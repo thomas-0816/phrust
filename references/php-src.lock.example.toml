@@ -1,0 +1,18 @@
+[php]
+series = "8.5"
+version = "8.5.7"
+tag = "php-8.5.7"
+repository = "https://github.com/php/php-src.git"
+commit = "<resolved commit sha>"
+resolved_at_utc = "<ISO-8601 timestamp>"
+
+[paths]
+local_checkout = "third_party/php-src"
+
+[critical_files]
+scanner = "Zend/zend_language_scanner.l"
+parser = "Zend/zend_language_parser.y"
+vm_def = "Zend/zend_vm_def.h"
+ast = "Zend/zend_ast.h"
+compile = "Zend/zend_compile.h"
+types = "Zend/zend_types.h"

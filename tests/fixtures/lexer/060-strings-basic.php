@@ -1,0 +1,9 @@
+<?php
+'abc';
+'it\'s';
+'\\';
+"abc";
+"\n";
+"multi
+line";
+"$x";

@@ -1,0 +1,2 @@
+<?php
+/* unterminated block comment

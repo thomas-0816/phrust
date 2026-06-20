@@ -1,0 +1,2 @@
+<?php
+"unterminated $name

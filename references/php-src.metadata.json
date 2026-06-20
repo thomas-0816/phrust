@@ -1,0 +1,89 @@
+{
+  "generated_at_utc": "2026-06-19T19:33:43Z",
+  "git": {
+    "branch": "",
+    "commit": "35eab8c08bc590758d05813b0ff7a3d8c3e67b79",
+    "detached": true,
+    "repository": "https://github.com/php/php-src.git",
+    "tag": "php-8.5.7"
+  },
+  "paths": [
+    {
+      "bytes": 79066,
+      "kind": "file",
+      "lines": 3230,
+      "path": "Zend/zend_language_scanner.l",
+      "sha256": "5e178b9e0a4f865a423a098ac97ba5fc04ef2f68503382e18599d89d9ad8d15b"
+    },
+    {
+      "bytes": 67977,
+      "kind": "file",
+      "lines": 1908,
+      "path": "Zend/zend_language_parser.y",
+      "sha256": "f108f2c2ff4c98c68b6478e7fbdebc16d8afb8bbbc3ae6079e5b285b448dac0c"
+    },
+    {
+      "bytes": 306172,
+      "kind": "file",
+      "lines": 10553,
+      "path": "Zend/zend_vm_def.h",
+      "sha256": "334c34063cf5983d9e3e067bb24d7616aa62aed4851a69f6024ba7c2e9a0b653"
+    },
+    {
+      "bytes": 14848,
+      "kind": "file",
+      "lines": 428,
+      "path": "Zend/zend_ast.h",
+      "sha256": "e5739d70a49328d30f6ff905e44a9a30642ff4d6229b470cc5c2aaa669f49d4c"
+    },
+    {
+      "bytes": 54482,
+      "kind": "file",
+      "lines": 1316,
+      "path": "Zend/zend_compile.h",
+      "sha256": "9f6b0fc3cb3398810c5ba17eb8b993e7d856b304f5dff43901d80dcbec1c7f61"
+    },
+    {
+      "bytes": 53087,
+      "kind": "file",
+      "lines": 1619,
+      "path": "Zend/zend_types.h",
+      "sha256": "601ed337205b2258ff0de217d40aaf38afd3a52f67a8edf0f91182414a6bcccd"
+    },
+    {
+      "bytes": 4579,
+      "kind": "file",
+      "lines": 92,
+      "path": "Zend/zend_exceptions.h",
+      "sha256": "7d355b596e7a1f68633edb63898817b1543e70f39ff1f657a8ed136c919bdb6a"
+    },
+    {
+      "bytes": 22533,
+      "kind": "file",
+      "lines": 680,
+      "path": "Zend/zend_interfaces.c",
+      "sha256": "904d0009d7083c166c0eed878778071eb8e6b3bb95dcf71dca33a05912499e44"
+    },
+    {
+      "bytes": 64968,
+      "kind": "file",
+      "lines": 2309,
+      "path": "Zend/zend_builtin_functions.c",
+      "sha256": "0d4477170a78540131893a8cfca2b9d1033c79eab754f9ca3d85e05ae6919505"
+    },
+    {
+      "file_count": 5399,
+      "kind": "directory",
+      "manifest_sha256": "63277f9f4d4927b6e8ef70768ebec3d8e4e1148428aa693bf563903e5c1cb6b8",
+      "path": "Zend/tests",
+      "total_bytes": 3497589
+    },
+    {
+      "file_count": 894,
+      "kind": "directory",
+      "manifest_sha256": "06f641585a30607e7317faea788d36f3b5f3c922374841894bfb639e84a50cae",
+      "path": "tests",
+      "total_bytes": 1326408
+    }
+  ]
+}

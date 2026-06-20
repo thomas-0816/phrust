@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/php_lexer",
+    "crates/php_lexer_cli",
+    "crates/php_source",
+    "crates/php_testkit",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"

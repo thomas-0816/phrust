@@ -1,0 +1,57 @@
+name: phase0
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_reference_checks:
+        description: "Run network-dependent PHP reference checks"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "metadata"
+          - "build"
+
+jobs:
+  verify:
+    name: Phase 0 verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+
+      - name: Show flake
+        run: nix flake show
+
+      - name: Verify Phase 0
+        run: nix develop -c just verify-phase0
+
+  reference:
+    name: Optional PHP reference checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.run_reference_checks != 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+
+      - name: Bootstrap reference
+        run: nix develop -c just bootstrap-ref
+
+      - name: Extract reference metadata
+        run: nix develop -c just extract-ref-metadata
+
+      - name: Build reference PHP
+        if: inputs.run_reference_checks == 'build'
+        run: nix develop -c just build-ref-php
+
+      - name: Verify reference
+        run: nix develop -c just verify-ref

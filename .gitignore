@@ -1,0 +1,61 @@
+# Rust build outputs
+target/
+**/target/
+*.profraw
+*.profdata
+coverage/
+coverage-*/
+tarpaulin-report.html
+lcov.info
+
+# Cargo/local tool state
+.cargo/.package-cache
+.cargo/config.local.toml
+
+# Nix outputs
+result
+result-*
+*.drv
+
+# Local PHP reference checkouts and builds
+/third_party/php-src/
+/third_party/php-src-*
+!/third_party/.gitkeep
+
+# Generated reports and extracted corpora
+/target/
+/reports/
+/tmp/
+/tmp_*/
+/corpus/
+/tests/corpus/
+/fixtures/corpus/
+*.log
+*.trace
+*.prof
+
+# Local build and cache directories
+/build/
+/.cache/
+/.ref/
+.direnv/
+.devenv/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.fleet/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local Codex/session artifacts
+.codex/
+.agents/
