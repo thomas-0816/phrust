@@ -29,8 +29,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "php_parser_cli"
+version = "0.1.0"
+dependencies = [
+ "php_lexer",
+ "php_source",
+ "php_syntax",
+]
+
+[[package]]
 name = "php_source"
 version = "0.0.0"
+
+[[package]]
+name = "php_syntax"
+version = "0.1.0"
+dependencies = [
+ "php_lexer",
+ "php_source",
+]
 
 [[package]]
 name = "php_testkit"

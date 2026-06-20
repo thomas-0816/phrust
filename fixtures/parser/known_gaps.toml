@@ -1,0 +1,10 @@
+# Parser acceptance gaps allowed by `scripts/compare_parser_acceptance.py`.
+#
+# Add entries only for reviewed, temporary parser/reference deviations:
+#
+# [[gap]]
+# fixture = "fixtures/parser/example.php"
+# reference_ok = true
+# rust_ok = false
+# roundtrip_ok = true
+# reason = "Short explanation and follow-up."

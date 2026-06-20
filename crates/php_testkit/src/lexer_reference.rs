@@ -92,6 +92,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_token_parse_reference_stream_json() {
+        let json = r#"{
+          "php_version": "8.5.7",
+          "php_version_id": 80507,
+          "file": "tests/fixtures/lexer/contextual.php",
+          "token_parse": true,
+          "tokens": [
+            {"index": 0, "kind": "T_OPEN_TAG", "text": "<?php ", "line": 1},
+            {"index": 1, "kind": "T_STRING", "text": "match", "line": 1},
+            {"index": 2, "kind": ";", "text": ";", "line": 1}
+          ]
+        }"#;
+
+        let stream = ReferenceTokenStream::from_json(json).expect("valid JSON");
+        assert!(stream.token_parse);
+        assert_eq!(stream.tokens[1].kind, "T_STRING");
+        assert_eq!(stream.tokens[1].text, "match");
+    }
+
+    #[test]
     fn parses_reference_token_dump_json() {
         let json = r#"{
           "php_version": "8.5.7",

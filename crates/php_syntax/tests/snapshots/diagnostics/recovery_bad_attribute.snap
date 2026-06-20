@@ -1,0 +1,11 @@
+fixture: recovery/bad_attribute.php
+roundtrip_ok: true
+diagnostics:
+- id: expected_identifier
+  span: 8..9
+  expected: ["name"]
+  message: "expected attribute name"
+- id: expected_identifier
+  span: 9..10
+  expected: ["name"]
+  message: "expected attribute name"

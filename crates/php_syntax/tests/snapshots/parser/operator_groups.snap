@@ -1,0 +1,325 @@
+fixture: valid/operator_groups.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..332
+  PHP_BLOCK @0..332
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..332
+      EXPR_STMT @6..26
+        ASSIGN_EXPR @6..25
+          VARIABLE @6..13
+            T_VARIABLE @6..13 line=2 text="$prefix"
+          T_WHITESPACE @13..14 line=2 text=" "
+          = @14..15 line=2 text="="
+          BINARY_EXPR @15..25
+            T_WHITESPACE @15..16 line=2 text=" "
+            PREFIX_EXPR @16..20
+              + @16..17 line=2 text="+"
+              EXPR @17..20
+                VARIABLE @17..19
+                  T_VARIABLE @17..19 line=2 text="$a"
+                T_WHITESPACE @19..20 line=2 text=" "
+            - @20..21 line=2 text="-"
+            EXPR @21..25
+              T_WHITESPACE @21..22 line=2 text=" "
+              PREFIX_EXPR @22..25
+                - @22..23 line=2 text="-"
+                EXPR @23..25
+                  VARIABLE @23..25
+                    T_VARIABLE @23..25 line=2 text="$b"
+        ; @25..26 line=2 text=";"
+      T_WHITESPACE @26..27 line=2 text="\n"
+      EXPR_STMT @27..49
+        ASSIGN_EXPR @27..48
+          VARIABLE @27..31
+            T_VARIABLE @27..31 line=3 text="$pow"
+          T_WHITESPACE @31..32 line=3 text=" "
+          = @32..33 line=3 text="="
+          BINARY_EXPR @33..48
+            T_WHITESPACE @33..34 line=3 text=" "
+            VARIABLE @34..36
+              T_VARIABLE @34..36 line=3 text="$a"
+            T_WHITESPACE @36..37 line=3 text=" "
+            T_POW @37..39 line=3 text="**"
+            BINARY_EXPR @39..48
+              T_WHITESPACE @39..40 line=3 text=" "
+              VARIABLE @40..42
+                T_VARIABLE @40..42 line=3 text="$b"
+              T_WHITESPACE @42..43 line=3 text=" "
+              T_POW @43..45 line=3 text="**"
+              EXPR @45..48
+                T_WHITESPACE @45..46 line=3 text=" "
+                VARIABLE @46..48
+                  T_VARIABLE @46..48 line=3 text="$c"
+        ; @48..49 line=3 text=";"
+      T_WHITESPACE @49..50 line=3 text="\n"
+      EXPR_STMT @50..86
+        ASSIGN_EXPR @50..85
+          VARIABLE @50..55
+            T_VARIABLE @50..55 line=4 text="$math"
+          T_WHITESPACE @55..56 line=4 text=" "
+          = @56..57 line=4 text="="
+          BINARY_EXPR @57..85
+            T_WHITESPACE @57..58 line=4 text=" "
+            VARIABLE @58..60
+              T_VARIABLE @58..60 line=4 text="$a"
+            T_WHITESPACE @60..61 line=4 text=" "
+            * @61..62 line=4 text="*"
+            EXPR @62..66
+              T_WHITESPACE @62..63 line=4 text=" "
+              VARIABLE @63..65
+                T_VARIABLE @63..65 line=4 text="$b"
+              T_WHITESPACE @65..66 line=4 text=" "
+            / @66..67 line=4 text="/"
+            EXPR @67..71
+              T_WHITESPACE @67..68 line=4 text=" "
+              VARIABLE @68..70
+                T_VARIABLE @68..70 line=4 text="$c"
+              T_WHITESPACE @70..71 line=4 text=" "
+            % @71..72 line=4 text="%"
+            EXPR @72..76
+              T_WHITESPACE @72..73 line=4 text=" "
+              VARIABLE @73..75
+                T_VARIABLE @73..75 line=4 text="$d"
+              T_WHITESPACE @75..76 line=4 text=" "
+            + @76..77 line=4 text="+"
+            EXPR @77..81
+              T_WHITESPACE @77..78 line=4 text=" "
+              VARIABLE @78..80
+                T_VARIABLE @78..80 line=4 text="$e"
+              T_WHITESPACE @80..81 line=4 text=" "
+            - @81..82 line=4 text="-"
+            EXPR @82..85
+              T_WHITESPACE @82..83 line=4 text=" "
+              VARIABLE @83..85
+                T_VARIABLE @83..85 line=4 text="$f"
+        ; @85..86 line=4 text=";"
+      T_WHITESPACE @86..87 line=4 text="\n"
+      EXPR_STMT @87..105
+        ASSIGN_EXPR @87..104
+          VARIABLE @87..94
+            T_VARIABLE @87..94 line=5 text="$concat"
+          T_WHITESPACE @94..95 line=5 text=" "
+          = @95..96 line=5 text="="
+          BINARY_EXPR @96..104
+            T_WHITESPACE @96..97 line=5 text=" "
+            VARIABLE @97..99
+              T_VARIABLE @97..99 line=5 text="$a"
+            T_WHITESPACE @99..100 line=5 text=" "
+            . @100..101 line=5 text="."
+            EXPR @101..104
+              T_WHITESPACE @101..102 line=5 text=" "
+              VARIABLE @102..104
+                T_VARIABLE @102..104 line=5 text="$b"
+        ; @104..105 line=5 text=";"
+      T_WHITESPACE @105..106 line=5 text="\n"
+      EXPR_STMT @106..130
+        ASSIGN_EXPR @106..129
+          VARIABLE @106..112
+            T_VARIABLE @106..112 line=6 text="$shift"
+          T_WHITESPACE @112..113 line=6 text=" "
+          = @113..114 line=6 text="="
+          BINARY_EXPR @114..129
+            T_WHITESPACE @114..115 line=6 text=" "
+            VARIABLE @115..117
+              T_VARIABLE @115..117 line=6 text="$a"
+            T_WHITESPACE @117..118 line=6 text=" "
+            T_SL @118..120 line=6 text="<<"
+            EXPR @120..124
+              T_WHITESPACE @120..121 line=6 text=" "
+              VARIABLE @121..123
+                T_VARIABLE @121..123 line=6 text="$b"
+              T_WHITESPACE @123..124 line=6 text=" "
+            T_SR @124..126 line=6 text=">>"
+            EXPR @126..129
+              T_WHITESPACE @126..127 line=6 text=" "
+              VARIABLE @127..129
+                T_VARIABLE @127..129 line=6 text="$c"
+        ; @129..130 line=6 text=";"
+      T_WHITESPACE @130..131 line=6 text="\n"
+      EXPR_STMT @131..150
+        ASSIGN_EXPR @131..149
+          VARIABLE @131..139
+            T_VARIABLE @131..139 line=7 text="$compare"
+          T_WHITESPACE @139..140 line=7 text=" "
+          = @140..141 line=7 text="="
+          BINARY_EXPR @141..149
+            T_WHITESPACE @141..142 line=7 text=" "
+            VARIABLE @142..144
+              T_VARIABLE @142..144 line=7 text="$a"
+            T_WHITESPACE @144..145 line=7 text=" "
+            < @145..146 line=7 text="<"
+            EXPR @146..149
+              T_WHITESPACE @146..147 line=7 text=" "
+              VARIABLE @147..149
+                T_VARIABLE @147..149 line=7 text="$b"
+        ; @149..150 line=7 text=";"
+      T_WHITESPACE @150..151 line=7 text="\n"
+      EXPR_STMT @151..174
+        ASSIGN_EXPR @151..173
+          VARIABLE @151..161
+            T_VARIABLE @151..161 line=8 text="$spaceship"
+          T_WHITESPACE @161..162 line=8 text=" "
+          = @162..163 line=8 text="="
+          BINARY_EXPR @163..173
+            T_WHITESPACE @163..164 line=8 text=" "
+            VARIABLE @164..166
+              T_VARIABLE @164..166 line=8 text="$a"
+            T_WHITESPACE @166..167 line=8 text=" "
+            T_SPACESHIP @167..170 line=8 text="<=>"
+            EXPR @170..173
+              T_WHITESPACE @170..171 line=8 text=" "
+              VARIABLE @171..173
+                T_VARIABLE @171..173 line=8 text="$b"
+        ; @173..174 line=8 text=";"
+      T_WHITESPACE @174..175 line=8 text="\n"
+      EXPR_STMT @175..210
+        ASSIGN_EXPR @175..209
+          VARIABLE @175..184
+            T_VARIABLE @175..184 line=9 text="$equality"
+          T_WHITESPACE @184..185 line=9 text=" "
+          = @185..186 line=9 text="="
+          BINARY_EXPR @186..209
+            T_WHITESPACE @186..187 line=9 text=" "
+            VARIABLE @187..189
+              T_VARIABLE @187..189 line=9 text="$a"
+            T_WHITESPACE @189..190 line=9 text=" "
+            T_IS_IDENTICAL @190..193 line=9 text="==="
+            EXPR @193..197
+              T_WHITESPACE @193..194 line=9 text=" "
+              VARIABLE @194..196
+                T_VARIABLE @194..196 line=9 text="$b"
+              T_WHITESPACE @196..197 line=9 text=" "
+            T_BOOLEAN_OR @197..199 line=9 text="||"
+            BINARY_EXPR @199..209
+              T_WHITESPACE @199..200 line=9 text=" "
+              VARIABLE @200..202
+                T_VARIABLE @200..202 line=9 text="$a"
+              T_WHITESPACE @202..203 line=9 text=" "
+              T_IS_NOT_IDENTICAL @203..206 line=9 text="!=="
+              EXPR @206..209
+                T_WHITESPACE @206..207 line=9 text=" "
+                VARIABLE @207..209
+                  T_VARIABLE @207..209 line=9 text="$c"
+        ; @209..210 line=9 text=";"
+      T_WHITESPACE @210..211 line=9 text="\n"
+      EXPR_STMT @211..241
+        ASSIGN_EXPR @211..240
+          VARIABLE @211..216
+            T_VARIABLE @211..216 line=10 text="$bits"
+          T_WHITESPACE @216..217 line=10 text=" "
+          = @217..218 line=10 text="="
+          BINARY_EXPR @218..240
+            T_WHITESPACE @218..219 line=10 text=" "
+            PARENTHESIZED_EXPR @219..228
+              ( @219..220 line=10 text="("
+              BINARY_EXPR @220..227
+                VARIABLE @220..222
+                  T_VARIABLE @220..222 line=10 text="$a"
+                T_WHITESPACE @222..223 line=10 text=" "
+                T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG @223..224 line=10 text="&"
+                EXPR @224..227
+                  T_WHITESPACE @224..225 line=10 text=" "
+                  VARIABLE @225..227
+                    T_VARIABLE @225..227 line=10 text="$b"
+              ) @227..228 line=10 text=")"
+            T_WHITESPACE @228..229 line=10 text=" "
+            ^ @229..230 line=10 text="^"
+            EXPR @230..240
+              T_WHITESPACE @230..231 line=10 text=" "
+              PARENTHESIZED_EXPR @231..240
+                ( @231..232 line=10 text="("
+                BINARY_EXPR @232..239
+                  VARIABLE @232..234
+                    T_VARIABLE @232..234 line=10 text="$c"
+                  T_WHITESPACE @234..235 line=10 text=" "
+                  | @235..236 line=10 text="|"
+                  EXPR @236..239
+                    T_WHITESPACE @236..237 line=10 text=" "
+                    VARIABLE @237..239
+                      T_VARIABLE @237..239 line=10 text="$d"
+                ) @239..240 line=10 text=")"
+        ; @240..241 line=10 text=";"
+      T_WHITESPACE @241..242 line=10 text="\n"
+      EXPR_STMT @242..267
+        ASSIGN_EXPR @242..266
+          VARIABLE @242..248
+            T_VARIABLE @242..248 line=11 text="$logic"
+          T_WHITESPACE @248..249 line=11 text=" "
+          = @249..250 line=11 text="="
+          BINARY_EXPR @250..266
+            T_WHITESPACE @250..251 line=11 text=" "
+            PREFIX_EXPR @251..255
+              ! @251..252 line=11 text="!"
+              EXPR @252..255
+                VARIABLE @252..254
+                  T_VARIABLE @252..254 line=11 text="$a"
+                T_WHITESPACE @254..255 line=11 text=" "
+            T_BOOLEAN_AND @255..257 line=11 text="&&"
+            EXPR @257..261
+              T_WHITESPACE @257..258 line=11 text=" "
+              VARIABLE @258..260
+                T_VARIABLE @258..260 line=11 text="$b"
+              T_WHITESPACE @260..261 line=11 text=" "
+            T_BOOLEAN_OR @261..263 line=11 text="||"
+            EXPR @263..266
+              T_WHITESPACE @263..264 line=11 text=" "
+              VARIABLE @264..266
+                T_VARIABLE @264..266 line=11 text="$c"
+        ; @266..267 line=11 text=";"
+      T_WHITESPACE @267..268 line=11 text="\n"
+      EXPR_STMT @268..303
+        ASSIGN_EXPR @268..302
+          VARIABLE @268..277
+            T_VARIABLE @268..277 line=12 text="$keywords"
+          T_WHITESPACE @277..278 line=12 text=" "
+          = @278..279 line=12 text="="
+          BINARY_EXPR @279..302
+            T_WHITESPACE @279..280 line=12 text=" "
+            VARIABLE @280..282
+              T_VARIABLE @280..282 line=12 text="$a"
+            T_WHITESPACE @282..283 line=12 text=" "
+            T_LOGICAL_AND @283..286 line=12 text="and"
+            EXPR @286..290
+              T_WHITESPACE @286..287 line=12 text=" "
+              VARIABLE @287..289
+                T_VARIABLE @287..289 line=12 text="$b"
+              T_WHITESPACE @289..290 line=12 text=" "
+            T_LOGICAL_XOR @290..293 line=12 text="xor"
+            EXPR @293..297
+              T_WHITESPACE @293..294 line=12 text=" "
+              VARIABLE @294..296
+                T_VARIABLE @294..296 line=12 text="$c"
+              T_WHITESPACE @296..297 line=12 text=" "
+            T_LOGICAL_OR @297..299 line=12 text="or"
+            EXPR @299..302
+              T_WHITESPACE @299..300 line=12 text=" "
+              VARIABLE @300..302
+                T_VARIABLE @300..302 line=12 text="$d"
+        ; @302..303 line=12 text=";"
+      T_WHITESPACE @303..304 line=12 text="\n"
+      EXPR_STMT @304..331
+        ASSIGN_EXPR @304..330
+          VARIABLE @304..313
+            T_VARIABLE @304..313 line=13 text="$coalesce"
+          T_WHITESPACE @313..314 line=13 text=" "
+          = @314..315 line=13 text="="
+          BINARY_EXPR @315..330
+            T_WHITESPACE @315..316 line=13 text=" "
+            VARIABLE @316..318
+              T_VARIABLE @316..318 line=13 text="$a"
+            T_WHITESPACE @318..319 line=13 text=" "
+            T_COALESCE @319..321 line=13 text="??"
+            BINARY_EXPR @321..330
+              T_WHITESPACE @321..322 line=13 text=" "
+              VARIABLE @322..324
+                T_VARIABLE @322..324 line=13 text="$b"
+              T_WHITESPACE @324..325 line=13 text=" "
+              T_COALESCE @325..327 line=13 text="??"
+              EXPR @327..330
+                T_WHITESPACE @327..328 line=13 text=" "
+                VARIABLE @328..330
+                  T_VARIABLE @328..330 line=13 text="$c"
+        ; @330..331 line=13 text=";"
+      T_WHITESPACE @331..332 line=13 text="\n"

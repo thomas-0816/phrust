@@ -1,0 +1,172 @@
+fixture: valid/dnf_types.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..256
+  PHP_BLOCK @0..256
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..256
+      T_WHITESPACE @6..7 line=2 text="\n"
+      FUNCTION_DECL @7..83
+        T_FUNCTION @7..15 line=3 text="function"
+        T_WHITESPACE @15..16 line=3 text=" "
+        T_STRING @16..29 line=3 text="intersections"
+        PARAM_LIST @29..54
+          ( @29..30 line=3 text="("
+          PARAM @30..39
+            INTERSECTION_TYPE @30..34
+              NAME @30..31
+                T_STRING @30..31 line=3 text="A"
+              T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG @31..32 line=3 text="&"
+              NAME @32..34
+                T_STRING @32..33 line=3 text="B"
+                T_WHITESPACE @33..34 line=3 text=" "
+            T_VARIABLE @34..39 line=3 text="$both"
+          , @39..40 line=3 text=","
+          T_WHITESPACE @40..41 line=3 text=" "
+          PARAM @41..53
+            DNF_TYPE @41..49
+              ( @41..42 line=3 text="("
+              NAME @42..43
+                T_STRING @42..43 line=3 text="C"
+              T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG @43..44 line=3 text="&"
+              NAME @44..45
+                T_STRING @44..45 line=3 text="D"
+              ) @45..46 line=3 text=")"
+              | @46..47 line=3 text="|"
+              NAME @47..49
+                T_STRING @47..48 line=3 text="E"
+                T_WHITESPACE @48..49 line=3 text=" "
+            T_VARIABLE @49..53 line=3 text="$dnf"
+          ) @53..54 line=3 text=")"
+        : @54..55 line=3 text=":"
+        T_WHITESPACE @55..56 line=3 text=" "
+        DNF_TYPE @56..64
+          ( @56..57 line=3 text="("
+          NAME @57..58
+            T_STRING @57..58 line=3 text="F"
+          T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG @58..59 line=3 text="&"
+          NAME @59..60
+            T_STRING @59..60 line=3 text="G"
+          ) @60..61 line=3 text=")"
+          | @61..62 line=3 text="|"
+          NAME @62..64
+            T_STRING @62..63 line=3 text="H"
+            T_WHITESPACE @63..64 line=3 text=" "
+        BLOCK_STMT @64..83
+          { @64..65 line=3 text="{"
+          T_WHITESPACE @65..70 line=3 text="\n    "
+          ECHO_STMT @70..81
+            T_ECHO @70..74 line=4 text="echo"
+            EXPR @74..80
+              T_WHITESPACE @74..75 line=4 text=" "
+              VARIABLE @75..80
+                T_VARIABLE @75..80 line=4 text="$both"
+            ; @80..81 line=4 text=";"
+          T_WHITESPACE @81..82 line=4 text="\n"
+          } @82..83 line=5 text="}"
+      T_WHITESPACE @83..85 line=5 text="\n\n"
+      EXPR_STMT @85..185
+        ASSIGN_EXPR @85..184
+          VARIABLE @85..93
+            T_VARIABLE @85..93 line=7 text="$closure"
+          T_WHITESPACE @93..94 line=7 text=" "
+          = @94..95 line=7 text="="
+          EXPR @95..184
+            T_WHITESPACE @95..96 line=7 text=" "
+            CLOSURE_EXPR @96..184
+              T_FUNCTION @96..104 line=7 text="function"
+              T_WHITESPACE @104..105 line=7 text=" "
+              PARAM_LIST @105..135
+                ( @105..106 line=7 text="("
+                PARAM @106..134
+                  DNF_TYPE @106..127
+                    ( @106..107 line=7 text="("
+                    NAME @107..113
+                      T_STRING @107..113 line=7 text="Reader"
+                    T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG @113..114 line=7 text="&"
+                    NAME @114..120
+                      T_STRING @114..120 line=7 text="Writer"
+                    ) @120..121 line=7 text=")"
+                    | @121..122 line=7 text="|"
+                    NAME @122..127
+                      T_STRING @122..126 line=7 text="null"
+                      T_WHITESPACE @126..127 line=7 text=" "
+                  T_VARIABLE @127..134 line=7 text="$stream"
+                ) @134..135 line=7 text=")"
+              : @135..136 line=7 text=":"
+              T_WHITESPACE @136..137 line=7 text=" "
+              DNF_TYPE @137..163
+                ( @137..138 line=7 text="("
+                NAME @138..146
+                  T_STRING @138..146 line=7 text="Seekable"
+                T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG @146..147 line=7 text="&"
+                NAME @147..155
+                  T_STRING @147..155 line=7 text="Readable"
+                ) @155..156 line=7 text=")"
+                | @156..157 line=7 text="|"
+                NAME @157..163
+                  T_STRING @157..162 line=7 text="false"
+                  T_WHITESPACE @162..163 line=7 text=" "
+              BLOCK_STMT @163..184
+                { @163..164 line=7 text="{"
+                T_WHITESPACE @164..169 line=7 text="\n    "
+                ECHO_STMT @169..182
+                  T_ECHO @169..173 line=8 text="echo"
+                  EXPR @173..181
+                    T_WHITESPACE @173..174 line=8 text=" "
+                    VARIABLE @174..181
+                      T_VARIABLE @174..181 line=8 text="$stream"
+                  ; @181..182 line=8 text=";"
+                T_WHITESPACE @182..183 line=8 text="\n"
+                } @183..184 line=9 text="}"
+        ; @184..185 line=9 text=";"
+      T_WHITESPACE @185..187 line=9 text="\n\n"
+      EXPR_STMT @187..255
+        ASSIGN_EXPR @187..254
+          VARIABLE @187..193
+            T_VARIABLE @187..193 line=11 text="$arrow"
+          T_WHITESPACE @193..194 line=11 text=" "
+          = @194..195 line=11 text="="
+          EXPR @195..254
+            T_WHITESPACE @195..196 line=11 text=" "
+            ARROW_FUNCTION_EXPR @196..254
+              T_FN @196..198 line=11 text="fn"
+              PARAM_LIST @198..226
+                ( @198..199 line=11 text="("
+                PARAM @199..225
+                  DNF_TYPE @199..219
+                    ( @199..200 line=11 text="("
+                    NAME @200..204
+                      T_STRING @200..204 line=11 text="Left"
+                    T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG @204..205 line=11 text="&"
+                    NAME @205..210
+                      T_STRING @205..210 line=11 text="Right"
+                    ) @210..211 line=11 text=")"
+                    | @211..212 line=11 text="|"
+                    NAME @212..219
+                      T_STRING @212..218 line=11 text="Center"
+                      T_WHITESPACE @218..219 line=11 text=" "
+                  T_VARIABLE @219..225 line=11 text="$value"
+                ) @225..226 line=11 text=")"
+              : @226..227 line=11 text=":"
+              T_WHITESPACE @227..228 line=11 text=" "
+              DNF_TYPE @228..245
+                ( @228..229 line=11 text="("
+                NAME @229..233
+                  T_STRING @229..233 line=11 text="OutA"
+                T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG @233..234 line=11 text="&"
+                NAME @234..238
+                  T_STRING @234..238 line=11 text="OutB"
+                ) @238..239 line=11 text=")"
+                | @239..240 line=11 text="|"
+                NAME @240..245
+                  T_STRING @240..244 line=11 text="OutC"
+                  T_WHITESPACE @244..245 line=11 text=" "
+              T_DOUBLE_ARROW @245..247 line=11 text="=>"
+              EXPR @247..254
+                T_WHITESPACE @247..248 line=11 text=" "
+                VARIABLE @248..254
+                  T_VARIABLE @248..254 line=11 text="$value"
+        ; @254..255 line=11 text=";"
+      T_WHITESPACE @255..256 line=11 text="\n"

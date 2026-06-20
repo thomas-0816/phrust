@@ -1,0 +1,15 @@
+fixture: invalid/arrays_invalid.php
+roundtrip_ok: true
+diagnostics:
+- id: expected_token
+  span: 85..86
+  expected: [",", "]", ")"]
+  message: "expected `,` or array terminator"
+- id: unclosed_delimiter
+  span: 108..108
+  expected: ["]"]
+  message: "expected array terminator"
+- id: expected_token
+  span: 108..108
+  expected: [";", "}", "T_CLOSE_TAG", "EOF"]
+  message: "expected statement terminator"

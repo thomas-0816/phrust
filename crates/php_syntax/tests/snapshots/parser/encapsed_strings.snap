@@ -1,0 +1,129 @@
+fixture: valid/encapsed_strings.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..201
+  PHP_BLOCK @0..201
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..201
+      T_WHITESPACE @6..7 line=2 text="\n"
+      EXPR_STMT @7..21
+        ASSIGN_EXPR @7..20
+          VARIABLE @7..12
+            T_VARIABLE @7..12 line=3 text="$name"
+          T_WHITESPACE @12..13 line=3 text=" "
+          = @13..14 line=3 text="="
+          EXPR @14..20
+            T_WHITESPACE @14..15 line=3 text=" "
+            STRING @15..20
+              T_CONSTANT_ENCAPSED_STRING @15..20 line=3 text="\"Ada\""
+        ; @20..21 line=3 text=";"
+      T_WHITESPACE @21..22 line=3 text="\n"
+      EXPR_STMT @22..48
+        ASSIGN_EXPR @22..47
+          VARIABLE @22..26
+            T_VARIABLE @22..26 line=4 text="$arr"
+          T_WHITESPACE @26..27 line=4 text=" "
+          = @27..28 line=4 text="="
+          EXPR @28..47
+            T_WHITESPACE @28..29 line=4 text=" "
+            ARRAY_EXPR @29..47
+              [ @29..30 line=4 text="["
+              ARRAY_PAIR @30..46
+                EXPR @30..36
+                  STRING @30..35
+                    T_CONSTANT_ENCAPSED_STRING @30..35 line=4 text="\"key\""
+                  T_WHITESPACE @35..36 line=4 text=" "
+                T_DOUBLE_ARROW @36..38 line=4 text="=>"
+                EXPR @38..46
+                  T_WHITESPACE @38..39 line=4 text=" "
+                  STRING @39..46
+                    T_CONSTANT_ENCAPSED_STRING @39..46 line=4 text="\"value\""
+              ] @46..47 line=4 text="]"
+        ; @47..48 line=4 text=";"
+      T_WHITESPACE @48..49 line=4 text="\n"
+      EXPR_STMT @49..108
+        ASSIGN_EXPR @49..107
+          VARIABLE @49..53
+            T_VARIABLE @49..53 line=5 text="$obj"
+          T_WHITESPACE @53..54 line=5 text=" "
+          = @54..55 line=5 text="="
+          EXPR @55..107
+            T_WHITESPACE @55..56 line=5 text=" "
+            NEW_EXPR @56..107
+              T_NEW @56..59 line=5 text="new"
+              T_WHITESPACE @59..60 line=5 text=" "
+              CLASS_DECL @60..107
+                T_CLASS @60..65 line=5 text="class"
+                T_WHITESPACE @65..66 line=5 text=" "
+                CLASS_MEMBER_LIST @66..107
+                  { @66..67 line=5 text="{"
+                  T_WHITESPACE @67..72 line=5 text="\n    "
+                  PROPERTY_DECL @72..105
+                    T_PUBLIC @72..78 line=6 text="public"
+                    T_WHITESPACE @78..79 line=6 text=" "
+                    T_STRING @79..85 line=6 text="string"
+                    T_WHITESPACE @85..86 line=6 text=" "
+                    T_VARIABLE @86..91 line=6 text="$prop"
+                    T_WHITESPACE @91..92 line=6 text=" "
+                    = @92..93 line=6 text="="
+                    T_WHITESPACE @93..94 line=6 text=" "
+                    T_CONSTANT_ENCAPSED_STRING @94..104 line=6 text="\"property\""
+                    ; @104..105 line=6 text=";"
+                  T_WHITESPACE @105..106 line=6 text="\n"
+                  } @106..107 line=7 text="}"
+        ; @107..108 line=7 text=";"
+      T_WHITESPACE @108..110 line=7 text="\n\n"
+      EXPR_STMT @110..175
+        ASSIGN_EXPR @110..174
+          VARIABLE @110..115
+            T_VARIABLE @110..115 line=9 text="$text"
+          T_WHITESPACE @115..116 line=9 text=" "
+          = @116..117 line=9 text="="
+          EXPR @117..174
+            T_WHITESPACE @117..118 line=9 text=" "
+            ENCAPSED @118..174
+              " @118..119 line=9 text="\""
+              T_ENCAPSED_AND_WHITESPACE @119..125 line=9 text="Hello "
+              VARIABLE @125..130
+                T_VARIABLE @125..130 line=9 text="$name"
+              T_ENCAPSED_AND_WHITESPACE @130..131 line=9 text=" "
+              VARIABLE @131..141
+                T_VARIABLE @131..135 line=9 text="$arr"
+                [ @135..136 line=9 text="["
+                T_ENCAPSED_AND_WHITESPACE @136..141 line=9 text="key] "
+              VARIABLE @141..151
+                T_VARIABLE @141..145 line=9 text="$obj"
+                T_OBJECT_OPERATOR @145..147 line=9 text="->"
+                T_STRING @147..151 line=9 text="prop"
+              T_ENCAPSED_AND_WHITESPACE @151..152 line=9 text=" "
+              EXPR @152..165
+                T_CURLY_OPEN @152..153 line=9 text="{"
+                T_VARIABLE @153..157 line=9 text="$arr"
+                [ @157..158 line=9 text="["
+                T_ENCAPSED_AND_WHITESPACE @158..164 line=9 text="\'key\']"
+                } @164..165 line=9 text="}"
+              T_ENCAPSED_AND_WHITESPACE @165..166 line=9 text=" "
+              EXPR @166..173
+                T_DOLLAR_OPEN_CURLY_BRACES @166..168 line=9 text="${"
+                T_STRING_VARNAME @168..172 line=9 text="name"
+                } @172..173 line=9 text="}"
+              " @173..174 line=9 text="\""
+        ; @174..175 line=9 text=";"
+      T_WHITESPACE @175..176 line=9 text="\n"
+      EXPR_STMT @176..200
+        ASSIGN_EXPR @176..199
+          VARIABLE @176..182
+            T_VARIABLE @176..182 line=10 text="$shell"
+          T_WHITESPACE @182..183 line=10 text=" "
+          = @183..184 line=10 text="="
+          EXPR @184..199
+            T_WHITESPACE @184..185 line=10 text=" "
+            ENCAPSED @185..199
+              ` @185..186 line=10 text="`"
+              T_ENCAPSED_AND_WHITESPACE @186..193 line=10 text="printf "
+              VARIABLE @193..198
+                T_VARIABLE @193..198 line=10 text="$name"
+              ` @198..199 line=10 text="`"
+        ; @199..200 line=10 text=";"
+      T_WHITESPACE @200..201 line=10 text="\n"

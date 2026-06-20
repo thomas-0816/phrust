@@ -1,0 +1,15 @@
+fixture: invalid/types_invalid.php
+roundtrip_ok: true
+diagnostics:
+- id: expected_type
+  span: 102..108
+  expected: ["type"]
+  message: "expected type"
+- id: expected_type
+  span: 166..172
+  expected: ["type"]
+  message: "expected type after `|`"
+- id: unclosed_delimiter
+  span: 228..234
+  expected: [")"]
+  message: "expected `)` to close parenthesized type"

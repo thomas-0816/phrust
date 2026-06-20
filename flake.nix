@@ -87,9 +87,9 @@
             RUST_BACKTRACE = "1";
 
             shellHook = ''
-              echo "phrust Phase 1 dev shell" >&2
+              echo "phrust dev shell" >&2
               echo "  just help" >&2
-              echo "  just verify-phase1" >&2
+              echo "  just verify" >&2
             '';
           };
         }

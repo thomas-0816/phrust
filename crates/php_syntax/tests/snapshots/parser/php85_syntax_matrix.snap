@@ -1,0 +1,181 @@
+fixture: php85/syntax_matrix.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..364
+  PHP_BLOCK @0..364
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..364
+      FUNCTION_DECL @6..66
+        ATTRIBUTE_GROUP @6..19
+          T_ATTRIBUTE @6..8 line=2 text="#["
+          ATTRIBUTE @8..18
+            NAME @8..18
+              T_NAME_FULLY_QUALIFIED @8..18 line=2 text="\\NoDiscard"
+          ] @18..19 line=2 text="]"
+        T_WHITESPACE @19..20 line=2 text="\n"
+        T_FUNCTION @20..28 line=3 text="function"
+        T_WHITESPACE @28..29 line=3 text=" "
+        T_STRING @29..41 line=3 text="matrix_value"
+        PARAM_LIST @41..43
+          ( @41..42 line=3 text="("
+          ) @42..43 line=3 text=")"
+        : @43..44 line=3 text=":"
+        T_WHITESPACE @44..45 line=3 text=" "
+        TYPE @45..49
+          NAME @45..49
+            T_STRING @45..48 line=3 text="int"
+            T_WHITESPACE @48..49 line=3 text=" "
+        BLOCK_STMT @49..66
+          { @49..50 line=3 text="{"
+          T_WHITESPACE @50..55 line=3 text="\n    "
+          RETURN_STMT @55..64
+            T_RETURN @55..61 line=4 text="return"
+            T_WHITESPACE @61..62 line=4 text=" "
+            EXPR @62..63
+              LITERAL @62..63
+                T_LNUMBER @62..63 line=4 text="1"
+            ; @63..64 line=4 text=";"
+          T_WHITESPACE @64..65 line=4 text="\n"
+          } @65..66 line=5 text="}"
+      T_WHITESPACE @66..68 line=5 text="\n\n"
+      EXPR_STMT @68..120
+        ASSIGN_EXPR @68..119
+          VARIABLE @68..75
+            T_VARIABLE @68..75 line=7 text="$result"
+          T_WHITESPACE @75..76 line=7 text=" "
+          = @76..77 line=7 text="="
+          PIPE_EXPR @77..119
+            T_WHITESPACE @77..78 line=7 text=" "
+            STRING @78..85
+              T_CONSTANT_ENCAPSED_STRING @78..85 line=7 text="\"hello\""
+            T_WHITESPACE @85..86 line=7 text=" "
+            T_PIPE @86..88 line=7 text="|>"
+            EXPR @88..105
+              T_WHITESPACE @88..89 line=7 text=" "
+              NAME @89..99
+                T_STRING @89..99 line=7 text="strtoupper"
+              CALL_EXPR @99..104
+                ( @99..100 line=7 text="("
+                T_ELLIPSIS @100..103 line=7 text="..."
+                ) @103..104 line=7 text=")"
+              T_WHITESPACE @104..105 line=7 text=" "
+            T_PIPE @105..107 line=7 text="|>"
+            EXPR @107..119
+              T_WHITESPACE @107..108 line=7 text=" "
+              NAME @108..114
+                T_STRING @108..114 line=7 text="strlen"
+              CALL_EXPR @114..119
+                ( @114..115 line=7 text="("
+                T_ELLIPSIS @115..118 line=7 text="..."
+                ) @118..119 line=7 text=")"
+        ; @119..120 line=7 text=";"
+      T_WHITESPACE @120..121 line=7 text="\n"
+      EXPR_STMT @121..202
+        ASSIGN_EXPR @121..201
+          VARIABLE @121..126
+            T_VARIABLE @121..126 line=8 text="$copy"
+          T_WHITESPACE @126..127 line=8 text=" "
+          = @127..128 line=8 text="="
+          EXPR @128..201
+            T_WHITESPACE @128..129 line=8 text=" "
+            CLONE_WITH_EXPR @129..201
+              T_CLONE @129..134 line=8 text="clone"
+              CALL_EXPR @134..201
+                ( @134..135 line=8 text="("
+                T_NEW @135..138 line=8 text="new"
+                T_WHITESPACE @138..139 line=8 text=" "
+                T_CLASS @139..144 line=8 text="class"
+                T_WHITESPACE @144..145 line=8 text=" "
+                { @145..146 line=8 text="{"
+                T_WHITESPACE @146..151 line=8 text="\n    "
+                T_PUBLIC @151..157 line=9 text="public"
+                T_WHITESPACE @157..158 line=9 text=" "
+                T_STRING @158..164 line=9 text="string"
+                T_WHITESPACE @164..165 line=9 text=" "
+                T_VARIABLE @165..170 line=9 text="$name"
+                T_WHITESPACE @170..171 line=9 text=" "
+                = @171..172 line=9 text="="
+                T_WHITESPACE @172..173 line=9 text=" "
+                T_CONSTANT_ENCAPSED_STRING @173..178 line=9 text="\"old\""
+                ; @178..179 line=9 text=";"
+                T_WHITESPACE @179..180 line=9 text="\n"
+                } @180..181 line=10 text="}"
+                , @181..182 line=10 text=","
+                T_WHITESPACE @182..183 line=10 text=" "
+                [ @183..184 line=10 text="["
+                T_CONSTANT_ENCAPSED_STRING @184..190 line=10 text="\"name\""
+                T_WHITESPACE @190..191 line=10 text=" "
+                T_DOUBLE_ARROW @191..193 line=10 text="=>"
+                T_WHITESPACE @193..194 line=10 text=" "
+                T_CONSTANT_ENCAPSED_STRING @194..199 line=10 text="\"new\""
+                ] @199..200 line=10 text="]"
+                ) @200..201 line=10 text=")"
+        ; @201..202 line=10 text=";"
+      T_WHITESPACE @202..203 line=10 text="\n"
+      EXPR_STMT @203..225
+        EXPR @203..224
+          VOID_CAST_EXPR @203..224
+            T_VOID_CAST @203..209 line=11 text="(void)"
+            EXPR @209..224
+              T_WHITESPACE @209..210 line=11 text=" "
+              NAME @210..222
+                T_STRING @210..222 line=11 text="matrix_value"
+              CALL_EXPR @222..224
+                ( @222..223 line=11 text="("
+                ) @223..224 line=11 text=")"
+        ; @224..225 line=11 text=";"
+      T_WHITESPACE @225..227 line=11 text="\n\n"
+      CLASS_DECL @227..363
+        T_CLASS @227..232 line=13 text="class"
+        T_WHITESPACE @232..233 line=13 text=" "
+        T_STRING @233..244 line=13 text="Php85Matrix"
+        T_WHITESPACE @244..245 line=13 text=" "
+        CLASS_MEMBER_LIST @245..363
+          { @245..246 line=13 text="{"
+          T_WHITESPACE @246..251 line=13 text="\n    "
+          CLASS_CONST_DECL @251..283
+            T_PUBLIC @251..257 line=14 text="public"
+            T_WHITESPACE @257..258 line=14 text=" "
+            T_CONST @258..263 line=14 text="const"
+            T_WHITESPACE @263..264 line=14 text=" "
+            T_STRING @264..269 line=14 text="VALUE"
+            T_WHITESPACE @269..270 line=14 text=" "
+            = @270..271 line=14 text="="
+            T_WHITESPACE @271..272 line=14 text=" "
+            T_INT_CAST @272..277 line=14 text="(int)"
+            T_WHITESPACE @277..278 line=14 text=" "
+            T_CONSTANT_ENCAPSED_STRING @278..282 line=14 text="\"42\""
+            ; @282..283 line=14 text=";"
+          T_WHITESPACE @283..288 line=14 text="\n    "
+          CLASS_CONST_DECL @288..361
+            T_PUBLIC @288..294 line=15 text="public"
+            T_WHITESPACE @294..295 line=15 text=" "
+            T_CONST @295..300 line=15 text="const"
+            T_WHITESPACE @300..301 line=15 text=" "
+            T_STRING @301..308 line=15 text="FACTORY"
+            T_WHITESPACE @308..309 line=15 text=" "
+            = @309..310 line=15 text="="
+            T_WHITESPACE @310..311 line=15 text=" "
+            T_STATIC @311..317 line=15 text="static"
+            T_WHITESPACE @317..318 line=15 text=" "
+            T_FUNCTION @318..326 line=15 text="function"
+            T_WHITESPACE @326..327 line=15 text=" "
+            ( @327..328 line=15 text="("
+            ) @328..329 line=15 text=")"
+            : @329..330 line=15 text=":"
+            T_WHITESPACE @330..331 line=15 text=" "
+            T_STRING @331..334 line=15 text="int"
+            T_WHITESPACE @334..335 line=15 text=" "
+            { @335..336 line=15 text="{"
+            T_WHITESPACE @336..345 line=15 text="\n        "
+            T_RETURN @345..351 line=16 text="return"
+            T_WHITESPACE @351..352 line=16 text=" "
+            T_LNUMBER @352..353 line=16 text="1"
+            ; @353..354 line=16 text=";"
+            T_WHITESPACE @354..359 line=16 text="\n    "
+            } @359..360 line=17 text="}"
+            ; @360..361 line=17 text=";"
+          T_WHITESPACE @361..362 line=17 text="\n"
+          } @362..363 line=18 text="}"
+      T_WHITESPACE @363..364 line=18 text="\n"

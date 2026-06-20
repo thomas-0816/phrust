@@ -1,0 +1,23 @@
+fixture: invalid/expressions_basic_invalid.php
+roundtrip_ok: true
+diagnostics:
+- id: expected_expression
+  span: 61..62
+  expected: ["expression"]
+  message: "expected expression"
+- id: expected_expression
+  span: 61..62
+  expected: ["expression"]
+  message: "expected expression after binary operator"
+- id: unclosed_delimiter
+  span: 61..62
+  expected: [")"]
+  message: "expected `)` after parenthesized expression"
+- id: expected_expression
+  span: 73..74
+  expected: ["expression"]
+  message: "expected expression"
+- id: expected_expression
+  span: 73..74
+  expected: ["expression"]
+  message: "expected expression after binary operator"

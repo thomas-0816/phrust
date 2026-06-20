@@ -1,0 +1,59 @@
+fixture: valid/statements_basic.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..108
+  PHP_BLOCK @0..95
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..92
+      EMPTY_STMT @6..7
+        ; @6..7 line=2 text=";"
+      T_WHITESPACE @7..8 line=2 text="\n"
+      ECHO_STMT @8..26
+        T_ECHO @8..12 line=3 text="echo"
+        EXPR @12..18
+          T_WHITESPACE @12..13 line=3 text=" "
+          STRING @13..18
+            T_CONSTANT_ENCAPSED_STRING @13..18 line=3 text="\"one\""
+        , @18..19 line=3 text=","
+        EXPR @19..25
+          T_WHITESPACE @19..20 line=3 text=" "
+          STRING @20..25
+            T_CONSTANT_ENCAPSED_STRING @20..25 line=3 text="\"two\""
+        ; @25..26 line=3 text=";"
+      T_WHITESPACE @26..27 line=3 text="\n"
+      BLOCK_STMT @27..63
+        { @27..28 line=4 text="{"
+        T_WHITESPACE @28..33 line=4 text="\n    "
+        EXPR_STMT @33..44
+          ASSIGN_EXPR @33..43
+            VARIABLE @33..39
+              T_VARIABLE @33..39 line=5 text="$value"
+            T_WHITESPACE @39..40 line=5 text=" "
+            = @40..41 line=5 text="="
+            EXPR @41..43
+              T_WHITESPACE @41..42 line=5 text=" "
+              LITERAL @42..43
+                T_LNUMBER @42..43 line=5 text="1"
+          ; @43..44 line=5 text=";"
+        T_WHITESPACE @44..49 line=5 text="\n    "
+        ECHO_STMT @49..61
+          T_ECHO @49..53 line=6 text="echo"
+          EXPR @53..60
+            T_WHITESPACE @53..54 line=6 text=" "
+            VARIABLE @54..60
+              T_VARIABLE @54..60 line=6 text="$value"
+          ; @60..61 line=6 text=";"
+        T_WHITESPACE @61..62 line=6 text="\n"
+        } @62..63 line=7 text="}"
+      T_WHITESPACE @63..64 line=7 text="\n"
+      ECHO_STMT @64..92
+        T_ECHO @64..68 line=8 text="echo"
+        EXPR @68..92
+          T_WHITESPACE @68..69 line=8 text=" "
+          STRING @69..91
+            T_CONSTANT_ENCAPSED_STRING @69..91 line=8 text="\"close tag terminates\""
+          T_WHITESPACE @91..92 line=8 text=" "
+    T_CLOSE_TAG @92..95 line=8 text="?>\n"
+  INLINE_HTML @95..108
+    T_INLINE_HTML @95..108 line=9 text="<p>after</p>\n"

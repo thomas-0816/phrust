@@ -1,0 +1,7 @@
+fixture: valid/pure_html.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..67
+  INLINE_HTML @0..67
+    T_INLINE_HTML @0..67 line=1 text="<h1>Pure HTML</h1>\n<p>No PHP open tag appears in this fixture.</p>\n"

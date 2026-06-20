@@ -1,0 +1,7 @@
+fixture: recovery/unclosed_delimiter.php
+roundtrip_ok: true
+diagnostics:
+- id: unclosed_delimiter
+  span: 17..18
+  expected: [")"]
+  message: "expected `)` after parenthesized expression"

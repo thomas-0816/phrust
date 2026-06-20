@@ -1,0 +1,7 @@
+fixture: invalid/missing_semicolon.php
+roundtrip_ok: true
+diagnostics:
+- id: expected_token
+  span: 73..73
+  expected: [";", "}", "T_CLOSE_TAG", "EOF"]
+  message: "expected statement terminator"

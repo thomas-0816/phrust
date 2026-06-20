@@ -1,0 +1,7 @@
+fixture: invalid/attributes_invalid.php
+roundtrip_ok: true
+diagnostics:
+- id: unclosed_delimiter
+  span: 77..85
+  expected: ["]"]
+  message: "expected `]` to close attribute group"

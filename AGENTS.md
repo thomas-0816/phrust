@@ -28,6 +28,9 @@ Do not automatically update the target PHP version without a new ADR.
 
 - Do not implement VM, runtime values, JIT, extensions, or Zend ABI emulation
   unless the user explicitly asks for that layer.
+- Do not implement AST/HIR lowering, name resolution, compile-time semantics,
+  constant expression evaluation, type checking, bytecode generation, or IR
+  generation inside the parser/CST layer.
 - Parser and CST work must reuse the existing lexer. Do not introduce a second
   lexer.
 - Do not hardcode numeric PHP token values.
@@ -41,6 +44,17 @@ Do not automatically update the target PHP version without a new ADR.
 - Do not commit generated reports under `target/`.
 - Do not commit extracted `php-src` corpus files or a vendored `php-src` copy.
 - Keep local reference checkouts under `third_party/`.
+
+## Future Work Boundaries
+
+- Semantic work should consume `php_syntax` CST APIs and produce separate
+  declaration tables, typed views, and semantic diagnostics.
+- Parser diagnostics and semantic diagnostics should remain separate so parser
+  acceptance stays comparable with the PHP lint oracle.
+- Any execution layer must be introduced as a new bounded layer with its own
+  validation gates and must not change lexer/parser contracts opportunistically.
+- New tools should prefer existing source maps, token kinds, CST ranges, and
+  fixture harnesses over adding parallel representations.
 
 ## Validation Commands
 

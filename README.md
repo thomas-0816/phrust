@@ -3,9 +3,10 @@
 `phrust` is a Rust project intended to become a PHP 8.5 compatible core
 engine.
 
-Phase 0 is foundation only. Phase 1 adds the lexer/tokenization layer. The
-project still does not implement a parser, AST/CST, VM, runtime values, JIT,
-extensions, or Zend ABI emulation.
+The repository currently contains the foundation tooling, byte-oriented lexer,
+lossless parser/CST layer, fixture harnesses, and PHP reference comparison
+scripts. It does not implement semantic analysis, AST/HIR lowering, VM
+execution, runtime values, JIT, extensions, or Zend ABI emulation.
 
 ## Reference Target
 
@@ -14,8 +15,8 @@ extensions, or Zend ABI emulation.
 - Git tag: `php-8.5.7`
 - Repository: `https://github.com/php/php-src.git`
 
-The reference version is fixed for Phase 0. It must not be automatically
-advanced to a newer patch release without a new ADR.
+The reference version is fixed by ADR. It must not be automatically advanced to
+a newer patch release without a new ADR.
 
 ## Development Environment
 
@@ -35,10 +36,10 @@ nix develop
 just help
 ```
 
-4. Run the required Phase 1 checks:
+4. Run the central parser/CST verification gate:
 
 ```bash
-just verify-phase1
+just verify-phase2
 ```
 
 5. Fetch and pin the PHP reference:
@@ -59,27 +60,33 @@ just extract-ref-metadata
 just build-ref-php
 ```
 
-The central Phase 1 validation command can also be run without entering the
-shell first:
+The same validation command can also be run without entering the shell first:
 
 ```bash
-nix develop -c just verify-phase1
+nix develop -c just verify-phase2
+```
+
+Useful parser commands:
+
+```bash
+just parser-diff
+cargo run -p php_parser_cli -- --debug-tree file.php
 ```
 
 ## CI
 
-Phase 0 and Phase 1 CI use Nix. Phase 1 runs:
+CI uses Nix. The parser workflow runs:
 
 ```bash
-nix develop -c just verify-phase1
+nix develop -c just verify-phase2
 ```
 
 Required CI does not clone or build `php-src`. Reference-dependent fixture
 checks skip clearly if a PHP reference binary is unavailable.
 
-## Phase 0 Scope
+## Foundation Scope
 
-Phase 0 establishes:
+The foundation establishes:
 
 - A pinned PHP 8.5.7 reference contract.
 - Documentation for the authoritative PHP syntax and runtime sources.
@@ -90,30 +97,29 @@ Phase 0 establishes:
 - A test-oracle plan for lexer, parser, runtime, and framework compatibility.
 - CI preparation around `nix develop -c just verify-phase0`.
 
-Phase 0 explicitly does not build the engine.
+The foundation does not build the engine.
 
 It also does not implement a lexer, parser, AST/CST, VM, runtime value model,
 JIT, extensions, or Zend ABI emulation.
 
-## Phase 1 Scope
+## Lexer Scope
 
-Phase 1 adds the PHP lexer/tokenization layer. It targets curated fixture
-compatibility with:
+The lexer/tokenization layer targets curated fixture compatibility with:
 
 ```php
 token_get_all($code, 0)
 ```
 
-The central Phase 1 validation command is:
+The central lexer validation command is:
 
 ```bash
 nix develop -c just verify-phase1
 ```
 
-Phase 1 still does not implement a parser, AST/CST lowering, VM, runtime, JIT,
-extensions, or Zend ABI emulation.
+The lexer layer does not implement parser semantics, AST/CST lowering, VM,
+runtime, JIT, extensions, or Zend ABI emulation.
 
-Useful Phase 1 commands:
+Useful lexer commands:
 
 ```bash
 export REFERENCE_PHP="$PWD/third_party/php-src/sapi/cli/php"
@@ -130,14 +136,42 @@ nix develop -c just lexer-corpus-smoke
 curated fixtures. `docs/phase-1/known-lexer-differences.md` records that no
 curated fixture differences are currently accepted.
 
+## Parser and CST Scope
+
+The parser consumes `php_lexer` tokens and builds a lossless CST. It preserves
+PHP tags, inline HTML, trivia, strings, heredoc/nowdoc structures, byte spans,
+diagnostics, and error nodes. It compares curated fixture acceptance with the
+pinned PHP 8.5.7 `php -l` oracle.
+
+The central parser/CST validation command is:
+
+```bash
+nix develop -c just verify-phase2
+```
+
+Useful parser commands:
+
+```bash
+nix develop -c just parser-fixtures
+nix develop -c just parser-diff
+nix develop -c just cst-roundtrip
+nix develop -c cargo run -p php_parser_cli -- --debug-tree file.php
+```
+
+Parser/CST work does not perform name resolution, compile-time semantic checks,
+typed AST/HIR lowering, bytecode/IR generation, execution, runtime values, JIT,
+extensions, or Zend ABI emulation.
+
 ## Rust Workspace
 
 The workspace uses Cargo resolver `3` and Rust edition `2024`. The current
 crates are:
 
 - `php_source`: byte-oriented source maps and spans.
-- `php_lexer`: Phase 1 PHP lexer/tokenization library.
+- `php_lexer`: PHP lexer/tokenization library.
 - `php_lexer_cli`: JSON output CLI for differential testing.
+- `php_syntax`: PHP parser and lossless CST library.
+- `php_parser_cli`: parser diagnostics, JSON, debug tree, and roundtrip CLI.
 - `php_testkit`: reference testing helpers.
 
 ## Reference Source Policy
@@ -162,3 +196,9 @@ It must not be committed. Reference metadata and lockfiles belong under
 - [Phase 1 Final Audit](docs/phase-1/final-audit.md)
 - [Known Lexer Differences](docs/phase-1/known-lexer-differences.md)
 - [Lexer to Parser Handoff](docs/phase-2/lexer-to-parser-handoff.md)
+- [Parser and CST Definition of Done](docs/phase-2/phase-2-definition-of-done.md)
+- [Parser Architecture](docs/phase-2/parser-architecture.md)
+- [CST Model](docs/phase-2/cst-model.md)
+- [PHP Lint Oracle](docs/phase-2/php-lint-oracle.md)
+- [Parser Known Gaps](docs/phase-2/parser-known-gaps.md)
+- [Handoff to Semantic Layers](docs/phase-2/handoff-to-phase-3.md)

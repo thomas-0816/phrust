@@ -16,6 +16,7 @@ pub(crate) fn keyword_or_magic_token(bytes: &[u8]) -> Option<TokenName> {
         (b"continue", TokenName::Continue),
         (b"declare", TokenName::Declare),
         (b"default", TokenName::Default),
+        (b"die", TokenName::Exit),
         (b"do", TokenName::Do),
         (b"echo", TokenName::Echo),
         (b"else", TokenName::Else),

@@ -163,7 +163,24 @@ Namespace names are lexical tokens where PHP 8 reports them as
 
 ## TOKEN_PARSE Boundary
 
-`TOKEN_PARSE` can change tokenization for parser-contextual cases. Phase 1
-prepares the interface but only hard-gates `token_get_all($code, 0)`.
-Reserved words that become `T_STRING` only under `TOKEN_PARSE` are Phase 2
-parser-context work, not Phase 1 hard compatibility.
+`TOKEN_PARSE` can change tokenization for parser-contextual cases. The lexer
+does not emulate that mode and does not rebuild tokens with parser context.
+Phase 1 hard-gates `token_get_all($code, 0)` so token classification remains a
+pure lexical pass:
+
+- keywords such as `match`, `readonly`, `class`, and `include` are emitted as
+  their stable `T_*` keyword names when the scanner sees them.
+- namespace-name tokens such as `T_NAME_QUALIFIED` are still lexical tokens
+  derived from the source spelling.
+- numeric PHP token values are never used by Rust compatibility logic.
+
+PHP's `TOKEN_PARSE` may report a reserved word as `T_STRING` when the parser
+knows that the position accepts an identifier, for example after `->` or `::`.
+That behavior belongs to the parser boundary, not to the lexer crate.
+`php_testkit::lexer_reference` records whether oracle JSON was generated with
+`TOKEN_PARSE`, but the Rust lexer keeps one deterministic token stream.
+
+The parser bridges the gap through `TokenSource::current_keyword_context()`.
+That API exposes the current named token and original text to grammar sites
+that are allowed to treat a keyword token as a contextual name. It is metadata
+over the existing token stream, not parser-aware tokenization.

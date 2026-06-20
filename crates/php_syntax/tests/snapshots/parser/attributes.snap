@@ -1,0 +1,262 @@
+fixture: valid/attributes.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..481
+  PHP_BLOCK @0..481
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..481
+      T_WHITESPACE @6..7 line=2 text="\n"
+      FUNCTION_DECL @7..87
+        ATTRIBUTE_GROUP @7..18
+          T_ATTRIBUTE @7..9 line=3 text="#["
+          ATTRIBUTE @9..17
+            NAME @9..17
+              T_STRING @9..17 line=3 text="FileAttr"
+          ] @17..18 line=3 text="]"
+        T_WHITESPACE @18..19 line=3 text="\n"
+        T_FUNCTION @19..27 line=4 text="function"
+        T_WHITESPACE @27..28 line=4 text=" "
+        T_STRING @28..34 line=4 text="marked"
+        PARAM_LIST @34..61
+          ( @34..35 line=4 text="("
+          PARAM @35..60
+            ATTRIBUTE_GROUP @35..47
+              T_ATTRIBUTE @35..37 line=4 text="#["
+              ATTRIBUTE @37..46
+                NAME @37..46
+                  T_STRING @37..46 line=4 text="ParamAttr"
+              ] @46..47 line=4 text="]"
+            T_WHITESPACE @47..48 line=4 text=" "
+            TYPE @48..55
+              NAME @48..55
+                T_STRING @48..54 line=4 text="string"
+                T_WHITESPACE @54..55 line=4 text=" "
+            T_VARIABLE @55..60 line=4 text="$name"
+          ) @60..61 line=4 text=")"
+        : @61..62 line=4 text=":"
+        T_WHITESPACE @62..63 line=4 text=" "
+        TYPE @63..68
+          NAME @63..68
+            T_STRING @63..67 line=4 text="void"
+            T_WHITESPACE @67..68 line=4 text=" "
+        BLOCK_STMT @68..87
+          { @68..69 line=4 text="{"
+          T_WHITESPACE @69..74 line=4 text="\n    "
+          ECHO_STMT @74..85
+            T_ECHO @74..78 line=5 text="echo"
+            EXPR @78..84
+              T_WHITESPACE @78..79 line=5 text=" "
+              VARIABLE @79..84
+                T_VARIABLE @79..84 line=5 text="$name"
+            ; @84..85 line=5 text=";"
+          T_WHITESPACE @85..86 line=5 text="\n"
+          } @86..87 line=6 text="}"
+      T_WHITESPACE @87..89 line=6 text="\n\n"
+      EXPR_STMT @89..195
+        ASSIGN_EXPR @89..194
+          VARIABLE @89..97
+            T_VARIABLE @89..97 line=8 text="$closure"
+          T_WHITESPACE @97..98 line=8 text=" "
+          = @98..99 line=8 text="="
+          EXPR @99..194
+            T_WHITESPACE @99..100 line=8 text=" "
+            CLOSURE_EXPR @100..194
+              ATTRIBUTE_GROUP @100..140
+                T_ATTRIBUTE @100..102 line=8 text="#["
+                ATTRIBUTE @102..139
+                  NAME @102..113
+                    T_STRING @102..113 line=8 text="ClosureAttr"
+                  ( @113..114 line=8 text="("
+                  T_STRING @114..118 line=8 text="name"
+                  : @118..119 line=8 text=":"
+                  T_WHITESPACE @119..120 line=8 text=" "
+                  T_CONSTANT_ENCAPSED_STRING @120..123 line=8 text="\"c\""
+                  , @123..124 line=8 text=","
+                  T_WHITESPACE @124..125 line=8 text=" "
+                  T_STRING @125..130 line=8 text="flags"
+                  : @130..131 line=8 text=":"
+                  T_WHITESPACE @131..132 line=8 text=" "
+                  [ @132..133 line=8 text="["
+                  T_LNUMBER @133..134 line=8 text="1"
+                  , @134..135 line=8 text=","
+                  T_WHITESPACE @135..136 line=8 text=" "
+                  T_LNUMBER @136..137 line=8 text="2"
+                  ] @137..138 line=8 text="]"
+                  ) @138..139 line=8 text=")"
+                ] @139..140 line=8 text="]"
+              T_WHITESPACE @140..141 line=8 text=" "
+              T_FUNCTION @141..149 line=8 text="function"
+              T_WHITESPACE @149..150 line=8 text=" "
+              PARAM_LIST @150..171
+                ( @150..151 line=8 text="("
+                PARAM @151..170
+                  ATTRIBUTE_GROUP @151..163
+                    T_ATTRIBUTE @151..153 line=8 text="#["
+                    ATTRIBUTE @153..162
+                      NAME @153..162
+                        T_STRING @153..162 line=8 text="ParamAttr"
+                    ] @162..163 line=8 text="]"
+                  T_WHITESPACE @163..164 line=8 text=" "
+                  TYPE @164..168
+                    NAME @164..168
+                      T_STRING @164..167 line=8 text="int"
+                      T_WHITESPACE @167..168 line=8 text=" "
+                  T_VARIABLE @168..170 line=8 text="$x"
+                ) @170..171 line=8 text=")"
+              : @171..172 line=8 text=":"
+              T_WHITESPACE @172..173 line=8 text=" "
+              TYPE @173..178
+                NAME @173..178
+                  T_STRING @173..177 line=8 text="void"
+                  T_WHITESPACE @177..178 line=8 text=" "
+              BLOCK_STMT @178..194
+                { @178..179 line=8 text="{"
+                T_WHITESPACE @179..184 line=8 text="\n    "
+                ECHO_STMT @184..192
+                  T_ECHO @184..188 line=9 text="echo"
+                  EXPR @188..191
+                    T_WHITESPACE @188..189 line=9 text=" "
+                    VARIABLE @189..191
+                      T_VARIABLE @189..191 line=9 text="$x"
+                  ; @191..192 line=9 text=";"
+                T_WHITESPACE @192..193 line=9 text="\n"
+                } @193..194 line=10 text="}"
+        ; @194..195 line=10 text=";"
+      T_WHITESPACE @195..197 line=10 text="\n\n"
+      EXPR_STMT @197..264
+        ASSIGN_EXPR @197..263
+          VARIABLE @197..203
+            T_VARIABLE @197..203 line=12 text="$arrow"
+          T_WHITESPACE @203..204 line=12 text=" "
+          = @204..205 line=12 text="="
+          EXPR @205..263
+            T_WHITESPACE @205..206 line=12 text=" "
+            ARROW_FUNCTION_EXPR @206..263
+              ATTRIBUTE_GROUP @206..228
+                T_ATTRIBUTE @206..208 line=12 text="#["
+                ATTRIBUTE @208..227
+                  NAME @208..217
+                    T_STRING @208..217 line=12 text="ArrowAttr"
+                  ( @217..218 line=12 text="("
+                  T_STRING @218..219 line=12 text="B"
+                  T_DOUBLE_COLON @219..221 line=12 text="::"
+                  T_CLASS @221..226 line=12 text="class"
+                  ) @226..227 line=12 text=")"
+                ] @227..228 line=12 text="]"
+              T_WHITESPACE @228..229 line=12 text=" "
+              T_FN @229..231 line=12 text="fn"
+              PARAM_LIST @231..252
+                ( @231..232 line=12 text="("
+                PARAM @232..251
+                  ATTRIBUTE_GROUP @232..244
+                    T_ATTRIBUTE @232..234 line=12 text="#["
+                    ATTRIBUTE @234..243
+                      NAME @234..243
+                        T_STRING @234..243 line=12 text="ParamAttr"
+                    ] @243..244 line=12 text="]"
+                  T_WHITESPACE @244..245 line=12 text=" "
+                  TYPE @245..249
+                    NAME @245..249
+                      T_STRING @245..248 line=12 text="int"
+                      T_WHITESPACE @248..249 line=12 text=" "
+                  T_VARIABLE @249..251 line=12 text="$x"
+                ) @251..252 line=12 text=")"
+              : @252..253 line=12 text=":"
+              T_WHITESPACE @253..254 line=12 text=" "
+              TYPE @254..258
+                NAME @254..258
+                  T_STRING @254..257 line=12 text="int"
+                  T_WHITESPACE @257..258 line=12 text=" "
+              T_DOUBLE_ARROW @258..260 line=12 text="=>"
+              EXPR @260..263
+                T_WHITESPACE @260..261 line=12 text=" "
+                VARIABLE @261..263
+                  T_VARIABLE @261..263 line=12 text="$x"
+        ; @263..264 line=12 text=";"
+      T_WHITESPACE @264..266 line=12 text="\n\n"
+      CLASS_DECL @266..480
+        ATTRIBUTE_GROUP @266..278
+          T_ATTRIBUTE @266..268 line=14 text="#["
+          ATTRIBUTE @268..277
+            NAME @268..277
+              T_STRING @268..277 line=14 text="ClassAttr"
+          ] @277..278 line=14 text="]"
+        T_WHITESPACE @278..279 line=14 text="\n"
+        T_CLASS @279..284 line=15 text="class"
+        T_WHITESPACE @284..285 line=15 text=" "
+        T_STRING @285..294 line=15 text="Annotated"
+        T_WHITESPACE @294..295 line=15 text=" "
+        CLASS_MEMBER_LIST @295..480
+          { @295..296 line=15 text="{"
+          T_WHITESPACE @296..301 line=15 text="\n    "
+          CLASS_CONST_DECL @301..341
+            ATTRIBUTE_GROUP @301..313
+              T_ATTRIBUTE @301..303 line=16 text="#["
+              ATTRIBUTE @303..312
+                NAME @303..312
+                  T_STRING @303..312 line=16 text="ConstAttr"
+              ] @312..313 line=16 text="]"
+            T_WHITESPACE @313..318 line=16 text="\n    "
+            T_PUBLIC @318..324 line=17 text="public"
+            T_WHITESPACE @324..325 line=17 text=" "
+            T_CONST @325..330 line=17 text="const"
+            T_WHITESPACE @330..331 line=17 text=" "
+            T_STRING @331..336 line=17 text="VALUE"
+            T_WHITESPACE @336..337 line=17 text=" "
+            = @337..338 line=17 text="="
+            T_WHITESPACE @338..339 line=17 text=" "
+            T_LNUMBER @339..340 line=17 text="1"
+            ; @340..341 line=17 text=";"
+          T_WHITESPACE @341..347 line=17 text="\n\n    "
+          PROPERTY_DECL @347..393
+            ATTRIBUTE_GROUP @347..362
+              T_ATTRIBUTE @347..349 line=19 text="#["
+              ATTRIBUTE @349..361
+                NAME @349..361
+                  T_STRING @349..361 line=19 text="PropertyAttr"
+              ] @361..362 line=19 text="]"
+            T_WHITESPACE @362..367 line=19 text="\n    "
+            T_PUBLIC @367..373 line=20 text="public"
+            T_WHITESPACE @373..374 line=20 text=" "
+            T_STRING @374..380 line=20 text="string"
+            T_WHITESPACE @380..381 line=20 text=" "
+            T_VARIABLE @381..386 line=20 text="$name"
+            T_WHITESPACE @386..387 line=20 text=" "
+            = @387..388 line=20 text="="
+            T_WHITESPACE @388..389 line=20 text=" "
+            T_CONSTANT_ENCAPSED_STRING @389..392 line=20 text="\"x\""
+            ; @392..393 line=20 text=";"
+          T_WHITESPACE @393..399 line=20 text="\n\n    "
+          METHOD_DECL @399..478
+            ATTRIBUTE_GROUP @399..412
+              T_ATTRIBUTE @399..401 line=22 text="#["
+              ATTRIBUTE @401..411
+                NAME @401..411
+                  T_STRING @401..411 line=22 text="MethodAttr"
+              ] @411..412 line=22 text="]"
+            T_WHITESPACE @412..417 line=22 text="\n    "
+            T_PUBLIC @417..423 line=23 text="public"
+            T_WHITESPACE @423..424 line=23 text=" "
+            T_FUNCTION @424..432 line=23 text="function"
+            T_WHITESPACE @432..433 line=23 text=" "
+            T_STRING @433..436 line=23 text="run"
+            ( @436..437 line=23 text="("
+            ) @437..438 line=23 text=")"
+            : @438..439 line=23 text=":"
+            T_WHITESPACE @439..440 line=23 text=" "
+            T_STRING @440..444 line=23 text="void"
+            T_WHITESPACE @444..445 line=23 text=" "
+            { @445..446 line=23 text="{"
+            T_WHITESPACE @446..455 line=23 text="\n        "
+            T_ECHO @455..459 line=24 text="echo"
+            T_WHITESPACE @459..460 line=24 text=" "
+            T_STRING @460..464 line=24 text="self"
+            T_DOUBLE_COLON @464..466 line=24 text="::"
+            T_STRING @466..471 line=24 text="VALUE"
+            ; @471..472 line=24 text=";"
+            T_WHITESPACE @472..477 line=24 text="\n    "
+            } @477..478 line=25 text="}"
+          T_WHITESPACE @478..479 line=25 text="\n"
+          } @479..480 line=26 text="}"
+      T_WHITESPACE @480..481 line=26 text="\n"

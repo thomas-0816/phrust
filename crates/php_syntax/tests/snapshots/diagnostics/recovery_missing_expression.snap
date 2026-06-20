@@ -1,0 +1,11 @@
+fixture: recovery/missing_expression.php
+roundtrip_ok: true
+diagnostics:
+- id: expected_expression
+  span: 11..12
+  expected: ["expression"]
+  message: "expected expression"
+- id: expected_expression
+  span: 11..12
+  expected: ["expression"]
+  message: "expected expression after echo"

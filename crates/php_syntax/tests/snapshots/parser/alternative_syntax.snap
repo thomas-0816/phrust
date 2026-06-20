@@ -1,0 +1,197 @@
+fixture: valid/alternative_syntax.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..382
+  PHP_BLOCK @0..382
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..382
+      T_WHITESPACE @6..7 line=2 text="\n"
+      IF_STMT @7..102
+        T_IF @7..9 line=3 text="if"
+        T_WHITESPACE @9..10 line=3 text=" "
+        ( @10..11 line=3 text="("
+        T_VARIABLE @11..17 line=3 text="$ready"
+        ) @17..18 line=3 text=")"
+        : @18..19 line=3 text=":"
+        T_WHITESPACE @19..24 line=3 text="\n    "
+        ECHO_STMT @24..37
+          T_ECHO @24..28 line=4 text="echo"
+          EXPR @28..36
+            T_WHITESPACE @28..29 line=4 text=" "
+            STRING @29..36
+              T_CONSTANT_ENCAPSED_STRING @29..36 line=4 text="\"ready\""
+          ; @36..37 line=4 text=";"
+        T_WHITESPACE @37..38 line=4 text="\n"
+        T_ELSEIF @38..44 line=5 text="elseif"
+        T_WHITESPACE @44..45 line=5 text=" "
+        ( @45..46 line=5 text="("
+        T_VARIABLE @46..52 line=5 text="$other"
+        ) @52..53 line=5 text=")"
+        : @53..54 line=5 text=":"
+        T_WHITESPACE @54..59 line=5 text="\n    "
+        ECHO_STMT @59..72
+          T_ECHO @59..63 line=6 text="echo"
+          EXPR @63..71
+            T_WHITESPACE @63..64 line=6 text=" "
+            STRING @64..71
+              T_CONSTANT_ENCAPSED_STRING @64..71 line=6 text="\"other\""
+          ; @71..72 line=6 text=";"
+        T_WHITESPACE @72..73 line=6 text="\n"
+        T_ELSE @73..77 line=7 text="else"
+        : @77..78 line=7 text=":"
+        T_WHITESPACE @78..83 line=7 text="\n    "
+        ECHO_STMT @83..95
+          T_ECHO @83..87 line=8 text="echo"
+          EXPR @87..94
+            T_WHITESPACE @87..88 line=8 text=" "
+            STRING @88..94
+              T_CONSTANT_ENCAPSED_STRING @88..94 line=8 text="\"none\""
+          ; @94..95 line=8 text=";"
+        T_WHITESPACE @95..96 line=8 text="\n"
+        T_ENDIF @96..101 line=9 text="endif"
+        ; @101..102 line=9 text=";"
+      T_WHITESPACE @102..104 line=9 text="\n\n"
+      WHILE_STMT @104..158
+        T_WHILE @104..109 line=11 text="while"
+        T_WHITESPACE @109..110 line=11 text=" "
+        ( @110..111 line=11 text="("
+        T_VARIABLE @111..117 line=11 text="$count"
+        T_WHITESPACE @117..118 line=11 text=" "
+        < @118..119 line=11 text="<"
+        T_WHITESPACE @119..120 line=11 text=" "
+        T_LNUMBER @120..121 line=11 text="2"
+        ) @121..122 line=11 text=")"
+        : @122..123 line=11 text=":"
+        T_WHITESPACE @123..128 line=11 text="\n    "
+        EXPR_STMT @128..148
+          ASSIGN_EXPR @128..147
+            VARIABLE @128..134
+              T_VARIABLE @128..134 line=12 text="$count"
+            T_WHITESPACE @134..135 line=12 text=" "
+            = @135..136 line=12 text="="
+            BINARY_EXPR @136..147
+              T_WHITESPACE @136..137 line=12 text=" "
+              VARIABLE @137..143
+                T_VARIABLE @137..143 line=12 text="$count"
+              T_WHITESPACE @143..144 line=12 text=" "
+              + @144..145 line=12 text="+"
+              EXPR @145..147
+                T_WHITESPACE @145..146 line=12 text=" "
+                LITERAL @146..147
+                  T_LNUMBER @146..147 line=12 text="1"
+          ; @147..148 line=12 text=";"
+        T_WHITESPACE @148..149 line=12 text="\n"
+        T_ENDWHILE @149..157 line=13 text="endwhile"
+        ; @157..158 line=13 text=";"
+      T_WHITESPACE @158..160 line=13 text="\n\n"
+      FOR_STMT @160..215
+        T_FOR @160..163 line=15 text="for"
+        T_WHITESPACE @163..164 line=15 text=" "
+        ( @164..165 line=15 text="("
+        T_VARIABLE @165..167 line=15 text="$i"
+        T_WHITESPACE @167..168 line=15 text=" "
+        = @168..169 line=15 text="="
+        T_WHITESPACE @169..170 line=15 text=" "
+        T_LNUMBER @170..171 line=15 text="0"
+        ; @171..172 line=15 text=";"
+        T_WHITESPACE @172..173 line=15 text=" "
+        T_VARIABLE @173..175 line=15 text="$i"
+        T_WHITESPACE @175..176 line=15 text=" "
+        < @176..177 line=15 text="<"
+        T_WHITESPACE @177..178 line=15 text=" "
+        T_LNUMBER @178..179 line=15 text="2"
+        ; @179..180 line=15 text=";"
+        T_WHITESPACE @180..181 line=15 text=" "
+        T_VARIABLE @181..183 line=15 text="$i"
+        T_WHITESPACE @183..184 line=15 text=" "
+        = @184..185 line=15 text="="
+        T_WHITESPACE @185..186 line=15 text=" "
+        T_VARIABLE @186..188 line=15 text="$i"
+        T_WHITESPACE @188..189 line=15 text=" "
+        + @189..190 line=15 text="+"
+        T_WHITESPACE @190..191 line=15 text=" "
+        T_LNUMBER @191..192 line=15 text="1"
+        ) @192..193 line=15 text=")"
+        : @193..194 line=15 text=":"
+        T_WHITESPACE @194..199 line=15 text="\n    "
+        ECHO_STMT @199..207
+          T_ECHO @199..203 line=16 text="echo"
+          EXPR @203..206
+            T_WHITESPACE @203..204 line=16 text=" "
+            VARIABLE @204..206
+              T_VARIABLE @204..206 line=16 text="$i"
+          ; @206..207 line=16 text=";"
+        T_WHITESPACE @207..208 line=16 text="\n"
+        T_ENDFOR @208..214 line=17 text="endfor"
+        ; @214..215 line=17 text=";"
+      T_WHITESPACE @215..217 line=17 text="\n\n"
+      FOREACH_STMT @217..271
+        T_FOREACH @217..224 line=19 text="foreach"
+        T_WHITESPACE @224..225 line=19 text=" "
+        ( @225..226 line=19 text="("
+        [ @226..227 line=19 text="["
+        T_LNUMBER @227..228 line=19 text="1"
+        , @228..229 line=19 text=","
+        T_WHITESPACE @229..230 line=19 text=" "
+        T_LNUMBER @230..231 line=19 text="2"
+        ] @231..232 line=19 text="]"
+        T_WHITESPACE @232..233 line=19 text=" "
+        T_AS @233..235 line=19 text="as"
+        T_WHITESPACE @235..236 line=19 text=" "
+        T_VARIABLE @236..241 line=19 text="$item"
+        ) @241..242 line=19 text=")"
+        : @242..243 line=19 text=":"
+        T_WHITESPACE @243..248 line=19 text="\n    "
+        ECHO_STMT @248..259
+          T_ECHO @248..252 line=20 text="echo"
+          EXPR @252..258
+            T_WHITESPACE @252..253 line=20 text=" "
+            VARIABLE @253..258
+              T_VARIABLE @253..258 line=20 text="$item"
+          ; @258..259 line=20 text=";"
+        T_WHITESPACE @259..260 line=20 text="\n"
+        T_ENDFOREACH @260..270 line=21 text="endforeach"
+        ; @270..271 line=21 text=";"
+      T_WHITESPACE @271..273 line=21 text="\n\n"
+      SWITCH_STMT @273..381
+        T_SWITCH @273..279 line=23 text="switch"
+        T_WHITESPACE @279..280 line=23 text=" "
+        ( @280..281 line=23 text="("
+        T_VARIABLE @281..286 line=23 text="$item"
+        ) @286..287 line=23 text=")"
+        : @287..288 line=23 text=":"
+        T_WHITESPACE @288..293 line=23 text="\n    "
+        T_CASE @293..297 line=24 text="case"
+        T_WHITESPACE @297..298 line=24 text=" "
+        EXPR @298..299
+          LITERAL @298..299
+            T_LNUMBER @298..299 line=24 text="1"
+        : @299..300 line=24 text=":"
+        T_WHITESPACE @300..309 line=24 text="\n        "
+        ECHO_STMT @309..320
+          T_ECHO @309..313 line=25 text="echo"
+          EXPR @313..319
+            T_WHITESPACE @313..314 line=25 text=" "
+            STRING @314..319
+              T_CONSTANT_ENCAPSED_STRING @314..319 line=25 text="\"one\""
+          ; @319..320 line=25 text=";"
+        T_WHITESPACE @320..329 line=25 text="\n        "
+        BREAK_STMT @329..335
+          T_BREAK @329..334 line=26 text="break"
+          ; @334..335 line=26 text=";"
+        T_WHITESPACE @335..340 line=26 text="\n    "
+        T_DEFAULT @340..347 line=27 text="default"
+        : @347..348 line=27 text=":"
+        T_WHITESPACE @348..357 line=27 text="\n        "
+        ECHO_STMT @357..370
+          T_ECHO @357..361 line=28 text="echo"
+          EXPR @361..369
+            T_WHITESPACE @361..362 line=28 text=" "
+            STRING @362..369
+              T_CONSTANT_ENCAPSED_STRING @362..369 line=28 text="\"other\""
+          ; @369..370 line=28 text=";"
+        T_WHITESPACE @370..371 line=28 text="\n"
+        T_ENDSWITCH @371..380 line=29 text="endswitch"
+        ; @380..381 line=29 text=";"
+      T_WHITESPACE @381..382 line=29 text="\n"

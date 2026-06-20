@@ -1,0 +1,19 @@
+fixture: invalid/functions_invalid.php
+roundtrip_ok: true
+diagnostics:
+- id: expected_token
+  span: 103..104
+  expected: [",", ")"]
+  message: "expected `,` or `)` in parameter list"
+- id: unclosed_delimiter
+  span: 103..104
+  expected: [")"]
+  message: "expected `)` to close parameter list"
+- id: expected_token
+  span: 143..145
+  expected: ["T_DOUBLE_ARROW"]
+  message: "expected `=>` in arrow function"
+- id: expected_token
+  span: 143..145
+  expected: [";", "}", "T_CLOSE_TAG", "EOF"]
+  message: "expected statement terminator"

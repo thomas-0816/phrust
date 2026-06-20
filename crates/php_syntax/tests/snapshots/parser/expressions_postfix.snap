@@ -1,0 +1,184 @@
+fixture: valid/expressions_postfix.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..211
+  PHP_BLOCK @0..211
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..211
+      EXPR_STMT @6..12
+        EXPR @6..11
+          NAME @6..9
+            T_STRING @6..9 line=2 text="foo"
+          CALL_EXPR @9..11
+            ( @9..10 line=2 text="("
+            ) @10..11 line=2 text=")"
+        ; @11..12 line=2 text=";"
+      T_WHITESPACE @12..13 line=2 text="\n"
+      EXPR_STMT @13..18
+        EXPR @13..17
+          VARIABLE @13..15
+            T_VARIABLE @13..15 line=3 text="$f"
+          CALL_EXPR @15..17
+            ( @15..16 line=3 text="("
+            ) @16..17 line=3 text=")"
+        ; @17..18 line=3 text=";"
+      T_WHITESPACE @18..19 line=3 text="\n"
+      EXPR_STMT @19..26
+        EXPR @19..25
+          PARENTHESIZED_EXPR @19..23
+            ( @19..20 line=4 text="("
+            EXPR @20..22
+              VARIABLE @20..22
+                T_VARIABLE @20..22 line=4 text="$f"
+            ) @22..23 line=4 text=")"
+          CALL_EXPR @23..25
+            ( @23..24 line=4 text="("
+            ) @24..25 line=4 text=")"
+        ; @25..26 line=4 text=";"
+      T_WHITESPACE @26..27 line=4 text="\n"
+      EXPR_STMT @27..45
+        EXPR @27..44
+          NAME @27..30
+            T_STRING @27..30 line=5 text="foo"
+          CALL_EXPR @30..44
+            ( @30..31 line=5 text="("
+            T_STRING @31..35 line=5 text="name"
+            : @35..36 line=5 text=":"
+            T_WHITESPACE @36..37 line=5 text=" "
+            T_VARIABLE @37..43 line=5 text="$value"
+            ) @43..44 line=5 text=")"
+        ; @44..45 line=5 text=";"
+      T_WHITESPACE @45..46 line=5 text="\n"
+      EXPR_STMT @46..60
+        EXPR @46..59
+          NAME @46..49
+            T_STRING @46..49 line=6 text="foo"
+          CALL_EXPR @49..59
+            ( @49..50 line=6 text="("
+            T_ELLIPSIS @50..53 line=6 text="..."
+            T_VARIABLE @53..58 line=6 text="$args"
+            ) @58..59 line=6 text=")"
+        ; @59..60 line=6 text=";"
+      T_WHITESPACE @60..61 line=6 text="\n"
+      EXPR_STMT @61..67
+        EXPR @61..66
+          VARIABLE @61..63
+            T_VARIABLE @61..63 line=7 text="$a"
+          ARRAY_DIM_FETCH_EXPR @63..66
+            [ @63..64 line=7 text="["
+            T_LNUMBER @64..65 line=7 text="0"
+            ] @65..66 line=7 text="]"
+        ; @66..67 line=7 text=";"
+      T_WHITESPACE @67..68 line=7 text="\n"
+      EXPR_STMT @68..79
+        EXPR @68..78
+          VARIABLE @68..72
+            T_VARIABLE @68..72 line=8 text="$obj"
+          PROPERTY_FETCH_EXPR @72..78
+            T_OBJECT_OPERATOR @72..74 line=8 text="->"
+            T_STRING @74..78 line=8 text="prop"
+        ; @78..79 line=8 text=";"
+      T_WHITESPACE @79..80 line=8 text="\n"
+      EXPR_STMT @80..92
+        EXPR @80..91
+          VARIABLE @80..84
+            T_VARIABLE @80..84 line=9 text="$obj"
+          PROPERTY_FETCH_EXPR @84..91
+            T_OBJECT_OPERATOR @84..86 line=9 text="->"
+            T_VARIABLE @86..91 line=9 text="$prop"
+        ; @91..92 line=9 text=";"
+      T_WHITESPACE @92..93 line=9 text="\n"
+      EXPR_STMT @93..107
+        EXPR @93..106
+          VARIABLE @93..97
+            T_VARIABLE @93..97 line=10 text="$obj"
+          PROPERTY_FETCH_EXPR @97..106
+            T_OBJECT_OPERATOR @97..99 line=10 text="->"
+            { @99..100 line=10 text="{"
+            EXPR @100..105
+              VARIABLE @100..105
+                T_VARIABLE @100..105 line=10 text="$prop"
+            } @105..106 line=10 text="}"
+        ; @106..107 line=10 text=";"
+      T_WHITESPACE @107..108 line=10 text="\n"
+      EXPR_STMT @108..124
+        EXPR @108..123
+          VARIABLE @108..112
+            T_VARIABLE @108..112 line=11 text="$obj"
+          PROPERTY_FETCH_EXPR @112..121
+            T_NULLSAFE_OBJECT_OPERATOR @112..115 line=11 text="?->"
+            T_STRING @115..121 line=11 text="method"
+          CALL_EXPR @121..123
+            ( @121..122 line=11 text="("
+            ) @122..123 line=11 text=")"
+        ; @123..124 line=11 text=";"
+      T_WHITESPACE @124..125 line=11 text="\n"
+      EXPR_STMT @125..133
+        EXPR @125..132
+          NAME @125..128
+            T_STRING @125..128 line=12 text="Foo"
+          STATIC_ACCESS_EXPR @128..132
+            T_DOUBLE_COLON @128..130 line=12 text="::"
+            T_VARIABLE @130..132 line=12 text="$x"
+        ; @132..133 line=12 text=";"
+      T_WHITESPACE @133..134 line=12 text="\n"
+      EXPR_STMT @134..145
+        EXPR @134..144
+          NAME @134..137
+            T_STRING @134..137 line=13 text="Foo"
+          STATIC_ACCESS_EXPR @137..144
+            T_DOUBLE_COLON @137..139 line=13 text="::"
+            T_CLASS @139..144 line=13 text="class"
+        ; @144..145 line=13 text=";"
+      T_WHITESPACE @145..146 line=13 text="\n"
+      EXPR_STMT @146..160
+        EXPR @146..159
+          NAME @146..149
+            T_STRING @146..149 line=14 text="Foo"
+          STATIC_ACCESS_EXPR @149..157
+            T_DOUBLE_COLON @149..151 line=14 text="::"
+            T_STRING @151..157 line=14 text="method"
+          CALL_EXPR @157..159
+            ( @157..158 line=14 text="("
+            ) @158..159 line=14 text=")"
+        ; @159..160 line=14 text=";"
+      T_WHITESPACE @160..161 line=14 text="\n"
+      EXPR_STMT @161..178
+        EXPR @161..177
+          VARIABLE @161..167
+            T_VARIABLE @161..167 line=15 text="$class"
+          STATIC_ACCESS_EXPR @167..175
+            T_DOUBLE_COLON @167..169 line=15 text="::"
+            T_STRING @169..175 line=15 text="method"
+          CALL_EXPR @175..177
+            ( @175..176 line=15 text="("
+            ) @176..177 line=15 text=")"
+        ; @177..178 line=15 text=";"
+      T_WHITESPACE @178..179 line=15 text="\n"
+      EXPR_STMT @179..210
+        EXPR @179..209
+          VARIABLE @179..183
+            T_VARIABLE @179..183 line=16 text="$foo"
+          PROPERTY_FETCH_EXPR @183..188
+            T_OBJECT_OPERATOR @183..185 line=16 text="->"
+            T_STRING @185..188 line=16 text="bar"
+          CALL_EXPR @188..190
+            ( @188..189 line=16 text="("
+            ) @189..190 line=16 text=")"
+          ARRAY_DIM_FETCH_EXPR @190..193
+            [ @190..191 line=16 text="["
+            T_LNUMBER @191..192 line=16 text="0"
+            ] @192..193 line=16 text="]"
+          PROPERTY_FETCH_EXPR @193..199
+            T_NULLSAFE_OBJECT_OPERATOR @193..196 line=16 text="?->"
+            T_STRING @196..199 line=16 text="baz"
+          STATIC_ACCESS_EXPR @199..204
+            T_DOUBLE_COLON @199..201 line=16 text="::"
+            T_STRING @201..204 line=16 text="qux"
+          CALL_EXPR @204..209
+            ( @204..205 line=16 text="("
+            T_ELLIPSIS @205..208 line=16 text="..."
+            ) @208..209 line=16 text=")"
+        ; @209..210 line=16 text=";"
+      T_WHITESPACE @210..211 line=16 text="\n"

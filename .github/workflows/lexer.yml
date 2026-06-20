@@ -1,4 +1,4 @@
-name: phase1
+name: lexer
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   verify:
-    name: Phase 1 verify
+    name: Lexer verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -16,5 +16,5 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
 
-      - name: Verify Phase 1
-        run: nix develop -c just verify-phase1
+      - name: Verify lexer
+        run: nix develop -c just verify-lexer

@@ -1,0 +1,16 @@
+fixture: valid/basic_echo.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..22
+  PHP_BLOCK @0..22
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..22
+      ECHO_STMT @6..21
+        T_ECHO @6..10 line=2 text="echo"
+        EXPR @10..20
+          T_WHITESPACE @10..11 line=2 text=" "
+          STRING @11..20
+            T_CONSTANT_ENCAPSED_STRING @11..20 line=2 text="\"hello\\n\""
+        ; @20..21 line=2 text=";"
+      T_WHITESPACE @21..22 line=2 text="\n"

@@ -1,0 +1,407 @@
+fixture: valid/control_flow.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..723
+  PHP_BLOCK @0..723
+    T_OPEN_TAG @0..6 line=1 text="<?php\n"
+    STATEMENT_LIST @6..723
+      T_WHITESPACE @6..7 line=2 text="\n"
+      EXPR_STMT @7..18
+        ASSIGN_EXPR @7..17
+          VARIABLE @7..13
+            T_VARIABLE @7..13 line=3 text="$value"
+          T_WHITESPACE @13..14 line=3 text=" "
+          = @14..15 line=3 text="="
+          EXPR @15..17
+            T_WHITESPACE @15..16 line=3 text=" "
+            LITERAL @16..17
+              T_LNUMBER @16..17 line=3 text="0"
+        ; @17..18 line=3 text=";"
+      T_WHITESPACE @18..20 line=3 text="\n\n"
+      IF_STMT @20..126
+        T_IF @20..22 line=5 text="if"
+        T_WHITESPACE @22..23 line=5 text=" "
+        ( @23..24 line=5 text="("
+        T_VARIABLE @24..30 line=5 text="$value"
+        T_WHITESPACE @30..31 line=5 text=" "
+        T_IS_IDENTICAL @31..34 line=5 text="==="
+        T_WHITESPACE @34..35 line=5 text=" "
+        T_LNUMBER @35..36 line=5 text="0"
+        ) @36..37 line=5 text=")"
+        T_WHITESPACE @37..38 line=5 text=" "
+        BLOCK_STMT @38..58
+          { @38..39 line=5 text="{"
+          T_WHITESPACE @39..44 line=5 text="\n    "
+          ECHO_STMT @44..56
+            T_ECHO @44..48 line=6 text="echo"
+            EXPR @48..55
+              T_WHITESPACE @48..49 line=6 text=" "
+              STRING @49..55
+                T_CONSTANT_ENCAPSED_STRING @49..55 line=6 text="\"zero\""
+            ; @55..56 line=6 text=";"
+          T_WHITESPACE @56..57 line=6 text="\n"
+          } @57..58 line=7 text="}"
+        T_WHITESPACE @58..59 line=7 text=" "
+        T_ELSEIF @59..65 line=7 text="elseif"
+        T_WHITESPACE @65..66 line=7 text=" "
+        ( @66..67 line=7 text="("
+        T_VARIABLE @67..73 line=7 text="$value"
+        T_WHITESPACE @73..74 line=7 text=" "
+        T_IS_IDENTICAL @74..77 line=7 text="==="
+        T_WHITESPACE @77..78 line=7 text=" "
+        T_LNUMBER @78..79 line=7 text="1"
+        ) @79..80 line=7 text=")"
+        T_WHITESPACE @80..81 line=7 text=" "
+        BLOCK_STMT @81..100
+          { @81..82 line=7 text="{"
+          T_WHITESPACE @82..87 line=7 text="\n    "
+          ECHO_STMT @87..98
+            T_ECHO @87..91 line=8 text="echo"
+            EXPR @91..97
+              T_WHITESPACE @91..92 line=8 text=" "
+              STRING @92..97
+                T_CONSTANT_ENCAPSED_STRING @92..97 line=8 text="\"one\""
+            ; @97..98 line=8 text=";"
+          T_WHITESPACE @98..99 line=8 text="\n"
+          } @99..100 line=9 text="}"
+        T_WHITESPACE @100..101 line=9 text=" "
+        T_ELSE @101..105 line=9 text="else"
+        T_WHITESPACE @105..106 line=9 text=" "
+        BLOCK_STMT @106..126
+          { @106..107 line=9 text="{"
+          T_WHITESPACE @107..112 line=9 text="\n    "
+          ECHO_STMT @112..124
+            T_ECHO @112..116 line=10 text="echo"
+            EXPR @116..123
+              T_WHITESPACE @116..117 line=10 text=" "
+              STRING @117..123
+                T_CONSTANT_ENCAPSED_STRING @117..123 line=10 text="\"many\""
+            ; @123..124 line=10 text=";"
+          T_WHITESPACE @124..125 line=10 text="\n"
+          } @125..126 line=11 text="}"
+      T_WHITESPACE @126..128 line=11 text="\n\n"
+      WHILE_STMT @128..175
+        T_WHILE @128..133 line=13 text="while"
+        T_WHITESPACE @133..134 line=13 text=" "
+        ( @134..135 line=13 text="("
+        T_VARIABLE @135..141 line=13 text="$value"
+        T_WHITESPACE @141..142 line=13 text=" "
+        < @142..143 line=13 text="<"
+        T_WHITESPACE @143..144 line=13 text=" "
+        T_LNUMBER @144..145 line=13 text="3"
+        ) @145..146 line=13 text=")"
+        T_WHITESPACE @146..147 line=13 text=" "
+        BLOCK_STMT @147..175
+          { @147..148 line=13 text="{"
+          T_WHITESPACE @148..153 line=13 text="\n    "
+          EXPR_STMT @153..173
+            ASSIGN_EXPR @153..172
+              VARIABLE @153..159
+                T_VARIABLE @153..159 line=14 text="$value"
+              T_WHITESPACE @159..160 line=14 text=" "
+              = @160..161 line=14 text="="
+              BINARY_EXPR @161..172
+                T_WHITESPACE @161..162 line=14 text=" "
+                VARIABLE @162..168
+                  T_VARIABLE @162..168 line=14 text="$value"
+                T_WHITESPACE @168..169 line=14 text=" "
+                + @169..170 line=14 text="+"
+                EXPR @170..172
+                  T_WHITESPACE @170..171 line=14 text=" "
+                  LITERAL @171..172
+                    T_LNUMBER @171..172 line=14 text="1"
+            ; @172..173 line=14 text=";"
+          T_WHITESPACE @173..174 line=14 text="\n"
+          } @174..175 line=15 text="}"
+      T_WHITESPACE @175..177 line=15 text="\n\n"
+      DO_WHILE_STMT @177..228
+        T_DO @177..179 line=17 text="do"
+        T_WHITESPACE @179..180 line=17 text=" "
+        BLOCK_STMT @180..208
+          { @180..181 line=17 text="{"
+          T_WHITESPACE @181..186 line=17 text="\n    "
+          EXPR_STMT @186..206
+            ASSIGN_EXPR @186..205
+              VARIABLE @186..192
+                T_VARIABLE @186..192 line=18 text="$value"
+              T_WHITESPACE @192..193 line=18 text=" "
+              = @193..194 line=18 text="="
+              BINARY_EXPR @194..205
+                T_WHITESPACE @194..195 line=18 text=" "
+                VARIABLE @195..201
+                  T_VARIABLE @195..201 line=18 text="$value"
+                T_WHITESPACE @201..202 line=18 text=" "
+                - @202..203 line=18 text="-"
+                EXPR @203..205
+                  T_WHITESPACE @203..204 line=18 text=" "
+                  LITERAL @204..205
+                    T_LNUMBER @204..205 line=18 text="1"
+            ; @205..206 line=18 text=";"
+          T_WHITESPACE @206..207 line=18 text="\n"
+          } @207..208 line=19 text="}"
+        T_WHITESPACE @208..209 line=19 text=" "
+        T_WHILE @209..214 line=19 text="while"
+        T_WHITESPACE @214..215 line=19 text=" "
+        ( @215..216 line=19 text="("
+        T_VARIABLE @216..222 line=19 text="$value"
+        T_WHITESPACE @222..223 line=19 text=" "
+        > @223..224 line=19 text=">"
+        T_WHITESPACE @224..225 line=19 text=" "
+        T_LNUMBER @225..226 line=19 text="0"
+        ) @226..227 line=19 text=")"
+        ; @227..228 line=19 text=";"
+      T_WHITESPACE @228..230 line=19 text="\n\n"
+      FOR_STMT @230..311
+        T_FOR @230..233 line=21 text="for"
+        T_WHITESPACE @233..234 line=21 text=" "
+        ( @234..235 line=21 text="("
+        T_VARIABLE @235..237 line=21 text="$i"
+        T_WHITESPACE @237..238 line=21 text=" "
+        = @238..239 line=21 text="="
+        T_WHITESPACE @239..240 line=21 text=" "
+        T_LNUMBER @240..241 line=21 text="0"
+        ; @241..242 line=21 text=";"
+        T_WHITESPACE @242..243 line=21 text=" "
+        T_VARIABLE @243..245 line=21 text="$i"
+        T_WHITESPACE @245..246 line=21 text=" "
+        < @246..247 line=21 text="<"
+        T_WHITESPACE @247..248 line=21 text=" "
+        T_LNUMBER @248..249 line=21 text="3"
+        ; @249..250 line=21 text=";"
+        T_WHITESPACE @250..251 line=21 text=" "
+        T_VARIABLE @251..253 line=21 text="$i"
+        T_WHITESPACE @253..254 line=21 text=" "
+        = @254..255 line=21 text="="
+        T_WHITESPACE @255..256 line=21 text=" "
+        T_VARIABLE @256..258 line=21 text="$i"
+        T_WHITESPACE @258..259 line=21 text=" "
+        + @259..260 line=21 text="+"
+        T_WHITESPACE @260..261 line=21 text=" "
+        T_LNUMBER @261..262 line=21 text="1"
+        ) @262..263 line=21 text=")"
+        T_WHITESPACE @263..264 line=21 text=" "
+        BLOCK_STMT @264..311
+          { @264..265 line=21 text="{"
+          T_WHITESPACE @265..270 line=21 text="\n    "
+          IF_STMT @270..310
+            T_IF @270..272 line=22 text="if"
+            T_WHITESPACE @272..273 line=22 text=" "
+            ( @273..274 line=22 text="("
+            T_VARIABLE @274..276 line=22 text="$i"
+            T_WHITESPACE @276..277 line=22 text=" "
+            T_IS_IDENTICAL @277..280 line=22 text="==="
+            T_WHITESPACE @280..281 line=22 text=" "
+            T_LNUMBER @281..282 line=22 text="1"
+            ) @282..283 line=22 text=")"
+            T_WHITESPACE @283..284 line=22 text=" "
+            BLOCK_STMT @284..309
+              { @284..285 line=22 text="{"
+              T_WHITESPACE @285..294 line=22 text="\n        "
+              CONTINUE_STMT @294..303
+                T_CONTINUE @294..302 line=23 text="continue"
+                ; @302..303 line=23 text=";"
+              T_WHITESPACE @303..308 line=23 text="\n    "
+              } @308..309 line=24 text="}"
+            T_WHITESPACE @309..310 line=24 text="\n"
+          } @310..311 line=25 text="}"
+      T_WHITESPACE @311..313 line=25 text="\n\n"
+      FOREACH_STMT @313..431
+        T_FOREACH @313..320 line=27 text="foreach"
+        T_WHITESPACE @320..321 line=27 text=" "
+        ( @321..322 line=27 text="("
+        [ @322..323 line=27 text="["
+        T_LNUMBER @323..324 line=27 text="1"
+        T_WHITESPACE @324..325 line=27 text=" "
+        T_DOUBLE_ARROW @325..327 line=27 text="=>"
+        T_WHITESPACE @327..328 line=27 text=" "
+        T_LNUMBER @328..329 line=27 text="2"
+        , @329..330 line=27 text=","
+        T_WHITESPACE @330..331 line=27 text=" "
+        T_LNUMBER @331..332 line=27 text="3"
+        T_WHITESPACE @332..333 line=27 text=" "
+        T_DOUBLE_ARROW @333..335 line=27 text="=>"
+        T_WHITESPACE @335..336 line=27 text=" "
+        T_LNUMBER @336..337 line=27 text="4"
+        ] @337..338 line=27 text="]"
+        T_WHITESPACE @338..339 line=27 text=" "
+        T_AS @339..341 line=27 text="as"
+        T_WHITESPACE @341..342 line=27 text=" "
+        T_VARIABLE @342..346 line=27 text="$key"
+        T_WHITESPACE @346..347 line=27 text=" "
+        T_DOUBLE_ARROW @347..349 line=27 text="=>"
+        T_WHITESPACE @349..350 line=27 text=" "
+        T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG @350..351 line=27 text="&"
+        T_VARIABLE @351..356 line=27 text="$item"
+        ) @356..357 line=27 text=")"
+        T_WHITESPACE @357..358 line=27 text=" "
+        BLOCK_STMT @358..431
+          { @358..359 line=27 text="{"
+          T_WHITESPACE @359..364 line=27 text="\n    "
+          EXPR_STMT @364..385
+            ASSIGN_EXPR @364..384
+              VARIABLE @364..369
+                T_VARIABLE @364..369 line=28 text="$item"
+              T_WHITESPACE @369..370 line=28 text=" "
+              = @370..371 line=28 text="="
+              BINARY_EXPR @371..384
+                T_WHITESPACE @371..372 line=28 text=" "
+                VARIABLE @372..377
+                  T_VARIABLE @372..377 line=28 text="$item"
+                T_WHITESPACE @377..378 line=28 text=" "
+                + @378..379 line=28 text="+"
+                EXPR @379..384
+                  T_WHITESPACE @379..380 line=28 text=" "
+                  VARIABLE @380..384
+                    T_VARIABLE @380..384 line=28 text="$key"
+            ; @384..385 line=28 text=";"
+          T_WHITESPACE @385..390 line=28 text="\n    "
+          IF_STMT @390..430
+            T_IF @390..392 line=29 text="if"
+            T_WHITESPACE @392..393 line=29 text=" "
+            ( @393..394 line=29 text="("
+            T_VARIABLE @394..399 line=29 text="$item"
+            T_WHITESPACE @399..400 line=29 text=" "
+            > @400..401 line=29 text=">"
+            T_WHITESPACE @401..402 line=29 text=" "
+            T_LNUMBER @402..403 line=29 text="5"
+            ) @403..404 line=29 text=")"
+            T_WHITESPACE @404..405 line=29 text=" "
+            BLOCK_STMT @405..429
+              { @405..406 line=29 text="{"
+              T_WHITESPACE @406..415 line=29 text="\n        "
+              BREAK_STMT @415..423
+                T_BREAK @415..420 line=30 text="break"
+                T_WHITESPACE @420..421 line=30 text=" "
+                EXPR @421..422
+                  LITERAL @421..422
+                    T_LNUMBER @421..422 line=30 text="1"
+                ; @422..423 line=30 text=";"
+              T_WHITESPACE @423..428 line=30 text="\n    "
+              } @428..429 line=31 text="}"
+            T_WHITESPACE @429..430 line=31 text="\n"
+          } @430..431 line=32 text="}"
+      T_WHITESPACE @431..433 line=32 text="\n\n"
+      SWITCH_STMT @433..610
+        T_SWITCH @433..439 line=34 text="switch"
+        T_WHITESPACE @439..440 line=34 text=" "
+        ( @440..441 line=34 text="("
+        T_VARIABLE @441..447 line=34 text="$value"
+        ) @447..448 line=34 text=")"
+        T_WHITESPACE @448..449 line=34 text=" "
+        { @449..450 line=34 text="{"
+        T_WHITESPACE @450..455 line=34 text="\n    "
+        T_CASE @455..459 line=35 text="case"
+        T_WHITESPACE @459..460 line=35 text=" "
+        EXPR @460..461
+          LITERAL @460..461
+            T_LNUMBER @460..461 line=35 text="0"
+        : @461..462 line=35 text=":"
+        T_WHITESPACE @462..471 line=35 text="\n        "
+        ECHO_STMT @471..483
+          T_ECHO @471..475 line=36 text="echo"
+          EXPR @475..482
+            T_WHITESPACE @475..476 line=36 text=" "
+            STRING @476..482
+              T_CONSTANT_ENCAPSED_STRING @476..482 line=36 text="\"zero\""
+          ; @482..483 line=36 text=";"
+        T_WHITESPACE @483..492 line=36 text="\n        "
+        BREAK_STMT @492..498
+          T_BREAK @492..497 line=37 text="break"
+          ; @497..498 line=37 text=";"
+        T_WHITESPACE @498..503 line=37 text="\n    "
+        T_CASE @503..507 line=38 text="case"
+        T_WHITESPACE @507..508 line=38 text=" "
+        EXPR @508..509
+          LITERAL @508..509
+            T_LNUMBER @508..509 line=38 text="1"
+        : @509..510 line=38 text=":"
+        T_WHITESPACE @510..519 line=38 text="\n        "
+        ECHO_STMT @519..530
+          T_ECHO @519..523 line=39 text="echo"
+          EXPR @523..529
+            T_WHITESPACE @523..524 line=39 text=" "
+            STRING @524..529
+              T_CONSTANT_ENCAPSED_STRING @524..529 line=39 text="\"one\""
+          ; @529..530 line=39 text=";"
+        T_WHITESPACE @530..539 line=39 text="\n        "
+        BREAK_STMT @539..545
+          T_BREAK @539..544 line=40 text="break"
+          ; @544..545 line=40 text=";"
+        T_WHITESPACE @545..550 line=40 text="\n    "
+        T_DEFAULT @550..557 line=41 text="default"
+        : @557..558 line=41 text=":"
+        T_WHITESPACE @558..567 line=41 text="\n        "
+        THROW_STMT @567..608
+          T_THROW @567..572 line=42 text="throw"
+          T_WHITESPACE @572..573 line=42 text=" "
+          EXPR @573..607
+            NEW_EXPR @573..607
+              T_NEW @573..576 line=42 text="new"
+              T_WHITESPACE @576..577 line=42 text=" "
+              NAME @577..593
+                T_STRING @577..593 line=42 text="RuntimeException"
+              CALL_EXPR @593..607
+                ( @593..594 line=42 text="("
+                T_CONSTANT_ENCAPSED_STRING @594..606 line=42 text="\"unexpected\""
+                ) @606..607 line=42 text=")"
+          ; @607..608 line=42 text=";"
+        T_WHITESPACE @608..609 line=42 text="\n"
+        } @609..610 line=43 text="}"
+      T_WHITESPACE @610..612 line=43 text="\n\n"
+      FUNCTION_DECL @612..722
+        T_FUNCTION @612..620 line=45 text="function"
+        T_WHITESPACE @620..621 line=45 text=" "
+        T_STRING @621..635 line=45 text="control_return"
+        PARAM_LIST @635..647
+          ( @635..636 line=45 text="("
+          PARAM @636..646
+            TYPE @636..640
+              NAME @636..640
+                T_STRING @636..639 line=45 text="int"
+                T_WHITESPACE @639..640 line=45 text=" "
+            T_VARIABLE @640..646 line=45 text="$input"
+          ) @646..647 line=45 text=")"
+        : @647..648 line=45 text=":"
+        T_WHITESPACE @648..649 line=45 text=" "
+        TYPE @649..653
+          NAME @649..653
+            T_STRING @649..652 line=45 text="int"
+            T_WHITESPACE @652..653 line=45 text=" "
+        BLOCK_STMT @653..722
+          { @653..654 line=45 text="{"
+          T_WHITESPACE @654..659 line=45 text="\n    "
+          IF_STMT @659..706
+            T_IF @659..661 line=46 text="if"
+            T_WHITESPACE @661..662 line=46 text=" "
+            ( @662..663 line=46 text="("
+            T_VARIABLE @663..669 line=46 text="$input"
+            T_WHITESPACE @669..670 line=46 text=" "
+            < @670..671 line=46 text="<"
+            T_WHITESPACE @671..672 line=46 text=" "
+            T_LNUMBER @672..673 line=46 text="0"
+            ) @673..674 line=46 text=")"
+            T_WHITESPACE @674..675 line=46 text=" "
+            BLOCK_STMT @675..700
+              { @675..676 line=46 text="{"
+              T_WHITESPACE @676..685 line=46 text="\n        "
+              RETURN_STMT @685..694
+                T_RETURN @685..691 line=47 text="return"
+                T_WHITESPACE @691..692 line=47 text=" "
+                EXPR @692..693
+                  LITERAL @692..693
+                    T_LNUMBER @692..693 line=47 text="0"
+                ; @693..694 line=47 text=";"
+              T_WHITESPACE @694..699 line=47 text="\n    "
+              } @699..700 line=48 text="}"
+            T_WHITESPACE @700..706 line=48 text="\n\n    "
+          RETURN_STMT @706..720
+            T_RETURN @706..712 line=50 text="return"
+            T_WHITESPACE @712..713 line=50 text=" "
+            EXPR @713..719
+              VARIABLE @713..719
+                T_VARIABLE @713..719 line=50 text="$input"
+            ; @719..720 line=50 text=";"
+          T_WHITESPACE @720..721 line=50 text="\n"
+          } @721..722 line=51 text="}"
+      T_WHITESPACE @722..723 line=51 text="\n"

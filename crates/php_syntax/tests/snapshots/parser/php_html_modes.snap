@@ -1,0 +1,43 @@
+fixture: valid/php_html_modes.php
+roundtrip_ok: true
+diagnostics: 0
+
+SOURCE_FILE @0..99
+  INLINE_HTML @0..16
+    T_INLINE_HTML @0..16 line=1 text="<h1>Before</h1>\n"
+  PHP_BLOCK @16..40
+    T_OPEN_TAG @16..22 line=2 text="<?php "
+    STATEMENT_LIST @22..37
+      ECHO_STMT @22..36
+        T_ECHO @22..26 line=2 text="echo"
+        EXPR @26..35
+          T_WHITESPACE @26..27 line=2 text=" "
+          STRING @27..35
+            T_CONSTANT_ENCAPSED_STRING @27..35 line=2 text="\"inside\""
+        ; @35..36 line=2 text=";"
+      T_WHITESPACE @36..37 line=2 text=" "
+    T_CLOSE_TAG @37..40 line=2 text="?>\n"
+  INLINE_HTML @40..55
+    T_INLINE_HTML @40..55 line=3 text="<p>Between</p>\n"
+  PHP_BLOCK @55..69
+    T_OPEN_TAG_WITH_ECHO @55..58 line=4 text="<?="
+    STATEMENT_LIST @58..66
+      ECHO_STMT @58..66
+        EXPR @58..66
+          T_WHITESPACE @58..59 line=4 text=" "
+          VARIABLE @59..65
+            T_VARIABLE @59..65 line=4 text="$short"
+          T_WHITESPACE @65..66 line=4 text=" "
+    T_CLOSE_TAG @66..69 line=4 text="?>\n"
+  PHP_BLOCK @69..99
+    T_OPEN_TAG @69..75 line=5 text="<?php "
+    STATEMENT_LIST @75..96
+      ECHO_STMT @75..95
+        T_ECHO @75..79 line=5 text="echo"
+        EXPR @79..94
+          T_WHITESPACE @79..80 line=5 text=" "
+          STRING @80..94
+            T_CONSTANT_ENCAPSED_STRING @80..94 line=5 text="\"after reopen\""
+        ; @94..95 line=5 text=";"
+      T_WHITESPACE @95..96 line=5 text=" "
+    T_CLOSE_TAG @96..99 line=5 text="?>\n"

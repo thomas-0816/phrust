@@ -1,4 +1,4 @@
-name: phase0
+name: foundation
 
 on:
   push:
@@ -17,7 +17,7 @@ on:
 
 jobs:
   verify:
-    name: Phase 0 verify
+    name: Foundation verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,8 +29,8 @@ jobs:
       - name: Show flake
         run: nix flake show
 
-      - name: Verify Phase 0
-        run: nix develop -c just verify-phase0
+      - name: Verify foundation
+        run: nix develop -c just verify-foundation
 
   reference:
     name: Optional PHP reference checks
