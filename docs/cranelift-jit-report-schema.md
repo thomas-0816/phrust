@@ -54,6 +54,7 @@ The VM counter JSON includes these JIT fields:
 | `jit_compile_cache_hits` | Process-local compile-cache hits. |
 | `jit_compile_cache_misses` | Process-local compile-cache misses. |
 | `jit_compile_cache_invalidations` | Process-local compile-cache invalidations caused by runtime layout, ABI/config, IR, or blacklist mismatch. |
+| `jit_compile_descriptors` | Diagnostic list of successful Cranelift compiles with `FunctionId`, function name, IR fingerprint, code bytes, compile time, target ISA, ABI hash, and config hash. |
 | `property_fetch_profiles` | Deterministic per-callsite property-fetch metadata profiles used by monomorphic property-load fast paths. |
 | `method_call_profiles` | Deterministic per-callsite method-call metadata profiles used by monomorphic method-call fast paths. |
 
@@ -93,6 +94,13 @@ Each report uses stable fields:
 | `candidate_kind` | Stable eligible candidate kind such as `IntLeafCandidate`, `PackedArrayFetchCandidate`, `PackedForeachIntSumCandidate`, `KnownCallCandidate`, or `StringConcatCandidate`; otherwise `null`. |
 | `stats` | Function-local analysis counters. |
 | `reasons` | Stable non-eligibility reason objects with `code`, `detail`, `block`, and `instruction`. |
+
+Successful Cranelift compiles also populate `jit.compile_descriptors` in the
+compact stats JSON. Optional local diagnostics such as
+`just jit-cranelift-disasm` use this array to link a dump to the same
+`function_id`, `ir_fingerprint`, `code_bytes`, ABI hash, config hash, and
+target ISA used by the process-local compile cache. This is metadata only and
+does not affect tiering, eligibility, native entry, or fallback behavior.
 
 Prompt 07.CL.10 keeps the allowed intrinsic set empty. Calls therefore remain
 non-eligible with `JIT_ELIGIBILITY_REJECT_CALL_OPCODE` until a later prompt
@@ -282,6 +290,22 @@ Prompt 07.CL.32 consumes the schema-2 report through
 `side_exit_reasons` and `blacklist_reasons` maps when the VM reports them. The
 guard report writes JSON and a text summary with top side exits, high-failure
 rows, blacklisted candidates, and next-action recommendations.
+
+Optional 07.CL.E can pass
+`target/phase7/cranelift/polymorphic-ic/report.json` into the same analyzer with
+`--experimental-ic-report`. In that mode the guard report adds an
+`experimental_ic_guards` array. Each row is report-only and contains
+`scenario`, `kind`, `state`, `guard_entry_count`, `max_polymorphic_entries`, and
+`fallback`; megamorphic rows must show `fallback: "megamorphic_fallback"`.
+Without the optional input, the array is empty and no runtime behavior changes.
+
+Optional 07.CL.F writes `target/phase7/cranelift/framework-smoke.json` from
+`scripts/phase7/cranelift/framework_smoke.py`. That report is schema-version 1
+and contains `required_fixture_kinds`, `all_triggered_paths`, and per-fixture
+rows with `expected_paths`, `triggered_paths`, output parity, and a compact JIT
+counter summary. The report is intentionally separate from the Big-Win matrix
+because its fixtures are generated local mini-app shapes rather than committed
+benchmark fixtures.
 
 ## Report Types
 

@@ -29,6 +29,12 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "target/phase7/cranelift/minimized",
         help="temp/output directory suggested for optional minimization hooks",
     )
+    parser.add_argument(
+        "--experimental-ic-report",
+        type=Path,
+        default=None,
+        help="optional local polymorphic-IC experiment report to include in the guard output",
+    )
     return parser.parse_args()
 
 
@@ -51,6 +57,20 @@ def load_report(path: Path) -> dict[str, Any]:
     rows = decoded.get("rows")
     if not isinstance(rows, list):
         raise SystemExit(f"Big-Win report has no rows array: {path}")
+    return decoded
+
+
+def load_optional_ic_report(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    if not path.is_file():
+        raise SystemExit(f"missing experimental IC report JSON: {path}")
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid experimental IC report JSON {path}: {exc}") from exc
+    if not isinstance(decoded, dict):
+        raise SystemExit(f"experimental IC report is not a JSON object: {path}")
     return decoded
 
 
@@ -149,7 +169,11 @@ def minimizer_hook(candidate: dict[str, Any], minimize_dir: Path) -> dict[str, A
     }
 
 
-def analyze(report: dict[str, Any], minimize_dir: Path) -> dict[str, Any]:
+def analyze(
+    report: dict[str, Any],
+    minimize_dir: Path,
+    experimental_ic_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     rows = [row for row in report["rows"] if isinstance(row, dict) and row.get("jit_mode") == "cranelift"]
     side_exit_counts: Counter[str] = Counter()
     blacklist_counts: Counter[str] = Counter()
@@ -173,6 +197,12 @@ def analyze(report: dict[str, Any], minimize_dir: Path) -> dict[str, Any]:
         if hook is not None
     ]
 
+    ic_guards: list[dict[str, Any]] = []
+    if experimental_ic_report is not None:
+        raw_guards = experimental_ic_report.get("guard_report_extension")
+        if isinstance(raw_guards, list):
+            ic_guards = [guard for guard in raw_guards if isinstance(guard, dict)]
+
     return {
         "schema_version": 1,
         "gate": "cranelift-guard-report",
@@ -192,6 +222,7 @@ def analyze(report: dict[str, Any], minimize_dir: Path) -> dict[str, Any]:
         "recommendation_counts": dict(sorted(recommendations.items())),
         "row_recommendations": candidates,
         "minimizer_hooks": minimizer_hooks,
+        "experimental_ic_guards": ic_guards,
     }
 
 
@@ -237,6 +268,22 @@ def render_text(analysis: dict[str, Any]) -> str:
     for action, count in analysis["recommendation_counts"].items():
         lines.append(f"- {action}: {count}")
 
+    lines.extend(["", "## Experimental Polymorphic IC Guards"])
+    if analysis["experimental_ic_guards"]:
+        for item in analysis["experimental_ic_guards"]:
+            lines.append(
+                "- {scenario}: {kind} state={state}, entries={entries}/{limit}, fallback={fallback}".format(
+                    scenario=item.get("scenario", "unknown"),
+                    kind=item.get("kind", "unknown"),
+                    state=item.get("state", "unknown"),
+                    entries=item.get("guard_entry_count", 0),
+                    limit=item.get("max_polymorphic_entries", 0),
+                    fallback=item.get("fallback", "none"),
+                )
+            )
+    else:
+        lines.append("- none")
+
     lines.extend(["", "## Minimizer Hooks"])
     if analysis["minimizer_hooks"]:
         for hook in analysis["minimizer_hooks"]:
@@ -249,7 +296,8 @@ def render_text(analysis: dict[str, Any]) -> str:
 def main() -> int:
     args = parse_args()
     report = load_report(args.input)
-    analysis = analyze(report, args.minimize_dir)
+    experimental_ic_report = load_optional_ic_report(args.experimental_ic_report)
+    analysis = analyze(report, args.minimize_dir, experimental_ic_report)
     text = render_text(analysis)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::compiled_unit::CompiledUnit;
+#[cfg(feature = "jit-cranelift")]
+use crate::counters::JitCompileDescriptor;
 use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
 use crate::frame::{CallStack, Frame};
 use crate::include::{IncludeLoader, include_path_file_fingerprint};
@@ -414,6 +416,8 @@ pub struct VmOptions {
     pub jit_threshold: u64,
     /// Process-local JIT blacklist policy.
     pub jit_blacklist: JitBlacklistMode,
+    /// Optional diagnostic path for dumping Cranelift IR for compiled JIT functions.
+    pub jit_dump_clif: Option<PathBuf>,
     /// Request-local adaptive tiering policy and stats configuration.
     pub tiering: TieringOptions,
     /// Use conservative fast paths for simple runtime type checks.
@@ -437,6 +441,7 @@ impl Default for VmOptions {
             jit: JitMode::Off,
             jit_threshold: TieringOptions::default().function_entry_threshold,
             jit_blacklist: JitBlacklistMode::On,
+            jit_dump_clif: None,
             tiering: TieringOptions::default(),
             typecheck_fast_paths: true,
             internal_function_dispatch_cache: true,
@@ -1512,6 +1517,33 @@ impl Vm {
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_jit_compile_metadata(code_bytes, compile_time_nanos);
         }
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    fn record_counter_jit_compile_descriptor(&self, descriptor: JitCompileDescriptor) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_jit_compile_descriptor(descriptor);
+        }
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    fn maybe_write_cranelift_clif_dump(&self, compiled: &CompiledUnit, function_id: FunctionId) {
+        let Some(path) = self.options.jit_dump_clif.as_ref() else {
+            return;
+        };
+        let Ok(result) = php_jit::lower_function_to_cranelift(compiled.unit(), function_id) else {
+            return;
+        };
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && fs::create_dir_all(parent).is_err()
+        {
+            return;
+        }
+        let _ = fs::write(path, result.clif);
     }
 
     #[cfg(feature = "jit-cranelift")]
@@ -3214,6 +3246,16 @@ impl Vm {
                     self.record_counter_jit_bailout();
                     return None;
                 };
+                let descriptor = JitCompileDescriptor {
+                    function_id: function_id.raw(),
+                    function_name: function.name.clone(),
+                    ir_fingerprint: format!("{:016x}", cache_key.ir_fingerprint),
+                    code_bytes: result.stats.native_code_bytes,
+                    compile_time_nanos: result.stats.native_compile_time_nanos,
+                    target_isa: cache_key.target_isa.clone(),
+                    abi_hash: cache_key.abi_hash,
+                    config_hash: cache_key.config_hash,
+                };
                 {
                     let mut jit = self.jit.borrow_mut();
                     if let Some(entry) = jit.functions.get_mut(&key) {
@@ -3227,6 +3269,8 @@ impl Vm {
                     result.stats.native_code_bytes,
                     result.stats.native_compile_time_nanos,
                 );
+                self.record_counter_jit_compile_descriptor(descriptor);
+                self.maybe_write_cranelift_clif_dump(compiled, function_id);
                 self.record_jit_compile_budget_spent(result.stats.native_compile_time_nanos);
                 Some(handle)
             }

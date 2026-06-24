@@ -270,6 +270,7 @@ where
         jit: run_options.jit,
         jit_threshold: run_options.jit_threshold,
         jit_blacklist: run_options.jit_blacklist,
+        jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
         tiering: run_options.tiering.clone(),
         ..VmOptions::default()
     });
@@ -1390,9 +1391,10 @@ fn write_jit_stats_json<W: Write>(
     let dump_clif = options.jit_dump_clif.as_deref().unwrap_or("");
     let side_exit_reasons = write_string_u64_map_json(&counters.jit_side_exit_reasons);
     let blacklist_reasons = write_string_u64_map_json(&counters.jit_blacklist_reasons);
+    let compile_descriptors = write_jit_compile_descriptors_json(&counters.jit_compile_descriptors);
     writeln!(
         stderr,
-        "{{\"jit\":{{\"mode\":\"{}\",\"threshold\":{},\"eager\":{},\"max_compile_us\":{},\"max_functions\":{},\"blacklist\":\"{}\",\"dump_clif\":\"{}\",\"compile_attempts\":{},\"compiled\":{},\"executed\":{},\"bailouts\":{},\"code_bytes\":{},\"compile_time_nanos\":{},\"side_exits\":{},\"side_exit_reasons\":{},\"guard_failures\":{},\"blacklisted_regions\":{},\"blacklist_reasons\":{},\"tiering_cold_functions\":{},\"tiering_hot_functions\":{},\"tiering_eager_functions\":{},\"tiering_blacklist_rejections\":{},\"tiering_budget_rejections\":{},\"helper_calls\":{},\"fast_path_hits\":{},\"packed_fetch_fast_hits\":{},\"packed_fetch_bounds_exits\":{},\"packed_fetch_layout_exits\":{},\"packed_foreach_sum_fast_hits\":{},\"packed_foreach_sum_layout_exits\":{},\"packed_foreach_sum_overflow_exits\":{},\"known_call_fast_hits\":{},\"known_call_guard_exits\":{},\"known_call_slow_calls\":{},\"direct_call_hits\":{},\"direct_call_fallbacks\":{},\"property_load_fast_hits\":{},\"property_load_guard_exits\":{},\"property_load_layout_exits\":{},\"property_load_uninitialized_exits\":{},\"property_load_slow_calls\":{},\"string_concat_fast_path_hits\":{},\"string_concat_fast_path_misses\":{},\"overflow_exits\":{},\"slow_path_calls\":{},\"compile_cache_hits\":{},\"compile_cache_misses\":{},\"compile_cache_invalidations\":{},\"eligibility\":{}}}}}",
+        "{{\"jit\":{{\"mode\":\"{}\",\"threshold\":{},\"eager\":{},\"max_compile_us\":{},\"max_functions\":{},\"blacklist\":\"{}\",\"dump_clif\":\"{}\",\"compile_attempts\":{},\"compiled\":{},\"executed\":{},\"bailouts\":{},\"code_bytes\":{},\"compile_time_nanos\":{},\"side_exits\":{},\"side_exit_reasons\":{},\"guard_failures\":{},\"blacklisted_regions\":{},\"blacklist_reasons\":{},\"tiering_cold_functions\":{},\"tiering_hot_functions\":{},\"tiering_eager_functions\":{},\"tiering_blacklist_rejections\":{},\"tiering_budget_rejections\":{},\"helper_calls\":{},\"fast_path_hits\":{},\"packed_fetch_fast_hits\":{},\"packed_fetch_bounds_exits\":{},\"packed_fetch_layout_exits\":{},\"packed_foreach_sum_fast_hits\":{},\"packed_foreach_sum_layout_exits\":{},\"packed_foreach_sum_overflow_exits\":{},\"known_call_fast_hits\":{},\"known_call_guard_exits\":{},\"known_call_slow_calls\":{},\"direct_call_hits\":{},\"direct_call_fallbacks\":{},\"property_load_fast_hits\":{},\"property_load_guard_exits\":{},\"property_load_layout_exits\":{},\"property_load_uninitialized_exits\":{},\"property_load_slow_calls\":{},\"string_concat_fast_path_hits\":{},\"string_concat_fast_path_misses\":{},\"overflow_exits\":{},\"slow_path_calls\":{},\"compile_cache_hits\":{},\"compile_cache_misses\":{},\"compile_cache_invalidations\":{},\"compile_descriptors\":{},\"eligibility\":{}}}}}",
         options.jit.as_str(),
         options.jit_threshold,
         options.tiering.jit_eager,
@@ -1441,6 +1443,7 @@ fn write_jit_stats_json<W: Write>(
         counters.jit_compile_cache_hits,
         counters.jit_compile_cache_misses,
         counters.jit_compile_cache_invalidations,
+        compile_descriptors,
         eligibility_json
     )
     .map_err(|error| error.to_string())
@@ -1458,6 +1461,35 @@ fn write_string_u64_map_json(values: &std::collections::BTreeMap<String, u64>) -
         json.push_str(&value.to_string());
     }
     json.push('}');
+    json
+}
+
+fn write_jit_compile_descriptors_json(values: &[php_vm::JitCompileDescriptor]) -> String {
+    let mut json = String::from("[");
+    for (index, descriptor) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        json.push_str("\"function_id\":");
+        json.push_str(&descriptor.function_id.to_string());
+        json.push_str(",\"function_name\":\"");
+        json.push_str(&escape_json(&descriptor.function_name));
+        json.push_str("\",\"ir_fingerprint\":\"");
+        json.push_str(&escape_json(&descriptor.ir_fingerprint));
+        json.push_str("\",\"code_bytes\":");
+        json.push_str(&descriptor.code_bytes.to_string());
+        json.push_str(",\"compile_time_nanos\":");
+        json.push_str(&descriptor.compile_time_nanos.to_string());
+        json.push_str(",\"target_isa\":\"");
+        json.push_str(&escape_json(&descriptor.target_isa));
+        json.push_str("\",\"abi_hash\":");
+        json.push_str(&descriptor.abi_hash.to_string());
+        json.push_str(",\"config_hash\":");
+        json.push_str(&descriptor.config_hash.to_string());
+        json.push('}');
+    }
+    json.push(']');
     json
 }
 

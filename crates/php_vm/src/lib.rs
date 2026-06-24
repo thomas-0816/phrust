@@ -18,7 +18,7 @@ pub mod todo_phase4;
 pub mod vm;
 
 pub use compiled_unit::CompiledUnit;
-pub use counters::VmCounters;
+pub use counters::{JitCompileDescriptor, VmCounters};
 pub use fallback::{
     DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolEvent,
     FallbackProtocolStats,

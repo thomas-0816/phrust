@@ -190,6 +190,7 @@ pub struct VmCounters {
     pub jit_compile_cache_hits: u64,
     pub jit_compile_cache_misses: u64,
     pub jit_compile_cache_invalidations: u64,
+    pub jit_compile_descriptors: Vec<JitCompileDescriptor>,
     pub inline_cache_observations: u64,
     pub inline_cache_slots: u64,
     pub inline_cache_function_slots: u64,
@@ -227,6 +228,19 @@ pub struct VmCounters {
     pub autoload_class_lookup_ic_guard_failures: u64,
     pub property_fetch_profiles: BTreeMap<String, PropertyFetchProfile>,
     pub method_call_profiles: BTreeMap<String, MethodCallProfile>,
+}
+
+/// Diagnostic metadata for one successful Cranelift compile.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct JitCompileDescriptor {
+    pub function_id: u32,
+    pub function_name: String,
+    pub ir_fingerprint: String,
+    pub code_bytes: u64,
+    pub compile_time_nanos: u64,
+    pub target_isa: String,
+    pub abi_hash: u64,
+    pub config_hash: u64,
 }
 
 impl VmCounters {
@@ -479,6 +493,11 @@ impl VmCounters {
     pub(crate) fn record_jit_compile_metadata(&mut self, code_bytes: u64, compile_time_nanos: u64) {
         self.jit_code_bytes += code_bytes;
         self.jit_compile_time_nanos += compile_time_nanos;
+    }
+
+    #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
+    pub(crate) fn record_jit_compile_descriptor(&mut self, descriptor: JitCompileDescriptor) {
+        self.jit_compile_descriptors.push(descriptor);
     }
 
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
@@ -1296,6 +1315,31 @@ impl VmCounters {
             self.jit_compile_cache_invalidations,
             true,
         );
+        json.push_str("  \"jit_compile_descriptors\": [");
+        for (index, descriptor) in self.jit_compile_descriptors.iter().enumerate() {
+            if index > 0 {
+                json.push_str(", ");
+            }
+            json.push('{');
+            json.push_str("\"function_id\": ");
+            json.push_str(&descriptor.function_id.to_string());
+            json.push_str(", \"function_name\": ");
+            push_json_string(&mut json, &descriptor.function_name);
+            json.push_str(", \"ir_fingerprint\": ");
+            push_json_string(&mut json, &descriptor.ir_fingerprint);
+            json.push_str(", \"code_bytes\": ");
+            json.push_str(&descriptor.code_bytes.to_string());
+            json.push_str(", \"compile_time_nanos\": ");
+            json.push_str(&descriptor.compile_time_nanos.to_string());
+            json.push_str(", \"target_isa\": ");
+            push_json_string(&mut json, &descriptor.target_isa);
+            json.push_str(", \"abi_hash\": ");
+            json.push_str(&descriptor.abi_hash.to_string());
+            json.push_str(", \"config_hash\": ");
+            json.push_str(&descriptor.config_hash.to_string());
+            json.push('}');
+        }
+        json.push_str("],\n");
         push_field(
             &mut json,
             "inline_cache_observations",
@@ -1983,6 +2027,12 @@ fn push_string_field(json: &mut String, name: &str, value: &str, comma: bool) {
     json.push('\n');
 }
 
+fn push_json_string(json: &mut String, value: &str) {
+    json.push('"');
+    json.push_str(&escape_json(value));
+    json.push('"');
+}
+
 fn escape_json(value: &str) -> String {
     let mut escaped = String::new();
     for ch in value.chars() {
@@ -2006,7 +2056,8 @@ mod tests {
     use php_ir::instruction::{BinaryOp, InstructionKind};
 
     use super::{
-        MethodCallProfileObservation, OutputStats, PropertyFetchProfileObservation, VmCounters,
+        JitCompileDescriptor, MethodCallProfileObservation, OutputStats,
+        PropertyFetchProfileObservation, VmCounters,
     };
 
     #[test]
@@ -2363,6 +2414,7 @@ mod tests {
         assert!(json.contains("\"jit_compile_cache_hits\": 0"));
         assert!(json.contains("\"jit_compile_cache_misses\": 0"));
         assert!(json.contains("\"jit_compile_cache_invalidations\": 0"));
+        assert!(json.contains("\"jit_compile_descriptors\": []"));
         assert!(json.contains("\"inline_cache_observations\": 0"));
         assert!(json.contains("\"inline_cache_slots\": 0"));
         assert!(json.contains("\"inline_cache_function_slots\": 0"));
@@ -2401,6 +2453,32 @@ mod tests {
         assert!(json.contains("\"property_fetch_profiles\": []"));
         assert!(json.contains("\"method_call_profiles\": []"));
         assert!(json.ends_with('\n'));
+    }
+
+    #[test]
+    fn jit_compile_descriptors_are_reported_in_counter_json() {
+        let mut counters = VmCounters::default();
+        counters.record_jit_compile_descriptor(JitCompileDescriptor {
+            function_id: 7,
+            function_name: "hot\"leaf".to_owned(),
+            ir_fingerprint: "00000000000000ab".to_owned(),
+            code_bytes: 64,
+            compile_time_nanos: 1_500,
+            target_isa: "aarch64-darwin".to_owned(),
+            abi_hash: 42,
+            config_hash: 99,
+        });
+
+        let json = counters.to_json();
+
+        assert!(json.contains("\"jit_compile_descriptors\": [{"));
+        assert!(json.contains("\"function_id\": 7"));
+        assert!(json.contains("\"function_name\": \"hot\\\"leaf\""));
+        assert!(json.contains("\"ir_fingerprint\": \"00000000000000ab\""));
+        assert!(json.contains("\"code_bytes\": 64"));
+        assert!(json.contains("\"target_isa\": \"aarch64-darwin\""));
+        assert!(json.contains("\"abi_hash\": 42"));
+        assert!(json.contains("\"config_hash\": 99"));
     }
 
     #[test]

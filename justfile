@@ -62,6 +62,10 @@ help:
       '  just jit-cranelift-bench-smoke  Run Phase 7 Cranelift int-arithmetic bench/report smoke' \
       '  just jit-cranelift-report  Generate Phase 7 Cranelift big-win report' \
       '  just cranelift-guard-report  Generate Phase 7 Cranelift side-exit/guard report' \
+      '  just jit-cranelift-disasm  Generate optional Phase 7 Cranelift code-size/CLIF dumps' \
+      '  just jit-cranelift-fuzz-smoke  Run bounded Cranelift eligible-IR fuzz smoke' \
+      '  just jit-cranelift-poly-ic-experiment  Run optional local polymorphic IC guard experiment' \
+      '  just jit-cranelift-framework-smoke  Run optional offline framework-like Cranelift smokes' \
       '  just verify-phase7-cranelift  Run Phase 7 Cranelift addendum verification' \
       '  just dump-cranelift-clif  Write and verify the Phase 7 Cranelift CLIF smoke dump' \
       '  just phase7-safety-audit-smoke  Run optional Phase 7 safety audit smoke' \
@@ -1231,6 +1235,28 @@ cranelift-guard-report:
     @just jit-cranelift-report
     scripts/phase7/cranelift/guard_failure_report.py --input target/phase7/cranelift/big_wins_report.json --out target/phase7/cranelift/guard-report.json --text-out target/phase7/cranelift/guard-report.txt
 
+jit-cranelift-disasm:
+    @set +e; scripts/phase7/cranelift/platform_check.py --out target/phase7/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
+    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    scripts/phase7/cranelift/disasm_dump.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+
+jit-cranelift-fuzz-smoke:
+    @set +e; scripts/phase7/cranelift/platform_check.py --out target/phase7/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
+    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    scripts/phase7/cranelift/jit_eligible_ir_fuzz_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+
+jit-cranelift-poly-ic-experiment:
+    @set +e; scripts/phase7/cranelift/platform_check.py --out target/phase7/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
+    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    scripts/phase7/cranelift/polymorphic_ic_experiment.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+    @just jit-cranelift-report
+    scripts/phase7/cranelift/guard_failure_report.py --input target/phase7/cranelift/big_wins_report.json --out target/phase7/cranelift/polymorphic-ic/guard-report.json --text-out target/phase7/cranelift/polymorphic-ic/guard-report.txt --experimental-ic-report target/phase7/cranelift/polymorphic-ic/report.json
+
+jit-cranelift-framework-smoke:
+    @set +e; scripts/phase7/cranelift/platform_check.py --out target/phase7/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
+    cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
+    scripts/phase7/cranelift/framework_smoke.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+
 verify-phase7-cranelift:
     @set +e; scripts/phase7/cranelift/platform_check.py --out target/phase7/cranelift/platform.json; status=$?; set -e; if [ "$status" -eq 77 ]; then exit 0; elif [ "$status" -ne 0 ]; then exit "$status"; fi
     @just jit-cranelift-smoke
@@ -1238,6 +1264,7 @@ verify-phase7-cranelift:
     @just jit-cranelift-bench-smoke
     @just jit-cranelift-report
     @just cranelift-guard-report
+    @just jit-cranelift-fuzz-smoke
     @printf '%s\n' '[pass] phase7 Cranelift addendum verification complete'
 
 dump-cranelift-clif:
