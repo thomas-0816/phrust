@@ -84,7 +84,7 @@ pub fn expectf_to_regex(pattern: &str) -> Result<Regex, String> {
         if rest.starts_with("%r") {
             if let Some(end) = pattern[index + 2..].find("%r") {
                 out.push_str("(?:");
-                out.push_str(&pattern[index + 2..index + 2 + end]);
+                out.push_str(&normalize_pcre_regex(&pattern[index + 2..index + 2 + end]));
                 out.push(')');
                 index += end + 4;
                 continue;
@@ -317,6 +317,14 @@ mod tests {
         assert!(
             !match_expectation(ExpectationKind::ExpectF, "value=%r[a-z]+%r", "value=123").matched
         );
+    }
+
+    #[test]
+    fn expectf_raw_regex_regions_accept_php_pcre_nul_escape() {
+        let pattern = "string(7) \"%r\\0%rhidden\"";
+        let actual = "string(7) \"\0hidden\"";
+
+        assert!(match_expectation(ExpectationKind::ExpectF, pattern, actual).matched);
     }
 
     #[test]
