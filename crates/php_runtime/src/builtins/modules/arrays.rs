@@ -165,6 +165,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "array_walk_recursive",
+        core::builtin_array_callback_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "arsort",
         core::builtin_array_sort_requires_vm,
         BuiltinCompatibility::Php,

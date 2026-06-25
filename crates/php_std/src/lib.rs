@@ -589,6 +589,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("array_unshift", "standard"))
                 .with_function(FunctionDescriptor::php("array_values", "standard"))
                 .with_function(FunctionDescriptor::php("array_walk", "standard"))
+                .with_function(FunctionDescriptor::php("array_walk_recursive", "standard"))
                 .with_function(FunctionDescriptor::php("arsort", "standard"))
                 .with_function(FunctionDescriptor::php("asort", "standard"))
                 .with_function(FunctionDescriptor::php("base64_decode", "standard"))
@@ -1600,6 +1601,7 @@ mod tests {
             "array_unshift",
             "array_values",
             "array_walk",
+            "array_walk_recursive",
             "arsort",
             "asort",
             "count",

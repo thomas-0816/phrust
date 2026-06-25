@@ -1204,6 +1204,10 @@ struct CallArgument {
 
 enum ArrayCallbackError {
     Runtime(Box<VmResult>),
+    BuiltinType {
+        function: &'static str,
+        actual: String,
+    },
     Message(String),
 }
 
@@ -4374,6 +4378,34 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_std_class_runtime_class(class_name) {
+                            let values = match read_call_args(unit, stack, args) {
+                                Ok(values) => values,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if !values.is_empty() {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_TOO_MANY_ARGS: constructor for class {class_name} does not accept arguments"
+                                    ),
+                                );
+                            }
+                            let object = ObjectRef::new(&std_class_entry());
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         let class = match lookup_class_in_state(compiled, state, class_name) {
                             Some(class) => class,
                             None => {
@@ -4449,6 +4481,36 @@ impl Vm {
                                                 .runtime_error(output, compiled, stack, message);
                                         }
                                     };
+                                    if let Err(message) = stack
+                                        .current_mut()
+                                        .expect("frame was pushed")
+                                        .registers
+                                        .set(*dst, Value::Object(object))
+                                    {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                    continue;
+                                }
+                                if is_std_class_runtime_class(class_name) {
+                                    let values = match read_call_args(unit, stack, args) {
+                                        Ok(values) => values,
+                                        Err(message) => {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                    };
+                                    if !values.is_empty() {
+                                        return self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            format!(
+                                                "E_PHP_VM_TOO_MANY_ARGS: constructor for class {class_name} does not accept arguments"
+                                            ),
+                                        );
+                                    }
+                                    let object = ObjectRef::new(&std_class_entry());
                                     if let Err(message) = stack
                                         .current_mut()
                                         .expect("frame was pushed")
@@ -4879,6 +4941,18 @@ impl Vm {
                             continue;
                         }
                         if is_php_token_runtime_class(&object.class_name()) {
+                            let value = object.get_property(property).unwrap_or(Value::Null);
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_std_class_runtime_class(&object.class_name()) {
                             let value = object.get_property(property).unwrap_or(Value::Null);
                             if let Err(message) = stack
                                 .current_mut()
@@ -5920,6 +5994,24 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
+                        if is_std_class_runtime_class(&object.class_name()) {
+                            let value = match read_operand(unit, stack, *value) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            object.set_property(property, value.clone());
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         let class =
                             match lookup_class_in_state(compiled, state, &object.class_name()) {
                                 Some(class) => class,
@@ -9501,6 +9593,9 @@ impl Vm {
             "array_filter" => self.call_array_filter_builtin(compiled, args, output, stack, state),
             "array_reduce" => self.call_array_reduce_builtin(compiled, args, output, stack, state),
             "array_walk" => self.call_array_walk_builtin(compiled, args, output, stack, state),
+            "array_walk_recursive" => {
+                self.call_array_walk_recursive_builtin(compiled, args, output, stack, state)
+            }
             "array_any" | "array_all" | "array_find" | "array_find_key" => {
                 self.call_array_predicate_builtin(compiled, name, args, output, stack, state)
             }
@@ -9511,6 +9606,9 @@ impl Vm {
         match result {
             Ok(value) => VmResult::success(output.clone(), Some(value)),
             Err(ArrayCallbackError::Runtime(result)) => *result,
+            Err(ArrayCallbackError::BuiltinType { function, actual }) => {
+                array_callback_type_error(output, compiled, stack, function, &actual)
+            }
             Err(ArrayCallbackError::Message(message)) => {
                 self.runtime_error(output, compiled, stack, message)
             }
@@ -9668,7 +9766,7 @@ impl Vm {
                 "E_PHP_VM_BUILTIN_ARITY: array_walk expects two or three argument(s)".to_owned(),
             ));
         }
-        let entries = array_callback_entries("array_walk", &args[0])?;
+        let entries = array_walk_entries("array_walk", compiled, &args[0])?;
         let callback = args[1].clone();
         let userdata = args.get(2).cloned();
         for (key, value) in entries {
@@ -9686,6 +9784,68 @@ impl Vm {
             )?;
         }
         Ok(Value::Bool(true))
+    }
+
+    fn call_array_walk_recursive_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        args: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, ArrayCallbackError> {
+        if !(2..=3).contains(&args.len()) {
+            return Err(ArrayCallbackError::Message(
+                "E_PHP_VM_BUILTIN_ARITY: array_walk_recursive expects two or three argument(s)"
+                    .to_owned(),
+            ));
+        }
+        let callback = args[1].clone();
+        let userdata = args.get(2).cloned();
+        self.walk_recursive_value(compiled, &args[0], callback, userdata, output, stack, state)?;
+        Ok(Value::Bool(true))
+    }
+
+    fn walk_recursive_value(
+        &self,
+        compiled: &CompiledUnit,
+        value: &Value,
+        callback: Value,
+        userdata: Option<Value>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), ArrayCallbackError> {
+        for (key, entry_value) in array_walk_entries("array_walk_recursive", compiled, value)? {
+            if matches!(
+                callable_resolve_reference(entry_value.clone()),
+                Value::Array(_)
+            ) {
+                self.walk_recursive_value(
+                    compiled,
+                    &entry_value,
+                    callback.clone(),
+                    userdata.clone(),
+                    output,
+                    stack,
+                    state,
+                )?;
+                continue;
+            }
+            let mut callback_args = vec![entry_value, array_callback_key_value(&key)];
+            if let Some(userdata) = &userdata {
+                callback_args.push(userdata.clone());
+            }
+            self.invoke_array_callback(
+                compiled,
+                callback.clone(),
+                callback_args,
+                output,
+                stack,
+                state,
+            )?;
+        }
+        Ok(())
     }
 
     fn call_array_predicate_builtin(
@@ -9770,6 +9930,9 @@ impl Vm {
         match result {
             Ok(value) => VmResult::success(output.clone(), Some(value)),
             Err(ArrayCallbackError::Runtime(result)) => *result,
+            Err(ArrayCallbackError::BuiltinType { function, actual }) => {
+                array_callback_type_error(output, compiled, stack, function, &actual)
+            }
             Err(ArrayCallbackError::Message(message)) => {
                 self.runtime_error(output, compiled, stack, message)
             }
@@ -14020,6 +14183,22 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
     Ok(ObjectRef::new(&class))
 }
 
+fn std_class_entry() -> RuntimeClassEntry {
+    RuntimeClassEntry {
+        name: "stdClass".to_owned(),
+        parent: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor_id: None,
+        flags: RuntimeClassFlags::default(),
+    }
+}
+
 fn internal_throwable_method_value(
     object: &ObjectRef,
     method: &str,
@@ -17440,6 +17619,15 @@ fn normalize_method_name(method: &str) -> String {
 
 fn is_fiber_runtime_class(class_name: &str) -> bool {
     normalize_class_name(class_name) == "fiber"
+}
+
+fn is_std_class_runtime_class(class_name: &str) -> bool {
+    class_name
+        .trim_start_matches('\\')
+        .rsplit('\\')
+        .next()
+        .unwrap_or(class_name)
+        .eq_ignore_ascii_case("stdclass")
 }
 
 fn is_php_token_runtime_class(class_name: &str) -> bool {
@@ -21277,6 +21465,7 @@ fn is_array_callback_builtin_name(name: &str) -> bool {
             | "array_filter"
             | "array_reduce"
             | "array_walk"
+            | "array_walk_recursive"
             | "array_any"
             | "array_all"
             | "array_find"
@@ -21315,6 +21504,49 @@ fn array_callback_entries(
             value_type_name(&other)
         ))),
     }
+}
+
+fn array_walk_entries(
+    function: &'static str,
+    compiled: &CompiledUnit,
+    value: &Value,
+) -> Result<Vec<(ArrayKey, Value)>, ArrayCallbackError> {
+    match callable_resolve_reference(value.clone()) {
+        Value::Array(array) => Ok(array
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()),
+        Value::Object(object) => Ok(
+            object_vars_array(compiled, &CallStack::new(), &object, true)
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ),
+        other => Err(ArrayCallbackError::BuiltinType {
+            function,
+            actual: value_type_name(&other).to_owned(),
+        }),
+    }
+}
+
+fn array_callback_type_error(
+    output: &OutputBuffer,
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    function: &str,
+    actual: &str,
+) -> VmResult {
+    let message =
+        format!("{function}(): Argument #1 ($array) must be of type array, {actual} given");
+    let diagnostic = RuntimeDiagnostic::new(
+        "E_PHP_RUNTIME_BUILTIN_TYPE",
+        RuntimeSeverity::FatalError,
+        message.clone(),
+        builtin_source_span(compiled),
+        stack_trace(compiled, stack),
+        Some(php_runtime::PhpReferenceClassification::TypeError),
+    );
+    VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
 }
 
 fn array_callback_key_value(key: &ArrayKey) -> Value {
@@ -28442,6 +28674,64 @@ echo perf_jit_unstable_types_debug(4), "\n";
         assert_eq!(
             result.output.to_string_lossy(),
             "array (\n  'a' => 2,\n  'b' => 3,\n  'c' => 4,\n)\narray (\n  0 => 2,\n  1 => 4,\n)\narray (\n  'b' => 2,\n)\n6\nx:1;y:2;\nTT|2|c"
+        );
+    }
+
+    #[test]
+    fn array_walk_accepts_objects_and_preserves_php_property_keys() {
+        let stdclass = execute_source(
+            "<?php
+            $object = new stdclass;
+            $object->foo = 'foo';
+            $object->bar = 'bar';
+            array_walk($object, function($value, $key) { echo $key, ':', $value, '|'; });
+            ",
+        );
+        assert!(stdclass.status.is_success(), "{:?}", stdclass.status);
+        assert_eq!(stdclass.output.as_bytes(), b"foo:foo|bar:bar|");
+
+        let declared = execute_source(
+            "<?php
+            class WalkBox {
+                private $pri = 'private';
+                public $pub = 'public';
+                protected $pro = 'protected';
+            }
+            array_walk(new WalkBox(), function($value, $key) { echo $key, ':', $value, '|'; });
+            ",
+        );
+        assert!(declared.status.is_success(), "{:?}", declared.status);
+        assert_eq!(
+            declared.output.as_bytes(),
+            b"\0WalkBox\0pri:private|pub:public|\0*\0pro:protected|"
+        );
+    }
+
+    #[test]
+    fn array_walk_recursive_walks_nested_arrays_and_reports_type_errors() {
+        let nested = execute_source(
+            "<?php
+            array_walk_recursive(['a' => ['b' => 1], 'c' => 2], function($value, $key) {
+                echo $key, ':', $value, '|';
+            });
+            ",
+        );
+        assert!(nested.status.is_success(), "{:?}", nested.status);
+        assert_eq!(nested.output.as_bytes(), b"b:1|c:2|");
+
+        let type_error = execute_source(
+            "<?php
+            try {
+                array_walk('', function() {});
+            } catch (TypeError $e) {
+                echo $e->getMessage();
+            }
+            ",
+        );
+        assert!(type_error.status.is_success(), "{:?}", type_error.status);
+        assert_eq!(
+            type_error.output.to_string_lossy(),
+            "array_walk(): Argument #1 ($array) must be of type array, string given"
         );
     }
 

@@ -234,6 +234,7 @@ pub struct AttributeEntry {
 struct ObjectStorage {
     class_name: String,
     properties: HashMap<String, Value>,
+    property_order: Vec<String>,
 }
 
 /// Reference to runtime object storage.
@@ -277,7 +278,7 @@ impl ObjectRef {
     /// Creates an object with properties initialized from the class entry.
     #[must_use]
     pub fn new(class: &ClassEntry) -> Self {
-        let properties = class
+        let property_entries = class
             .properties
             .iter()
             .filter(|property| {
@@ -287,12 +288,18 @@ impl ObjectRef {
                         && !property.hooks.backed)
             })
             .map(|property| (property.name.clone(), property.default.clone()))
+            .collect::<Vec<_>>();
+        let property_order = property_entries
+            .iter()
+            .map(|(name, _)| name.clone())
             .collect();
+        let properties = property_entries.into_iter().collect();
         Self {
             id: NEXT_OBJECT_ID.fetch_add(1, Ordering::Relaxed),
             storage: Rc::new(RefCell::new(ObjectStorage {
                 class_name: class.name.clone(),
                 properties,
+                property_order,
             })),
         }
     }
@@ -333,6 +340,7 @@ impl ObjectRef {
             storage: Rc::new(RefCell::new(ObjectStorage {
                 class_name: storage.class_name.clone(),
                 properties: storage.properties.clone(),
+                property_order: storage.property_order.clone(),
             })),
         }
     }
@@ -345,15 +353,22 @@ impl ObjectRef {
 
     /// Writes a property value.
     pub fn set_property(&self, name: impl Into<String>, value: Value) {
-        self.storage
-            .borrow_mut()
-            .properties
-            .insert(name.into(), value);
+        let name = name.into();
+        let mut storage = self.storage.borrow_mut();
+        if !storage.properties.contains_key(&name) {
+            storage.property_order.push(name.clone());
+        }
+        storage.properties.insert(name, value);
     }
 
     /// Removes a property value, returning whether it existed.
     pub fn unset_property(&self, name: &str) -> bool {
-        self.storage.borrow_mut().properties.remove(name).is_some()
+        let mut storage = self.storage.borrow_mut();
+        let removed = storage.properties.remove(name).is_some();
+        if removed {
+            storage.property_order.retain(|entry| entry != name);
+        }
+        removed
     }
 
     /// Clears all stored properties as an internal GC action.
@@ -362,21 +377,25 @@ impl ObjectRef {
     /// runtime-semantics cycle-collection test hook after proving the object is not
     /// rooted.
     pub fn gc_clear_properties(&self) {
-        self.storage.borrow_mut().properties.clear();
+        let mut storage = self.storage.borrow_mut();
+        storage.properties.clear();
+        storage.property_order.clear();
     }
 
-    /// Returns a deterministic snapshot of public runtime properties.
+    /// Returns a snapshot of runtime properties in PHP insertion/declaration order.
     #[must_use]
     pub fn properties_snapshot(&self) -> Vec<(String, Value)> {
-        let mut properties: Vec<_> = self
-            .storage
-            .borrow()
-            .properties
+        let storage = self.storage.borrow();
+        storage
+            .property_order
             .iter()
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect();
-        properties.sort_by(|(left, _), (right, _)| left.cmp(right));
-        properties
+            .filter_map(|name| {
+                storage
+                    .properties
+                    .get(name)
+                    .map(|value| (name.clone(), value.clone()))
+            })
+            .collect()
     }
 }
 
