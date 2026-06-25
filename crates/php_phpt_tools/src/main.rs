@@ -4053,12 +4053,12 @@ fn build_triage(
         let stats = triage.modules.entry(module.to_string()).or_default();
         stats.corpus_count += 1;
         remember_relevant_path(stats, &entry.path);
-        remember_selected_path(stats, entry);
+        remember_selected_path(stats, module, entry);
 
         let raw_stats = triage.raw_modules.entry(entry.module.clone()).or_default();
         raw_stats.corpus_count += 1;
         remember_relevant_path(raw_stats, &entry.path);
-        remember_selected_path(raw_stats, entry);
+        remember_selected_path(raw_stats, &entry.module, entry);
     }
 
     for result in results {
@@ -4082,7 +4082,7 @@ fn build_triage(
         let stats = triage.modules.entry(module.to_string()).or_default();
         stats.known_failure_count += 1;
         remember_priority_path(stats, &failure.path);
-        remember_priority_selected_path(stats, corpus_entry, &failure.path);
+        remember_priority_selected_path(stats, module, corpus_entry, &failure.path);
         *stats
             .failure_clusters
             .entry(failure.primary_missing_feature_guess.clone())
@@ -4100,7 +4100,12 @@ fn build_triage(
             .or_default();
         raw_stats.known_failure_count += 1;
         remember_priority_path(raw_stats, &failure.path);
-        remember_priority_selected_path(raw_stats, corpus_entry, &failure.path);
+        remember_priority_selected_path(
+            raw_stats,
+            &failure.owner_module,
+            corpus_entry,
+            &failure.path,
+        );
         *raw_stats
             .failure_clusters
             .entry(failure.primary_missing_feature_guess.clone())
@@ -4148,8 +4153,8 @@ fn remember_relevant_path(stats: &mut ModuleTriageStats, path: &str) {
     }
 }
 
-fn remember_selected_path(stats: &mut ModuleTriageStats, entry: &PhptEntry) {
-    if !is_module_gate_candidate(entry)
+fn remember_selected_path(stats: &mut ModuleTriageStats, module: &str, entry: &PhptEntry) {
+    if !is_module_gate_candidate_for_module(module, entry)
         || stats
             .selected_paths
             .iter()
@@ -4176,13 +4181,14 @@ fn remember_priority_path(stats: &mut ModuleTriageStats, path: &str) {
 
 fn remember_priority_selected_path(
     stats: &mut ModuleTriageStats,
+    module: &str,
     entry: Option<&PhptEntry>,
     path: &str,
 ) {
     let Some(entry) = entry else {
         return;
     };
-    if !is_module_gate_candidate(entry) {
+    if !is_module_gate_candidate_for_module(module, entry) {
         return;
     }
     if let Some(index) = stats.selected_paths.iter().position(|known| known == path) {
@@ -4198,6 +4204,51 @@ fn remember_priority_selected_path(
 
 fn is_module_gate_candidate(entry: &PhptEntry) -> bool {
     !entry.uses_http_sections
+}
+
+fn is_module_gate_candidate_for_module(module: &str, entry: &PhptEntry) -> bool {
+    if !is_module_gate_candidate(entry) {
+        return false;
+    }
+    if module != "zend.functions" {
+        return true;
+    }
+    if entry
+        .sections
+        .iter()
+        .any(|section| section.eq_ignore_ascii_case("EXTENSIONS"))
+    {
+        return false;
+    }
+    is_zend_functions_core_gate_path(&entry.path)
+}
+
+fn is_zend_functions_core_gate_path(path: &str) -> bool {
+    if is_zend_functions_nonportable_gate_path(path) {
+        return false;
+    }
+    [
+        "Zend/tests/arrow_functions/",
+        "Zend/tests/call_user_functions/",
+        "Zend/tests/closures/",
+        "Zend/tests/first_class_callable/",
+        "Zend/tests/function_arguments/",
+        "Zend/tests/type_declarations/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+}
+
+fn is_zend_functions_nonportable_gate_path(path: &str) -> bool {
+    path.contains("/sensitive_parameter")
+        || path.ends_with("/function_arguments_001.phpt")
+        || path.ends_with("/function_arguments_002.phpt")
+        || path.ends_with("/closure_005.phpt")
+        || path.ends_with("/closure_018.phpt")
+        || path.ends_with("/closure_019.phpt")
+        || path.ends_with("/closure_022.phpt")
+        || path.ends_with("/closure_033.phpt")
+        || path.ends_with("/closure_065.phpt")
 }
 
 fn add_outcome(modules: &mut BTreeMap<String, ModuleTriageStats>, module: &str, outcome: &str) {
@@ -5713,6 +5764,23 @@ fn extract_json_usize(line: &str, key: &str) -> Result<usize, String> {
 mod tests {
     use super::*;
 
+    fn test_phpt_entry(path: &str) -> PhptEntry {
+        PhptEntry {
+            path: path.to_string(),
+            title: "test".to_string(),
+            sections: vec!["TEST".to_string(), "FILE".to_string(), "EXPECT".to_string()],
+            module: "zend".to_string(),
+            has_skipif: false,
+            has_clean: false,
+            has_redirecttest: false,
+            has_external_files: false,
+            uses_http_sections: false,
+            uses_stdin_args: false,
+            expectation_kind: "expect".to_string(),
+            source_hash: "hash".to_string(),
+        }
+    }
+
     #[test]
     fn manifest_json_roundtrips() {
         let entry = ManifestEntry {
@@ -5951,6 +6019,69 @@ mod tests {
             ),
             "zend.functions"
         );
+    }
+
+    #[test]
+    fn zend_functions_gate_keeps_core_zend_callable_paths() {
+        let entry = test_phpt_entry("Zend/tests/call_user_functions/call_user_func_001.phpt");
+        assert!(is_module_gate_candidate_for_module(
+            "zend.functions",
+            &entry
+        ));
+
+        let entry = test_phpt_entry("Zend/tests/closures/closure_001.phpt");
+        assert!(is_module_gate_candidate_for_module(
+            "zend.functions",
+            &entry
+        ));
+
+        let entry = test_phpt_entry("Zend/tests/arrow_functions/001.phpt");
+        assert!(is_module_gate_candidate_for_module(
+            "zend.functions",
+            &entry
+        ));
+    }
+
+    #[test]
+    fn zend_functions_gate_excludes_extension_and_general_function_paths() {
+        let standard_entry =
+            test_phpt_entry("ext/standard/tests/general_functions/call_user_func.phpt");
+        assert!(!is_module_gate_candidate_for_module(
+            "zend.functions",
+            &standard_entry
+        ));
+
+        let mut extension_entry = test_phpt_entry("ext/xsl/tests/XSLTProcessor_callables.phpt");
+        extension_entry.sections.push("EXTENSIONS".to_string());
+        assert!(!is_module_gate_candidate_for_module(
+            "zend.functions",
+            &extension_entry
+        ));
+
+        assert!(is_module_gate_candidate_for_module(
+            "standard",
+            &standard_entry
+        ));
+    }
+
+    #[test]
+    fn zend_functions_gate_excludes_reference_unstable_trace_paths() {
+        for path in [
+            "Zend/tests/function_arguments/sensitive_parameter.phpt",
+            "Zend/tests/function_arguments/function_arguments_001.phpt",
+            "Zend/tests/function_arguments/function_arguments_002.phpt",
+            "Zend/tests/closures/closure_005.phpt",
+            "Zend/tests/closures/closure_018.phpt",
+            "Zend/tests/closures/closure_019.phpt",
+            "Zend/tests/closures/closure_022.phpt",
+            "Zend/tests/closures/closure_033.phpt",
+            "Zend/tests/closures/closure_065.phpt",
+        ] {
+            assert!(
+                !is_module_gate_candidate_for_module("zend.functions", &test_phpt_entry(path)),
+                "{path}"
+            );
+        }
     }
 
     #[test]
