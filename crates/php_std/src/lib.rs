@@ -483,6 +483,76 @@ impl ExtensionRegistry {
                     ConstantValue::Int(constants::E_ALL),
                 )),
             ExtensionDescriptor::new("standard")
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_ASC",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_ASC),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_DESC",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_DESC),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_REGULAR",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_REGULAR),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_NUMERIC",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_NUMERIC),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_STRING",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_STRING),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_LOCALE_STRING",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_LOCALE_STRING),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_NATURAL",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_NATURAL),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "SORT_FLAG_CASE",
+                    "standard",
+                    ConstantValue::Int(constants::SORT_FLAG_CASE),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CASE_LOWER",
+                    "standard",
+                    ConstantValue::Int(constants::CASE_LOWER),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CASE_UPPER",
+                    "standard",
+                    ConstantValue::Int(constants::CASE_UPPER),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "COUNT_NORMAL",
+                    "standard",
+                    ConstantValue::Int(constants::COUNT_NORMAL),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "COUNT_RECURSIVE",
+                    "standard",
+                    ConstantValue::Int(constants::COUNT_RECURSIVE),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "ARRAY_FILTER_USE_BOTH",
+                    "standard",
+                    ConstantValue::Int(constants::ARRAY_FILTER_USE_BOTH),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "ARRAY_FILTER_USE_KEY",
+                    "standard",
+                    ConstantValue::Int(constants::ARRAY_FILTER_USE_KEY),
+                ))
                 .with_function(FunctionDescriptor::php("abs", "standard"))
                 .with_function(FunctionDescriptor::php("array_all", "standard"))
                 .with_function(FunctionDescriptor::php("array_any", "standard"))
@@ -1411,6 +1481,36 @@ mod tests {
             ("PHP_URL_PATH", constants::PHP_URL_PATH),
             ("PHP_URL_QUERY", constants::PHP_URL_QUERY),
             ("PHP_URL_FRAGMENT", constants::PHP_URL_FRAGMENT),
+        ] {
+            assert_eq!(
+                registry
+                    .enabled_constant(name)
+                    .and_then(ConstantDescriptor::value),
+                Some(ConstantValue::Int(expected)),
+                "{name} should be registered with its PHP value"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_registry_tracks_array_sort_and_filter_constants() {
+        let registry = ExtensionRegistry::standard_library();
+
+        for (name, expected) in [
+            ("SORT_ASC", constants::SORT_ASC),
+            ("SORT_DESC", constants::SORT_DESC),
+            ("SORT_REGULAR", constants::SORT_REGULAR),
+            ("SORT_NUMERIC", constants::SORT_NUMERIC),
+            ("SORT_STRING", constants::SORT_STRING),
+            ("SORT_LOCALE_STRING", constants::SORT_LOCALE_STRING),
+            ("SORT_NATURAL", constants::SORT_NATURAL),
+            ("SORT_FLAG_CASE", constants::SORT_FLAG_CASE),
+            ("CASE_LOWER", constants::CASE_LOWER),
+            ("CASE_UPPER", constants::CASE_UPPER),
+            ("COUNT_NORMAL", constants::COUNT_NORMAL),
+            ("COUNT_RECURSIVE", constants::COUNT_RECURSIVE),
+            ("ARRAY_FILTER_USE_BOTH", constants::ARRAY_FILTER_USE_BOTH),
+            ("ARRAY_FILTER_USE_KEY", constants::ARRAY_FILTER_USE_KEY),
         ] {
             assert_eq!(
                 registry

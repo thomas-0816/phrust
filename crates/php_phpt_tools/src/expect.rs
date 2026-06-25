@@ -107,7 +107,79 @@ pub fn expectf_to_regex(pattern: &str) -> Result<Regex, String> {
 }
 
 fn anchored_regex(pattern: &str) -> Result<Regex, regex::Error> {
-    Regex::new(&format!("(?s)\\A(?:{pattern})\\z"))
+    let pattern = normalize_pcre_regex(pattern);
+    match Regex::new(&format!("(?s)\\A(?:{pattern})\\z")) {
+        Ok(regex) => Ok(regex),
+        Err(_) => Regex::new(&format!(
+            "(?s)\\A(?:{})\\z",
+            escape_pcre_literal_braces(&pattern)
+        )),
+    }
+}
+
+fn normalize_pcre_regex(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('0') => out.push_str("\\x00"),
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn escape_pcre_literal_braces(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                out.push(ch);
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '{' if looks_like_quantifier(&chars) => {
+                out.push(ch);
+                for next in chars.by_ref() {
+                    out.push(next);
+                    if next == '}' {
+                        break;
+                    }
+                }
+            }
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn looks_like_quantifier<I>(chars: &I) -> bool
+where
+    I: Iterator<Item = char> + Clone,
+{
+    let mut clone = chars.clone();
+    let mut saw_digit = false;
+    while let Some(ch) = clone.next() {
+        match ch {
+            '0'..='9' => saw_digit = true,
+            ',' => {}
+            '}' => return saw_digit,
+            _ => return false,
+        }
+    }
+    false
 }
 
 struct Placeholder {
@@ -251,6 +323,22 @@ mod tests {
     fn expectregex_is_anchored() {
         assert!(match_expectation(ExpectationKind::ExpectRegex, "a.+c", "abc").matched);
         assert!(!match_expectation(ExpectationKind::ExpectRegex, "a.+c", "zabc").matched);
+    }
+
+    #[test]
+    fn expectregex_accepts_php_pcre_literal_braces() {
+        let pattern = "array\\(1\\) {\n  \\[0\\]=>\n  string\\([0-9]+\\) \"ok\"\n}";
+        let actual = "array(1) {\n  [0]=>\n  string(2) \"ok\"\n}";
+
+        assert!(match_expectation(ExpectationKind::ExpectRegex, pattern, actual).matched);
+    }
+
+    #[test]
+    fn expectregex_accepts_php_pcre_nul_escape() {
+        let pattern = "string\\([0-9]+\\) \"[a-z \\0]*\"";
+        let actual = "string(3) \"a\0b\"";
+
+        assert!(match_expectation(ExpectationKind::ExpectRegex, pattern, actual).matched);
     }
 
     #[test]

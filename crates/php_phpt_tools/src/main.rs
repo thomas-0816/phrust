@@ -43,6 +43,7 @@ const PHP_RUN_TESTS_INI_DEFAULTS: &[(&str, &str)] = &[
     ("precision", "14"),
     ("serialize_precision", "-1"),
     ("memory_limit", "128M"),
+    ("expose_php", "1"),
     ("opcache.fast_shutdown", "0"),
     ("opcache.file_update_protection", "0"),
     ("opcache.revalidate_freq", "0"),
@@ -1005,6 +1006,7 @@ fn run_one_phpt(
             .join(format!("case-{}-{}", std::process::id(), index));
     let _ = fs::remove_dir_all(&work_dir);
     fs::create_dir_all(&work_dir).map_err(|error| format!("{}: {error}", work_dir.display()))?;
+    copy_phpt_support_files(&phpt_path, &work_dir)?;
 
     if let Some(skipif) = section(&document.sections, "SKIPIF") {
         let skip_path = work_dir.join("skipif.php");
@@ -2609,6 +2611,7 @@ struct ModuleTriageStats {
     failure_clusters: BTreeMap<String, usize>,
     bork_subclasses: BTreeMap<String, usize>,
     relevant_paths: Vec<String>,
+    selected_paths: Vec<String>,
 }
 
 impl ModuleTriageStats {
@@ -3202,6 +3205,7 @@ fn phpt_result_cache_key(
         hasher.update(b"\0file-body=");
         hasher.update(file_body.as_bytes());
     }
+    hash_phpt_support_files(&mut hasher, phpt_path)?;
     if let Some((kind, expected)) = expectation(&document.sections, phpt_path)? {
         hasher.update(b"\0expectation-kind=");
         hasher.update(format!("{kind:?}").as_bytes());
@@ -3231,6 +3235,7 @@ fn phpt_result_input_cache_key(
         hasher.update(b"\0file-body=");
         hasher.update(file_body.as_bytes());
     }
+    hash_phpt_support_files(&mut hasher, phpt_path)?;
     if let Some((kind, expected)) = expectation(&document.sections, phpt_path)? {
         hasher.update(b"\0expectation-kind=");
         hasher.update(format!("{kind:?}").as_bytes());
@@ -3269,6 +3274,99 @@ fn expectation(
         }
     }
     Ok(None)
+}
+
+fn copy_phpt_support_files(phpt_path: &Path, work_dir: &Path) -> Result<(), String> {
+    let Some(source_dir) = phpt_path.parent() else {
+        return Ok(());
+    };
+    for entry in sorted_dir_entries(source_dir)? {
+        let source = entry.path();
+        if source == phpt_path || is_phpt_file(&source) {
+            continue;
+        }
+        let destination = work_dir.join(entry.file_name());
+        copy_phpt_support_entry(&source, &destination)?;
+    }
+    Ok(())
+}
+
+fn copy_phpt_support_entry(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata =
+        fs::symlink_metadata(source).map_err(|error| format!("{}: {error}", source.display()))?;
+    if metadata.is_dir() {
+        fs::create_dir_all(destination)
+            .map_err(|error| format!("{}: {error}", destination.display()))?;
+        for entry in sorted_dir_entries(source)? {
+            let child_source = entry.path();
+            if is_phpt_file(&child_source) {
+                continue;
+            }
+            copy_phpt_support_entry(&child_source, &destination.join(entry.file_name()))?;
+        }
+    } else if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        fs::copy(source, destination).map_err(|error| {
+            format!("{} -> {}: {error}", source.display(), destination.display())
+        })?;
+    }
+    Ok(())
+}
+
+fn hash_phpt_support_files(hasher: &mut Sha256, phpt_path: &Path) -> Result<(), String> {
+    let Some(source_dir) = phpt_path.parent() else {
+        return Ok(());
+    };
+    hasher.update(b"\0support-files=");
+    hash_phpt_support_dir(hasher, source_dir, source_dir, phpt_path)
+}
+
+fn hash_phpt_support_dir(
+    hasher: &mut Sha256,
+    root: &Path,
+    current: &Path,
+    phpt_path: &Path,
+) -> Result<(), String> {
+    for entry in sorted_dir_entries(current)? {
+        let path = entry.path();
+        if path == phpt_path || is_phpt_file(&path) {
+            continue;
+        }
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        if metadata.is_dir() {
+            hasher.update(b"dir:");
+            hasher.update(relative.to_string_lossy().as_bytes());
+            hasher.update(b"\0");
+            hash_phpt_support_dir(hasher, root, &path, phpt_path)?;
+        } else if metadata.is_file() {
+            hasher.update(b"file:");
+            hasher.update(relative.to_string_lossy().as_bytes());
+            hasher.update(b"\0");
+            let bytes = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            hasher.update(bytes);
+            hasher.update(b"\0");
+        }
+    }
+    Ok(())
+}
+
+fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    let mut entries = fs::read_dir(dir)
+        .map_err(|error| format!("{}: {error}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("{}: {error}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    Ok(entries)
+}
+
+fn is_phpt_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("phpt"))
 }
 
 fn ini_args(sections: &[PhptSection]) -> Vec<(String, String)> {
@@ -3955,10 +4053,12 @@ fn build_triage(
         let stats = triage.modules.entry(module.to_string()).or_default();
         stats.corpus_count += 1;
         remember_relevant_path(stats, &entry.path);
+        remember_selected_path(stats, entry);
 
         let raw_stats = triage.raw_modules.entry(entry.module.clone()).or_default();
         raw_stats.corpus_count += 1;
         remember_relevant_path(raw_stats, &entry.path);
+        remember_selected_path(raw_stats, entry);
     }
 
     for result in results {
@@ -3975,13 +4075,14 @@ fn build_triage(
 
     for failure in failures {
         let result = result_by_path.get(&failure.path).copied();
-        let module = corpus_by_path
-            .get(&failure.path)
+        let corpus_entry = corpus_by_path.get(&failure.path).copied();
+        let module = corpus_entry
             .map(|entry| plan_module_for_entry(entry, result))
             .unwrap_or_else(|| plan_module_for_path(&failure.path, &failure.module_tag, result));
         let stats = triage.modules.entry(module.to_string()).or_default();
         stats.known_failure_count += 1;
         remember_priority_path(stats, &failure.path);
+        remember_priority_selected_path(stats, corpus_entry, &failure.path);
         *stats
             .failure_clusters
             .entry(failure.primary_missing_feature_guess.clone())
@@ -3999,6 +4100,7 @@ fn build_triage(
             .or_default();
         raw_stats.known_failure_count += 1;
         remember_priority_path(raw_stats, &failure.path);
+        remember_priority_selected_path(raw_stats, corpus_entry, &failure.path);
         *raw_stats
             .failure_clusters
             .entry(failure.primary_missing_feature_guess.clone())
@@ -4046,6 +4148,20 @@ fn remember_relevant_path(stats: &mut ModuleTriageStats, path: &str) {
     }
 }
 
+fn remember_selected_path(stats: &mut ModuleTriageStats, entry: &PhptEntry) {
+    if !is_module_gate_candidate(entry)
+        || stats
+            .selected_paths
+            .iter()
+            .any(|known| known == &entry.path)
+    {
+        return;
+    }
+    if stats.selected_paths.len() < 500 {
+        stats.selected_paths.push(entry.path.clone());
+    }
+}
+
 fn remember_priority_path(stats: &mut ModuleTriageStats, path: &str) {
     if let Some(index) = stats.relevant_paths.iter().position(|known| known == path) {
         let path = stats.relevant_paths.remove(index);
@@ -4056,6 +4172,32 @@ fn remember_priority_path(stats: &mut ModuleTriageStats, path: &str) {
     if stats.relevant_paths.len() > 500 {
         stats.relevant_paths.pop();
     }
+}
+
+fn remember_priority_selected_path(
+    stats: &mut ModuleTriageStats,
+    entry: Option<&PhptEntry>,
+    path: &str,
+) {
+    let Some(entry) = entry else {
+        return;
+    };
+    if !is_module_gate_candidate(entry) {
+        return;
+    }
+    if let Some(index) = stats.selected_paths.iter().position(|known| known == path) {
+        let path = stats.selected_paths.remove(index);
+        stats.selected_paths.insert(0, path);
+        return;
+    }
+    stats.selected_paths.insert(0, path.to_string());
+    if stats.selected_paths.len() > 500 {
+        stats.selected_paths.pop();
+    }
+}
+
+fn is_module_gate_candidate(entry: &PhptEntry) -> bool {
+    !entry.uses_http_sections
 }
 
 fn add_outcome(modules: &mut BTreeMap<String, ModuleTriageStats>, module: &str, outcome: &str) {
@@ -4533,7 +4675,12 @@ fn render_module_manifest(
 
 fn render_selected_manifest(stats: &ModuleTriageStats, limit: usize) -> String {
     let mut out = String::new();
-    for path in stats.relevant_paths.iter().take(limit) {
+    let paths = if stats.selected_paths.is_empty() {
+        &stats.relevant_paths
+    } else {
+        &stats.selected_paths
+    };
+    for path in paths.iter().take(limit) {
         out.push_str(&format!("{{\"path\":\"{}\"}}\n", escape_json(path)));
     }
     out

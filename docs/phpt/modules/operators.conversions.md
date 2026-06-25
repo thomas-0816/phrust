@@ -2,7 +2,7 @@
 
 - Priority: 5
 - Selected manifest: `tests/phpt/manifests/modules/operators.conversions.selected.jsonl`
-- Current counts: 7 PASS, 0 SKIP, 0 FAIL, 0 BORK from 7 selected cases
+- Current counts: 13 PASS, 0 SKIP, 116 FAIL, 0 BORK from 129 corpus candidates
 
 ## Scope
 
@@ -30,13 +30,46 @@
 
 ## Relevant PHPT Paths
 
-- `tests/phpt/generated/operators.conversions/regression-operators_scalar_matrix-8930bdcfc752.phpt`
-- `tests/phpt/generated/operators.conversions/regression-string_number_precision-c50f1cd9d9a3.phpt`
-- `tests/phpt/generated/operators.conversions/regression-object_numeric_casts-5a2a4047d1ed.phpt`
-- `tests/phpt/generated/operators.conversions/smoke-leading-numeric-arithmetic-warning-417523e69412.phpt`
-- `Zend/tests/add_005.phpt`
-- `Zend/tests/div_001.phpt`
-- `Zend/tests/concat/concat_002.phpt`
+- `Zend/tests/zend_operators.phpt`
+- `Zend/tests/type_declarations/add_return_type.phpt`
+- `Zend/tests/ternary_operator_basic.phpt`
+- `Zend/tests/sub_001.phpt`
+- `Zend/tests/property_hooks/override_add_set_covariant.phpt`
+- `Zend/tests/property_hooks/override_add_set.phpt`
+- `Zend/tests/property_hooks/override_add_get_contravariant.phpt`
+- `Zend/tests/property_hooks/override_add_get.phpt`
+- `Zend/tests/pipe_operator/void_return.phpt`
+- `Zend/tests/pipe_operator/type_mismatch.phpt`
+- `Zend/tests/pipe_operator/too_many_parameters.phpt`
+- `Zend/tests/pipe_operator/precedence_ternary.phpt`
+- `Zend/tests/pipe_operator/precedence_comparison.phpt`
+- `Zend/tests/pipe_operator/precedence_coalesce.phpt`
+- `Zend/tests/pipe_operator/precedence_addition.phpt`
+- `Zend/tests/pipe_operator/prec_007.phpt`
+- `Zend/tests/pipe_operator/prec_006.phpt`
+- `Zend/tests/pipe_operator/prec_005.phpt`
+- `Zend/tests/pipe_operator/prec_004.phpt`
+- `Zend/tests/pipe_operator/prec_003.phpt`
+- `Zend/tests/pipe_operator/prec_001.phpt`
+- `Zend/tests/pipe_operator/oss_fuzz_439125710.phpt`
+- `Zend/tests/pipe_operator/oss_fuzz_427814452.phpt`
+- `Zend/tests/pipe_operator/gh18965.phpt`
+- `Zend/tests/pipe_operator/generators.phpt`
+- `Zend/tests/pipe_operator/exception_interruption.phpt`
+- `Zend/tests/pipe_operator/complex_ordering.phpt`
+- `Zend/tests/pipe_operator/call_prefer_by_ref.phpt`
+- `Zend/tests/pipe_operator/call_by_ref.phpt`
+- `Zend/tests/pipe_operator/ast.phpt`
+- `Zend/tests/operator_unsupported_types.phpt`
+- `Zend/tests/nullsafe_operator/oss_fuzz_60011_2.phpt`
+- `Zend/tests/nullsafe_operator/oss_fuzz_60011_1.phpt`
+- `Zend/tests/nullsafe_operator/oss-fuzz-69765.phpt`
+- `Zend/tests/nullsafe_operator/gh8661.phpt`
+- `Zend/tests/nullsafe_operator/constant_propagation.phpt`
+- `Zend/tests/nullsafe_operator/bug81216_2.phpt`
+- `Zend/tests/nullsafe_operator/bug81216.phpt`
+- `Zend/tests/nullsafe_operator/040.phpt`
+- `Zend/tests/nullsafe_operator/039.phpt`
 
 ## Relevant php-src Source Areas
 
@@ -50,10 +83,9 @@
 
 ## Known Gaps
 
-- Array union (`+`) remains outside this scalar conversion gate.
-- Full non-numeric operand `TypeError` catchability remains outside this gate.
-- Array/object concat warnings beyond the existing object `__toString` smoke remain outside this gate.
-- Pipe, nullsafe, property-hook, fiber, and performance-only PHPTs are routed to their own modules.
+- `runtime-unsupported-feature`: 78
+- `runtime-error-or-diagnostic`: 32
+- `runtime-output-mismatch`: 8
 
 ## Next Step
 

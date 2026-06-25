@@ -109,9 +109,7 @@
 {"path":"ext/standard/tests/general_functions/print_r_arrays_whitespace_sensitive.phpt"}
 {"path":"ext/standard/tests/general_functions/print_r_arrays.phpt"}
 {"path":"ext/standard/tests/general_functions/print_r_array_circular.phpt"}
-{"path":"ext/standard/tests/general_functions/phpinfo2.phpt"}
 {"path":"ext/standard/tests/general_functions/phpinfo.phpt"}
-{"path":"ext/standard/tests/general_functions/phpcredits2.phpt"}
 {"path":"ext/standard/tests/general_functions/phpcredits.phpt"}
 {"path":"ext/standard/tests/general_functions/php_uname_error.phpt"}
 {"path":"ext/standard/tests/general_functions/parse_ini_string_error.phpt"}
@@ -198,3 +196,5 @@
 {"path":"ext/standard/tests/general_functions/getopt_002.phpt"}
 {"path":"ext/standard/tests/general_functions/getopt.phpt"}
 {"path":"ext/standard/tests/general_functions/getmypid_basic.phpt"}
+{"path":"ext/standard/tests/general_functions/get_included_files.phpt"}
+{"path":"ext/standard/tests/general_functions/get_include_path_basic.phpt"}

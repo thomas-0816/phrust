@@ -2,8 +2,7 @@
 
 - Priority: 4
 - Selected manifest: `tests/phpt/manifests/modules/zend.basic.selected.jsonl`
-- Current counts: 274 PASS, 1 SKIP, 3226 FAIL, 0 BORK from 3509 corpus candidates
-- Selected gate status: 6 PASS, 0 SKIP, 0 FAIL, 0 BORK for reference and target
+- Current counts: 300 PASS, 1 SKIP, 3200 FAIL, 0 BORK from 3509 corpus candidates
 
 ## Scope
 
@@ -27,12 +26,46 @@
 
 ## Relevant PHPT Paths
 
-- `Zend/tests/numeric_literal_separator/numeric_literal_separator_001.phpt`
-- `tests/phpt/generated/zend.basic/regression-numeric_literal_separator_001-e7854d367777.phpt`
-- `tests/phpt/generated/zend.basic/smoke-var-dump-scalars-e7854d367777.phpt`
-- `tests/phpt/generated/zend.basic/smoke-echo-print-sequencing-5aec11b01afc.phpt`
-- `tests/phpt/generated/zend.basic/smoke-top-level-return-f9f31fdf1b6e.phpt`
-- `tests/phpt/generated/zend.basic/smoke-top-level-exit-ff648fb6d646.phpt`
+- `Zend/tests/zend_strtod.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_uquantity_overflow.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_zero.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_overflow.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_octal_prefixes.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_ini_setting_error.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_ini_set_error.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_hex_prefixes.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_error.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity_binary_prefixes.phpt`
+- `Zend/tests/zend_ini/zend_ini_parse_quantity.phpt`
+- `Zend/tests/zend_ini/oss_fuzz_428983568.phpt`
+- `Zend/tests/zend_ini/gh16892.phpt`
+- `Zend/tests/zend_ini/gh16886.phpt`
+- `Zend/tests/zend_ini/gh11876.phpt`
+- `Zend/tests/xor_001.phpt`
+- `Zend/tests/write_property_ref_overwrite_return.phpt`
+- `Zend/tests/weakrefs/weakrefs_debug_dump.phpt`
+- `Zend/tests/weakrefs/weakrefs_006.phpt`
+- `Zend/tests/weakrefs/weakrefs_005.phpt`
+- `Zend/tests/weakrefs/weakrefs_004.phpt`
+- `Zend/tests/weakrefs/weakrefs_003.phpt`
+- `Zend/tests/weakrefs/weakrefs_002.phpt`
+- `Zend/tests/weakrefs/weakrefs_001.phpt`
+- `Zend/tests/weakrefs/weakmap_weakness.phpt`
+- `Zend/tests/weakrefs/weakmap_nested.phpt`
+- `Zend/tests/weakrefs/weakmap_multiple_weakrefs.phpt`
+- `Zend/tests/weakrefs/weakmap_iteration.phpt`
+- `Zend/tests/weakrefs/weakmap_error_conditions.phpt`
+- `Zend/tests/weakrefs/weakmap_dtor_exception.phpt`
+- `Zend/tests/weakrefs/weakmap_basic_map_behavior.phpt`
+- `Zend/tests/weakrefs/notify.phpt`
+- `Zend/tests/weakrefs/gh20073.phpt`
+- `Zend/tests/weakrefs/gh17442_2.phpt`
+- `Zend/tests/weakrefs/gh17442_1.phpt`
+- `Zend/tests/weakrefs/gh13612.phpt`
+- `Zend/tests/weakrefs/gh10043-016.phpt`
+- `Zend/tests/weakrefs/gh10043-015.phpt`
+- `Zend/tests/weakrefs/gh10043-014.phpt`
+- `Zend/tests/weakrefs/gh10043-012.phpt`
 
 ## Relevant php-src Source Areas
 

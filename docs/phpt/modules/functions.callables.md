@@ -2,7 +2,7 @@
 
 - Priority: 9
 - Selected manifest: `tests/phpt/manifests/modules/functions.callables.selected.jsonl`
-- Current counts: 46 PASS, 2 SKIP, 817 FAIL, 0 BORK from 887 corpus candidates
+- Current counts: 48 PASS, 2 SKIP, 815 FAIL, 0 BORK from 887 corpus candidates
 
 ## Scope
 

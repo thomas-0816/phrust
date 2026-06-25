@@ -1,5 +1,0 @@
-{"path":"tests/phpt/generated/diagnostics.output/undefined-variable-warning.phpt","module":"diagnostics.output","kind":"generated","reason":"undefined variable warning formatting and continuation"}
-{"path":"tests/phpt/generated/diagnostics.output/array-to-string-warning.phpt","module":"diagnostics.output","kind":"generated","reason":"array to string warning formatting and continuation"}
-{"path":"tests/phpt/generated/diagnostics.output/invalid-operand-type-error.phpt","module":"diagnostics.output","kind":"generated","reason":"invalid operand fatal diagnostic maps to catchable TypeError"}
-{"path":"tests/phpt/generated/diagnostics.output/builtin-arity-error.phpt","module":"diagnostics.output","kind":"generated","reason":"builtin arity diagnostic maps to catchable ArgumentCountError"}
-{"path":"tests/phpt/generated/diagnostics.output/builtin-type-error.phpt","module":"diagnostics.output","kind":"generated","reason":"builtin type diagnostic maps to catchable TypeError"}

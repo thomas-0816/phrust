@@ -7,7 +7,6 @@
 {"path":"ext/standard/tests/serialize/serialization_arrays_003.phpt"}
 {"path":"ext/standard/tests/serialize/serialization_arrays_002.phpt"}
 {"path":"ext/standard/tests/serialize/serialization_arrays_001.phpt"}
-{"path":"ext/standard/tests/network/setcookie_array_option_error.phpt"}
 {"path":"ext/standard/tests/http/http_response_header_deprecated_nested_op_arrays.phpt"}
 {"path":"ext/standard/tests/http/http_response_header_deprecated_multiple_op_arrays.phpt"}
 {"path":"ext/standard/tests/hrtime/hrtime_array.phpt"}
@@ -198,3 +197,4 @@
 {"path":"ext/standard/tests/array/max.phpt"}
 {"path":"ext/standard/tests/array/key_variation4.phpt"}
 {"path":"ext/standard/tests/array/key_variation3.phpt"}
+{"path":"ext/standard/tests/array/key_variation2.phpt"}

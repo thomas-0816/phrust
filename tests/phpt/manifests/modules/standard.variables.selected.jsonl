@@ -2,7 +2,6 @@
 {"path":"ext/standard/tests/versioning/version_compare_invalid_operator.phpt"}
 {"path":"ext/standard/tests/versioning/version_compare.phpt"}
 {"path":"ext/standard/tests/versioning/phpversion.phpt"}
-{"path":"ext/standard/tests/versioning/php_sapi_name_variation001.phpt"}
 {"path":"ext/standard/tests/versioning/php_sapi_name.phpt"}
 {"path":"ext/standard/tests/url/parse_url_unterminated.phpt"}
 {"path":"ext/standard/tests/url/parse_url_relative_scheme.phpt"}
@@ -74,9 +73,6 @@
 {"path":"ext/standard/tests/network/socket_get_status_basic.phpt"}
 {"path":"ext/standard/tests/network/socket_bug74429.phpt"}
 {"path":"ext/standard/tests/network/shutdown.phpt"}
-{"path":"ext/standard/tests/network/setrawcookie_error.phpt"}
-{"path":"ext/standard/tests/network/setcookie_error.phpt"}
-{"path":"ext/standard/tests/network/setcookie.phpt"}
 {"path":"ext/standard/tests/network/ip_x86_64.phpt"}
 {"path":"ext/standard/tests/network/ip2long_variation2_x64.phpt"}
 {"path":"ext/standard/tests/network/ip2long_variation2.phpt"}
@@ -116,8 +112,6 @@
 {"path":"ext/standard/tests/network/bug74764.phpt"}
 {"path":"ext/standard/tests/network/bug73594a.phpt"}
 {"path":"ext/standard/tests/network/bug73594.phpt"}
-{"path":"ext/standard/tests/network/bug72071.phpt"}
-{"path":"ext/standard/tests/network/bug69948.phpt"}
 {"path":"ext/standard/tests/network/bug69523.phpt"}
 {"path":"ext/standard/tests/network/bug68925.phpt"}
 {"path":"ext/standard/tests/network/bug64330.phpt"}
@@ -198,3 +192,9 @@
 {"path":"ext/standard/tests/image/getimagesize_variation_005.phpt"}
 {"path":"ext/standard/tests/image/getimagesize_variation4.phpt"}
 {"path":"ext/standard/tests/image/getimagesize_variation3.phpt"}
+{"path":"ext/standard/tests/image/getimagesize_variation2.phpt"}
+{"path":"ext/standard/tests/image/getimagesize_tif_mm.phpt"}
+{"path":"ext/standard/tests/image/getimagesize_swc.phpt"}
+{"path":"ext/standard/tests/image/getimagesize_jpgapp.phpt"}
+{"path":"ext/standard/tests/image/getimagesize_basic.phpt"}
+{"path":"ext/standard/tests/image/getimagesize_384x385.phpt"}

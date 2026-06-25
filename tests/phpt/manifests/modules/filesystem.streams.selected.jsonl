@@ -5,9 +5,6 @@
 {"path":"tests/output/stream_isatty_non_castable_user_stream.phpt"}
 {"path":"tests/output/stream_isatty_no_warning_on_cast.phpt"}
 {"path":"tests/output/sapi_windows_vt100_support_non_castable_user_stream.phpt"}
-{"path":"tests/basic/rfc1867_max_file_uploads_empty_files.phpt"}
-{"path":"tests/basic/rfc1867_max_file_size.phpt"}
-{"path":"tests/basic/rfc1867_file_upload_disabled.phpt"}
 {"path":"ext/zlib/tests/zlib_scheme_file_read_file_basic.phpt"}
 {"path":"ext/zlib/tests/zlib_scheme_file_put_contents_basic.phpt"}
 {"path":"ext/zlib/tests/zlib_scheme_file_get_contents_basic.phpt"}
@@ -198,3 +195,6 @@
 {"path":"ext/standard/tests/file/windows_mb_path/test_kartuli_utf8_3.phpt"}
 {"path":"ext/standard/tests/file/windows_mb_path/test_kartuli_utf8_2.phpt"}
 {"path":"ext/standard/tests/file/windows_mb_path/test_kartuli_utf8_1.phpt"}
+{"path":"ext/standard/tests/file/windows_mb_path/test_kartuli_utf8_0.phpt"}
+{"path":"ext/standard/tests/file/windows_mb_path/test_cwd_mb_names.phpt"}
+{"path":"ext/standard/tests/file/windows_mb_path/test_cp874_to_utf8_1.phpt"}

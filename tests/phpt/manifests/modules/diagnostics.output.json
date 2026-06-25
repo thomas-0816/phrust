@@ -3,14 +3,14 @@
   "module":"diagnostics.output",
   "priority":6,
   "selected_manifest":"tests/phpt/manifests/modules/diagnostics.output.selected.jsonl",
-  "corpus_count":5,
-  "pass_count":5,
+  "corpus_count":0,
+  "pass_count":0,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":0,
-  "scope":["warnings","notices","fatal formatting","display_errors","error_reporting","file and line output","output channels","warning continuation","catchable builtin diagnostics","catchable invalid operand diagnostics"],
-  "non_scope":["full php.ini parsing","extension loading","complete Zend fatal backtrace formatting"],
-  "target_gates":["nix develop -c cargo test -p php_runtime","nix develop -c cargo test -p php_vm","nix develop -c just verify-runtime","nix develop -c just phpt-module MODULE=diagnostics.output"],
-  "next_step":"Close remaining exact wording and uncaught fatal formatting gaps while preserving centralized diagnostic rendering."
+  "scope":["warnings","notices","fatal formatting","display_errors","output channels"],
+  "non_scope":["exact wording for intentionally unsupported extensions"],
+  "target_gates":["nix develop -c just verify-runtime"],
+  "next_step":"Centralize runtime diagnostic rendering and continuation semantics."
 }

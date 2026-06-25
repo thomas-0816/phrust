@@ -1,4 +1,3 @@
-{"path":"tests/basic/011_register_argc_argv_disabled.phpt"}
 {"path":"sapi/phpdbg/tests/gh12962.phpt"}
 {"path":"sapi/phpdbg/tests/bug73615.phpt"}
 {"path":"sapi/fpm/tests/status-ping.phpt"}
@@ -198,3 +197,4 @@
 {"path":"sapi/cli/tests/bug71005.phpt"}
 {"path":"sapi/cli/tests/bug70470.phpt"}
 {"path":"sapi/cli/tests/bug70264.phpt"}
+{"path":"sapi/cli/tests/bug70006.phpt"}

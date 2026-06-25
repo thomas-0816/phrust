@@ -118,6 +118,36 @@ pub const PHP_URL_QUERY: i64 = 6;
 /// `parse_url()` component selector for the URL fragment.
 pub const PHP_URL_FRAGMENT: i64 = 7;
 
+/// `sort()`/`array_multisort()` ascending order flag.
+pub const SORT_ASC: i64 = 4;
+/// `sort()`/`array_multisort()` descending order flag.
+pub const SORT_DESC: i64 = 3;
+/// Regular PHP comparison sort flag.
+pub const SORT_REGULAR: i64 = 0;
+/// Numeric comparison sort flag.
+pub const SORT_NUMERIC: i64 = 1;
+/// String comparison sort flag.
+pub const SORT_STRING: i64 = 2;
+/// Locale-aware string comparison sort flag.
+pub const SORT_LOCALE_STRING: i64 = 5;
+/// Natural string comparison sort flag.
+pub const SORT_NATURAL: i64 = 6;
+/// Case-insensitive string/natural sort modifier.
+pub const SORT_FLAG_CASE: i64 = 8;
+
+/// Lowercase key conversion flag.
+pub const CASE_LOWER: i64 = 0;
+/// Uppercase key conversion flag.
+pub const CASE_UPPER: i64 = 1;
+/// Non-recursive count mode.
+pub const COUNT_NORMAL: i64 = 0;
+/// Recursive count mode.
+pub const COUNT_RECURSIVE: i64 = 1;
+/// `array_filter()` callback receives value and key.
+pub const ARRAY_FILTER_USE_BOTH: i64 = 1;
+/// `array_filter()` callback receives key.
+pub const ARRAY_FILTER_USE_KEY: i64 = 2;
+
 /// Converts registry constant metadata into a runtime value.
 #[must_use]
 pub fn constant_to_value(value: ConstantValue) -> Value {
@@ -188,6 +218,24 @@ mod tests {
                 .and_then(crate::ConstantDescriptor::value),
             Some(ConstantValue::Float(value)) if value.to_f64().is_nan()
         ));
+    }
+
+    #[test]
+    fn standard_array_constants_match_php_src_values() {
+        assert_eq!(SORT_REGULAR, 0);
+        assert_eq!(SORT_NUMERIC, 1);
+        assert_eq!(SORT_STRING, 2);
+        assert_eq!(SORT_DESC, 3);
+        assert_eq!(SORT_ASC, 4);
+        assert_eq!(SORT_LOCALE_STRING, 5);
+        assert_eq!(SORT_NATURAL, 6);
+        assert_eq!(SORT_FLAG_CASE, 8);
+        assert_eq!(CASE_LOWER, 0);
+        assert_eq!(CASE_UPPER, 1);
+        assert_eq!(COUNT_NORMAL, 0);
+        assert_eq!(COUNT_RECURSIVE, 1);
+        assert_eq!(ARRAY_FILTER_USE_BOTH, 1);
+        assert_eq!(ARRAY_FILTER_USE_KEY, 2);
     }
 
     #[test]

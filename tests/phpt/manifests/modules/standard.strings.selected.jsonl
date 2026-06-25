@@ -1,5 +1,3 @@
-{"path":"tests/phpt/generated/standard.strings/regression-string-literal-escapes-binary-8f5e1a2c9d10.phpt","module":"standard.strings","kind":"generated","reason":"binary-safe double-quoted escape decoding"}
-{"path":"tests/phpt/generated/standard.strings/regression-heredoc-nowdoc-interpolation-b4d6e8a17321.phpt","module":"standard.strings","kind":"generated","reason":"heredoc body trimming, nowdoc raw bytes, and simple interpolation"}
 {"path":"ext/standard/tests/strings/wordwrap_variation5.phpt"}
 {"path":"ext/standard/tests/strings/wordwrap_memory_limit_32bit.phpt"}
 {"path":"ext/standard/tests/strings/wordwrap_memory_limit.phpt"}
