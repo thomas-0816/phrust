@@ -559,6 +559,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("array_chunk", "standard"))
                 .with_function(FunctionDescriptor::php("array_column", "standard"))
                 .with_function(FunctionDescriptor::php("array_filter", "standard"))
+                .with_function(FunctionDescriptor::php("array_fill", "standard"))
                 .with_function(FunctionDescriptor::php("array_find", "standard"))
                 .with_function(FunctionDescriptor::php("array_find_key", "standard"))
                 .with_function(FunctionDescriptor::php("array_flip", "standard"))
@@ -575,6 +576,10 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("array_push", "standard"))
                 .with_function(FunctionDescriptor::php("array_reduce", "standard"))
                 .with_function(FunctionDescriptor::php("array_replace", "standard"))
+                .with_function(FunctionDescriptor::php(
+                    "array_replace_recursive",
+                    "standard",
+                ))
                 .with_function(FunctionDescriptor::php("array_reverse", "standard"))
                 .with_function(FunctionDescriptor::php("array_search", "standard"))
                 .with_function(FunctionDescriptor::php("array_shift", "standard"))
@@ -623,6 +628,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("floor", "standard"))
                 .with_function(FunctionDescriptor::php("floatval", "standard"))
                 .with_function(FunctionDescriptor::php("flush", "standard"))
+                .with_function(FunctionDescriptor::php("fdiv", "standard"))
                 .with_function(FunctionDescriptor::php("fmod", "standard"))
                 .with_function(FunctionDescriptor::php("fopen", "standard"))
                 .with_function(FunctionDescriptor::php("fprintf", "standard"))
@@ -667,6 +673,7 @@ impl ExtensionRegistry {
                     "htmlspecialchars_decode",
                     "standard",
                 ))
+                .with_function(FunctionDescriptor::php("hrtime", "standard"))
                 .with_function(FunctionDescriptor::php("http_build_query", "standard"))
                 .with_function(FunctionDescriptor::php("implode", "standard"))
                 .with_function(FunctionDescriptor::php("in_array", "standard"))
@@ -1565,6 +1572,7 @@ mod tests {
             "array_chunk",
             "array_column",
             "array_filter",
+            "array_fill",
             "array_find",
             "array_find_key",
             "array_flip",
@@ -1581,6 +1589,7 @@ mod tests {
             "array_push",
             "array_reduce",
             "array_replace",
+            "array_replace_recursive",
             "array_reverse",
             "array_search",
             "array_shift",
@@ -1620,6 +1629,7 @@ mod tests {
             "abs",
             "ceil",
             "floor",
+            "fdiv",
             "fmod",
             "intdiv",
             "is_finite",
@@ -1701,6 +1711,7 @@ mod tests {
             "constant",
             "class_exists",
             "function_exists",
+            "hrtime",
             "version_compare",
         ] {
             assert!(

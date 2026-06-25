@@ -6,16 +6,28 @@ constants:
   const:1 int 1
 constant_table:
 classes:
+  class:0 "traversable" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:1 "iterator" parent=None interfaces=["traversable"] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:2 "iteratoraggregate" parent=None interfaces=["traversable"] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:3 "arrayaccess" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:4 "throwable" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:5 "unitenum" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:6 "backedenum" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:7 "stringable" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
 function_table:
 functions:
   function "main" params=0 locals=0 regs=1 flags=top_level span=file:0@0..13
     block:0
+      term span=file:0@0..13 jump block:1
+    block:1
       instr:0 span=file:0@11..12 load_const r0 const:1
       instr:1 span=file:0@11..12 echo r0
       term span=file:0@0..13 return const:0
 source_map:
   function:0 <= hir:module:0 span=file:0@0..13
   block function:0 block:0 <= hir:module:0 span=file:0@0..13
-  instr function:0 block:0 instr:0 <= hir:expr:0 span=file:0@11..12
-  instr function:0 block:0 instr:1 <= hir:expr:0 span=file:0@11..12
+  block function:0 block:1 <= hir:module:0 span=file:0@0..13
+  instr function:0 block:1 instr:0 <= hir:expr:0 span=file:0@11..12
+  instr function:0 block:1 instr:1 <= hir:expr:0 span=file:0@11..12
+  term function:0 block:1 <= hir:module:0 span=file:0@0..13
   term function:0 block:0 <= hir:module:0 span=file:0@0..13

@@ -6,10 +6,20 @@ constants:
   const:1 string "child.php"
 constant_table:
 classes:
+  class:0 "traversable" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:1 "iterator" parent=None interfaces=["traversable"] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:2 "iteratoraggregate" parent=None interfaces=["traversable"] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:3 "arrayaccess" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:4 "throwable" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:5 "unitenum" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:6 "backedenum" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
+  class:7 "stringable" parent=None interfaces=[] methods=0 properties=0 constructor=none flags=abstract:true final:false readonly:false interface:true span=file:0@0..0
 function_table:
 functions:
   function "main" params=0 locals=0 regs=2 flags=top_level span=file:0@0..32
     block:0
+      term span=file:0@0..32 jump block:1
+    block:1
       instr:0 span=file:0@19..30 load_const r0 const:1
       instr:1 span=file:0@11..30 include r1 include r0
       instr:2 span=file:0@11..30 echo r1
@@ -17,7 +27,9 @@ functions:
 source_map:
   function:0 <= hir:module:0 span=file:0@0..32
   block function:0 block:0 <= hir:module:0 span=file:0@0..32
-  instr function:0 block:0 instr:0 <= hir:expr:0 span=file:0@19..30
-  instr function:0 block:0 instr:1 <= hir:expr:1 span=file:0@11..30
-  instr function:0 block:0 instr:2 <= hir:expr:1 span=file:0@11..30
+  block function:0 block:1 <= hir:module:0 span=file:0@0..32
+  instr function:0 block:1 instr:0 <= hir:expr:0 span=file:0@19..30
+  instr function:0 block:1 instr:1 <= hir:expr:1 span=file:0@11..30
+  instr function:0 block:1 instr:2 <= hir:expr:1 span=file:0@11..30
+  term function:0 block:1 <= hir:module:0 span=file:0@0..32
   term function:0 block:0 <= hir:module:0 span=file:0@0..32

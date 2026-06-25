@@ -28,10 +28,11 @@ fn lowered_single_literal_snapshot_is_stable() {
         "<?php echo 1;",
         "fixtures/bytecode/literals/valid/echo-int.php",
     );
-    let expected = lowered_expected(include_str!(
-        "../../../fixtures/bytecode/valid/literals-single.ir.snap"
-    ));
-    assert_eq!(actual, expected);
+    assert_lowered_snapshot(
+        &actual,
+        include_str!("../../../fixtures/bytecode/valid/literals-single.ir.snap"),
+        "fixtures/bytecode/valid/literals-single.ir.snap",
+    );
 }
 
 #[test]
@@ -40,10 +41,11 @@ fn lowered_multiple_literals_snapshot_is_stable() {
         "<?php echo 1, \"x\";",
         "fixtures/bytecode/literals/valid/echo-multiple.php",
     );
-    let expected = lowered_expected(include_str!(
-        "../../../fixtures/bytecode/valid/literals-multiple.ir.snap"
-    ));
-    assert_eq!(actual, expected);
+    assert_lowered_snapshot(
+        &actual,
+        include_str!("../../../fixtures/bytecode/valid/literals-multiple.ir.snap"),
+        "fixtures/bytecode/valid/literals-multiple.ir.snap",
+    );
 }
 
 #[test]
@@ -52,30 +54,33 @@ fn lowered_source_map_snapshot_is_stable() {
         "<?php echo null, true;",
         "fixtures/bytecode/literals/valid/echo-source-map.php",
     );
-    let expected = lowered_expected(include_str!(
-        "../../../fixtures/bytecode/valid/source-map.ir.snap"
-    ));
-    assert_eq!(actual, expected);
+    assert_lowered_snapshot(
+        &actual,
+        include_str!("../../../fixtures/bytecode/valid/source-map.ir.snap"),
+        "fixtures/bytecode/valid/source-map.ir.snap",
+    );
 }
 
 #[test]
 fn lowered_foreach_snapshot_is_stable() {
     let source = include_str!("../../../fixtures/bytecode/lower/valid/foreach.php");
     let actual = lowered_snapshot(source, "fixtures/bytecode/lower/valid/foreach.php");
-    let expected = lowered_expected(include_str!(
-        "../../../fixtures/bytecode/valid/foreach.ir.snap"
-    ));
-    assert_eq!(actual, expected);
+    assert_lowered_snapshot(
+        &actual,
+        include_str!("../../../fixtures/bytecode/valid/foreach.ir.snap"),
+        "fixtures/bytecode/valid/foreach.ir.snap",
+    );
 }
 
 #[test]
 fn lowered_include_snapshot_is_stable() {
     let source = include_str!("../../../fixtures/bytecode/lower/valid/include.php");
     let actual = lowered_snapshot(source, "fixtures/bytecode/lower/valid/include.php");
-    let expected = lowered_expected(include_str!(
-        "../../../fixtures/bytecode/valid/include.ir.snap"
-    ));
-    assert_eq!(actual, expected);
+    assert_lowered_snapshot(
+        &actual,
+        include_str!("../../../fixtures/bytecode/valid/include.ir.snap"),
+        "fixtures/bytecode/valid/include.ir.snap",
+    );
 }
 
 const RUNTIME_SEMANTICS_INTERNAL_CLASS_SNAPSHOT: &str = concat!(
@@ -94,6 +99,17 @@ fn lowered_expected(snapshot: &str) -> String {
         "classes:\nfunction_table:",
         &format!("classes:\n{RUNTIME_SEMANTICS_INTERNAL_CLASS_SNAPSHOT}function_table:"),
     )
+}
+
+fn assert_lowered_snapshot(actual: &str, expected: &str, snapshot_path: &str) {
+    if std::env::var_os("UPDATE_BYTECODE_SNAPSHOTS").is_some() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(snapshot_path);
+        std::fs::write(&path, actual).expect("failed to update bytecode snapshot");
+        return;
+    }
+    assert_eq!(actual, lowered_expected(expected));
 }
 
 fn manual_basic_unit() -> php_ir::IrUnit {

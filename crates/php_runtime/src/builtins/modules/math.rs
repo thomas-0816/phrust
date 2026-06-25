@@ -8,6 +8,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("ceil", core::builtin_ceil, BuiltinCompatibility::Php),
     BuiltinEntry::new("decbin", core::builtin_decbin, BuiltinCompatibility::Php),
     BuiltinEntry::new("floor", core::builtin_floor, BuiltinCompatibility::Php),
+    BuiltinEntry::new("fdiv", core::builtin_fdiv, BuiltinCompatibility::Php),
     BuiltinEntry::new("fmod", core::builtin_fmod, BuiltinCompatibility::Php),
     BuiltinEntry::new("intdiv", core::builtin_intdiv, BuiltinCompatibility::Php),
     BuiltinEntry::new(

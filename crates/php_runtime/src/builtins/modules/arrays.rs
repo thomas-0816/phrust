@@ -30,6 +30,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "array_fill",
+        core::builtin_array_fill,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "array_find",
         core::builtin_array_callback_requires_vm,
         BuiltinCompatibility::Php,
@@ -107,6 +112,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "array_replace",
         core::builtin_array_replace,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "array_replace_recursive",
+        core::builtin_array_replace_recursive,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(

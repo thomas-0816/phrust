@@ -20,6 +20,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         core::builtin_strtotime,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("hrtime", core::builtin_hrtime, BuiltinCompatibility::Php),
     BuiltinEntry::new("time", core::builtin_time, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "timezone_identifiers_list",

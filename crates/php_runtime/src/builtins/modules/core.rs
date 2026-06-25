@@ -23,7 +23,7 @@ use sha1::Sha1;
 use std::collections::BTreeSet;
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const RANGE_MAX_ELEMENTS: usize = 1_000_000;
 
@@ -653,6 +653,49 @@ pub(in crate::builtins::modules) fn builtin_array_column(
     Ok(Value::Array(output))
 }
 
+pub(in crate::builtins::modules) fn builtin_array_fill(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("array_fill", &args, 3)?;
+    let start_index = int_arg("array_fill", &args[0])?;
+    let count = int_arg("array_fill", &args[1])?;
+    if count < 0 {
+        return Err(argument_value_error(
+            "array_fill",
+            "#2 ($count)",
+            "must be greater than or equal to 0",
+        ));
+    }
+    let count = usize::try_from(count).map_err(|_| {
+        argument_value_error(
+            "array_fill",
+            "#2 ($count)",
+            "must be less than or equal to PHP_INT_MAX",
+        )
+    })?;
+    ensure_array_fill_size(count)?;
+
+    let mut output = crate::PhpArray::new();
+    for offset in 0..count {
+        let offset = i64::try_from(offset).map_err(|_| {
+            value_error(
+                "array_fill",
+                "The supplied range exceeds the maximum array size",
+            )
+        })?;
+        let key = start_index.checked_add(offset).ok_or_else(|| {
+            value_error(
+                "array_fill",
+                "The supplied range exceeds the maximum array size",
+            )
+        })?;
+        output.insert(ArrayKey::Int(key), args[2].clone());
+    }
+    Ok(Value::Array(output))
+}
+
 pub(in crate::builtins::modules) fn builtin_array_push(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -847,6 +890,25 @@ pub(in crate::builtins::modules) fn builtin_array_replace(
         for (key, value) in array.iter() {
             output.insert(key.clone(), value.clone());
         }
+    }
+    Ok(Value::Array(output))
+}
+
+pub(in crate::builtins::modules) fn builtin_array_replace_recursive(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.is_empty() {
+        return Err(arity_error(
+            "array_replace_recursive",
+            "one or more argument(s)",
+        ));
+    }
+    let mut output = array_value_arg("array_replace_recursive", &args[0])?;
+    for arg in args.iter().skip(1) {
+        let array = array_value_arg("array_replace_recursive", arg)?;
+        replace_recursive_into(&mut output, &array);
     }
     Ok(Value::Array(output))
 }
@@ -1195,6 +1257,17 @@ pub(in crate::builtins::modules) fn builtin_fmod(
         return Err(value_error("fmod", "division by zero"));
     }
     Ok(Value::float(dividend % divisor))
+}
+
+pub(in crate::builtins::modules) fn builtin_fdiv(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("fdiv", &args, 2)?;
+    let dividend = numeric_f64_arg("fdiv", &args[0])?;
+    let divisor = numeric_f64_arg("fdiv", &args[1])?;
+    Ok(Value::float(dividend / divisor))
 }
 
 pub(in crate::builtins::modules) fn builtin_is_finite(
@@ -4328,6 +4401,39 @@ pub(in crate::builtins::modules) fn builtin_time(
     Ok(Value::Int(datetime::current_timestamp()))
 }
 
+pub(in crate::builtins::modules) fn builtin_hrtime(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 1 {
+        return Err(arity_error("hrtime", "zero or one argument(s)"));
+    }
+    let as_number = args
+        .first()
+        .map(to_bool)
+        .transpose()
+        .map_err(|message| conversion_error("hrtime", message))?
+        .unwrap_or(false);
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| value_error("hrtime", "system time is before UNIX epoch"))?;
+    let seconds = i64::try_from(elapsed.as_secs())
+        .map_err(|_| value_error("hrtime", "timestamp exceeds PHP integer range"))?;
+    let nanos = i64::from(elapsed.subsec_nanos());
+    if as_number {
+        let total = seconds
+            .checked_mul(1_000_000_000)
+            .and_then(|value| value.checked_add(nanos))
+            .ok_or_else(|| value_error("hrtime", "timestamp exceeds PHP integer range"))?;
+        return Ok(Value::Int(total));
+    }
+    Ok(Value::packed_array(vec![
+        Value::Int(seconds),
+        Value::Int(nanos),
+    ]))
+}
+
 pub(in crate::builtins::modules) fn builtin_strtotime(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -5402,7 +5508,7 @@ fn parse_php_url_host(bytes: &[u8], mut s: usize, mut parsed: ParsedUrl) -> Opti
         s = at + 1;
     }
 
-    let port_separator = if s < e && bytes[s] == b'[' && e > s && bytes[e - 1] == b']' {
+    let port_separator = if s < e && bytes[s] == b'[' && bytes[e - 1] == b']' {
         None
     } else {
         find_last_byte(&bytes[s..e], b':').map(|offset| s + offset)
@@ -7733,6 +7839,16 @@ fn ensure_range_size(count: usize) -> Result<(), BuiltinError> {
     ))
 }
 
+fn ensure_array_fill_size(count: usize) -> Result<(), BuiltinError> {
+    if count <= RANGE_MAX_ELEMENTS {
+        return Ok(());
+    }
+    Err(value_error(
+        "array_fill",
+        "The supplied range exceeds the maximum array size",
+    ))
+}
+
 fn range_step_span_error() -> BuiltinError {
     argument_value_error(
         "range",
@@ -7868,6 +7984,27 @@ fn merge_recursive_values(left: Value, right: Value) -> Value {
             Value::Array(left)
         }
         (left, right) => Value::packed_array(vec![left, right]),
+    }
+}
+
+fn replace_recursive_into(output: &mut crate::PhpArray, input: &crate::PhpArray) {
+    for (key, value) in input.iter() {
+        let replacement = if let Some(existing) = output.get(key).cloned() {
+            replace_recursive_values(existing, value.clone())
+        } else {
+            value.clone()
+        };
+        output.insert(key.clone(), replacement);
+    }
+}
+
+fn replace_recursive_values(left: Value, right: Value) -> Value {
+    match (deref_value(&left), deref_value(&right)) {
+        (Value::Array(mut left), Value::Array(right)) => {
+            replace_recursive_into(&mut left, &right);
+            Value::Array(left)
+        }
+        (_, right) => right,
     }
 }
 
@@ -10613,6 +10750,17 @@ mod tests {
             call_in_context(&mut context, "time", Vec::new()),
             Value::Int(value) if value > 0
         ));
+        let Value::Array(hrtime) = call_in_context(&mut context, "hrtime", Vec::new()) else {
+            panic!("hrtime() should return an array");
+        };
+        let entries = super::array_entries(&hrtime);
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0].1, Value::Int(value) if value > 0));
+        assert!(matches!(entries[1].1, Value::Int(value) if (0..1_000_000_000).contains(&value)));
+        assert!(matches!(
+            call_in_context(&mut context, "hrtime", vec![Value::Bool(true)]),
+            Value::Int(value) if value > 0
+        ));
     }
 
     #[test]
@@ -12643,6 +12791,18 @@ mod tests {
             Value::float(1.0)
         );
         assert_eq!(
+            call("fdiv", vec![Value::Int(7), Value::Int(2)], &mut output),
+            Value::float(3.5)
+        );
+        assert!(matches!(
+            call("fdiv", vec![Value::Int(1), Value::Int(0)], &mut output),
+            Value::Float(value) if value.to_f64().is_infinite()
+        ));
+        assert!(matches!(
+            call("fdiv", vec![Value::Int(0), Value::Int(0)], &mut output),
+            Value::Float(value) if value.to_f64().is_nan()
+        ));
+        assert_eq!(
             call("is_finite", vec![Value::float(1.5)], &mut output),
             Value::Bool(true)
         );
@@ -13097,6 +13257,26 @@ mod tests {
             ),
             Value::packed_array(vec![Value::Int(1), Value::Int(0), Value::Int(0)])
         );
+        let mut expected_fill = PhpArray::new();
+        expected_fill.insert(ArrayKey::Int(-2), Value::string("x"));
+        expected_fill.insert(ArrayKey::Int(-1), Value::string("x"));
+        expected_fill.insert(ArrayKey::Int(0), Value::string("x"));
+        assert_eq!(
+            call(
+                "array_fill",
+                vec![Value::Int(-2), Value::Int(3), Value::string("x")],
+                &mut output
+            ),
+            Value::Array(expected_fill)
+        );
+        assert_eq!(
+            call_error(
+                "array_fill",
+                vec![Value::Int(0), Value::Int(-1), Value::Null],
+                &mut output
+            ),
+            "array_fill(): Argument #2 ($count) must be greater than or equal to 0"
+        );
 
         let mut left = PhpArray::new();
         left.insert(ArrayKey::Int(0), Value::string("x"));
@@ -13139,6 +13319,58 @@ mod tests {
                 &mut output
             ),
             Value::Array(expected_replace)
+        );
+
+        let mut nested_left = PhpArray::new();
+        nested_left.insert(ArrayKey::Int(0), Value::string("keep"));
+        nested_left.insert(
+            ArrayKey::String(PhpString::from_test_str("inner")),
+            Value::Int(1),
+        );
+        let mut recursive_left = PhpArray::new();
+        recursive_left.insert(
+            ArrayKey::String(PhpString::from_test_str("nested")),
+            Value::Array(nested_left),
+        );
+        recursive_left.insert(ArrayKey::Int(2), Value::string("old"));
+        let mut nested_right = PhpArray::new();
+        nested_right.insert(
+            ArrayKey::String(PhpString::from_test_str("inner")),
+            Value::Int(2),
+        );
+        nested_right.insert(
+            ArrayKey::String(PhpString::from_test_str("added")),
+            Value::Bool(true),
+        );
+        let mut recursive_right = PhpArray::new();
+        recursive_right.insert(
+            ArrayKey::String(PhpString::from_test_str("nested")),
+            Value::Array(nested_right),
+        );
+        recursive_right.insert(ArrayKey::Int(2), Value::string("new"));
+        let mut expected_nested = PhpArray::new();
+        expected_nested.insert(ArrayKey::Int(0), Value::string("keep"));
+        expected_nested.insert(
+            ArrayKey::String(PhpString::from_test_str("inner")),
+            Value::Int(2),
+        );
+        expected_nested.insert(
+            ArrayKey::String(PhpString::from_test_str("added")),
+            Value::Bool(true),
+        );
+        let mut expected_recursive = PhpArray::new();
+        expected_recursive.insert(
+            ArrayKey::String(PhpString::from_test_str("nested")),
+            Value::Array(expected_nested),
+        );
+        expected_recursive.insert(ArrayKey::Int(2), Value::string("new"));
+        assert_eq!(
+            call(
+                "array_replace_recursive",
+                vec![Value::Array(recursive_left), Value::Array(recursive_right)],
+                &mut output
+            ),
+            Value::Array(expected_recursive)
         );
     }
 

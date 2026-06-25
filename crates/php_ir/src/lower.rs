@@ -7934,8 +7934,7 @@ fn decode_octal_escape(bytes: &[u8]) -> (u8, usize) {
 
 fn decode_unicode_escape(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
     let mut value = 0u32;
-    let mut consumed = 0;
-    for byte in bytes.iter().copied() {
+    for (consumed, byte) in bytes.iter().copied().enumerate() {
         if byte == b'}' {
             if consumed == 0 {
                 return None;
@@ -7949,7 +7948,6 @@ fn decode_unicode_escape(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
         }
         let nibble = hex_nibble(byte)?;
         value = value.checked_mul(16)?.checked_add(u32::from(nibble))?;
-        consumed += 1;
     }
     None
 }
