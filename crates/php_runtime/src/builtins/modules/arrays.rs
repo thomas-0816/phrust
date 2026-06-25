@@ -105,6 +105,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "array_rand",
+        core::builtin_array_rand,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "array_reduce",
         core::builtin_array_callback_requires_vm,
         BuiltinCompatibility::Php,

@@ -129,6 +129,13 @@ impl<'src> Lexer<'src> {
             return None;
         }
 
+        if self.cursor.position() == 0
+            && self.cursor.starts_with(b"\xEF\xBB\xBF")
+            && self.open_tag_at_offset(3).is_some()
+        {
+            self.consume_len(3);
+        }
+
         if let Some((kind, len)) = self.open_tag_at_cursor() {
             let start = self.cursor.position();
             let line = self.line;
@@ -1168,28 +1175,41 @@ impl<'src> Lexer<'src> {
     }
 
     fn open_tag_at_cursor(&self) -> Option<(TokenKind, usize)> {
-        if self.cursor.starts_with(b"<?=") {
+        self.open_tag_at_offset(0)
+    }
+
+    fn open_tag_at_offset(&self, offset: usize) -> Option<(TokenKind, usize)> {
+        if self.cursor_starts_with_at(offset, b"<?=") {
             return Some((TokenKind::Named(TokenName::OpenTagWithEcho), 3));
         }
 
-        if self.cursor.starts_with(b"<?php") || self.cursor.starts_with(b"<?PHP") {
-            let next = self.cursor.peek_n(5);
+        if self.cursor_starts_with_at(offset, b"<?php")
+            || self.cursor_starts_with_at(offset, b"<?PHP")
+        {
+            let next = self.cursor.peek_n(offset + 5);
             if next.is_none_or(|byte| byte.is_ascii_whitespace()) {
                 return Some((
                     TokenKind::Named(TokenName::OpenTag),
-                    5 + php_tag_space_len(&self.cursor, 5),
+                    5 + php_tag_space_len(&self.cursor, offset + 5),
                 ));
             }
         }
 
-        if self.config.short_open_tag && self.cursor.starts_with(b"<?") {
+        if self.config.short_open_tag && self.cursor_starts_with_at(offset, b"<?") {
             return Some((
                 TokenKind::Named(TokenName::OpenTag),
-                2 + php_tag_space_len(&self.cursor, 2),
+                2 + php_tag_space_len(&self.cursor, offset + 2),
             ));
         }
 
         None
+    }
+
+    fn cursor_starts_with_at(&self, offset: usize, needle: &[u8]) -> bool {
+        needle
+            .iter()
+            .enumerate()
+            .all(|(index, expected)| self.cursor.peek_n(offset + index) == Some(*expected))
     }
 
     fn word_at_cursor(&self, word: &[u8]) -> bool {
@@ -1364,6 +1384,15 @@ mod tests {
         assert_eq!(result.tokens[0].kind, TokenKind::Named(TokenName::OpenTag));
         assert_eq!(result.tokens[0].text(source), Some("<?php "));
         assert_eq!(result.tokens[0].line, 1);
+    }
+
+    #[test]
+    fn utf8_bom_before_open_tag_does_not_emit_inline_html() {
+        let source = "\u{feff}<?php echo 'ok';";
+        let result = lex_all(source, LexerConfig::default());
+        assert_eq!(result.tokens[0].kind, TokenKind::Named(TokenName::OpenTag));
+        assert_eq!(result.tokens[0].text(source), Some("<?php "));
+        assert_eq!(result.tokens[0].range, TextRange::new(3, 9));
     }
 
     #[test]

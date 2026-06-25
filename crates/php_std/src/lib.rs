@@ -574,6 +574,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("array_pad", "standard"))
                 .with_function(FunctionDescriptor::php("array_pop", "standard"))
                 .with_function(FunctionDescriptor::php("array_push", "standard"))
+                .with_function(FunctionDescriptor::php("array_rand", "standard"))
                 .with_function(FunctionDescriptor::php("array_reduce", "standard"))
                 .with_function(FunctionDescriptor::php("array_replace", "standard"))
                 .with_function(FunctionDescriptor::php(
@@ -1587,6 +1588,7 @@ mod tests {
             "array_pad",
             "array_pop",
             "array_push",
+            "array_rand",
             "array_reduce",
             "array_replace",
             "array_replace_recursive",

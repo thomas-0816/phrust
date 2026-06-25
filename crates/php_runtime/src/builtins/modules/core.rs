@@ -714,6 +714,49 @@ pub(in crate::builtins::modules) fn builtin_array_push(
     Ok(Value::Int(len))
 }
 
+pub(in crate::builtins::modules) fn builtin_array_rand(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(arity_error("array_rand", "one or two argument(s)"));
+    }
+    let array = array_value_arg("array_rand", &args[0])?;
+    if array.is_empty() {
+        return Err(value_error("array_rand", "Array is empty"));
+    }
+    let requested = args
+        .get(1)
+        .map(|value| int_arg("array_rand", value))
+        .transpose()?
+        .unwrap_or(1);
+    if requested < 1 || requested as usize > array.len() {
+        return Err(value_error(
+            "array_rand",
+            "Argument #2 ($num) must be between 1 and the number of elements in argument #1 ($array)",
+        ));
+    }
+
+    let mut keys = array.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
+    let requested = requested as usize;
+    for index in 0..requested {
+        let offset = random_bounded_usize("array_rand", keys.len() - index)?;
+        keys.swap(index, index + offset);
+    }
+
+    if requested == 1 {
+        Ok(array_key_to_value(&keys[0]))
+    } else {
+        Ok(Value::packed_array(
+            keys.into_iter()
+                .take(requested)
+                .map(|key| array_key_to_value(&key))
+                .collect(),
+        ))
+    }
+}
+
 pub(in crate::builtins::modules) fn builtin_array_pop(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -3484,6 +3527,9 @@ pub(in crate::builtins::modules) fn builtin_copy(
     if !context.filesystem_capabilities().allows_path(&from)
         || !context.filesystem_capabilities().allows_path(&to)
     {
+        return Ok(Value::Bool(false));
+    }
+    if same_filesystem_path(&from, &to) {
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(fs::copy(from, to).is_ok()))
@@ -7557,6 +7603,35 @@ fn array_key_to_value(key: &ArrayKey) -> Value {
     }
 }
 
+fn random_bounded_usize(name: &str, upper: usize) -> Result<usize, BuiltinError> {
+    debug_assert!(upper > 0);
+    let range = upper as u128;
+    let zone = u128::MAX - (u128::MAX % range);
+    loop {
+        let mut bytes = [0; 16];
+        getrandom::getrandom(&mut bytes).map_err(|error| {
+            BuiltinError::new(
+                "E_PHP_RUNTIME_RANDOM_FAILURE",
+                format!("{name}(): failed to read random bytes: {error}"),
+            )
+        })?;
+        let sample = u128::from_le_bytes(bytes);
+        if sample < zone {
+            return Ok((sample % range) as usize);
+        }
+    }
+}
+
+fn same_filesystem_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn array_value_matches(
     name: &str,
     left: &Value,
@@ -10027,6 +10102,34 @@ mod tests {
         );
         assert_eq!(read_output.to_string_lossy(), "hello");
 
+        assert_eq!(
+            call_with_fs(
+                "copy",
+                vec![Value::string("fixture.txt"), Value::string("fixture.txt")],
+                &mut output,
+                root.clone(),
+                capabilities.clone(),
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call_with_fs(
+                "copy",
+                vec![
+                    Value::string(
+                        root.join("fixture.txt")
+                            .to_string_lossy()
+                            .as_bytes()
+                            .to_vec()
+                    ),
+                    Value::string("fixture.txt")
+                ],
+                &mut output,
+                root.clone(),
+                capabilities.clone(),
+            ),
+            Value::Bool(false)
+        );
         assert_eq!(
             call_with_fs(
                 "copy",
@@ -13319,6 +13422,45 @@ mod tests {
                 &mut output
             ),
             Value::Array(expected_replace)
+        );
+
+        let mut rand_input = PhpArray::new();
+        rand_input.insert(ArrayKey::Int(2), Value::string("two"));
+        rand_input.insert(
+            ArrayKey::String(PhpString::from_test_str("name")),
+            Value::string("n"),
+        );
+        let rand_key = call(
+            "array_rand",
+            vec![Value::Array(rand_input.clone())],
+            &mut output,
+        );
+        assert!(
+            matches!(rand_key, Value::Int(2))
+                || matches!(rand_key, Value::String(ref key) if key.as_bytes() == b"name")
+        );
+        let rand_keys = call(
+            "array_rand",
+            vec![Value::Array(rand_input), Value::Int(2)],
+            &mut output,
+        );
+        let Value::Array(rand_keys) = rand_keys else {
+            panic!("array_rand with num > 1 should return a packed array");
+        };
+        assert_eq!(rand_keys.len(), 2);
+        let mut returned = rand_keys
+            .iter()
+            .map(|(_, value)| match value {
+                Value::Int(value) => format!("int:{value}"),
+                Value::String(value) => format!("str:{}", value.to_string_lossy()),
+                other => panic!("unexpected array_rand key value: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        returned.sort();
+        assert_eq!(returned, ["int:2", "str:name"]);
+        assert_eq!(
+            call_error("array_rand", vec![Value::packed_array(vec![])], &mut output),
+            "builtin array_rand: Array is empty"
         );
 
         let mut nested_left = PhpArray::new();
