@@ -2,7 +2,7 @@
 
 - Priority: 18
 - Selected manifest: `tests/phpt/manifests/modules/pcre.selected.jsonl`
-- Current counts: 36 PASS, 1 SKIP, 126 FAIL, 0 BORK from 165 corpus candidates
+- Current counts: 41 PASS, 5 SKIP, 117 FAIL, 0 BORK from 165 corpus candidates
 
 ## Scope
 

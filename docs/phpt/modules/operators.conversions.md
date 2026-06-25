@@ -2,7 +2,7 @@
 
 - Priority: 5
 - Selected manifest: `tests/phpt/manifests/modules/operators.conversions.selected.jsonl`
-- Current counts: 13 PASS, 0 SKIP, 116 FAIL, 0 BORK from 129 corpus candidates
+- Current counts: 16 PASS, 6 SKIP, 107 FAIL, 0 BORK from 129 corpus candidates
 
 ## Scope
 

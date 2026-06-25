@@ -2,7 +2,7 @@
 
 - Priority: 16
 - Selected manifest: `tests/phpt/manifests/modules/standard.serialization.selected.jsonl`
-- Current counts: 13 PASS, 0 SKIP, 112 FAIL, 0 BORK from 126 corpus candidates
+- Current counts: 16 PASS, 2 SKIP, 107 FAIL, 0 BORK from 126 corpus candidates
 
 ## Scope
 

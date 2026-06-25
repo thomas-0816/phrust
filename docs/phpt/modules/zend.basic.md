@@ -2,7 +2,7 @@
 
 - Priority: 4
 - Selected manifest: `tests/phpt/manifests/modules/zend.basic.selected.jsonl`
-- Current counts: 300 PASS, 1 SKIP, 3200 FAIL, 0 BORK from 3509 corpus candidates
+- Current counts: 434 PASS, 40 SKIP, 3027 FAIL, 0 BORK from 3509 corpus candidates
 
 ## Scope
 

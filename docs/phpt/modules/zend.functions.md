@@ -1,8 +1,8 @@
-# functions.callables
+# zend.functions
 
 - Priority: 9
-- Selected manifest: `tests/phpt/manifests/modules/functions.callables.selected.jsonl`
-- Current counts: 48 PASS, 2 SKIP, 815 FAIL, 0 BORK from 887 corpus candidates
+- Selected manifest: `tests/phpt/manifests/modules/zend.functions.selected.jsonl`
+- Current counts: 85 PASS, 53 SKIP, 727 FAIL, 0 BORK from 887 corpus candidates
 
 ## Scope
 

@@ -2,7 +2,7 @@
 
 - Priority: 14
 - Selected manifest: `tests/phpt/manifests/modules/standard.math.selected.jsonl`
-- Current counts: 8 PASS, 0 SKIP, 163 FAIL, 0 BORK from 171 corpus candidates
+- Current counts: 14 PASS, 11 SKIP, 146 FAIL, 0 BORK from 171 corpus candidates
 
 ## Scope
 

@@ -2,7 +2,7 @@
 
 - Priority: 22
 - Selected manifest: `tests/phpt/manifests/modules/extension.policy.selected.jsonl`
-- Current counts: 301 PASS, 58 SKIP, 8390 FAIL, 0 BORK from 9006 corpus candidates
+- Current counts: 468 PASS, 525 SKIP, 7757 FAIL, 0 BORK from 9006 corpus candidates
 
 ## Scope
 

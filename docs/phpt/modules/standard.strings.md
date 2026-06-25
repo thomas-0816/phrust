@@ -2,7 +2,7 @@
 
 - Priority: 13
 - Selected manifest: `tests/phpt/manifests/modules/standard.strings.selected.jsonl`
-- Current counts: 83 PASS, 0 SKIP, 619 FAIL, 0 BORK from 727 corpus candidates
+- Current counts: 352 PASS, 42 SKIP, 308 FAIL, 0 BORK from 727 corpus candidates
 
 ## Scope
 

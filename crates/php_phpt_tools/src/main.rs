@@ -2428,7 +2428,7 @@ const MODULE_PLAN: &[ModulePlanSpec] = &[
         leverage: 86,
     },
     ModulePlanSpec {
-        name: "functions.callables",
+        name: "zend.functions",
         scope: &[
             "user functions",
             "closures",
@@ -4275,7 +4275,7 @@ fn plan_module_for_path(
         || lower.contains("function")
         || lower.contains("variadic")
     {
-        return "functions.callables";
+        return "zend.functions";
     }
     if lower.contains("class")
         || lower.contains("object")
@@ -5926,6 +5926,30 @@ mod tests {
         assert_eq!(
             plan_module_for_path("ext/spl/tests/arrayAccess_001.phpt", "spl", None),
             "arrays.references"
+        );
+    }
+
+    #[test]
+    fn triage_routes_function_and_callable_paths_to_zend_functions() {
+        assert_eq!(
+            plan_module_for_path(
+                "Zend/tests/call_user_functions/call_user_func_001.phpt",
+                "zend",
+                None
+            ),
+            "zend.functions"
+        );
+        assert_eq!(
+            plan_module_for_path("Zend/tests/closures/closure_001.phpt", "zend", None),
+            "zend.functions"
+        );
+        assert_eq!(
+            plan_module_for_path(
+                "ext/standard/tests/general_functions/call_user_func.phpt",
+                "standard",
+                None
+            ),
+            "zend.functions"
         );
     }
 
