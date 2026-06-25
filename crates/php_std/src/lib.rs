@@ -736,6 +736,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("putenv", "standard"))
                 .with_function(FunctionDescriptor::php("rawurldecode", "standard"))
                 .with_function(FunctionDescriptor::php("rawurlencode", "standard"))
+                .with_function(FunctionDescriptor::php("range", "standard"))
                 .with_function(FunctionDescriptor::php("readdir", "standard"))
                 .with_function(FunctionDescriptor::php("readfile", "standard"))
                 .with_function(FunctionDescriptor::php("realpath", "standard"))
@@ -1596,6 +1597,7 @@ mod tests {
             "ksort",
             "natcasesort",
             "natsort",
+            "range",
             "rsort",
             "sizeof",
             "sort",

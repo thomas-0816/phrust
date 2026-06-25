@@ -185,6 +185,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         core::builtin_array_sort_requires_vm,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("range", core::builtin_range, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "rsort",
         core::builtin_array_sort_requires_vm,

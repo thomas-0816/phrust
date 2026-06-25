@@ -9,7 +9,7 @@ use super::super::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
     BuiltinResult, RuntimeSourceSpan,
 };
-use crate::numeric_string::{NumericStringKind, classify_php_string};
+use crate::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 use crate::{
     ArrayKey, CallableValue, ClassEntry, ClassFlags, NumericValue, ObjectRef, OutputBuffer,
     PhpArray, PhpString, StreamWrapperRegistry, UnserializeOptions, Value, compare, datetime,
@@ -24,6 +24,8 @@ use std::collections::BTreeSet;
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+
+const RANGE_MAX_ELEMENTS: usize = 1_000_000;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("boolval", builtin_boolval, BuiltinCompatibility::Php),
@@ -581,6 +583,30 @@ pub(in crate::builtins::modules) fn builtin_array_search(
         }
     }
     Ok(Value::Bool(false))
+}
+
+pub(in crate::builtins::modules) fn builtin_range(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(2..=3).contains(&args.len()) {
+        return Err(arity_error("range", "two or three argument(s)"));
+    }
+    let step = args
+        .get(2)
+        .map(range_step_arg)
+        .transpose()?
+        .unwrap_or(RangeStep::Int(1));
+    validate_range_step(step)?;
+
+    if let Some(values) = range_string_values(&args[0], &args[1], step)? {
+        return Ok(Value::packed_array(values));
+    }
+
+    let start = range_numeric_arg("range", "#1 ($start)", &args[0])?;
+    let end = range_numeric_arg("range", "#2 ($end)", &args[1])?;
+    range_numeric_values(start, end, step).map(Value::packed_array)
 }
 
 pub(in crate::builtins::modules) fn builtin_array_column(
@@ -7438,6 +7464,291 @@ fn array_value_matches(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RangeStep {
+    Int(i64),
+    Float(f64),
+}
+
+impl RangeStep {
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Int(value) => value as f64,
+            Self::Float(value) => value,
+        }
+    }
+
+    fn abs_f64(self) -> f64 {
+        self.as_f64().abs()
+    }
+
+    fn is_integral(self) -> bool {
+        match self {
+            Self::Int(_) => true,
+            Self::Float(value) => value.fract() == 0.0,
+        }
+    }
+
+    fn abs_i64(self) -> Option<i64> {
+        match self {
+            Self::Int(value) => value.checked_abs(),
+            Self::Float(value) if value.fract() == 0.0 && value.abs() <= i64::MAX as f64 => {
+                Some(value.abs() as i64)
+            }
+            Self::Float(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RangeNumeric {
+    Int(i64),
+    Float(f64),
+}
+
+impl RangeNumeric {
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Int(value) => value as f64,
+            Self::Float(value) => value,
+        }
+    }
+
+    const fn is_int(self) -> bool {
+        matches!(self, Self::Int(_))
+    }
+}
+
+fn range_step_arg(value: &Value) -> Result<RangeStep, BuiltinError> {
+    match range_numeric_arg("range", "#3 ($step)", value)? {
+        RangeNumeric::Int(value) => Ok(RangeStep::Int(value)),
+        RangeNumeric::Float(value) => Ok(RangeStep::Float(value)),
+    }
+}
+
+fn range_numeric_arg(
+    name: &str,
+    argument: &str,
+    value: &Value,
+) -> Result<RangeNumeric, BuiltinError> {
+    let value = deref_value(value);
+    let numeric = match &value {
+        Value::String(string) => {
+            let classified = classify_php_string(string);
+            match (classified.kind, classified.value) {
+                (
+                    NumericStringKind::IntString
+                    | NumericStringKind::FloatString
+                    | NumericStringKind::LeadingNumeric,
+                    Some(NumericStringValue::Int(value)),
+                ) => RangeNumeric::Int(value),
+                (
+                    NumericStringKind::IntString
+                    | NumericStringKind::FloatString
+                    | NumericStringKind::LeadingNumeric,
+                    Some(NumericStringValue::Float(value)),
+                ) => RangeNumeric::Float(value),
+                _ => RangeNumeric::Int(0),
+            }
+        }
+        _ => match to_number(&value).map_err(|message| conversion_error(name, message))? {
+            NumericValue::Int(value) => RangeNumeric::Int(value),
+            NumericValue::Float(value) => RangeNumeric::Float(value),
+        },
+    };
+    validate_finite_range_number(argument, numeric)?;
+    Ok(numeric)
+}
+
+fn validate_range_step(step: RangeStep) -> Result<(), BuiltinError> {
+    let value = step.as_f64();
+    if value == 0.0 {
+        return Err(argument_value_error("range", "#3 ($step)", "cannot be 0"));
+    }
+    if !value.is_finite() {
+        return Err(argument_value_error(
+            "range",
+            "#3 ($step)",
+            &format!(
+                "must be a finite number, {} provided",
+                php_non_finite_name(value)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_finite_range_number(argument: &str, value: RangeNumeric) -> Result<(), BuiltinError> {
+    let value = value.as_f64();
+    if value.is_finite() {
+        return Ok(());
+    }
+    Err(argument_value_error(
+        "range",
+        argument,
+        &format!(
+            "must be a finite number, {} provided",
+            php_non_finite_name(value)
+        ),
+    ))
+}
+
+fn php_non_finite_name(value: f64) -> &'static str {
+    if value.is_nan() { "NAN" } else { "INF" }
+}
+
+fn range_string_values(
+    start: &Value,
+    end: &Value,
+    step: RangeStep,
+) -> Result<Option<Vec<Value>>, BuiltinError> {
+    let (Value::String(start), Value::String(end)) = (deref_value(start), deref_value(end)) else {
+        return Ok(None);
+    };
+    if start.len() != 1 || end.len() != 1 || !step.is_integral() {
+        return Ok(None);
+    }
+    let Some(step) = step.abs_i64() else {
+        return Ok(None);
+    };
+    let step = i32::try_from(step).map_err(|_| range_step_span_error())?;
+    let start = i32::from(start.as_bytes()[0]);
+    let end = i32::from(end.as_bytes()[0]);
+    if start < end && step <= 0 {
+        return Err(range_increasing_step_error());
+    }
+    let distance = (start - end).abs();
+    if step > distance && distance != 0 {
+        return Err(range_step_span_error());
+    }
+    let count = distance / step.max(1) + 1;
+    ensure_range_size(count as usize)?;
+    let direction = if start <= end { 1 } else { -1 };
+    let mut out = Vec::with_capacity(count as usize);
+    let mut current = start;
+    loop {
+        out.push(Value::string(vec![current as u8]));
+        if current == end {
+            break;
+        }
+        let next = current + direction * step;
+        if (direction > 0 && next > end) || (direction < 0 && next < end) {
+            break;
+        }
+        current = next;
+    }
+    Ok(Some(out))
+}
+
+fn range_numeric_values(
+    start: RangeNumeric,
+    end: RangeNumeric,
+    step: RangeStep,
+) -> Result<Vec<Value>, BuiltinError> {
+    if start.as_f64() < end.as_f64() && step.as_f64() < 0.0 {
+        return Err(range_increasing_step_error());
+    }
+    let distance = (end.as_f64() - start.as_f64()).abs();
+    let step_abs = step.abs_f64();
+    if distance != 0.0 && step_abs > distance {
+        return Err(range_step_span_error());
+    }
+    let count = range_numeric_count(distance, step_abs)?;
+    ensure_range_size(count)?;
+    let use_int_values = start.is_int() && end.is_int() && step.is_integral();
+    if use_int_values {
+        let RangeNumeric::Int(start) = start else {
+            unreachable!("use_int_values requires integer start")
+        };
+        let RangeNumeric::Int(end) = end else {
+            unreachable!("use_int_values requires integer end")
+        };
+        let step = step.abs_i64().ok_or_else(range_step_span_error)?;
+        return range_int_values(start, end, step, count);
+    }
+    Ok(range_float_values(
+        start.as_f64(),
+        end.as_f64(),
+        step_abs,
+        count,
+    ))
+}
+
+fn range_numeric_count(distance: f64, step_abs: f64) -> Result<usize, BuiltinError> {
+    if !distance.is_finite() || !step_abs.is_finite() || step_abs <= 0.0 {
+        return Err(value_error(
+            "range",
+            "The supplied range exceeds the maximum array size",
+        ));
+    }
+    let steps = (distance / step_abs).floor();
+    if !steps.is_finite() || steps >= RANGE_MAX_ELEMENTS as f64 {
+        return Err(value_error(
+            "range",
+            "The supplied range exceeds the maximum array size",
+        ));
+    }
+    Ok(steps as usize + 1)
+}
+
+fn range_int_values(
+    start: i64,
+    end: i64,
+    step: i64,
+    count: usize,
+) -> Result<Vec<Value>, BuiltinError> {
+    if step <= 0 {
+        return Err(argument_value_error("range", "#3 ($step)", "cannot be 0"));
+    }
+    let mut out = Vec::with_capacity(count);
+    let direction = if start <= end { 1_i64 } else { -1_i64 };
+    let mut current = start;
+    loop {
+        out.push(Value::Int(current));
+        let Some(next) = current.checked_add(direction.saturating_mul(step)) else {
+            break;
+        };
+        if (direction > 0 && next > end) || (direction < 0 && next < end) {
+            break;
+        }
+        current = next;
+    }
+    Ok(out)
+}
+
+fn range_float_values(start: f64, end: f64, step: f64, count: usize) -> Vec<Value> {
+    let direction = if start <= end { 1.0 } else { -1.0 };
+    (0..count)
+        .map(|index| Value::float(start + direction * step * index as f64))
+        .collect()
+}
+
+fn ensure_range_size(count: usize) -> Result<(), BuiltinError> {
+    if count <= RANGE_MAX_ELEMENTS {
+        return Ok(());
+    }
+    Err(value_error(
+        "range",
+        "The supplied range exceeds the maximum array size",
+    ))
+}
+
+fn range_step_span_error() -> BuiltinError {
+    argument_value_error(
+        "range",
+        "#3 ($step)",
+        "must be less than the range spanned by argument #1 ($start) and argument #2 ($end)",
+    )
+}
+
+fn range_increasing_step_error() -> BuiltinError {
+    argument_value_error(
+        "range",
+        "#3 ($step)",
+        "must be greater than 0 for increasing ranges",
+    )
+}
+
 fn count_recursive(array: &crate::PhpArray) -> usize {
     let mut count = array.len();
     for (_, value) in array.iter() {
@@ -12539,6 +12850,151 @@ mod tests {
                 &mut output
             ),
             Value::Array(expected)
+        );
+    }
+
+    #[test]
+    fn array_range_builtin_covers_numeric_and_string_sequences() {
+        let mut output = OutputBuffer::new();
+
+        assert_eq!(
+            call("range", vec![Value::Int(1), Value::Int(5)], &mut output),
+            Value::packed_array(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5)
+            ])
+        );
+        assert_eq!(
+            call(
+                "range",
+                vec![Value::Int(5), Value::Int(1), Value::Int(2)],
+                &mut output
+            ),
+            Value::packed_array(vec![Value::Int(5), Value::Int(3), Value::Int(1)])
+        );
+        assert_eq!(
+            call(
+                "range",
+                vec![Value::Int(1), Value::Int(2), Value::float(0.5)],
+                &mut output
+            ),
+            Value::packed_array(vec![
+                Value::float(1.0),
+                Value::float(1.5),
+                Value::float(2.0)
+            ])
+        );
+        assert_eq!(
+            call(
+                "range",
+                vec![Value::string("a"), Value::string("e"), Value::Int(2)],
+                &mut output
+            ),
+            Value::packed_array(vec![
+                Value::string("a"),
+                Value::string("c"),
+                Value::string("e")
+            ])
+        );
+        assert_eq!(
+            call(
+                "range",
+                vec![Value::string("1"), Value::string("3")],
+                &mut output
+            ),
+            Value::packed_array(vec![
+                Value::string("1"),
+                Value::string("2"),
+                Value::string("3")
+            ])
+        );
+        assert_eq!(
+            call(
+                "range",
+                vec![Value::string("1"), Value::string("10"), Value::string("3")],
+                &mut output
+            ),
+            Value::packed_array(vec![
+                Value::Int(1),
+                Value::Int(4),
+                Value::Int(7),
+                Value::Int(10)
+            ])
+        );
+    }
+
+    #[test]
+    fn array_range_builtin_reports_step_value_errors() {
+        let mut output = OutputBuffer::new();
+
+        assert_eq!(
+            call_error(
+                "range",
+                vec![Value::Int(1), Value::Int(7), Value::Int(0)],
+                &mut output
+            ),
+            "range(): Argument #3 ($step) cannot be 0"
+        );
+        assert_eq!(
+            call_error(
+                "range",
+                vec![
+                    Value::float(1.0),
+                    Value::float(7.0),
+                    Value::float(f64::INFINITY)
+                ],
+                &mut output
+            ),
+            "range(): Argument #3 ($step) must be a finite number, INF provided"
+        );
+        assert_eq!(
+            call_error(
+                "range",
+                vec![Value::Int(1), Value::Int(7), Value::float(7.5)],
+                &mut output
+            ),
+            "range(): Argument #3 ($step) must be less than the range spanned by argument #1 ($start) and argument #2 ($end)"
+        );
+        assert_eq!(
+            call_error(
+                "range",
+                vec![Value::Int(1), Value::Int(3), Value::Int(-1)],
+                &mut output
+            ),
+            "range(): Argument #3 ($step) must be greater than 0 for increasing ranges"
+        );
+    }
+
+    #[test]
+    fn array_range_builtin_reports_oversized_ranges_without_panicking() {
+        let mut output = OutputBuffer::new();
+
+        assert_eq!(
+            call_error(
+                "range",
+                vec![Value::float(1.0), Value::float(f64::INFINITY)],
+                &mut output
+            ),
+            "range(): Argument #2 ($end) must be a finite number, INF provided"
+        );
+        assert_eq!(
+            call_error(
+                "range",
+                vec![Value::Int(i64::MIN), Value::Int(i64::MAX), Value::Int(1)],
+                &mut output
+            ),
+            "builtin range: The supplied range exceeds the maximum array size"
+        );
+        assert_eq!(
+            call_error(
+                "range",
+                vec![Value::Int(1), Value::Int(3), Value::Int(i64::MIN)],
+                &mut output
+            ),
+            "range(): Argument #3 ($step) must be greater than 0 for increasing ranges"
         );
     }
 
