@@ -1,5 +1,6 @@
 //! Arginfo, parameter validation, and builtin coercion support.
 
+use crate::generated::arginfo as generated_arginfo;
 use php_runtime::{
     PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value, to_bool, to_float,
     to_int, to_string,
@@ -242,6 +243,38 @@ impl FunctionArgInfo {
         }
     }
 
+    /// Creates runtime validation arginfo from generated php-src metadata when
+    /// every declared type maps to a scalar/runtime atom this validator can
+    /// check without class-table context.
+    #[must_use]
+    pub fn from_generated(
+        metadata: &'static generated_arginfo::GeneratedFunctionMetadata,
+    ) -> Option<Self> {
+        let mut params = Vec::with_capacity(metadata.params.len());
+        for param in metadata.params {
+            let type_spec = parse_generated_type(param.type_decl)?;
+            let mut info = if param.optional {
+                ParameterInfo::optional(param.name, type_spec, DefaultValue::None)
+            } else {
+                ParameterInfo::required(param.name, type_spec)
+            };
+            if param.by_ref {
+                info = info.by_ref();
+            }
+            if param.variadic {
+                info = info.variadic();
+            }
+            params.push(info);
+        }
+
+        Some(Self::new(
+            metadata.name,
+            params,
+            parse_generated_type(metadata.return_type)
+                .unwrap_or_else(|| TypeSpec::one(ArgType::Mixed)),
+        ))
+    }
+
     /// Function name.
     #[must_use]
     pub const fn name(&self) -> &'static str {
@@ -461,6 +494,46 @@ fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 
+fn parse_generated_type(type_decl: &str) -> Option<TypeSpec> {
+    let mut nullable = false;
+    let mut normalized = type_decl.trim();
+    if normalized.is_empty() || normalized == "void" || normalized == "never" {
+        return Some(TypeSpec::one(ArgType::Mixed));
+    }
+    if let Some(stripped) = normalized.strip_prefix('?') {
+        nullable = true;
+        normalized = stripped;
+    }
+
+    let mut atoms = Vec::new();
+    for atom in normalized.split('|') {
+        match atom.trim() {
+            "" => return None,
+            "mixed" => atoms.push(ArgType::Mixed),
+            "null" => {
+                nullable = true;
+                atoms.push(ArgType::Null);
+            }
+            "bool" | "false" | "true" => atoms.push(ArgType::Bool),
+            "int" => atoms.push(ArgType::Int),
+            "float" => atoms.push(ArgType::Float),
+            "string" => atoms.push(ArgType::String),
+            "array" => atoms.push(ArgType::Array),
+            "object" => atoms.push(ArgType::Object),
+            "callable" => atoms.push(ArgType::Callable),
+            _ => return None,
+        }
+    }
+    if atoms.is_empty() {
+        return None;
+    }
+    let mut spec = TypeSpec::union(atoms);
+    if nullable {
+        spec = spec.nullable();
+    }
+    Some(spec)
+}
+
 fn match_exact(atom: ArgType, value: &Value) -> Option<Value> {
     match (atom, value) {
         (ArgType::Mixed, value) => Some(value.clone()),
@@ -586,6 +659,26 @@ mod tests {
             validated.values(),
             &[Value::String(PhpString::from("42")), Value::Int(3),]
         );
+    }
+
+    #[test]
+    fn generated_function_metadata_builds_runtime_validator_info() {
+        let metadata = crate::generated::arginfo::function_metadata("strlen").expect("strlen");
+        let info = FunctionArgInfo::from_generated(metadata).expect("runtime arginfo");
+
+        assert_eq!(info.name(), "strlen");
+        assert_eq!(info.params().len(), 1);
+        assert_eq!(info.params()[0].name(), "string");
+        assert_eq!(info.params()[0].type_spec().display(), "string");
+        assert_eq!(info.return_type().display(), "int");
+    }
+
+    #[test]
+    fn generated_class_typed_metadata_is_left_to_call_context() {
+        let metadata =
+            crate::generated::arginfo::function_metadata("collator_sort").expect("collator_sort");
+
+        assert!(FunctionArgInfo::from_generated(metadata).is_none());
     }
 
     #[test]

@@ -2410,6 +2410,10 @@ impl Vm {
             Ok(values) => values,
             Err(result) => return result,
         };
+        let values = match validate_internal_builtin_args(name, values, compiled, output) {
+            Ok(values) => values,
+            Err(result) => return result,
+        };
         execute_builtin_entry(
             entry,
             values,
@@ -3694,7 +3698,7 @@ impl Vm {
                             ) {
                                 Ok(value) => value,
                                 Err(result) => {
-                                    if let Some(throwable) = builtin_error_throwable(&result) {
+                                    if let Some(throwable) = runtime_error_throwable(&result) {
                                         if let Some(target) = handle_throw(
                                             compiled,
                                             throwable.clone(),
@@ -7236,7 +7240,7 @@ impl Vm {
                             &running_fiber,
                         );
                         if !result.status.is_success()
-                            && let Some(throwable) = builtin_error_throwable(&result)
+                            && let Some(throwable) = runtime_error_throwable(&result)
                         {
                             if let Some(target) = handle_throw(
                                 compiled,
@@ -20587,12 +20591,53 @@ fn builtin_source_span(compiled: &CompiledUnit) -> RuntimeSourceSpan {
     }
 }
 
-fn builtin_error_throwable(result: &VmResult) -> Option<Value> {
+fn validate_internal_builtin_args(
+    name: &str,
+    values: Vec<Value>,
+    compiled: &CompiledUnit,
+    output: &OutputBuffer,
+) -> Result<Vec<Value>, VmResult> {
+    let Some(metadata) = php_std::generated::arginfo::function_metadata(name) else {
+        return Ok(values);
+    };
+    if metadata.params.iter().any(|param| param.by_ref) {
+        return Ok(values);
+    }
+    let Some(info) = php_std::arginfo::FunctionArgInfo::from_generated(metadata) else {
+        return Ok(values);
+    };
+    let mode = if compiled.unit().strict_types {
+        php_std::arginfo::CoercionMode::Strict
+    } else {
+        php_std::arginfo::CoercionMode::Weak
+    };
+    let span = builtin_source_span(compiled);
+    match php_std::arginfo::ArgumentValidator::new(mode).validate(&info, &values, span) {
+        Ok(validated) => Ok(validated.values().to_vec()),
+        Err(error) => Err(arginfo_error_result(error, output)),
+    }
+}
+
+fn arginfo_error_result(error: php_std::arginfo::ArginfoError, output: &OutputBuffer) -> VmResult {
+    let diagnostic = error.diagnostic().clone();
+    VmResult::runtime_error_with_diagnostic(
+        output.clone(),
+        diagnostic.message().to_owned(),
+        diagnostic,
+    )
+}
+
+fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
     let diagnostic = result.diagnostics.first()?;
     let class_name = match diagnostic.id() {
         "E_PHP_RUNTIME_BUILTIN_ARITY" => "ArgumentCountError",
         "E_PHP_RUNTIME_BUILTIN_TYPE" => "TypeError",
         "E_PHP_RUNTIME_BUILTIN_VALUE" => "ValueError",
+        "E_PHP_STD_MISSING_ARGUMENT" | "E_PHP_STD_TOO_MANY_ARGUMENTS" => "ArgumentCountError",
+        "E_PHP_STD_TYPE_ERROR" => "TypeError",
+        "E_PHP_STD_VALUE_ERROR" => "ValueError",
+        "E_PHP_VM_TOO_FEW_ARGS" | "E_PHP_VM_TOO_MANY_ARGS" => "ArgumentCountError",
+        "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE" => "Error",
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",
         _ => return None,
@@ -22933,6 +22978,23 @@ mod tests {
             result.output.to_string_lossy(),
             "arity|arity-type|type|value"
         );
+    }
+
+    #[test]
+    fn generated_arginfo_drives_builtin_scalar_coercion_mode() {
+        let weak = execute_source("<?php echo strlen(42), '|', strtoupper(42);");
+        assert!(weak.status.is_success(), "{:?}", weak.status);
+        assert_eq!(weak.output.as_bytes(), b"2|42");
+
+        let strict = execute_source(
+            "<?php declare(strict_types=1);
+            try { strlen(42); } catch (TypeError $e) { echo 'strlen'; }
+            echo '|';
+            try { ord(49); } catch (TypeError $e) { echo 'ord'; }
+            ",
+        );
+        assert!(strict.status.is_success(), "{:?}", strict.status);
+        assert_eq!(strict.output.as_bytes(), b"strlen|ord");
     }
 
     #[test]
@@ -28793,6 +28855,22 @@ echo perf_jit_unstable_types_debug(4), "\n";
         let ret = execute_source("<?php function &bad_ref() { return 1; } $x =& bad_ref();");
         assert_eq!(ret.status.exit_status(), ExitStatus::RuntimeError);
         assert_eq!(ret.diagnostics[0].id(), "E_PHP_VM_BY_REF_RETURN_TEMPORARY");
+    }
+
+    #[test]
+    fn call_by_ref_argument_mismatch_is_catchable_error() {
+        let result = execute_source(
+            "<?php
+            function set_value(&$value): void { $value = 2; }
+            try {
+                set_value(1);
+            } catch (Error $e) {
+                echo 'by-ref';
+            }
+            ",
+        );
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"by-ref");
     }
 
     #[test]

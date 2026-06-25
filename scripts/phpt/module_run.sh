@@ -130,8 +130,8 @@ fi
   --php-src "$php_src" \
   --work-dir "$reference_dir/work" \
   --timeout-seconds "${PHPT_TIMEOUT_SECONDS:-10}" \
-  "${reference_reuse_args[@]}" \
-  "${job_args[@]}"
+  ${reference_reuse_args[@]+"${reference_reuse_args[@]}"} \
+  ${job_args[@]+"${job_args[@]}"}
 
 set +e
 "$phpt_tool" run \
@@ -143,8 +143,8 @@ set +e
   --php-src "$php_src" \
   --work-dir "$target_dir/work" \
   --timeout-seconds "${PHPT_TIMEOUT_SECONDS:-10}" \
-  "${target_reuse_args[@]}" \
-  "${job_args[@]}"
+  ${target_reuse_args[@]+"${target_reuse_args[@]}"} \
+  ${job_args[@]+"${job_args[@]}"}
 target_status=$?
 set -e
 
