@@ -4256,6 +4256,138 @@ impl Vm {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
+                    InstructionKind::DynamicNewObject {
+                        dst,
+                        class_name,
+                        args,
+                    } => {
+                        let class_name = match read_operand(unit, stack, *class_name) {
+                            Ok(Value::String(value)) => {
+                                normalize_class_name(&value.to_string_lossy())
+                            }
+                            Ok(Value::Object(object)) => normalize_class_name(&object.class_name()),
+                            Ok(other) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_INVALID_DYNAMIC_CLASS_NAME: class name must be string or object, {} given",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let values = match read_call_args(unit, stack, args) {
+                            Ok(values) => values,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if is_std_class_runtime_class(&class_name) {
+                            if !values.is_empty() {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_TOO_MANY_ARGS: constructor for class {class_name} does not accept arguments"
+                                    ),
+                                );
+                            }
+                            let object = ObjectRef::new(&std_class_entry());
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        let Some(class) = lookup_class_in_state(compiled, state, &class_name)
+                        else {
+                            return self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!(
+                                    "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
+                                ),
+                            );
+                        };
+                        let runtime_class = match runtime_class_entry(compiled, &class, &|value| {
+                            self.constant_value(compiled.unit(), value)
+                        }) {
+                            Ok(class) => class,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if let Err(message) = validate_object_mvp(&runtime_class) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        let object = ObjectRef::new(&runtime_class);
+                        if let Some(constructor) = class.constructor {
+                            let class_owner = dynamic_class_owner_in_state(state, &class.name)
+                                .unwrap_or_else(|| compiled.clone());
+                            let result = self.execute_function(
+                                &class_owner,
+                                constructor,
+                                FunctionCall::new(values, Vec::new())
+                                    .with_this(object.clone())
+                                    .with_class_context(
+                                        class.name.clone(),
+                                        class.name.clone(),
+                                        class.name.clone(),
+                                    )
+                                    .inherit_fiber_context(&running_fiber),
+                                output,
+                                stack,
+                                state,
+                            );
+                            if !result.status.is_success() {
+                                return result;
+                            }
+                            if result.fiber_suspension.is_some() {
+                                return self.propagate_fiber_suspension(
+                                    result,
+                                    compiled,
+                                    *dst,
+                                    block_id,
+                                    instruction_index + 1,
+                                    &foreach_iterators,
+                                    &exception_handlers,
+                                    &pending_control,
+                                    output,
+                                    stack,
+                                );
+                            }
+                            diagnostics.extend(result.diagnostics);
+                        } else if !values.is_empty() {
+                            return self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!(
+                                    "E_PHP_VM_TOO_MANY_ARGS: constructor for class {class_name} does not accept arguments"
+                                ),
+                            );
+                        }
+                        self.register_destructor_if_needed(compiled, &class, object.clone(), state);
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("caller frame is active")
+                            .registers
+                            .set(*dst, Value::Object(object))
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
                     InstructionKind::NewObject {
                         dst,
                         class_name,
@@ -7923,6 +8055,66 @@ impl Vm {
                         ) {
                             Ok(Some(method)) => method,
                             Ok(None) => {
+                                if let Some(object) = current_this_object(compiled, stack) {
+                                    let result = match self.call_magic_instance_method(
+                                        compiled,
+                                        object,
+                                        "__call",
+                                        method,
+                                        values.clone(),
+                                        output,
+                                        stack,
+                                        state,
+                                    ) {
+                                        Ok(Some(result)) => result,
+                                        Ok(None) => {
+                                            let called_class = called_class_for_static_call(
+                                                compiled, stack, class_name, class,
+                                            );
+                                            match self.call_magic_static_method(
+                                                compiled,
+                                                class,
+                                                "__callStatic",
+                                                method,
+                                                values,
+                                                called_class,
+                                                output,
+                                                stack,
+                                                state,
+                                            ) {
+                                                Ok(Some(result)) => result,
+                                                Ok(None) => {
+                                                    return self.runtime_error(
+                                                        output,
+                                                        compiled,
+                                                        stack,
+                                                        format!(
+                                                            "E_PHP_VM_UNKNOWN_METHOD: method {}::{} is not defined",
+                                                            class.name, method
+                                                        ),
+                                                    );
+                                                }
+                                                Err(result) => return result,
+                                            }
+                                        }
+                                        Err(result) => return result,
+                                    };
+                                    if !result.status.is_success() {
+                                        return result;
+                                    }
+                                    diagnostics.extend(result.diagnostics);
+                                    let return_value = result.return_value.unwrap_or(Value::Null);
+                                    if let Err(message) = stack
+                                        .current_mut()
+                                        .expect("caller frame is active")
+                                        .registers
+                                        .set(*dst, return_value)
+                                    {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                    continue;
+                                }
                                 let called_class = called_class_for_static_call(
                                     compiled, stack, class_name, class,
                                 );
@@ -17136,6 +17328,20 @@ fn current_scope_class(compiled: &CompiledUnit, stack: &CallStack) -> Option<Str
                 .map(|(class, _)| normalize_class_name(class))
         })
         .flatten()
+}
+
+fn current_this_object(compiled: &CompiledUnit, stack: &CallStack) -> Option<ObjectRef> {
+    let frame = stack.current()?;
+    let function = compiled.unit().functions.get(frame.function.index())?;
+    let local = function
+        .locals
+        .iter()
+        .position(|name| name == "this")
+        .map(|index| LocalId::new(index as u32))?;
+    match frame.locals.get(local)? {
+        Value::Object(object) => Some(object),
+        _ => None,
+    }
 }
 
 fn current_called_class(compiled: &CompiledUnit, stack: &CallStack) -> Option<String> {
@@ -27407,14 +27613,18 @@ echo perf_jit_unstable_types_debug(4), "\n";
         assert_eq!(missing.status.exit_status(), ExitStatus::RuntimeError);
         assert_eq!(
             missing.status.message(),
-            Some("E_PHP_VM_TOO_FEW_ARGS: function one expects at least 1 argument(s), got 0")
+            Some(
+                "E_PHP_VM_UNCAUGHT_EXCEPTION: Uncaught ArgumentCountError: function one expects at least 1 argument(s), got 0"
+            )
         );
 
         let extra = execute_source("<?php function one($a) { return $a; } one(1, 2);");
         assert_eq!(extra.status.exit_status(), ExitStatus::RuntimeError);
         assert_eq!(
             extra.status.message(),
-            Some("E_PHP_VM_TOO_MANY_ARGS: function one expects at most 1 argument(s), got 2")
+            Some(
+                "E_PHP_VM_UNCAUGHT_EXCEPTION: Uncaught ArgumentCountError: function one expects at most 1 argument(s), got 2"
+            )
         );
     }
 

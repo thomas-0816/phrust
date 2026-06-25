@@ -1992,6 +1992,7 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::Include { .. } => "include",
         InstructionKind::Eval { .. } => "eval",
         InstructionKind::NewObject { .. } => "new_object",
+        InstructionKind::DynamicNewObject { .. } => "dynamic_new_object",
         InstructionKind::FetchProperty { .. } => "fetch_property",
         InstructionKind::IssetProperty { .. } => "isset_property",
         InstructionKind::EmptyProperty { .. } => "empty_property",

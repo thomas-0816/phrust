@@ -3624,13 +3624,45 @@ impl LoweringContext<'_> {
         class: Option<ExprId>,
         args: Vec<HirCallArg>,
     ) -> Option<LoweredExpr> {
-        let Some(class_name) = class.and_then(|class| self.static_class_name(class)) else {
+        let Some(class) = class else {
             self.unsupported(
                 UnsupportedFeature::HirStatement,
                 site.range,
-                "new expression class name is not static in the object-runtime object MVP",
+                "new expression is missing its class operand",
             );
             return None;
+        };
+        let Some(class_name) = self.static_class_name(class) else {
+            let class_name =
+                self.lower_expr_to_register(builder, site.function, site.block, class)?;
+            let dynamic_site = LowerSite {
+                block: class_name.block,
+                ..site
+            };
+            let (operands, current) = self.lower_call_args(builder, dynamic_site, &args)?;
+            let dst = builder.alloc_register(site.function);
+            let instruction = builder.emit(
+                site.function,
+                current,
+                InstructionKind::DynamicNewObject {
+                    dst,
+                    class_name: Operand::Register(class_name.register),
+                    args: operands,
+                },
+                site.span,
+            );
+            self.add_expr_source_map(
+                builder,
+                site.function,
+                current,
+                instruction,
+                site.expr,
+                site.span,
+            );
+            return Some(LoweredExpr {
+                register: dst,
+                block: current,
+            });
         };
         let normalized_class_name = normalize_class_name(&class_name);
         if is_internal_throwable_class(&normalized_class_name) {

@@ -177,6 +177,7 @@ impl ParameterInfo {
     #[must_use]
     pub fn variadic(mut self) -> Self {
         self.variadic = true;
+        self.required = false;
         self
     }
 
@@ -699,7 +700,25 @@ mod tests {
         assert!(info.params()[0].is_by_ref());
         assert!(info.params()[0].type_spec().is_nullable());
         assert!(info.params()[1].is_variadic());
+        assert!(!info.params()[1].is_required());
         assert_eq!(info.return_type().display(), "null");
+    }
+
+    #[test]
+    fn generated_variadic_tail_does_not_raise_required_arity() {
+        let metadata = crate::generated::arginfo::function_metadata("var_dump").expect("var_dump");
+        let info = FunctionArgInfo::from_generated(metadata).expect("runtime arginfo");
+
+        assert_eq!(info.params().len(), 2);
+        assert!(info.params()[1].is_variadic());
+        assert!(!info.params()[1].is_required());
+
+        let result = ArgumentValidator::new(CoercionMode::Weak).validate(
+            &info,
+            &[Value::Null],
+            RuntimeSourceSpan::default(),
+        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

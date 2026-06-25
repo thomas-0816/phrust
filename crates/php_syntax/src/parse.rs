@@ -302,6 +302,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_dynamic_new_class_references_without_recovery() {
+        let source = "<?php $arr = [new stdClass, 'stdClass']; new $arr[0](); new $arr[1]();";
+        let parse = parse_source_file(source);
+        let debug = parse.debug_tree();
+
+        assert!(
+            !parse.has_errors(),
+            "unexpected parser diagnostics: {:?}",
+            parse.diagnostics()
+        );
+        assert_eq!(debug.matches("NEW_EXPR").count(), 3);
+        assert!(debug.contains("ARRAY_DIM_FETCH_EXPR"));
+        assert_eq!(parse.reconstructed_text(), source);
+    }
+
+    #[test]
     fn print_construct_keeps_concat_operand() {
         let source = "<?php print(bin2hex($char)).\" => \".bin2hex($char).\"\\n\";";
         let parse = parse_source_file(source);

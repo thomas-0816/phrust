@@ -354,6 +354,12 @@ pub enum InstructionKind {
         class_name: String,
         args: Vec<IrCallArg>,
     },
+    /// Creates a new object from a runtime class-name expression.
+    DynamicNewObject {
+        dst: RegId,
+        class_name: Operand,
+        args: Vec<IrCallArg>,
+    },
     /// Fetches an instance property by static property name.
     FetchProperty {
         dst: RegId,

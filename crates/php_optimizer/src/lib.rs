@@ -602,6 +602,7 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::Include { dst, .. }
         | InstructionKind::Eval { dst, .. }
         | InstructionKind::NewObject { dst, .. }
+        | InstructionKind::DynamicNewObject { dst, .. }
         | InstructionKind::FetchProperty { dst, .. }
         | InstructionKind::IssetProperty { dst, .. }
         | InstructionKind::EmptyProperty { dst, .. }

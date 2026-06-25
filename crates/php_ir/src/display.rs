@@ -676,6 +676,19 @@ fn format_instruction(kind: &InstructionKind) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        InstructionKind::DynamicNewObject {
+            dst,
+            class_name,
+            args,
+        } => format!(
+            "dynamic_new_object r{} {} ({})",
+            dst.raw(),
+            format_operand(class_name),
+            args.iter()
+                .map(format_call_arg)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         InstructionKind::FetchProperty {
             dst,
             object,

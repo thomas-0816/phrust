@@ -904,13 +904,13 @@ runtime-fixtures:
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    grep -q 'E_PHP_VM_TOO_FEW_ARGS' "$tmp_dir/functions-missing-arg.err"; \
+    grep -q 'ArgumentCountError: function one expects at least 1 argument(s), got 0' "$tmp_dir/functions-missing-arg.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/functions/extra-arg.php > "$tmp_dir/functions-extra-arg.out" 2> "$tmp_dir/functions-extra-arg.err"; \
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    grep -q 'E_PHP_VM_TOO_MANY_ARGS' "$tmp_dir/functions-extra-arg.err"; \
+    grep -q 'ArgumentCountError: function one expects at most 1 argument(s), got 2' "$tmp_dir/functions-extra-arg.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/functions/return-type-error.php > "$tmp_dir/functions-return-type-error.out" 2> "$tmp_dir/functions-return-type-error.err"; \
     code=$?; \

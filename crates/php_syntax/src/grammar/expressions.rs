@@ -420,6 +420,11 @@ fn parse_new_expression(parser: &mut Parser<'_>) {
         if parser.at(symbol(b'(')) {
             parse_call_tail(parser);
         }
+    } else if parse_dynamic_new_class_reference(parser) {
+        bump_trivia(parser);
+        if parser.at(symbol(b'(')) {
+            parse_call_tail(parser);
+        }
     } else {
         parser.error_expected(
             "expected class name or anonymous class after `new`",
@@ -428,6 +433,51 @@ fn parse_new_expression(parser: &mut Parser<'_>) {
     }
 
     let _completed = new_expr.complete(parser, SyntaxKind::Node(SyntaxNodeKind::NewExpr));
+}
+
+fn parse_dynamic_new_class_reference(parser: &mut Parser<'_>) -> bool {
+    if !at_dynamic_new_class_reference_start(parser) {
+        return false;
+    }
+
+    let expr = parser.start();
+    if !parse_prefix_or_primary(parser) {
+        let _completed = expr.complete(parser, SyntaxKind::ERROR);
+        return false;
+    }
+
+    loop {
+        bump_trivia(parser);
+        if parser.at(symbol(b'(')) || at_expression_stop(parser) {
+            break;
+        }
+        if parser.at(symbol(b'[')) {
+            arrays::parse_dim_fetch_tail(parser, b'[', b']');
+            continue;
+        }
+        if parser.at(symbol(b'{')) {
+            arrays::parse_dim_fetch_tail(parser, b'{', b'}');
+            continue;
+        }
+        if parser.at(named(TokenName::ObjectOperator))
+            || parser.at(named(TokenName::NullsafeObjectOperator))
+        {
+            parse_property_fetch_tail(parser);
+            continue;
+        }
+        if parser.at(named(TokenName::DoubleColon)) {
+            parse_static_access_tail(parser);
+            continue;
+        }
+        break;
+    }
+
+    let _completed = expr.complete(parser, SyntaxKind::Node(SyntaxNodeKind::Expr));
+    true
+}
+
+fn at_dynamic_new_class_reference_start(parser: &Parser<'_>) -> bool {
+    parser.at(named(TokenName::Variable)) || parser.at(symbol(b'('))
 }
 
 fn parse_static_class_name(parser: &mut Parser<'_>) -> bool {

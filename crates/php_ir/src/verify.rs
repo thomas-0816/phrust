@@ -453,6 +453,15 @@ fn verify_instruction(
             verify_register(*dst, function.register_count, errors);
             verify_call_args(args, function, unit, errors);
         }
+        InstructionKind::DynamicNewObject {
+            dst,
+            class_name,
+            args,
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(class_name, function, unit, errors);
+            verify_call_args(args, function, unit, errors);
+        }
         InstructionKind::FetchProperty { dst, object, .. } => {
             verify_register(*dst, function.register_count, errors);
             verify_operand(object, function, unit, errors);
@@ -955,6 +964,12 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         | InstructionKind::CallFunction { args, .. }
         | InstructionKind::CallStaticMethod { args, .. }
         | InstructionKind::NewObject { args, .. } => call_args_register_uses(args, uses),
+        InstructionKind::DynamicNewObject {
+            class_name, args, ..
+        } => {
+            operand_register_uses(class_name, uses);
+            call_args_register_uses(args, uses);
+        }
         InstructionKind::CallMethod { object, args, .. } => {
             operand_register_uses(object, uses);
             call_args_register_uses(args, uses);
@@ -1051,6 +1066,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::Pipe { dst, .. }
         | InstructionKind::Include { dst, .. }
         | InstructionKind::Eval { dst, .. }
+        | InstructionKind::DynamicNewObject { dst, .. }
         | InstructionKind::NewObject { dst, .. }
         | InstructionKind::FetchProperty { dst, .. }
         | InstructionKind::IssetProperty { dst, .. }
