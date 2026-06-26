@@ -106,6 +106,25 @@ pub fn try_fold_const_expr_pure(module: &HirModule, expr_id: ExprId) -> Option<C
         HirExprKind::Name { resolution } => {
             Some(ConstValue::UnresolvedRef(resolution.source().to_owned()))
         }
+        HirExprKind::DimFetch { receiver, dim } => {
+            let receiver = try_fold_const_expr_pure(module, (*receiver)?)?;
+            let dim = try_fold_const_expr_pure(module, (*dim)?)?;
+            match (receiver, dim) {
+                (ConstValue::String(string), ConstValue::Int(index)) => {
+                    let bytes = string.as_bytes();
+                    let length = bytes.len() as i64;
+                    let resolved = if index < 0 { index + length } else { index };
+                    if resolved < 0 || resolved >= length {
+                        None
+                    } else {
+                        Some(ConstValue::String(
+                            char::from(bytes[resolved as usize]).to_string(),
+                        ))
+                    }
+                }
+                _ => None,
+            }
+        }
         HirExprKind::StaticAccess { .. } => None,
         HirExprKind::Array { .. }
         | HirExprKind::ArrayPair { .. }
@@ -124,7 +143,6 @@ pub fn try_fold_const_expr_pure(module: &HirModule, expr_id: ExprId) -> Option<C
         | HirExprKind::BuiltinCall { .. }
         | HirExprKind::MethodCall { .. }
         | HirExprKind::PropertyFetch { .. }
-        | HirExprKind::DimFetch { .. }
         | HirExprKind::Clone { .. }
         | HirExprKind::Pipe { .. }
         | HirExprKind::CloneWith { .. }
@@ -214,6 +232,12 @@ pub fn validate_const_expr_allowed_forms(
                 allowed: class_allowed && args_allowed,
             }
         }
+        HirExprKind::DimFetch { receiver, dim } => aggregate(
+            module,
+            ConstExprKind::Dim,
+            [*receiver, *dim].into_iter().flatten(),
+            context,
+        ),
         HirExprKind::Missing => disallowed(ConstExprKind::Missing),
         HirExprKind::Variable { .. }
         | HirExprKind::Assign { .. }
@@ -221,7 +245,6 @@ pub fn validate_const_expr_allowed_forms(
         | HirExprKind::BuiltinCall { .. }
         | HirExprKind::MethodCall { .. }
         | HirExprKind::PropertyFetch { .. }
-        | HirExprKind::DimFetch { .. }
         | HirExprKind::Clone { .. }
         | HirExprKind::Pipe { .. }
         | HirExprKind::CloneWith { .. }

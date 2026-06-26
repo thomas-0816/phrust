@@ -131,6 +131,8 @@ pub enum ConstExprKind {
     Cast,
     /// Object creation expression.
     New,
+    /// Array or string dimension fetch (e.g. `[1, 2][0]` or `"ab"[0]`).
+    Dim,
     /// Structurally disallowed expression family.
     Disallowed,
 }
@@ -153,6 +155,7 @@ impl ConstExprKind {
             Self::FirstClassCallable => "first_class_callable",
             Self::Cast => "cast",
             Self::New => "new",
+            Self::Dim => "dim",
             Self::Disallowed => "disallowed",
         }
     }
