@@ -23842,6 +23842,54 @@ fn assign_globals_dim(
     Ok(())
 }
 
+/// Write a single byte into a string offset, following PHP semantics: the first
+/// byte of the value replaces the byte at the index, the string is padded with
+/// spaces when the index is past the end, and only a single integer dimension is
+/// allowed.
+fn write_string_offset(
+    mut bytes: Vec<u8>,
+    dims: &[ArrayKey],
+    value: Value,
+    append: bool,
+) -> Result<Vec<u8>, String> {
+    if append {
+        return Err("E_PHP_VM_STRING_APPEND: [] operator not supported for strings".to_owned());
+    }
+    let [key] = dims else {
+        return Err(
+            "E_PHP_VM_STRING_OFFSET_NESTED: cannot use a nested write on a string offset"
+                .to_owned(),
+        );
+    };
+    let index = match key {
+        ArrayKey::Int(value) => *value,
+        ArrayKey::String(value) => leading_int_offset(value.as_bytes()).ok_or_else(|| {
+            "E_PHP_VM_STRING_OFFSET_TYPE: Cannot access offset of type string on string".to_owned()
+        })?,
+    };
+    let length = bytes.len() as i64;
+    let resolved = if index < 0 { index + length } else { index };
+    if resolved < 0 {
+        return Err(format!(
+            "E_PHP_VM_STRING_OFFSET_NEGATIVE: Illegal string offset {index}"
+        ));
+    }
+    let replacement =
+        to_string(&value).map_err(|message| format!("E_PHP_VM_STRING_OFFSET_VALUE: {message}"))?;
+    let Some(&first) = replacement.as_bytes().first() else {
+        return Err(
+            "E_PHP_VM_STRING_OFFSET_EMPTY: Cannot assign an empty string to a string offset"
+                .to_owned(),
+        );
+    };
+    let index = resolved as usize;
+    if index >= bytes.len() {
+        bytes.resize(index + 1, b' ');
+    }
+    bytes[index] = first;
+    Ok(bytes)
+}
+
 fn assign_dim_value(
     container: &mut Value,
     dims: &[ArrayKey],
@@ -23872,6 +23920,11 @@ fn assign_dim_value(
             array_key_to_value(key.clone())
         };
         spl_container_offset_set(object, key, value)?;
+        return Ok(());
+    }
+    if let Value::String(string) = container {
+        let updated = write_string_offset(string.as_bytes().to_vec(), dims, value, append)?;
+        *container = Value::string(updated);
         return Ok(());
     }
     let Value::Array(array) = container else {
