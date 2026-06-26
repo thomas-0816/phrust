@@ -7024,9 +7024,11 @@ fn substr_replace_indexed_string_arg(
     index: usize,
 ) -> Result<PhpString, BuiltinError> {
     match deref_value(value) {
-        Value::Array(array) => array.packed_element(index).map_or_else(
+        // PHP walks the replacement array's values in iteration order, so a gap
+        // left by unset() is skipped rather than yielding an empty replacement.
+        Value::Array(array) => array.iter().nth(index).map_or_else(
             || Ok(PhpString::from_bytes(Vec::new())),
-            |value| string_arg("substr_replace", value),
+            |(_, value)| string_arg("substr_replace", value),
         ),
         other => string_arg("substr_replace", &other),
     }
@@ -7037,9 +7039,9 @@ fn substr_replace_indexed_int_arg(
     index: usize,
 ) -> Result<Option<i64>, BuiltinError> {
     match deref_value(value) {
-        Value::Array(array) => array
-            .packed_element(index)
-            .map_or(Ok(None), |value| int_arg("substr_replace", value).map(Some)),
+        Value::Array(array) => array.iter().nth(index).map_or(Ok(None), |(_, value)| {
+            int_arg("substr_replace", value).map(Some)
+        }),
         other => int_arg("substr_replace", &other).map(Some),
     }
 }
