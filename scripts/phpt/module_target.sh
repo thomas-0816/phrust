@@ -54,6 +54,17 @@ if [[ -z "$module" ]]; then
   exit 2
 fi
 
+if [[ -n "$focus_file" && -n "$focus_pattern" ]]; then
+  printf '%s\n' 'Use either FILE or PATTERN, not both.' >&2
+  exit 2
+fi
+
+if [[ -n "${PHPT_REQUIRE_FOCUS:-}" && "${PHPT_REQUIRE_FOCUS:-}" != "0" && -z "$focus_file" && -z "$focus_pattern" ]]; then
+  printf '%s\n' 'Focused PHPT run requires FILE=... or PATTERN=....' >&2
+  printf '%s\n' 'Use just phpt-module-target MODULE=<module> for a full target-only module run.' >&2
+  exit 2
+fi
+
 safe_module="$(printf '%s' "$module" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
 selected_manifest="tests/phpt/manifests/modules/${safe_module}.selected.jsonl"
 generated_manifest="tests/phpt/manifests/${safe_module}-generated.jsonl"
@@ -74,17 +85,6 @@ fi
 
 if [[ ! -s "$manifest" ]]; then
   scripts/phpt/generate_module.sh "MODULE=$module"
-fi
-
-if [[ -n "$focus_file" && -n "$focus_pattern" ]]; then
-  printf '%s\n' 'Use either FILE or PATTERN, not both.' >&2
-  exit 2
-fi
-
-if [[ -n "${PHPT_REQUIRE_FOCUS:-}" && "${PHPT_REQUIRE_FOCUS:-}" != "0" && -z "$focus_file" && -z "$focus_pattern" ]]; then
-  printf '%s\n' 'Focused PHPT run requires FILE=... or PATTERN=....' >&2
-  printf '%s\n' 'Use just phpt-module-target MODULE=<module> for a full target-only module run.' >&2
-  exit 2
 fi
 
 if [[ -n "$focus_file" ]]; then
