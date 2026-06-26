@@ -150,9 +150,9 @@
                 mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR" "$CCACHE_DIR"
                 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
                 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang
-                case " ${RUSTFLAGS:-} " in
+                case " ''${RUSTFLAGS:-} " in
                   *" -C link-arg=-fuse-ld=mold "*) ;;
-                  *) export RUSTFLAGS="-C link-arg=-fuse-ld=mold ${RUSTFLAGS:-}" ;;
+                  *) export RUSTFLAGS="-C link-arg=-fuse-ld=mold ''${RUSTFLAGS:-}" ;;
                 esac
               ''
               + ''
