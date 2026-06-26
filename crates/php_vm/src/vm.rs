@@ -6760,19 +6760,135 @@ impl Vm {
                                             .runtime_error(output, compiled, stack, message);
                                     }
                                 };
-                                match fetch_dim_value(&array, &key) {
-                                    Ok(Some(value)) => value,
-                                    Ok(None) if *quiet => Value::Null,
-                                    Ok(None) => {
-                                        diagnostics.push(undefined_array_key_warning(
-                                            &key,
-                                            stack_trace(compiled, stack),
-                                        ));
-                                        Value::Null
+                                let base = effective_value(&array);
+                                if let Value::String(string) = &base {
+                                    match string_offset_for_read(string, &key) {
+                                        StringOffsetRead::Byte(value) => value,
+                                        StringOffsetRead::Illegal { value, key_bytes } => {
+                                            if !*quiet {
+                                                let diagnostic = illegal_string_offset_warning(
+                                                    &key_bytes,
+                                                    runtime_source_span(compiled, instruction.span),
+                                                    stack_trace(compiled, stack),
+                                                );
+                                                match self.dispatch_error_handler(
+                                                    compiled,
+                                                    output,
+                                                    stack,
+                                                    state,
+                                                    php_runtime::PHP_E_WARNING,
+                                                    &diagnostic,
+                                                ) {
+                                                    Ok(false)
+                                                        if error_reporting_allows(
+                                                            state,
+                                                            php_runtime::PHP_E_WARNING,
+                                                        ) =>
+                                                    {
+                                                        emit_vm_diagnostic(
+                                                            output,
+                                                            state,
+                                                            &diagnostic,
+                                                            php_runtime::PhpDiagnosticChannel::Warning,
+                                                            php_runtime::PHP_E_WARNING,
+                                                        );
+                                                        diagnostics.push(diagnostic);
+                                                    }
+                                                    Ok(_) => {}
+                                                    Err(result) => return result,
+                                                }
+                                            }
+                                            value
+                                        }
+                                        StringOffsetRead::OutOfRange(index) => {
+                                            if *quiet {
+                                                Value::Null
+                                            } else {
+                                                let diagnostic =
+                                                    uninitialized_string_offset_warning(
+                                                        index,
+                                                        runtime_source_span(
+                                                            compiled,
+                                                            instruction.span,
+                                                        ),
+                                                        stack_trace(compiled, stack),
+                                                    );
+                                                match self.dispatch_error_handler(
+                                                    compiled,
+                                                    output,
+                                                    stack,
+                                                    state,
+                                                    php_runtime::PHP_E_WARNING,
+                                                    &diagnostic,
+                                                ) {
+                                                    Ok(false)
+                                                        if error_reporting_allows(
+                                                            state,
+                                                            php_runtime::PHP_E_WARNING,
+                                                        ) =>
+                                                    {
+                                                        emit_vm_diagnostic(
+                                                            output,
+                                                            state,
+                                                            &diagnostic,
+                                                            php_runtime::PhpDiagnosticChannel::Warning,
+                                                            php_runtime::PHP_E_WARNING,
+                                                        );
+                                                        diagnostics.push(diagnostic);
+                                                    }
+                                                    Ok(_) => {}
+                                                    Err(result) => return result,
+                                                }
+                                                Value::string(Vec::new())
+                                            }
+                                        }
+                                        StringOffsetRead::NonNumeric => {
+                                            if *quiet {
+                                                Value::Null
+                                            } else {
+                                                let result = self.runtime_error(
+                                                    output,
+                                                    compiled,
+                                                    stack,
+                                                    "E_PHP_VM_STRING_OFFSET_TYPE: Cannot access offset of type string on string"
+                                                        .to_owned(),
+                                                );
+                                                if let Some(throwable) =
+                                                    runtime_error_throwable(&result)
+                                                {
+                                                    if let Some(target) = handle_throw(
+                                                        compiled,
+                                                        throwable.clone(),
+                                                        &mut exception_handlers,
+                                                        stack,
+                                                        &mut pending_control,
+                                                    ) {
+                                                        block_id = target;
+                                                        continue 'dispatch;
+                                                    }
+                                                    return self.handle_uncaught_exception(
+                                                        compiled, output, stack, state, throwable,
+                                                    );
+                                                }
+                                                return result;
+                                            }
+                                        }
                                     }
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
+                                } else {
+                                    match fetch_dim_value(&array, &key) {
+                                        Ok(Some(value)) => value,
+                                        Ok(None) if *quiet => Value::Null,
+                                        Ok(None) => {
+                                            diagnostics.push(undefined_array_key_warning(
+                                                &key,
+                                                stack_trace(compiled, stack),
+                                            ));
+                                            Value::Null
+                                        }
+                                        Err(message) => {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
                                     }
                                 }
                             }
@@ -21659,6 +21775,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE" => "Error",
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",
+        "E_PHP_VM_STRING_OFFSET_TYPE" => "TypeError",
         _ => return None,
     };
     let message = diagnostic
@@ -22444,6 +22561,43 @@ fn string_offset_byte(string: &PhpString, key: &ArrayKey) -> Option<Value> {
         return None;
     }
     Some(Value::string(vec![string.as_bytes()[resolved as usize]]))
+}
+
+/// Outcome of reading a string offset, distinguishing the diagnostics PHP emits.
+enum StringOffsetRead {
+    /// In-range read with an integer (or canonical integer string) key.
+    Byte(Value),
+    /// Integer offset outside the string; PHP warns "Uninitialized string offset".
+    OutOfRange(i64),
+    /// Leading-integer string key (e.g. `"0foo"`); PHP warns "Illegal string offset".
+    Illegal { value: Value, key_bytes: Vec<u8> },
+    /// Non-numeric string key; PHP throws TypeError on read, false on isset.
+    NonNumeric,
+}
+
+fn string_offset_for_read(string: &PhpString, key: &ArrayKey) -> StringOffsetRead {
+    let (index, illegal_key) = match key {
+        ArrayKey::Int(value) => (*value, None),
+        ArrayKey::String(value) => match leading_int_offset(value.as_bytes()) {
+            Some(index) => (index, Some(value.as_bytes().to_vec())),
+            None => return StringOffsetRead::NonNumeric,
+        },
+    };
+    let length = string.len() as i64;
+    let resolved = if index < 0 { index + length } else { index };
+    let byte = if resolved < 0 || resolved >= length {
+        None
+    } else {
+        Some(Value::string(vec![string.as_bytes()[resolved as usize]]))
+    };
+    match (illegal_key, byte) {
+        (Some(key_bytes), value) => StringOffsetRead::Illegal {
+            value: value.unwrap_or_else(|| Value::string(Vec::new())),
+            key_bytes,
+        },
+        (None, Some(value)) => StringOffsetRead::Byte(value),
+        (None, None) => StringOffsetRead::OutOfRange(index),
+    }
 }
 
 fn fetch_dim_value(array: &Value, key: &ArrayKey) -> Result<Option<Value>, String> {
@@ -23942,6 +24096,37 @@ fn php_empty(value: &Value) -> Result<bool, String> {
         | Value::Generator(_)
         | Value::Callable(_) => Ok(false),
     }
+}
+
+fn illegal_string_offset_warning(
+    key_bytes: &[u8],
+    span: RuntimeSourceSpan,
+    stack_trace: Vec<RuntimeStackFrame>,
+) -> RuntimeDiagnostic {
+    let key = String::from_utf8_lossy(key_bytes);
+    RuntimeDiagnostic::new(
+        "E_PHP_RUNTIME_ILLEGAL_STRING_OFFSET",
+        RuntimeSeverity::Warning,
+        format!("Illegal string offset \"{key}\""),
+        span,
+        stack_trace,
+        Some(php_runtime::PhpReferenceClassification::Warning),
+    )
+}
+
+fn uninitialized_string_offset_warning(
+    index: i64,
+    span: RuntimeSourceSpan,
+    stack_trace: Vec<RuntimeStackFrame>,
+) -> RuntimeDiagnostic {
+    RuntimeDiagnostic::new(
+        "E_PHP_RUNTIME_UNINITIALIZED_STRING_OFFSET",
+        RuntimeSeverity::Warning,
+        format!("Uninitialized string offset {index}"),
+        span,
+        stack_trace,
+        Some(php_runtime::PhpReferenceClassification::Warning),
+    )
 }
 
 fn undefined_array_key_warning(
