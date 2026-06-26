@@ -9691,6 +9691,11 @@ impl DebugFormatter {
             Value::Float(value) => output.write_test_str(&value.to_string()),
             Value::String(value) => output.write_php_string(value),
             Value::Array(array) => {
+                let id = array.gc_debug_id();
+                if !self.active_arrays.insert(id) {
+                    output.write_test_str("Array\n *RECURSION*");
+                    return;
+                }
                 output.write_test_str("Array\n");
                 write_indent(output, indent);
                 output.write_test_str("(\n");
@@ -9698,11 +9703,17 @@ impl DebugFormatter {
                     write_indent(output, indent + 4);
                     write_print_r_key(output, key);
                     output.write_test_str(" => ");
-                    self.write_print_r_value(output, element, indent + 4);
+                    let element_indent = if print_r_value_starts_multiline(element) {
+                        indent + 8
+                    } else {
+                        indent + 4
+                    };
+                    self.write_print_r_value(output, element, element_indent);
                     output.write_test_str("\n");
                 }
                 write_indent(output, indent);
                 output.write_test_str(")\n");
+                self.active_arrays.remove(&id);
             }
             Value::Object(object) => {
                 output.write_test_str(&format!("{} Object\n", object.display_name()));
@@ -9760,11 +9771,35 @@ impl DebugFormatter {
                 output.write_test_str(")");
             }
             Value::Object(object) => {
-                output.write_test_str(&format!("{}::__set_state(array(\n", object.display_name()));
+                if object.class_name().eq_ignore_ascii_case("stdClass") {
+                    output.write_test_str("(object) array(\n");
+                    for (name, property) in object.properties_snapshot() {
+                        write_indent(output, indent + 3);
+                        write_export_string(output, &name);
+                        output.write_test_str(" => ");
+                        if var_export_value_starts_multiline(&property) {
+                            output.write_test_str("\n");
+                            write_indent(output, indent + 2);
+                        }
+                        self.write_var_export_value(output, &property, indent + 2);
+                        output.write_test_str(",\n");
+                    }
+                    write_indent(output, indent);
+                    output.write_test_str(")");
+                    return;
+                }
+                output.write_test_str(&format!(
+                    "\\{}::__set_state(array(\n",
+                    object.display_name()
+                ));
                 for (name, property) in object.properties_snapshot() {
-                    write_indent(output, indent + 2);
+                    write_indent(output, indent + 3);
                     write_export_string(output, &name);
                     output.write_test_str(" => ");
+                    if var_export_value_starts_multiline(&property) {
+                        output.write_test_str("\n");
+                        write_indent(output, indent + 2);
+                    }
                     self.write_var_export_value(output, &property, indent + 2);
                     output.write_test_str(",\n");
                 }
@@ -9807,6 +9842,14 @@ fn var_export_value_starts_multiline(value: &Value) -> bool {
     }
 }
 
+fn print_r_value_starts_multiline(value: &Value) -> bool {
+    match value {
+        Value::Array(_) | Value::Object(_) => true,
+        Value::Reference(cell) => print_r_value_starts_multiline(&cell.get()),
+        _ => false,
+    }
+}
+
 fn write_print_r_key(output: &mut OutputBuffer, key: &ArrayKey) {
     match key {
         ArrayKey::Int(index) => output.write_test_str(&format!("[{index}]")),
@@ -9822,6 +9865,19 @@ fn write_export_key(output: &mut OutputBuffer, key: &ArrayKey) {
 }
 
 fn write_export_string(output: &mut OutputBuffer, text: &str) {
+    if text.contains('\0') {
+        let mut segments = text.split('\0');
+        write_export_single_quoted_string(output, segments.next().unwrap_or_default());
+        for segment in segments {
+            output.write_test_str(" . \"\\0\" . ");
+            write_export_single_quoted_string(output, segment);
+        }
+        return;
+    }
+    write_export_single_quoted_string(output, text);
+}
+
+fn write_export_single_quoted_string(output: &mut OutputBuffer, text: &str) {
     output.write_test_str("'");
     for character in text.chars() {
         match character {
@@ -11972,6 +12028,27 @@ mod tests {
     }
 
     #[test]
+    fn print_r_marks_array_references_to_active_arrays_as_recursion() {
+        let outer_cell = ReferenceCell::new(Value::Null);
+        let inner_cell = ReferenceCell::new(Value::Null);
+        let mut inner = PhpArray::new();
+        inner.append(Value::Reference(outer_cell.clone()));
+        inner_cell.set(Value::Array(inner.clone()));
+        let mut outer = PhpArray::new();
+        outer.append(Value::Reference(inner_cell));
+        outer_cell.set(Value::Array(outer.clone()));
+
+        let mut output = OutputBuffer::new();
+        let result = call("print_r", vec![Value::Array(outer)], &mut output);
+
+        assert_eq!(result, Value::Bool(true));
+        assert_eq!(
+            output.to_string_lossy(),
+            "Array\n(\n    [0] => Array\n        (\n            [0] => Array\n *RECURSION*\n        )\n\n)\n"
+        );
+    }
+
+    #[test]
     fn debug_output_builtins_cover_return_modes_and_cycles() {
         let mut output = OutputBuffer::new();
 
@@ -11982,6 +12059,19 @@ mod tests {
                 &mut output
             ),
             Value::string("Array\n(\n    [0] => 1\n)\n")
+        );
+        assert_eq!(
+            call(
+                "print_r",
+                vec![
+                    Value::packed_array(vec![Value::packed_array(vec![Value::Int(1)])]),
+                    Value::Bool(true)
+                ],
+                &mut output
+            ),
+            Value::string(
+                "Array\n(\n    [0] => Array\n        (\n            [0] => 1\n        )\n\n)\n"
+            )
         );
         assert_eq!(
             call(
@@ -12004,6 +12094,19 @@ mod tests {
                 &mut output
             ),
             Value::string("array (\n  0 => \n  array (\n    0 => 1,\n  ),\n)")
+        );
+        let mut nul_key_array = PhpArray::new();
+        nul_key_array.insert(
+            ArrayKey::String(PhpString::from_bytes(vec![0])),
+            Value::string("null"),
+        );
+        assert_eq!(
+            call(
+                "var_export",
+                vec![Value::Array(nul_key_array), Value::Bool(true)],
+                &mut output
+            ),
+            Value::string("array (\n  '' . \"\\0\" . '' => 'null',\n)")
         );
         assert_eq!(
             call(
@@ -12028,6 +12131,29 @@ mod tests {
                 &mut output
             ),
             Value::string("10000000000000000.0")
+        );
+        let std_class = ObjectRef::new(&empty_class("stdClass"));
+        std_class.set_property("0", Value::Int(1));
+        std_class.set_property("foo", Value::packed_array(vec![Value::Int(2)]));
+        assert_eq!(
+            call(
+                "var_export",
+                vec![Value::Object(std_class), Value::Bool(true)],
+                &mut output
+            ),
+            Value::string(
+                "(object) array(\n   '0' => 1,\n   'foo' => \n  array (\n    0 => 2,\n  ),\n)"
+            )
+        );
+        let debug_box = ObjectRef::new(&empty_class("DebugBox"));
+        debug_box.set_property("x", Value::Int(1));
+        assert_eq!(
+            call(
+                "var_export",
+                vec![Value::Object(debug_box), Value::Bool(true)],
+                &mut output
+            ),
+            Value::string("\\DebugBox::__set_state(array(\n   'x' => 1,\n))")
         );
 
         let cell = ReferenceCell::new(Value::Null);

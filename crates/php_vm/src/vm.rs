@@ -13333,9 +13333,7 @@ impl Vm {
             CastKind::Array => {
                 Err(self.runtime_error(output, compiled, stack, "array cast is not implemented"))
             }
-            CastKind::Object => {
-                Err(self.runtime_error(output, compiled, stack, "object cast is not implemented"))
-            }
+            CastKind::Object => Ok(cast_value_to_object(src)),
         }
     }
 
@@ -22437,6 +22435,32 @@ fn effective_value(value: &Value) -> Value {
     }
 }
 
+fn cast_value_to_object(value: &Value) -> Value {
+    match effective_value(value) {
+        Value::Object(object) => Value::Object(object),
+        Value::Null | Value::Uninitialized => Value::Object(ObjectRef::new(&std_class_entry())),
+        Value::Array(array) => {
+            let object = ObjectRef::new(&std_class_entry());
+            for (key, element) in array.iter() {
+                object.set_property(object_cast_property_name(key), effective_value(element));
+            }
+            Value::Object(object)
+        }
+        scalar => {
+            let object = ObjectRef::new(&std_class_entry());
+            object.set_property("scalar", scalar);
+            Value::Object(object)
+        }
+    }
+}
+
+fn object_cast_property_name(key: &ArrayKey) -> String {
+    match key {
+        ArrayKey::Int(value) => value.to_string(),
+        ArrayKey::String(value) => value.to_string_lossy(),
+    }
+}
+
 fn fetch_dim_path_value(value: &Value, dims: &[ArrayKey]) -> Result<Option<Value>, String> {
     let mut current = effective_value(value);
     for key in dims {
@@ -24379,6 +24403,25 @@ mod tests {
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"12|1|");
+    }
+
+    #[test]
+    fn expressions_object_casts_create_std_class_values() {
+        let result = execute_source(
+            "<?php
+            var_export((object) array(1, 3, 'foo' => 'bar'));
+            echo \"\\n---\\n\";
+            var_export((object) 42);
+            echo \"\\n---\\n\";
+            var_export((object) null);
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "(object) array(\n   '0' => 1,\n   '1' => 3,\n   'foo' => 'bar',\n)\n---\n(object) array(\n   'scalar' => 42,\n)\n---\n(object) array(\n)"
+        );
     }
 
     #[test]

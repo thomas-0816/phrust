@@ -590,28 +590,29 @@ fn weak_coerce_int_float_union(type_spec: &TypeSpec, value: &Value) -> Option<Va
     None
 }
 
-fn value_type(value: &Value) -> &'static str {
+fn value_type(value: &Value) -> String {
     match value {
-        Value::Null => "null",
-        Value::Bool(true) => "true",
-        Value::Bool(false) => "false",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::String(_) => "string",
-        Value::Uninitialized => "uninitialized",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Fiber(_) => "Fiber",
-        Value::Generator(_) => "Generator",
-        Value::Callable(_) => "callable",
-        Value::Reference(_) => "reference",
+        Value::Null => "null".to_owned(),
+        Value::Bool(true) => "true".to_owned(),
+        Value::Bool(false) => "false".to_owned(),
+        Value::Int(_) => "int".to_owned(),
+        Value::Float(_) => "float".to_owned(),
+        Value::String(_) => "string".to_owned(),
+        Value::Uninitialized => "uninitialized".to_owned(),
+        Value::Array(_) => "array".to_owned(),
+        Value::Object(object) => object.class_name(),
+        Value::Resource(_) => "resource".to_owned(),
+        Value::Fiber(_) => "Fiber".to_owned(),
+        Value::Generator(_) => "Generator".to_owned(),
+        Value::Callable(_) => "callable".to_owned(),
+        Value::Reference(_) => "reference".to_owned(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use php_runtime::{ClassEntry, ClassFlags, ObjectRef};
 
     fn span() -> RuntimeSourceSpan {
         RuntimeSourceSpan {
@@ -630,6 +631,22 @@ mod tests {
             ],
             TypeSpec::one(ArgType::Bool),
         )
+    }
+
+    fn empty_class(name: &str) -> ClassEntry {
+        ClassEntry {
+            name: name.to_owned(),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        }
     }
 
     #[test]
@@ -728,6 +745,19 @@ mod tests {
         assert_eq!(
             error.diagnostic().message(),
             "stdlib_sample(): Argument #1 ($value) must be of type string, false given"
+        );
+    }
+
+    #[test]
+    fn validates_object_type_names_with_class_name() {
+        let object = ObjectRef::new(&empty_class("stdClass"));
+        let error = ArgumentValidator::new(CoercionMode::Strict)
+            .validate(&sample_info(), &[Value::Object(object)], span())
+            .expect_err("wrong type");
+
+        assert_eq!(
+            error.diagnostic().message(),
+            "stdlib_sample(): Argument #1 ($value) must be of type string, stdClass given"
         );
     }
 
