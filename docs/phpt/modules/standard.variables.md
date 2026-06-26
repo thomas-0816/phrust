@@ -67,7 +67,7 @@
 ## Known Gaps
 
 - `runtime-error-or-diagnostic`: 226
-- `runtime-unsupported-feature`: 153
+- `runtime-unsupported-feature`: 152
 - `runtime-output-mismatch`: 42
 - `frontend-parse-or-compile`: 14
 

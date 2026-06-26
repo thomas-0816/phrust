@@ -49,6 +49,7 @@ The command runs the complete discovered PHPT corpus from
 committed baseline files:
 
 - `tests/phpt/manifests/full-baseline-metadata.json`
+- `tests/phpt/manifests/full-baseline-module-counts.jsonl`
 - `tests/phpt/manifests/full-known-failures.jsonl`
 - `docs/phpt/reports/full-baseline.md`
 
@@ -216,6 +217,11 @@ case. Each line has these fields:
 - `primary_missing_feature_guess`
 - `owner_module`
 - `first_seen_timestamp`
+
+`full-baseline-module-counts.jsonl` contains compact per-module and raw
+php-src module PASS/SKIP/FAIL/BORK counts for the same accepted baseline. It
+lets `just phpt-triage` reproduce module priorities and extension-policy
+counts in a fresh checkout without reading local `target/phpt-work` artifacts.
 
 `docs/phpt/reports/full-baseline.md` is the concise human report for the same
 baseline. It must agree with the metadata and machine manifest.

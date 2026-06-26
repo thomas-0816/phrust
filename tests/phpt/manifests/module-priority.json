@@ -1,6 +1,7 @@
 {
   "schema_version":"phpt-module-priority-v1",
   "has_result_counts":true,
+  "count_source":"baseline-module-counts",
   "modules":[
     {
       "priority":1,

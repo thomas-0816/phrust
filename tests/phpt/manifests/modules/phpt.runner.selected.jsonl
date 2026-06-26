@@ -132,7 +132,11 @@
 {"path":"ext/standard/tests/strings/bug37244.phpt"}
 {"path":"ext/standard/tests/serialize/006.phpt"}
 {"path":"ext/standard/tests/image/gh20582.phpt"}
+{"path":"ext/standard/tests/hrtime/hrtime.phpt"}
+{"path":"ext/standard/tests/general_functions/var_dump_strings.phpt"}
 {"path":"ext/standard/tests/general_functions/putenv_bug75574_cp936_win.phpt"}
+{"path":"ext/standard/tests/general_functions/print_r_strings.phpt"}
+{"path":"ext/standard/tests/general_functions/print_r_arrays_whitespace_sensitive.phpt"}
 {"path":"ext/standard/tests/general_functions/phpinfo-header-anchors.phpt"}
 {"path":"ext/standard/tests/general_functions/gh21018.phpt"}
 {"path":"ext/standard/tests/general_functions/gettype_settype_variation8.phpt"}
@@ -194,7 +198,3 @@
 {"path":"ext/standard/tests/file/windows_mb_path/test_big5_2.phpt"}
 {"path":"ext/standard/tests/file/windows_mb_path/test_big5_1.phpt"}
 {"path":"ext/standard/tests/file/windows_mb_path/test_big5_0.phpt"}
-{"path":"ext/standard/tests/file/windows_mb_path/bug75063_cp1251.phpt"}
-{"path":"ext/standard/tests/file/windows_mb_path/bug71509.phpt"}
-{"path":"ext/standard/tests/array/sort/locale_sort.phpt"}
-{"path":"ext/soap/tests/server020.phpt"}

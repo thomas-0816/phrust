@@ -80,7 +80,7 @@
 ## Known Gaps
 
 - `runtime-error-or-diagnostic`: 1386
-- `runtime-unsupported-feature`: 1136
+- `runtime-unsupported-feature`: 1133
 - `runtime-output-mismatch`: 653
 - `frontend-parse-or-compile`: 43
 - `runtime-timeout`: 9

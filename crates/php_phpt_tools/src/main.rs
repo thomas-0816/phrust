@@ -16,7 +16,10 @@ const DEFAULT_SYMBOLS: &str = "tests/phpt/manifests/php-src-symbols.jsonl";
 const DEFAULT_PHPT_CORPUS: &str = "tests/phpt/manifests/phpt-corpus.jsonl";
 const DEFAULT_PHPT_REPORT: &str = "docs/phpt/reports/phpt-corpus-summary.md";
 const DEFAULT_PHPT_BASELINE_METADATA: &str = "tests/phpt/manifests/full-baseline-metadata.json";
+const DEFAULT_PHPT_BASELINE_MODULE_COUNTS: &str =
+    "tests/phpt/manifests/full-baseline-module-counts.jsonl";
 const DEFAULT_PHPT_TRIAGE_REPORT: &str = "docs/phpt/reports/triage.md";
+const DEFAULT_PHPT_EXTENSION_POLICY_REPORT: &str = "docs/phpt/extension-policy.md";
 const DEFAULT_PHPT_MODULE_PRIORITY: &str = "tests/phpt/manifests/module-priority.json";
 const DEFAULT_PHPT_MODULE_DOCS_DIR: &str = "docs/phpt/modules";
 const DEFAULT_PHPT_MODULE_MANIFESTS_DIR: &str = "tests/phpt/manifests/modules";
@@ -434,7 +437,11 @@ fn baseline_results<W: Write, E: Write>(
 ) -> Result<i32, String> {
     let options = BaselineOptions::parse(args)?;
     let results = read_run_results(&options.results)?;
-    let corpus = read_corpus_modules(&options.corpus)?;
+    let corpus_entries = read_phpt_entries(&options.corpus)?;
+    let corpus = corpus_entries
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.module.clone()))
+        .collect::<BTreeMap<_, _>>();
     let accepting_baseline = env::var("PHPT_ACCEPT_BASELINE").as_deref() == Ok("1");
     let previous_failures = if let Some(previous) = &options.previous_known_failures {
         if previous.is_file() {
@@ -615,6 +622,9 @@ fn baseline_results<W: Write, E: Write>(
     if let Some(parent) = options.metadata.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
+    if let Some(parent) = options.module_counts.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
     if let Some(parent) = options.report.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
@@ -631,8 +641,14 @@ fn baseline_results<W: Write, E: Write>(
         &options.timestamp,
         &options.known_failures,
     );
+    let triage = build_triage(&corpus_entries, &failures, &results);
     fs::write(&options.metadata, metadata.to_json())
         .map_err(|error| format!("{}: {error}", options.metadata.display()))?;
+    fs::write(
+        &options.module_counts,
+        render_baseline_module_counts(&triage),
+    )
+    .map_err(|error| format!("{}: {error}", options.module_counts.display()))?;
     fs::write(
         &options.report,
         render_baseline_report(&results, &failures, &options.timestamp),
@@ -640,10 +656,11 @@ fn baseline_results<W: Write, E: Write>(
     .map_err(|error| format!("{}: {error}", options.report.display()))?;
     writeln!(
         stdout,
-        "[ok] wrote {} known failures to {}, metadata {}, and report {}",
+        "[ok] wrote {} known failures to {}, metadata {}, module counts {}, and report {}",
         failures.len(),
         options.known_failures.display(),
         options.metadata.display(),
+        options.module_counts.display(),
         options.report.display()
     )
     .map_err(|error| error.to_string())?;
@@ -659,6 +676,7 @@ fn verify_baseline<W: Write, E: Write>(
     let corpus = read_manifest_paths(&options.corpus)?;
     let failures = read_known_failures(&options.known_failures)?;
     let metadata = read_baseline_metadata(&options.metadata)?;
+    let module_counts = read_baseline_module_counts(&options.module_counts)?;
     let report = read_baseline_report_totals(&options.report)?;
 
     let mut errors = Vec::new();
@@ -742,6 +760,7 @@ fn verify_baseline<W: Write, E: Write>(
             metadata.bork_count
         ));
     }
+    verify_baseline_module_counts(&module_counts, &metadata, &mut errors);
 
     for (index, failure) in failures.iter().enumerate() {
         if failure.path.is_empty()
@@ -792,13 +811,18 @@ fn triage_phpt_baseline<W: Write>(args: &[String], stdout: &mut W) -> Result<i32
         }
         None => Vec::new(),
     };
-    let triage = build_triage(&corpus, &failures, &results);
+    let mut triage = build_triage(&corpus, &failures, &results);
+    if results.is_empty() && options.module_counts.is_file() {
+        let module_counts = read_baseline_module_counts(&options.module_counts)?;
+        apply_baseline_module_counts(&mut triage, &module_counts);
+    }
 
     write_triage_outputs(&options, &metadata, &triage)?;
     writeln!(
         stdout,
-        "[ok] wrote PHPT triage report {}, priority manifest {}, and {} module plans",
+        "[ok] wrote PHPT triage report {}, extension policy {}, priority manifest {}, and {} module plans",
         options.report.display(),
+        options.extension_policy_report.display(),
         options.priority.display(),
         MODULE_PLAN.len()
     )
@@ -1297,6 +1321,7 @@ struct BaselineOptions {
     corpus: PathBuf,
     known_failures: PathBuf,
     metadata: PathBuf,
+    module_counts: PathBuf,
     report: PathBuf,
     previous_known_failures: Option<PathBuf>,
     previous_results: Option<PathBuf>,
@@ -1308,6 +1333,7 @@ struct VerifyBaselineOptions {
     corpus: PathBuf,
     known_failures: PathBuf,
     metadata: PathBuf,
+    module_counts: PathBuf,
     report: PathBuf,
 }
 
@@ -1316,8 +1342,10 @@ struct TriageOptions {
     corpus: PathBuf,
     known_failures: PathBuf,
     metadata: PathBuf,
+    module_counts: PathBuf,
     results: Option<PathBuf>,
     report: PathBuf,
+    extension_policy_report: PathBuf,
     priority: PathBuf,
     modules_dir: PathBuf,
     module_manifests_dir: PathBuf,
@@ -1564,6 +1592,7 @@ impl BaselineOptions {
         let mut corpus = None;
         let mut known_failures = None;
         let mut metadata = None;
+        let mut module_counts = None;
         let mut report = None;
         let mut previous_known_failures = None;
         let mut previous_results = None;
@@ -1599,6 +1628,13 @@ impl BaselineOptions {
                         args.get(index)
                             .ok_or_else(|| "--metadata requires a path".to_string())?,
                     ));
+                }
+                "--module-counts" => {
+                    index += 1;
+                    module_counts =
+                        Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                            "--module-counts requires a path".to_string()
+                        })?));
                 }
                 "--report" => {
                     index += 1;
@@ -1642,6 +1678,9 @@ impl BaselineOptions {
                 _ if arg.starts_with("--metadata=") => {
                     metadata = Some(PathBuf::from(arg.trim_start_matches("--metadata=")));
                 }
+                _ if arg.starts_with("--module-counts=") => {
+                    module_counts = Some(PathBuf::from(arg.trim_start_matches("--module-counts=")));
+                }
                 _ if arg.starts_with("--report=") => {
                     report = Some(PathBuf::from(arg.trim_start_matches("--report=")));
                 }
@@ -1667,6 +1706,8 @@ impl BaselineOptions {
             known_failures: known_failures
                 .unwrap_or_else(|| PathBuf::from("tests/phpt/manifests/full-known-failures.jsonl")),
             metadata: metadata.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_METADATA)),
+            module_counts: module_counts
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_MODULE_COUNTS)),
             report: report.unwrap_or_else(|| PathBuf::from("docs/phpt/reports/full-baseline.md")),
             previous_known_failures,
             previous_results,
@@ -1682,6 +1723,7 @@ impl VerifyBaselineOptions {
         let mut corpus = None;
         let mut known_failures = None;
         let mut metadata = None;
+        let mut module_counts = None;
         let mut report = None;
         let mut index = 0usize;
         while index < args.len() {
@@ -1708,6 +1750,13 @@ impl VerifyBaselineOptions {
                             .ok_or_else(|| "--metadata requires a path".to_string())?,
                     ));
                 }
+                "--module-counts" => {
+                    index += 1;
+                    module_counts =
+                        Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                            "--module-counts requires a path".to_string()
+                        })?));
+                }
                 "--report" => {
                     index += 1;
                     report = Some(PathBuf::from(
@@ -1725,6 +1774,9 @@ impl VerifyBaselineOptions {
                 _ if arg.starts_with("--metadata=") => {
                     metadata = Some(PathBuf::from(arg.trim_start_matches("--metadata=")));
                 }
+                _ if arg.starts_with("--module-counts=") => {
+                    module_counts = Some(PathBuf::from(arg.trim_start_matches("--module-counts=")));
+                }
                 _ if arg.starts_with("--report=") => {
                     report = Some(PathBuf::from(arg.trim_start_matches("--report=")));
                 }
@@ -1737,6 +1789,8 @@ impl VerifyBaselineOptions {
             known_failures: known_failures
                 .unwrap_or_else(|| PathBuf::from("tests/phpt/manifests/full-known-failures.jsonl")),
             metadata: metadata.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_METADATA)),
+            module_counts: module_counts
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_MODULE_COUNTS)),
             report: report.unwrap_or_else(|| PathBuf::from("docs/phpt/reports/full-baseline.md")),
         })
     }
@@ -1747,8 +1801,10 @@ impl TriageOptions {
         let mut corpus = None;
         let mut known_failures = None;
         let mut metadata = None;
+        let mut module_counts = None;
         let mut results = None;
         let mut report = None;
+        let mut extension_policy_report = None;
         let mut priority = None;
         let mut modules_dir = None;
         let mut module_manifests_dir = None;
@@ -1778,6 +1834,13 @@ impl TriageOptions {
                             .ok_or_else(|| "--metadata requires a path".to_string())?,
                     ));
                 }
+                "--module-counts" => {
+                    index += 1;
+                    module_counts =
+                        Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                            "--module-counts requires a path".to_string()
+                        })?));
+                }
                 "--results" => {
                     index += 1;
                     results = Some(PathBuf::from(
@@ -1791,6 +1854,13 @@ impl TriageOptions {
                         args.get(index)
                             .ok_or_else(|| "--report requires a path".to_string())?,
                     ));
+                }
+                "--extension-policy-report" => {
+                    index += 1;
+                    extension_policy_report =
+                        Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                            "--extension-policy-report requires a path".to_string()
+                        })?));
                 }
                 "--priority" => {
                     index += 1;
@@ -1831,11 +1901,19 @@ impl TriageOptions {
                 _ if arg.starts_with("--metadata=") => {
                     metadata = Some(PathBuf::from(arg.trim_start_matches("--metadata=")));
                 }
+                _ if arg.starts_with("--module-counts=") => {
+                    module_counts = Some(PathBuf::from(arg.trim_start_matches("--module-counts=")));
+                }
                 _ if arg.starts_with("--results=") => {
                     results = Some(PathBuf::from(arg.trim_start_matches("--results=")));
                 }
                 _ if arg.starts_with("--report=") => {
                     report = Some(PathBuf::from(arg.trim_start_matches("--report=")));
+                }
+                _ if arg.starts_with("--extension-policy-report=") => {
+                    extension_policy_report = Some(PathBuf::from(
+                        arg.trim_start_matches("--extension-policy-report="),
+                    ));
                 }
                 _ if arg.starts_with("--priority=") => {
                     priority = Some(PathBuf::from(arg.trim_start_matches("--priority=")));
@@ -1858,16 +1936,18 @@ impl TriageOptions {
             }
             index += 1;
         }
-        let results = results
-            .or_else(|| env::var_os("PHPT_RESULTS").map(PathBuf::from))
-            .or_else(latest_full_results);
+        let results = results.or_else(|| env::var_os("PHPT_RESULTS").map(PathBuf::from));
         Ok(Self {
             corpus: corpus.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_CORPUS)),
             known_failures: known_failures
                 .unwrap_or_else(|| PathBuf::from("tests/phpt/manifests/full-known-failures.jsonl")),
             metadata: metadata.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_METADATA)),
+            module_counts: module_counts
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_MODULE_COUNTS)),
             results,
             report: report.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_TRIAGE_REPORT)),
+            extension_policy_report: extension_policy_report
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_EXTENSION_POLICY_REPORT)),
             priority: priority.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_MODULE_PRIORITY)),
             modules_dir: modules_dir.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_MODULE_DOCS_DIR)),
             module_manifests_dir: module_manifests_dir
@@ -2261,6 +2341,18 @@ struct BaselineMetadata {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct BaselineModuleCount {
+    kind: String,
+    module: String,
+    corpus_count: usize,
+    pass_count: usize,
+    skip_count: usize,
+    fail_count: usize,
+    bork_count: usize,
+    known_failure_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct GeneratedCase {
     path: PathBuf,
     manifest_path: String,
@@ -2289,6 +2381,137 @@ struct ModulePlanSpec {
     next_step: &'static str,
     leverage: usize,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExtensionPolicySpec {
+    extension: &'static str,
+    policy: &'static str,
+    required_for_core: bool,
+    required_for_composer: bool,
+    needs_stub: bool,
+    needs_implementation: bool,
+    next_action: &'static str,
+}
+
+const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
+    ExtensionPolicySpec {
+        extension: "dom",
+        policy: "optional",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: true,
+        needs_implementation: false,
+        next_action: "Keep visible in triage; add stubs only when composer/framework tests require them.",
+    },
+    ExtensionPolicySpec {
+        extension: "xml",
+        policy: "optional",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: true,
+        needs_implementation: false,
+        next_action: "Classify XML parser failures separately from core syntax/runtime failures.",
+    },
+    ExtensionPolicySpec {
+        extension: "simplexml",
+        policy: "optional",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: true,
+        needs_implementation: false,
+        next_action: "Defer implementation until XML support exists; keep PHPTs counted.",
+    },
+    ExtensionPolicySpec {
+        extension: "pdo",
+        policy: "optional",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: true,
+        needs_implementation: false,
+        next_action: "Keep database API failures out of core runtime gates while preserving counts.",
+    },
+    ExtensionPolicySpec {
+        extension: "mysqli",
+        policy: "optional",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: true,
+        needs_implementation: false,
+        next_action: "Treat as database-extension work, not a blocker for core PHPT green.",
+    },
+    ExtensionPolicySpec {
+        extension: "soap",
+        policy: "out-of-scope",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: false,
+        needs_implementation: false,
+        next_action: "Keep failures documented as extension-policy non-green unless scope changes.",
+    },
+    ExtensionPolicySpec {
+        extension: "intl",
+        policy: "optional",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: true,
+        needs_implementation: false,
+        next_action: "Defer ICU parity; add targeted stubs only for framework smoke blockers.",
+    },
+    ExtensionPolicySpec {
+        extension: "mbstring",
+        policy: "composer-relevant",
+        required_for_core: false,
+        required_for_composer: true,
+        needs_stub: true,
+        needs_implementation: true,
+        next_action: "Plan a bounded UTF-8 string MVP after standard.strings is stable.",
+    },
+    ExtensionPolicySpec {
+        extension: "gd",
+        policy: "out-of-scope",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: false,
+        needs_implementation: false,
+        next_action: "Keep image-processing PHPTs visible but outside core policy-green.",
+    },
+    ExtensionPolicySpec {
+        extension: "phar",
+        policy: "composer-relevant",
+        required_for_core: false,
+        required_for_composer: true,
+        needs_stub: true,
+        needs_implementation: true,
+        next_action: "Define a read-only PHAR MVP after filesystem.streams is stable.",
+    },
+    ExtensionPolicySpec {
+        extension: "opcache",
+        policy: "out-of-scope",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: false,
+        needs_implementation: false,
+        next_action: "Keep Opcache/JIT behavior excluded from runtime correctness scope.",
+    },
+    ExtensionPolicySpec {
+        extension: "session",
+        policy: "framework-relevant",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: true,
+        needs_implementation: true,
+        next_action: "Implement deterministic local session state only after filesystem primitives are stable.",
+    },
+    ExtensionPolicySpec {
+        extension: "sapi",
+        policy: "target-policy",
+        required_for_core: false,
+        required_for_composer: false,
+        needs_stub: false,
+        needs_implementation: false,
+        next_action: "Route CLI-compatible tests to phpt.cli and leave CGI/FPM/PHPDBG explicit.",
+    },
+];
 
 const MODULE_PLAN: &[ModulePlanSpec] = &[
     ModulePlanSpec {
@@ -2632,6 +2855,7 @@ struct PhptTriage {
     unsupported_guesses: BTreeMap<String, usize>,
     bork_subclasses: BTreeMap<String, usize>,
     has_result_counts: bool,
+    count_source: String,
 }
 
 impl KnownFailure {
@@ -2726,6 +2950,21 @@ impl BaselineMetadata {
             bork_count: extract_json_usize(source, "bork_count")?,
             known_failure_count: extract_json_usize(source, "known_failure_count")?,
             failure_manifest: extract_json_string(source, "failure_manifest")?,
+        })
+    }
+}
+
+impl BaselineModuleCount {
+    fn from_json_line(line: &str) -> Result<Self, String> {
+        Ok(Self {
+            kind: extract_json_string(line, "kind")?,
+            module: extract_json_string(line, "module")?,
+            corpus_count: extract_json_usize(line, "corpus_count")?,
+            pass_count: extract_json_usize(line, "pass_count")?,
+            skip_count: extract_json_usize(line, "skip_count")?,
+            fail_count: extract_json_usize(line, "fail_count")?,
+            bork_count: extract_json_usize(line, "bork_count")?,
+            known_failure_count: extract_json_usize(line, "known_failure_count")?,
         })
     }
 }
@@ -3953,14 +4192,20 @@ fn read_known_failures(path: &Path) -> Result<Vec<KnownFailure>, String> {
     Ok(failures)
 }
 
-fn latest_full_results() -> Option<PathBuf> {
-    let root = Path::new("target/phpt-work/full-runs");
-    let entries = fs::read_dir(root).ok()?;
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().join("results.jsonl"))
-        .filter(|path| path.is_file())
-        .max()
+fn read_baseline_module_counts(path: &Path) -> Result<Vec<BaselineModuleCount>, String> {
+    let source =
+        fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut counts = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        counts.push(
+            BaselineModuleCount::from_json_line(line)
+                .map_err(|error| format!("{}:{}: {error}", path.display(), index + 1))?,
+        );
+    }
+    Ok(counts)
 }
 
 fn read_baseline_metadata(path: &Path) -> Result<BaselineMetadata, String> {
@@ -4041,6 +4286,11 @@ fn build_triage(
 ) -> PhptTriage {
     let mut triage = PhptTriage {
         has_result_counts: !results.is_empty(),
+        count_source: if results.is_empty() {
+            "known-failures".to_string()
+        } else {
+            "results".to_string()
+        },
         ..PhptTriage::default()
     };
     let corpus_by_path = corpus
@@ -4080,9 +4330,13 @@ fn build_triage(
     for failure in failures {
         let result = result_by_path.get(&failure.path).copied();
         let corpus_entry = corpus_by_path.get(&failure.path).copied();
-        let module = corpus_entry
-            .map(|entry| plan_module_for_entry(entry, result))
-            .unwrap_or_else(|| plan_module_for_path(&failure.path, &failure.module_tag, result));
+        let module = if result.is_none() && failure.outcome == "BORK" {
+            "phpt.runner"
+        } else {
+            corpus_entry
+                .map(|entry| plan_module_for_entry(entry, result))
+                .unwrap_or_else(|| plan_module_for_path(&failure.path, &failure.module_tag, result))
+        };
         let stats = triage.modules.entry(module.to_string()).or_default();
         stats.known_failure_count += 1;
         remember_priority_path(stats, &failure.path);
@@ -4146,6 +4400,36 @@ fn build_triage(
     }
 
     triage
+}
+
+fn apply_baseline_module_counts(triage: &mut PhptTriage, counts: &[BaselineModuleCount]) {
+    if counts.iter().any(|count| count.kind == "bork_subclass") {
+        triage.bork_subclasses.clear();
+    }
+    for count in counts {
+        if count.kind == "bork_subclass" {
+            triage
+                .bork_subclasses
+                .insert(count.module.clone(), count.known_failure_count);
+            continue;
+        }
+        let target = match count.kind.as_str() {
+            "plan" => &mut triage.modules,
+            "raw" => &mut triage.raw_modules,
+            _ => continue,
+        };
+        let stats = target.entry(count.module.clone()).or_default();
+        stats.corpus_count = count.corpus_count;
+        stats.pass_count = count.pass_count;
+        stats.skip_count = count.skip_count;
+        stats.fail_count = count.fail_count;
+        stats.bork_count = count.bork_count;
+        stats.known_failure_count = count.known_failure_count;
+    }
+    if !counts.is_empty() {
+        triage.has_result_counts = true;
+        triage.count_source = "baseline-module-counts".to_string();
+    }
 }
 
 fn remember_relevant_path(stats: &mut ModuleTriageStats, path: &str) {
@@ -4383,6 +4667,9 @@ fn write_triage_outputs(
     if let Some(parent) = options.report.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
+    if let Some(parent) = options.extension_policy_report.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
     if let Some(parent) = options.priority.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
@@ -4393,6 +4680,11 @@ fn write_triage_outputs(
 
     fs::write(&options.report, render_triage_report(metadata, triage))
         .map_err(|error| format!("{}: {error}", options.report.display()))?;
+    fs::write(
+        &options.extension_policy_report,
+        render_extension_policy_report(metadata, triage),
+    )
+    .map_err(|error| format!("{}: {error}", options.extension_policy_report.display()))?;
     fs::write(&options.priority, render_module_priority_json(triage))
         .map_err(|error| format!("{}: {error}", options.priority.display()))?;
     fs::write(
@@ -4416,23 +4708,32 @@ fn write_triage_outputs(
         let selected_manifest_path = options
             .module_manifests_dir
             .join(format!("{safe_module}.selected.jsonl"));
-        fs::write(
-            &doc_path,
-            render_module_doc(spec, index + 1, &stats, &selected_manifest_path),
-        )
-        .map_err(|error| format!("{}: {error}", doc_path.display()))?;
-        fs::write(
-            &manifest_path,
-            render_module_manifest(spec, index + 1, &stats, &selected_manifest_path),
-        )
-        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+        let preserve_curated_module = has_curated_generated_manifest(&selected_manifest_path);
+        if !preserve_curated_module {
+            fs::write(
+                &doc_path,
+                render_module_doc(spec, index + 1, &stats, &selected_manifest_path),
+            )
+            .map_err(|error| format!("{}: {error}", doc_path.display()))?;
+            fs::write(
+                &manifest_path,
+                render_module_manifest(spec, index + 1, &stats, &selected_manifest_path),
+            )
+            .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+        }
         fs::write(
             &selected_manifest_path,
-            render_selected_manifest(&stats, options.selected_limit),
+            render_selected_manifest(&selected_manifest_path, &stats, options.selected_limit),
         )
         .map_err(|error| format!("{}: {error}", selected_manifest_path.display()))?;
     }
     Ok(())
+}
+
+fn has_curated_generated_manifest(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|existing| existing.contains("tests/phpt/generated/"))
+        .unwrap_or(false)
 }
 
 fn render_triage_report(metadata: &BaselineMetadata, triage: &PhptTriage) -> String {
@@ -4447,9 +4748,13 @@ fn render_triage_report(metadata: &BaselineMetadata, triage: &PhptTriage) -> Str
         metadata.fail_count,
         metadata.bork_count
     ));
-    if triage.has_result_counts {
+    if triage.count_source == "results" {
         out.push_str(
-            "Per-module PASS/SKIP counts are based on the latest available full-run results.\n\n",
+            "Per-module PASS/SKIP counts are based on the explicitly provided full-run results.\n\n",
+        );
+    } else if triage.count_source == "baseline-module-counts" {
+        out.push_str(
+            "Per-module PASS/SKIP counts are based on the committed baseline module-count manifest.\n\n",
         );
     } else {
         out.push_str("Per-module PASS/SKIP counts are unavailable because no full-run results were provided; FAIL/BORK counts come from the committed known-failure baseline.\n\n");
@@ -4498,6 +4803,10 @@ fn render_triage_report(metadata: &BaselineMetadata, triage: &PhptTriage) -> Str
         ));
     }
 
+    out.push_str("\n## Extension Policy\n\n");
+    out.push_str("Extension PHPTs remain in the corpus and full-regression baseline; this table classifies ownership instead of hiding failures.\n\n");
+    render_extension_policy_table(&mut out, triage);
+
     out.push_str("\n## Raw Corpus Module Counts\n\n");
     out.push_str("| Module | Corpus | PASS | SKIP | FAIL | BORK | Known non-green |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
@@ -4521,6 +4830,78 @@ fn render_triage_report(metadata: &BaselineMetadata, triage: &PhptTriage) -> Str
         ));
     }
     out
+}
+
+fn render_extension_policy_report(metadata: &BaselineMetadata, triage: &PhptTriage) -> String {
+    let mut out = String::new();
+    out.push_str("# PHPT Extension Policy\n\n");
+    out.push_str(&format!(
+        "Generated from baseline `{}` with {} PHPT corpus entries and {} known non-green fingerprints.\n\n",
+        metadata.timestamp, metadata.corpus_count, metadata.known_failure_count
+    ));
+    out.push_str("Extension PHPTs remain in the corpus and full-regression baseline. Policy classification decides whether a non-green result is core-blocking, optional, target-policy, composer-relevant, framework-relevant, or out-of-scope; it does not remove tests from accounting.\n\n");
+    out.push_str("## Policy Table\n\n");
+    render_extension_policy_table(&mut out, triage);
+    out.push_str("\n## Invariants\n\n");
+    out.push_str("- Extension PHPT counts come from `tests/phpt/manifests/phpt-corpus.jsonl` and the committed known-failure baseline.\n");
+    out.push_str("- Extension failures are still present in `docs/phpt/reports/triage.md` and `docs/phpt/reports/full-baseline.md`.\n");
+    out.push_str("- Out-of-scope means not required for strict core progress; it does not mean silently skipped or deleted.\n");
+    out.push_str("- Stub or implementation work must be added in the owning functional module, not as generated prompt or phase artifacts.\n");
+    out
+}
+
+fn render_extension_policy_table(out: &mut String, triage: &PhptTriage) {
+    out.push_str("| Extension | Policy | PHPT count | PASS | SKIP | FAIL | BORK | Required for Core | Required for Composer | Needs stub | Needs implementation | Next action |\n");
+    out.push_str(
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |\n",
+    );
+    for spec in EXTENSION_POLICY {
+        let stats = extension_policy_stats(triage, spec.extension);
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            spec.extension,
+            spec.policy,
+            stats.corpus_count,
+            stats.pass_count,
+            stats.skip_count,
+            stats.fail_count,
+            stats.bork_count,
+            yes_no(spec.required_for_core),
+            yes_no(spec.required_for_composer),
+            yes_no(spec.needs_stub),
+            yes_no(spec.needs_implementation),
+            spec.next_action
+        ));
+    }
+}
+
+fn extension_policy_stats(triage: &PhptTriage, extension: &str) -> ModuleTriageStats {
+    let mut stats = triage
+        .raw_modules
+        .get(extension)
+        .cloned()
+        .unwrap_or_default();
+    if extension == "pdo" {
+        merge_extension_stats(&mut stats, triage.raw_modules.get("pdo_mysql"));
+        merge_extension_stats(&mut stats, triage.raw_modules.get("pdo_sqlite"));
+    }
+    stats
+}
+
+fn merge_extension_stats(target: &mut ModuleTriageStats, source: Option<&ModuleTriageStats>) {
+    let Some(source) = source else {
+        return;
+    };
+    target.corpus_count += source.corpus_count;
+    target.pass_count += source.pass_count;
+    target.skip_count += source.skip_count;
+    target.fail_count += source.fail_count;
+    target.bork_count += source.bork_count;
+    target.known_failure_count += source.known_failure_count;
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn render_count_table(
@@ -4576,6 +4957,10 @@ fn render_module_priority_json(triage: &PhptTriage) -> String {
             "false"
         }
     ));
+    out.push_str(&format!(
+        "  \"count_source\":\"{}\",\n",
+        escape_json(&triage.count_source)
+    ));
     out.push_str("  \"modules\":[\n");
     for (row_index, (priority, spec, stats)) in prioritized_modules(triage).into_iter().enumerate()
     {
@@ -4606,6 +4991,58 @@ fn render_module_priority_json(triage: &PhptTriage) -> String {
     }
     out.push_str("\n  ]\n}\n");
     out
+}
+
+fn render_baseline_module_counts(triage: &PhptTriage) -> String {
+    let mut out = String::new();
+    for spec in MODULE_PLAN {
+        let stats = triage.modules.get(spec.name).cloned().unwrap_or_default();
+        push_baseline_module_count(&mut out, "plan", spec.name, &stats);
+    }
+
+    let mut raw_modules = triage.raw_modules.iter().collect::<Vec<_>>();
+    raw_modules.sort_by(|left, right| {
+        right
+            .1
+            .known_failure_count
+            .cmp(&left.1.known_failure_count)
+            .then_with(|| right.1.corpus_count.cmp(&left.1.corpus_count))
+            .then_with(|| left.0.cmp(right.0))
+    });
+    for (module, stats) in raw_modules {
+        push_baseline_module_count(&mut out, "raw", module, stats);
+    }
+
+    let mut bork_subclasses = triage.bork_subclasses.iter().collect::<Vec<_>>();
+    bork_subclasses.sort_by(|left, right| right.1.cmp(left.1).then_with(|| left.0.cmp(right.0)));
+    for (subclass, count) in bork_subclasses {
+        let stats = ModuleTriageStats {
+            bork_count: *count,
+            known_failure_count: *count,
+            ..ModuleTriageStats::default()
+        };
+        push_baseline_module_count(&mut out, "bork_subclass", subclass, &stats);
+    }
+    out
+}
+
+fn push_baseline_module_count(
+    out: &mut String,
+    kind: &str,
+    module: &str,
+    stats: &ModuleTriageStats,
+) {
+    out.push_str(&format!(
+        "{{\"kind\":\"{}\",\"module\":\"{}\",\"corpus_count\":{},\"pass_count\":{},\"skip_count\":{},\"fail_count\":{},\"bork_count\":{},\"known_failure_count\":{}}}\n",
+        escape_json(kind),
+        escape_json(module),
+        stats.corpus_count,
+        stats.pass_count,
+        stats.skip_count,
+        stats.fail_count,
+        stats.bork_count,
+        stats.known_failure_count
+    ));
 }
 
 fn render_modules_readme(triage: &PhptTriage) -> String {
@@ -4728,7 +5165,12 @@ fn render_module_manifest(
     )
 }
 
-fn render_selected_manifest(stats: &ModuleTriageStats, limit: usize) -> String {
+fn render_selected_manifest(path: &Path, stats: &ModuleTriageStats, limit: usize) -> String {
+    if has_curated_generated_manifest(path)
+        && let Ok(existing) = fs::read_to_string(path)
+    {
+        return existing;
+    }
     let mut out = String::new();
     let paths = if stats.selected_paths.is_empty() {
         &stats.relevant_paths
@@ -4769,21 +5211,64 @@ fn compare_report_total(
     }
 }
 
-fn read_corpus_modules(path: &Path) -> Result<BTreeMap<String, String>, String> {
-    let source =
-        fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut modules = BTreeMap::new();
-    for (index, line) in source.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let path_value = extract_json_string(line, "path")
-            .map_err(|error| format!("{}:{}: {error}", path.display(), index + 1))?;
-        let module = extract_json_string(line, "module")
-            .map_err(|error| format!("{}:{}: {error}", path.display(), index + 1))?;
-        modules.insert(path_value, module);
+fn verify_baseline_module_counts(
+    counts: &[BaselineModuleCount],
+    metadata: &BaselineMetadata,
+    errors: &mut Vec<String>,
+) {
+    if counts.is_empty() {
+        errors.push("baseline module-count manifest is empty".to_string());
+        return;
     }
-    Ok(modules)
+
+    let mut plan_corpus = 0usize;
+    let mut plan_known = 0usize;
+    let mut seen_plan_modules = std::collections::BTreeSet::new();
+    let mut bork_subclasses = 0usize;
+    for count in counts {
+        match count.kind.as_str() {
+            "plan" => {
+                plan_corpus += count.corpus_count;
+                plan_known += count.known_failure_count;
+                seen_plan_modules.insert(count.module.as_str());
+            }
+            "bork_subclass" => {
+                bork_subclasses += count.known_failure_count;
+            }
+            "raw" => {}
+            other => errors.push(format!(
+                "baseline module-count manifest contains unknown kind `{other}` for `{}`",
+                count.module
+            )),
+        }
+    }
+
+    for spec in MODULE_PLAN {
+        if !seen_plan_modules.contains(spec.name) {
+            errors.push(format!(
+                "baseline module-count manifest is missing plan module `{}`",
+                spec.name
+            ));
+        }
+    }
+    if plan_corpus != metadata.corpus_count {
+        errors.push(format!(
+            "plan module corpus_count sum mismatch: metadata={} module_counts={plan_corpus}",
+            metadata.corpus_count
+        ));
+    }
+    if plan_known != metadata.known_failure_count {
+        errors.push(format!(
+            "plan module known_failure_count sum mismatch: metadata={} module_counts={plan_known}",
+            metadata.known_failure_count
+        ));
+    }
+    if bork_subclasses != metadata.bork_count {
+        errors.push(format!(
+            "BORK subclass count sum mismatch: metadata={} module_counts={bork_subclasses}",
+            metadata.bork_count
+        ));
+    }
 }
 
 fn failure_fingerprint(result: &PhptRunResult) -> String {
@@ -6116,6 +6601,137 @@ mod tests {
             classify_bork(Some("STDIN and ARGS are unsupported")),
             "unsupported-runner-io"
         );
+    }
+
+    #[test]
+    fn triage_renders_extension_policy_without_hiding_counts() {
+        let mut triage = PhptTriage::default();
+        triage.raw_modules.insert(
+            "phar".to_string(),
+            ModuleTriageStats {
+                corpus_count: 3,
+                pass_count: 1,
+                skip_count: 0,
+                fail_count: 2,
+                bork_count: 0,
+                known_failure_count: 2,
+                ..ModuleTriageStats::default()
+            },
+        );
+        triage.raw_modules.insert(
+            "pdo_mysql".to_string(),
+            ModuleTriageStats {
+                corpus_count: 5,
+                pass_count: 0,
+                skip_count: 1,
+                fail_count: 4,
+                bork_count: 0,
+                known_failure_count: 5,
+                ..ModuleTriageStats::default()
+            },
+        );
+
+        let report = render_extension_policy_report(
+            &BaselineMetadata {
+                schema_version: "phpt-full-baseline-v1".to_string(),
+                timestamp: "20260624T210848Z".to_string(),
+                corpus_count: 8,
+                pass_count: 1,
+                skip_count: 1,
+                fail_count: 6,
+                bork_count: 0,
+                known_failure_count: 7,
+                failure_manifest: "tests/phpt/manifests/full-known-failures.jsonl".to_string(),
+            },
+            &triage,
+        );
+
+        assert!(report.contains("Extension PHPTs remain in the corpus"));
+        assert!(
+            report.contains(
+                "| phar | composer-relevant | 3 | 1 | 0 | 2 | 0 | no | yes | yes | yes |"
+            )
+        );
+        assert!(report.contains("| pdo | optional | 5 | 0 | 1 | 4 | 0 | no | no | yes | no |"));
+    }
+
+    #[test]
+    fn triage_applies_committed_baseline_module_counts() {
+        let counts = vec![BaselineModuleCount::from_json_line(
+            "{\"kind\":\"plan\",\"module\":\"standard.arrays\",\"corpus_count\":2,\"pass_count\":1,\"skip_count\":0,\"fail_count\":1,\"bork_count\":0,\"known_failure_count\":1}",
+        )
+        .unwrap()];
+        let mut triage = PhptTriage::default();
+        triage
+            .modules
+            .insert("standard.arrays".to_string(), ModuleTriageStats::default());
+
+        apply_baseline_module_counts(&mut triage, &counts);
+
+        let stats = triage.modules.get("standard.arrays").unwrap();
+        assert_eq!(stats.corpus_count, 2);
+        assert_eq!(stats.pass_count, 1);
+        assert_eq!(stats.fail_count, 1);
+        assert_eq!(triage.count_source, "baseline-module-counts");
+        assert!(triage.has_result_counts);
+    }
+
+    #[test]
+    fn baseline_module_counts_render_plan_raw_and_bork_rows() {
+        let mut triage = PhptTriage::default();
+        triage.modules.insert(
+            "standard.arrays".to_string(),
+            ModuleTriageStats {
+                corpus_count: 2,
+                pass_count: 1,
+                fail_count: 1,
+                known_failure_count: 1,
+                ..ModuleTriageStats::default()
+            },
+        );
+        triage.raw_modules.insert(
+            "standard".to_string(),
+            ModuleTriageStats {
+                corpus_count: 3,
+                pass_count: 1,
+                skip_count: 1,
+                fail_count: 1,
+                known_failure_count: 1,
+                ..ModuleTriageStats::default()
+            },
+        );
+        triage
+            .bork_subclasses
+            .insert("unsupported-section".to_string(), 4);
+
+        let rendered = render_baseline_module_counts(&triage);
+
+        assert!(
+            rendered
+                .contains("\"kind\":\"plan\",\"module\":\"standard.arrays\",\"corpus_count\":2")
+        );
+        assert!(rendered.contains("\"kind\":\"raw\",\"module\":\"standard\",\"corpus_count\":3"));
+        assert!(rendered.contains(
+            "\"kind\":\"bork_subclass\",\"module\":\"unsupported-section\",\"corpus_count\":0"
+        ));
+    }
+
+    #[test]
+    fn triage_preserves_curated_generated_selected_manifests() {
+        let dir = env::temp_dir().join(format!("phrust-curated-selected-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("filesystem.streams.selected.jsonl");
+        let existing = "{\"path\":\"tests/phpt/generated/filesystem.streams/local-file-roundtrip.phpt\",\"module\":\"filesystem.streams\",\"kind\":\"generated\"}\n";
+        fs::write(&manifest, existing).unwrap();
+
+        let stats = ModuleTriageStats {
+            selected_paths: vec!["ext/standard/tests/file/new-broad-path.phpt".to_string()],
+            ..ModuleTriageStats::default()
+        };
+
+        assert!(has_curated_generated_manifest(&manifest));
+        assert_eq!(render_selected_manifest(&manifest, &stats, 200), existing);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

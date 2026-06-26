@@ -10,6 +10,7 @@ artifacts, extracted working files, and full result streams belong under
 baseline. It is paired with:
 
 - `tests/phpt/manifests/full-baseline-metadata.json`
+- `tests/phpt/manifests/full-baseline-module-counts.jsonl`
 - `tests/phpt/manifests/full-known-failures.jsonl`
 
 The metadata file is schema `phpt-full-baseline-v1` and stores timestamp,
@@ -17,6 +18,12 @@ corpus count, PASS/SKIP/FAIL/BORK counts, known-failure count, and the failure
 manifest path. The JSONL manifest stores stable known non-green fingerprints
 with path, module ownership, outcome, missing-feature guess, and first-seen
 timestamp.
+
+`full-baseline-module-counts.jsonl` stores compact plan-module, raw php-src
+module, and BORK-subclass counts for the same accepted baseline. `just
+phpt-triage` uses it when no explicit `PHPT_RESULTS` file is supplied, so a
+fresh checkout does not depend on local `target/phpt-work` artifacts to render
+module priorities, PASS/SKIP counts, or extension-policy counts.
 
 Run the committed consistency check with:
 
