@@ -51,6 +51,7 @@ committed baseline files:
 - `tests/phpt/manifests/full-baseline-metadata.json`
 - `tests/phpt/manifests/full-baseline-module-counts.jsonl`
 - `tests/phpt/manifests/full-known-failures.jsonl`
+- `tests/phpt/manifests/known-gap-catalog.jsonl`
 - `docs/phpt/reports/full-baseline.md`
 
 The default target is `target/debug/phrust-php` in `php-cli` mode. This is the
@@ -223,6 +224,20 @@ php-src module PASS/SKIP/FAIL/BORK counts for the same accepted baseline. It
 lets `just phpt-triage` reproduce module priorities and extension-policy
 counts in a fresh checkout without reading local `target/phpt-work` artifacts.
 
+`known-gap-catalog.jsonl` is schema `phpt-known-gap-v1`. Each row has:
+
+- `id`
+- `title`
+- `reference_behavior`
+- `current_rust_behavior`
+- `fixture_or_phpt_example`
+- `planned_solution_layer`
+- `baseline_count`
+
+Every `primary_missing_feature_guess` in `full-known-failures.jsonl` and every
+BORK subclass in `full-baseline-module-counts.jsonl` must have a row here.
+`docs/phpt/known-gaps.md` is the human-readable rendering of the same catalog.
+
 `docs/phpt/reports/full-baseline.md` is the concise human report for the same
 baseline. It must agree with the metadata and machine manifest.
 
@@ -238,6 +253,8 @@ The check verifies that:
 - the corpus manifest count matches `corpus_count`;
 - `full-known-failures.jsonl` contains `known_failure_count` entries;
 - `FAIL` and `BORK` counts in the manifest match metadata;
+- all known failure guess IDs and BORK subclasses are present in
+  `known-gap-catalog.jsonl`;
 - if the report has any non-green outcomes, the machine-readable known-failure
   manifest is not empty.
 

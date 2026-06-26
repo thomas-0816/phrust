@@ -14,6 +14,7 @@ corpus="${PHPT_CORPUS_MANIFEST:-tests/phpt/manifests/phpt-corpus.jsonl}"
 known_failures="${PHPT_KNOWN_FAILURES:-tests/phpt/manifests/full-known-failures.jsonl}"
 baseline_metadata="${PHPT_BASELINE_METADATA:-tests/phpt/manifests/full-baseline-metadata.json}"
 module_counts="${PHPT_BASELINE_MODULE_COUNTS:-tests/phpt/manifests/full-baseline-module-counts.jsonl}"
+known_gap_catalog="${PHPT_KNOWN_GAP_CATALOG:-tests/phpt/manifests/known-gap-catalog.jsonl}"
 report="${PHPT_BASELINE_REPORT:-docs/phpt/reports/full-baseline.md}"
 work_root="${PHPT_WORK_DIR:-target/phpt-work}"
 timestamp="${PHPT_BASELINE_TIMESTAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -161,11 +162,19 @@ fi
   --timestamp "$timestamp" \
   "${previous_args[@]}"
 
+"$phpt_tool" triage \
+  --corpus "$corpus" \
+  --known-failures "$known_failures" \
+  --metadata "$baseline_metadata" \
+  --module-counts "$module_counts" \
+  --known-gap-catalog "$known_gap_catalog"
+
 "$phpt_tool" verify-baseline \
   --corpus "$corpus" \
   --known-failures "$known_failures" \
   --metadata "$baseline_metadata" \
   --module-counts "$module_counts" \
+  --known-gap-catalog "$known_gap_catalog" \
   --report "$report"
 
 scripts/phpt/verify_source_integrity.sh
@@ -174,4 +183,5 @@ printf '[ok] full PHPT regression baseline artifacts: %s\n' "$run_dir"
 printf '[ok] known failures: %s\n' "$known_failures"
 printf '[ok] baseline metadata: %s\n' "$baseline_metadata"
 printf '[ok] baseline module counts: %s\n' "$module_counts"
+printf '[ok] known-gap catalog: %s\n' "$known_gap_catalog"
 printf '[ok] baseline report: %s\n' "$report"

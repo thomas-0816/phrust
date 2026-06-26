@@ -20,6 +20,8 @@ const DEFAULT_PHPT_BASELINE_MODULE_COUNTS: &str =
     "tests/phpt/manifests/full-baseline-module-counts.jsonl";
 const DEFAULT_PHPT_TRIAGE_REPORT: &str = "docs/phpt/reports/triage.md";
 const DEFAULT_PHPT_EXTENSION_POLICY_REPORT: &str = "docs/phpt/extension-policy.md";
+const DEFAULT_PHPT_KNOWN_GAP_REPORT: &str = "docs/phpt/known-gaps.md";
+const DEFAULT_PHPT_KNOWN_GAP_CATALOG: &str = "tests/phpt/manifests/known-gap-catalog.jsonl";
 const DEFAULT_PHPT_MODULE_PRIORITY: &str = "tests/phpt/manifests/module-priority.json";
 const DEFAULT_PHPT_MODULE_DOCS_DIR: &str = "docs/phpt/modules";
 const DEFAULT_PHPT_MODULE_MANIFESTS_DIR: &str = "tests/phpt/manifests/modules";
@@ -677,6 +679,7 @@ fn verify_baseline<W: Write, E: Write>(
     let failures = read_known_failures(&options.known_failures)?;
     let metadata = read_baseline_metadata(&options.metadata)?;
     let module_counts = read_baseline_module_counts(&options.module_counts)?;
+    let known_gap_catalog = read_known_gap_catalog(&options.known_gap_catalog)?;
     let report = read_baseline_report_totals(&options.report)?;
 
     let mut errors = Vec::new();
@@ -761,6 +764,13 @@ fn verify_baseline<W: Write, E: Write>(
         ));
     }
     verify_baseline_module_counts(&module_counts, &metadata, &mut errors);
+    verify_known_gap_catalog(
+        &known_gap_catalog,
+        &failures,
+        &module_counts,
+        &metadata,
+        &mut errors,
+    );
 
     for (index, failure) in failures.iter().enumerate() {
         if failure.path.is_empty()
@@ -816,13 +826,20 @@ fn triage_phpt_baseline<W: Write>(args: &[String], stdout: &mut W) -> Result<i32
         let module_counts = read_baseline_module_counts(&options.module_counts)?;
         apply_baseline_module_counts(&mut triage, &module_counts);
     }
+    let module_counts = if options.module_counts.is_file() {
+        read_baseline_module_counts(&options.module_counts)?
+    } else {
+        Vec::new()
+    };
+    let known_gap_rows = build_known_gap_rows(&failures, &module_counts);
 
-    write_triage_outputs(&options, &metadata, &triage)?;
+    write_triage_outputs(&options, &metadata, &triage, &known_gap_rows)?;
     writeln!(
         stdout,
-        "[ok] wrote PHPT triage report {}, extension policy {}, priority manifest {}, and {} module plans",
+        "[ok] wrote PHPT triage report {}, extension policy {}, known gaps {}, priority manifest {}, and {} module plans",
         options.report.display(),
         options.extension_policy_report.display(),
+        options.known_gap_report.display(),
         options.priority.display(),
         MODULE_PLAN.len()
     )
@@ -1334,6 +1351,7 @@ struct VerifyBaselineOptions {
     known_failures: PathBuf,
     metadata: PathBuf,
     module_counts: PathBuf,
+    known_gap_catalog: PathBuf,
     report: PathBuf,
 }
 
@@ -1346,6 +1364,8 @@ struct TriageOptions {
     results: Option<PathBuf>,
     report: PathBuf,
     extension_policy_report: PathBuf,
+    known_gap_report: PathBuf,
+    known_gap_catalog: PathBuf,
     priority: PathBuf,
     modules_dir: PathBuf,
     module_manifests_dir: PathBuf,
@@ -1724,6 +1744,7 @@ impl VerifyBaselineOptions {
         let mut known_failures = None;
         let mut metadata = None;
         let mut module_counts = None;
+        let mut known_gap_catalog = None;
         let mut report = None;
         let mut index = 0usize;
         while index < args.len() {
@@ -1757,6 +1778,13 @@ impl VerifyBaselineOptions {
                             "--module-counts requires a path".to_string()
                         })?));
                 }
+                "--known-gap-catalog" => {
+                    index += 1;
+                    known_gap_catalog =
+                        Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                            "--known-gap-catalog requires a path".to_string()
+                        })?));
+                }
                 "--report" => {
                     index += 1;
                     report = Some(PathBuf::from(
@@ -1777,6 +1805,11 @@ impl VerifyBaselineOptions {
                 _ if arg.starts_with("--module-counts=") => {
                     module_counts = Some(PathBuf::from(arg.trim_start_matches("--module-counts=")));
                 }
+                _ if arg.starts_with("--known-gap-catalog=") => {
+                    known_gap_catalog = Some(PathBuf::from(
+                        arg.trim_start_matches("--known-gap-catalog="),
+                    ));
+                }
                 _ if arg.starts_with("--report=") => {
                     report = Some(PathBuf::from(arg.trim_start_matches("--report=")));
                 }
@@ -1791,6 +1824,8 @@ impl VerifyBaselineOptions {
             metadata: metadata.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_METADATA)),
             module_counts: module_counts
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_MODULE_COUNTS)),
+            known_gap_catalog: known_gap_catalog
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_KNOWN_GAP_CATALOG)),
             report: report.unwrap_or_else(|| PathBuf::from("docs/phpt/reports/full-baseline.md")),
         })
     }
@@ -1805,6 +1840,8 @@ impl TriageOptions {
         let mut results = None;
         let mut report = None;
         let mut extension_policy_report = None;
+        let mut known_gap_report = None;
+        let mut known_gap_catalog = None;
         let mut priority = None;
         let mut modules_dir = None;
         let mut module_manifests_dir = None;
@@ -1862,6 +1899,20 @@ impl TriageOptions {
                             "--extension-policy-report requires a path".to_string()
                         })?));
                 }
+                "--known-gap-report" => {
+                    index += 1;
+                    known_gap_report =
+                        Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                            "--known-gap-report requires a path".to_string()
+                        })?));
+                }
+                "--known-gap-catalog" => {
+                    index += 1;
+                    known_gap_catalog =
+                        Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                            "--known-gap-catalog requires a path".to_string()
+                        })?));
+                }
                 "--priority" => {
                     index += 1;
                     priority = Some(PathBuf::from(
@@ -1915,6 +1966,15 @@ impl TriageOptions {
                         arg.trim_start_matches("--extension-policy-report="),
                     ));
                 }
+                _ if arg.starts_with("--known-gap-report=") => {
+                    known_gap_report =
+                        Some(PathBuf::from(arg.trim_start_matches("--known-gap-report=")));
+                }
+                _ if arg.starts_with("--known-gap-catalog=") => {
+                    known_gap_catalog = Some(PathBuf::from(
+                        arg.trim_start_matches("--known-gap-catalog="),
+                    ));
+                }
                 _ if arg.starts_with("--priority=") => {
                     priority = Some(PathBuf::from(arg.trim_start_matches("--priority=")));
                 }
@@ -1948,6 +2008,10 @@ impl TriageOptions {
             report: report.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_TRIAGE_REPORT)),
             extension_policy_report: extension_policy_report
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_EXTENSION_POLICY_REPORT)),
+            known_gap_report: known_gap_report
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_KNOWN_GAP_REPORT)),
+            known_gap_catalog: known_gap_catalog
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_KNOWN_GAP_CATALOG)),
             priority: priority.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_MODULE_PRIORITY)),
             modules_dir: modules_dir.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_MODULE_DOCS_DIR)),
             module_manifests_dir: module_manifests_dir
@@ -2353,6 +2417,17 @@ struct BaselineModuleCount {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct KnownGapCatalogEntry {
+    id: String,
+    title: String,
+    reference_behavior: String,
+    current_rust_behavior: String,
+    fixture_or_phpt_example: String,
+    planned_solution_layer: String,
+    baseline_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct GeneratedCase {
     path: PathBuf,
     manifest_path: String,
@@ -2391,6 +2466,16 @@ struct ExtensionPolicySpec {
     needs_stub: bool,
     needs_implementation: bool,
     next_action: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KnownGapSpec {
+    id: &'static str,
+    title: &'static str,
+    reference_behavior: &'static str,
+    current_rust_behavior: &'static str,
+    fixture_or_phpt_example: &'static str,
+    planned_solution_layer: &'static str,
 }
 
 const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
@@ -2510,6 +2595,137 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         needs_stub: false,
         needs_implementation: false,
         next_action: "Route CLI-compatible tests to phpt.cli and leave CGI/FPM/PHPDBG explicit.",
+    },
+];
+
+const KNOWN_GAP_CATALOG: &[KnownGapSpec] = &[
+    KnownGapSpec {
+        id: "runtime-error-or-diagnostic",
+        title: "Runtime error or diagnostic mismatch",
+        reference_behavior: "PHP emits the exact warning, notice, fatal, stack, and exit behavior expected by the PHPT oracle.",
+        current_rust_behavior: "The target exits or formats diagnostics differently from PHP for this baseline fingerprint.",
+        fixture_or_phpt_example: "Zend/tests/basic/002.phpt",
+        planned_solution_layer: "php_runtime/php_vm diagnostics and error channel",
+    },
+    KnownGapSpec {
+        id: "runtime-output-mismatch",
+        title: "Runtime output mismatch",
+        reference_behavior: "PHP stdout and stderr match the PHPT expectation after normal EXPECT/EXPECTF/EXPECTREGEX handling.",
+        current_rust_behavior: "The target completes but emits different observable output.",
+        fixture_or_phpt_example: "ext/standard/tests/strings/echo.phpt",
+        planned_solution_layer: "php_runtime builtins, php_vm execution semantics, or output buffering",
+    },
+    KnownGapSpec {
+        id: "runtime-unsupported-feature",
+        title: "Unsupported runtime feature",
+        reference_behavior: "PHP executes the language or builtin feature covered by the PHPT.",
+        current_rust_behavior: "The runtime or VM reports an unsupported/not-implemented diagnostic.",
+        fixture_or_phpt_example: "Zend/tests/traits/error_001.phpt",
+        planned_solution_layer: "php_ir/php_runtime/php_vm feature implementation",
+    },
+    KnownGapSpec {
+        id: "frontend-parse-or-compile",
+        title: "Frontend parse or compile gap",
+        reference_behavior: "PHP accepts the source or reports the same syntax/compile-time diagnostic as the PHPT expects.",
+        current_rust_behavior: "The lexer, parser, semantic frontend, or IR lowering rejects or lowers the source differently.",
+        fixture_or_phpt_example: "Zend/tests/parser/heredoc_001.phpt",
+        planned_solution_layer: "php_syntax/php_ast/php_semantics/php_ir",
+    },
+    KnownGapSpec {
+        id: "runtime-timeout",
+        title: "Runtime timeout",
+        reference_behavior: "PHP completes the PHPT within the runner timeout or skips it deterministically.",
+        current_rust_behavior: "The target exceeds the PHPT timeout budget.",
+        fixture_or_phpt_example: "Zend/tests/loop/while_001.phpt",
+        planned_solution_layer: "php_vm control flow, termination, or performance",
+    },
+    KnownGapSpec {
+        id: "phpt-runner-section",
+        title: "Unsupported PHPT runner section",
+        reference_behavior: "PHP run-tests handles the section and passes the transformed test to the target correctly.",
+        current_rust_behavior: "The PHPT runner marks the test BORK because this section is not yet supported.",
+        fixture_or_phpt_example: "ext/standard/tests/file/file_variation.phpt",
+        planned_solution_layer: "php_phpt_tools runner section handling",
+    },
+    KnownGapSpec {
+        id: "needs-triage",
+        title: "Needs focused triage",
+        reference_behavior: "PHP behavior is known through the PHPT oracle but the owning failure class is not yet specific enough.",
+        current_rust_behavior: "The fingerprint is retained as known non-green until a narrower owner and implementation path is assigned.",
+        fixture_or_phpt_example: "tests/phpt/manifests/full-known-failures.jsonl",
+        planned_solution_layer: "PHPT triage and module ownership",
+    },
+    KnownGapSpec {
+        id: "unsupported-section",
+        title: "Unsupported PHPT section",
+        reference_behavior: "run-tests.php understands the section and prepares the target invocation accordingly.",
+        current_rust_behavior: "The local PHPT runner BORKs because the section is unsupported.",
+        fixture_or_phpt_example: "ext/standard/tests/basic/bug.phpt",
+        planned_solution_layer: "php_phpt_tools runner section handling",
+    },
+    KnownGapSpec {
+        id: "missing-target-cli-capability",
+        title: "Missing target CLI capability",
+        reference_behavior: "The upstream target supports CLI/SAPI-specific invocation required by the PHPT.",
+        current_rust_behavior: "The current target mode cannot emulate phpdbg, CGI, or another required SAPI capability.",
+        fixture_or_phpt_example: "sapi/phpdbg/tests/print_001.phpt",
+        planned_solution_layer: "target CLI/SAPI policy or explicit extension policy",
+    },
+    KnownGapSpec {
+        id: "unsupported-file-external",
+        title: "Unsupported FILE_EXTERNAL",
+        reference_behavior: "run-tests.php loads the external FILE payload and executes it as the test script.",
+        current_rust_behavior: "The runner marks the PHPT BORK because safe FILE_EXTERNAL support is not complete.",
+        fixture_or_phpt_example: "ext/standard/tests/file/bug45181.phpt",
+        planned_solution_layer: "php_phpt_tools runner file materialization",
+    },
+    KnownGapSpec {
+        id: "unsupported-expectation",
+        title: "Unsupported expectation variant",
+        reference_behavior: "run-tests.php compares output with the declared expectation section.",
+        current_rust_behavior: "The runner BORKs because this expectation form is not yet supported or normalized.",
+        fixture_or_phpt_example: "ext/standard/tests/general_functions/bug.phpt",
+        planned_solution_layer: "php_phpt_tools expectation matcher",
+    },
+    KnownGapSpec {
+        id: "unsupported-runner-io",
+        title: "Unsupported runner IO setup",
+        reference_behavior: "run-tests.php passes ARGS, STDIN, ENV, INI, CLEAN, or related IO setup to the target.",
+        current_rust_behavior: "The local runner cannot yet reproduce that setup for this PHPT.",
+        fixture_or_phpt_example: "ext/standard/tests/streams/bug.phpt",
+        planned_solution_layer: "php_phpt_tools runner environment and process setup",
+    },
+    KnownGapSpec {
+        id: "malformed-or-non-utf8-phpt",
+        title: "Malformed or non-UTF8 PHPT source",
+        reference_behavior: "run-tests.php either parses the PHPT with PHP's file handling or reports a deterministic BORK.",
+        current_rust_behavior: "The local runner classifies the PHPT as malformed or lossy/non-UTF8 input.",
+        fixture_or_phpt_example: "tests/phpt/manifests/full-known-failures.jsonl",
+        planned_solution_layer: "php_phpt_tools parser and source decoding",
+    },
+    KnownGapSpec {
+        id: "malformed-or-incomplete-phpt",
+        title: "Malformed or incomplete PHPT",
+        reference_behavior: "run-tests.php reports malformed PHPT structure consistently.",
+        current_rust_behavior: "The local runner classifies missing required sections as BORK.",
+        fixture_or_phpt_example: "tests/phpt/manifests/full-known-failures.jsonl",
+        planned_solution_layer: "php_phpt_tools PHPT parser diagnostics",
+    },
+    KnownGapSpec {
+        id: "unknown-bork",
+        title: "Unknown BORK",
+        reference_behavior: "run-tests.php gives a concrete reason why the PHPT cannot be executed.",
+        current_rust_behavior: "The local baseline retained a BORK without a more specific subclass.",
+        fixture_or_phpt_example: "tests/phpt/manifests/full-baseline-module-counts.jsonl",
+        planned_solution_layer: "PHPT triage subclass refinement",
+    },
+    KnownGapSpec {
+        id: "other-bork",
+        title: "Other BORK",
+        reference_behavior: "run-tests.php gives a concrete reason why the PHPT cannot be executed.",
+        current_rust_behavior: "The local baseline groups a low-volume BORK outside the named subclasses.",
+        fixture_or_phpt_example: "tests/phpt/manifests/full-baseline-module-counts.jsonl",
+        planned_solution_layer: "PHPT triage subclass refinement",
     },
 ];
 
@@ -2966,6 +3182,33 @@ impl BaselineModuleCount {
             bork_count: extract_json_usize(line, "bork_count")?,
             known_failure_count: extract_json_usize(line, "known_failure_count")?,
         })
+    }
+}
+
+impl KnownGapCatalogEntry {
+    fn from_json_line(line: &str) -> Result<Self, String> {
+        Ok(Self {
+            id: extract_json_string(line, "id")?,
+            title: extract_json_string(line, "title")?,
+            reference_behavior: extract_json_string(line, "reference_behavior")?,
+            current_rust_behavior: extract_json_string(line, "current_rust_behavior")?,
+            fixture_or_phpt_example: extract_json_string(line, "fixture_or_phpt_example")?,
+            planned_solution_layer: extract_json_string(line, "planned_solution_layer")?,
+            baseline_count: extract_json_usize(line, "baseline_count")?,
+        })
+    }
+
+    fn to_json_line(&self) -> String {
+        format!(
+            "{{\"schema_version\":\"phpt-known-gap-v1\",\"id\":\"{}\",\"title\":\"{}\",\"reference_behavior\":\"{}\",\"current_rust_behavior\":\"{}\",\"fixture_or_phpt_example\":\"{}\",\"planned_solution_layer\":\"{}\",\"baseline_count\":{}}}",
+            escape_json(&self.id),
+            escape_json(&self.title),
+            escape_json(&self.reference_behavior),
+            escape_json(&self.current_rust_behavior),
+            escape_json(&self.fixture_or_phpt_example),
+            escape_json(&self.planned_solution_layer),
+            self.baseline_count
+        )
     }
 }
 
@@ -4208,6 +4451,22 @@ fn read_baseline_module_counts(path: &Path) -> Result<Vec<BaselineModuleCount>, 
     Ok(counts)
 }
 
+fn read_known_gap_catalog(path: &Path) -> Result<Vec<KnownGapCatalogEntry>, String> {
+    let source =
+        fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut entries = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        entries.push(
+            KnownGapCatalogEntry::from_json_line(line)
+                .map_err(|error| format!("{}:{}: {error}", path.display(), index + 1))?,
+        );
+    }
+    Ok(entries)
+}
+
 fn read_baseline_metadata(path: &Path) -> Result<BaselineMetadata, String> {
     let source =
         fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -4663,11 +4922,18 @@ fn write_triage_outputs(
     options: &TriageOptions,
     metadata: &BaselineMetadata,
     triage: &PhptTriage,
+    known_gap_rows: &[KnownGapCatalogEntry],
 ) -> Result<(), String> {
     if let Some(parent) = options.report.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     if let Some(parent) = options.extension_policy_report.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    if let Some(parent) = options.known_gap_report.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    if let Some(parent) = options.known_gap_catalog.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     if let Some(parent) = options.priority.parent() {
@@ -4685,6 +4951,16 @@ fn write_triage_outputs(
         render_extension_policy_report(metadata, triage),
     )
     .map_err(|error| format!("{}: {error}", options.extension_policy_report.display()))?;
+    fs::write(
+        &options.known_gap_report,
+        render_known_gap_report(metadata, known_gap_rows),
+    )
+    .map_err(|error| format!("{}: {error}", options.known_gap_report.display()))?;
+    fs::write(
+        &options.known_gap_catalog,
+        render_known_gap_catalog(known_gap_rows),
+    )
+    .map_err(|error| format!("{}: {error}", options.known_gap_catalog.display()))?;
     fs::write(&options.priority, render_module_priority_json(triage))
         .map_err(|error| format!("{}: {error}", options.priority.display()))?;
     fs::write(
@@ -4902,6 +5178,88 @@ fn merge_extension_stats(target: &mut ModuleTriageStats, source: Option<&ModuleT
 
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
+}
+
+fn build_known_gap_rows(
+    failures: &[KnownFailure],
+    module_counts: &[BaselineModuleCount],
+) -> Vec<KnownGapCatalogEntry> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    let mut examples = BTreeMap::<String, String>::new();
+    for failure in failures {
+        let id = failure.primary_missing_feature_guess.as_str();
+        if id.is_empty() {
+            continue;
+        }
+        *counts.entry(id.to_string()).or_default() += 1;
+        examples
+            .entry(id.to_string())
+            .or_insert_with(|| failure.path.clone());
+    }
+    for count in module_counts {
+        if count.kind == "bork_subclass" {
+            *counts.entry(count.module.clone()).or_default() += count.known_failure_count;
+        }
+    }
+
+    KNOWN_GAP_CATALOG
+        .iter()
+        .map(|spec| KnownGapCatalogEntry {
+            id: spec.id.to_string(),
+            title: spec.title.to_string(),
+            reference_behavior: spec.reference_behavior.to_string(),
+            current_rust_behavior: spec.current_rust_behavior.to_string(),
+            fixture_or_phpt_example: examples
+                .get(spec.id)
+                .cloned()
+                .unwrap_or_else(|| spec.fixture_or_phpt_example.to_string()),
+            planned_solution_layer: spec.planned_solution_layer.to_string(),
+            baseline_count: *counts.get(spec.id).unwrap_or(&0),
+        })
+        .collect()
+}
+
+fn render_known_gap_catalog(entries: &[KnownGapCatalogEntry]) -> String {
+    let mut out = String::new();
+    for entry in entries {
+        out.push_str(&entry.to_json_line());
+        out.push('\n');
+    }
+    out
+}
+
+fn render_known_gap_report(
+    metadata: &BaselineMetadata,
+    entries: &[KnownGapCatalogEntry],
+) -> String {
+    let mut out = String::new();
+    out.push_str("# PHPT Known Gaps\n\n");
+    out.push_str(&format!(
+        "Generated from baseline `{}` with {} known non-green fingerprints. This catalog is the stable owner map for PHPT failures that are accepted in the committed full baseline.\n\n",
+        metadata.timestamp, metadata.known_failure_count
+    ));
+    out.push_str("Each row carries the hard-rule fields required for a known gap: ID, reference behavior, current Rust behavior, fixture or PHPT example, and planned solution layer.\n\n");
+    out.push_str("| ID | Baseline count | Reference behavior | Current Rust behavior | Fixture or PHPT example | Planned solution layer |\n");
+    out.push_str("| --- | ---: | --- | --- | --- | --- |\n");
+    for entry in entries {
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} | `{}` | {} |\n",
+            entry.id,
+            entry.baseline_count,
+            entry.reference_behavior,
+            entry.current_rust_behavior,
+            entry.fixture_or_phpt_example,
+            entry.planned_solution_layer
+        ));
+    }
+    out.push_str("\n## Invariants\n\n");
+    out.push_str("- `tests/phpt/manifests/known-gap-catalog.jsonl` is the machine-readable form of this catalog.\n");
+    out.push_str("- `just phpt-verify-baseline` rejects a known failure whose `primary_missing_feature_guess` is missing here.\n");
+    out.push_str(
+        "- BORK subclasses from `full-baseline-module-counts.jsonl` must also have catalog rows.\n",
+    );
+    out.push_str("- The catalog documents accepted baseline gaps only; it does not make new failures acceptable without `PHPT_ACCEPT_BASELINE=1`.\n");
+    out
 }
 
 fn render_count_table(
@@ -5268,6 +5626,83 @@ fn verify_baseline_module_counts(
             "BORK subclass count sum mismatch: metadata={} module_counts={bork_subclasses}",
             metadata.bork_count
         ));
+    }
+}
+
+fn verify_known_gap_catalog(
+    catalog: &[KnownGapCatalogEntry],
+    failures: &[KnownFailure],
+    module_counts: &[BaselineModuleCount],
+    metadata: &BaselineMetadata,
+    errors: &mut Vec<String>,
+) {
+    if metadata.known_failure_count > 0 && catalog.is_empty() {
+        errors.push("PHPT known-gap catalog is empty while known failures exist".to_string());
+        return;
+    }
+
+    let mut ids = BTreeSet::new();
+    let mut rows = BTreeMap::<String, &KnownGapCatalogEntry>::new();
+    for entry in catalog {
+        if entry.id.is_empty()
+            || entry.title.is_empty()
+            || entry.reference_behavior.is_empty()
+            || entry.current_rust_behavior.is_empty()
+            || entry.fixture_or_phpt_example.is_empty()
+            || entry.planned_solution_layer.is_empty()
+        {
+            errors.push(format!(
+                "PHPT known-gap catalog row `{}` has an empty required field",
+                entry.id
+            ));
+        }
+        if !ids.insert(entry.id.as_str()) {
+            errors.push(format!(
+                "PHPT known-gap catalog contains duplicate id `{}`",
+                entry.id
+            ));
+        }
+        rows.insert(entry.id.clone(), entry);
+    }
+
+    for spec in KNOWN_GAP_CATALOG {
+        if !rows.contains_key(spec.id) {
+            errors.push(format!(
+                "PHPT known-gap catalog is missing required id `{}`",
+                spec.id
+            ));
+        }
+    }
+
+    let expected = build_known_gap_rows(failures, module_counts);
+    for expected_row in expected {
+        let Some(actual) = rows.get(&expected_row.id) else {
+            continue;
+        };
+        if actual.baseline_count != expected_row.baseline_count {
+            errors.push(format!(
+                "PHPT known-gap `{}` baseline_count mismatch: catalog={} expected={}",
+                expected_row.id, actual.baseline_count, expected_row.baseline_count
+            ));
+        }
+    }
+
+    for failure in failures {
+        if !rows.contains_key(&failure.primary_missing_feature_guess) {
+            errors.push(format!(
+                "PHPT known-gap catalog is missing primary_missing_feature_guess `{}` for `{}`",
+                failure.primary_missing_feature_guess, failure.path
+            ));
+            break;
+        }
+    }
+    for count in module_counts {
+        if count.kind == "bork_subclass" && !rows.contains_key(&count.module) {
+            errors.push(format!(
+                "PHPT known-gap catalog is missing BORK subclass `{}`",
+                count.module
+            ));
+        }
     }
 }
 
@@ -6714,6 +7149,97 @@ mod tests {
         assert!(rendered.contains(
             "\"kind\":\"bork_subclass\",\"module\":\"unsupported-section\",\"corpus_count\":0"
         ));
+    }
+
+    #[test]
+    fn known_gap_catalog_renders_required_hard_rule_fields() {
+        let failures = vec![KnownFailure {
+            path: "Zend/tests/basic/002.phpt".to_string(),
+            module_tag: "zend".to_string(),
+            outcome: "FAIL".to_string(),
+            failure_fingerprint: "abc".to_string(),
+            primary_missing_feature_guess: "runtime-output-mismatch".to_string(),
+            owner_module: "zend.basic".to_string(),
+            first_seen_timestamp: "20260624T125543Z".to_string(),
+        }];
+        let rows = build_known_gap_rows(&failures, &[]);
+        let rendered = render_known_gap_catalog(&rows);
+        let markdown = render_known_gap_report(
+            &BaselineMetadata {
+                schema_version: "phpt-full-baseline-v1".to_string(),
+                timestamp: "20260624T125543Z".to_string(),
+                corpus_count: 1,
+                pass_count: 0,
+                skip_count: 0,
+                fail_count: 1,
+                bork_count: 0,
+                known_failure_count: 1,
+                failure_manifest: "tests/phpt/manifests/full-known-failures.jsonl".to_string(),
+            },
+            &rows,
+        );
+
+        assert!(rendered.contains("\"schema_version\":\"phpt-known-gap-v1\""));
+        assert!(rendered.contains("\"id\":\"runtime-output-mismatch\""));
+        assert!(rendered.contains("\"baseline_count\":1"));
+        assert!(rendered.contains("\"reference_behavior\":\""));
+        assert!(rendered.contains("\"current_rust_behavior\":\""));
+        assert!(rendered.contains("\"fixture_or_phpt_example\":\"Zend/tests/basic/002.phpt\""));
+        assert!(rendered.contains("\"planned_solution_layer\":\""));
+        assert!(markdown.contains("| `runtime-output-mismatch` | 1 |"));
+    }
+
+    #[test]
+    fn known_gap_catalog_verifier_rejects_missing_ids_and_count_drift() {
+        let failures = vec![KnownFailure {
+            path: "Zend/tests/basic/002.phpt".to_string(),
+            module_tag: "zend".to_string(),
+            outcome: "FAIL".to_string(),
+            failure_fingerprint: "abc".to_string(),
+            primary_missing_feature_guess: "runtime-output-mismatch".to_string(),
+            owner_module: "zend.basic".to_string(),
+            first_seen_timestamp: "20260624T125543Z".to_string(),
+        }];
+        let module_counts = vec![BaselineModuleCount::from_json_line(
+            "{\"kind\":\"bork_subclass\",\"module\":\"unsupported-section\",\"corpus_count\":0,\"pass_count\":0,\"skip_count\":0,\"fail_count\":0,\"bork_count\":2,\"known_failure_count\":2}",
+        )
+        .unwrap()];
+        let mut catalog = build_known_gap_rows(&failures, &module_counts);
+        catalog.retain(|entry| entry.id != "unsupported-section");
+        if let Some(entry) = catalog
+            .iter_mut()
+            .find(|entry| entry.id == "runtime-output-mismatch")
+        {
+            entry.baseline_count = 99;
+        }
+        let mut errors = Vec::new();
+
+        verify_known_gap_catalog(
+            &catalog,
+            &failures,
+            &module_counts,
+            &BaselineMetadata {
+                schema_version: "phpt-full-baseline-v1".to_string(),
+                timestamp: "20260624T125543Z".to_string(),
+                corpus_count: 3,
+                pass_count: 0,
+                skip_count: 0,
+                fail_count: 1,
+                bork_count: 2,
+                known_failure_count: 3,
+                failure_manifest: "tests/phpt/manifests/full-known-failures.jsonl".to_string(),
+            },
+            &mut errors,
+        );
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("unsupported-section"))
+        );
+        assert!(errors.iter().any(|error| {
+            error.contains("runtime-output-mismatch") && error.contains("baseline_count mismatch")
+        }));
     }
 
     #[test]

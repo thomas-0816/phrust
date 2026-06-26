@@ -8,6 +8,7 @@ required_files=(
   "docs/phpt/binary-discovery.md"
   "docs/phpt/official-runner.md"
   "docs/phpt/extension-policy.md"
+  "docs/phpt/known-gaps.md"
   "docs/phpt/full-phpt-gate.md"
 )
 
@@ -50,6 +51,7 @@ require_text 'navigation aid' docs/phpt/source-lookup.md
 require_text 'phrust-php' docs/phpt/binary-discovery.md
 require_text 'official `run-tests.php` wrapper' docs/phpt/official-runner.md
 require_text 'Extension PHPTs remain in the corpus' docs/phpt/extension-policy.md
+require_text 'PHPT Known Gaps' docs/phpt/known-gaps.md
 require_text 'complete discovered PHPT corpus' docs/phpt/full-phpt-gate.md
 
 if [[ -f tests/phpt/manifests/php-src-hashes.jsonl && ! -s tests/phpt/manifests/php-src-hashes.jsonl ]]; then
@@ -69,6 +71,11 @@ fi
 
 if [[ ! -s tests/phpt/manifests/full-baseline-module-counts.jsonl ]]; then
   printf '%s\n' 'PHPT baseline module-count manifest is missing or empty.' >&2
+  exit 1
+fi
+
+if [[ ! -s tests/phpt/manifests/known-gap-catalog.jsonl ]]; then
+  printf '%s\n' 'PHPT known-gap catalog is missing or empty.' >&2
   exit 1
 fi
 
