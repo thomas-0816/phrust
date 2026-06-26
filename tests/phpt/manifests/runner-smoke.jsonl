@@ -14,5 +14,6 @@
 {"path":"tests/phpt/generated/runner_smoke/phpdbg_skip.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/gzip_post_skip.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/deflate_post_skip.phpt","source":"generated"}
+{"path":"tests/phpt/generated/runner_smoke/extensions_skip.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/xfail.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/metadata_sections.phpt","source":"generated"}

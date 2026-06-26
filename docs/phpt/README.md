@@ -75,6 +75,8 @@ covers:
 - `ARGS`
 - `STDIN`
 - `CAPTURE_STDIO`
+- `EXTENSIONS`, as a deterministic target-capability `SKIP` when required
+  extensions are not loaded
 - `FILEEOF`
 - `FILE_EXTERNAL`
 - metadata-only sections `FLAKY`, `WHITESPACE_SENSITIVE`, and `XLEAK`
@@ -88,6 +90,11 @@ For original php-src `CAPTURE_STDIO` cases that use the upstream
 while evaluating `SKIPIF` when the host process does not expose stdin, stdout,
 and stderr as terminals. This keeps non-interactive local and CI runs
 deterministic instead of reporting TTY-topology mismatches as engine failures.
+
+For original php-src `EXTENSIONS` cases, the runner checks `extension_loaded()`
+against the active target before `SKIPIF` and `FILE` execution. Missing
+extensions become explicit `SKIP` outcomes. This preserves the PHPT contract
+without editing original php-src tests or emulating unavailable extensions.
 
 The runner classifies remaining BORKs separately from VM/runtime failures so
 PHPT infrastructure gaps are fixed before module work attributes failures to

@@ -1052,6 +1052,11 @@ fn run_one_phpt(
     fs::create_dir_all(&work_dir).map_err(|error| format!("{}: {error}", work_dir.display()))?;
     copy_phpt_support_files(&phpt_path, &work_dir)?;
 
+    if let Some(reason) = required_extensions_skip_reason(options, &document.sections, &work_dir)? {
+        return Ok(PhptRunResult::new(manifest_path, "SKIP", reason)
+            .with_cache_keys(cache_key, input_cache_key));
+    }
+
     if let Some(skipif) = section(&document.sections, "SKIPIF") {
         let skip_path = work_dir.join("skipif.php");
         fs::write(&skip_path, &skipif.body)
@@ -1077,7 +1082,7 @@ fn run_one_phpt(
         )
         .with_cache_keys(cache_key, input_cache_key));
     };
-    let test_path = work_dir.join("test.php");
+    let test_path = work_dir.join(phpt_execution_filename(&phpt_path));
     fs::write(&test_path, file_body)
         .map_err(|error| format!("{}: {error}", test_path.display()))?;
     let ini = ini_args(&document.sections);
@@ -4014,6 +4019,77 @@ fn target_sapi_skip_reason(sections: &[PhptSection]) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn required_extensions(sections: &[PhptSection]) -> Vec<String> {
+    let Some(section) = section(sections, "EXTENSIONS") else {
+        return Vec::new();
+    };
+    section
+        .body
+        .lines()
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with(';'))
+        .map(str::to_string)
+        .collect()
+}
+
+fn required_extensions_skip_reason(
+    options: &RunOptions,
+    sections: &[PhptSection],
+    work_dir: &Path,
+) -> Result<Option<String>, String> {
+    let required = required_extensions(sections);
+    if required.is_empty() {
+        return Ok(None);
+    }
+
+    let check_path = work_dir.join("required_extensions.php");
+    fs::write(&check_path, extension_check_source(&required))
+        .map_err(|error| format!("{}: {error}", check_path.display()))?;
+    let output = run_php(options, &check_path, work_dir, &[], &[], &[], None)?;
+    let missing = output
+        .stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("missing:"))
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|extension| !extension.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(format!(
+            "required extension(s) not loaded: {}",
+            missing.join(", ")
+        )))
+    }
+}
+
+fn extension_check_source(required: &[String]) -> String {
+    let extensions = required
+        .iter()
+        .map(|extension| format!("'{}'", php_single_quoted_literal(extension)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "<?php\n$missing = [];\nforeach ([{extensions}] as $extension) {{\n    if (!extension_loaded($extension)) {{\n        $missing[] = $extension;\n    }}\n}}\nif ($missing) {{\n    echo 'missing:', implode(',', $missing), \"\\n\";\n}}\n"
+    )
+}
+
+fn php_single_quoted_literal(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn phpt_execution_filename(phpt_path: &Path) -> String {
+    let stem = phpt_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("test");
+    format!("{stem}.php")
 }
 
 fn split_phpt_args(args: &str) -> Vec<String> {
@@ -7499,6 +7575,37 @@ mod tests {
         assert_eq!(
             target_sapi_skip_reason(&deflate_sections),
             Some("CGI not available")
+        );
+    }
+
+    #[test]
+    fn required_extensions_parse_lines_and_commas() {
+        let sections = parse_phpt(
+            "--TEST--\nt\n--EXTENSIONS--\nzend_test, session\n# comment\n; another\nstandard\n--FILE--\n<?php\n--EXPECT--\n",
+        )
+        .sections;
+        assert_eq!(
+            required_extensions(&sections),
+            vec![
+                "zend_test".to_string(),
+                "session".to_string(),
+                "standard".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn extension_check_source_escapes_single_quoted_literals() {
+        let source = extension_check_source(&["weird\\ext'name".to_string()]);
+        assert!(source.contains("'weird\\\\ext\\'name'"));
+        assert!(source.contains("extension_loaded($extension)"));
+    }
+
+    #[test]
+    fn phpt_execution_filename_uses_original_basename() {
+        assert_eq!(
+            phpt_execution_filename(Path::new("Zend/tests/unset/this_in_unset.phpt")),
+            "this_in_unset.php"
         );
     }
 

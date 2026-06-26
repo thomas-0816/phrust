@@ -8,4 +8,4 @@ echo $argc, "\n";
 echo implode(",", $argv), "\n";
 --EXPECTF--
 3
-%stest.php,alpha,beta
+%sargs.php,alpha,beta
