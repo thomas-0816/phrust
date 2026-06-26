@@ -4281,6 +4281,7 @@ mod tests {
                     name: None,
                     value: Operand::Register(r0),
                     unpack: false,
+                    value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
                     by_ref_local: Some(local_s),
                     by_ref_dim: None,
                     by_ref_property: None,

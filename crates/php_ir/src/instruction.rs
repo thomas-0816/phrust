@@ -124,12 +124,24 @@ pub struct IrCallArg {
     pub value: Operand,
     /// True when this argument came from `...`.
     pub unpack: bool,
+    /// Source value class for PHP by-reference send compatibility.
+    pub value_kind: IrCallArgValueKind,
     /// Caller local when this argument can satisfy a by-reference parameter.
     pub by_ref_local: Option<LocalId>,
     /// Caller array dimension when this argument can satisfy a by-reference parameter.
     pub by_ref_dim: Option<IrCallDimTarget>,
     /// Caller property when this argument can satisfy a by-reference parameter.
     pub by_ref_property: Option<IrCallPropertyTarget>,
+}
+
+/// Source value class for a lowered PHP call argument.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IrCallArgValueKind {
+    /// A normal value expression. Non-referenceable by-ref sends are fatal.
+    Direct,
+    /// A temporary produced by an expression PHP allows with a notice.
+    IndirectTemporary,
 }
 
 /// Array-dimension lvalue metadata for a call argument.

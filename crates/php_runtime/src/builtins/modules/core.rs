@@ -9,6 +9,7 @@ use super::super::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
     BuiltinResult, RuntimeSourceSpan,
 };
+use crate::convert::float_to_php_string;
 use crate::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 use crate::{
     ArrayKey, CallableValue, ClassEntry, ClassFlags, NumericValue, ObjectRef, OutputBuffer,
@@ -16,7 +17,6 @@ use crate::{
     equal, identical, pcre, serialize as serialize_value, to_bool, to_float, to_int, to_number,
     to_string, unserialize as unserialize_value, value::FloatValue,
 };
-use crate::convert::float_to_php_string;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use md5::{Digest, Md5};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
@@ -226,11 +226,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("serialize", builtin_serialize, BuiltinCompatibility::Php),
-    BuiltinEntry::new(
-        "setlocale",
-        builtin_setlocale,
-        BuiltinCompatibility::Php,
-    ),
+    BuiltinEntry::new("setlocale", builtin_setlocale, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "set_error_handler",
         builtin_error_handling_requires_vm,
@@ -8421,7 +8417,10 @@ fn warn_range_empty_string(
     }
     range_warning(
         context,
-        &format!("Argument {} must not be empty, casted to 0", operand.argument),
+        &format!(
+            "Argument {} must not be empty, casted to 0",
+            operand.argument
+        ),
         span,
     );
 }
@@ -8513,6 +8512,7 @@ fn range_numeric_values(
         start.as_f64(),
         end.as_f64(),
         step_abs,
+        step,
         count,
     ))
 }
@@ -8585,8 +8585,24 @@ fn range_int_values(
     Ok(out)
 }
 
-fn range_float_values(start: f64, end: f64, step: f64, count: usize) -> Vec<Value> {
+fn range_float_values(
+    start: f64,
+    end: f64,
+    step: f64,
+    original_step: RangeStep,
+    count: usize,
+) -> Vec<Value> {
     let direction = if start <= end { 1.0 } else { -1.0 };
+    if original_step.is_integral() {
+        let mut out = Vec::with_capacity(count);
+        let mut current = start;
+        let delta = direction * step;
+        for _ in 0..count {
+            out.push(Value::float(current));
+            current += delta;
+        }
+        return out;
+    }
     (0..count)
         .map(|index| Value::float(start + direction * step * index as f64))
         .collect()
@@ -9830,7 +9846,44 @@ fn php_float_debug_string(value: FloatValue) -> String {
         };
     }
 
-    float_to_php_string(value)
+    if value != 0.0 {
+        let abs = value.abs();
+        if !(1e-4..1e17).contains(&abs) {
+            return php_float_debug_scientific_string(value);
+        }
+    }
+    value.to_string()
+}
+
+fn php_float_debug_scientific_string(value: f64) -> String {
+    let mut output = format!("{value:.15E}");
+    let Some(exponent_index) = output.find('E') else {
+        return output;
+    };
+    let mut mantissa = output[..exponent_index].to_owned();
+    let exponent = &output[exponent_index + 1..];
+    while mantissa.ends_with('0') {
+        mantissa.pop();
+    }
+    if mantissa.ends_with('.') {
+        mantissa.pop();
+    }
+    if !mantissa.contains('.') {
+        mantissa.push_str(".0");
+    }
+    let sign = exponent
+        .strip_prefix('+')
+        .map(|digits| ("+", digits))
+        .or_else(|| exponent.strip_prefix('-').map(|digits| ("-", digits)))
+        .unwrap_or(("+", exponent));
+    let digits = sign.1.trim_start_matches('0');
+    output = format!(
+        "{}E{}{}",
+        mantissa,
+        sign.0,
+        if digits.is_empty() { "0" } else { digits }
+    );
+    output
 }
 
 fn php_float_export_string(value: FloatValue) -> String {
@@ -11883,6 +11936,8 @@ mod tests {
                 Value::Int(7),
                 Value::float(1.0),
                 Value::float(1.7000000000000002),
+                Value::float(3.9000000000000004),
+                Value::float(4.2),
                 Value::float(f64::INFINITY),
                 Value::float(f64::NAN),
                 Value::float(9_223_372_036_854_776_000.0),
@@ -11895,7 +11950,7 @@ mod tests {
         assert_eq!(result, Value::Null);
         assert_eq!(
             output.to_string_lossy(),
-            "NULL\nbool(true)\nint(7)\nfloat(1)\nfloat(1.7)\nfloat(INF)\nfloat(NAN)\nfloat(9.2233720368548E+18)\nstring(2) \"hi\"\narray(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  string(1) \"x\"\n}\n"
+            "NULL\nbool(true)\nint(7)\nfloat(1)\nfloat(1.7000000000000002)\nfloat(3.9000000000000004)\nfloat(4.2)\nfloat(INF)\nfloat(NAN)\nfloat(9.223372036854776E+18)\nstring(2) \"hi\"\narray(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  string(1) \"x\"\n}\n"
         );
     }
 
@@ -14217,6 +14272,25 @@ mod tests {
         assert_eq!(
             call(
                 "range",
+                vec![Value::float(9.9), Value::string("0")],
+                &mut output
+            ),
+            Value::packed_array(vec![
+                Value::float(9.9),
+                Value::float(8.9),
+                Value::float(7.9),
+                Value::float(6.9),
+                Value::float(5.9),
+                Value::float(4.9),
+                Value::float(3.9000000000000004),
+                Value::float(2.9000000000000004),
+                Value::float(1.9000000000000004),
+                Value::float(0.9000000000000004),
+            ])
+        );
+        assert_eq!(
+            call(
+                "range",
                 vec![Value::string("a"), Value::string("e"), Value::Int(2)],
                 &mut output
             ),
@@ -14391,11 +14465,7 @@ mod tests {
 
         let mut output = OutputBuffer::new();
         assert_eq!(
-            call(
-                "range",
-                vec![Value::Null, Value::string("e")],
-                &mut output
-            ),
+            call("range", vec![Value::Null, Value::string("e")], &mut output),
             Value::packed_array(vec![Value::Int(0)])
         );
         let warnings = output.to_string_lossy();

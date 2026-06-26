@@ -3,7 +3,8 @@
 use crate::constants::IrConstant;
 use crate::function::IrReturnType;
 use crate::instruction::{
-    BinaryOp, CastKind, CompareOp, InstructionKind, IrCallArg, TerminatorKind, UnaryOp,
+    BinaryOp, CastKind, CompareOp, InstructionKind, IrCallArg, IrCallArgValueKind, TerminatorKind,
+    UnaryOp,
 };
 use crate::module::IrUnit;
 use crate::operand::Operand;
@@ -324,6 +325,9 @@ fn format_call_arg(arg: &IrCallArg) -> String {
         out.push_str("...");
     }
     out.push_str(&format_operand(&arg.value));
+    if arg.value_kind == IrCallArgValueKind::IndirectTemporary {
+        out.push_str(" value=indirect_temporary");
+    }
     if let Some(local) = arg.by_ref_local {
         out.push_str(&format!(" by_ref=local:{}", local.raw()));
     }

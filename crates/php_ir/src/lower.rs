@@ -8,7 +8,8 @@ use crate::function::{FunctionFlags, IrCapture, IrParam, IrReturnType};
 use crate::ids::{BlockId, FileId, FunctionId, LocalId, RegId, UnitId};
 use crate::instruction::{
     BinaryOp, CallableKind, CastKind, ClosureCaptureArg, CompareOp, IncludeKind, InstructionKind,
-    IrCallArg, IrCallDimTarget, IrCallPropertyTarget, IrDiagnosticSeverity, UnaryOp,
+    IrCallArg, IrCallArgValueKind, IrCallDimTarget, IrCallPropertyTarget, IrDiagnosticSeverity,
+    UnaryOp,
 };
 use crate::module::{
     AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
@@ -4115,6 +4116,7 @@ impl LoweringContext<'_> {
                 name: arg.name.clone(),
                 value: Operand::Register(value.register),
                 unpack: arg.unpack,
+                value_kind: self.call_arg_value_kind(arg.value),
                 by_ref_local: (!arg.unpack)
                     .then(|| self.variable_local(builder, site.function, arg.value))
                     .flatten(),
@@ -4123,6 +4125,28 @@ impl LoweringContext<'_> {
             });
         }
         Some((operands, current))
+    }
+
+    fn call_arg_value_kind(&self, expr: ExprId) -> IrCallArgValueKind {
+        let Some(module) = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())
+        else {
+            return IrCallArgValueKind::Direct;
+        };
+        let Some(expression) = module.expressions().get(expr) else {
+            return IrCallArgValueKind::Direct;
+        };
+        match expression.kind() {
+            HirExprKind::Call { .. }
+            | HirExprKind::MethodCall { .. }
+            | HirExprKind::New { .. }
+            | HirExprKind::Clone { .. }
+            | HirExprKind::Include { .. }
+            | HirExprKind::Eval { .. } => IrCallArgValueKind::IndirectTemporary,
+            _ => IrCallArgValueKind::Direct,
+        }
     }
 
     fn lower_call_to_register(

@@ -27,7 +27,7 @@ use php_ir::function::{IrFunction, IrParam, IrReturnType};
 use php_ir::ids::{BlockId, ConstId, FunctionId, InstrId, LocalId, RegId};
 use php_ir::instruction::{
     BinaryOp, CallableKind, CastKind, ClosureCaptureArg, CompareOp, IncludeKind, Instruction,
-    InstructionKind, IrCallArg, IrDiagnosticSeverity, TerminatorKind, UnaryOp,
+    InstructionKind, IrCallArg, IrCallArgValueKind, IrDiagnosticSeverity, TerminatorKind, UnaryOp,
 };
 use php_ir::module::IrUnit;
 use php_ir::operand::Operand;
@@ -1220,6 +1220,7 @@ impl FunctionCall<'_> {
 struct CallArgument {
     name: Option<String>,
     value: Value,
+    value_kind: IrCallArgValueKind,
     by_ref_local: Option<LocalId>,
     by_ref_dim: Option<CallDimTarget>,
     by_ref_property: Option<CallPropertyTarget>,
@@ -1235,6 +1236,11 @@ struct CallDimTarget {
 struct CallPropertyTarget {
     object: ObjectRef,
     property: String,
+}
+
+enum InternalBuiltinArgError {
+    Message(String),
+    Fatal(VmResult),
 }
 
 struct MultisortArraySpec {
@@ -1259,6 +1265,7 @@ impl CallArgument {
         Self {
             name: None,
             value,
+            value_kind: IrCallArgValueKind::Direct,
             by_ref_local: None,
             by_ref_dim: None,
             by_ref_property: None,
@@ -9213,11 +9220,14 @@ impl Vm {
                 if is_process_builtin_name(&name) {
                     return self.call_process_builtin(compiled, &name, args, output, stack);
                 }
-                let values = match call_builtin_args_to_positional(compiled, &name, args, stack) {
+                let values = match call_builtin_args_to_positional(
+                    compiled, &name, args, output, stack, state,
+                ) {
                     Ok(values) => values,
-                    Err(message) => {
+                    Err(InternalBuiltinArgError::Message(message)) => {
                         return self.runtime_error(output, compiled, stack, message);
                     }
+                    Err(InternalBuiltinArgError::Fatal(result)) => return result,
                 };
                 if name == "var_dump"
                     && let Some(message) = debug_info_gap_message(compiled, &values)
@@ -10900,10 +10910,12 @@ impl Vm {
             return compare(&left, &right)
                 .map_err(|message| ArrayCallbackError::Message(format!("sort: {message}")));
         }
-        let left = self.sort_regular_mixed_comparable_value(compiled, &left, output, stack, state)?;
+        let left =
+            self.sort_regular_mixed_comparable_value(compiled, &left, output, stack, state)?;
         let right =
             self.sort_regular_mixed_comparable_value(compiled, &right, output, stack, state)?;
-        compare(&left, &right).map_err(|message| ArrayCallbackError::Message(format!("sort: {message}")))
+        compare(&left, &right)
+            .map_err(|message| ArrayCallbackError::Message(format!("sort: {message}")))
     }
 
     fn sort_regular_comparable_value(
@@ -10931,11 +10943,10 @@ impl Vm {
         state: &mut ExecutionState,
     ) -> Result<Value, ArrayCallbackError> {
         match value {
-            Value::Object(object) if object_has_public_to_string(compiled, object) => {
-                self.object_to_string(compiled, object.clone(), output, stack, state)
-                    .map(Value::String)
-                    .map_err(|result| ArrayCallbackError::Runtime(Box::new(result)))
-            }
+            Value::Object(object) if object_has_public_to_string(compiled, object) => self
+                .object_to_string(compiled, object.clone(), output, stack, state)
+                .map(Value::String)
+                .map_err(|result| ArrayCallbackError::Runtime(Box::new(result))),
             other => Ok(other.clone()),
         }
     }
@@ -11083,11 +11094,19 @@ impl Vm {
             return self.call_array_sort_builtin(compiled, &normalized, args, output, stack, state);
         }
         if BuiltinRegistry::new().contains(&normalized) {
-            let values = match call_builtin_args_to_positional(compiled, &normalized, args, stack) {
+            let values = match call_builtin_args_to_positional(
+                compiled,
+                &normalized,
+                args,
+                output,
+                stack,
+                state,
+            ) {
                 Ok(values) => values,
-                Err(message) => {
+                Err(InternalBuiltinArgError::Message(message)) => {
                     return self.runtime_error(output, compiled, stack, message);
                 }
+                Err(InternalBuiltinArgError::Fatal(result)) => return result,
             };
             if normalized == "var_dump"
                 && let Some(message) = debug_info_gap_message(compiled, &values)
@@ -11251,12 +11270,14 @@ impl Vm {
                     self.call_array_sort_builtin(compiled, &name, args, output, stack, state)
                 }
                 FunctionCallBuiltinKind::InternalRegistry => {
-                    let values = match call_builtin_args_to_positional(compiled, &name, args, stack)
-                    {
+                    let values = match call_builtin_args_to_positional(
+                        compiled, &name, args, output, stack, state,
+                    ) {
                         Ok(values) => values,
-                        Err(message) => {
+                        Err(InternalBuiltinArgError::Message(message)) => {
                             return self.runtime_error(output, compiled, stack, message);
                         }
+                        Err(InternalBuiltinArgError::Fatal(result)) => return result,
                     };
                     if name == "var_dump"
                         && let Some(message) = debug_info_gap_message(compiled, &values)
@@ -21777,6 +21798,7 @@ fn prepare_arguments(
             bound[index] = Some(CallArgument {
                 name: None,
                 value: arg.value,
+                value_kind: arg.value_kind,
                 by_ref_local: arg.by_ref_local,
                 by_ref_dim: arg.by_ref_dim,
                 by_ref_property: arg.by_ref_property,
@@ -21817,6 +21839,7 @@ fn prepare_arguments(
         bound[positional_index] = Some(CallArgument {
             name: None,
             value: arg.value,
+            value_kind: arg.value_kind,
             by_ref_local: arg.by_ref_local,
             by_ref_dim: arg.by_ref_dim,
             by_ref_property: arg.by_ref_property,
@@ -22587,6 +22610,7 @@ fn read_call_args(
                 out.push(CallArgument {
                     name,
                     value: value.clone(),
+                    value_kind: IrCallArgValueKind::Direct,
                     by_ref_local: None,
                     by_ref_dim: None,
                     by_ref_property: None,
@@ -22622,6 +22646,7 @@ fn read_call_args(
         out.push(CallArgument {
             name: arg.name.clone(),
             value,
+            value_kind: arg.value_kind,
             by_ref_local: arg.by_ref_local,
             by_ref_dim,
             by_ref_property,
@@ -23415,14 +23440,16 @@ fn call_builtin_args_to_positional(
     compiled: &CompiledUnit,
     function: &str,
     args: Vec<CallArgument>,
+    output: &mut OutputBuffer,
     stack: &mut CallStack,
-) -> Result<Vec<Value>, String> {
+    state: &mut ExecutionState,
+) -> Result<Vec<Value>, InternalBuiltinArgError> {
     let mut values = Vec::with_capacity(args.len());
     for (index, arg) in args.into_iter().enumerate() {
         if let Some(name) = arg.name {
-            return Err(format!(
+            return Err(InternalBuiltinArgError::Message(format!(
                 "E_PHP_VM_UNKNOWN_NAMED_ARG: function {function} has no builtin parameter ${name}"
-            ));
+            )));
         }
         let bind_by_ref = (function == "str_replace" && index == 3)
             || (matches!(function, "preg_match" | "preg_match_all") && index == 2)
@@ -23440,14 +23467,101 @@ fn call_builtin_args_to_positional(
                     | "shuffle"
             ) && index == 0);
         if bind_by_ref {
-            if let Some(cell) = call_argument_reference_cell(compiled, &arg, stack)? {
+            if let Some(cell) = call_argument_reference_cell(compiled, &arg, stack)
+                .map_err(InternalBuiltinArgError::Message)?
+            {
                 values.push(Value::Reference(cell));
                 continue;
             }
+            let param_name = internal_builtin_by_ref_param_name(function, index);
+            if arg.value_kind == IrCallArgValueKind::IndirectTemporary {
+                emit_internal_by_ref_indirect_temporary_notice(compiled, output, stack, state);
+                values.push(Value::Reference(ReferenceCell::new(arg.value)));
+                continue;
+            }
+            return Err(InternalBuiltinArgError::Fatal(
+                internal_builtin_by_ref_temporary_fatal_result(
+                    output,
+                    compiled,
+                    stack,
+                    function,
+                    index + 1,
+                    param_name,
+                ),
+            ));
         }
         values.push(arg.value);
     }
     Ok(values)
+}
+
+fn internal_builtin_by_ref_param_name(function: &str, index: usize) -> &'static str {
+    match (function, index) {
+        ("str_replace", 3) => "count",
+        ("preg_match" | "preg_match_all", 2) => "matches",
+        (_, 0) => "array",
+        _ => "arg",
+    }
+}
+
+fn emit_internal_by_ref_indirect_temporary_notice(
+    compiled: &CompiledUnit,
+    output: &mut OutputBuffer,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+) {
+    let diagnostic = RuntimeDiagnostic::new(
+        "E_PHP_VM_BY_REF_ARG_INDIRECT_TEMPORARY_NOTICE",
+        RuntimeSeverity::Notice,
+        "Only variables should be passed by reference",
+        RuntimeSourceSpan::default(),
+        stack_trace(compiled, stack),
+        Some(php_runtime::PhpReferenceClassification::Warning),
+    );
+    if error_reporting_allows(state, php_runtime::PHP_E_NOTICE) {
+        emit_vm_diagnostic(
+            output,
+            state,
+            &diagnostic,
+            php_runtime::PhpDiagnosticChannel::Notice,
+            php_runtime::PHP_E_NOTICE,
+        );
+        state.diagnostics.push(diagnostic);
+    }
+}
+
+fn internal_builtin_by_ref_temporary_fatal_result(
+    output: &mut OutputBuffer,
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    function: &str,
+    position: usize,
+    param_name: &str,
+) -> VmResult {
+    let source_span = RuntimeSourceSpan::default();
+    let location = php_runtime::PhpDiagnosticLocation::from_span(&source_span);
+    let message = format!(
+        "Uncaught Error: {function}(): Argument #{position} (${param_name}) could not be passed by reference"
+    );
+    output.write_bytes(
+        format!(
+            "Fatal error: {message} in {}:{}\nStack trace:\n#0 {{main}}\n  thrown in {} on line {}\n",
+            location.file, location.line, location.file, location.line
+        )
+        .as_bytes(),
+    );
+    VmResult::runtime_error_with_diagnostic(
+        output.clone(),
+        message.clone(),
+        RuntimeDiagnostic::new(
+            "E_PHP_VM_INTERNAL_BY_REF_ARG_NOT_REFERENCEABLE",
+            RuntimeSeverity::FatalError,
+            message,
+            source_span,
+            stack_trace(compiled, stack),
+            Some(php_runtime::PhpReferenceClassification::Error),
+        ),
+    )
 }
 
 fn assign_dim_local(
@@ -30634,6 +30748,51 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     #[test]
+    fn by_ref_builtin_direct_temporary_is_fatal_error() {
+        let result = execute_source("<?php var_dump(prev(array(1, 2)));");
+
+        assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.contains(
+                "Fatal error: Uncaught Error: prev(): Argument #1 ($array) could not be passed by reference"
+            ),
+            "{output}"
+        );
+        assert!(
+            output.contains("Stack trace:\n#0 {main}\n  thrown in "),
+            "{output}"
+        );
+        assert_eq!(
+            result.diagnostics[0].id(),
+            "E_PHP_VM_INTERNAL_BY_REF_ARG_NOT_REFERENCEABLE"
+        );
+    }
+
+    #[test]
+    fn by_ref_builtin_indirect_temporary_warns_and_uses_temp_cell() {
+        let result = execute_source(
+            "<?php
+            function f() {
+                $array = array(1, 2);
+                end($array);
+                return $array;
+            }
+            var_dump(prev(f()));
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "\nNotice: Only variables should be passed by reference in <unknown> on line 0\nint(1)\n"
+        );
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.id() == "E_PHP_VM_BY_REF_ARG_INDIRECT_TEMPORARY_NOTICE"
+        }));
+    }
+
+    #[test]
     fn array_sort_builtins_mutate_private_properties() {
         let result = execute_source(
             "<?php
@@ -30757,7 +30916,10 @@ echo perf_jit_unstable_types_debug(4), "\n";
         );
         assert!(result.status.is_success(), "{:?}", result.status);
         let output = result.output.to_string_lossy();
-        assert!(!output.contains("Warning: Array to string conversion"), "{output}");
+        assert!(
+            !output.contains("Warning: Array to string conversion"),
+            "{output}"
+        );
         assert_eq!(output, "bool(true)\nuppercase NULL");
     }
 

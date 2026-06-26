@@ -1483,6 +1483,7 @@ mod tests {
                     name: None,
                     value: Operand::Register(RegId::new(0)),
                     unpack: true,
+                    value_kind: crate::instruction::IrCallArgValueKind::Direct,
                     by_ref_local: Some(LocalId::new(0)),
                     by_ref_dim: None,
                     by_ref_property: None,

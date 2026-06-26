@@ -584,10 +584,7 @@ fn weak_coerce_int_float_union(type_spec: &TypeSpec, value: &Value) -> Option<Va
         return None;
     };
     let bytes = string.as_bytes();
-    if bytes
-        .iter()
-        .any(|byte| matches!(byte, b'.' | b'e' | b'E'))
-    {
+    if bytes.iter().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
         return to_float(value).ok().map(Value::float);
     }
     None
