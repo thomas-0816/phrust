@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -1039,6 +1039,10 @@ fn run_one_phpt(
                 .with_cache_keys(cache_key, input_cache_key),
         );
     }
+    if let Some(reason) = target_sapi_skip_reason(&document.sections) {
+        return Ok(PhptRunResult::new(manifest_path, "SKIP", reason)
+            .with_cache_keys(cache_key, input_cache_key));
+    }
     let work_dir =
         options
             .work_dir
@@ -1052,7 +1056,8 @@ fn run_one_phpt(
         let skip_path = work_dir.join("skipif.php");
         fs::write(&skip_path, &skipif.body)
             .map_err(|error| format!("{}: {error}", skip_path.display()))?;
-        let skip = run_php(options, &skip_path, &work_dir, &[], &[], &[], None)?;
+        let skip_env = skipif_env_args(&document.sections);
+        let skip = run_php(options, &skip_path, &work_dir, &[], &skip_env, &[], None)?;
         if skip.stdout.to_ascii_lowercase().starts_with("skip") {
             run_clean_if_present(options, &document.sections, &work_dir)?;
             return Ok(PhptRunResult::new(
@@ -1080,7 +1085,8 @@ fn run_one_phpt(
     let args = section(&document.sections, "ARGS")
         .map(|section| split_phpt_args(&section.body))
         .unwrap_or_default();
-    let stdin = section(&document.sections, "STDIN").map(|section| section.body.as_str());
+    let capture_stdio = capture_stdio(&document.sections);
+    let stdin = stdin_from_sections(&document.sections, capture_stdio);
     let xfail =
         section(&document.sections, "XFAIL").map(|section| first_non_empty_line(&section.body));
     let output = run_php(options, &test_path, &work_dir, &ini, &env, &args, stdin)?;
@@ -1095,7 +1101,7 @@ fn run_one_phpt(
     let matched = match_expectation(
         kind,
         &normalize_expected_output(&expected),
-        &normalize_actual_output(&output.stdout),
+        &normalize_actual_output(&captured_output(&output, capture_stdio)),
     );
     if matched.matched {
         if let Some(reason) = xfail {
@@ -3904,13 +3910,109 @@ struct PhptExecutionContext<'a> {
 }
 
 fn context_from_sections(sections: &[PhptSection]) -> PhptExecutionContext<'_> {
+    let capture_stdio = capture_stdio(sections);
     PhptExecutionContext {
         ini: ini_args(sections),
         env: env_args(sections),
         args: section(sections, "ARGS")
             .map(|section| split_phpt_args(&section.body))
             .unwrap_or_default(),
-        stdin: section(sections, "STDIN").map(|section| section.body.as_str()),
+        stdin: stdin_from_sections(sections, capture_stdio),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CaptureStdio {
+    stdin: bool,
+    stdout: bool,
+    stderr: bool,
+}
+
+impl CaptureStdio {
+    const ALL: Self = Self {
+        stdin: true,
+        stdout: true,
+        stderr: true,
+    };
+}
+
+fn capture_stdio(sections: &[PhptSection]) -> CaptureStdio {
+    let Some(section) = section(sections, "CAPTURE_STDIO") else {
+        return CaptureStdio::ALL;
+    };
+    let tokens = section
+        .body
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>();
+    CaptureStdio {
+        stdin: tokens.iter().any(|token| token == "STDIN"),
+        stdout: tokens.iter().any(|token| token == "STDOUT"),
+        stderr: tokens.iter().any(|token| token == "STDERR"),
+    }
+}
+
+fn stdin_from_sections<'a>(
+    sections: &'a [PhptSection],
+    capture_stdio: CaptureStdio,
+) -> Option<&'a str> {
+    section(sections, "STDIN")
+        .map(|section| section.body.as_str())
+        .or_else(|| capture_stdio.stdin.then_some(""))
+}
+
+fn captured_output(output: &ProcessOutput, capture_stdio: CaptureStdio) -> String {
+    match (capture_stdio.stdout, capture_stdio.stderr) {
+        (true, true) => {
+            let mut combined = String::with_capacity(output.stdout.len() + output.stderr.len());
+            combined.push_str(&output.stdout);
+            combined.push_str(&output.stderr);
+            combined
+        }
+        (true, false) => output.stdout.clone(),
+        (false, true) => output.stderr.clone(),
+        (false, false) => String::new(),
+    }
+}
+
+fn skipif_env_args(sections: &[PhptSection]) -> Vec<(String, String)> {
+    skipif_env_args_for_stdio(sections, host_stdio_is_fully_terminal())
+}
+
+fn skipif_env_args_for_stdio(
+    sections: &[PhptSection],
+    stdio_is_fully_terminal: bool,
+) -> Vec<(String, String)> {
+    if capture_stdio_needs_io_capture_skip(sections, stdio_is_fully_terminal) {
+        vec![("SKIP_IO_CAPTURE_TESTS".to_string(), "1".to_string())]
+    } else {
+        Vec::new()
+    }
+}
+
+fn capture_stdio_needs_io_capture_skip(
+    sections: &[PhptSection],
+    stdio_is_fully_terminal: bool,
+) -> bool {
+    section(sections, "CAPTURE_STDIO").is_some() && !stdio_is_fully_terminal
+}
+
+fn host_stdio_is_fully_terminal() -> bool {
+    io::stdin().is_terminal() && io::stdout().is_terminal() && io::stderr().is_terminal()
+}
+
+fn target_sapi_skip_reason(sections: &[PhptSection]) -> Option<&'static str> {
+    if section(sections, "PHPDBG").is_some() {
+        Some("phpdbg not available")
+    } else if section(sections, "CGI").is_some()
+        || section(sections, "GZIP_POST").is_some()
+        || section(sections, "DEFLATE_POST").is_some()
+    {
+        Some("CGI not available")
+    } else {
+        None
     }
 }
 
@@ -4312,6 +4414,11 @@ fn render_generated_phpt(
     if let Some(stdin) = section(sections, "STDIN") {
         out.push_str("--STDIN--\n");
         out.push_str(&stdin.body);
+        ensure_trailing_newline(&mut out);
+    }
+    if let Some(capture_stdio) = section(sections, "CAPTURE_STDIO") {
+        out.push_str("--CAPTURE_STDIO--\n");
+        out.push_str(&capture_stdio.body);
         ensure_trailing_newline(&mut out);
     }
     out.push_str("--FILE--\n");
@@ -7276,6 +7383,123 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert!(source.contains("--FILE--"));
         assert!(source.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn capture_stdio_defaults_to_all_streams() {
+        let sections = parse_phpt("--TEST--\nt\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert_eq!(capture_stdio(&sections), CaptureStdio::ALL);
+        assert_eq!(stdin_from_sections(&sections, CaptureStdio::ALL), Some(""));
+    }
+
+    #[test]
+    fn capture_stdio_parses_stream_tokens_case_insensitively() {
+        let sections = parse_phpt(
+            "--TEST--\nt\n--CAPTURE_STDIO--\nstdin, stderr\n--FILE--\n<?php\n--EXPECT--\n",
+        )
+        .sections;
+        assert_eq!(
+            capture_stdio(&sections),
+            CaptureStdio {
+                stdin: true,
+                stdout: false,
+                stderr: true
+            }
+        );
+    }
+
+    #[test]
+    fn captured_output_respects_capture_stdio_stream_mask() {
+        let output = ProcessOutput {
+            status: 0,
+            stdout: "out\n".to_string(),
+            stderr: "err\n".to_string(),
+        };
+        assert_eq!(
+            captured_output(
+                &output,
+                CaptureStdio {
+                    stdin: true,
+                    stdout: true,
+                    stderr: true
+                }
+            ),
+            "out\nerr\n"
+        );
+        assert_eq!(
+            captured_output(
+                &output,
+                CaptureStdio {
+                    stdin: true,
+                    stdout: false,
+                    stderr: true
+                }
+            ),
+            "err\n"
+        );
+        assert_eq!(
+            captured_output(
+                &output,
+                CaptureStdio {
+                    stdin: true,
+                    stdout: false,
+                    stderr: false
+                }
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn capture_stdio_skipif_env_only_applies_without_tty() {
+        let sections = parse_phpt(
+            "--TEST--\nt\n--SKIPIF--\n<?php\n--CAPTURE_STDIO--\nSTDOUT\n--FILE--\n<?php\n--EXPECT--\n",
+        )
+        .sections;
+        assert_eq!(
+            skipif_env_args_for_stdio(&sections, false),
+            vec![("SKIP_IO_CAPTURE_TESTS".to_string(), "1".to_string())]
+        );
+        assert!(skipif_env_args_for_stdio(&sections, true).is_empty());
+    }
+
+    #[test]
+    fn capture_stdio_skipif_env_does_not_apply_without_capture_section() {
+        let sections =
+            parse_phpt("--TEST--\nt\n--SKIPIF--\n<?php\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert!(skipif_env_args_for_stdio(&sections, false).is_empty());
+    }
+
+    #[test]
+    fn target_sapi_sections_skip_without_sapi_binary() {
+        let cgi_sections =
+            parse_phpt("--TEST--\nt\n--CGI--\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert_eq!(
+            target_sapi_skip_reason(&cgi_sections),
+            Some("CGI not available")
+        );
+
+        let phpdbg_sections =
+            parse_phpt("--TEST--\nt\n--PHPDBG--\nr\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert_eq!(
+            target_sapi_skip_reason(&phpdbg_sections),
+            Some("phpdbg not available")
+        );
+
+        let gzip_sections =
+            parse_phpt("--TEST--\nt\n--GZIP_POST--\na=1\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert_eq!(
+            target_sapi_skip_reason(&gzip_sections),
+            Some("CGI not available")
+        );
+
+        let deflate_sections =
+            parse_phpt("--TEST--\nt\n--DEFLATE_POST--\na=1\n--FILE--\n<?php\n--EXPECT--\n")
+                .sections;
+        assert_eq!(
+            target_sapi_skip_reason(&deflate_sections),
+            Some("CGI not available")
+        );
     }
 
     #[test]

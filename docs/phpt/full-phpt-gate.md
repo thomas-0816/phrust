@@ -185,7 +185,10 @@ nix develop -c just phpt-runner-smoke
 ```
 
 That gate covers generic PHPT section handling, expectation variants, expected
-failures, and runner-provided execution context without requiring a full corpus
+failures, runner-provided execution context, and stream-capture handling such as
+`CAPTURE_STDIO`. It also checks explicit SAPI policy skips for `CGI` and
+`PHPDBG`, plus compressed POST sections that upstream routes through CGI, when
+no matching local SAPI target is configured, without requiring a full corpus
 run.
 
 When an accepted known-failure manifest already exists, the command compares the

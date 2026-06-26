@@ -9,5 +9,10 @@
 {"path":"tests/phpt/generated/runner_smoke/env.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/args.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/stdin.phpt","source":"generated"}
+{"path":"tests/phpt/generated/runner_smoke/capture_stdio.phpt","source":"generated"}
+{"path":"tests/phpt/generated/runner_smoke/cgi_skip.phpt","source":"generated"}
+{"path":"tests/phpt/generated/runner_smoke/phpdbg_skip.phpt","source":"generated"}
+{"path":"tests/phpt/generated/runner_smoke/gzip_post_skip.phpt","source":"generated"}
+{"path":"tests/phpt/generated/runner_smoke/deflate_post_skip.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/xfail.phpt","source":"generated"}
 {"path":"tests/phpt/generated/runner_smoke/metadata_sections.phpt","source":"generated"}

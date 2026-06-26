@@ -74,9 +74,20 @@ covers:
 - `ENV`
 - `ARGS`
 - `STDIN`
+- `CAPTURE_STDIO`
 - `FILEEOF`
 - `FILE_EXTERNAL`
 - metadata-only sections `FLAKY`, `WHITESPACE_SENSITIVE`, and `XLEAK`
+- SAPI policy sections `CGI` and `PHPDBG`, which are explicit `SKIP` results
+  when the local runner has no matching php-cgi or phpdbg target
+- compressed POST sections `GZIP_POST` and `DEFLATE_POST`, which are explicit
+  `SKIP` results until a php-cgi-compatible target is configured
+
+For original php-src `CAPTURE_STDIO` cases that use the upstream
+`SKIP_IO_CAPTURE_TESTS` skip hook, the local runner sets that environment value
+while evaluating `SKIPIF` when the host process does not expose stdin, stdout,
+and stderr as terminals. This keeps non-interactive local and CI runs
+deterministic instead of reporting TTY-topology mismatches as engine failures.
 
 The runner classifies remaining BORKs separately from VM/runtime failures so
 PHPT infrastructure gaps are fixed before module work attributes failures to
