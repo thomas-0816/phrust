@@ -14,6 +14,15 @@ help:
       '  just fmt                  Check Rust formatting' \
       '  just lint                 Run Rust linting' \
       '  just test                 Run Rust workspace tests' \
+      '  just quality              Run additive Rust quality/tooling gates' \
+      '  just quality-deps         Check advisories, licenses, bans, sources' \
+      '  just quality-unused-deps  Check for unused Cargo dependencies' \
+      '  just quality-coverage     Run opt-in cargo-llvm-cov coverage' \
+      '  just quality-mutants      Run opt-in cargo-mutants mutation testing' \
+      '  just quality-fuzz         Run deterministic fuzz/property smokes' \
+      '  just quality-docs         Treat rustdoc warnings and doctests as failures' \
+      '  just quality-api          Check public API semver against a git baseline' \
+      '  just quality-lints        Report pedantic/nursery Clippy findings' \
       '  just bootstrap-ref        Clone/pin the PHP reference checkout' \
       '  just verify-ref           Verify PHP reference checkout against lockfile' \
       '' \
@@ -96,6 +105,93 @@ check:
     @just fmt
     @just lint
     @just test
+
+quality:
+    @just quality-deps
+    @just quality-unused-deps
+    @just quality-coverage
+    @just quality-mutants
+    @just quality-fuzz
+    @just quality-docs
+    @just quality-api
+    @just quality-lints
+
+quality-deps:
+    @if ! command -v cargo-deny >/dev/null 2>&1; then \
+      printf '%s\n' '[skip] cargo-deny unavailable; enter nix develop or install cargo-deny.'; \
+      exit 0; \
+    fi; \
+    cargo deny check advisories bans licenses sources
+
+quality-unused-deps:
+    @if ! command -v cargo-machete >/dev/null 2>&1; then \
+      printf '%s\n' '[skip] cargo-machete unavailable; enter nix develop or install cargo-machete.'; \
+      exit 0; \
+    fi; \
+    cargo machete
+
+quality-coverage:
+    @if [[ "${PHRUST_RUN_COVERAGE:-0}" != "1" ]]; then \
+      printf '%s\n' '[skip] set PHRUST_RUN_COVERAGE=1 to run cargo-llvm-cov coverage.'; \
+      exit 0; \
+    fi; \
+    if ! command -v cargo-llvm-cov >/dev/null 2>&1; then \
+      printf '%s\n' '[skip] cargo-llvm-cov unavailable; enter nix develop or install cargo-llvm-cov.'; \
+      exit 0; \
+    fi; \
+    if cargo nextest --version >/dev/null 2>&1; then \
+      cargo llvm-cov nextest --workspace --summary-only; \
+    else \
+      cargo llvm-cov --workspace --summary-only; \
+    fi
+
+quality-mutants:
+    @if [[ "${PHRUST_RUN_MUTANTS:-0}" != "1" ]]; then \
+      printf '%s\n' '[skip] set PHRUST_RUN_MUTANTS=1 to run cargo-mutants mutation testing.'; \
+      exit 0; \
+    fi; \
+    if command -v cargo-mutants >/dev/null 2>&1; then \
+      cargo-mutants --workspace; \
+    elif cargo mutants --version >/dev/null 2>&1; then \
+      cargo mutants --workspace; \
+    else \
+      printf '%s\n' '[skip] cargo-mutants unavailable; enter nix develop or install cargo-mutants.'; \
+      exit 0; \
+    fi
+
+quality-fuzz:
+    @just fuzz-lexer-smoke
+    @just fuzz-parser-smoke
+    @just runtime-fuzz-smoke
+    @just fuzz-vm-smoke
+    @if command -v cargo-fuzz >/dev/null 2>&1 || cargo fuzz --version >/dev/null 2>&1; then \
+      printf '%s\n' '[ok] cargo-fuzz is available for coverage-guided fuzz target expansion.'; \
+    else \
+      printf '%s\n' '[skip] cargo-fuzz unavailable; deterministic fuzz/property smokes ran, but coverage-guided cargo-fuzz is not installed.'; \
+    fi
+
+quality-docs:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --lib --no-deps
+    cargo test --doc --workspace
+
+quality-api:
+    @baseline="${PHRUST_SEMVER_BASELINE:-HEAD}"; \
+    if command -v cargo-semver-checks >/dev/null 2>&1 || cargo semver-checks --version >/dev/null 2>&1; then \
+      cargo semver-checks check-release --workspace --baseline-rev "$baseline"; \
+    else \
+      printf '%s\n' '[skip] cargo-semver-checks unavailable; enter nix develop or install cargo-semver-checks.'; \
+      exit 0; \
+    fi
+
+quality-lints:
+    cargo clippy --workspace --all-targets -- \
+      -W clippy::pedantic \
+      -W clippy::nursery \
+      -A clippy::missing_errors_doc \
+      -A clippy::missing_panics_doc \
+      -A clippy::module_name_repetitions \
+      -A clippy::must_use_candidate \
+      -A clippy::too_many_lines
 
 verify:
     @just check
@@ -811,16 +907,16 @@ runtime-fixtures:
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    printf 'finally\n' > "$tmp_dir/exceptions-finally-throw.expected"; \
-    cmp "$tmp_dir/exceptions-finally-throw.expected" "$tmp_dir/exceptions-finally-throw.out"; \
+    grep -qx 'finally' "$tmp_dir/exceptions-finally-throw.out"; \
+    grep -q 'Uncaught Exception: boom' "$tmp_dir/exceptions-finally-throw.out"; \
     grep -q 'E_PHP_VM_UNCAUGHT_EXCEPTION' "$tmp_dir/exceptions-finally-throw.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/exceptions/rethrow.php > "$tmp_dir/exceptions-rethrow.out" 2> "$tmp_dir/exceptions-rethrow.err"; \
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    printf 'catch\n' > "$tmp_dir/exceptions-rethrow.expected"; \
-    cmp "$tmp_dir/exceptions-rethrow.expected" "$tmp_dir/exceptions-rethrow.out"; \
+    grep -qx 'catch' "$tmp_dir/exceptions-rethrow.out"; \
+    grep -q 'Uncaught Exception: boom' "$tmp_dir/exceptions-rethrow.out"; \
     grep -q 'E_PHP_VM_UNCAUGHT_EXCEPTION' "$tmp_dir/exceptions-rethrow.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/runtime_types/param-int-fail.php > "$tmp_dir/runtime-types-param-int-fail.out" 2> "$tmp_dir/runtime-types-param-int-fail.err"; \
