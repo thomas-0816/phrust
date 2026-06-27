@@ -1,7 +1,0 @@
-<?php
-function one($a)
-{
-    return $a;
-}
-
-one(1, 2);

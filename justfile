@@ -1024,12 +1024,9 @@ runtime-fixtures:
     set -e; \
     test "$code" -eq 3; \
     grep -q 'ArgumentCountError: function one expects at least 1 argument(s), got 0' "$tmp_dir/functions-missing-arg.err"; \
-    set +e; \
-    ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/functions/extra-arg.php > "$tmp_dir/functions-extra-arg.out" 2> "$tmp_dir/functions-extra-arg.err"; \
-    code=$?; \
-    set -e; \
-    test "$code" -eq 3; \
-    grep -q 'ArgumentCountError: function one expects at most 1 argument(s), got 2' "$tmp_dir/functions-extra-arg.err"; \
+    ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/functions/extra-arg.php > "$tmp_dir/functions-extra-arg.out"; \
+    printf '1|1,2' > "$tmp_dir/functions-extra-arg.expected"; \
+    cmp "$tmp_dir/functions-extra-arg.expected" "$tmp_dir/functions-extra-arg.out"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/functions/return-type-error.php > "$tmp_dir/functions-return-type-error.out" 2> "$tmp_dir/functions-return-type-error.err"; \
     code=$?; \
