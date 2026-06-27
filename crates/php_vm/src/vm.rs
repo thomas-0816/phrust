@@ -8519,7 +8519,18 @@ impl Vm {
                                 ),
                             );
                         }
-                        if method_entry.flags.is_private || method_entry.flags.is_protected {
+                        // A private/protected static method that is inaccessible
+                        // from the current scope routes to __callStatic (or fails);
+                        // one that IS accessible (e.g. a class calling its own
+                        // private static method) falls through to a normal call.
+                        if (method_entry.flags.is_private || method_entry.flags.is_protected)
+                            && let Err(inaccessible) = validate_method_callable(
+                                compiled,
+                                stack,
+                                declaring_class,
+                                method_entry,
+                            )
+                        {
                             let called_class =
                                 called_class_for_static_call(compiled, stack, class_name, class);
                             let result = match self.call_magic_static_method(
@@ -8535,16 +8546,12 @@ impl Vm {
                             ) {
                                 Ok(Some(result)) => result,
                                 Ok(None) => {
-                                    if let Err(message) = validate_method_callable(
+                                    return self.runtime_error(
+                                        output,
                                         compiled,
                                         stack,
-                                        declaring_class,
-                                        method_entry,
-                                    ) {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                    unreachable!("inaccessible method should fail validation");
+                                        inaccessible,
+                                    );
                                 }
                                 Err(result) => return result,
                             };
