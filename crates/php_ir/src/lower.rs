@@ -4750,16 +4750,25 @@ impl LoweringContext<'_> {
         site: LowerSite,
         callee: Option<ExprId>,
     ) -> Option<LoweredExpr> {
-        let callable =
-            if let Some(name) = callee.and_then(|callee| self.static_function_call_name(callee)) {
-                CallableKind::FunctionName {
-                    name: normalize_function_name(&name),
-                }
-            } else {
-                CallableKind::UnresolvedDynamic {
-                    target: "first-class callable target is not a simple function name".to_owned(),
-                }
-            };
+        let callable = if let Some(name) =
+            callee.and_then(|callee| self.static_function_call_name(callee))
+        {
+            CallableKind::FunctionName {
+                name: normalize_function_name(&name),
+            }
+        } else {
+            // A method or static-method first-class callable (`$obj->m(...)`,
+            // `Cls::m(...)`) lowers to the equivalent `[receiver, 'm']` array
+            // callable, which the runtime already dispatches.
+            if let Some(callee) = callee
+                && let Some(lowered) = self.lower_method_first_class_callable(builder, site, callee)
+            {
+                return Some(lowered);
+            }
+            CallableKind::UnresolvedDynamic {
+                target: "first-class callable target is not a simple function name".to_owned(),
+            }
+        };
         let dst = builder.alloc_register(site.function);
         let instruction = builder.emit(
             site.function,
@@ -4779,6 +4788,138 @@ impl LoweringContext<'_> {
             register: dst,
             block: site.block,
         })
+    }
+
+    /// Lowers a method or static-method first-class callable (`$obj->m(...)`,
+    /// `Cls::m(...)`) to a `[receiver, 'm']` array callable value.
+    fn lower_method_first_class_callable(
+        &mut self,
+        builder: &mut IrBuilder,
+        site: LowerSite,
+        callee: ExprId,
+    ) -> Option<LoweredExpr> {
+        let module = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())?;
+        let expr = module.expressions().get(callee)?;
+        enum Receiver {
+            Instance(ExprId),
+            Static(String),
+        }
+        let (receiver, method) = match expr.kind() {
+            HirExprKind::MethodCall {
+                receiver, method, ..
+            } => {
+                let target = self.method_call_target(*receiver, *method)?;
+                (Receiver::Instance(target.receiver), target.method)
+            }
+            HirExprKind::PropertyFetch {
+                receiver: Some(receiver),
+                property: Some(property),
+                nullsafe: false,
+            } => (
+                Receiver::Instance(*receiver),
+                self.static_property_name(*property)?,
+            ),
+            HirExprKind::StaticAccess { .. } => {
+                let target = self.static_method_call_target(callee)?;
+                (Receiver::Static(target.class_name), target.method)
+            }
+            _ => return None,
+        };
+        let dst = builder.alloc_register(site.function);
+        let new_array = builder.emit(
+            site.function,
+            site.block,
+            InstructionKind::NewArray { dst },
+            site.span,
+        );
+        self.add_expr_source_map(
+            builder,
+            site.function,
+            site.block,
+            new_array,
+            site.expr,
+            site.span,
+        );
+        let mut current = site.block;
+        let receiver_register = match receiver {
+            Receiver::Instance(receiver_expr) => {
+                let lowered =
+                    self.lower_expr_to_register(builder, site.function, current, receiver_expr)?;
+                current = lowered.block;
+                lowered.register
+            }
+            Receiver::Static(class_name) => {
+                let lowered = self.emit_constant_to_register(
+                    builder,
+                    LowerSite {
+                        block: current,
+                        ..site
+                    },
+                    IrConstant::String(class_name),
+                );
+                current = lowered.block;
+                lowered.register
+            }
+        };
+        self.emit_callable_array_insert(
+            builder,
+            site,
+            current,
+            dst,
+            Operand::Register(receiver_register),
+        );
+        let method_value = self.emit_constant_to_register(
+            builder,
+            LowerSite {
+                block: current,
+                ..site
+            },
+            IrConstant::String(method),
+        );
+        current = method_value.block;
+        self.emit_callable_array_insert(
+            builder,
+            site,
+            current,
+            dst,
+            Operand::Register(method_value.register),
+        );
+        Some(LoweredExpr {
+            register: dst,
+            block: current,
+        })
+    }
+
+    fn emit_callable_array_insert(
+        &mut self,
+        builder: &mut IrBuilder,
+        site: LowerSite,
+        block: BlockId,
+        array: RegId,
+        value: Operand,
+    ) {
+        let instruction = builder.emit(
+            site.function,
+            block,
+            InstructionKind::ArrayInsert {
+                array,
+                key: None,
+                value,
+                by_ref_local: None,
+            },
+            site.span,
+        );
+        self.add_expr_source_map(
+            builder,
+            site.function,
+            block,
+            instruction,
+            site.expr,
+            site.span,
+        );
     }
 
     fn lower_closure_to_register(
