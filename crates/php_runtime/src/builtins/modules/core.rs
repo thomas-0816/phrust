@@ -9840,7 +9840,10 @@ impl DebugFormatter {
                 output.write_test_str("(\n");
                 for (name, property) in object.properties_snapshot() {
                     write_indent(output, indent + 4);
-                    output.write_test_str(&format!("[{name}] => "));
+                    // print_r annotates visibility as `name`, `name:protected`,
+                    // or `name:Class:private` — the var_dump label without quotes.
+                    let label = object.property_debug_label(&name).replace('"', "");
+                    output.write_test_str(&format!("[{label}] => "));
                     self.write_print_r_value(output, &property, indent + 4);
                     output.write_test_str("\n");
                 }
