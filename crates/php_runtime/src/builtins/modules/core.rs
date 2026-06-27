@@ -2277,7 +2277,7 @@ pub(in crate::builtins::modules) fn builtin_random_bytes(
         return Err(value_error("random_bytes", "length must be greater than 0"));
     }
     let mut bytes = vec![0; length as usize];
-    getrandom::getrandom(&mut bytes).map_err(|error| {
+    getrandom::fill(&mut bytes).map_err(|error| {
         BuiltinError::new(
             "E_PHP_RUNTIME_RANDOM_FAILURE",
             format!("random_bytes(): failed to read random bytes: {error}"),
@@ -2304,7 +2304,7 @@ pub(in crate::builtins::modules) fn builtin_random_int(
     let zone = u128::MAX - (u128::MAX % range);
     loop {
         let mut bytes = [0; 16];
-        getrandom::getrandom(&mut bytes).map_err(|error| {
+        getrandom::fill(&mut bytes).map_err(|error| {
             BuiltinError::new(
                 "E_PHP_RUNTIME_RANDOM_FAILURE",
                 format!("random_int(): failed to read random bytes: {error}"),
@@ -8029,7 +8029,7 @@ fn random_bounded_usize(name: &str, upper: usize) -> Result<usize, BuiltinError>
     let zone = u128::MAX - (u128::MAX % range);
     loop {
         let mut bytes = [0; 16];
-        getrandom::getrandom(&mut bytes).map_err(|error| {
+        getrandom::fill(&mut bytes).map_err(|error| {
             BuiltinError::new(
                 "E_PHP_RUNTIME_RANDOM_FAILURE",
                 format!("{name}(): failed to read random bytes: {error}"),

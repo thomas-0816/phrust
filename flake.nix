@@ -37,6 +37,12 @@
                 fd
                 ccache
                 sccache
+                cargo-deny
+                cargo-machete
+                cargo-llvm-cov
+                cargo-mutants
+                cargo-fuzz
+                cargo-semver-checks
                 python3
               ];
               PHP_REF_SERIES = "8.5";
@@ -96,6 +102,12 @@
             ccache
             sccache
             cargo-nextest
+            cargo-deny
+            cargo-machete
+            cargo-llvm-cov
+            cargo-mutants
+            cargo-fuzz
+            cargo-semver-checks
 
             python3
           ];

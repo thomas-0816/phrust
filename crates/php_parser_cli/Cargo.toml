@@ -10,6 +10,4 @@ name = "php-parse"
 path = "src/main.rs"
 
 [dependencies]
-php_lexer = { path = "../php_lexer" }
-php_source = { path = "../php_source" }
 php_syntax = { path = "../php_syntax" }

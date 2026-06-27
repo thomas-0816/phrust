@@ -9,6 +9,7 @@ implement a lexer, parser, VM, runtime, or framework runner.
 | --- | --- | --- |
 | Repository contract files exist | Yes | `nix develop -c just verify-foundation` |
 | Rust placeholder workspace passes | Yes | `cargo fmt`, `cargo clippy`, `cargo test` |
+| Rust quality tooling runs | Optional/deep | `nix develop -c just quality` |
 | PHP reference lockfile verifies when present | Yes, if bootstrapped | `nix develop -c just verify-ref` |
 | PHP reference metadata is extractable | Optional network/local reference | `nix develop -c just extract-ref-metadata` |
 | Minimal reference PHP CLI builds | Optional expensive | `nix develop -c just build-ref-php` |
@@ -43,6 +44,7 @@ network downloads after the initial setup. Network and expensive checks are
 separate:
 
 - Required local: `nix develop -c just verify-foundation`
+- Optional quality: `nix develop -c just quality`
 - Optional network: `nix develop -c just bootstrap-ref`
 - Optional metadata: `nix develop -c just extract-ref-metadata`
 - Optional expensive: `nix develop -c just build-ref-php`
