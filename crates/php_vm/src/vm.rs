@@ -1221,6 +1221,7 @@ struct FunctionCall<'a> {
     args: Vec<CallArgument>,
     captures: Vec<ClosureCaptureValue>,
     call_span: Option<php_ir::IrSpan>,
+    error_context_compiled: Option<CompiledUnit>,
     allow_by_ref_value_warnings: bool,
     by_ref_warning_callable_name: Option<String>,
     this_value: Option<ObjectRef>,
@@ -1242,6 +1243,7 @@ impl FunctionCall<'_> {
             args,
             captures,
             call_span: None,
+            error_context_compiled: None,
             allow_by_ref_value_warnings: false,
             by_ref_warning_callable_name: None,
             this_value: None,
@@ -1265,6 +1267,11 @@ impl FunctionCall<'_> {
 
     fn with_optional_call_span(mut self, span: Option<php_ir::IrSpan>) -> Self {
         self.call_span = span;
+        self
+    }
+
+    fn with_error_context(mut self, compiled: CompiledUnit) -> Self {
+        self.error_context_compiled = Some(compiled);
         self
     }
 
@@ -6045,10 +6052,12 @@ impl Vm {
             ) {
                 Ok(args) => args,
                 Err(message) => {
-                    let result = self.runtime_error(output, compiled, stack, message);
+                    let error_compiled = call.error_context_compiled.as_ref().unwrap_or(compiled);
+                    let error_span = call.call_span.unwrap_or(function.span);
+                    let result = self.runtime_error(output, error_compiled, stack, message);
                     if let Some(throwable) = runtime_error_throwable(&result) {
-                        tag_throwable_location(&throwable, compiled, function.span);
-                        state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                        tag_throwable_location(&throwable, error_compiled, error_span);
+                        state.pending_trace = Some(capture_backtrace_string(error_compiled, stack));
                         state.pending_throw = Some(throwable);
                         return VmResult::propagating_exception(output.clone());
                     }
@@ -11633,7 +11642,8 @@ impl Vm {
                             current_scope_class(compiled, stack),
                             current_called_class(compiled, stack),
                             current_scope_class(compiled, stack),
-                        );
+                        )
+                        .with_closure_owner_unit(dynamic_unit_index_for_compiled(state, compiled));
                         if let Err(message) = stack
                             .current_mut()
                             .expect("frame was pushed")
@@ -11655,6 +11665,7 @@ impl Vm {
                             captures,
                             bound_this,
                             debug,
+                            owner_unit,
                             scope_class,
                             called_class,
                             declaring_class,
@@ -11675,7 +11686,8 @@ impl Vm {
                         };
                         let mut call = FunctionCall::new(values, captures.clone())
                             .inherit_fiber_context(&running_fiber)
-                            .with_call_span(instruction.span);
+                            .with_call_span(instruction.span)
+                            .with_error_context(compiled.clone());
                         if let Some(bound_this) = bound_this {
                             call = call.with_this(bound_this.clone());
                         }
@@ -11686,8 +11698,9 @@ impl Vm {
                                 declaring_class.unwrap_or(scope_class).clone(),
                             );
                         }
-                        let closure_owner =
-                            closure_owner_for_function(compiled, state, function, debug);
+                        let closure_owner = closure_owner_for_function(
+                            compiled, state, function, debug, owner_unit,
+                        );
                         let result = self.execute_function(
                             &closure_owner,
                             FunctionId::new(function),
@@ -12458,14 +12471,22 @@ impl Vm {
                 captures,
                 bound_this,
                 debug,
+                owner_unit,
                 scope_class,
                 called_class,
                 declaring_class,
                 ..
             }) => {
-                let mut call = FunctionCall::new(args, captures).with_optional_call_span(call_span);
-                let closure_owner =
-                    closure_owner_for_function(compiled, state, function, debug.as_ref());
+                let mut call = FunctionCall::new(args, captures)
+                    .with_optional_call_span(call_span)
+                    .with_error_context(compiled.clone());
+                let closure_owner = closure_owner_for_function(
+                    compiled,
+                    state,
+                    function,
+                    debug.as_ref(),
+                    owner_unit,
+                );
                 if let Some(bound_this) = bound_this
                     && closure_function_has_this_local(&closure_owner, function)
                 {
@@ -14502,14 +14523,22 @@ impl Vm {
                 captures,
                 bound_this,
                 debug,
+                owner_unit,
                 scope_class,
                 called_class,
                 declaring_class,
                 ..
             }) => {
-                let mut call = FunctionCall::new(args, captures).running_fiber(fiber);
-                let closure_owner =
-                    closure_owner_for_function(compiled, state, function, debug.as_ref());
+                let mut call = FunctionCall::new(args, captures)
+                    .running_fiber(fiber)
+                    .with_error_context(compiled.clone());
+                let closure_owner = closure_owner_for_function(
+                    compiled,
+                    state,
+                    function,
+                    debug.as_ref(),
+                    owner_unit,
+                );
                 if let Some(bound_this) = bound_this
                     && closure_function_has_this_local(&closure_owner, function)
                 {
@@ -17957,6 +17986,7 @@ impl Vm {
             args: Vec::new(),
             captures: Vec::new(),
             call_span: None,
+            error_context_compiled: None,
             allow_by_ref_value_warnings: false,
             by_ref_warning_callable_name: None,
             this_value: None,
@@ -19244,12 +19274,21 @@ impl Vm {
                 stack_trace(compiled, stack),
             );
         }
+        let has_closures = evaluated
+            .unit()
+            .functions
+            .iter()
+            .any(|function| function.flags.is_closure);
+        if has_closures {
+            retain_dynamic_closure_unit(state, evaluated.clone());
+        }
 
         let mut shared = shared_locals_from_current_frame(compiled, stack);
         let call = FunctionCall {
             args: Vec::new(),
             captures: Vec::new(),
             call_span: None,
+            error_context_compiled: None,
             allow_by_ref_value_warnings: false,
             by_ref_warning_callable_name: None,
             this_value: None,
@@ -23643,7 +23682,7 @@ fn closure_static_method_value(
                     values.len()
                 ));
             }
-            current_closure_value(compiled, stack)
+            current_closure_value(compiled, state, stack)
         }
         "fromcallable" => {
             let mut values = call_args_to_positional("Closure::fromCallable", args)?;
@@ -23726,6 +23765,7 @@ fn bind_closure_callable_value(callable: CallableValue, bound_this: Option<Objec
             function,
             captures,
             debug,
+            owner_unit,
             scope_class,
             called_class,
             declaring_class,
@@ -23747,7 +23787,8 @@ fn bind_closure_callable_value(callable: CallableValue, bound_this: Option<Objec
                 .as_ref()
                 .map(ObjectRef::class_name)
                 .or(declaring_class),
-        ),
+        )
+        .with_closure_owner_unit(owner_unit),
         CallableValue::BoundMethod {
             target,
             method,
@@ -23983,7 +24024,11 @@ fn emit_relative_callable_deprecation(
     state.diagnostics.push(diagnostic);
 }
 
-fn current_closure_value(compiled: &CompiledUnit, stack: &CallStack) -> Result<Value, String> {
+fn current_closure_value(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    stack: &CallStack,
+) -> Result<Value, String> {
     let frame = stack
         .current()
         .ok_or_else(|| "E_PHP_VM_CURRENT_CLOSURE: Current function is not a closure".to_owned())?;
@@ -24034,7 +24079,8 @@ fn current_closure_value(compiled: &CompiledUnit, stack: &CallStack) -> Result<V
         current_scope_class(compiled, stack),
         current_called_class(compiled, stack),
         current_scope_class(compiled, stack),
-    ))
+    )
+    .with_closure_owner_unit(dynamic_unit_index_for_compiled(state, compiled)))
 }
 
 fn is_std_class_runtime_class(class_name: &str) -> bool {
@@ -25641,6 +25687,7 @@ fn error_handler_callback_from_value(
             captures,
             bound_this,
             debug,
+            owner_unit,
             scope_class,
             called_class,
             declaring_class,
@@ -25650,6 +25697,7 @@ fn error_handler_callback_from_value(
             captures,
             bound_this,
             debug,
+            owner_unit,
             scope_class,
             called_class,
             declaring_class,
@@ -25707,6 +25755,7 @@ fn autoload_callback_from_value(
             captures,
             bound_this,
             debug,
+            owner_unit,
             scope_class,
             called_class,
             declaring_class,
@@ -25716,6 +25765,7 @@ fn autoload_callback_from_value(
             captures,
             bound_this,
             debug,
+            owner_unit,
             scope_class,
             called_class,
             declaring_class,
@@ -25769,6 +25819,22 @@ fn register_dynamic_unit(state: &mut ExecutionState, unit: CompiledUnit) {
     state.bump_class_table_epoch();
 }
 
+fn retain_dynamic_closure_unit(state: &mut ExecutionState, unit: CompiledUnit) -> usize {
+    let unit_index = state.dynamic_units.len();
+    state.dynamic_units.push(unit);
+    unit_index
+}
+
+fn dynamic_unit_index_for_compiled(
+    state: &ExecutionState,
+    compiled: &CompiledUnit,
+) -> Option<usize> {
+    state
+        .dynamic_units
+        .iter()
+        .rposition(|unit| unit == compiled)
+}
+
 fn register_dynamic_classes(state: &mut ExecutionState, unit_index: usize, unit: &IrUnit) {
     for class in unit
         .classes
@@ -25816,8 +25882,19 @@ fn closure_owner_for_function(
     state: &ExecutionState,
     function: u32,
     debug: Option<&ClosureDebugInfo>,
+    owner_unit: Option<usize>,
 ) -> CompiledUnit {
     let function_id = FunctionId::new(function);
+    if let Some(owner_unit) = owner_unit
+        && let Some(unit) = state.dynamic_units.get(owner_unit)
+        && unit
+            .unit()
+            .functions
+            .get(function_id.index())
+            .is_some_and(|entry| entry.flags.is_closure)
+    {
+        return unit.clone();
+    }
     if compiled_unit_contains_closure(compiled, function_id, debug) {
         return compiled.clone();
     }
@@ -37774,6 +37851,16 @@ echo perf_jit_unstable_types_debug(4), "\n";
 
         assert!(result.status.is_success(), "{:#?}", result);
         assert_eq!(result.output.as_bytes(), b"parent|eval");
+    }
+
+    #[test]
+    fn eval_returned_closures_keep_distinct_parameter_metadata() {
+        let result = execute_source(
+            "<?php $a = eval('return function($a) { echo $a; };'); $b = eval('return function($b) { echo $b; };'); $a(a: 1); echo '|'; $b(b: 2);",
+        );
+
+        assert!(result.status.is_success(), "{:#?}", result);
+        assert_eq!(result.output.as_bytes(), b"1|2");
     }
 
     #[test]

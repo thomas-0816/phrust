@@ -23,6 +23,7 @@ pub type ClosurePayloadRef<'a> = (
     &'a Vec<ClosureCaptureValue>,
     Option<&'a ObjectRef>,
     Option<&'a ClosureDebugInfo>,
+    Option<usize>,
     Option<&'a String>,
     Option<&'a String>,
     Option<&'a String>,
@@ -49,6 +50,8 @@ pub enum CallableValue {
         bound_this: Option<ObjectRef>,
         /// Optional source metadata used by debug output.
         debug: Option<ClosureDebugInfo>,
+        /// Optional owning dynamic VM unit for closures created by include/eval.
+        owner_unit: Option<usize>,
         /// Lexical class scope captured when the closure was created.
         scope_class: Option<String>,
         /// Late-bound class captured when the closure was created.
@@ -245,6 +248,7 @@ impl Value {
             captures,
             bound_this: None,
             debug: None,
+            owner_unit: None,
             scope_class: None,
             called_class: None,
             declaring_class: None,
@@ -264,6 +268,7 @@ impl Value {
             captures,
             bound_this: None,
             debug,
+            owner_unit: None,
             scope_class: None,
             called_class: None,
             declaring_class: None,
@@ -285,6 +290,7 @@ impl Value {
             captures,
             bound_this,
             debug,
+            owner_unit: None,
             scope_class: None,
             called_class: None,
             declaring_class: None,
@@ -309,10 +315,23 @@ impl Value {
             captures,
             bound_this,
             debug,
+            owner_unit: None,
             scope_class,
             called_class,
             declaring_class,
         })
+    }
+
+    /// Stamps a closure with the owning dynamic VM unit that created it.
+    #[must_use]
+    pub fn with_closure_owner_unit(mut self, owner_unit: Option<usize>) -> Self {
+        if let Self::Callable(CallableValue::Closure {
+            owner_unit: stored, ..
+        }) = &mut self
+        {
+            *stored = owner_unit;
+        }
+        self
     }
 
     /// Creates a resolved user-function callable value.
@@ -366,6 +385,7 @@ impl Value {
                 captures,
                 bound_this,
                 debug,
+                owner_unit,
                 scope_class,
                 called_class,
                 declaring_class,
@@ -375,6 +395,7 @@ impl Value {
                 captures,
                 bound_this.as_ref(),
                 debug.as_ref(),
+                *owner_unit,
                 scope_class.as_ref(),
                 called_class.as_ref(),
                 declaring_class.as_ref(),
