@@ -27,6 +27,15 @@ baseline. Higher levels may add safe constant folding, peepholes, and CFG
 simplification only when verifier and A/B tests prove no visible behavior
 changes.
 
+The current Performance pipeline runs verifier-bracketed passes for safe
+constant folding, literal-pool compaction, block-local register copy
+propagation, NOP/self-move peepholes, and conservative CFG simplification.
+Pass reports are machine-readable and include stable attempted/applied/skipped
+style counters. Literal compaction deduplicates equal constants and remaps all
+constant IDs in instructions, terminators, attributes, class metadata, and
+global constants. Copy propagation is intentionally register-only and
+block-local; it does not cross local/reference state or basic-block boundaries.
+
 ### Quickening
 
 Quickening may rewrite or side-table op behavior after hotness evidence, but
@@ -165,12 +174,13 @@ JIT, safety, matrix, and reporting gates.
 
 | Command | Current behavior |
 | --- | --- |
-| `verify-performance` | Runs `performance-tests`, `performance-regression`, cache/optimizer/superinstruction/quickening/inline-cache/JIT/safety gates, benchmark smoke, framework smoke, release benchmark smoke, hot-path inventory, and `perf-report`. |
+| `verify-performance` | Runs `performance-tests`, `performance-regression`, cache/optimizer/superinstruction/quickening/inline-cache/JIT/safety gates, benchmark smoke, framework smoke, release benchmark smoke, acceleration matrix, hot-path inventory, and `perf-report`. |
 | `performance-tests` | Runs `cargo test --workspace` with deterministic `RUST_MIN_STACK` defaulting to `8388608`, plus Performance script self-tests. |
 | `performance-regression` | Runs `scripts/performance_regression_smoke.sh`, then `scripts/performance/regression_smoke.sh` across opt levels 0/1/2, quickening off/on, and inline caches off/on for the Work item stress fixtures, followed by `perf-flag-matrix`. |
 | `perf-flag-matrix` | Compares baseline output/exit/stderr against opt 1, opt 2, superinstructions-on-with-IR, quickening, quickening with `--exec-format=auto`, inline caches, bytecode-cache read/write, and all-non-JIT-on combinations across Performance regressions and selected Runtime semantics fixtures. JIT is opt-in with `PHRUST_PERF_MATRIX_JIT=1` when feature/platform support is available. |
 | `benchmark-smoke` | Builds the VM, runs deterministic Performance smoke fixtures, checks expected output, and writes `target/performance/benchmark-smoke.json`. |
 | `framework-smoke` | Builds the VM, compares opt-off and opt-on runs over deterministic framework-like fixtures, checks output parity, writes `target/performance/framework-smoke/summary.json`, and regenerates `docs/performance-framework-corpus.md`. |
+| `acceleration-matrix` | Builds the VM, compares `baseline-ir` against dense-bytecode auto/strict subset, superinstructions, optimizer levels 1/2, quickening, inline caches, all-non-JIT, release, and optional Cranelift rows. It checks stdout, stderr/runtime diagnostics, exit status, and counter sanity before writing local JSON/Markdown under `target/performance/acceleration/`. |
 | `bytecode-exec-smoke` | Builds the VM, compares `--exec-format=ir` and strict `--exec-format=bytecode` for the supported dense-bytecode subset including scalar expressions, comparisons, and simple direct user-function calls, verifies `--exec-format=auto` fallback on an unsupported fixture, and writes `target/performance/bytecode-exec-smoke/summary.json`. |
 | `superinstruction-smoke` | Builds the VM, compares strict dense bytecode with `--superinstructions=off` and `--superinstructions=on` across supported fixtures, asserts fused opcode counters, and writes `target/performance/superinstruction-smoke/summary.json`. |
 | `release-benchmark-smoke` | Builds `php-vm` with Cargo `profile.release`, runs the deterministic performance and framework corpora against the release binary, and writes `target/performance/release/release-summary.{json,md}` plus corpus reports. Timings are advisory. |

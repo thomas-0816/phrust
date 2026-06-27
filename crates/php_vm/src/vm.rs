@@ -15264,16 +15264,38 @@ impl Vm {
     ) -> Result<(), VmResult> {
         match value {
             Value::String(value) => {
-                output.write_php_string(value);
+                output.write_fast_php_string(value);
                 Ok(())
             }
             Value::Null | Value::Bool(false) => Ok(()),
             Value::Bool(true) => {
-                output.write_bytes(b"1");
+                output.write_fast_bytes(b"1");
                 Ok(())
             }
-            Value::Reference(cell) => self.write_echo(compiled, output, stack, state, &cell.get()),
+            Value::Int(value) => {
+                output.write_fast_bytes(value.to_string().as_bytes());
+                Ok(())
+            }
+            Value::Reference(cell) => {
+                output.record_slow_append_reason("reference_deref");
+                self.write_echo(compiled, output, stack, state, &cell.get())
+            }
             _ => {
+                output.record_slow_append_reason(match value {
+                    Value::Float(_) => "float_conversion",
+                    Value::Array(_) => "array_conversion_warning",
+                    Value::Object(_) => "object_to_string",
+                    Value::Resource(_) => "resource_conversion",
+                    Value::Fiber(_) => "object_to_string",
+                    Value::Generator(_) => "object_to_string",
+                    Value::Callable(_) => "callable_conversion_error",
+                    Value::Uninitialized => "uninitialized_conversion_error",
+                    Value::Null
+                    | Value::Bool(_)
+                    | Value::Int(_)
+                    | Value::String(_)
+                    | Value::Reference(_) => "generic_conversion",
+                });
                 let string = self.value_to_string(compiled, value, output, stack, state)?;
                 output.write_php_string(&string);
                 Ok(())
@@ -27710,12 +27732,17 @@ mod tests {
         let counters = result.counters.expect("counters should be collected");
         assert_eq!(counters.output_bytes, expected.len() as u64);
         assert!(counters.output_buffer_appends > 0, "{counters:?}");
+        assert!(counters.output_fast_appends >= 9, "{counters:?}");
         assert_eq!(counters.output_buffer_flushes, 1);
+        assert!(
+            counters.output_slow_appends_by_reason.is_empty(),
+            "{counters:?}"
+        );
     }
 
     #[test]
     fn output_fast_paths_preserve_to_string_fallback_and_conversion_errors() {
-        let object = execute_source(
+        let object = execute_source_with_options(
             "<?php
             class S {
                 public function __toString(): string {
@@ -27725,10 +27752,23 @@ mod tests {
             }
             echo new S(), '|done';
             ",
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
         );
 
         assert!(object.status.is_success(), "{:?}", object.status);
         assert_eq!(object.output.to_string_lossy(), "side|object|done");
+        let counters = object.counters.expect("counters should be collected");
+        assert_eq!(
+            counters
+                .output_slow_appends_by_reason
+                .get("object_to_string"),
+            Some(&1),
+            "{counters:?}"
+        );
+        assert!(counters.output_fast_appends >= 2, "{counters:?}");
 
         let throwing = execute_source(
             "<?php
@@ -30323,7 +30363,13 @@ echo perf_jit_unstable_types_debug(4), "\n";
         );
 
         assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(result.output.as_bytes(), b"1\n");
+        let output = String::from_utf8(result.output.as_bytes().to_vec()).expect("utf-8 output");
+        assert!(
+            output
+                .starts_with("1\n\nFatal error: Uncaught Exception: performance-direct-method in "),
+            "{output}"
+        );
+        assert!(output.contains("PerfDirectThrowerTest->fail()"), "{output}");
         assert!(
             result
                 .status

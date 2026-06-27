@@ -75,6 +75,14 @@ INLINE_CACHE_COUNTERS = (
     "autoload_class_lookup_ic_misses",
 )
 
+OUTPUT_COUNTERS = (
+    "output_bytes",
+    "output_buffer_appends",
+    "output_buffer_batch_writes",
+    "output_buffer_flushes",
+    "output_fast_appends",
+)
+
 FRAME_REUSE_COUNTERS = (
     "frame_allocations",
     "frame_reuses",
@@ -95,6 +103,7 @@ FRAMEWORK_COUNTER_COLUMNS = (
     "internal_function_dispatches",
     "inline_cache_hits",
     "output_bytes",
+    "output_fast_appends",
 )
 
 
@@ -165,6 +174,7 @@ def measurement_counters(measurement: dict[str, Any]) -> dict[str, int]:
             "builtin_fast_stub_hits",
             "builtin_fast_stub_misses",
             "property_ic_fallback_reasons",
+            "output_slow_appends_by_reason",
         } and isinstance(value, dict):
             for reason, count in value.items():
                 if isinstance(reason, str) and isinstance(count, int):
@@ -244,6 +254,16 @@ def summarize_report(
         "inline_cache_counters": {
             key: counter_totals.get(key, 0) for key in INLINE_CACHE_COUNTERS
         },
+        "output_counters": {key: counter_totals.get(key, 0) for key in OUTPUT_COUNTERS},
+        "output_slow_appends_by_reason": dict(
+            sorted(
+                (
+                    (key.removeprefix("output_slow_appends_by_reason."), value)
+                    for key, value in counter_totals.items()
+                    if key.startswith("output_slow_appends_by_reason.")
+                )
+            )
+        ),
         "frame_reuse_counters": {
             key: counter_totals.get(key, 0) for key in FRAME_REUSE_COUNTERS
         },
@@ -395,6 +415,13 @@ def render_markdown(summary: dict[str, Any]) -> str:
     lines.extend(
         render_counter_table("Inline Cache Hits and Misses", summary["inline_cache_counters"])
     )
+    lines.extend(render_counter_table("Output Fast Paths", summary["output_counters"]))
+    lines.extend(
+        render_counter_table(
+            "Output Slow Append Reasons",
+            summary["output_slow_appends_by_reason"],
+        )
+    )
     lines.extend(render_counter_table("Frame and Register Reuse", summary["frame_reuse_counters"]))
     lines.extend(
         render_counter_table(
@@ -437,6 +464,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
                         "Builtin calls",
                         "IC hits",
                         "Output bytes",
+                        "Output fast appends",
                     ],
                     rows,
                 )

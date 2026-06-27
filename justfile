@@ -260,6 +260,7 @@ verify-performance:
     @just benchmark-smoke
     @just framework-smoke
     @just release-benchmark-smoke
+    @just acceleration-matrix
     @just cache-roundtrip
     @just optimizer-diff
     @just superinstruction-smoke
@@ -1336,6 +1337,10 @@ bolt-benchmark-smoke:
 framework-smoke:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/framework_micro_smoke.py
+
+acceleration-matrix:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/acceleration_matrix.py
 
 hotpath-inventory:
     scripts/performance/hotpath_inventory.py target/performance/benchmark-smoke.json --json-out target/performance/hotpaths.json --markdown-out docs/hotpath-inventory.md

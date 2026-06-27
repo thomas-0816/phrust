@@ -2151,12 +2151,14 @@ mod tests {
         assert!(pipeline.ok());
         let report = pipeline.optimizer.expect("level 1 should run optimizer");
         assert_eq!(report.level, OptimizationLevel::O1);
-        assert_eq!(report.enabled_pass_count(), 5);
+        assert_eq!(report.enabled_pass_count(), 7);
         assert_eq!(report.passes[0].name, "perf_pre_verify_noop");
         assert_eq!(report.passes[1].name, "constant_folding_safe_subset");
-        assert_eq!(report.passes[2].name, "peephole_simplify");
-        assert_eq!(report.passes[3].name, "branch_simplify");
-        assert_eq!(report.passes[4].name, "perf_post_verify_noop");
+        assert_eq!(report.passes[2].name, "literal_compaction");
+        assert_eq!(report.passes[3].name, "copy_propagation_register_subset");
+        assert_eq!(report.passes[4].name, "peephole_simplify");
+        assert_eq!(report.passes[5].name, "branch_simplify");
+        assert_eq!(report.passes[6].name, "perf_post_verify_noop");
         assert!(report.passes.iter().all(|pass| pass.source_spans_preserved));
     }
 

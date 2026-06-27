@@ -1,9 +1,11 @@
 //! Byte-oriented output buffering.
 
+use std::collections::BTreeMap;
+
 use crate::string::PhpString;
 
 /// Runtime output buffer.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OutputStats {
     /// Final/root-visible bytes are computed by the VM from `OutputBuffer::len`.
     pub appends: u64,
@@ -11,6 +13,10 @@ pub struct OutputStats {
     pub batch_writes: u64,
     /// Active output-buffer flushes into a parent or root buffer.
     pub flushes: u64,
+    /// Appends that used a VM-proven exact-output fast path.
+    pub fast_appends: u64,
+    /// Generic conversion/output appends grouped by stable fallback reason.
+    pub slow_appends_by_reason: BTreeMap<String, u64>,
 }
 
 /// Runtime output buffer.
@@ -32,15 +38,11 @@ impl Eq for OutputBuffer {}
 impl OutputBuffer {
     /// Creates an empty output buffer.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             bytes: Vec::new(),
             stack: Vec::new(),
-            stats: OutputStats {
-                appends: 0,
-                batch_writes: 0,
-                flushes: 0,
-            },
+            stats: OutputStats::default(),
         }
     }
 
@@ -56,8 +58,8 @@ impl OutputBuffer {
 
     /// Returns request-local output write statistics.
     #[must_use]
-    pub const fn stats(&self) -> OutputStats {
-        self.stats
+    pub fn stats(&self) -> OutputStats {
+        self.stats.clone()
     }
 
     /// Reserves capacity in the active buffer.
@@ -84,6 +86,16 @@ impl OutputBuffer {
         } else {
             self.bytes.extend_from_slice(bytes);
         }
+    }
+
+    /// Appends exact bytes through a VM-proven fast path.
+    pub fn write_fast_bytes(&mut self, bytes: impl AsRef<[u8]>) {
+        let bytes = bytes.as_ref();
+        if bytes.is_empty() {
+            return;
+        }
+        self.stats.fast_appends += 1;
+        self.write_bytes(bytes);
     }
 
     /// Appends several byte slices with one active-buffer reservation.
@@ -115,9 +127,33 @@ impl OutputBuffer {
         }
     }
 
+    /// Appends several byte slices through a VM-proven fast path.
+    pub fn write_fast_slices(&mut self, slices: &[&[u8]]) {
+        let has_bytes = slices.iter().any(|bytes| !bytes.is_empty());
+        if !has_bytes {
+            return;
+        }
+        self.stats.fast_appends += 1;
+        self.write_slices(slices);
+    }
+
     /// Appends a PHP string's exact bytes.
     pub fn write_php_string(&mut self, value: &PhpString) {
         self.write_bytes(value.as_bytes());
+    }
+
+    /// Appends a PHP string's exact bytes through a VM-proven fast path.
+    pub fn write_fast_php_string(&mut self, value: &PhpString) {
+        self.write_fast_bytes(value.as_bytes());
+    }
+
+    /// Records that output had to use a generic conversion/fallback path.
+    pub fn record_slow_append_reason(&mut self, reason: &'static str) {
+        *self
+            .stats
+            .slow_appends_by_reason
+            .entry(reason.to_string())
+            .or_default() += 1;
     }
 
     /// Convenience for tests and ASCII literals.
@@ -226,6 +262,8 @@ mod tests {
         assert_eq!(output.stats().appends, 4);
         assert_eq!(output.stats().batch_writes, 0);
         assert_eq!(output.stats().flushes, 1);
+        assert_eq!(output.stats().fast_appends, 0);
+        assert!(output.stats().slow_appends_by_reason.is_empty());
     }
 
     #[test]
@@ -238,5 +276,27 @@ mod tests {
         assert_eq!(output.stats().appends, 1);
         assert_eq!(output.stats().batch_writes, 1);
         assert_eq!(output.stats().flushes, 0);
+    }
+
+    #[test]
+    fn fast_and_slow_output_stats_are_stable() {
+        let mut output = OutputBuffer::new();
+
+        output.write_fast_bytes(b"a");
+        output.write_fast_slices(&[b"b", b"c"]);
+        output.record_slow_append_reason("object_to_string");
+        output.record_slow_append_reason("object_to_string");
+
+        assert_eq!(output.as_bytes(), b"abc");
+        assert_eq!(output.stats().appends, 2);
+        assert_eq!(output.stats().batch_writes, 1);
+        assert_eq!(output.stats().fast_appends, 2);
+        assert_eq!(
+            output
+                .stats()
+                .slow_appends_by_reason
+                .get("object_to_string"),
+            Some(&2)
+        );
     }
 }

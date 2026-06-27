@@ -50,6 +50,7 @@ FOCUS_COUNTERS = [
     "output_buffer_appends",
     "output_buffer_batch_writes",
     "output_buffer_flushes",
+    "output_fast_appends",
     "string_concats",
     "string_concat_fast_path_hits",
     "quickening_attempts",
@@ -183,6 +184,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
                 str(focus.get("property_accesses", 0)),
                 str(focus.get("internal_function_dispatches", 0)),
                 str(focus.get("output_bytes", 0)),
+                str(focus.get("output_fast_appends", 0)),
             ]
         )
     lines.extend(
@@ -197,6 +199,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
                 "Property access",
                 "Builtin calls",
                 "Output bytes",
+                "Output fast appends",
             ],
             rows,
         )

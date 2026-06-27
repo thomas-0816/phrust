@@ -71,7 +71,12 @@ CATEGORIES = (
     CategorySpec(
         "output",
         "Output",
-        ("output_bytes", "output_buffer_appends", "output_buffer_flushes"),
+        (
+            "output_bytes",
+            "output_buffer_appends",
+            "output_buffer_flushes",
+            "output_fast_appends",
+        ),
         "echo/print output buffering and batched internal buffer appends",
         "stdout/stderr bytes, output buffering levels, callbacks, and conversion errors are observable",
         "echo, print, output-buffering, object-to-string, and conversion-error fixtures",

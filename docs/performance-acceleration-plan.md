@@ -45,6 +45,7 @@ the relevant performance gates are:
 | `just benchmark-smoke` | Deterministic smoke benchmark over `tests/fixtures/performance/perf_smoke/`, writing JSON under `target/performance/`. |
 | `just framework-smoke` | Offline framework-like opt-off/opt-on smoke over router, Composer/autoload-like lookup, DI, DTO hydration, template, JSON/API output, object property/method loop, packed/mixed array traversal, and attribute/reflection fixtures. It is part of `verify-performance` and writes `docs/performance-framework-corpus.md`. |
 | `just release-benchmark-smoke` | Builds `php-vm` with the explicit `release` Cargo profile, runs the deterministic performance smoke and framework corpus against the release binary, and writes JSON/Markdown under `target/performance/release/`. It is part of `verify-performance`; timings are advisory. |
+| `just acceleration-matrix` | Runs the correctness-first Phase 09.16 matrix over baseline IR, dense bytecode auto/strict subset, superinstructions, optimizer levels, quickening, inline caches, all-non-JIT, release, and optional Cranelift rows. It writes JSON/Markdown under `target/performance/acceleration/` and is part of `verify-performance`. |
 | `just pgo-benchmark-smoke` | Optional PGO flow. It skips with a report unless `PHRUST_RUN_PGO=1` is set and `llvm-profdata` is available; enabled runs build an instrumented release binary, train on the performance corpus, merge profile data, rebuild with `-Cprofile-use`, and write reports under `target/performance/release/`. |
 | `just bolt-benchmark-smoke` | Optional Linux-only BOLT flow. It skips with a report outside Linux, without BOLT tools, or without `PHRUST_RUN_BOLT=1` plus `PHRUST_BOLT_PERF_DATA`; enabled runs consume perf data, emit an optimized binary under `target/performance/release/`, and run the corpus smoke. |
 | `just hotpath-inventory` | Generates `docs/hotpath-inventory.md` from benchmark counter totals. |
@@ -57,8 +58,9 @@ the relevant performance gates are:
 | `just verify-cranelift` | Optional Cranelift feature-on verification with platform skip support. |
 | `just perf-report` | Renders local Markdown and JSON performance reports under `target/performance/`. |
 
-The remaining missing gate required by later acceleration phases is the final
-acceleration matrix.
+The Phase 09.16 acceleration matrix is now the final cross-layer performance
+summary gate. It keeps timing advisory and compares PHP-visible behavior before
+reporting counters or wall time.
 
 ## Current Cranelift Status
 
@@ -255,10 +257,20 @@ The prompt-pack order is:
    safe subset. Phase 09.10 has landed explicit interpreter property-fetch
    layout metadata, shape guard fixtures, and fallback reason counters; property
    assignment ICs remain future work.
-6. Phase 09.13: optimizer pass expansion.
-7. Phase 09.14: Cranelift policy hardening and packed-loop expansion only.
-8. Phase 09.15: baseline native tier research/prototype.
-9. Phase 09.16: end-to-end acceleration matrix.
+6. Phase 09.13: optimizer pass expansion. The performance pipeline now reports
+   safe constant folding, literal-pool compaction, block-local register copy
+   propagation, peepholes, and branch simplification with attempted/applied/
+   skipped counters plus verifier-backed rollback.
+7. Phase 09.14: Cranelift policy hardening and packed-loop expansion only. The
+   Cranelift tier remains feature-gated and runtime-off, with packed foreach
+   integer reductions as the only keep-and-expand win.
+8. Phase 09.15: baseline native tier research/prototype. The
+   `docs/research/baseline-native-tier.md` decision keeps baseline native work
+   research-only until executable-memory, ABI, deopt, live-state, references,
+   COW, foreach, exception, generator, and fiber state are owned by the VM.
+9. Phase 09.16: end-to-end acceleration matrix. The `acceleration-matrix`
+   recipe writes local JSON/Markdown under `target/performance/acceleration/`
+   and feeds the committed summary in `docs/performance-acceleration-results.md`.
 10. Phase 09.17: runtime, stdlib, performance, and PHPT compatibility sweep.
 
 Only after Phase 09.01 lands should independent lanes split, and shared edits to

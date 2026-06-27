@@ -8,12 +8,12 @@ This inventory is derived from Rust VM counters in the performance smoke benchma
 
 | Category | Counter(s) | Total | Top fixture | Coverage |
 | --- | --- | ---: | --- | --- |
-| Dispatch | `instructions_executed` | 2080 | `tests/fixtures/performance/perf_smoke/arrays_packed.php` (459) | complete_for_current_counter_set |
-| Calls | `function_calls, method_calls` | 77 | `tests/fixtures/performance/perf_smoke/stdlib_dispatch.php` (56) | complete_for_current_counter_set |
+| Dispatch | `instructions_executed` | 2319 | `tests/fixtures/performance/perf_smoke/arrays_packed.php` (459) | complete_for_current_counter_set |
+| Calls | `function_calls, method_calls` | 81 | `tests/fixtures/performance/perf_smoke/stdlib_dispatch.php` (56) | complete_for_current_counter_set |
 | Arrays | `array_dim_fetches` | 15 | `tests/fixtures/performance/perf_smoke/arrays_packed.php` (12) | complete_for_current_counter_set |
 | Properties | `property_accesses, property_fetches` | 44 | `tests/fixtures/performance/perf_smoke/properties.php` (24) | complete_for_current_counter_set |
-| Strings | `string_concats` | 12 | `tests/fixtures/performance/perf_smoke/strings_concat.php` (12) | complete_for_current_counter_set |
-| Output | `output_bytes, output_buffer_appends, output_buffer_flushes` | 347 | `tests/fixtures/performance/perf_smoke/output_writes.php` (93) | complete_for_current_counter_set |
+| Strings | `string_concats` | 13 | `tests/fixtures/performance/perf_smoke/strings_concat.php` (12) | complete_for_current_counter_set |
+| Output | `output_bytes, output_buffer_appends, output_buffer_flushes, output_fast_appends` | 700 | `tests/fixtures/performance/perf_smoke/output_scalar_fast_paths.php` (273) | complete_for_current_counter_set |
 | Type Checks | `type_checks` | 0 | none observed | no_events_in_smoke_corpus |
 | Includes/Autoload | `includes, autoloads` | 2 | `tests/fixtures/performance/perf_smoke/autoload_smoke.php` (2) | complete_for_current_counter_set |
 | Standard Library Calls | `internal_function_dispatches, internal_function_dispatch_cache_hits, internal_function_dispatch_cache_misses` | 59 | `tests/fixtures/performance/perf_smoke/stdlib_dispatch.php` (56) | builtin_dispatch_counters_visible_in_smoke_corpus |
@@ -23,7 +23,7 @@ This inventory is derived from Rust VM counters in the performance smoke benchma
 | Priority | Hot path | Evidence | Optimization layer | Risk | Required correctness tests | Benefit |
 | ---: | --- | --- | --- | --- | --- | --- |
 | 1 | Dispatch | 459 counted event(s) in tests/fixtures/performance/perf_smoke/arrays_packed.php | interpreter dispatch and bytecode layout | changing dispatch can reorder side effects or diagnostics | runtime fixture diff plus bytecode snapshots for the same fixture family | high |
-| 2 | Output | 93 counted event(s) in tests/fixtures/performance/perf_smoke/output_writes.php | echo/print output buffering and batched internal buffer appends | stdout/stderr bytes, output buffering levels, callbacks, and conversion errors are observable | echo, print, output-buffering, object-to-string, and conversion-error fixtures | high |
+| 2 | Output | 273 counted event(s) in tests/fixtures/performance/perf_smoke/output_scalar_fast_paths.php | echo/print output buffering and batched internal buffer appends | stdout/stderr bytes, output buffering levels, callbacks, and conversion errors are observable | echo, print, output-buffering, object-to-string, and conversion-error fixtures | high |
 | 3 | Calls | 56 counted event(s) in tests/fixtures/performance/perf_smoke/stdlib_dispatch.php | call frame setup, method lookup, and later inline caches | call semantics include references, late static binding, visibility, and argument coercion | function, method, reference, variadic, and visibility fixtures | high |
 | 4 | Standard Library Calls | 56 internal dispatch(es), 51 dispatch-cache hit(s), and 5 miss(es) in tests/fixtures/performance/perf_smoke/stdlib_dispatch.php covering count, strlen, is_int, array_values, strtolower | builtin dispatch and standard-library call shims | cache must not bypass named-argument conversion, arity checks, TypeError/ValueError diagnostics, or reflection metadata | per-builtin fixtures plus differential stdlib gates before any fast path | high |
 | 5 | Properties | 24 counted event(s) in tests/fixtures/performance/perf_smoke/properties.php | property lookup and object layout caches | visibility, magic methods, dynamic properties, and typed properties are observable | public/private/protected, magic, dynamic, and typed-property fixtures | high |

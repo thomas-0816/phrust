@@ -281,6 +281,8 @@ impl PassPipeline {
         Self::new(vec![
             Box::new(NoopPass::new("perf_pre_verify_noop", PassPhase::PreVerify)),
             Box::new(ConstantFoldingPass),
+            Box::new(LiteralCompactionPass),
+            Box::new(CopyPropagationPass),
             Box::new(PeepholeSimplify),
             Box::new(BranchSimplify),
             Box::new(NoopPass::new(
@@ -375,6 +377,9 @@ impl OptimizerPass for NoopPass {
                 .sum(),
         );
         stats.insert("source_map_entries", unit.source_map.entries().len() as u64);
+        stats.insert("transformations_attempted", 0);
+        stats.insert("transformations_applied", 0);
+        stats.insert("transformations_skipped", 0);
 
         Ok(PassReport {
             name: self.name,
@@ -508,6 +513,12 @@ impl ConstantFoldingStats {
             ("integer_binary_folded", self.integer_binary_folded),
             ("skipped_unsafe", self.skipped_unsafe),
             ("string_concat_folded", self.string_concat_folded),
+            (
+                "transformations_attempted",
+                self.total_folded() + self.skipped_unsafe,
+            ),
+            ("transformations_applied", self.total_folded()),
+            ("transformations_skipped", self.skipped_unsafe),
             ("total_folded", self.total_folded()),
         ])
     }
@@ -572,6 +583,190 @@ fn append_constant(constants: &mut Vec<IrConstant>, constant: IrConstant) -> Opt
     let index = u32::try_from(constants.len()).ok()?;
     constants.push(constant);
     Some(ConstId::new(index))
+}
+
+/// Deduplicates literal pool entries and remaps all constant IDs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiteralCompactionPass;
+
+impl OptimizerPass for LiteralCompactionPass {
+    fn name(&self) -> &'static str {
+        "literal_compaction"
+    }
+
+    fn phase(&self) -> PassPhase {
+        PassPhase::PreVerify
+    }
+
+    fn run(&self, unit: &mut IrUnit, _context: &PassContext) -> Result<PassReport, PassError> {
+        let before_files = unit.files.clone();
+        let before_source_map = unit.source_map.clone();
+        let before = unit.clone();
+        let mut constants = Vec::<IrConstant>::new();
+        let mut remap = Vec::<ConstId>::with_capacity(unit.constants.len());
+        let mut stats = LiteralCompactionStats::default();
+
+        for constant in &unit.constants {
+            stats.constants_seen += 1;
+            if let Some(index) = constants
+                .iter()
+                .position(|candidate| candidate == constant)
+                .and_then(|index| u32::try_from(index).ok())
+            {
+                remap.push(ConstId::new(index));
+                stats.duplicates_removed += 1;
+            } else if let Ok(index) = u32::try_from(constants.len()) {
+                remap.push(ConstId::new(index));
+                constants.push(constant.clone());
+            } else {
+                remap.push(ConstId::new(u32::MAX));
+                stats.skipped_index_overflow += 1;
+            }
+        }
+
+        if stats.duplicates_removed > 0 && stats.skipped_index_overflow == 0 {
+            unit.constants = constants;
+            remap_unit_constants(unit, &remap);
+            if let Err(errors) = verify_unit(unit) {
+                *unit = before;
+                return Err(PassError::Verification {
+                    phase: self.phase(),
+                    errors,
+                });
+            }
+        }
+
+        Ok(PassReport {
+            name: self.name(),
+            phase: self.phase(),
+            enabled: true,
+            changed: stats.duplicates_removed > 0 && stats.skipped_index_overflow == 0,
+            source_spans_preserved: before_files == unit.files
+                && before_source_map == unit.source_map,
+            stats: stats.into_report_stats(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct LiteralCompactionStats {
+    constants_seen: u64,
+    duplicates_removed: u64,
+    skipped_index_overflow: u64,
+}
+
+impl LiteralCompactionStats {
+    fn into_report_stats(self) -> BTreeMap<&'static str, u64> {
+        BTreeMap::from([
+            ("constants_seen", self.constants_seen),
+            ("duplicates_removed", self.duplicates_removed),
+            ("skipped_index_overflow", self.skipped_index_overflow),
+            ("transformations_attempted", self.constants_seen),
+            ("transformations_applied", self.duplicates_removed),
+            ("transformations_skipped", self.skipped_index_overflow),
+        ])
+    }
+}
+
+/// Block-local register copy propagation that never crosses local/reference state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CopyPropagationPass;
+
+impl OptimizerPass for CopyPropagationPass {
+    fn name(&self) -> &'static str {
+        "copy_propagation_register_subset"
+    }
+
+    fn phase(&self) -> PassPhase {
+        PassPhase::PreVerify
+    }
+
+    fn run(&self, unit: &mut IrUnit, _context: &PassContext) -> Result<PassReport, PassError> {
+        let before_files = unit.files.clone();
+        let before_source_map = unit.source_map.clone();
+        let before = unit.clone();
+        let mut stats = CopyPropagationStats::default();
+
+        for function in &mut unit.functions {
+            for block in &mut function.blocks {
+                let mut aliases = BTreeMap::<RegId, RegId>::new();
+                for instruction in &mut block.instructions {
+                    let before_instruction = instruction.kind.clone();
+                    rewrite_instruction_register_operands(&mut instruction.kind, &aliases);
+                    if instruction.kind != before_instruction {
+                        stats.operands_rewritten += 1;
+                    }
+
+                    for register in defined_registers(&instruction.kind) {
+                        invalidate_aliases_touching(&mut aliases, register);
+                    }
+
+                    if let InstructionKind::Move {
+                        dst,
+                        src: Operand::Register(src),
+                    } = instruction.kind
+                    {
+                        stats.moves_considered += 1;
+                        if dst == src {
+                            stats.skipped_self_move += 1;
+                        } else {
+                            aliases.insert(dst, resolve_register_alias(src, &aliases));
+                            stats.aliases_recorded += 1;
+                        }
+                    }
+                }
+                if let Some(terminator) = &mut block.terminator {
+                    let before_terminator = terminator.kind.clone();
+                    rewrite_terminator_register_operands(&mut terminator.kind, &aliases);
+                    if terminator.kind != before_terminator {
+                        stats.operands_rewritten += 1;
+                    }
+                }
+            }
+        }
+
+        if stats.operands_rewritten > 0
+            && let Err(errors) = verify_unit(unit)
+        {
+            *unit = before;
+            return Err(PassError::Verification {
+                phase: self.phase(),
+                errors,
+            });
+        }
+
+        Ok(PassReport {
+            name: self.name(),
+            phase: self.phase(),
+            enabled: true,
+            changed: stats.operands_rewritten > 0,
+            source_spans_preserved: before_files == unit.files
+                && before_source_map == unit.source_map,
+            stats: stats.into_report_stats(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct CopyPropagationStats {
+    moves_considered: u64,
+    aliases_recorded: u64,
+    operands_rewritten: u64,
+    skipped_self_move: u64,
+}
+
+impl CopyPropagationStats {
+    fn into_report_stats(self) -> BTreeMap<&'static str, u64> {
+        BTreeMap::from([
+            ("aliases_recorded", self.aliases_recorded),
+            ("moves_considered", self.moves_considered),
+            ("operands_rewritten", self.operands_rewritten),
+            ("skipped_self_move", self.skipped_self_move),
+            ("transformations_attempted", self.moves_considered),
+            ("transformations_applied", self.operands_rewritten),
+            ("transformations_skipped", self.skipped_self_move),
+        ])
+    }
 }
 
 fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
@@ -671,6 +866,462 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
     }
 }
 
+fn remap_unit_constants(unit: &mut IrUnit, remap: &[ConstId]) {
+    for function in &mut unit.functions {
+        for attribute in &mut function.attributes {
+            remap_attribute_constants(attribute, remap);
+        }
+        for param in &mut function.params {
+            for attribute in &mut param.attributes {
+                remap_attribute_constants(attribute, remap);
+            }
+        }
+        for block in &mut function.blocks {
+            for instruction in &mut block.instructions {
+                remap_instruction_constants(&mut instruction.kind, remap);
+            }
+            if let Some(terminator) = &mut block.terminator {
+                remap_terminator_constants(&mut terminator.kind, remap);
+            }
+        }
+    }
+    for class in &mut unit.classes {
+        for attribute in &mut class.attributes {
+            remap_attribute_constants(attribute, remap);
+        }
+        for method in &mut class.methods {
+            for attribute in &mut method.attributes {
+                remap_attribute_constants(attribute, remap);
+            }
+        }
+        for property in &mut class.properties {
+            remap_optional_const(&mut property.default, remap);
+            for attribute in &mut property.attributes {
+                remap_attribute_constants(attribute, remap);
+            }
+        }
+        for constant in &mut class.constants {
+            remap_optional_const(&mut constant.value, remap);
+            for attribute in &mut constant.attributes {
+                remap_attribute_constants(attribute, remap);
+            }
+        }
+        for case in &mut class.enum_cases {
+            remap_optional_const(&mut case.value, remap);
+            for attribute in &mut case.attributes {
+                remap_attribute_constants(attribute, remap);
+            }
+        }
+    }
+    for constant in &mut unit.constant_table {
+        constant.value = remapped_const(constant.value, remap);
+    }
+}
+
+fn remap_optional_const(value: &mut Option<ConstId>, remap: &[ConstId]) {
+    if let Some(constant) = value {
+        *constant = remapped_const(*constant, remap);
+    }
+}
+
+fn remap_attribute_constants(attribute: &mut php_ir::AttributeEntry, remap: &[ConstId]) {
+    for argument in &mut attribute.arguments {
+        *argument = remapped_const(*argument, remap);
+    }
+}
+
+fn remapped_const(value: ConstId, remap: &[ConstId]) -> ConstId {
+    remap.get(value.index()).copied().unwrap_or(value)
+}
+
+fn remap_operand_constants(operand: &mut Operand, remap: &[ConstId]) {
+    if let Operand::Constant(constant) = operand {
+        *constant = remapped_const(*constant, remap);
+    }
+}
+
+fn remap_optional_operand_constants(operand: &mut Option<Operand>, remap: &[ConstId]) {
+    if let Some(operand) = operand {
+        remap_operand_constants(operand, remap);
+    }
+}
+
+fn remap_operands_constants(operands: &mut [Operand], remap: &[ConstId]) {
+    for operand in operands {
+        remap_operand_constants(operand, remap);
+    }
+}
+
+fn remap_call_args_constants(args: &mut [php_ir::instruction::IrCallArg], remap: &[ConstId]) {
+    for arg in args {
+        remap_operand_constants(&mut arg.value, remap);
+        if let Some(dim) = &mut arg.by_ref_dim {
+            remap_operands_constants(&mut dim.dims, remap);
+        }
+        if let Some(property) = &mut arg.by_ref_property {
+            remap_operand_constants(&mut property.object, remap);
+        }
+    }
+}
+
+fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
+    match kind {
+        InstructionKind::LoadConst { constant, .. } => {
+            *constant = remapped_const(*constant, remap);
+        }
+        InstructionKind::Move { src, .. }
+        | InstructionKind::StoreLocal { src, .. }
+        | InstructionKind::InitStaticLocal { default: src, .. }
+        | InstructionKind::Discard { src }
+        | InstructionKind::Echo { src }
+        | InstructionKind::YieldFrom { source: src, .. }
+        | InstructionKind::Throw { value: src }
+        | InstructionKind::Include { path: src, .. }
+        | InstructionKind::Eval { code: src, .. }
+        | InstructionKind::DynamicNewObject {
+            class_name: src, ..
+        }
+        | InstructionKind::UnsetProperty { object: src, .. }
+        | InstructionKind::ForeachInit { source: src, .. } => remap_operand_constants(src, remap),
+        InstructionKind::Binary { lhs, rhs, .. } | InstructionKind::Compare { lhs, rhs, .. } => {
+            remap_operand_constants(lhs, remap);
+            remap_operand_constants(rhs, remap);
+        }
+        InstructionKind::InstanceOf { object, .. }
+        | InstructionKind::Unary { src: object, .. }
+        | InstructionKind::Cast { src: object, .. }
+        | InstructionKind::CloneObject { object, .. }
+        | InstructionKind::FetchProperty { object, .. }
+        | InstructionKind::IssetProperty { object, .. }
+        | InstructionKind::EmptyProperty { object, .. } => {
+            remap_operand_constants(object, remap);
+        }
+        InstructionKind::Yield { key, value, .. } => {
+            remap_optional_operand_constants(key, remap);
+            remap_optional_operand_constants(value, remap);
+        }
+        InstructionKind::MakeException { message, .. } => {
+            remap_operand_constants(message, remap);
+        }
+        InstructionKind::MakeClosure { captures, .. } => {
+            for capture in captures {
+                remap_operand_constants(&mut capture.src, remap);
+            }
+        }
+        InstructionKind::CallFunction { args, .. }
+        | InstructionKind::CallStaticMethod { args, .. }
+        | InstructionKind::NewObject { args, .. }
+        | InstructionKind::BindReferenceFromCall { args, .. } => {
+            remap_call_args_constants(args, remap);
+        }
+        InstructionKind::CallMethod { object, args, .. } => {
+            remap_operand_constants(object, remap);
+            remap_call_args_constants(args, remap);
+        }
+        InstructionKind::CallClosure { callee, args, .. }
+        | InstructionKind::CallCallable { callee, args, .. } => {
+            remap_operand_constants(callee, remap);
+            remap_call_args_constants(args, remap);
+        }
+        InstructionKind::Pipe {
+            input, callable, ..
+        } => {
+            remap_operand_constants(input, remap);
+            remap_operand_constants(callable, remap);
+        }
+        InstructionKind::CloneWith {
+            object,
+            replacements,
+            ..
+        }
+        | InstructionKind::AssignProperty {
+            object,
+            value: replacements,
+            ..
+        } => {
+            remap_operand_constants(object, remap);
+            remap_operand_constants(replacements, remap);
+        }
+        InstructionKind::IssetPropertyDim { object, dims, .. }
+        | InstructionKind::EmptyPropertyDim { object, dims, .. } => {
+            remap_operand_constants(object, remap);
+            remap_operands_constants(dims, remap);
+        }
+        InstructionKind::AssignDim { dims, value, .. }
+        | InstructionKind::AppendDim { dims, value, .. } => {
+            remap_operands_constants(dims, remap);
+            remap_operand_constants(value, remap);
+        }
+        InstructionKind::ArrayInsert { key, value, .. } => {
+            remap_optional_operand_constants(key, remap);
+            remap_operand_constants(value, remap);
+        }
+        InstructionKind::FetchDim { array, key, .. } => {
+            remap_operand_constants(array, remap);
+            remap_operand_constants(key, remap);
+        }
+        InstructionKind::IssetDim { dims, .. }
+        | InstructionKind::EmptyDim { dims, .. }
+        | InstructionKind::UnsetDim { dims, .. }
+        | InstructionKind::BindReferenceDim { dims, .. }
+        | InstructionKind::BindReferenceFromDim { dims, .. } => {
+            remap_operands_constants(dims, remap);
+        }
+        InstructionKind::AssignStaticProperty { value, .. } => {
+            remap_operand_constants(value, remap);
+        }
+        InstructionKind::ArrayGet { array, index, .. } => {
+            remap_operand_constants(array, remap);
+            remap_operand_constants(index, remap);
+        }
+        InstructionKind::Nop
+        | InstructionKind::FetchConst { .. }
+        | InstructionKind::LoadLocal { .. }
+        | InstructionKind::LoadLocalQuiet { .. }
+        | InstructionKind::BindReference { .. }
+        | InstructionKind::BindGlobal { .. }
+        | InstructionKind::EmitDiagnostic { .. }
+        | InstructionKind::EnterTry { .. }
+        | InstructionKind::LeaveTry
+        | InstructionKind::EndFinally { .. }
+        | InstructionKind::ResolveCallable { .. }
+        | InstructionKind::FetchStaticProperty { .. }
+        | InstructionKind::FetchClassConstant { .. }
+        | InstructionKind::NewArray { .. }
+        | InstructionKind::IssetLocal { .. }
+        | InstructionKind::EmptyLocal { .. }
+        | InstructionKind::UnsetLocal { .. }
+        | InstructionKind::ForeachNext { .. }
+        | InstructionKind::ForeachInitRef { .. }
+        | InstructionKind::ForeachNextRef { .. }
+        | InstructionKind::Unsupported { .. }
+        | InstructionKind::RuntimeError { .. } => {}
+    }
+}
+
+fn remap_terminator_constants(kind: &mut TerminatorKind, remap: &[ConstId]) {
+    match kind {
+        TerminatorKind::Jump { .. } => {}
+        TerminatorKind::JumpIfFalse { condition, .. }
+        | TerminatorKind::JumpIfTrue { condition, .. }
+        | TerminatorKind::JumpIf { condition, .. } => {
+            remap_operand_constants(condition, remap);
+        }
+        TerminatorKind::Return { value, .. } => {
+            remap_optional_operand_constants(value, remap);
+        }
+    }
+}
+
+fn resolve_register_alias(register: RegId, aliases: &BTreeMap<RegId, RegId>) -> RegId {
+    let mut current = register;
+    for _ in 0..aliases.len() {
+        let Some(next) = aliases.get(&current).copied() else {
+            break;
+        };
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+fn invalidate_aliases_touching(aliases: &mut BTreeMap<RegId, RegId>, register: RegId) {
+    aliases.retain(|alias, source| *alias != register && *source != register);
+}
+
+fn rewrite_operand_registers(operand: &mut Operand, aliases: &BTreeMap<RegId, RegId>) {
+    if let Operand::Register(register) = operand {
+        *register = resolve_register_alias(*register, aliases);
+    }
+}
+
+fn rewrite_optional_operand_registers(
+    operand: &mut Option<Operand>,
+    aliases: &BTreeMap<RegId, RegId>,
+) {
+    if let Some(operand) = operand {
+        rewrite_operand_registers(operand, aliases);
+    }
+}
+
+fn rewrite_operands_registers(operands: &mut [Operand], aliases: &BTreeMap<RegId, RegId>) {
+    for operand in operands {
+        rewrite_operand_registers(operand, aliases);
+    }
+}
+
+fn rewrite_call_args_registers(
+    args: &mut [php_ir::instruction::IrCallArg],
+    aliases: &BTreeMap<RegId, RegId>,
+) {
+    for arg in args {
+        rewrite_operand_registers(&mut arg.value, aliases);
+        if let Some(dim) = &mut arg.by_ref_dim {
+            rewrite_operands_registers(&mut dim.dims, aliases);
+        }
+        if let Some(property) = &mut arg.by_ref_property {
+            rewrite_operand_registers(&mut property.object, aliases);
+        }
+    }
+}
+
+fn rewrite_instruction_register_operands(
+    kind: &mut InstructionKind,
+    aliases: &BTreeMap<RegId, RegId>,
+) {
+    match kind {
+        InstructionKind::Move { src, .. }
+        | InstructionKind::StoreLocal { src, .. }
+        | InstructionKind::InitStaticLocal { default: src, .. }
+        | InstructionKind::Discard { src }
+        | InstructionKind::Echo { src }
+        | InstructionKind::YieldFrom { source: src, .. }
+        | InstructionKind::Throw { value: src }
+        | InstructionKind::Include { path: src, .. }
+        | InstructionKind::Eval { code: src, .. }
+        | InstructionKind::DynamicNewObject {
+            class_name: src, ..
+        }
+        | InstructionKind::UnsetProperty { object: src, .. }
+        | InstructionKind::ForeachInit { source: src, .. } => {
+            rewrite_operand_registers(src, aliases)
+        }
+        InstructionKind::Binary { lhs, rhs, .. } | InstructionKind::Compare { lhs, rhs, .. } => {
+            rewrite_operand_registers(lhs, aliases);
+            rewrite_operand_registers(rhs, aliases);
+        }
+        InstructionKind::InstanceOf { object, .. }
+        | InstructionKind::Unary { src: object, .. }
+        | InstructionKind::Cast { src: object, .. }
+        | InstructionKind::CloneObject { object, .. }
+        | InstructionKind::FetchProperty { object, .. }
+        | InstructionKind::IssetProperty { object, .. }
+        | InstructionKind::EmptyProperty { object, .. } => {
+            rewrite_operand_registers(object, aliases);
+        }
+        InstructionKind::Yield { key, value, .. } => {
+            rewrite_optional_operand_registers(key, aliases);
+            rewrite_optional_operand_registers(value, aliases);
+        }
+        InstructionKind::MakeException { message, .. } => {
+            rewrite_operand_registers(message, aliases);
+        }
+        InstructionKind::MakeClosure { captures, .. } => {
+            for capture in captures {
+                rewrite_operand_registers(&mut capture.src, aliases);
+            }
+        }
+        InstructionKind::CallFunction { args, .. }
+        | InstructionKind::CallStaticMethod { args, .. }
+        | InstructionKind::NewObject { args, .. }
+        | InstructionKind::BindReferenceFromCall { args, .. } => {
+            rewrite_call_args_registers(args, aliases);
+        }
+        InstructionKind::CallMethod { object, args, .. } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_call_args_registers(args, aliases);
+        }
+        InstructionKind::CallClosure { callee, args, .. }
+        | InstructionKind::CallCallable { callee, args, .. } => {
+            rewrite_operand_registers(callee, aliases);
+            rewrite_call_args_registers(args, aliases);
+        }
+        InstructionKind::Pipe {
+            input, callable, ..
+        } => {
+            rewrite_operand_registers(input, aliases);
+            rewrite_operand_registers(callable, aliases);
+        }
+        InstructionKind::CloneWith {
+            object,
+            replacements,
+            ..
+        }
+        | InstructionKind::AssignProperty {
+            object,
+            value: replacements,
+            ..
+        } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operand_registers(replacements, aliases);
+        }
+        InstructionKind::IssetPropertyDim { object, dims, .. }
+        | InstructionKind::EmptyPropertyDim { object, dims, .. } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operands_registers(dims, aliases);
+        }
+        InstructionKind::AssignDim { dims, value, .. }
+        | InstructionKind::AppendDim { dims, value, .. } => {
+            rewrite_operands_registers(dims, aliases);
+            rewrite_operand_registers(value, aliases);
+        }
+        InstructionKind::ArrayInsert { key, value, .. } => {
+            rewrite_optional_operand_registers(key, aliases);
+            rewrite_operand_registers(value, aliases);
+        }
+        InstructionKind::FetchDim { array, key, .. } => {
+            rewrite_operand_registers(array, aliases);
+            rewrite_operand_registers(key, aliases);
+        }
+        InstructionKind::IssetDim { dims, .. }
+        | InstructionKind::EmptyDim { dims, .. }
+        | InstructionKind::UnsetDim { dims, .. }
+        | InstructionKind::BindReferenceDim { dims, .. }
+        | InstructionKind::BindReferenceFromDim { dims, .. } => {
+            rewrite_operands_registers(dims, aliases);
+        }
+        InstructionKind::AssignStaticProperty { value, .. } => {
+            rewrite_operand_registers(value, aliases);
+        }
+        InstructionKind::ArrayGet { array, index, .. } => {
+            rewrite_operand_registers(array, aliases);
+            rewrite_operand_registers(index, aliases);
+        }
+        InstructionKind::Nop
+        | InstructionKind::LoadConst { .. }
+        | InstructionKind::FetchConst { .. }
+        | InstructionKind::LoadLocal { .. }
+        | InstructionKind::LoadLocalQuiet { .. }
+        | InstructionKind::BindReference { .. }
+        | InstructionKind::BindGlobal { .. }
+        | InstructionKind::EmitDiagnostic { .. }
+        | InstructionKind::EnterTry { .. }
+        | InstructionKind::LeaveTry
+        | InstructionKind::EndFinally { .. }
+        | InstructionKind::ResolveCallable { .. }
+        | InstructionKind::FetchStaticProperty { .. }
+        | InstructionKind::FetchClassConstant { .. }
+        | InstructionKind::NewArray { .. }
+        | InstructionKind::IssetLocal { .. }
+        | InstructionKind::EmptyLocal { .. }
+        | InstructionKind::UnsetLocal { .. }
+        | InstructionKind::ForeachNext { .. }
+        | InstructionKind::ForeachInitRef { .. }
+        | InstructionKind::ForeachNextRef { .. }
+        | InstructionKind::Unsupported { .. }
+        | InstructionKind::RuntimeError { .. } => {}
+    }
+}
+
+fn rewrite_terminator_register_operands(
+    kind: &mut TerminatorKind,
+    aliases: &BTreeMap<RegId, RegId>,
+) {
+    match kind {
+        TerminatorKind::Jump { .. } => {}
+        TerminatorKind::JumpIfFalse { condition, .. }
+        | TerminatorKind::JumpIfTrue { condition, .. }
+        | TerminatorKind::JumpIf { condition, .. } => {
+            rewrite_operand_registers(condition, aliases);
+        }
+        TerminatorKind::Return { value, .. } => {
+            rewrite_optional_operand_registers(value, aliases);
+        }
+    }
+}
+
 /// Peephole simplification for trivially side-effect-free IR patterns.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PeepholeSimplify;
@@ -748,10 +1399,15 @@ impl PeepholeStats {
     }
 
     fn into_report_stats(self) -> BTreeMap<&'static str, u64> {
+        let total = self.total_transformations();
         BTreeMap::from([
             ("noops_removed", self.noops_removed),
             ("self_moves_removed", self.self_moves_removed),
-            ("total_transformations", self.total_transformations()),
+            ("total_transformations", total),
+            ("transformations_attempted", total),
+            ("transformations_applied", total),
+            ("transformations_skipped", 0),
+            ("skipped_no_match", 0),
         ])
     }
 }
@@ -943,6 +1599,7 @@ impl BranchSimplifyStats {
     }
 
     fn into_report_stats(self) -> BTreeMap<&'static str, u64> {
+        let total = self.total_transformations();
         BTreeMap::from([
             ("constant_branches", self.constant_branches),
             ("empty_block_forwards", self.empty_block_forwards),
@@ -950,7 +1607,11 @@ impl BranchSimplifyStats {
                 "unreachable_empty_tail_blocks_removed",
                 self.unreachable_empty_tail_blocks_removed,
             ),
-            ("total_transformations", self.total_transformations()),
+            ("total_transformations", total),
+            ("transformations_attempted", total),
+            ("transformations_applied", total),
+            ("transformations_skipped", 0),
+            ("skipped_no_match", 0),
         ])
     }
 }
@@ -1260,8 +1921,8 @@ fn block_has_exception_boundary(block: &php_ir::BasicBlock) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConstantFoldingPass, NoopPass, OptimizationLevel, OptimizerPass, PassContext, PassPhase,
-        PassPipeline, PeepholeSimplify,
+        ConstantFoldingPass, CopyPropagationPass, LiteralCompactionPass, NoopPass,
+        OptimizationLevel, OptimizerPass, PassContext, PassPhase, PassPipeline, PeepholeSimplify,
     };
     use php_ir::instruction::TerminatorKind;
     use php_ir::{
@@ -1411,14 +2072,18 @@ mod tests {
             .run(&mut unit, &PassContext::new(OptimizationLevel::O1))
             .expect("performance pipeline should pass");
 
-        assert_eq!(report.enabled_pass_count(), 5);
+        assert_eq!(report.enabled_pass_count(), 7);
         assert_eq!(report.passes[1].name, "constant_folding_safe_subset");
         assert_eq!(report.passes[1].phase, PassPhase::PreVerify);
         assert_eq!(report.passes[1].stats["total_folded"], 0);
-        assert_eq!(report.passes[2].name, "peephole_simplify");
-        assert_eq!(report.passes[2].stats["total_transformations"], 0);
-        assert_eq!(report.passes[3].name, "branch_simplify");
-        assert_eq!(report.passes[3].stats["total_transformations"], 0);
+        assert_eq!(report.passes[2].name, "literal_compaction");
+        assert_eq!(report.passes[2].stats["duplicates_removed"], 0);
+        assert_eq!(report.passes[3].name, "copy_propagation_register_subset");
+        assert_eq!(report.passes[3].stats["operands_rewritten"], 0);
+        assert_eq!(report.passes[4].name, "peephole_simplify");
+        assert_eq!(report.passes[4].stats["total_transformations"], 0);
+        assert_eq!(report.passes[5].name, "branch_simplify");
+        assert_eq!(report.passes[5].stats["total_transformations"], 0);
     }
 
     #[test]
@@ -1535,6 +2200,121 @@ mod tests {
         assert_eq!(unit.files, before_files);
         assert_eq!(unit.source_map, before_source_map);
         assert_eq!(report.stats["skipped_unsafe"], 1);
+    }
+
+    #[test]
+    fn literal_compaction_remaps_duplicate_constants() {
+        let mut builder = IrBuilder::new(UnitId::new(20));
+        let file = builder.add_file("optimizer/literals.php");
+        let function = builder.start_function(
+            "main",
+            FunctionFlags {
+                is_top_level: true,
+                ..FunctionFlags::default()
+            },
+            IrSpan::new(file, 0, 5),
+        );
+        let block = builder.append_block(function);
+        let first = builder.add_constant(IrConstant::String("same".to_string()));
+        let second = builder.add_constant(IrConstant::String("same".to_string()));
+        let register = builder.alloc_register(function);
+        builder.emit_load_const(function, block, register, second, IrSpan::new(file, 6, 10));
+        builder.terminate_return(
+            function,
+            block,
+            Some(Operand::Constant(second)),
+            IrSpan::new(file, 11, 12),
+        );
+        builder.set_entry(function);
+        let mut unit = builder.finish();
+
+        let report = LiteralCompactionPass
+            .run(&mut unit, &PassContext::new(OptimizationLevel::O1))
+            .expect("literal compaction should verify");
+
+        assert!(report.changed);
+        assert_eq!(report.stats["duplicates_removed"], 1);
+        assert_eq!(unit.constants.len(), 1);
+        assert!(matches!(
+            unit.functions[0].blocks[0].instructions[0].kind,
+            InstructionKind::LoadConst {
+                constant,
+                ..
+            } if constant == first
+        ));
+        assert!(matches!(
+            unit.functions[0].blocks[0].terminator.as_ref().unwrap().kind,
+            TerminatorKind::Return {
+                value: Some(Operand::Constant(constant)),
+                ..
+            } if constant == first
+        ));
+    }
+
+    #[test]
+    fn copy_propagation_rewrites_register_sources_within_block() {
+        let mut builder = IrBuilder::new(UnitId::new(21));
+        let file = builder.add_file("optimizer/copy-prop.php");
+        let function = builder.start_function(
+            "main",
+            FunctionFlags {
+                is_top_level: true,
+                ..FunctionFlags::default()
+            },
+            IrSpan::new(file, 0, 5),
+        );
+        let block = builder.append_block(function);
+        let constant = builder.add_constant(IrConstant::String("copy".to_string()));
+        let source = builder.alloc_register(function);
+        let copy = builder.alloc_register(function);
+        builder.emit_load_const(function, block, source, constant, IrSpan::new(file, 6, 10));
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Move {
+                dst: copy,
+                src: Operand::Register(source),
+            },
+            IrSpan::new(file, 11, 12),
+        );
+        builder.emit(
+            function,
+            block,
+            InstructionKind::Echo {
+                src: Operand::Register(copy),
+            },
+            IrSpan::new(file, 13, 14),
+        );
+        builder.terminate_return(
+            function,
+            block,
+            Some(Operand::Register(copy)),
+            IrSpan::new(file, 15, 16),
+        );
+        builder.set_entry(function);
+        let mut unit = builder.finish();
+
+        let report = CopyPropagationPass
+            .run(&mut unit, &PassContext::new(OptimizationLevel::O1))
+            .expect("copy propagation should verify");
+
+        assert!(report.changed);
+        assert_eq!(report.stats["moves_considered"], 1);
+        assert_eq!(report.stats["aliases_recorded"], 1);
+        assert_eq!(report.stats["operands_rewritten"], 2);
+        assert!(matches!(
+            unit.functions[0].blocks[0].instructions[2].kind,
+            InstructionKind::Echo {
+                src: Operand::Register(register)
+            } if register == source
+        ));
+        assert!(matches!(
+            unit.functions[0].blocks[0].terminator.as_ref().unwrap().kind,
+            TerminatorKind::Return {
+                value: Some(Operand::Register(register)),
+                ..
+            } if register == source
+        ));
     }
 
     #[test]

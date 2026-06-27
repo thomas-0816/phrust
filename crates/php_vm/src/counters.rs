@@ -139,6 +139,8 @@ pub struct VmCounters {
     pub output_buffer_appends: u64,
     pub output_buffer_batch_writes: u64,
     pub output_buffer_flushes: u64,
+    pub output_fast_appends: u64,
+    pub output_slow_appends_by_reason: BTreeMap<String, u64>,
     pub internal_function_dispatches: u64,
     pub internal_function_dispatch_cache_hits: u64,
     pub internal_function_dispatch_cache_misses: u64,
@@ -508,6 +510,8 @@ impl VmCounters {
         self.output_buffer_appends = stats.appends;
         self.output_buffer_batch_writes = stats.batch_writes;
         self.output_buffer_flushes = stats.flushes;
+        self.output_fast_appends = stats.fast_appends;
+        self.output_slow_appends_by_reason = stats.slow_appends_by_reason;
     }
 
     pub(crate) fn record_internal_function_dispatch(&mut self) {
@@ -1195,6 +1199,18 @@ impl VmCounters {
             &mut json,
             "output_buffer_flushes",
             self.output_buffer_flushes,
+            true,
+        );
+        push_field(
+            &mut json,
+            "output_fast_appends",
+            self.output_fast_appends,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "output_slow_appends_by_reason",
+            &self.output_slow_appends_by_reason,
             true,
         );
         push_field(
@@ -2411,6 +2427,8 @@ mod tests {
                 appends: 3,
                 batch_writes: 1,
                 flushes: 2,
+                fast_appends: 2,
+                slow_appends_by_reason: BTreeMap::from([("object_to_string".to_string(), 1)]),
             },
         );
         counters.record_internal_function_dispatch();
@@ -2546,6 +2564,13 @@ mod tests {
         assert_eq!(counters.output_buffer_appends, 3);
         assert_eq!(counters.output_buffer_batch_writes, 1);
         assert_eq!(counters.output_buffer_flushes, 2);
+        assert_eq!(counters.output_fast_appends, 2);
+        assert_eq!(
+            counters
+                .output_slow_appends_by_reason
+                .get("object_to_string"),
+            Some(&1)
+        );
         assert_eq!(counters.internal_function_dispatches, 1);
         assert_eq!(counters.internal_function_dispatch_cache_hits, 1);
         assert_eq!(counters.internal_function_dispatch_cache_misses, 1);
@@ -2719,6 +2744,8 @@ mod tests {
         assert!(json.contains("\"output_buffer_appends\": 0"));
         assert!(json.contains("\"output_buffer_batch_writes\": 0"));
         assert!(json.contains("\"output_buffer_flushes\": 0"));
+        assert!(json.contains("\"output_fast_appends\": 0"));
+        assert!(json.contains("\"output_slow_appends_by_reason\": {}"));
         assert!(json.contains("\"internal_function_dispatches\": 0"));
         assert!(json.contains("\"internal_function_dispatch_cache_hits\": 0"));
         assert!(json.contains("\"internal_function_dispatch_cache_misses\": 0"));

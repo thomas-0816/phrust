@@ -72,7 +72,8 @@ must not be committed:
 
 ## Validation Results
 
-Current validation was run in `nix develop` on 2026-06-24:
+Current validation was refreshed in `nix develop` on 2026-06-27 for the
+Performance acceleration Phase 09.14 audit:
 
 | Command | Result |
 | --- | --- |
@@ -84,6 +85,7 @@ Current validation was run in `nix develop` on 2026-06-24:
 | `nix develop -c just jit-cranelift-diff` | Passed; wrote `target/performance/cranelift/diff.json` after comparing 68 fixtures. |
 | `nix develop -c just jit-cranelift-bench-smoke` | Passed; wrote `target/performance/cranelift/bench-smoke.json` with 70 rows. |
 | `nix develop -c just jit-cranelift-report` | Passed; wrote `target/performance/cranelift/big_wins_report.json` with 70 rows and all eight required families. |
+| `nix develop -c just cranelift-guard-report` | Passed; wrote `target/performance/cranelift/guard-report.json` and `.txt` with keep/specialize/unsupported/blacklist recommendations. |
 | `nix develop -c just jit-cranelift-disasm` | Passed; wrote five linked entries under `target/performance/cranelift/disasm/`; native instruction disassembly remains explicitly skipped. |
 | `nix develop -c just jit-cranelift-poly-ic-experiment` | Passed; wrote `polymorphic-ic/report.json` and guard report extension with property and method `megamorphic_fallback` rows. |
 | `nix develop -c just jit-cranelift-framework-smoke` | Passed; wrote `framework-smoke.json` for router dispatch, DTO hydration, service method loop, template-like string concat, and config array reads. |
