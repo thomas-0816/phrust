@@ -7923,15 +7923,26 @@ impl Vm {
                             }
                             Value::Object(object) => object,
                             other => {
-                                return self.runtime_error(
-                                    output,
-                                    compiled,
-                                    stack,
-                                    format!(
-                                        "E_PHP_VM_METHOD_CALL_NON_OBJECT: cannot call method {method} on {}",
-                                        value_type_name(&other)
-                                    ),
+                                let message = format!(
+                                    "E_PHP_VM_METHOD_CALL_NON_OBJECT: Call to a member function {method}() on {}",
+                                    value_type_name(&other)
                                 );
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
                             }
                         };
                         if internal_throwable_instanceof(&object.class_name(), "throwable")
@@ -22111,7 +22122,8 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_UNKNOWN_STATIC_PROPERTY"
         | "E_PHP_VM_NON_STATIC_METHOD_CALL"
         | "E_PHP_VM_PRIVATE_CLASS_CONSTANT_ACCESS"
-        | "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS" => "Error",
+        | "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS"
+        | "E_PHP_VM_METHOD_CALL_NON_OBJECT" => "Error",
         _ => return None,
     };
     let message = diagnostic
