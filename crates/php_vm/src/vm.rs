@@ -8191,8 +8191,28 @@ impl Vm {
                                 ) {
                                     Ok(Some(result)) => result,
                                     Ok(None) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
+                                        let result =
+                                            self.runtime_error(output, compiled, stack, message);
+                                        if let Some(throwable) = runtime_error_throwable(&result) {
+                                            tag_throwable_location(
+                                                &throwable,
+                                                runtime_source_span(compiled, instruction.span),
+                                            );
+                                            if let Some(target) = handle_throw(
+                                                compiled,
+                                                throwable.clone(),
+                                                &mut exception_handlers,
+                                                stack,
+                                                &mut pending_control,
+                                            ) {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            return self.handle_uncaught_exception(
+                                                compiled, output, stack, state, throwable,
+                                            );
+                                        }
+                                        return result;
                                     }
                                     Err(result) => return result,
                                 };
@@ -8211,7 +8231,27 @@ impl Vm {
                                 }
                                 continue;
                             }
-                            return self.runtime_error(output, compiled, stack, message);
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            if let Some(throwable) = runtime_error_throwable(&result) {
+                                tag_throwable_location(
+                                    &throwable,
+                                    runtime_source_span(compiled, instruction.span),
+                                );
+                                if let Some(target) = handle_throw(
+                                    compiled,
+                                    throwable.clone(),
+                                    &mut exception_handlers,
+                                    stack,
+                                    &mut pending_control,
+                                ) {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                return self.handle_uncaught_exception(
+                                    compiled, output, stack, state, throwable,
+                                );
+                            }
+                            return result;
                         }
                         let target = dynamic_owner_index.map_or_else(
                             || MethodCallCacheTarget::CurrentUnit {
@@ -15393,6 +15433,17 @@ fn catch_matches(
     Ok(false)
 }
 
+/// Stamps a synthesized throwable with the file/line of the failing operation so
+/// its `Fatal error: …` rendering and getFile/getLine report a real location.
+fn tag_throwable_location(throwable: &Value, span: RuntimeSourceSpan) {
+    if let Value::Object(object) = throwable {
+        if let Some(file) = span.file {
+            object.set_property("file", Value::string(file.into_bytes()));
+        }
+        object.set_property("line", Value::Int(i64::from(span.start)));
+    }
+}
+
 fn uncaught_exception(
     output: &mut OutputBuffer,
     compiled: &CompiledUnit,
@@ -17776,34 +17827,45 @@ fn validate_method_callable(
 ) -> Result<(), String> {
     if method.flags.is_abstract {
         return Err(format!(
-            "E_PHP_VM_ABSTRACT_METHOD_CALL: method {}::{} is abstract",
-            class.name, method.name
+            "E_PHP_VM_ABSTRACT_METHOD_CALL: Cannot call abstract method {}::{}()",
+            class.display_name, method.name
         ));
     }
     if method.flags.is_private {
         let scope = current_scope_class(compiled, stack);
         if scope.as_deref() != Some(normalize_class_name(&class.name).as_str()) {
             return Err(format!(
-                "E_PHP_VM_PRIVATE_METHOD_ACCESS: method {}::{} is private",
-                class.name, method.name
+                "E_PHP_VM_PRIVATE_METHOD_ACCESS: Call to private method {}::{}() from {}",
+                class.display_name,
+                method.name,
+                scope_description(scope.as_deref())
             ));
         }
     }
     if method.flags.is_protected {
-        let Some(scope) = current_scope_class(compiled, stack) else {
+        let scope = current_scope_class(compiled, stack);
+        let allowed = scope.as_deref().is_some_and(|scope| {
+            class_is_or_extends(compiled, scope, &class.name).unwrap_or(false)
+        });
+        if !allowed {
             return Err(format!(
-                "E_PHP_VM_PROTECTED_METHOD_ACCESS: method {}::{} is protected",
-                class.name, method.name
-            ));
-        };
-        if !class_is_or_extends(compiled, &scope, &class.name)? {
-            return Err(format!(
-                "E_PHP_VM_PROTECTED_METHOD_ACCESS: method {}::{} is protected",
-                class.name, method.name
+                "E_PHP_VM_PROTECTED_METHOD_ACCESS: Call to protected method {}::{}() from {}",
+                class.display_name,
+                method.name,
+                scope_description(scope.as_deref())
             ));
         }
     }
     Ok(())
+}
+
+/// Renders the calling scope for access-violation messages: PHP says "global
+/// scope" outside a class and "scope <Class>" inside one.
+fn scope_description(scope: Option<&str>) -> String {
+    match scope {
+        Some(scope) => format!("scope {scope}"),
+        None => "global scope".to_owned(),
+    }
 }
 
 fn lookup_method_in_hierarchy<'a>(
@@ -21913,6 +21975,9 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",
         "E_PHP_VM_STRING_OFFSET_TYPE" => "TypeError",
+        "E_PHP_VM_PRIVATE_METHOD_ACCESS"
+        | "E_PHP_VM_PROTECTED_METHOD_ACCESS"
+        | "E_PHP_VM_ABSTRACT_METHOD_CALL" => "Error",
         _ => return None,
     };
     let message = diagnostic
@@ -26403,18 +26468,24 @@ mod tests {
             "<?php class Secret { private function hidden() { return 1; } } (new Secret())->hidden();",
         );
         assert_eq!(private.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(
-            private.diagnostics[0].id(),
-            "E_PHP_VM_PRIVATE_METHOD_ACCESS"
+        assert!(
+            private.output.to_string_lossy().contains(
+                "Uncaught Error: Call to private method Secret::hidden() from global scope"
+            ),
+            "{}",
+            private.output.to_string_lossy()
         );
 
         let protected = execute_source(
             "<?php class Secret { protected function hidden() { return 1; } } (new Secret())->hidden();",
         );
         assert_eq!(protected.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(
-            protected.diagnostics[0].id(),
-            "E_PHP_VM_PROTECTED_METHOD_ACCESS"
+        assert!(
+            protected.output.to_string_lossy().contains(
+                "Uncaught Error: Call to protected method Secret::hidden() from global scope"
+            ),
+            "{}",
+            protected.output.to_string_lossy()
         );
 
         let private_property = execute_source(
@@ -27779,9 +27850,12 @@ echo perf_jit_unstable_types_debug(4), "\n";
             },
         );
         assert_eq!(private.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(
-            private.diagnostics[0].id(),
-            "E_PHP_VM_PRIVATE_METHOD_ACCESS"
+        assert!(
+            private.output.to_string_lossy().contains(
+                "Uncaught Error: Call to private method PerfMethodPrivate::secret() from global scope"
+            ),
+            "{}",
+            private.output.to_string_lossy()
         );
     }
 
