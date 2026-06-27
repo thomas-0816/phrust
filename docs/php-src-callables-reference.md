@@ -1,0 +1,4749 @@
+# PHP callables from php-src stubs — phrust coverage
+
+Generated from `*.stub.php` files for PHP `8.5.7` at commit `35eab8c08bc5`.
+
+Every callable carries two **independent** position-encoded flags `[impl][test]`:
+
+| Badge | Meaning |
+| --- | --- |
+| `✅🧪` | in phrust's static registry **and** exercised by a passing test — solidly done |
+| `·🧪` | exercised by a passing test but **not** in the static registry — runtime supports it, introspection under-reports (e.g. base `Exception`, array-pointer fns) |
+| `✅·` | registered but **no test** found in the corpus — verify |
+| `··` | no evidence in either source |
+
+### How the flags are derived (heuristic)
+
+- **impl — functions:** name is present in phrust's runtime builtin dispatch table (`BuiltinRegistry`, via `dump_stdlib_registry`). This is what phrust can actually call.
+- **impl — methods:** the owning class is in phrust's `ExtensionRegistry` class descriptors. This is **class-level and known to under-report**: phrust functionally supports several classes it does not register (base `Exception`/`Error`/`Throwable`, `ReflectionClass`, `Fiber`, …), so those methods show as `·🧪`. Treat the **test** flag as the stronger "works in phrust" signal for methods.
+- **test:** the name is exercised in a **passing** upstream PHPT (PHP code sections of the 2,287 tests phrust passes in the latest committed full run) or in a phrust fixture / generated PHPT. Functions: `name(` appears. Methods: a verbatim `Class::method(`, or an instance `->method(` call with the class referenced **in the same file**. Name-occurrence based, so it can over- or under-count at the margins.
+
+## Summary
+
+| Kind | Total | Implemented | Tested | Impl + Tested |
+| --- | ---: | ---: | ---: | ---: |
+| Functions | 2274 | 335 | 312 | 298 |
+| Methods | 2214 | 315 | 96 | 43 |
+| **All** | **4488** | **650** | **408** | **341** |
+
+## Coverage by module (rows with any coverage)
+
+| Module | Total | Impl | Tested | Impl+Test |
+| --- | ---: | ---: | ---: | ---: |
+| ext/standard | 557 | 266 | 245 | 240 |
+| ext/spl | 387 | 218 | 38 | 38 |
+| Zend | 163 | 56 | 66 | 39 |
+| ext/date | 136 | 83 | 5 | 5 |
+| ext/reflection | 280 | 0 | 32 | 0 |
+| ext/pcre | 11 | 9 | 7 | 7 |
+| ext/tokenizer | 8 | 8 | 4 | 4 |
+| ext/json | 6 | 6 | 5 | 5 |
+| ext/gettext | 10 | 0 | 2 | 0 |
+| ext/hash | 24 | 2 | 1 | 1 |
+| ext/random | 41 | 2 | 2 | 2 |
+| ext/dom | 313 | 0 | 1 | 0 |
+
+> Modules with zero impl and zero tested callables are omitted from this table but still listed in full below.
+
+---
+
+## Zend (`163`) — impl `56`, tested `66`
+
+- ·· `public function AllowDynamicProperties::__construct()` — `Zend/zend_attributes.stub.php:41`
+- ✅· `public function ArrayAccess::offsetExists(mixed $offset): bool` — `Zend/zend_interfaces.stub.php:34`
+- ✅· `public function ArrayAccess::offsetGet(mixed $offset): mixed` — `Zend/zend_interfaces.stub.php:40`
+- ✅· `public function ArrayAccess::offsetSet(mixed $offset, mixed $value): void` — `Zend/zend_interfaces.stub.php:43`
+- ✅· `public function ArrayAccess::offsetUnset(mixed $offset): void` — `Zend/zend_interfaces.stub.php:46`
+- ·· `public function Attribute::__construct(int $flags = Attribute::TARGET_ALL)` — `Zend/zend_attributes.stub.php:29`
+- ·· `public static function BackedEnum::from(int|string $value): static` — `Zend/zend_enum.stub.php:12`
+- ·· `public static function BackedEnum::tryFrom(int|string $value): ?static` — `Zend/zend_enum.stub.php:14`
+- ·· `function class_alias(string $class, string $alias, bool $autoload = true): bool` — `Zend/zend_builtin_functions.stub.php:99`
+- ✅🧪 `function class_exists(string $class, bool $autoload = true): bool` — `Zend/zend_builtin_functions.stub.php:89`
+- ·🧪 `function clone(object $object, array $withProperties = []): object` — `Zend/zend_builtin_functions.stub.php:11`
+- ✅🧪 `private function Closure::__construct()` — `Zend/zend_closures.stub.php:11`
+- ✅· `public static function Closure::bind( Closure $closure, ?object $newThis, object|string|null $newScope = "static" ): ?Closure` — `Zend/zend_closures.stub.php:13`
+- ✅· `public function Closure::bindTo(?object $newThis, object|string|null $newScope = "static"): ?Closure` — `Zend/zend_closures.stub.php:19`
+- ✅· `public function Closure::call(object $newThis, mixed ...$args): mixed` — `Zend/zend_closures.stub.php:21`
+- ✅· `public static function Closure::fromCallable(callable $callback): Closure` — `Zend/zend_closures.stub.php:23`
+- ✅· `public static function Closure::getCurrent(): Closure` — `Zend/zend_closures.stub.php:25`
+- ✅· `public function Countable::count(): int` — `Zend/zend_interfaces.stub.php:61`
+- ·· `function debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0): array` — `Zend/zend_builtin_functions.stub.php:189`
+- ·· `function debug_print_backtrace(int $options = 0, int $limit = 0): void` — `Zend/zend_builtin_functions.stub.php:191`
+- ·🧪 `function define(string $constant_name, mixed $value, bool $case_insensitive = false): bool` — `Zend/zend_builtin_functions.stub.php:44`
+- ✅🧪 `function defined(string $constant_name): bool` — `Zend/zend_builtin_functions.stub.php:46`
+- ·· `public function Deprecated::__construct(?string $message = null, ?string $since = null)` — `Zend/zend_attributes.stub.php:87`
+- ·🧪 `function die(string|int $status = 0): never` — `Zend/zend_builtin_functions.stub.php:16`
+- ✅· `function enum_exists(string $enum, bool $autoload = true): bool` — `Zend/zend_builtin_functions.stub.php:95`
+- ·· `private function Error::__clone(): void` — `Zend/zend_exceptions.stub.php:103`
+- ·🧪 `public function Error::__construct(string $message = "", int $code = 0, ?Throwable $previous = null)` — `Zend/zend_exceptions.stub.php:106`
+- ·· `public function Error::__toString(): string` — `Zend/zend_exceptions.stub.php:139`
+- ·· `public function Error::__wakeup(): void` — `Zend/zend_exceptions.stub.php:112`
+- ·🧪 `final public function Error::getCode()` — `Zend/zend_exceptions.stub.php:121`
+- ·🧪 `final public function Error::getFile(): string` — `Zend/zend_exceptions.stub.php:124`
+- ·🧪 `final public function Error::getLine(): int` — `Zend/zend_exceptions.stub.php:127`
+- ·🧪 `final public function Error::getMessage(): string` — `Zend/zend_exceptions.stub.php:115`
+- ·· `final public function Error::getPrevious(): ?Throwable` — `Zend/zend_exceptions.stub.php:133`
+- ·· `final public function Error::getTrace(): array` — `Zend/zend_exceptions.stub.php:130`
+- ·· `final public function Error::getTraceAsString(): string` — `Zend/zend_exceptions.stub.php:136`
+- ✅🧪 `function error_reporting(?int $error_level = null): int` — `Zend/zend_builtin_functions.stub.php:42`
+- ·· `public function ErrorException::__construct( string $message = "", int $code = 0, int $severity = E_ERROR, ?string $filename = null, ?int $line = null, ?Throwable $previous = null )` — `Zend/zend_exceptions.stub.php:72`
+- ·· `final public function ErrorException::getSeverity(): int` — `Zend/zend_exceptions.stub.php:81`
+- ·· `private function Exception::__clone(): void` — `Zend/zend_exceptions.stub.php:43`
+- ·🧪 `public function Exception::__construct(string $message = "", int $code = 0, ?Throwable $previous = null)` — `Zend/zend_exceptions.stub.php:45`
+- ·🧪 `public function Exception::__toString(): string` — `Zend/zend_exceptions.stub.php:65`
+- ·· `public function Exception::__wakeup(): void` — `Zend/zend_exceptions.stub.php:48`
+- ·· `final public function Exception::getCode()` — `Zend/zend_exceptions.stub.php:53`
+- ·· `final public function Exception::getFile(): string` — `Zend/zend_exceptions.stub.php:55`
+- ·🧪 `final public function Exception::getLine(): int` — `Zend/zend_exceptions.stub.php:57`
+- ·🧪 `final public function Exception::getMessage(): string` — `Zend/zend_exceptions.stub.php:50`
+- ·· `final public function Exception::getPrevious(): ?Throwable` — `Zend/zend_exceptions.stub.php:61`
+- ·· `final public function Exception::getTrace(): array` — `Zend/zend_exceptions.stub.php:59`
+- ·· `final public function Exception::getTraceAsString(): string` — `Zend/zend_exceptions.stub.php:63`
+- ·🧪 `function exit(string|int $status = 0): never` — `Zend/zend_builtin_functions.stub.php:13`
+- ✅🧪 `function extension_loaded(string $extension): bool` — `Zend/zend_builtin_functions.stub.php:193`
+- ·🧪 `public function Fiber::__construct(callable $callback)` — `Zend/zend_fibers.stub.php:11`
+- ·· `public static function Fiber::getCurrent(): ?Fiber` — `Zend/zend_fibers.stub.php:29`
+- ·🧪 `public function Fiber::getReturn(): mixed` — `Zend/zend_fibers.stub.php:27`
+- ·🧪 `public function Fiber::isRunning(): bool` — `Zend/zend_fibers.stub.php:23`
+- ·🧪 `public function Fiber::isStarted(): bool` — `Zend/zend_fibers.stub.php:19`
+- ·🧪 `public function Fiber::isSuspended(): bool` — `Zend/zend_fibers.stub.php:21`
+- ·🧪 `public function Fiber::isTerminated(): bool` — `Zend/zend_fibers.stub.php:25`
+- ·🧪 `public function Fiber::resume(mixed $value = null): mixed` — `Zend/zend_fibers.stub.php:15`
+- ·🧪 `public function Fiber::start(mixed ...$args): mixed` — `Zend/zend_fibers.stub.php:13`
+- ·🧪 `public static function Fiber::suspend(mixed $value = null): mixed` — `Zend/zend_fibers.stub.php:31`
+- ·🧪 `public function Fiber::throw(Throwable $exception): mixed` — `Zend/zend_fibers.stub.php:17`
+- ·· `public function FiberError::__construct()` — `Zend/zend_fibers.stub.php:36`
+- ✅🧪 `function func_get_arg(int $position): mixed` — `Zend/zend_builtin_functions.stub.php:23`
+- ✅🧪 `function func_get_args(): array` — `Zend/zend_builtin_functions.stub.php:26`
+- ✅🧪 `function func_num_args(): int` — `Zend/zend_builtin_functions.stub.php:21`
+- ✅🧪 `function function_exists(string $function): bool` — `Zend/zend_builtin_functions.stub.php:97`
+- ·🧪 `function gc_collect_cycles(): int` — `Zend/zend_builtin_functions.stub.php:207`
+- ·· `function gc_disable(): void` — `Zend/zend_builtin_functions.stub.php:213`
+- ·· `function gc_enable(): void` — `Zend/zend_builtin_functions.stub.php:211`
+- ·· `function gc_enabled(): bool` — `Zend/zend_builtin_functions.stub.php:209`
+- ·· `function gc_mem_caches(): int` — `Zend/zend_builtin_functions.stub.php:205`
+- ·🧪 `function gc_status(): array` — `Zend/zend_builtin_functions.stub.php:219`
+- ·· `public function Generator::__debugInfo(): array` — `Zend/zend_generators.stub.php:27`
+- ·· `public function Generator::current(): mixed` — `Zend/zend_generators.stub.php:15`
+- ·· `public function Generator::getReturn(): mixed` — `Zend/zend_generators.stub.php:25`
+- ·· `public function Generator::key(): mixed` — `Zend/zend_generators.stub.php:17`
+- ·· `public function Generator::next(): void` — `Zend/zend_generators.stub.php:19`
+- ·· `public function Generator::rewind(): void` — `Zend/zend_generators.stub.php:11`
+- ·· `public function Generator::send(mixed $value): mixed` — `Zend/zend_generators.stub.php:21`
+- ·· `public function Generator::throw(Throwable $exception): mixed` — `Zend/zend_generators.stub.php:23`
+- ·· `public function Generator::valid(): bool` — `Zend/zend_generators.stub.php:13`
+- ·· `function get_called_class(): string` — `Zend/zend_builtin_functions.stub.php:50`
+- ✅🧪 `function get_class(object $object = UNKNOWN): string` — `Zend/zend_builtin_functions.stub.php:48`
+- ✅🧪 `function get_class_methods(object|string $object_or_class): array` — `Zend/zend_builtin_functions.stub.php:74`
+- ✅🧪 `function get_class_vars(string $class): array` — `Zend/zend_builtin_functions.stub.php:64`
+- ✅🧪 `function get_declared_classes(): array` — `Zend/zend_builtin_functions.stub.php:136`
+- ✅🧪 `function get_declared_interfaces(): array` — `Zend/zend_builtin_functions.stub.php:148`
+- ✅· `function get_declared_traits(): array` — `Zend/zend_builtin_functions.stub.php:142`
+- ·· `function get_defined_constants(bool $categorize = false): array` — `Zend/zend_builtin_functions.stub.php:183`
+- ·· `function get_defined_functions(bool $exclude_disabled = true): array` — `Zend/zend_builtin_functions.stub.php:154`
+- ·· `function get_defined_vars(): array` — `Zend/zend_builtin_functions.stub.php:160`
+- ·· `function get_error_handler(): ?callable` — `Zend/zend_builtin_functions.stub.php:123`
+- ·· `function get_exception_handler(): ?callable` — `Zend/zend_builtin_functions.stub.php:130`
+- ·· `function get_extension_funcs(string $extension): array|false` — `Zend/zend_builtin_functions.stub.php:199`
+- ·· `function get_included_files(): array` — `Zend/zend_builtin_functions.stub.php:105`
+- ✅🧪 `function get_loaded_extensions(bool $zend_extensions = false): array` — `Zend/zend_builtin_functions.stub.php:177`
+- ✅· `function get_mangled_object_vars(object $object): array` — `Zend/zend_builtin_functions.stub.php:68`
+- ✅🧪 `function get_object_vars(object $object): array` — `Zend/zend_builtin_functions.stub.php:66`
+- ✅🧪 `function get_parent_class(object|string $object_or_class = UNKNOWN): string|false` — `Zend/zend_builtin_functions.stub.php:52`
+- ·· `function get_required_files(): array` — `Zend/zend_builtin_functions.stub.php:111`
+- ✅🧪 `function get_resource_id($resource): int` — `Zend/zend_builtin_functions.stub.php:169`
+- ✅🧪 `function get_resource_type($resource): string` — `Zend/zend_builtin_functions.stub.php:166`
+- ·· `function get_resources(?string $type = null): array` — `Zend/zend_builtin_functions.stub.php:171`
+- ✅🧪 `function interface_exists(string $interface, bool $autoload = true): bool` — `Zend/zend_builtin_functions.stub.php:91`
+- ·· `private function InternalIterator::__construct()` — `Zend/zend_interfaces.stub.php:74`
+- ·· `public function InternalIterator::current(): mixed` — `Zend/zend_interfaces.stub.php:76`
+- ·· `public function InternalIterator::key(): mixed` — `Zend/zend_interfaces.stub.php:78`
+- ·· `public function InternalIterator::next(): void` — `Zend/zend_interfaces.stub.php:80`
+- ·· `public function InternalIterator::rewind(): void` — `Zend/zend_interfaces.stub.php:84`
+- ·· `public function InternalIterator::valid(): bool` — `Zend/zend_interfaces.stub.php:82`
+- ·🧪 `function is_a(mixed $object_or_class, string $class, bool $allow_string = false): bool` — `Zend/zend_builtin_functions.stub.php:58`
+- ✅🧪 `function is_subclass_of(mixed $object_or_class, string $class, bool $allow_string = true): bool` — `Zend/zend_builtin_functions.stub.php:55`
+- ✅🧪 `public function Iterator::current(): mixed` — `Zend/zend_interfaces.stub.php:16`
+- ✅🧪 `public function Iterator::key(): mixed` — `Zend/zend_interfaces.stub.php:22`
+- ✅🧪 `public function Iterator::next(): void` — `Zend/zend_interfaces.stub.php:19`
+- ✅🧪 `public function Iterator::rewind(): void` — `Zend/zend_interfaces.stub.php:28`
+- ✅🧪 `public function Iterator::valid(): bool` — `Zend/zend_interfaces.stub.php:25`
+- ✅🧪 `public function IteratorAggregate::getIterator(): Traversable` — `Zend/zend_interfaces.stub.php:10`
+- ✅🧪 `function method_exists($object_or_class, string $method): bool` — `Zend/zend_builtin_functions.stub.php:77`
+- ·· `public function NoDiscard::__construct(?string $message = null)` — `Zend/zend_attributes.stub.php:98`
+- ·· `public function Override::__construct()` — `Zend/zend_attributes.stub.php:74`
+- ✅🧪 `function property_exists($object_or_class, string $property): bool` — `Zend/zend_builtin_functions.stub.php:83`
+- ✅🧪 `function restore_error_handler(): true` — `Zend/zend_builtin_functions.stub.php:121`
+- ✅🧪 `function restore_exception_handler(): true` — `Zend/zend_builtin_functions.stub.php:128`
+- ·· `public function ReturnTypeWillChange::__construct()` — `Zend/zend_attributes.stub.php:35`
+- ·· `public function SensitiveParameter::__construct()` — `Zend/zend_attributes.stub.php:50`
+- ·· `public function SensitiveParameterValue::__construct(mixed $value)` — `Zend/zend_attributes.stub.php:61`
+- ·· `public function SensitiveParameterValue::__debugInfo(): array` — `Zend/zend_attributes.stub.php:65`
+- ·· `public function SensitiveParameterValue::getValue(): mixed` — `Zend/zend_attributes.stub.php:63`
+- ✅· `public function Serializable::serialize()` — `Zend/zend_interfaces.stub.php:52`
+- ✅· `public function Serializable::unserialize(string $data)` — `Zend/zend_interfaces.stub.php:55`
+- ✅🧪 `function set_error_handler(?callable $callback, int $error_levels = E_ALL)` — `Zend/zend_builtin_functions.stub.php:119`
+- ✅🧪 `function set_exception_handler(?callable $callback)` — `Zend/zend_builtin_functions.stub.php:126`
+- ✅🧪 `function strcasecmp(string $string1, string $string2): int` — `Zend/zend_builtin_functions.stub.php:37`
+- ✅🧪 `function strcmp(string $string1, string $string2): int` — `Zend/zend_builtin_functions.stub.php:31`
+- ·· `public function Stringable::__toString(): string` — `Zend/zend_interfaces.stub.php:66`
+- ✅🧪 `function strlen(string $string): int` — `Zend/zend_builtin_functions.stub.php:28`
+- ✅🧪 `function strncasecmp(string $string1, string $string2, int $length): int` — `Zend/zend_builtin_functions.stub.php:40`
+- ✅🧪 `function strncmp(string $string1, string $string2, int $length): int` — `Zend/zend_builtin_functions.stub.php:34`
+- ·· `public function Throwable::getCode()` — `Zend/zend_exceptions.stub.php:12`
+- ·· `public function Throwable::getFile(): string` — `Zend/zend_exceptions.stub.php:14`
+- ·· `public function Throwable::getLine(): int` — `Zend/zend_exceptions.stub.php:16`
+- ·🧪 `public function Throwable::getMessage(): string` — `Zend/zend_exceptions.stub.php:9`
+- ·· `public function Throwable::getPrevious(): ?Throwable` — `Zend/zend_exceptions.stub.php:20`
+- ·· `public function Throwable::getTrace(): array` — `Zend/zend_exceptions.stub.php:18`
+- ·· `public function Throwable::getTraceAsString(): string` — `Zend/zend_exceptions.stub.php:22`
+- ✅· `function trait_exists(string $trait, bool $autoload = true): bool` — `Zend/zend_builtin_functions.stub.php:93`
+- ✅🧪 `function trigger_error(string $message, int $error_level = E_USER_NOTICE): true` — `Zend/zend_builtin_functions.stub.php:113`
+- ·· `public static function UnitEnum::cases(): array` — `Zend/zend_enum.stub.php:7`
+- ✅· `function user_error(string $message, int $error_level = E_USER_NOTICE): true` — `Zend/zend_builtin_functions.stub.php:116`
+- ·· `public function WeakMap::count(): int` — `Zend/zend_weakrefs.stub.php:36`
+- ·· `public function WeakMap::getIterator(): Iterator` — `Zend/zend_weakrefs.stub.php:38`
+- ·· `public function WeakMap::offsetExists($object): bool` — `Zend/zend_weakrefs.stub.php:31`
+- ·· `public function WeakMap::offsetGet($object): mixed` — `Zend/zend_weakrefs.stub.php:25`
+- ·· `public function WeakMap::offsetSet($object, mixed $value): void` — `Zend/zend_weakrefs.stub.php:28`
+- ·· `public function WeakMap::offsetUnset($object): void` — `Zend/zend_weakrefs.stub.php:34`
+- ·· `public function WeakReference::__construct()` — `Zend/zend_weakrefs.stub.php:11`
+- ·· `public static function WeakReference::create(object $object): WeakReference` — `Zend/zend_weakrefs.stub.php:13`
+- ·· `public function WeakReference::get(): ?object` — `Zend/zend_weakrefs.stub.php:15`
+- ·· `function zend_thread_id(): int` — `Zend/zend_builtin_functions.stub.php:202`
+- ·· `function zend_version(): string` — `Zend/zend_builtin_functions.stub.php:19`
+
+## ext/bcmath (`31`) — impl `0`, tested `0`
+
+- ·· `function bcadd(string $num1, string $num2, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:8`
+- ·· `function bcceil(string $num): string` — `ext/bcmath/bcmath.stub.php:45`
+- ·· `function bccomp(string $num1, string $num2, ?int $scale = null): int` — `ext/bcmath/bcmath.stub.php:37`
+- ·· `function bcdiv(string $num1, string $num2, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:17`
+- ·· `function bcdivmod(string $num1, string $num2, ?int $scale = null): array` — `ext/bcmath/bcmath.stub.php:26`
+- ·· `function bcfloor(string $num): string` — `ext/bcmath/bcmath.stub.php:42`
+- ·· `public function BcMath\Number::__construct(string|int $num)` — `ext/bcmath/bcmath.stub.php:61`
+- ·· `public function BcMath\Number::__serialize(): array` — `ext/bcmath/bcmath.stub.php:92`
+- ·· `public function BcMath\Number::__toString(): string` — `ext/bcmath/bcmath.stub.php:90`
+- ·· `public function BcMath\Number::__unserialize(array $data): void` — `ext/bcmath/bcmath.stub.php:94`
+- ·· `public function BcMath\Number::add(Number|string|int $num, ?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:63`
+- ·· `public function BcMath\Number::ceil(): Number` — `ext/bcmath/bcmath.stub.php:84`
+- ·· `public function BcMath\Number::compare(Number|string|int $num, ?int $scale = null): int` — `ext/bcmath/bcmath.stub.php:88`
+- ·· `public function BcMath\Number::div(Number|string|int $num, ?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:69`
+- ·· `public function BcMath\Number::divmod(Number|string|int $num, ?int $scale = null): array` — `ext/bcmath/bcmath.stub.php:74`
+- ·· `public function BcMath\Number::floor(): Number` — `ext/bcmath/bcmath.stub.php:82`
+- ·· `public function BcMath\Number::mod(Number|string|int $num, ?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:71`
+- ·· `public function BcMath\Number::mul(Number|string|int $num, ?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:67`
+- ·· `public function BcMath\Number::pow(Number|string|int $exponent, ?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:78`
+- ·· `public function BcMath\Number::powmod(Number|string|int $exponent, Number|string|int $modulus, ?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:76`
+- ·· `public function BcMath\Number::round(int $precision = 0, \RoundingMode $mode = \RoundingMode::HalfAwayFromZero): Number` — `ext/bcmath/bcmath.stub.php:86`
+- ·· `public function BcMath\Number::sqrt(?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:80`
+- ·· `public function BcMath\Number::sub(Number|string|int $num, ?int $scale = null): Number` — `ext/bcmath/bcmath.stub.php:65`
+- ·· `function bcmod(string $num1, string $num2, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:20`
+- ·· `function bcmul(string $num1, string $num2, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:14`
+- ·· `function bcpow(string $num, string $exponent, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:32`
+- ·· `function bcpowmod(string $num, string $exponent, string $modulus, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:29`
+- ·· `function bcround(string $num, int $precision = 0, RoundingMode $mode = RoundingMode::HalfAwayFromZero): string` — `ext/bcmath/bcmath.stub.php:48`
+- ·· `function bcscale(?int $scale = null): int` — `ext/bcmath/bcmath.stub.php:39`
+- ·· `function bcsqrt(string $num, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:35`
+- ·· `function bcsub(string $num1, string $num2, ?int $scale = null): string` — `ext/bcmath/bcmath.stub.php:11`
+
+## ext/bz2 (`10`) — impl `0`, tested `0`
+
+- ·· `function bzclose($bz): bool` — `ext/bz2/bz2.stub.php:30`
+- ·· `function bzcompress(string $data, int $block_size = 4, int $work_factor = 0): string|int` — `ext/bz2/bz2.stub.php:45`
+- ·· `function bzdecompress(string $data, bool $use_less_memory = false): string|int|false` — `ext/bz2/bz2.stub.php:47`
+- ·· `function bzerrno($bz): int` — `ext/bz2/bz2.stub.php:33`
+- ·· `function bzerror($bz): array` — `ext/bz2/bz2.stub.php:43`
+- ·· `function bzerrstr($bz): string` — `ext/bz2/bz2.stub.php:36`
+- ·· `function bzflush($bz): bool` — `ext/bz2/bz2.stub.php:24`
+- ·· `function bzopen($file, string $mode)` — `ext/bz2/bz2.stub.php:9`
+- ·· `function bzread($bz, int $length = 1024): string|false` — `ext/bz2/bz2.stub.php:12`
+- ·· `function bzwrite($bz, string $data, ?int $length = null): int|false` — `ext/bz2/bz2.stub.php:18`
+
+## ext/calendar (`18`) — impl `0`, tested `0`
+
+- ·· `function cal_days_in_month(int $calendar, int $month, int $year): int` — `ext/calendar/calendar.stub.php:115`
+- ·· `function cal_from_jd(int $julian_day, int $calendar): array` — `ext/calendar/calendar.stub.php:121`
+- ·· `function cal_info(int $calendar = -1): array` — `ext/calendar/calendar.stub.php:127`
+- ·· `function cal_to_jd(int $calendar, int $month, int $day, int $year): int` — `ext/calendar/calendar.stub.php:129`
+- ·· `function easter_date(?int $year = null, int $mode = CAL_EASTER_DEFAULT): int` — `ext/calendar/calendar.stub.php:131`
+- ·· `function easter_days(?int $year = null, int $mode = CAL_EASTER_DEFAULT): int` — `ext/calendar/calendar.stub.php:133`
+- ·· `function frenchtojd(int $month, int $day, int $year): int` — `ext/calendar/calendar.stub.php:135`
+- ·· `function gregoriantojd(int $month, int $day, int $year): int` — `ext/calendar/calendar.stub.php:137`
+- ·· `function jddayofweek(int $julian_day, int $mode = CAL_DOW_DAYNO): int|string` — `ext/calendar/calendar.stub.php:139`
+- ·· `function jdmonthname(int $julian_day, int $mode): string` — `ext/calendar/calendar.stub.php:141`
+- ·· `function jdtofrench(int $julian_day): string` — `ext/calendar/calendar.stub.php:143`
+- ·· `function jdtogregorian(int $julian_day): string` — `ext/calendar/calendar.stub.php:145`
+- ·· `function jdtojewish(int $julian_day, bool $hebrew = false, int $flags = 0): string` — `ext/calendar/calendar.stub.php:147`
+- ·· `function jdtojulian(int $julian_day): string` — `ext/calendar/calendar.stub.php:149`
+- ·· `function jdtounix(int $julian_day): int` — `ext/calendar/calendar.stub.php:151`
+- ·· `function jewishtojd(int $month, int $day, int $year): int` — `ext/calendar/calendar.stub.php:153`
+- ·· `function juliantojd(int $month, int $day, int $year): int` — `ext/calendar/calendar.stub.php:155`
+- ·· `function unixtojd(?int $timestamp = null): int|false` — `ext/calendar/calendar.stub.php:157`
+
+## ext/com_dotnet (`43`) — impl `0`, tested `0`
+
+- ·· `public function com::__construct(string $module_name, array|string|null $server_name = null, int $codepage = CP_ACP, string $typelib = "")` — `ext/com_dotnet/com_extension.stub.php:363`
+- ·· `function com_create_guid(): string|false` — `ext/com_dotnet/com_extension.stub.php:345`
+- ·· `function com_event_sink(variant $variant, object $sink_object, array|string|null $sink_interface = null): bool` — `ext/com_dotnet/com_extension.stub.php:347`
+- ·· `function com_get_active_object(string $prog_id, ?int $codepage = null): variant` — `ext/com_dotnet/com_extension.stub.php:343`
+- ·· `function com_load_typelib(string $typelib, bool $case_insensitive = true): bool` — `ext/com_dotnet/com_extension.stub.php:353`
+- ·· `function com_message_pump(int $timeout_milliseconds = 0): bool` — `ext/com_dotnet/com_extension.stub.php:351`
+- ·· `function com_print_typeinfo(variant|string $variant, ?string $dispatch_interface = null, bool $display_sink = false): bool` — `ext/com_dotnet/com_extension.stub.php:349`
+- ·· `public function COMPersistHelper::__construct(?variant $variant = null)` — `ext/com_dotnet/com_persist.stub.php:7`
+- ·· `public function COMPersistHelper::GetCurFileName(): string|false` — `ext/com_dotnet/com_persist.stub.php:9`
+- ·· `public function COMPersistHelper::GetMaxStreamSize(): int` — `ext/com_dotnet/com_persist.stub.php:15`
+- ·· `public function COMPersistHelper::InitNew(): bool` — `ext/com_dotnet/com_persist.stub.php:17`
+- ·· `public function COMPersistHelper::LoadFromFile(string $filename, int $flags = 0): bool` — `ext/com_dotnet/com_persist.stub.php:13`
+- ·· `public function COMPersistHelper::LoadFromStream($stream): bool` — `ext/com_dotnet/com_persist.stub.php:20`
+- ·· `public function COMPersistHelper::SaveToFile(?string $filename, bool $remember = true): bool` — `ext/com_dotnet/com_persist.stub.php:11`
+- ·· `public function COMPersistHelper::SaveToStream($stream): bool` — `ext/com_dotnet/com_persist.stub.php:23`
+- ·· `public function dotnet::__construct(string $assembly_name, string $datatype_name, int $codepage = CP_ACP)` — `ext/com_dotnet/com_extension.stub.php:369`
+- ·· `public function variant::__construct(mixed $value = null, int $type = VT_EMPTY, int $codepage = CP_ACP)` — `ext/com_dotnet/com_extension.stub.php:358`
+- ·· `function variant_abs(mixed $value): variant` — `ext/com_dotnet/com_extension.stub.php:319`
+- ·· `function variant_add(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:293`
+- ·· `function variant_and(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:301`
+- ·· `function variant_cast(variant $variant, int $type): variant` — `ext/com_dotnet/com_extension.stub.php:341`
+- ·· `function variant_cat(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:295`
+- ·· `function variant_cmp(mixed $left, mixed $right, int $locale_id = LOCALE_SYSTEM_DEFAULT, int $flags = 0): int` — `ext/com_dotnet/com_extension.stub.php:331`
+- ·· `function variant_date_from_timestamp(int $timestamp): variant` — `ext/com_dotnet/com_extension.stub.php:335`
+- ·· `function variant_date_to_timestamp(variant $variant): ?int` — `ext/com_dotnet/com_extension.stub.php:333`
+- ·· `function variant_div(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:303`
+- ·· `function variant_eqv(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:305`
+- ·· `function variant_fix(mixed $value): variant` — `ext/com_dotnet/com_extension.stub.php:321`
+- ·· `function variant_get_type(variant $variant): int` — `ext/com_dotnet/com_extension.stub.php:337`
+- ·· `function variant_idiv(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:307`
+- ·· `function variant_imp(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:309`
+- ·· `function variant_int(mixed $value): variant` — `ext/com_dotnet/com_extension.stub.php:323`
+- ·· `function variant_mod(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:311`
+- ·· `function variant_mul(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:299`
+- ·· `function variant_neg(mixed $value): variant` — `ext/com_dotnet/com_extension.stub.php:325`
+- ·· `function variant_not(mixed $value): variant` — `ext/com_dotnet/com_extension.stub.php:327`
+- ·· `function variant_or(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:313`
+- ·· `function variant_pow(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:315`
+- ·· `function variant_round(mixed $value, int $decimals): ?variant` — `ext/com_dotnet/com_extension.stub.php:329`
+- ·· `function variant_set(variant $variant, mixed $value): void` — `ext/com_dotnet/com_extension.stub.php:291`
+- ·· `function variant_set_type(variant $variant, int $type): void` — `ext/com_dotnet/com_extension.stub.php:339`
+- ·· `function variant_sub(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:297`
+- ·· `function variant_xor(mixed $left, mixed $right): variant` — `ext/com_dotnet/com_extension.stub.php:317`
+
+## ext/ctype (`11`) — impl `0`, tested `0`
+
+- ·· `function ctype_alnum(mixed $text): bool` — `ext/ctype/ctype.stub.php:5`
+- ·· `function ctype_alpha(mixed $text): bool` — `ext/ctype/ctype.stub.php:7`
+- ·· `function ctype_cntrl(mixed $text): bool` — `ext/ctype/ctype.stub.php:9`
+- ·· `function ctype_digit(mixed $text): bool` — `ext/ctype/ctype.stub.php:11`
+- ·· `function ctype_graph(mixed $text): bool` — `ext/ctype/ctype.stub.php:15`
+- ·· `function ctype_lower(mixed $text): bool` — `ext/ctype/ctype.stub.php:13`
+- ·· `function ctype_print(mixed $text): bool` — `ext/ctype/ctype.stub.php:17`
+- ·· `function ctype_punct(mixed $text): bool` — `ext/ctype/ctype.stub.php:19`
+- ·· `function ctype_space(mixed $text): bool` — `ext/ctype/ctype.stub.php:21`
+- ·· `function ctype_upper(mixed $text): bool` — `ext/ctype/ctype.stub.php:23`
+- ·· `function ctype_xdigit(mixed $text): bool` — `ext/ctype/ctype.stub.php:25`
+
+## ext/curl (`42`) — impl `0`, tested `0`
+
+- ·· `function curl_close(CurlHandle $handle): void` — `ext/curl/curl.stub.php:3744`
+- ·· `function curl_copy_handle(CurlHandle $handle): CurlHandle|false` — `ext/curl/curl.stub.php:3747`
+- ·· `function curl_errno(CurlHandle $handle): int` — `ext/curl/curl.stub.php:3749`
+- ·· `function curl_error(CurlHandle $handle): string` — `ext/curl/curl.stub.php:3752`
+- ·· `function curl_escape(CurlHandle $handle, string $string): string|false` — `ext/curl/curl.stub.php:3755`
+- ·· `function curl_exec(CurlHandle $handle): string|bool` — `ext/curl/curl.stub.php:3762`
+- ·· `function curl_file_create(string $filename, ?string $mime_type = null, ?string $posted_filename = null): CURLFile` — `ext/curl/curl.stub.php:3765`
+- ·· `function curl_getinfo(CurlHandle $handle, ?int $option = null): mixed` — `ext/curl/curl.stub.php:3767`
+- ·· `function curl_init(?string $url = null): CurlHandle|false` — `ext/curl/curl.stub.php:3770`
+- ·· `function curl_multi_add_handle(CurlMultiHandle $multi_handle, CurlHandle $handle): int` — `ext/curl/curl.stub.php:3776`
+- ·· `function curl_multi_close(CurlMultiHandle $multi_handle): void` — `ext/curl/curl.stub.php:3780`
+- ·· `function curl_multi_errno(CurlMultiHandle $multi_handle): int` — `ext/curl/curl.stub.php:3782`
+- ·· `function curl_multi_exec(CurlMultiHandle $multi_handle,&$still_running): int` — `ext/curl/curl.stub.php:3785`
+- ·· `function curl_multi_get_handles(CurlMultiHandle $multi_handle): array` — `ext/curl/curl.stub.php:3778`
+- ·· `function curl_multi_getcontent(CurlHandle $handle): ?string` — `ext/curl/curl.stub.php:3787`
+- ·· `function curl_multi_info_read(CurlMultiHandle $multi_handle,&$queued_messages = null): array|false` — `ext/curl/curl.stub.php:3794`
+- ·· `function curl_multi_init(): CurlMultiHandle` — `ext/curl/curl.stub.php:3797`
+- ·· `function curl_multi_remove_handle(CurlMultiHandle $multi_handle, CurlHandle $handle): int` — `ext/curl/curl.stub.php:3799`
+- ·· `function curl_multi_select(CurlMultiHandle $multi_handle, float $timeout = 1.0): int` — `ext/curl/curl.stub.php:3801`
+- ·· `function curl_multi_setopt(CurlMultiHandle $multi_handle, int $option, mixed $value): bool` — `ext/curl/curl.stub.php:3760`
+- ·· `function curl_multi_strerror(int $error_code): ?string` — `ext/curl/curl.stub.php:3804`
+- ·· `function curl_pause(CurlHandle $handle, int $flags): int` — `ext/curl/curl.stub.php:3806`
+- ·· `function curl_reset(CurlHandle $handle): void` — `ext/curl/curl.stub.php:3808`
+- ·· `function curl_setopt(CurlHandle $handle, int $option, mixed $value): bool` — `ext/curl/curl.stub.php:3812`
+- ·· `function curl_setopt_array(CurlHandle $handle, array $options): bool` — `ext/curl/curl.stub.php:3810`
+- ·· `function curl_share_close(CurlShareHandle $share_handle): void` — `ext/curl/curl.stub.php:3815`
+- ·· `function curl_share_errno(CurlShareHandle $share_handle): int` — `ext/curl/curl.stub.php:3817`
+- ·· `function curl_share_init(): CurlShareHandle` — `ext/curl/curl.stub.php:3820`
+- ·· `function curl_share_init_persistent(array $share_options): CurlSharePersistentHandle` — `ext/curl/curl.stub.php:3828`
+- ·· `function curl_share_setopt(CurlShareHandle $share_handle, int $option, mixed $value): bool` — `ext/curl/curl.stub.php:3822`
+- ·· `function curl_share_strerror(int $error_code): ?string` — `ext/curl/curl.stub.php:3825`
+- ·· `function curl_strerror(int $error_code): ?string` — `ext/curl/curl.stub.php:3831`
+- ·· `function curl_unescape(CurlHandle $handle, string $string): string|false` — `ext/curl/curl.stub.php:3758`
+- ·· `function curl_upkeep(CurlHandle $handle): bool` — `ext/curl/curl.stub.php:3773`
+- ·· `function curl_version(): array|false` — `ext/curl/curl.stub.php:3837`
+- ·· `public function CURLFile::__construct(string $filename, ?string $mime_type = null, ?string $posted_filename = null)` — `ext/curl/curl_file.stub.php:12`
+- ·· `public function CURLFile::getFilename(): string` — `ext/curl/curl_file.stub.php:15`
+- ·· `public function CURLFile::getMimeType(): string` — `ext/curl/curl_file.stub.php:18`
+- ·· `public function CURLFile::getPostFilename(): string` — `ext/curl/curl_file.stub.php:21`
+- ·· `public function CURLFile::setMimeType(string $mime_type): void` — `ext/curl/curl_file.stub.php:24`
+- ·· `public function CURLFile::setPostFilename(string $posted_filename): void` — `ext/curl/curl_file.stub.php:27`
+- ·· `public function CURLStringFile::__construct(string $data, string $postname, string $mime = "application/octet-stream")` — `ext/curl/curl_file.stub.php:36`
+
+## ext/date (`136`) — impl `83`, tested `5`
+
+- ·· `function checkdate(int $month, int $day, int $year): bool` — `ext/date/php_date.stub.php:111`
+- ✅🧪 `function date(string $format, ?int $timestamp = null): string` — `ext/date/php_date.stub.php:96`
+- ·· `function date_add(DateTime $object, DateInterval $interval): DateTime` — `ext/date/php_date.stub.php:177`
+- ·· `function date_create(string $datetime = "now", ?DateTimeZone $timezone = null): DateTime|false` — `ext/date/php_date.stub.php:140`
+- ·· `function date_create_from_format( string $format, string $datetime, ?DateTimeZone $timezone = null): DateTime|false` — `ext/date/php_date.stub.php:147`
+- ·· `function date_create_immutable( string $datetime = "now", ?DateTimeZone $timezone = null): DateTimeImmutable|false` — `ext/date/php_date.stub.php:143`
+- ·· `function date_create_immutable_from_format( string $format, string $datetime, ?DateTimeZone $timezone = null): DateTimeImmutable|false` — `ext/date/php_date.stub.php:151`
+- ·· `function date_date_set(DateTime $object, int $year, int $month, int $day): DateTime` — `ext/date/php_date.stub.php:195`
+- ✅· `function date_default_timezone_get(): string` — `ext/date/php_date.stub.php:251`
+- ✅🧪 `function date_default_timezone_set(string $timezoneId): bool` — `ext/date/php_date.stub.php:248`
+- ·· `function date_diff( DateTimeInterface $baseObject, DateTimeInterface $targetObject, bool $absolute = false): DateInterval` — `ext/date/php_date.stub.php:189`
+- ·· `function date_format(DateTimeInterface $object, string $format): string` — `ext/date/php_date.stub.php:173`
+- ·· `function date_get_last_errors(): array|false` — `ext/date/php_date.stub.php:170`
+- ·· `function date_interval_create_from_date_string(string $datetime): DateInterval|false` — `ext/date/php_date.stub.php:243`
+- ·· `function date_interval_format(DateInterval $object, string $format): string` — `ext/date/php_date.stub.php:246`
+- ·· `function date_isodate_set(DateTime $object, int $year, int $week, int $dayOfWeek = 1): DateTime` — `ext/date/php_date.stub.php:197`
+- ·· `function date_modify(DateTime $object, string $modifier): DateTime|false` — `ext/date/php_date.stub.php:175`
+- ·· `function date_offset_get(DateTimeInterface $object): int` — `ext/date/php_date.stub.php:186`
+- ·· `function date_parse(string $datetime): array` — `ext/date/php_date.stub.php:158`
+- ·· `function date_parse_from_format(string $format, string $datetime): array` — `ext/date/php_date.stub.php:164`
+- ·· `function date_sub(DateTime $object, DateInterval $interval): DateTime` — `ext/date/php_date.stub.php:179`
+- ·· `function date_sun_info(int $timestamp, float $latitude, float $longitude): array` — `ext/date/php_date.stub.php:275`
+- ·· `function date_sunrise( int $timestamp, int $returnFormat = SUNFUNCS_RET_STRING, ?float $latitude = null, ?float $longitude = null, ?float $zenith = null, ?float $utcOffset = null): string|int|float|false` — `ext/date/php_date.stub.php:257`
+- ·· `function date_sunset( int $timestamp, int $returnFormat = SUNFUNCS_RET_STRING, ?float $latitude = null, ?float $longitude = null, ?float $zenith = null, ?float $utcOffset = null): string|int|float|false` — `ext/date/php_date.stub.php:266`
+- ·· `function date_time_set( DateTime $object, int $hour, int $minute, int $second = 0, int $microsecond = 0): DateTime` — `ext/date/php_date.stub.php:192`
+- ·· `function date_timestamp_get(DateTimeInterface $object): int` — `ext/date/php_date.stub.php:201`
+- ·· `function date_timestamp_set(DateTime $object, int $timestamp): DateTime` — `ext/date/php_date.stub.php:199`
+- ·· `function date_timezone_get(DateTimeInterface $object): DateTimeZone|false` — `ext/date/php_date.stub.php:182`
+- ·· `function date_timezone_set(DateTime $object, DateTimeZone $timezone): DateTime` — `ext/date/php_date.stub.php:184`
+- ✅· `public function DateInterval::__construct(string $duration)` — `ext/date/php_date.stub.php:647`
+- ✅· `public function DateInterval::__serialize(): array` — `ext/date/php_date.stub.php:660`
+- ✅· `public static function DateInterval::__set_state(array $array): DateInterval` — `ext/date/php_date.stub.php:669`
+- ✅· `public function DateInterval::__unserialize(array $data): void` — `ext/date/php_date.stub.php:662`
+- ✅· `public function DateInterval::__wakeup(): void` — `ext/date/php_date.stub.php:666`
+- ✅· `public static function DateInterval::createFromDateString(string $datetime): DateInterval` — `ext/date/php_date.stub.php:652`
+- ✅· `public function DateInterval::format(string $format): string` — `ext/date/php_date.stub.php:658`
+- ·· `public function DatePeriod::__construct($start, $interval = UNKNOWN, $end = UNKNOWN, $options = UNKNOWN)` — `ext/date/php_date.stub.php:723`
+- ·· `public function DatePeriod::__serialize(): array` — `ext/date/php_date.stub.php:737`
+- ·· `public static function DatePeriod::__set_state(array $array): DatePeriod` — `ext/date/php_date.stub.php:746`
+- ·· `public function DatePeriod::__unserialize(array $data): void` — `ext/date/php_date.stub.php:739`
+- ·· `public function DatePeriod::__wakeup(): void` — `ext/date/php_date.stub.php:743`
+- ·· `public static function DatePeriod::createFromISO8601String(string $specification, int $options = 0): static` — `ext/date/php_date.stub.php:715`
+- ·· `public function DatePeriod::getDateInterval(): DateInterval` — `ext/date/php_date.stub.php:732`
+- ·· `public function DatePeriod::getEndDate(): ?DateTimeInterface` — `ext/date/php_date.stub.php:729`
+- ·· `public function DatePeriod::getIterator(): Iterator` — `ext/date/php_date.stub.php:748`
+- ·· `public function DatePeriod::getRecurrences(): ?int` — `ext/date/php_date.stub.php:735`
+- ·· `public function DatePeriod::getStartDate(): DateTimeInterface` — `ext/date/php_date.stub.php:726`
+- ✅· `public function DateTime::__construct(string $datetime = "now", ?DateTimeZone $timezone = null)` — `ext/date/php_date.stub.php:336`
+- ✅· `public function DateTime::__serialize(): array` — `ext/date/php_date.stub.php:338`
+- ✅· `public static function DateTime::__set_state(array $array): DateTime` — `ext/date/php_date.stub.php:347`
+- ✅· `public function DateTime::__unserialize(array $data): void` — `ext/date/php_date.stub.php:340`
+- ✅· `public function DateTime::__wakeup(): void` — `ext/date/php_date.stub.php:344`
+- ✅· `public function DateTime::add(DateInterval $interval): DateTime` — `ext/date/php_date.stub.php:386`
+- ✅· `public static function DateTime::createFromFormat(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTime|false` — `ext/date/php_date.stub.php:359`
+- ✅· `public static function DateTime::createFromImmutable(DateTimeImmutable $object): static` — `ext/date/php_date.stub.php:350`
+- ✅· `public static function DateTime::createFromInterface(DateTimeInterface $object): DateTime` — `ext/date/php_date.stub.php:353`
+- ✅· `public static function DateTime::createFromTimestamp(int|float $timestamp): static` — `ext/date/php_date.stub.php:362`
+- ✅· `public function DateTime::diff(DateTimeInterface $targetObject, bool $absolute = false): DateInterval` — `ext/date/php_date.stub.php:449`
+- ✅· `public function DateTime::format(string $format): string` — `ext/date/php_date.stub.php:375`
+- ✅· `public static function DateTime::getLastErrors(): array|false` — `ext/date/php_date.stub.php:369`
+- ✅· `public function DateTime::getMicrosecond(): int` — `ext/date/php_date.stub.php:411`
+- ✅· `public function DateTime::getOffset(): int` — `ext/date/php_date.stub.php:409`
+- ✅· `public function DateTime::getTimestamp(): int` — `ext/date/php_date.stub.php:443`
+- ✅· `public function DateTime::getTimezone(): DateTimeZone|false` — `ext/date/php_date.stub.php:397`
+- ✅· `public function DateTime::modify(string $modifier): DateTime` — `ext/date/php_date.stub.php:380`
+- ✅· `public function DateTime::setDate(int $year, int $month, int $day): DateTime` — `ext/date/php_date.stub.php:423`
+- ✅· `public function DateTime::setISODate(int $year, int $week, int $dayOfWeek = 1): DateTime` — `ext/date/php_date.stub.php:429`
+- ✅· `public function DateTime::setMicrosecond(int $microsecond): static` — `ext/date/php_date.stub.php:437`
+- ✅· `public function DateTime::setTime(int $hour, int $minute, int $second = 0, int $microsecond = 0): DateTime` — `ext/date/php_date.stub.php:417`
+- ✅· `public function DateTime::setTimestamp(int $timestamp): DateTime` — `ext/date/php_date.stub.php:435`
+- ✅· `public function DateTime::setTimezone(DateTimeZone $timezone): DateTime` — `ext/date/php_date.stub.php:403`
+- ✅· `public function DateTime::sub(DateInterval $interval): DateTime` — `ext/date/php_date.stub.php:391`
+- ✅· `public function DateTimeImmutable::__construct(string $datetime = "now", ?DateTimeZone $timezone = null)` — `ext/date/php_date.stub.php:454`
+- ✅· `public function DateTimeImmutable::__serialize(): array` — `ext/date/php_date.stub.php:456`
+- ✅· `public static function DateTimeImmutable::__set_state(array $array): DateTimeImmutable` — `ext/date/php_date.stub.php:465`
+- ✅· `public function DateTimeImmutable::__unserialize(array $data): void` — `ext/date/php_date.stub.php:458`
+- ✅· `public function DateTimeImmutable::__wakeup(): void` — `ext/date/php_date.stub.php:462`
+- ✅· `public function DateTimeImmutable::add(DateInterval $interval): DateTimeImmutable` — `ext/date/php_date.stub.php:524`
+- ✅· `public static function DateTimeImmutable::createFromFormat(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTimeImmutable|false` — `ext/date/php_date.stub.php:471`
+- ✅· `public static function DateTimeImmutable::createFromInterface(DateTimeInterface $object): DateTimeImmutable` — `ext/date/php_date.stub.php:557`
+- ✅· `public static function DateTimeImmutable::createFromMutable(DateTime $object): static` — `ext/date/php_date.stub.php:554`
+- ✅· `public static function DateTimeImmutable::createFromTimestamp(int|float $timestamp): static` — `ext/date/php_date.stub.php:474`
+- ✅· `public function DateTimeImmutable::diff(DateTimeInterface $targetObject, bool $absolute = false): DateInterval` — `ext/date/php_date.stub.php:516`
+- ✅· `public function DateTimeImmutable::format(string $format): string` — `ext/date/php_date.stub.php:487`
+- ✅· `public static function DateTimeImmutable::getLastErrors(): array|false` — `ext/date/php_date.stub.php:481`
+- ✅· `public function DateTimeImmutable::getMicrosecond(): int` — `ext/date/php_date.stub.php:510`
+- ✅· `public function DateTimeImmutable::getOffset(): int` — `ext/date/php_date.stub.php:499`
+- ✅· `public function DateTimeImmutable::getTimestamp(): int` — `ext/date/php_date.stub.php:505`
+- ✅· `public function DateTimeImmutable::getTimezone(): DateTimeZone|false` — `ext/date/php_date.stub.php:493`
+- ✅· `public function DateTimeImmutable::modify(string $modifier): DateTimeImmutable` — `ext/date/php_date.stub.php:520`
+- ✅· `public function DateTimeImmutable::setDate(int $year, int $month, int $day): DateTimeImmutable` — `ext/date/php_date.stub.php:540`
+- ✅· `public function DateTimeImmutable::setISODate(int $year, int $week, int $dayOfWeek = 1): DateTimeImmutable` — `ext/date/php_date.stub.php:544`
+- ✅· `public function DateTimeImmutable::setMicrosecond(int $microsecond): static` — `ext/date/php_date.stub.php:551`
+- ✅· `public function DateTimeImmutable::setTime(int $hour, int $minute, int $second = 0, int $microsecond = 0): DateTimeImmutable` — `ext/date/php_date.stub.php:536`
+- ✅· `public function DateTimeImmutable::setTimestamp(int $timestamp): DateTimeImmutable` — `ext/date/php_date.stub.php:548`
+- ✅· `public function DateTimeImmutable::setTimezone(DateTimeZone $timezone): DateTimeImmutable` — `ext/date/php_date.stub.php:532`
+- ✅· `public function DateTimeImmutable::sub(DateInterval $interval): DateTimeImmutable` — `ext/date/php_date.stub.php:528`
+- ✅· `public function DateTimeInterface::__serialize(): array` — `ext/date/php_date.stub.php:329`
+- ✅· `public function DateTimeInterface::__unserialize(array $data): void` — `ext/date/php_date.stub.php:331`
+- ✅· `public function DateTimeInterface::__wakeup(): void` — `ext/date/php_date.stub.php:327`
+- ✅· `public function DateTimeInterface::diff(DateTimeInterface $targetObject, bool $absolute = false): DateInterval` — `ext/date/php_date.stub.php:323`
+- ✅· `public function DateTimeInterface::format(string $format): string` — `ext/date/php_date.stub.php:309`
+- ✅· `public function DateTimeInterface::getMicrosecond(): int` — `ext/date/php_date.stub.php:320`
+- ✅· `public function DateTimeInterface::getOffset(): int` — `ext/date/php_date.stub.php:315`
+- ✅· `public function DateTimeInterface::getTimestamp(): int` — `ext/date/php_date.stub.php:318`
+- ✅· `public function DateTimeInterface::getTimezone(): DateTimeZone|false` — `ext/date/php_date.stub.php:312`
+- ✅· `public function DateTimeZone::__construct(string $timezone)` — `ext/date/php_date.stub.php:591`
+- ✅· `public function DateTimeZone::__serialize(): array` — `ext/date/php_date.stub.php:633`
+- ✅· `public static function DateTimeZone::__set_state(array $array): DateTimeZone` — `ext/date/php_date.stub.php:642`
+- ✅· `public function DateTimeZone::__unserialize(array $data): void` — `ext/date/php_date.stub.php:635`
+- ✅· `public function DateTimeZone::__wakeup(): void` — `ext/date/php_date.stub.php:639`
+- ✅· `public function DateTimeZone::getLocation(): array|false` — `ext/date/php_date.stub.php:617`
+- ✅· `public function DateTimeZone::getName(): string` — `ext/date/php_date.stub.php:597`
+- ✅· `public function DateTimeZone::getOffset(DateTimeInterface $datetime): int` — `ext/date/php_date.stub.php:603`
+- ✅· `public function DateTimeZone::getTransitions(int $timestampBegin = PHP_INT_MIN, int $timestampEnd = 2147483647): array|false` — `ext/date/php_date.stub.php:610`
+- ✅· `public static function DateTimeZone::listAbbreviations(): array` — `ext/date/php_date.stub.php:624`
+- ✅· `public static function DateTimeZone::listIdentifiers(int $timezoneGroup = DateTimeZone::ALL, ?string $countryCode = null): array` — `ext/date/php_date.stub.php:631`
+- ·· `function getdate(?int $timestamp = null): array` — `ext/date/php_date.stub.php:137`
+- ·· `function gmdate(string $format, ?int $timestamp = null): string` — `ext/date/php_date.stub.php:101`
+- ·· `function gmmktime( int $hour, ?int $minute = null, ?int $second = null, ?int $month = null, ?int $day = null, ?int $year = null): int|false` — `ext/date/php_date.stub.php:107`
+- ·· `function gmstrftime(string $format, ?int $timestamp = null): string|false` — `ext/date/php_date.stub.php:123`
+- ·· `function idate(string $format, ?int $timestamp = null): int|false` — `ext/date/php_date.stub.php:98`
+- ·· `function localtime(?int $timestamp = null, bool $associative = false): array` — `ext/date/php_date.stub.php:131`
+- ·· `function mktime( int $hour, ?int $minute = null, ?int $second = null, ?int $month = null, ?int $day = null, ?int $year = null): int|false` — `ext/date/php_date.stub.php:103`
+- ·· `function strftime(string $format, ?int $timestamp = null): string|false` — `ext/date/php_date.stub.php:117`
+- ✅🧪 `function strtotime(string $datetime, ?int $baseTimestamp = null): int|false` — `ext/date/php_date.stub.php:93`
+- ✅🧪 `function time(): int` — `ext/date/php_date.stub.php:125`
+- ·· `function timezone_abbreviations_list(): array` — `ext/date/php_date.stub.php:237`
+- ✅🧪 `function timezone_identifiers_list(int $timezoneGroup = DateTimeZone::ALL, ?string $countryCode = null): array` — `ext/date/php_date.stub.php:231`
+- ·· `function timezone_location_get(DateTimeZone $object): array|false` — `ext/date/php_date.stub.php:225`
+- ·· `function timezone_name_from_abbr(string $abbr, int $utcOffset = -1, int $isDST = -1): string|false` — `ext/date/php_date.stub.php:210`
+- ·· `function timezone_name_get(DateTimeZone $object): string` — `ext/date/php_date.stub.php:207`
+- ·· `function timezone_offset_get(DateTimeZone $object, DateTimeInterface $datetime): int` — `ext/date/php_date.stub.php:212`
+- ·· `function timezone_open(string $timezone): DateTimeZone|false` — `ext/date/php_date.stub.php:204`
+- ·· `function timezone_transitions_get( DateTimeZone $object, int $timestampBegin = PHP_INT_MIN, int $timestampEnd = 2147483647): array|false` — `ext/date/php_date.stub.php:218`
+- ·· `function timezone_version_get(): string` — `ext/date/php_date.stub.php:240`
+
+## ext/dba (`15`) — impl `0`, tested `0`
+
+- ·· `function dba_close(Dba\Connection $dba): void` — `ext/dba/dba.stub.php:29`
+- ·· `function dba_delete(string|array $key, Dba\Connection $dba): bool` — `ext/dba/dba.stub.php:46`
+- ·· `function dba_exists(string|array $key, Dba\Connection $dba): bool` — `ext/dba/dba.stub.php:31`
+- ·· `function dba_fetch(string|array $key, $dba, $skip = 0): string|false` — `ext/dba/dba.stub.php:37`
+- ·· `function dba_firstkey(Dba\Connection $dba): string|false` — `ext/dba/dba.stub.php:42`
+- ·· `function dba_handlers(bool $full_info = false): array` — `ext/dba/dba.stub.php:60`
+- ·· `function dba_insert(string|array $key, string $value, Dba\Connection $dba): bool` — `ext/dba/dba.stub.php:48`
+- ·· `function dba_key_split(string|false|null $key): array|false` — `ext/dba/dba.stub.php:40`
+- ·· `function dba_list(): array` — `ext/dba/dba.stub.php:63`
+- ·· `function dba_nextkey(Dba\Connection $dba): string|false` — `ext/dba/dba.stub.php:44`
+- ·· `function dba_open(string $path, string $mode, ?string $handler = null, int $permission = 0o644, int $map_size = 0, ?int $flags = null): Dba\Connection|false` — `ext/dba/dba.stub.php:27`
+- ·· `function dba_optimize(Dba\Connection $dba): bool` — `ext/dba/dba.stub.php:52`
+- ·· `function dba_popen(string $path, string $mode, ?string $handler = null, int $permission = 0o644, int $map_size = 0, ?int $flags = null): Dba\Connection|false` — `ext/dba/dba.stub.php:25`
+- ·· `function dba_replace(string|array $key, string $value, Dba\Connection $dba): bool` — `ext/dba/dba.stub.php:50`
+- ·· `function dba_sync(Dba\Connection $dba): bool` — `ext/dba/dba.stub.php:54`
+
+## ext/dom (`313`) — impl `0`, tested `1`
+
+- ·· `public function Dom\Attr::isId(): bool` — `ext/dom/php_dom.stub.php:1754`
+- ·· `public function Dom\Attr::rename(?string $namespaceURI, string $qualifiedName): void` — `ext/dom/php_dom.stub.php:1757`
+- ·· `public function Dom\CharacterData::after(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1792`
+- ·· `public function Dom\CharacterData::appendData(string $data): void` — `ext/dom/php_dom.stub.php:1782`
+- ·· `public function Dom\CharacterData::before(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1790`
+- ·· `public function Dom\CharacterData::deleteData(int $offset, int $count): void` — `ext/dom/php_dom.stub.php:1784`
+- ·· `public function Dom\CharacterData::insertData(int $offset, string $data): void` — `ext/dom/php_dom.stub.php:1783`
+- ·· `public function Dom\CharacterData::remove(): void` — `ext/dom/php_dom.stub.php:1788`
+- ·· `public function Dom\CharacterData::replaceData(int $offset, int $count, string $data): void` — `ext/dom/php_dom.stub.php:1785`
+- ·· `public function Dom\CharacterData::replaceWith(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1794`
+- ·· `public function Dom\CharacterData::substringData(int $offset, int $count): string` — `ext/dom/php_dom.stub.php:1781`
+- ·· `public function Dom\ChildNode::after(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1338`
+- ·· `public function Dom\ChildNode::before(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1337`
+- ·· `public function Dom\ChildNode::remove(): void` — `ext/dom/php_dom.stub.php:1336`
+- ·· `public function Dom\ChildNode::replaceWith(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1339`
+- ·· `public function Dom\Document::adoptNode(Node $node): Node` — `ext/dom/php_dom.stub.php:2006`
+- ·· `public function Dom\Document::append(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:2030`
+- ·· `public function Dom\Document::createAttribute(string $localName): Attr` — `ext/dom/php_dom.stub.php:2009`
+- ·· `public function Dom\Document::createAttributeNS(?string $namespace, string $qualifiedName): Attr` — `ext/dom/php_dom.stub.php:2011`
+- ·· `public function Dom\Document::createCDATASection(string $data): CDATASection` — `ext/dom/php_dom.stub.php:2000`
+- ·· `public function Dom\Document::createComment(string $data): Comment` — `ext/dom/php_dom.stub.php:2002`
+- ·· `public function Dom\Document::createDocumentFragment(): DocumentFragment` — `ext/dom/php_dom.stub.php:1996`
+- ·· `public function Dom\Document::createElement(string $localName): Element` — `ext/dom/php_dom.stub.php:1993`
+- ·· `public function Dom\Document::createElementNS(?string $namespace, string $qualifiedName): Element` — `ext/dom/php_dom.stub.php:1994`
+- ·· `public function Dom\Document::createProcessingInstruction(string $target, string $data): ProcessingInstruction` — `ext/dom/php_dom.stub.php:2003`
+- ·· `public function Dom\Document::createTextNode(string $data): Text` — `ext/dom/php_dom.stub.php:1998`
+- ·· `public function Dom\Document::getElementById(string $elementId): ?Element` — `ext/dom/php_dom.stub.php:2014`
+- ·· `public function Dom\Document::getElementsByClassName(string $classNames): HTMLCollection` — `ext/dom/php_dom.stub.php:1991`
+- ·· `public function Dom\Document::getElementsByTagName(string $qualifiedName): HTMLCollection` — `ext/dom/php_dom.stub.php:1987`
+- ·· `public function Dom\Document::getElementsByTagNameNS(?string $namespace, string $localName): HTMLCollection` — `ext/dom/php_dom.stub.php:1989`
+- ·· `public function Dom\Document::importLegacyNode(\DOMNode $node, bool $deep = false): Node` — `ext/dom/php_dom.stub.php:2036`
+- ·· `public function Dom\Document::importNode(?Node $node, bool $deep = false): Node` — `ext/dom/php_dom.stub.php:2005`
+- ·· `public function Dom\Document::prepend(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:2032`
+- ·· `public function Dom\Document::querySelector(string $selectors): ?Element` — `ext/dom/php_dom.stub.php:2039`
+- ·· `public function Dom\Document::querySelectorAll(string $selectors): NodeList` — `ext/dom/php_dom.stub.php:2041`
+- ·· `public function Dom\Document::registerNodeClass(string $baseClass, ?string $extendedClass): void` — `ext/dom/php_dom.stub.php:2016`
+- ·· `public function Dom\Document::relaxNgValidate(string $filename): bool` — `ext/dom/php_dom.stub.php:2024`
+- ·· `public function Dom\Document::relaxNgValidateSource(string $source): bool` — `ext/dom/php_dom.stub.php:2026`
+- ·· `public function Dom\Document::replaceChildren(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:2034`
+- ·· `public function Dom\Document::schemaValidate(string $filename, int $flags = 0): bool` — `ext/dom/php_dom.stub.php:2020`
+- ·· `public function Dom\Document::schemaValidateSource(string $source, int $flags = 0): bool` — `ext/dom/php_dom.stub.php:2022`
+- ·· `public function Dom\DocumentFragment::append(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1894`
+- ·· `public function Dom\DocumentFragment::appendXml(string $data): bool` — `ext/dom/php_dom.stub.php:1892`
+- ·· `public function Dom\DocumentFragment::prepend(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1896`
+- ·· `public function Dom\DocumentFragment::querySelector(string $selectors): ?Element` — `ext/dom/php_dom.stub.php:1901`
+- ·· `public function Dom\DocumentFragment::querySelectorAll(string $selectors): NodeList` — `ext/dom/php_dom.stub.php:1903`
+- ·· `public function Dom\DocumentFragment::replaceChildren(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1898`
+- ·· `public function Dom\DocumentType::after(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1864`
+- ·· `public function Dom\DocumentType::before(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1862`
+- ·· `public function Dom\DocumentType::remove(): void` — `ext/dom/php_dom.stub.php:1860`
+- ·· `public function Dom\DocumentType::replaceWith(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1866`
+- ·· `public function Dom\DtdNamedNodeMap::count(): int` — `ext/dom/php_dom.stub.php:1530`
+- ·· `public function Dom\DtdNamedNodeMap::getIterator(): \Iterator` — `ext/dom/php_dom.stub.php:1533`
+- ·· `public function Dom\DtdNamedNodeMap::getNamedItem(string $qualifiedName): Entity|Notation|null` — `ext/dom/php_dom.stub.php:1525`
+- ·· `public function Dom\DtdNamedNodeMap::getNamedItemNS(?string $namespace, string $localName): Entity|Notation|null` — `ext/dom/php_dom.stub.php:1527`
+- ·· `public function Dom\DtdNamedNodeMap::item(int $index): Entity|Notation|null` — `ext/dom/php_dom.stub.php:1523`
+- ·· `public function Dom\Element::after(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1679`
+- ·· `public function Dom\Element::append(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1683`
+- ·· `public function Dom\Element::before(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1677`
+- ·· `public function Dom\Element::closest(string $selectors): ?Element` — `ext/dom/php_dom.stub.php:1691`
+- ·· `public function Dom\Element::getAttribute(string $qualifiedName): ?string` — `ext/dom/php_dom.stub.php:1634`
+- ·· `public function Dom\Element::getAttributeNames(): array` — `ext/dom/php_dom.stub.php:1632`
+- ·· `public function Dom\Element::getAttributeNode(string $qualifiedName): ?Attr` — `ext/dom/php_dom.stub.php:1652`
+- ·· `public function Dom\Element::getAttributeNodeNS(?string $namespace, string $localName): ?Attr` — `ext/dom/php_dom.stub.php:1654`
+- ·· `public function Dom\Element::getAttributeNS(?string $namespace, string $localName): ?string` — `ext/dom/php_dom.stub.php:1636`
+- ·· `public function Dom\Element::getDescendantNamespaces(): array` — `ext/dom/php_dom.stub.php:1707`
+- ·· `public function Dom\Element::getElementsByClassName(string $classNames): HTMLCollection` — `ext/dom/php_dom.stub.php:1662`
+- ·· `public function Dom\Element::getElementsByTagName(string $qualifiedName): HTMLCollection` — `ext/dom/php_dom.stub.php:1660`
+- ·· `public function Dom\Element::getElementsByTagNameNS(?string $namespace, string $localName): HTMLCollection` — `ext/dom/php_dom.stub.php:1661`
+- ·· `public function Dom\Element::getInScopeNamespaces(): array` — `ext/dom/php_dom.stub.php:1704`
+- ·· `public function Dom\Element::hasAttribute(string $qualifiedName): bool` — `ext/dom/php_dom.stub.php:1647`
+- ·· `public function Dom\Element::hasAttributeNS(?string $namespace, string $localName): bool` — `ext/dom/php_dom.stub.php:1649`
+- ·· `public function Dom\Element::hasAttributes(): bool` — `ext/dom/php_dom.stub.php:1625`
+- ·· `public function Dom\Element::insertAdjacentElement(AdjacentPosition $where, Element $element): ?Element` — `ext/dom/php_dom.stub.php:1664`
+- ·· `public function Dom\Element::insertAdjacentHTML(AdjacentPosition $where, string $string): void` — `ext/dom/php_dom.stub.php:1666`
+- ·· `public function Dom\Element::insertAdjacentText(AdjacentPosition $where, string $data): void` — `ext/dom/php_dom.stub.php:1665`
+- ·· `public function Dom\Element::matches(string $selectors): bool` — `ext/dom/php_dom.stub.php:1692`
+- ·· `public function Dom\Element::prepend(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1685`
+- ·· `public function Dom\Element::querySelector(string $selectors): ?Element` — `ext/dom/php_dom.stub.php:1689`
+- ·· `public function Dom\Element::querySelectorAll(string $selectors): NodeList` — `ext/dom/php_dom.stub.php:1690`
+- ·· `public function Dom\Element::remove(): void` — `ext/dom/php_dom.stub.php:1675`
+- ·· `public function Dom\Element::removeAttribute(string $qualifiedName): void` — `ext/dom/php_dom.stub.php:1641`
+- ·· `public function Dom\Element::removeAttributeNode(Attr $attr): Attr` — `ext/dom/php_dom.stub.php:1658`
+- ·· `public function Dom\Element::removeAttributeNS(?string $namespace, string $localName): void` — `ext/dom/php_dom.stub.php:1643`
+- ·· `public function Dom\Element::rename(?string $namespaceURI, string $qualifiedName): void` — `ext/dom/php_dom.stub.php:1709`
+- ·· `public function Dom\Element::replaceChildren(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1687`
+- ·· `public function Dom\Element::replaceWith(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1681`
+- ·· `public function Dom\Element::setAttribute(string $qualifiedName, string $value): void` — `ext/dom/php_dom.stub.php:1638`
+- ·· `public function Dom\Element::setAttributeNode(Attr $attr): ?Attr` — `ext/dom/php_dom.stub.php:1656`
+- ·· `public function Dom\Element::setAttributeNodeNS(Attr $attr): ?Attr` — `ext/dom/php_dom.stub.php:1657`
+- ·· `public function Dom\Element::setAttributeNS(?string $namespace, string $qualifiedName, string $value): void` — `ext/dom/php_dom.stub.php:1640`
+- ·· `public function Dom\Element::setIdAttribute(string $qualifiedName, bool $isId): void` — `ext/dom/php_dom.stub.php:1669`
+- ·· `public function Dom\Element::setIdAttributeNode(Attr $attr, bool $isId): void` — `ext/dom/php_dom.stub.php:1672`
+- ·· `public function Dom\Element::setIdAttributeNS(?string $namespace, string $qualifiedName, bool $isId): void` — `ext/dom/php_dom.stub.php:1671`
+- ·· `public function Dom\Element::toggleAttribute(string $qualifiedName, ?bool $force = null): bool` — `ext/dom/php_dom.stub.php:1645`
+- ·· `public function Dom\HTMLCollection::count(): int` — `ext/dom/php_dom.stub.php:1550`
+- ·· `public function Dom\HTMLCollection::getIterator(): \Iterator` — `ext/dom/php_dom.stub.php:1553`
+- ·· `public function Dom\HTMLCollection::item(int $index): ?Element` — `ext/dom/php_dom.stub.php:1545`
+- ·· `public function Dom\HTMLCollection::namedItem(string $key): ?Element` — `ext/dom/php_dom.stub.php:1547`
+- ·· `public static function Dom\HTMLDocument::createEmpty(string $encoding = "UTF-8"): HTMLDocument` — `ext/dom/php_dom.stub.php:2056`
+- ·· `public static function Dom\HTMLDocument::createFromFile(string $path, int $options = 0, ?string $overrideEncoding = null): HTMLDocument` — `ext/dom/php_dom.stub.php:2058`
+- ·· `public static function Dom\HTMLDocument::createFromString(string $source, int $options = 0, ?string $overrideEncoding = null): HTMLDocument` — `ext/dom/php_dom.stub.php:2060`
+- ·· `public function Dom\HTMLDocument::debugGetTemplateCount(): int` — `ext/dom/php_dom.stub.php:2073`
+- ·· `public function Dom\HTMLDocument::saveHtml(?Node $node = null): string` — `ext/dom/php_dom.stub.php:2068`
+- ·· `public function Dom\HTMLDocument::saveHtmlFile(string $filename): int|false` — `ext/dom/php_dom.stub.php:2070`
+- ·· `public function Dom\HTMLDocument::saveXml(?Node $node = null, int $options = 0): string|false` — `ext/dom/php_dom.stub.php:2063`
+- ·· `public function Dom\HTMLDocument::saveXmlFile(string $filename, int $options = 0): int|false` — `ext/dom/php_dom.stub.php:2066`
+- ·· `public function Dom\Implementation::createDocument(?string $namespace, string $qualifiedName, ?DocumentType $doctype = null): XMLDocument` — `ext/dom/php_dom.stub.php:1350`
+- ·· `public function Dom\Implementation::createDocumentType(string $qualifiedName, string $publicId, string $systemId): DocumentType` — `ext/dom/php_dom.stub.php:1348`
+- ·· `public function Dom\Implementation::createHTMLDocument(?string $title = null): HTMLDocument` — `ext/dom/php_dom.stub.php:1352`
+- ·· `function Dom\import_simplexml(object $node): Attr|Element` — `ext/dom/php_dom.stub.php:2190`
+- ·· `public function Dom\NamedNodeMap::count(): int` — `ext/dom/php_dom.stub.php:1508`
+- ·· `public function Dom\NamedNodeMap::getIterator(): \Iterator` — `ext/dom/php_dom.stub.php:1511`
+- ·· `public function Dom\NamedNodeMap::getNamedItem(string $qualifiedName): ?Attr` — `ext/dom/php_dom.stub.php:1503`
+- ·· `public function Dom\NamedNodeMap::getNamedItemNS(?string $namespace, string $localName): ?Attr` — `ext/dom/php_dom.stub.php:1505`
+- ·· `public function Dom\NamedNodeMap::item(int $index): ?Attr` — `ext/dom/php_dom.stub.php:1501`
+- ·· `private function Dom\NamespaceInfo::__construct()` — `ext/dom/php_dom.stub.php:2154`
+- ·🧪 `private final function Dom\Node::__construct()` — `ext/dom/php_dom.stub.php:1358`
+- ·· `public function Dom\Node::__sleep(): array` — `ext/dom/php_dom.stub.php:1469`
+- ·· `public function Dom\Node::__wakeup(): void` — `ext/dom/php_dom.stub.php:1471`
+- ·· `public function Dom\Node::appendChild(Node $node): Node` — `ext/dom/php_dom.stub.php:1455`
+- ·· `public function Dom\Node::C14N(bool $exclusive = false, bool $withComments = false, ?array $xpath = null, ?array $nsPrefixes = null): string|false` — `ext/dom/php_dom.stub.php:1464`
+- ·· `public function Dom\Node::C14NFile(string $uri, bool $exclusive = false, bool $withComments = false, ?array $xpath = null, ?array $nsPrefixes = null): int|false` — `ext/dom/php_dom.stub.php:1466`
+- ·· `public function Dom\Node::cloneNode(bool $deep = false): Node` — `ext/dom/php_dom.stub.php:1436`
+- ·· `public function Dom\Node::compareDocumentPosition(Node $other): int` — `ext/dom/php_dom.stub.php:1446`
+- ·· `public function Dom\Node::contains(?Node $other): bool` — `ext/dom/php_dom.stub.php:1447`
+- ·· `public function Dom\Node::getLineNo(): int` — `ext/dom/php_dom.stub.php:1460`
+- ·· `public function Dom\Node::getNodePath(): string` — `ext/dom/php_dom.stub.php:1461`
+- ·· `public function Dom\Node::getRootNode(array $options = []): Node` — `ext/dom/php_dom.stub.php:1389`
+- ·· `public function Dom\Node::hasChildNodes(): bool` — `ext/dom/php_dom.stub.php:1401`
+- ·· `public function Dom\Node::insertBefore(Node $node, ?Node $child): Node` — `ext/dom/php_dom.stub.php:1454`
+- ·· `public function Dom\Node::isDefaultNamespace(?string $namespace): bool` — `ext/dom/php_dom.stub.php:1452`
+- ·· `public function Dom\Node::isEqualNode(?Node $otherNode): bool` — `ext/dom/php_dom.stub.php:1437`
+- ·· `public function Dom\Node::isSameNode(?Node $otherNode): bool` — `ext/dom/php_dom.stub.php:1438`
+- ·· `public function Dom\Node::lookupNamespaceURI(?string $prefix): ?string` — `ext/dom/php_dom.stub.php:1451`
+- ·· `public function Dom\Node::lookupPrefix(?string $namespace): ?string` — `ext/dom/php_dom.stub.php:1449`
+- ·· `public function Dom\Node::normalize(): void` — `ext/dom/php_dom.stub.php:1433`
+- ·· `public function Dom\Node::removeChild(Node $child): Node` — `ext/dom/php_dom.stub.php:1457`
+- ·· `public function Dom\Node::replaceChild(Node $node, Node $child): Node` — `ext/dom/php_dom.stub.php:1456`
+- ·· `public function Dom\NodeList::count(): int` — `ext/dom/php_dom.stub.php:1483`
+- ·· `public function Dom\NodeList::getIterator(): \Iterator` — `ext/dom/php_dom.stub.php:1486`
+- ·· `public function Dom\NodeList::item(int $index): ?Node` — `ext/dom/php_dom.stub.php:1489`
+- ·· `public function Dom\ParentNode::append(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1326`
+- ·· `public function Dom\ParentNode::prepend(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1327`
+- ·· `public function Dom\ParentNode::querySelector(string $selectors): ?Element` — `ext/dom/php_dom.stub.php:1330`
+- ·· `public function Dom\ParentNode::querySelectorAll(string $selectors): NodeList` — `ext/dom/php_dom.stub.php:1331`
+- ·· `public function Dom\ParentNode::replaceChildren(Node|string ...$nodes): void` — `ext/dom/php_dom.stub.php:1328`
+- ·· `public function Dom\Text::splitText(int $offset): Text` — `ext/dom/php_dom.stub.php:1802`
+- ·· `private function Dom\TokenList::__construct()` — `ext/dom/php_dom.stub.php:2121`
+- ·· `public function Dom\TokenList::add(string ...$tokens): void` — `ext/dom/php_dom.stub.php:2130`
+- ·· `public function Dom\TokenList::contains(string $token): bool` — `ext/dom/php_dom.stub.php:2129`
+- ·· `public function Dom\TokenList::count(): int` — `ext/dom/php_dom.stub.php:2138`
+- ·· `public function Dom\TokenList::getIterator(): \Iterator` — `ext/dom/php_dom.stub.php:2140`
+- ·· `public function Dom\TokenList::item(int $index): ?string` — `ext/dom/php_dom.stub.php:2128`
+- ·· `public function Dom\TokenList::remove(string ...$tokens): void` — `ext/dom/php_dom.stub.php:2131`
+- ·· `public function Dom\TokenList::replace(string $token, string $newToken): bool` — `ext/dom/php_dom.stub.php:2133`
+- ·· `public function Dom\TokenList::supports(string $token): bool` — `ext/dom/php_dom.stub.php:2134`
+- ·· `public function Dom\TokenList::toggle(string $token, ?bool $force = null): bool` — `ext/dom/php_dom.stub.php:2132`
+- ·· `public static function Dom\XMLDocument::createEmpty(string $version = "1.0", string $encoding = "UTF-8"): XMLDocument` — `ext/dom/php_dom.stub.php:2079`
+- ·· `public function Dom\XMLDocument::createEntityReference(string $name): EntityReference` — `ext/dom/php_dom.stub.php:2101`
+- ·· `public static function Dom\XMLDocument::createFromFile(string $path, int $options = 0, ?string $overrideEncoding = null): XMLDocument` — `ext/dom/php_dom.stub.php:2081`
+- ·· `public static function Dom\XMLDocument::createFromString(string $source, int $options = 0, ?string $overrideEncoding = null): XMLDocument` — `ext/dom/php_dom.stub.php:2083`
+- ·· `public function Dom\XMLDocument::saveXml(?Node $node = null, int $options = 0): string|false` — `ext/dom/php_dom.stub.php:2108`
+- ·· `public function Dom\XMLDocument::saveXmlFile(string $filename, int $options = 0): int|false` — `ext/dom/php_dom.stub.php:2111`
+- ·· `public function Dom\XMLDocument::validate(): bool` — `ext/dom/php_dom.stub.php:2104`
+- ·· `public function Dom\XMLDocument::xinclude(int $options = 0): int` — `ext/dom/php_dom.stub.php:2106`
+- ·· `public function Dom\XPath::__construct(Document $document, bool $registerNodeNS = true)` — `ext/dom/php_dom.stub.php:2170`
+- ·· `public function Dom\XPath::evaluate(string $expression, ?Node $contextNode = null, bool $registerNodeNS = true): null|bool|float|string|NodeList` — `ext/dom/php_dom.stub.php:2172`
+- ·· `public function Dom\XPath::query(string $expression, ?Node $contextNode = null, bool $registerNodeNS = true): NodeList` — `ext/dom/php_dom.stub.php:2174`
+- ·· `public static function Dom\XPath::quote(string $str): string` — `ext/dom/php_dom.stub.php:2186`
+- ·· `public function Dom\XPath::registerNamespace(string $prefix, string $namespace): bool` — `ext/dom/php_dom.stub.php:2177`
+- ·· `public function Dom\XPath::registerPhpFunctionNS(string $namespaceURI, string $name, callable $callable): void` — `ext/dom/php_dom.stub.php:2183`
+- ·· `public function Dom\XPath::registerPhpFunctions(string|array|null $restrict = null): void` — `ext/dom/php_dom.stub.php:2180`
+- ·· `function dom_import_simplexml(object $node): DOMAttr|DOMElement` — `ext/dom/php_dom.stub.php:1237`
+- ·· `public function DOMAttr::__construct(string $name, string $value = "")` — `ext/dom/php_dom.stub.php:713`
+- ·· `public function DOMAttr::isId(): bool` — `ext/dom/php_dom.stub.php:716`
+- ·· `public function DOMCdataSection::__construct(string $data)` — `ext/dom/php_dom.stub.php:276`
+- ·· `public function DOMCharacterData::after(...$nodes): void` — `ext/dom/php_dom.stub.php:681`
+- ·· `public function DOMCharacterData::appendData(string $data): true` — `ext/dom/php_dom.stub.php:648`
+- ·· `public function DOMCharacterData::before(... $nodes): void` — `ext/dom/php_dom.stub.php:675`
+- ·· `public function DOMCharacterData::deleteData(int $offset, int $count): bool` — `ext/dom/php_dom.stub.php:657`
+- ·· `public function DOMCharacterData::insertData(int $offset, string $data): bool` — `ext/dom/php_dom.stub.php:654`
+- ·· `public function DOMCharacterData::remove(): void` — `ext/dom/php_dom.stub.php:669`
+- ·· `public function DOMCharacterData::replaceData(int $offset, int $count, string $data): bool` — `ext/dom/php_dom.stub.php:660`
+- ·· `public function DOMCharacterData::replaceWith(...$nodes): void` — `ext/dom/php_dom.stub.php:666`
+- ·· `public function DOMCharacterData::substringData(int $offset, int $count)` — `ext/dom/php_dom.stub.php:651`
+- ·· `public function DOMChildNode::after(...$nodes): void` — `ext/dom/php_dom.stub.php:304`
+- ·· `public function DOMChildNode::before(... $nodes): void` — `ext/dom/php_dom.stub.php:301`
+- ·· `public function DOMChildNode::remove(): void` — `ext/dom/php_dom.stub.php:298`
+- ·· `public function DOMChildNode::replaceWith(...$nodes): void` — `ext/dom/php_dom.stub.php:307`
+- ·· `public function DOMComment::__construct(string $data = "")` — `ext/dom/php_dom.stub.php:281`
+- ·· `public function DOMDocument::__construct(string $version = "1.0", string $encoding = "")` — `ext/dom/php_dom.stub.php:951`
+- ·· `public function DOMDocument::adoptNode(DOMNode $node): DOMNode|false` — `ext/dom/php_dom.stub.php:1054`
+- ·· `public function DOMDocument::append(...$nodes): void` — `ext/dom/php_dom.stub.php:1060`
+- ·· `public function DOMDocument::createAttribute(string $localName)` — `ext/dom/php_dom.stub.php:954`
+- ·· `public function DOMDocument::createAttributeNS(?string $namespace, string $qualifiedName)` — `ext/dom/php_dom.stub.php:957`
+- ·· `public function DOMDocument::createCDATASection(string $data)` — `ext/dom/php_dom.stub.php:960`
+- ·· `public function DOMDocument::createComment(string $data): DOMComment` — `ext/dom/php_dom.stub.php:963`
+- ·· `public function DOMDocument::createDocumentFragment(): DOMDocumentFragment` — `ext/dom/php_dom.stub.php:966`
+- ·· `public function DOMDocument::createElement(string $localName, string $value = "")` — `ext/dom/php_dom.stub.php:969`
+- ·· `public function DOMDocument::createElementNS(?string $namespace, string $qualifiedName, string $value = "")` — `ext/dom/php_dom.stub.php:972`
+- ·· `public function DOMDocument::createEntityReference(string $name)` — `ext/dom/php_dom.stub.php:975`
+- ·· `public function DOMDocument::createProcessingInstruction(string $target, string $data = "")` — `ext/dom/php_dom.stub.php:978`
+- ·· `public function DOMDocument::createTextNode(string $data): DOMText` — `ext/dom/php_dom.stub.php:981`
+- ·· `public function DOMDocument::getElementById(string $elementId): ?DOMElement` — `ext/dom/php_dom.stub.php:984`
+- ·· `public function DOMDocument::getElementsByTagName(string $qualifiedName): DOMNodeList` — `ext/dom/php_dom.stub.php:990`
+- ·· `public function DOMDocument::getElementsByTagNameNS(?string $namespace, string $localName): DOMNodeList` — `ext/dom/php_dom.stub.php:996`
+- ·· `public function DOMDocument::importNode(DOMNode $node, bool $deep = false)` — `ext/dom/php_dom.stub.php:999`
+- ·· `public function DOMDocument::load(string $filename, int $options = 0): bool` — `ext/dom/php_dom.stub.php:1002`
+- ·· `public function DOMDocument::loadHTML(string $source, int $options = 0): bool` — `ext/dom/php_dom.stub.php:1018`
+- ·· `public function DOMDocument::loadHTMLFile(string $filename, int $options = 0): bool` — `ext/dom/php_dom.stub.php:1021`
+- ·· `public function DOMDocument::loadXML(string $source, int $options = 0): bool` — `ext/dom/php_dom.stub.php:1005`
+- ·· `public function DOMDocument::normalizeDocument(): void` — `ext/dom/php_dom.stub.php:1008`
+- ·· `public function DOMDocument::prepend(...$nodes): void` — `ext/dom/php_dom.stub.php:1066`
+- ·· `public function DOMDocument::registerNodeClass(string $baseClass, ?string $extendedClass): true` — `ext/dom/php_dom.stub.php:1011`
+- ·· `public function DOMDocument::relaxNGValidate(string $filename): bool` — `ext/dom/php_dom.stub.php:1041`
+- ·· `public function DOMDocument::relaxNGValidateSource(string $source): bool` — `ext/dom/php_dom.stub.php:1044`
+- ·· `public function DOMDocument::replaceChildren(...$nodes): void` — `ext/dom/php_dom.stub.php:1069`
+- ·· `public function DOMDocument::save(string $filename, int $options = 0): int|false` — `ext/dom/php_dom.stub.php:1014`
+- ·· `public function DOMDocument::saveHTML(?DOMNode $node = null): string|false` — `ext/dom/php_dom.stub.php:1024`
+- ·· `public function DOMDocument::saveHTMLFile(string $filename): int|false` — `ext/dom/php_dom.stub.php:1027`
+- ·· `public function DOMDocument::saveXML(?DOMNode $node = null, int $options = 0): string|false` — `ext/dom/php_dom.stub.php:1031`
+- ·· `public function DOMDocument::schemaValidate(string $filename, int $flags = 0): bool` — `ext/dom/php_dom.stub.php:1035`
+- ·· `public function DOMDocument::schemaValidateSource(string $source, int $flags = 0): bool` — `ext/dom/php_dom.stub.php:1038`
+- ·· `public function DOMDocument::validate(): bool` — `ext/dom/php_dom.stub.php:1048`
+- ·· `public function DOMDocument::xinclude(int $options = 0): int|false` — `ext/dom/php_dom.stub.php:1051`
+- ·· `public function DOMDocumentFragment::__construct()` — `ext/dom/php_dom.stub.php:583`
+- ·· `public function DOMDocumentFragment::append(...$nodes): void` — `ext/dom/php_dom.stub.php:592`
+- ·· `public function DOMDocumentFragment::appendXML(string $data): bool` — `ext/dom/php_dom.stub.php:586`
+- ·· `public function DOMDocumentFragment::prepend(...$nodes): void` — `ext/dom/php_dom.stub.php:598`
+- ·· `public function DOMDocumentFragment::replaceChildren(...$nodes): void` — `ext/dom/php_dom.stub.php:604`
+- ·· `public function DOMElement::__construct(string $qualifiedName, ?string $value = null, string $namespace = "")` — `ext/dom/php_dom.stub.php:769`
+- ·· `public function DOMElement::after(...$nodes): void` — `ext/dom/php_dom.stub.php:835`
+- ·· `public function DOMElement::append(...$nodes): void` — `ext/dom/php_dom.stub.php:841`
+- ·· `public function DOMElement::before(... $nodes): void` — `ext/dom/php_dom.stub.php:832`
+- ·· `public function DOMElement::getAttribute(string $qualifiedName): string` — `ext/dom/php_dom.stub.php:772`
+- ·· `public function DOMElement::getAttributeNames(): array` — `ext/dom/php_dom.stub.php:774`
+- ·· `public function DOMElement::getAttributeNode(string $qualifiedName)` — `ext/dom/php_dom.stub.php:780`
+- ·· `public function DOMElement::getAttributeNodeNS(?string $namespace, string $localName)` — `ext/dom/php_dom.stub.php:783`
+- ·· `public function DOMElement::getAttributeNS(?string $namespace, string $localName): string` — `ext/dom/php_dom.stub.php:777`
+- ·· `public function DOMElement::getElementsByTagName(string $qualifiedName): DOMNodeList` — `ext/dom/php_dom.stub.php:786`
+- ·· `public function DOMElement::getElementsByTagNameNS(?string $namespace, string $localName): DOMNodeList` — `ext/dom/php_dom.stub.php:789`
+- ·· `public function DOMElement::hasAttribute(string $qualifiedName): bool` — `ext/dom/php_dom.stub.php:792`
+- ·· `public function DOMElement::hasAttributeNS(?string $namespace, string $localName): bool` — `ext/dom/php_dom.stub.php:795`
+- ·· `public function DOMElement::insertAdjacentElement(string $where, DOMElement $element): ?DOMElement` — `ext/dom/php_dom.stub.php:849`
+- ·· `public function DOMElement::insertAdjacentText(string $where, string $data): void` — `ext/dom/php_dom.stub.php:851`
+- ·· `public function DOMElement::prepend(...$nodes): void` — `ext/dom/php_dom.stub.php:844`
+- ·· `public function DOMElement::remove(): void` — `ext/dom/php_dom.stub.php:829`
+- ·· `public function DOMElement::removeAttribute(string $qualifiedName): bool` — `ext/dom/php_dom.stub.php:798`
+- ·· `public function DOMElement::removeAttributeNode(DOMAttr $attr)` — `ext/dom/php_dom.stub.php:804`
+- ·· `public function DOMElement::removeAttributeNS(?string $namespace, string $localName): void` — `ext/dom/php_dom.stub.php:801`
+- ·· `public function DOMElement::replaceChildren(...$nodes): void` — `ext/dom/php_dom.stub.php:847`
+- ·· `public function DOMElement::replaceWith(...$nodes): void` — `ext/dom/php_dom.stub.php:838`
+- ·· `public function DOMElement::setAttribute(string $qualifiedName, string $value)` — `ext/dom/php_dom.stub.php:807`
+- ·· `public function DOMElement::setAttributeNode(DOMAttr $attr)` — `ext/dom/php_dom.stub.php:813`
+- ·· `public function DOMElement::setAttributeNodeNS(DOMAttr $attr)` — `ext/dom/php_dom.stub.php:816`
+- ·· `public function DOMElement::setAttributeNS(?string $namespace, string $qualifiedName, string $value): void` — `ext/dom/php_dom.stub.php:810`
+- ·· `public function DOMElement::setIdAttribute(string $qualifiedName, bool $isId): void` — `ext/dom/php_dom.stub.php:819`
+- ·· `public function DOMElement::setIdAttributeNode(DOMAttr $attr, bool $isId): void` — `ext/dom/php_dom.stub.php:825`
+- ·· `public function DOMElement::setIdAttributeNS(string $namespace, string $qualifiedName, bool $isId): void` — `ext/dom/php_dom.stub.php:822`
+- ·· `public function DOMElement::toggleAttribute(string $qualifiedName, ?bool $force = null): bool` — `ext/dom/php_dom.stub.php:827`
+- ·· `public function DOMEntityReference::__construct(string $name)` — `ext/dom/php_dom.stub.php:1172`
+- ·· `public function DOMImplementation::createDocument(?string $namespace = null, string $qualifiedName = "", ?DOMDocumentType $doctype = null): DOMDocument` — `ext/dom/php_dom.stub.php:560`
+- ·· `public function DOMImplementation::createDocumentType(string $qualifiedName, string $publicId = "", string $systemId = "")` — `ext/dom/php_dom.stub.php:557`
+- ·· `public function DOMImplementation::hasFeature(string $feature, string $version): bool` — `ext/dom/php_dom.stub.php:554`
+- ·· `public function DOMNamedNodeMap::count(): int` — `ext/dom/php_dom.stub.php:1123`
+- ·· `public function DOMNamedNodeMap::getIterator(): Iterator` — `ext/dom/php_dom.stub.php:1125`
+- ·· `public function DOMNamedNodeMap::getNamedItem(string $qualifiedName): ?DOMNode` — `ext/dom/php_dom.stub.php:1114`
+- ·· `public function DOMNamedNodeMap::getNamedItemNS(?string $namespace, string $localName): ?DOMNode` — `ext/dom/php_dom.stub.php:1117`
+- ·· `public function DOMNamedNodeMap::item(int $index): ?DOMNode` — `ext/dom/php_dom.stub.php:1120`
+- ·· `public function DOMNameSpaceNode::__sleep(): array` — `ext/dom/php_dom.stub.php:545`
+- ·· `public function DOMNameSpaceNode::__wakeup(): void` — `ext/dom/php_dom.stub.php:548`
+- ·· `public function DOMNode::__sleep(): array` — `ext/dom/php_dom.stub.php:477`
+- ·· `public function DOMNode::__wakeup(): void` — `ext/dom/php_dom.stub.php:479`
+- ·· `public function DOMNode::appendChild(DOMNode $node)` — `ext/dom/php_dom.stub.php:419`
+- ·· `public function DOMNode::C14N(bool $exclusive = false, bool $withComments = false, ?array $xpath = null, ?array $nsPrefixes = null): string|false` — `ext/dom/php_dom.stub.php:422`
+- ·· `public function DOMNode::C14NFile(string $uri, bool $exclusive = false, bool $withComments = false, ?array $xpath = null, ?array $nsPrefixes = null): int|false` — `ext/dom/php_dom.stub.php:425`
+- ·· `public function DOMNode::cloneNode(bool $deep = false)` — `ext/dom/php_dom.stub.php:428`
+- ·· `public function DOMNode::compareDocumentPosition(DOMNode $other): int` — `ext/dom/php_dom.stub.php:475`
+- ·· `public function DOMNode::contains(DOMNode|DOMNameSpaceNode|null $other): bool` — `ext/dom/php_dom.stub.php:471`
+- ·· `public function DOMNode::getLineNo(): int` — `ext/dom/php_dom.stub.php:431`
+- ·· `public function DOMNode::getNodePath(): ?string` — `ext/dom/php_dom.stub.php:434`
+- ·· `public function DOMNode::getRootNode(?array $options = null): DOMNode` — `ext/dom/php_dom.stub.php:473`
+- ·· `public function DOMNode::hasAttributes(): bool` — `ext/dom/php_dom.stub.php:437`
+- ·· `public function DOMNode::hasChildNodes(): bool` — `ext/dom/php_dom.stub.php:440`
+- ·· `public function DOMNode::insertBefore(DOMNode $node, ?DOMNode $child = null)` — `ext/dom/php_dom.stub.php:443`
+- ·· `public function DOMNode::isDefaultNamespace(string $namespace): bool` — `ext/dom/php_dom.stub.php:446`
+- ·· `public function DOMNode::isEqualNode(?DOMNode $otherNode): bool` — `ext/dom/php_dom.stub.php:451`
+- ·· `public function DOMNode::isSameNode(DOMNode $otherNode): bool` — `ext/dom/php_dom.stub.php:449`
+- ·· `public function DOMNode::isSupported(string $feature, string $version): bool` — `ext/dom/php_dom.stub.php:454`
+- ·· `public function DOMNode::lookupNamespaceURI(?string $prefix): ?string` — `ext/dom/php_dom.stub.php:457`
+- ·· `public function DOMNode::lookupPrefix(string $namespace): ?string` — `ext/dom/php_dom.stub.php:460`
+- ·· `public function DOMNode::normalize(): void` — `ext/dom/php_dom.stub.php:463`
+- ·· `public function DOMNode::removeChild(DOMNode $child)` — `ext/dom/php_dom.stub.php:466`
+- ·· `public function DOMNode::replaceChild(DOMNode $node, DOMNode $child)` — `ext/dom/php_dom.stub.php:469`
+- ·· `public function DOMNodeList::count(): int` — `ext/dom/php_dom.stub.php:616`
+- ·· `public function DOMNodeList::getIterator(): Iterator` — `ext/dom/php_dom.stub.php:618`
+- ·· `public function DOMNodeList::item(int $index)` — `ext/dom/php_dom.stub.php:621`
+- ·· `public function DOMParentNode::append(...$nodes): void` — `ext/dom/php_dom.stub.php:287`
+- ·· `public function DOMParentNode::prepend(...$nodes): void` — `ext/dom/php_dom.stub.php:290`
+- ·· `public function DOMParentNode::replaceChildren(...$nodes): void` — `ext/dom/php_dom.stub.php:293`
+- ·· `public function DOMProcessingInstruction::__construct(string $name, string $value = "")` — `ext/dom/php_dom.stub.php:1201`
+- ·· `public function DOMText::__construct(string $data = "")` — `ext/dom/php_dom.stub.php:1090`
+- ·· `public function DOMText::isElementContentWhitespace(): bool` — `ext/dom/php_dom.stub.php:1099`
+- ·· `public function DOMText::isWhitespaceInElementContent(): bool` — `ext/dom/php_dom.stub.php:1093`
+- ·· `public function DOMText::splitText(int $offset)` — `ext/dom/php_dom.stub.php:1102`
+- ·· `public function DOMXPath::__construct(DOMDocument $document, bool $registerNodeNS = true)` — `ext/dom/php_dom.stub.php:1217`
+- ·· `public function DOMXPath::evaluate(string $expression, ?DOMNode $contextNode = null, bool $registerNodeNS = true): mixed` — `ext/dom/php_dom.stub.php:1220`
+- ·· `public function DOMXPath::query(string $expression, ?DOMNode $contextNode = null, bool $registerNodeNS = true): mixed` — `ext/dom/php_dom.stub.php:1223`
+- ·· `public static function DOMXPath::quote(string $str): string` — `ext/dom/php_dom.stub.php:1233`
+- ·· `public function DOMXPath::registerNamespace(string $prefix, string $namespace): bool` — `ext/dom/php_dom.stub.php:1226`
+- ·· `public function DOMXPath::registerPhpFunctionNS(string $namespaceURI, string $name, callable $callable): void` — `ext/dom/php_dom.stub.php:1231`
+- ·· `public function DOMXPath::registerPhpFunctions(string|array|null $restrict = null): void` — `ext/dom/php_dom.stub.php:1229`
+
+## ext/enchant (`25`) — impl `0`, tested `0`
+
+- ·· `function enchant_broker_describe(EnchantBroker $broker): array` — `ext/enchant/enchant.stub.php:75`
+- ·· `function enchant_broker_dict_exists(EnchantBroker $broker, string $tag): bool` — `ext/enchant/enchant.stub.php:67`
+- ·· `function enchant_broker_free(EnchantBroker $broker): bool` — `ext/enchant/enchant.stub.php:44`
+- ·· `function enchant_broker_free_dict(EnchantDictionary $dictionary): bool` — `ext/enchant/enchant.stub.php:65`
+- ·· `function enchant_broker_get_dict_path(EnchantBroker $broker, int $type): string|false` — `ext/enchant/enchant.stub.php:52`
+- ·· `function enchant_broker_get_error(EnchantBroker $broker): string|false` — `ext/enchant/enchant.stub.php:46`
+- ·· `function enchant_broker_init(): EnchantBroker|false` — `ext/enchant/enchant.stub.php:41`
+- ·· `function enchant_broker_list_dicts(EnchantBroker $broker): array` — `ext/enchant/enchant.stub.php:58`
+- ·· `function enchant_broker_request_dict(EnchantBroker $broker, string $tag): EnchantDictionary|false` — `ext/enchant/enchant.stub.php:60`
+- ·· `function enchant_broker_request_pwl_dict(EnchantBroker $broker, string $filename): EnchantDictionary|false` — `ext/enchant/enchant.stub.php:62`
+- ·· `function enchant_broker_set_dict_path(EnchantBroker $broker, int $type, string $path): bool` — `ext/enchant/enchant.stub.php:49`
+- ·· `function enchant_broker_set_ordering(EnchantBroker $broker, string $tag, string $ordering): bool` — `ext/enchant/enchant.stub.php:69`
+- ·· `function enchant_dict_add(EnchantDictionary $dictionary, string $word): void` — `ext/enchant/enchant.stub.php:88`
+- ·· `function enchant_dict_add_to_personal(EnchantDictionary $dictionary, string $word): void` — `ext/enchant/enchant.stub.php:96`
+- ·· `function enchant_dict_add_to_session(EnchantDictionary $dictionary, string $word): void` — `ext/enchant/enchant.stub.php:98`
+- ·· `function enchant_dict_check(EnchantDictionary $dictionary, string $word): bool` — `ext/enchant/enchant.stub.php:80`
+- ·· `function enchant_dict_describe(EnchantDictionary $dictionary): array` — `ext/enchant/enchant.stub.php:118`
+- ·· `function enchant_dict_get_error(EnchantDictionary $dictionary): string|false` — `ext/enchant/enchant.stub.php:112`
+- ·· `function enchant_dict_is_added(EnchantDictionary $dictionary, string $word): bool` — `ext/enchant/enchant.stub.php:102`
+- ·· `function enchant_dict_is_in_session(EnchantDictionary $dictionary, string $word): bool` — `ext/enchant/enchant.stub.php:108`
+- ·· `function enchant_dict_quick_check(EnchantDictionary $dictionary, string $word,&$suggestions = null): bool` — `ext/enchant/enchant.stub.php:78`
+- ·· `function enchant_dict_remove(EnchantDictionary $dictionary, string $word): void` — `ext/enchant/enchant.stub.php:90`
+- ·· `function enchant_dict_remove_from_session(EnchantDictionary $dictionary, string $word): void` — `ext/enchant/enchant.stub.php:100`
+- ·· `function enchant_dict_store_replacement(EnchantDictionary $dictionary, string $misspelled, string $correct): void` — `ext/enchant/enchant.stub.php:110`
+- ·· `function enchant_dict_suggest(EnchantDictionary $dictionary, string $word): array` — `ext/enchant/enchant.stub.php:86`
+
+## ext/exif (`4`) — impl `0`, tested `0`
+
+- ·· `function exif_imagetype(string $filename): int|false` — `ext/exif/exif.stub.php:30`
+- ·· `function exif_read_data($file, ?string $required_sections = null, bool $as_arrays = false, bool $read_thumbnail = false): array|false` — `ext/exif/exif.stub.php:19`
+- ·· `function exif_tagname(int $index): string|false` — `ext/exif/exif.stub.php:12`
+- ·· `function exif_thumbnail($file,&$width = null,&$height = null,&$image_type = null): string|false` — `ext/exif/exif.stub.php:28`
+
+## ext/ffi (`33`) — impl `0`, tested `0`
+
+- ·· `public static function FFI::addr(FFI\CData $ptr): FFI\CData` — `ext/ffi/ffi.stub.php:37`
+- ·· `public static function FFI::alignof(FFI\CData|FFI\CType $ptr): int` — `ext/ffi/ffi.stub.php:43`
+- ·· `public static function FFI::arrayType(FFI\CType $type, array $dimensions): FFI\CType` — `ext/ffi/ffi.stub.php:34`
+- ·· `public static function FFI::cast(FFI\CType|string $type, $ptr): FFI\CData` — `ext/ffi/ffi.stub.php:27`
+- ·· `public static function FFI::cdef(string $code = "", ?string $lib = null): FFI` — `ext/ffi/ffi.stub.php:12`
+- ·· `public static function FFI::free(FFI\CData $ptr): void` — `ext/ffi/ffi.stub.php:21`
+- ·· `public static function FFI::isNull(FFI\CData $ptr): bool` — `ext/ffi/ffi.stub.php:67`
+- ·· `public static function FFI::load(string $filename): ?FFI` — `ext/ffi/ffi.stub.php:14`
+- ·· `public static function FFI::memcmp($ptr1, $ptr2, int $size): int` — `ext/ffi/ffi.stub.php:58`
+- ·· `public static function FFI::memcpy(FFI\CData $to, $from, int $size): void` — `ext/ffi/ffi.stub.php:50`
+- ·· `public static function FFI::memset(FFI\CData $ptr, int $value, int $size): void` — `ext/ffi/ffi.stub.php:61`
+- ·· `public static function FFI::new(FFI\CType|string $type, bool $owned = true, bool $persistent = false): FFI\CData` — `ext/ffi/ffi.stub.php:18`
+- ·· `public static function FFI::scope(string $name): FFI` — `ext/ffi/ffi.stub.php:16`
+- ·· `public static function FFI::sizeof(FFI\CData|FFI\CType $ptr): int` — `ext/ffi/ffi.stub.php:40`
+- ·· `public static function FFI::string(FFI\CData $ptr, ?int $size = null): string` — `ext/ffi/ffi.stub.php:64`
+- ·· `public static function FFI::type(string $type): FFI\CType` — `ext/ffi/ffi.stub.php:29`
+- ·· `public static function FFI::typeof(FFI\CData $ptr): FFI\CType` — `ext/ffi/ffi.stub.php:32`
+- ·· `public function FFI\CType::getAlignment(): int` — `ext/ffi/ffi.stub.php:165`
+- ·· `public function FFI\CType::getArrayElementType(): CType` — `ext/ffi/ffi.stub.php:170`
+- ·· `public function FFI\CType::getArrayLength(): int` — `ext/ffi/ffi.stub.php:171`
+- ·· `public function FFI\CType::getAttributes(): int` — `ext/ffi/ffi.stub.php:166`
+- ·· `public function FFI\CType::getEnumKind(): int` — `ext/ffi/ffi.stub.php:168`
+- ·· `public function FFI\CType::getFuncABI(): int` — `ext/ffi/ffi.stub.php:179`
+- ·· `public function FFI\CType::getFuncParameterCount(): int` — `ext/ffi/ffi.stub.php:181`
+- ·· `public function FFI\CType::getFuncParameterType(int $index): CType` — `ext/ffi/ffi.stub.php:182`
+- ·· `public function FFI\CType::getFuncReturnType(): CType` — `ext/ffi/ffi.stub.php:180`
+- ·· `public function FFI\CType::getKind(): int` — `ext/ffi/ffi.stub.php:163`
+- ·· `public function FFI\CType::getName(): string` — `ext/ffi/ffi.stub.php:161`
+- ·· `public function FFI\CType::getPointerType(): CType` — `ext/ffi/ffi.stub.php:173`
+- ·· `public function FFI\CType::getSize(): int` — `ext/ffi/ffi.stub.php:164`
+- ·· `public function FFI\CType::getStructFieldNames(): array` — `ext/ffi/ffi.stub.php:175`
+- ·· `public function FFI\CType::getStructFieldOffset(string $name): int` — `ext/ffi/ffi.stub.php:176`
+- ·· `public function FFI\CType::getStructFieldType(string $name): CType` — `ext/ffi/ffi.stub.php:177`
+
+## ext/fileinfo (`10`) — impl `0`, tested `0`
+
+- ·· `public function finfo::__construct(int $flags = FILEINFO_NONE, ?string $magic_database = null)` — `ext/fileinfo/fileinfo.stub.php:69`
+- ·· `public function finfo::buffer(string $string, int $flags = FILEINFO_NONE, $context = null): string|false` — `ext/fileinfo/fileinfo.stub.php:83`
+- ·· `public function finfo::file(string $filename, int $flags = FILEINFO_NONE, $context = null): string|false` — `ext/fileinfo/fileinfo.stub.php:76`
+- ·· `public function finfo::set_flags(int $flags): true` — `ext/fileinfo/fileinfo.stub.php:89`
+- ·· `function finfo_buffer(finfo $finfo, string $string, int $flags = FILEINFO_NONE, $context = null): string|false` — `ext/fileinfo/fileinfo.stub.php:110`
+- ·· `function finfo_close(finfo $finfo): true` — `ext/fileinfo/fileinfo.stub.php:96`
+- ·· `function finfo_file(finfo $finfo, string $filename, int $flags = FILEINFO_NONE, $context = null): string|false` — `ext/fileinfo/fileinfo.stub.php:104`
+- ·· `function finfo_open(int $flags = FILEINFO_NONE, ?string $magic_database = null): finfo|false` — `ext/fileinfo/fileinfo.stub.php:93`
+- ·· `function finfo_set_flags(finfo $finfo, int $flags): true` — `ext/fileinfo/fileinfo.stub.php:98`
+- ·· `function mime_content_type($filename): string|false` — `ext/fileinfo/fileinfo.stub.php:116`
+
+## ext/filter (`7`) — impl `0`, tested `0`
+
+- ·· `function filter_has_var(int $input_type, string $var_name): bool` — `ext/filter/filter.stub.php:303`
+- ·· `function filter_id(string $name): int|false` — `ext/filter/filter.stub.php:321`
+- ·· `function filter_input(int $type, string $var_name, int $filter = FILTER_DEFAULT, array|int $options = 0): mixed` — `ext/filter/filter.stub.php:305`
+- ·· `function filter_input_array(int $type, array|int $options = FILTER_DEFAULT, bool $add_empty = true): array|false|null` — `ext/filter/filter.stub.php:310`
+- ·· `function filter_list(): array` — `ext/filter/filter.stub.php:319`
+- ·· `function filter_var(mixed $value, int $filter = FILTER_DEFAULT, array|int $options = 0): mixed` — `ext/filter/filter.stub.php:307`
+- ·· `function filter_var_array(array $array, array|int $options = FILTER_DEFAULT, bool $add_empty = true): array|false|null` — `ext/filter/filter.stub.php:313`
+
+## ext/ftp (`36`) — impl `0`, tested `0`
+
+- ·· `function ftp_alloc(FTP\Connection $ftp, int $size,&$response = null): bool` — `ext/ftp/ftp.stub.php:84`
+- ·· `function ftp_append(FTP\Connection $ftp, string $remote_filename, string $local_filename, int $mode = FTP_BINARY): bool` — `ext/ftp/ftp.stub.php:122`
+- ·· `function ftp_cdup(FTP\Connection $ftp): bool` — `ext/ftp/ftp.stub.php:70`
+- ·· `function ftp_chdir(FTP\Connection $ftp, string $directory): bool` — `ext/ftp/ftp.stub.php:71`
+- ·· `function ftp_chmod(FTP\Connection $ftp, int $permissions, string $filename): int|false` — `ext/ftp/ftp.stub.php:81`
+- ·· `function ftp_close(FTP\Connection $ftp): bool` — `ext/ftp/ftp.stub.php:129`
+- ·· `function ftp_connect(string $hostname, int $port = 21, int $timeout = 90): FTP\Connection|false` — `ext/ftp/ftp.stub.php:62`
+- ·· `function ftp_delete(FTP\Connection $ftp, string $filename): bool` — `ext/ftp/ftp.stub.php:127`
+- ·· `function ftp_exec(FTP\Connection $ftp, string $command): bool` — `ext/ftp/ftp.stub.php:72`
+- ·· `function ftp_fget(FTP\Connection $ftp, $stream, string $remote_filename, int $mode = FTP_BINARY, int $offset = 0): bool` — `ext/ftp/ftp.stub.php:107`
+- ·· `function ftp_fput(FTP\Connection $ftp, string $remote_filename, $stream, int $mode = FTP_BINARY, int $offset = 0): bool` — `ext/ftp/ftp.stub.php:117`
+- ·· `function ftp_get(FTP\Connection $ftp, string $local_filename, string $remote_filename, int $mode = FTP_BINARY, int $offset = 0): bool` — `ext/ftp/ftp.stub.php:112`
+- ·· `function ftp_get_option(FTP\Connection $ftp, int $option): int|bool` — `ext/ftp/ftp.stub.php:136`
+- ·· `function ftp_login(FTP\Connection $ftp, string $username, #[\SensitiveParameter] string $password): bool` — `ext/ftp/ftp.stub.php:68`
+- ·· `function ftp_mdtm(FTP\Connection $ftp, string $filename): int` — `ext/ftp/ftp.stub.php:125`
+- ·· `function ftp_mkdir(FTP\Connection $ftp, string $directory): string|false` — `ext/ftp/ftp.stub.php:79`
+- ·· `function ftp_mlsd(FTP\Connection $ftp, string $directory): array|false` — `ext/ftp/ftp.stub.php:102`
+- ·· `function ftp_nb_continue(FTP\Connection $ftp): int` — `ext/ftp/ftp.stub.php:114`
+- ·· `function ftp_nb_fget(FTP\Connection $ftp, $stream, string $remote_filename, int $mode = FTP_BINARY, int $offset = 0): int` — `ext/ftp/ftp.stub.php:110`
+- ·· `function ftp_nb_fput(FTP\Connection $ftp, string $remote_filename, $stream, int $mode = FTP_BINARY, int $offset = 0): int` — `ext/ftp/ftp.stub.php:120`
+- ·· `function ftp_nb_get(FTP\Connection $ftp, string $local_filename, string $remote_filename, int $mode = FTP_BINARY, int $offset = 0): int|false` — `ext/ftp/ftp.stub.php:113`
+- ·· `function ftp_nb_put(FTP\Connection $ftp, string $remote_filename, string $local_filename, int $mode = FTP_BINARY, int $offset = 0): int|false` — `ext/ftp/ftp.stub.php:123`
+- ·· `function ftp_nlist(FTP\Connection $ftp, string $directory): array|false` — `ext/ftp/ftp.stub.php:90`
+- ·· `function ftp_pasv(FTP\Connection $ftp, bool $enable): bool` — `ext/ftp/ftp.stub.php:111`
+- ·· `function ftp_put(FTP\Connection $ftp, string $remote_filename, string $local_filename, int $mode = FTP_BINARY, int $offset = 0): bool` — `ext/ftp/ftp.stub.php:121`
+- ·· `function ftp_pwd(FTP\Connection $ftp): string|false` — `ext/ftp/ftp.stub.php:69`
+- ·· `function ftp_quit(FTP\Connection $ftp): bool` — `ext/ftp/ftp.stub.php:132`
+- ·· `function ftp_raw(FTP\Connection $ftp, string $command): ?array` — `ext/ftp/ftp.stub.php:78`
+- ·· `function ftp_rawlist(FTP\Connection $ftp, string $directory, bool $recursive = false): array|false` — `ext/ftp/ftp.stub.php:96`
+- ·· `function ftp_rename(FTP\Connection $ftp, string $from, string $to): bool` — `ext/ftp/ftp.stub.php:126`
+- ·· `function ftp_rmdir(FTP\Connection $ftp, string $directory): bool` — `ext/ftp/ftp.stub.php:80`
+- ·· `function ftp_set_option(FTP\Connection $ftp, int $option, $value): true` — `ext/ftp/ftp.stub.php:135`
+- ·· `function ftp_site(FTP\Connection $ftp, string $command): bool` — `ext/ftp/ftp.stub.php:128`
+- ·· `function ftp_size(FTP\Connection $ftp, string $filename): int` — `ext/ftp/ftp.stub.php:124`
+- ·· `function ftp_ssl_connect(string $hostname, int $port = 21, int $timeout = 90): FTP\Connection|false` — `ext/ftp/ftp.stub.php:65`
+- ·· `function ftp_systype(FTP\Connection $ftp): string|false` — `ext/ftp/ftp.stub.php:104`
+
+## ext/gd (`108`) — impl `0`, tested `0`
+
+- ·· `function gd_info(): array` — `ext/gd/gd.stub.php:478`
+- ·· `function imageaffine(GdImage $image, array $affine, ?array $clip = null): GdImage|false` — `ext/gd/gd.stub.php:762`
+- ·· `function imageaffinematrixconcat(array $matrix1, array $matrix2): array|false` — `ext/gd/gd.stub.php:775`
+- ·· `function imageaffinematrixget(int $type, $options): array|false` — `ext/gd/gd.stub.php:769`
+- ·· `function imagealphablending(GdImage $image, bool $enable): true` — `ext/gd/gd.stub.php:501`
+- ·· `function imageantialias(GdImage $image, bool $enable): true` — `ext/gd/gd.stub.php:750`
+- ·· `function imagearc(GdImage $image, int $center_x, int $center_y, int $width, int $height, int $start_angle, int $end_angle, int $color): true` — `ext/gd/gd.stub.php:665`
+- ·· `function imageavif(GdImage $image, $file = null, int $quality = -1, int $speed = -1): bool` — `ext/gd/gd.stub.php:595`
+- ·· `function imagebmp(GdImage $image, $file = null, bool $compressed = true): bool` — `ext/gd/gd.stub.php:624`
+- ·· `function imagechar(GdImage $image, GdFont|int $font, int $x, int $y, string $char, int $color): true` — `ext/gd/gd.stub.php:689`
+- ·· `function imagecharup(GdImage $image, GdFont|int $font, int $x, int $y, string $char, int $color): true` — `ext/gd/gd.stub.php:691`
+- ·· `function imagecolorallocate(GdImage $image, int $red, int $green, int $blue): int|false` — `ext/gd/gd.stub.php:629`
+- ·· `function imagecolorallocatealpha(GdImage $image, int $red, int $green, int $blue, int $alpha): int|false` — `ext/gd/gd.stub.php:507`
+- ·· `function imagecolorat(GdImage $image, int $x, int $y): int|false` — `ext/gd/gd.stub.php:633`
+- ·· `function imagecolorclosest(GdImage $image, int $red, int $green, int $blue): int` — `ext/gd/gd.stub.php:635`
+- ·· `function imagecolorclosestalpha(GdImage $image, int $red, int $green, int $blue, int $alpha): int` — `ext/gd/gd.stub.php:511`
+- ·· `function imagecolorclosesthwb(GdImage $image, int $red, int $green, int $blue): int` — `ext/gd/gd.stub.php:637`
+- ·· `function imagecolordeallocate(GdImage $image, int $color): true` — `ext/gd/gd.stub.php:639`
+- ·· `function imagecolorexact(GdImage $image, int $red, int $green, int $blue): int` — `ext/gd/gd.stub.php:643`
+- ·· `function imagecolorexactalpha(GdImage $image, int $red, int $green, int $blue, int $alpha): int` — `ext/gd/gd.stub.php:513`
+- ·· `function imagecolormatch(GdImage $image1, GdImage $image2): true` — `ext/gd/gd.stub.php:493`
+- ·· `function imagecolorresolve(GdImage $image, int $red, int $green, int $blue): int` — `ext/gd/gd.stub.php:641`
+- ·· `function imagecolorresolvealpha(GdImage $image, int $red, int $green, int $blue, int $alpha): int` — `ext/gd/gd.stub.php:509`
+- ·· `function imagecolorset(GdImage $image, int $color, int $red, int $green, int $blue, int $alpha = 0): false|null` — `ext/gd/gd.stub.php:645`
+- ·· `function imagecolorsforindex(GdImage $image, int $color): array` — `ext/gd/gd.stub.php:651`
+- ·· `function imagecolorstotal(GdImage $image): int` — `ext/gd/gd.stub.php:673`
+- ·· `function imagecolortransparent(GdImage $image, ?int $color = null): int` — `ext/gd/gd.stub.php:675`
+- ·· `function imageconvolution(GdImage $image, array $matrix, float $divisor, float $offset): bool` — `ext/gd/gd.stub.php:746`
+- ·· `function imagecopy(GdImage $dst_image, GdImage $src_image, int $dst_x, int $dst_y, int $src_x, int $src_y, int $src_width, int $src_height): true` — `ext/gd/gd.stub.php:697`
+- ·· `function imagecopymerge(GdImage $dst_image, GdImage $src_image, int $dst_x, int $dst_y, int $src_x, int $src_y, int $src_width, int $src_height, int $pct): true` — `ext/gd/gd.stub.php:699`
+- ·· `function imagecopymergegray(GdImage $dst_image, GdImage $src_image, int $dst_x, int $dst_y, int $src_x, int $src_y, int $src_width, int $src_height, int $pct): true` — `ext/gd/gd.stub.php:701`
+- ·· `function imagecopyresampled(GdImage $dst_image, GdImage $src_image, int $dst_x, int $dst_y, int $src_x, int $src_y, int $dst_width, int $dst_height, int $src_width, int $src_height): true` — `ext/gd/gd.stub.php:515`
+- ·· `function imagecopyresized(GdImage $dst_image, GdImage $src_image, int $dst_x, int $dst_y, int $src_x, int $src_y, int $dst_width, int $dst_height, int $src_width, int $src_height): true` — `ext/gd/gd.stub.php:703`
+- ·· `function imagecreate(int $width, int $height): GdImage|false` — `ext/gd/gd.stub.php:535`
+- ·· `function imagecreatefromavif(string $filename): GdImage|false` — `ext/gd/gd.stub.php:545`
+- ·· `function imagecreatefrombmp(string $filename): GdImage|false` — `ext/gd/gd.stub.php:587`
+- ·· `function imagecreatefromgd(string $filename): GdImage|false` — `ext/gd/gd.stub.php:578`
+- ·· `function imagecreatefromgd2(string $filename): GdImage|false` — `ext/gd/gd.stub.php:581`
+- ·· `function imagecreatefromgd2part(string $filename, int $x, int $y, int $width, int $height): GdImage|false` — `ext/gd/gd.stub.php:584`
+- ·· `function imagecreatefromgif(string $filename): GdImage|false` — `ext/gd/gd.stub.php:549`
+- ·· `function imagecreatefromjpeg(string $filename): GdImage|false` — `ext/gd/gd.stub.php:553`
+- ·· `function imagecreatefrompng(string $filename): GdImage|false` — `ext/gd/gd.stub.php:558`
+- ·· `function imagecreatefromstring(string $data): GdImage|false` — `ext/gd/gd.stub.php:541`
+- ·· `function imagecreatefromtga(string $filename): GdImage|false` — `ext/gd/gd.stub.php:589`
+- ·· `function imagecreatefromwbmp(string $filename): GdImage|false` — `ext/gd/gd.stub.php:575`
+- ·· `function imagecreatefromwebp(string $filename): GdImage|false` — `ext/gd/gd.stub.php:563`
+- ·· `function imagecreatefromxbm(string $filename): GdImage|false` — `ext/gd/gd.stub.php:567`
+- ·· `function imagecreatefromxpm(string $filename): GdImage|false` — `ext/gd/gd.stub.php:571`
+- ·· `function imagecreatetruecolor(int $width, int $height): GdImage|false` — `ext/gd/gd.stub.php:485`
+- ·· `function imagecrop(GdImage $image, array $rectangle): GdImage|false` — `ext/gd/gd.stub.php:753`
+- ·· `function imagecropauto(GdImage $image, int $mode = IMG_CROP_DEFAULT, float $threshold = 0.5, int $color = -1): GdImage|false` — `ext/gd/gd.stub.php:756`
+- ·· `function imagedashedline(GdImage $image, int $x1, int $y1, int $x2, int $y2, int $color): true` — `ext/gd/gd.stub.php:659`
+- ·· `function imagedestroy(GdImage $image): true` — `ext/gd/gd.stub.php:627`
+- ·· `function imageellipse(GdImage $image, int $center_x, int $center_y, int $width, int $height, int $color): true` — `ext/gd/gd.stub.php:667`
+- ·· `function imagefill(GdImage $image, int $x, int $y, int $color): true` — `ext/gd/gd.stub.php:671`
+- ·· `function imagefilledarc(GdImage $image, int $center_x, int $center_y, int $width, int $height, int $start_angle, int $end_angle, int $color, int $style): true` — `ext/gd/gd.stub.php:499`
+- ·· `function imagefilledellipse(GdImage $image, int $center_x, int $center_y, int $width, int $height, int $color): true` — `ext/gd/gd.stub.php:497`
+- ·· `function imagefilledpolygon(GdImage $image, array $points, int $num_points_or_color, ?int $color = null): bool` — `ext/gd/gd.stub.php:683`
+- ·· `function imagefilledrectangle(GdImage $image, int $x1, int $y1, int $x2, int $y2, int $color): true` — `ext/gd/gd.stub.php:663`
+- ·· `function imagefilltoborder(GdImage $image, int $x, int $y, int $border_color, int $color): true` — `ext/gd/gd.stub.php:669`
+- ·· `function imagefilter(GdImage $image, int $filter, ...$args): bool` — `ext/gd/gd.stub.php:744`
+- ·· `function imageflip(GdImage $image, int $mode): true` — `ext/gd/gd.stub.php:748`
+- ·· `function imagefontheight(GdFont|int $font): int` — `ext/gd/gd.stub.php:687`
+- ·· `function imagefontwidth(GdFont|int $font): int` — `ext/gd/gd.stub.php:685`
+- ·· `function imageftbbox(float $size, float $angle, string $font_filename, string $string, array $options = []): array|false` — `ext/gd/gd.stub.php:722`
+- ·· `function imagefttext(GdImage $image, float $size, float $angle, int $x, int $y, int $color, string $font_filename, string $text, array $options = []): array|false` — `ext/gd/gd.stub.php:728`
+- ·· `function imagegammacorrect(GdImage $image, float $input_gamma, float $output_gamma): true` — `ext/gd/gd.stub.php:653`
+- ·· `function imagegd(GdImage $image, ?string $file = null): bool` — `ext/gd/gd.stub.php:619`
+- ·· `function imagegd2(GdImage $image, ?string $file = null, int $chunk_size = 128, int $mode = IMG_GD2_RAW): bool` — `ext/gd/gd.stub.php:621`
+- ·· `function imagegetclip(GdImage $image): array` — `ext/gd/gd.stub.php:715`
+- ·· `function imagegetinterpolation(GdImage $image): int` — `ext/gd/gd.stub.php:777`
+- ·· `function imagegif(GdImage $image, $file = null): bool` — `ext/gd/gd.stub.php:599`
+- ·· `function imagegrabscreen(): GdImage|false` — `ext/gd/gd.stub.php:523`
+- ·· `function imagegrabwindow(int $handle, bool $client_area = false): GdImage|false` — `ext/gd/gd.stub.php:520`
+- ·· `function imageinterlace(GdImage $image, ?bool $enable = null): bool` — `ext/gd/gd.stub.php:677`
+- ·· `function imageistruecolor(GdImage $image): bool` — `ext/gd/gd.stub.php:487`
+- ·· `function imagejpeg(GdImage $image, $file = null, int $quality = -1): bool` — `ext/gd/gd.stub.php:613`
+- ·· `function imagelayereffect(GdImage $image, int $effect): true` — `ext/gd/gd.stub.php:505`
+- ·· `function imageline(GdImage $image, int $x1, int $y1, int $x2, int $y2, int $color): true` — `ext/gd/gd.stub.php:657`
+- ·· `function imageloadfont(string $filename): GdFont|false` — `ext/gd/gd.stub.php:480`
+- ·· `function imageopenpolygon(GdImage $image, array $points, int $num_points_or_color, ?int $color = null): bool` — `ext/gd/gd.stub.php:681`
+- ·· `function imagepalettecopy(GdImage $dst, GdImage $src): void` — `ext/gd/gd.stub.php:631`
+- ·· `function imagepalettetotruecolor(GdImage $image): bool` — `ext/gd/gd.stub.php:491`
+- ·· `function imagepng(GdImage $image, $file = null, int $quality = -1, int $filters = -1): bool` — `ext/gd/gd.stub.php:603`
+- ·· `function imagepolygon(GdImage $image, array $points, int $num_points_or_color, ?int $color = null): bool` — `ext/gd/gd.stub.php:679`
+- ·· `function imagerectangle(GdImage $image, int $x1, int $y1, int $x2, int $y2, int $color): true` — `ext/gd/gd.stub.php:661`
+- ·· `function imageresolution(GdImage $image, ?int $resolution_x = null, ?int $resolution_y = null): array|true` — `ext/gd/gd.stub.php:785`
+- ·· `function imagerotate(GdImage $image, float $angle, int $background_color): GdImage|false` — `ext/gd/gd.stub.php:528`
+- ·· `function imagesavealpha(GdImage $image, bool $enable): true` — `ext/gd/gd.stub.php:503`
+- ·· `function imagescale(GdImage $image, int $width, int $height = -1, int $mode = IMG_BILINEAR_FIXED): GdImage|false` — `ext/gd/gd.stub.php:759`
+- ·· `function imagesetbrush(GdImage $image, GdImage $brush): true` — `ext/gd/gd.stub.php:532`
+- ·· `function imagesetclip(GdImage $image, int $x1, int $y1, int $x2, int $y2): true` — `ext/gd/gd.stub.php:709`
+- ·· `function imagesetinterpolation(GdImage $image, int $method = IMG_BILINEAR_FIXED): bool` — `ext/gd/gd.stub.php:779`
+- ·· `function imagesetpixel(GdImage $image, int $x, int $y, int $color): true` — `ext/gd/gd.stub.php:655`
+- ·· `function imagesetstyle(GdImage $image, array $style): bool` — `ext/gd/gd.stub.php:482`
+- ·· `function imagesetthickness(GdImage $image, int $thickness): true` — `ext/gd/gd.stub.php:495`
+- ·· `function imagesettile(GdImage $image, GdImage $tile): true` — `ext/gd/gd.stub.php:530`
+- ·· `function imagestring(GdImage $image, GdFont|int $font, int $x, int $y, string $string, int $color): true` — `ext/gd/gd.stub.php:693`
+- ·· `function imagestringup(GdImage $image, GdFont|int $font, int $x, int $y, string $string, int $color): true` — `ext/gd/gd.stub.php:695`
+- ·· `function imagesx(GdImage $image): int` — `ext/gd/gd.stub.php:705`
+- ·· `function imagesy(GdImage $image): int` — `ext/gd/gd.stub.php:707`
+- ·· `function imagetruecolortopalette(GdImage $image, bool $dither, int $num_colors): bool` — `ext/gd/gd.stub.php:489`
+- ·· `function imagettfbbox(float $size, float $angle, string $font_filename, string $string, array $options = []): array|false` — `ext/gd/gd.stub.php:734`
+- ·· `function imagettftext(GdImage $image, float $size, float $angle, int $x, int $y, int $color, string $font_filename, string $text, array $options = []): array|false` — `ext/gd/gd.stub.php:740`
+- ·· `function imagetypes(): int` — `ext/gd/gd.stub.php:538`
+- ·· `function imagewbmp(GdImage $image, $file = null, ?int $foreground_color = null): bool` — `ext/gd/gd.stub.php:617`
+- ·· `function imagewebp(GdImage $image, $file = null, int $quality = -1): bool` — `ext/gd/gd.stub.php:608`
+- ·· `function imagexbm(GdImage $image, ?string $filename, ?int $foreground_color = null): bool` — `ext/gd/gd.stub.php:591`
+
+## ext/gettext (`10`) — impl `0`, tested `2`
+
+- ·🧪 `function _(string $message): string` — `ext/gettext/gettext.stub.php:12`
+- ·· `function bind_textdomain_codeset(string $domain, ?string $codeset = null): string|false` — `ext/gettext/gettext.stub.php:40`
+- ·· `function bindtextdomain(string $domain, ?string $directory = null): string|false` — `ext/gettext/gettext.stub.php:21`
+- ·· `function dcgettext(string $domain, string $message, int $category): string` — `ext/gettext/gettext.stub.php:18`
+- ·· `function dcngettext(string $domain, string $singular, string $plural, int $count, int $category): string` — `ext/gettext/gettext.stub.php:35`
+- ·· `function dgettext(string $domain, string $message): string` — `ext/gettext/gettext.stub.php:15`
+- ·· `function dngettext(string $domain, string $singular, string $plural, int $count): string` — `ext/gettext/gettext.stub.php:30`
+- ·🧪 `function gettext(string $message): string` — `ext/gettext/gettext.stub.php:9`
+- ·· `function ngettext(string $singular, string $plural, int $count): string` — `ext/gettext/gettext.stub.php:25`
+- ·· `function textdomain(?string $domain = null): string` — `ext/gettext/gettext.stub.php:6`
+
+## ext/gmp (`54`) — impl `0`, tested `0`
+
+- ·· `public function GMP::__construct(int|string $num = 0, int $base = 0)` — `ext/gmp/gmp.stub.php:62`
+- ·· `public function GMP::__serialize(): array` — `ext/gmp/gmp.stub.php:64`
+- ·· `public function GMP::__unserialize(array $data): void` — `ext/gmp/gmp.stub.php:66`
+- ·· `function gmp_abs(GMP|int|string $num): GMP` — `ext/gmp/gmp.stub.php:104`
+- ·· `function gmp_add(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:79`
+- ·· `function gmp_and(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:162`
+- ·· `function gmp_binomial(GMP|int|string $n, int $k): GMP` — `ext/gmp/gmp.stub.php:186`
+- ·· `function gmp_clrbit(GMP $num, int $index): void` — `ext/gmp/gmp.stub.php:172`
+- ·· `function gmp_cmp(GMP|int|string $num1, GMP|int|string $num2): int` — `ext/gmp/gmp.stub.php:152`
+- ·· `function gmp_com(GMP|int|string $num): GMP` — `ext/gmp/gmp.stub.php:166`
+- ·· `function gmp_div(GMP|int|string $num1, GMP|int|string $num2, int $rounding_mode = GMP_ROUND_ZERO): GMP` — `ext/gmp/gmp.stub.php:96`
+- ·· `function gmp_div_q(GMP|int|string $num1, GMP|int|string $num2, int $rounding_mode = GMP_ROUND_ZERO): GMP` — `ext/gmp/gmp.stub.php:91`
+- ·· `function gmp_div_qr(GMP|int|string $num1, GMP|int|string $num2, int $rounding_mode = GMP_ROUND_ZERO): array` — `ext/gmp/gmp.stub.php:89`
+- ·· `function gmp_div_r(GMP|int|string $num1, GMP|int|string $num2, int $rounding_mode = GMP_ROUND_ZERO): GMP` — `ext/gmp/gmp.stub.php:93`
+- ·· `function gmp_divexact(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:100`
+- ·· `function gmp_export(GMP|int|string $num, int $word_size = 1, int $flags = GMP_MSW_FIRST|GMP_NATIVE_ENDIAN): string` — `ext/gmp/gmp.stub.php:73`
+- ·· `function gmp_fact(GMP|int|string $num): GMP` — `ext/gmp/gmp.stub.php:106`
+- ·· `function gmp_gcd(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:134`
+- ·· `function gmp_gcdext(GMP|int|string $num1, GMP|int|string $num2): array` — `ext/gmp/gmp.stub.php:140`
+- ·· `function gmp_hamdist(GMP|int|string $num1, GMP|int|string $num2): int` — `ext/gmp/gmp.stub.php:182`
+- ·· `function gmp_import(string $data, int $word_size = 1, int $flags = GMP_MSW_FIRST|GMP_NATIVE_ENDIAN): GMP` — `ext/gmp/gmp.stub.php:71`
+- ·· `function gmp_init(int|string $num, int $base = 0): GMP` — `ext/gmp/gmp.stub.php:69`
+- ·· `function gmp_intval(GMP|int|string $num): int` — `ext/gmp/gmp.stub.php:75`
+- ·· `function gmp_invert(GMP|int|string $num1, GMP|int|string $num2): GMP|false` — `ext/gmp/gmp.stub.php:144`
+- ·· `function gmp_jacobi(GMP|int|string $num1, GMP|int|string $num2): int` — `ext/gmp/gmp.stub.php:146`
+- ·· `function gmp_kronecker(GMP|int|string $num1, GMP|int|string $num2): int` — `ext/gmp/gmp.stub.php:150`
+- ·· `function gmp_lcm(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:142`
+- ·· `function gmp_legendre(GMP|int|string $num1, GMP|int|string $num2): int` — `ext/gmp/gmp.stub.php:148`
+- ·· `function gmp_mod(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:98`
+- ·· `function gmp_mul(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:83`
+- ·· `function gmp_neg(GMP|int|string $num): GMP` — `ext/gmp/gmp.stub.php:102`
+- ·· `function gmp_nextprime(GMP|int|string $num): GMP` — `ext/gmp/gmp.stub.php:184`
+- ·· `function gmp_or(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:164`
+- ·· `function gmp_perfect_power(GMP|int|string $num): bool` — `ext/gmp/gmp.stub.php:130`
+- ·· `function gmp_perfect_square(GMP|int|string $num): bool` — `ext/gmp/gmp.stub.php:128`
+- ·· `function gmp_popcount(GMP|int|string $num): int` — `ext/gmp/gmp.stub.php:180`
+- ·· `function gmp_pow(GMP|int|string $num, int $exponent): GMP` — `ext/gmp/gmp.stub.php:124`
+- ·· `function gmp_powm(GMP|int|string $num, GMP|int|string $exponent, GMP|int|string $modulus): GMP` — `ext/gmp/gmp.stub.php:126`
+- ·· `function gmp_prob_prime(GMP|int|string $num, int $repetitions = 10): int` — `ext/gmp/gmp.stub.php:132`
+- ·· `function gmp_random_bits(int $bits): GMP` — `ext/gmp/gmp.stub.php:158`
+- ·· `function gmp_random_range(GMP|int|string $min, GMP|int|string $max): GMP` — `ext/gmp/gmp.stub.php:160`
+- ·· `function gmp_random_seed(GMP|int|string $seed): void` — `ext/gmp/gmp.stub.php:156`
+- ·· `function gmp_root(GMP|int|string $num, int $nth): GMP` — `ext/gmp/gmp.stub.php:116`
+- ·· `function gmp_rootrem(GMP|int|string $num, int $nth): array` — `ext/gmp/gmp.stub.php:122`
+- ·· `function gmp_scan0(GMP|int|string $num1, int $start): int` — `ext/gmp/gmp.stub.php:176`
+- ·· `function gmp_scan1(GMP|int|string $num1, int $start): int` — `ext/gmp/gmp.stub.php:178`
+- ·· `function gmp_setbit(GMP $num, int $index, bool $value = true): void` — `ext/gmp/gmp.stub.php:170`
+- ·· `function gmp_sign(GMP|int|string $num): int` — `ext/gmp/gmp.stub.php:154`
+- ·· `function gmp_sqrt(GMP|int|string $num): GMP` — `ext/gmp/gmp.stub.php:108`
+- ·· `function gmp_sqrtrem(GMP|int|string $num): array` — `ext/gmp/gmp.stub.php:114`
+- ·· `function gmp_strval(GMP|int|string $num, int $base = 10): string` — `ext/gmp/gmp.stub.php:77`
+- ·· `function gmp_sub(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:81`
+- ·· `function gmp_testbit(GMP|int|string $num, int $index): bool` — `ext/gmp/gmp.stub.php:174`
+- ·· `function gmp_xor(GMP|int|string $num1, GMP|int|string $num2): GMP` — `ext/gmp/gmp.stub.php:168`
+
+## ext/hash (`24`) — impl `2`, tested `1`
+
+- ✅🧪 `function hash(string $algo, string $data, bool $binary = false, array $options = []): string` — `ext/hash/hash.stub.php:12`
+- ·· `function hash_algos(): array` — `ext/hash/hash.stub.php:51`
+- ·· `function hash_copy(HashContext $context): HashContext` — `ext/hash/hash.stub.php:44`
+- ·· `function hash_equals(#[\SensitiveParameter] string $known_string, #[\SensitiveParameter] string $user_string): bool` — `ext/hash/hash.stub.php:65`
+- ·· `function hash_file(string $algo, string $filename, bool $binary = false, array $options = []): string|false` — `ext/hash/hash.stub.php:15`
+- ·· `function hash_final(HashContext $context, bool $binary = false): string` — `ext/hash/hash.stub.php:41`
+- ·· `function hash_hkdf(string $algo, #[\SensitiveParameter] string $key, int $length = 0, string $info = "", string $salt = ""): string` — `ext/hash/hash.stub.php:70`
+- ✅· `function hash_hmac(string $algo, string $data, #[\SensitiveParameter] string $key, bool $binary = false): string` — `ext/hash/hash.stub.php:20`
+- ·· `function hash_hmac_algos(): array` — `ext/hash/hash.stub.php:58`
+- ·· `function hash_hmac_file(string $algo, string $filename, #[\SensitiveParameter] string $key, bool $binary = false): string|false` — `ext/hash/hash.stub.php:25`
+- ·· `function hash_init(string $algo, int $flags = 0, #[\SensitiveParameter] string $key = "", array $options = []): HashContext` — `ext/hash/hash.stub.php:30`
+- ·· `function hash_pbkdf2(string $algo, #[\SensitiveParameter] string $password, string $salt, int $iterations, int $length = 0, bool $binary = false, array $options = []): string` — `ext/hash/hash.stub.php:63`
+- ·· `function hash_update(HashContext $context, string $data): true` — `ext/hash/hash.stub.php:32`
+- ·· `function hash_update_file(HashContext $context, string $filename, $stream_context = null): bool` — `ext/hash/hash.stub.php:38`
+- ·· `function hash_update_stream(HashContext $context, $stream, int $length = -1): int` — `ext/hash/hash.stub.php:35`
+- ·· `private function HashContext::__construct()` — `ext/hash/hash.stub.php:100`
+- ·· `public function HashContext::__debugInfo(): array` — `ext/hash/hash.stub.php:106`
+- ·· `public function HashContext::__serialize(): array` — `ext/hash/hash.stub.php:102`
+- ·· `public function HashContext::__unserialize(array $data): void` — `ext/hash/hash.stub.php:104`
+- ·· `function mhash(int $algo, string $data, ?string $key = null): string|false` — `ext/hash/hash.stub.php:95`
+- ·· `function mhash_count(): int` — `ext/hash/hash.stub.php:89`
+- ·· `function mhash_get_block_size(int $algo): int|false` — `ext/hash/hash.stub.php:74`
+- ·· `function mhash_get_hash_name(int $algo): string|false` — `ext/hash/hash.stub.php:80`
+- ·· `function mhash_keygen_s2k(int $algo, string $password, string $salt, int $length): string|false` — `ext/hash/hash.stub.php:86`
+
+## ext/iconv (`10`) — impl `0`, tested `0`
+
+- ·· `function iconv(string $from_encoding, string $to_encoding, string $string): string|false` — `ext/iconv/iconv.stub.php:48`
+- ·· `function iconv_get_encoding(string $type = "all"): array|string|false` — `ext/iconv/iconv.stub.php:56`
+- ·· `function iconv_mime_decode(string $string, int $mode = 0, ?string $encoding = null): string|false` — `ext/iconv/iconv.stub.php:39`
+- ·· `function iconv_mime_decode_headers(string $headers, int $mode = 0, ?string $encoding = null): array|false` — `ext/iconv/iconv.stub.php:45`
+- ·· `function iconv_mime_encode(string $field_name, string $field_value, array $options = []): string|false` — `ext/iconv/iconv.stub.php:36`
+- ·· `function iconv_set_encoding(string $type, string $encoding): bool` — `ext/iconv/iconv.stub.php:50`
+- ·· `function iconv_strlen(string $string, ?string $encoding = null): int|false` — `ext/iconv/iconv.stub.php:26`
+- ·· `function iconv_strpos(string $haystack, string $needle, int $offset = 0, ?string $encoding = null): int|false` — `ext/iconv/iconv.stub.php:31`
+- ·· `function iconv_strrpos(string $haystack, string $needle, ?string $encoding = null): int|false` — `ext/iconv/iconv.stub.php:33`
+- ·· `function iconv_substr(string $string, int $offset, ?int $length = null, ?string $encoding = null): string|false` — `ext/iconv/iconv.stub.php:29`
+
+## ext/intl (`498`) — impl `0`, tested `0`
+
+- ·· `public function Collator::__construct(string $locale)` — `ext/intl/collator/collator.stub.php:78`
+- ·· `public function Collator::asort(array&$array, int $flags = Collator::SORT_REGULAR): bool` — `ext/intl/collator/collator.stub.php:108`
+- ·· `public function Collator::compare(string $string1, string $string2): int|false` — `ext/intl/collator/collator.stub.php:90`
+- ·· `public static function Collator::create(string $locale): ?Collator` — `ext/intl/collator/collator.stub.php:84`
+- ·· `public function Collator::getAttribute(int $attribute): int|false` — `ext/intl/collator/collator.stub.php:114`
+- ·· `public function Collator::getErrorCode(): int|false` — `ext/intl/collator/collator.stub.php:144`
+- ·· `public function Collator::getErrorMessage(): string|false` — `ext/intl/collator/collator.stub.php:150`
+- ·· `public function Collator::getLocale(int $type): string|false` — `ext/intl/collator/collator.stub.php:138`
+- ·· `public function Collator::getSortKey(string $string): string|false` — `ext/intl/collator/collator.stub.php:156`
+- ·· `public function Collator::getStrength(): int` — `ext/intl/collator/collator.stub.php:126`
+- ·· `public function Collator::setAttribute(int $attribute, int $value): bool` — `ext/intl/collator/collator.stub.php:120`
+- ·· `public function Collator::setStrength(int $strength): true` — `ext/intl/collator/collator.stub.php:132`
+- ·· `public function Collator::sort(array&$array, int $flags = Collator::SORT_REGULAR): bool` — `ext/intl/collator/collator.stub.php:96`
+- ·· `public function Collator::sortWithSortKeys(array&$array): bool` — `ext/intl/collator/collator.stub.php:102`
+- ·· `function collator_asort(Collator $object, array&$array, int $flags = Collator::SORT_REGULAR): bool` — `ext/intl/php_intl.stub.php:307`
+- ·· `function collator_compare(Collator $object, string $string1, string $string2): int|false` — `ext/intl/php_intl.stub.php:293`
+- ·· `function collator_create(string $locale): ?Collator` — `ext/intl/php_intl.stub.php:291`
+- ·· `function collator_get_attribute(Collator $object, int $attribute): int|false` — `ext/intl/php_intl.stub.php:295`
+- ·· `function collator_get_error_code(Collator $object): int|false` — `ext/intl/php_intl.stub.php:311`
+- ·· `function collator_get_error_message(Collator $object): string|false` — `ext/intl/php_intl.stub.php:313`
+- ·· `function collator_get_locale(Collator $object, int $type): string|false` — `ext/intl/php_intl.stub.php:309`
+- ·· `function collator_get_sort_key(Collator $object, string $string): string|false` — `ext/intl/php_intl.stub.php:315`
+- ·· `function collator_get_strength(Collator $object): int` — `ext/intl/php_intl.stub.php:299`
+- ·· `function collator_set_attribute(Collator $object, int $attribute, int $value): bool` — `ext/intl/php_intl.stub.php:297`
+- ·· `function collator_set_strength(Collator $object, int $strength): true` — `ext/intl/php_intl.stub.php:301`
+- ·· `function collator_sort(Collator $object, array&$array, int $flags = Collator::SORT_REGULAR): bool` — `ext/intl/php_intl.stub.php:303`
+- ·· `function collator_sort_with_sort_keys(Collator $object, array&$array): bool` — `ext/intl/php_intl.stub.php:305`
+- ·· `function datefmt_create( ?string $locale, int $dateType = IntlDateFormatter::FULL, int $timeType = IntlDateFormatter::FULL, IntlTimeZone|DateTimeZone|string|null $timezone = null, IntlCalendar|int|null $calendar = null, ?string $pattern = null ): ?IntlDateFormatter` — `ext/intl/php_intl.stub.php:329`
+- ·· `function datefmt_format(IntlDateFormatter $formatter, $datetime): string|false` — `ext/intl/php_intl.stub.php:365`
+- ·· `function datefmt_format_object($datetime, $format = null, ?string $locale = null): string|false` — `ext/intl/php_intl.stub.php:371`
+- ·· `function datefmt_get_calendar(IntlDateFormatter $formatter): int|false` — `ext/intl/php_intl.stub.php:342`
+- ·· `function datefmt_get_calendar_object(IntlDateFormatter $formatter): IntlCalendar|false|null` — `ext/intl/php_intl.stub.php:348`
+- ·· `function datefmt_get_datetype(IntlDateFormatter $formatter): int|false` — `ext/intl/php_intl.stub.php:338`
+- ·· `function datefmt_get_error_code(IntlDateFormatter $formatter): int` — `ext/intl/php_intl.stub.php:383`
+- ·· `function datefmt_get_error_message(IntlDateFormatter $formatter): string` — `ext/intl/php_intl.stub.php:385`
+- ·· `function datefmt_get_locale(IntlDateFormatter $formatter, int $type = ULOC_ACTUAL_LOCALE): string|false` — `ext/intl/php_intl.stub.php:358`
+- ·· `function datefmt_get_pattern(IntlDateFormatter $formatter): string|false` — `ext/intl/php_intl.stub.php:356`
+- ·· `function datefmt_get_timetype(IntlDateFormatter $formatter): int|false` — `ext/intl/php_intl.stub.php:340`
+- ·· `function datefmt_get_timezone(IntlDateFormatter $formatter): IntlTimeZone|false` — `ext/intl/php_intl.stub.php:350`
+- ·· `function datefmt_get_timezone_id(IntlDateFormatter $formatter): string|false` — `ext/intl/php_intl.stub.php:346`
+- ·· `function datefmt_is_lenient(IntlDateFormatter $formatter): bool` — `ext/intl/php_intl.stub.php:362`
+- ·· `function datefmt_localtime(IntlDateFormatter $formatter, string $string,&$offset = null): array|false` — `ext/intl/php_intl.stub.php:381`
+- ·· `function datefmt_parse(IntlDateFormatter $formatter, string $string,&$offset = null): int|float|false` — `ext/intl/php_intl.stub.php:374`
+- ·· `function datefmt_set_calendar(IntlDateFormatter $formatter, IntlCalendar|int|null $calendar): bool` — `ext/intl/php_intl.stub.php:344`
+- ·· `function datefmt_set_lenient(IntlDateFormatter $formatter, bool $lenient): void` — `ext/intl/php_intl.stub.php:360`
+- ·· `function datefmt_set_pattern(IntlDateFormatter $formatter, string $pattern): bool` — `ext/intl/php_intl.stub.php:354`
+- ·· `function datefmt_set_timezone(IntlDateFormatter $formatter, IntlTimeZone|DateTimeZone|string|null $timezone): bool` — `ext/intl/php_intl.stub.php:352`
+- ·· `function grapheme_extract(string $haystack, int $size, int $type = GRAPHEME_EXTR_COUNT, int $offset = 0,&$next = null): string|false` — `ext/intl/php_intl.stub.php:449`
+- ·· `function grapheme_levenshtein(string $string1, string $string2, int $insertion_cost = 1, int $replacement_cost = 1, int $deletion_cost = 1, string $locale = ""): int|false` — `ext/intl/php_intl.stub.php:446`
+- ·· `function grapheme_str_split(string $string, int $length = 1): array|false` — `ext/intl/php_intl.stub.php:444`
+- ·· `function grapheme_stripos(string $haystack, string $needle, int $offset = 0, string $locale = ""): int|false` — `ext/intl/php_intl.stub.php:432`
+- ·· `function grapheme_stristr(string $haystack, string $needle, bool $beforeNeedle = false, string $locale = ""): string|false` — `ext/intl/php_intl.stub.php:442`
+- ·· `function grapheme_strlen(string $string): int|false|null` — `ext/intl/php_intl.stub.php:428`
+- ·· `function grapheme_strpos(string $haystack, string $needle, int $offset = 0, string $locale = ""): int|false` — `ext/intl/php_intl.stub.php:430`
+- ·· `function grapheme_strripos(string $haystack, string $needle, int $offset = 0, string $locale = ""): int|false` — `ext/intl/php_intl.stub.php:436`
+- ·· `function grapheme_strrpos(string $haystack, string $needle, int $offset = 0, string $locale = ""): int|false` — `ext/intl/php_intl.stub.php:434`
+- ·· `function grapheme_strstr(string $haystack, string $needle, bool $beforeNeedle = false, string $locale = ""): string|false` — `ext/intl/php_intl.stub.php:440`
+- ·· `function grapheme_substr(string $string, int $offset, ?int $length = null, string $locale = ""): string|false` — `ext/intl/php_intl.stub.php:438`
+- ·· `function idn_to_ascii(string $domain, int $flags = IDNA_DEFAULT, int $variant = INTL_IDNA_VARIANT_UTS46,&$idna_info = null): string|false` — `ext/intl/php_intl.stub.php:454`
+- ·· `function idn_to_utf8(string $domain, int $flags = IDNA_DEFAULT, int $variant = INTL_IDNA_VARIANT_UTS46,&$idna_info = null): string|false` — `ext/intl/php_intl.stub.php:457`
+- ·· `function intl_error_name(int $errorCode): string` — `ext/intl/php_intl.stub.php:325`
+- ·· `function intl_get_error_code(): int` — `ext/intl/php_intl.stub.php:319`
+- ·· `function intl_get_error_message(): string` — `ext/intl/php_intl.stub.php:321`
+- ·· `function intl_is_failure(int $errorCode): bool` — `ext/intl/php_intl.stub.php:323`
+- ·· `private function IntlBreakIterator::__construct()` — `ext/intl/breakiterator/breakiterator.stub.php:68`
+- ·· `public static function IntlBreakIterator::createCharacterInstance(?string $locale = null): ?IntlBreakIterator` — `ext/intl/breakiterator/breakiterator.stub.php:51`
+- ·· `public static function IntlBreakIterator::createCodePointInstance(): IntlCodePointBreakIterator` — `ext/intl/breakiterator/breakiterator.stub.php:54`
+- ·· `public static function IntlBreakIterator::createLineInstance(?string $locale = null): ?IntlBreakIterator` — `ext/intl/breakiterator/breakiterator.stub.php:57`
+- ·· `public static function IntlBreakIterator::createSentenceInstance(?string $locale = null): ?IntlBreakIterator` — `ext/intl/breakiterator/breakiterator.stub.php:60`
+- ·· `public static function IntlBreakIterator::createTitleInstance(?string $locale = null): ?IntlBreakIterator` — `ext/intl/breakiterator/breakiterator.stub.php:63`
+- ·· `public static function IntlBreakIterator::createWordInstance(?string $locale = null): ?IntlBreakIterator` — `ext/intl/breakiterator/breakiterator.stub.php:66`
+- ·· `public function IntlBreakIterator::current(): int` — `ext/intl/breakiterator/breakiterator.stub.php:71`
+- ·· `public function IntlBreakIterator::first(): int` — `ext/intl/breakiterator/breakiterator.stub.php:74`
+- ·· `public function IntlBreakIterator::following(int $offset): int` — `ext/intl/breakiterator/breakiterator.stub.php:77`
+- ·· `public function IntlBreakIterator::getErrorCode(): int` — `ext/intl/breakiterator/breakiterator.stub.php:80`
+- ·· `public function IntlBreakIterator::getErrorMessage(): string` — `ext/intl/breakiterator/breakiterator.stub.php:83`
+- ·· `public function IntlBreakIterator::getIterator(): Iterator` — `ext/intl/breakiterator/breakiterator.stub.php:112`
+- ·· `public function IntlBreakIterator::getLocale(int $type): string|false` — `ext/intl/breakiterator/breakiterator.stub.php:86`
+- ·· `public function IntlBreakIterator::getPartsIterator(string $type = IntlPartsIterator::KEY_SEQUENTIAL): IntlPartsIterator` — `ext/intl/breakiterator/breakiterator.stub.php:89`
+- ·· `public function IntlBreakIterator::getText(): ?string` — `ext/intl/breakiterator/breakiterator.stub.php:92`
+- ·· `public function IntlBreakIterator::isBoundary(int $offset): bool` — `ext/intl/breakiterator/breakiterator.stub.php:95`
+- ·· `public function IntlBreakIterator::last(): int` — `ext/intl/breakiterator/breakiterator.stub.php:98`
+- ·· `public function IntlBreakIterator::next(?int $offset = null): int` — `ext/intl/breakiterator/breakiterator.stub.php:101`
+- ·· `public function IntlBreakIterator::preceding(int $offset): int` — `ext/intl/breakiterator/breakiterator.stub.php:104`
+- ·· `public function IntlBreakIterator::previous(): int` — `ext/intl/breakiterator/breakiterator.stub.php:107`
+- ·· `public function IntlBreakIterator::setText(string $text): bool` — `ext/intl/breakiterator/breakiterator.stub.php:110`
+- ·· `function intlcal_add(IntlCalendar $calendar, int $field, int $value): bool` — `ext/intl/php_intl.stub.php:194`
+- ·· `function intlcal_after(IntlCalendar $calendar, IntlCalendar $other): bool` — `ext/intl/php_intl.stub.php:198`
+- ·· `function intlcal_before(IntlCalendar $calendar, IntlCalendar $other): bool` — `ext/intl/php_intl.stub.php:200`
+- ·· `function intlcal_clear(IntlCalendar $calendar, ?int $field = null): true` — `ext/intl/php_intl.stub.php:208`
+- ·· `function intlcal_create_instance(IntlTimeZone|DateTimeZone|string|null $timezone = null, ?string $locale = null): ?IntlCalendar` — `ext/intl/php_intl.stub.php:176`
+- ·· `function intlcal_equals(IntlCalendar $calendar, IntlCalendar $other): bool` — `ext/intl/php_intl.stub.php:256`
+- ·· `function intlcal_field_difference(IntlCalendar $calendar, float $timestamp, int $field): int|false` — `ext/intl/php_intl.stub.php:210`
+- ·· `function intlcal_from_date_time(DateTime|string $datetime, ?string $locale = null): ?IntlCalendar` — `ext/intl/php_intl.stub.php:264`
+- ·· `function intlcal_get(IntlCalendar $calendar, int $field): int|false` — `ext/intl/php_intl.stub.php:188`
+- ·· `function intlcal_get_actual_maximum(IntlCalendar $calendar, int $field): int|false` — `ext/intl/php_intl.stub.php:212`
+- ·· `function intlcal_get_actual_minimum(IntlCalendar $calendar, int $field): int|false` — `ext/intl/php_intl.stub.php:214`
+- ·· `function intlcal_get_available_locales(): array` — `ext/intl/php_intl.stub.php:186`
+- ·· `function intlcal_get_day_of_week_type(IntlCalendar $calendar, int $dayOfWeek): int|false` — `ext/intl/php_intl.stub.php:216`
+- ·· `function intlcal_get_error_code(IntlCalendar $calendar): int|false` — `ext/intl/php_intl.stub.php:268`
+- ·· `function intlcal_get_error_message(IntlCalendar $calendar): string|false` — `ext/intl/php_intl.stub.php:270`
+- ·· `function intlcal_get_first_day_of_week(IntlCalendar $calendar): int|false` — `ext/intl/php_intl.stub.php:218`
+- ·· `function intlcal_get_greatest_minimum(IntlCalendar $calendar, int $field): int|false` — `ext/intl/php_intl.stub.php:222`
+- ·· `function intlcal_get_keyword_values_for_locale(string $keyword, string $locale, bool $onlyCommon): IntlIterator|false` — `ext/intl/php_intl.stub.php:178`
+- ·· `function intlcal_get_least_maximum(IntlCalendar $calendar, int $field): int|false` — `ext/intl/php_intl.stub.php:220`
+- ·· `function intlcal_get_locale(IntlCalendar $calendar, int $type): string|false` — `ext/intl/php_intl.stub.php:224`
+- ·· `function intlcal_get_maximum(IntlCalendar $calendar, int $field): int|false` — `ext/intl/php_intl.stub.php:226`
+- ·· `function intlcal_get_minimal_days_in_first_week(IntlCalendar $calendar): int|false` — `ext/intl/php_intl.stub.php:228`
+- ·· `function intlcal_get_minimum(IntlCalendar $calendar, int $field): int|false` — `ext/intl/php_intl.stub.php:232`
+- ·· `function intlcal_get_now(): float` — `ext/intl/php_intl.stub.php:180`
+- ·· `function intlcal_get_repeated_wall_time_option(IntlCalendar $calendar): int` — `ext/intl/php_intl.stub.php:254`
+- ·· `function intlcal_get_skipped_wall_time_option(IntlCalendar $calendar): int` — `ext/intl/php_intl.stub.php:258`
+- ·· `function intlcal_get_time(IntlCalendar $calendar): float|false` — `ext/intl/php_intl.stub.php:190`
+- ·· `function intlcal_get_time_zone(IntlCalendar $calendar): IntlTimeZone|false` — `ext/intl/php_intl.stub.php:234`
+- ·· `function intlcal_get_type(IntlCalendar $calendar): string` — `ext/intl/php_intl.stub.php:236`
+- ·· `function intlcal_get_weekend_transition(IntlCalendar $calendar, int $dayOfWeek): int|false` — `ext/intl/php_intl.stub.php:238`
+- ·· `function intlcal_in_daylight_time(IntlCalendar $calendar): bool` — `ext/intl/php_intl.stub.php:240`
+- ·· `function intlcal_is_equivalent_to(IntlCalendar $calendar, IntlCalendar $other): bool` — `ext/intl/php_intl.stub.php:246`
+- ·· `function intlcal_is_lenient(IntlCalendar $calendar): bool` — `ext/intl/php_intl.stub.php:242`
+- ·· `function intlcal_is_set(IntlCalendar $calendar, int $field): bool` — `ext/intl/php_intl.stub.php:244`
+- ·· `function intlcal_is_weekend(IntlCalendar $calendar, ?float $timestamp = null): bool` — `ext/intl/php_intl.stub.php:248`
+- ·· `function intlcal_roll(IntlCalendar $calendar, int $field, $value): bool` — `ext/intl/php_intl.stub.php:206`
+- ·· `function intlcal_set(IntlCalendar $calendar, int $year, int $month, int $dayOfMonth = UNKNOWN, int $hour = UNKNOWN, int $minute = UNKNOWN, int $second = UNKNOWN): true` — `ext/intl/php_intl.stub.php:203`
+- ·· `function intlcal_set_first_day_of_week(IntlCalendar $calendar, int $dayOfWeek): true` — `ext/intl/php_intl.stub.php:250`
+- ·· `function intlcal_set_lenient(IntlCalendar $calendar, bool $lenient): true` — `ext/intl/php_intl.stub.php:252`
+- ·· `function intlcal_set_minimal_days_in_first_week(IntlCalendar $calendar, int $days): true` — `ext/intl/php_intl.stub.php:230`
+- ·· `function intlcal_set_repeated_wall_time_option(IntlCalendar $calendar, int $option): true` — `ext/intl/php_intl.stub.php:260`
+- ·· `function intlcal_set_skipped_wall_time_option(IntlCalendar $calendar, int $option): true` — `ext/intl/php_intl.stub.php:262`
+- ·· `function intlcal_set_time(IntlCalendar $calendar, float $timestamp): bool` — `ext/intl/php_intl.stub.php:192`
+- ·· `function intlcal_set_time_zone(IntlCalendar $calendar, IntlTimeZone|DateTimeZone|string|null $timezone): bool` — `ext/intl/php_intl.stub.php:196`
+- ·· `function intlcal_to_date_time(IntlCalendar $calendar): DateTime|false` — `ext/intl/php_intl.stub.php:266`
+- ·· `private function IntlCalendar::__construct()` — `ext/intl/calendar/calendar.stub.php:90`
+- ·· `public function IntlCalendar::add(int $field, int $value): bool` — `ext/intl/calendar/calendar.stub.php:114`
+- ·· `public function IntlCalendar::after(IntlCalendar $other): bool` — `ext/intl/calendar/calendar.stub.php:120`
+- ·· `public function IntlCalendar::before(IntlCalendar $other): bool` — `ext/intl/calendar/calendar.stub.php:126`
+- ·· `public function IntlCalendar::clear(?int $field = null): true` — `ext/intl/calendar/calendar.stub.php:132`
+- ·· `public static function IntlCalendar::createInstance(IntlTimeZone|DateTimeZone|string|null $timezone = null, ?string $locale = null): ?IntlCalendar` — `ext/intl/calendar/calendar.stub.php:96`
+- ·· `public function IntlCalendar::equals(IntlCalendar $other): bool` — `ext/intl/calendar/calendar.stub.php:102`
+- ·· `public function IntlCalendar::fieldDifference(float $timestamp, int $field): int|false` — `ext/intl/calendar/calendar.stub.php:108`
+- ·· `public static function IntlCalendar::fromDateTime(DateTime|string $datetime, ?string $locale = null): ?IntlCalendar` — `ext/intl/calendar/calendar.stub.php:138`
+- ·· `public function IntlCalendar::get(int $field): int|false` — `ext/intl/calendar/calendar.stub.php:144`
+- ·· `public function IntlCalendar::getActualMaximum(int $field): int|false` — `ext/intl/calendar/calendar.stub.php:150`
+- ·· `public function IntlCalendar::getActualMinimum(int $field): int|false` — `ext/intl/calendar/calendar.stub.php:156`
+- ·· `public static function IntlCalendar::getAvailableLocales(): array` — `ext/intl/calendar/calendar.stub.php:163`
+- ·· `public function IntlCalendar::getDayOfWeekType(int $dayOfWeek): int|false` — `ext/intl/calendar/calendar.stub.php:169`
+- ·· `public function IntlCalendar::getErrorCode(): int|false` — `ext/intl/calendar/calendar.stub.php:175`
+- ·· `public function IntlCalendar::getErrorMessage(): string|false` — `ext/intl/calendar/calendar.stub.php:181`
+- ·· `public function IntlCalendar::getFirstDayOfWeek(): int|false` — `ext/intl/calendar/calendar.stub.php:187`
+- ·· `public function IntlCalendar::getGreatestMinimum(int $field): int|false` — `ext/intl/calendar/calendar.stub.php:193`
+- ·· `public static function IntlCalendar::getKeywordValuesForLocale(string $keyword, string $locale, bool $onlyCommon): IntlIterator|false` — `ext/intl/calendar/calendar.stub.php:199`
+- ·· `public function IntlCalendar::getLeastMaximum(int $field): int|false` — `ext/intl/calendar/calendar.stub.php:205`
+- ·· `public function IntlCalendar::getLocale(int $type): string|false` — `ext/intl/calendar/calendar.stub.php:211`
+- ·· `public function IntlCalendar::getMaximum(int $field): int|false` — `ext/intl/calendar/calendar.stub.php:217`
+- ·· `public function IntlCalendar::getMinimalDaysInFirstWeek(): int|false` — `ext/intl/calendar/calendar.stub.php:223`
+- ·· `public function IntlCalendar::getMinimum(int $field): int|false` — `ext/intl/calendar/calendar.stub.php:235`
+- ·· `public static function IntlCalendar::getNow(): float` — `ext/intl/calendar/calendar.stub.php:241`
+- ·· `public function IntlCalendar::getRepeatedWallTimeOption(): int` — `ext/intl/calendar/calendar.stub.php:247`
+- ·· `public function IntlCalendar::getSkippedWallTimeOption(): int` — `ext/intl/calendar/calendar.stub.php:253`
+- ·· `public function IntlCalendar::getTime(): float|false` — `ext/intl/calendar/calendar.stub.php:259`
+- ·· `public function IntlCalendar::getTimeZone(): IntlTimeZone|false` — `ext/intl/calendar/calendar.stub.php:265`
+- ·· `public function IntlCalendar::getType(): string` — `ext/intl/calendar/calendar.stub.php:271`
+- ·· `public function IntlCalendar::getWeekendTransition(int $dayOfWeek): int|false` — `ext/intl/calendar/calendar.stub.php:277`
+- ·· `public function IntlCalendar::inDaylightTime(): bool` — `ext/intl/calendar/calendar.stub.php:283`
+- ·· `public function IntlCalendar::isEquivalentTo(IntlCalendar $other): bool` — `ext/intl/calendar/calendar.stub.php:289`
+- ·· `public function IntlCalendar::isLenient(): bool` — `ext/intl/calendar/calendar.stub.php:295`
+- ·· `public function IntlCalendar::isSet(int $field): bool` — `ext/intl/calendar/calendar.stub.php:314`
+- ·· `public function IntlCalendar::isWeekend(?float $timestamp = null): bool` — `ext/intl/calendar/calendar.stub.php:301`
+- ·· `public function IntlCalendar::roll(int $field, $value): bool` — `ext/intl/calendar/calendar.stub.php:308`
+- ·· `public function IntlCalendar::set(int $year, int $month, int $dayOfMonth = UNKNOWN, int $hour = UNKNOWN, int $minute = UNKNOWN, int $second = UNKNOWN): true` — `ext/intl/calendar/calendar.stub.php:320`
+- ·· `public function IntlCalendar::setDate(int $year, int $month, int $dayOfMonth): void` — `ext/intl/calendar/calendar.stub.php:322`
+- ·· `public function IntlCalendar::setDateTime(int $year, int $month, int $dayOfMonth, int $hour, int $minute, ?int $second = null): void` — `ext/intl/calendar/calendar.stub.php:324`
+- ·· `public function IntlCalendar::setFirstDayOfWeek(int $dayOfWeek): true` — `ext/intl/calendar/calendar.stub.php:330`
+- ·· `public function IntlCalendar::setLenient(bool $lenient): true` — `ext/intl/calendar/calendar.stub.php:336`
+- ·· `public function IntlCalendar::setMinimalDaysInFirstWeek(int $days): true` — `ext/intl/calendar/calendar.stub.php:229`
+- ·· `public function IntlCalendar::setRepeatedWallTimeOption(int $option): true` — `ext/intl/calendar/calendar.stub.php:342`
+- ·· `public function IntlCalendar::setSkippedWallTimeOption(int $option): true` — `ext/intl/calendar/calendar.stub.php:348`
+- ·· `public function IntlCalendar::setTime(float $timestamp): bool` — `ext/intl/calendar/calendar.stub.php:354`
+- ·· `public function IntlCalendar::setTimeZone(IntlTimeZone|DateTimeZone|string|null $timezone): bool` — `ext/intl/calendar/calendar.stub.php:359`
+- ·· `public function IntlCalendar::toDateTime(): DateTime|false` — `ext/intl/calendar/calendar.stub.php:365`
+- ·· `public static function IntlChar::charAge(int|string $codepoint): ?array` — `ext/intl/uchar/uchar.stub.php:1392`
+- ·· `public static function IntlChar::charDigitValue(int|string $codepoint): ?int` — `ext/intl/uchar/uchar.stub.php:1395`
+- ·· `public static function IntlChar::charDirection(int|string $codepoint): ?int` — `ext/intl/uchar/uchar.stub.php:1398`
+- ·· `public static function IntlChar::charFromName(string $name, int $type = IntlChar::UNICODE_CHAR_NAME): ?int` — `ext/intl/uchar/uchar.stub.php:1401`
+- ·· `public static function IntlChar::charMirror(int|string $codepoint): int|string|null` — `ext/intl/uchar/uchar.stub.php:1404`
+- ·· `public static function IntlChar::charName(int|string $codepoint, int $type = IntlChar::UNICODE_CHAR_NAME): ?string` — `ext/intl/uchar/uchar.stub.php:1407`
+- ·· `public static function IntlChar::charType(int|string $codepoint): ?int` — `ext/intl/uchar/uchar.stub.php:1410`
+- ·· `public static function IntlChar::chr(int|string $codepoint): ?string` — `ext/intl/uchar/uchar.stub.php:1413`
+- ·· `public static function IntlChar::digit(int|string $codepoint, int $base = 10): int|false|null` — `ext/intl/uchar/uchar.stub.php:1416`
+- ·· `public static function IntlChar::enumCharNames(int|string $start, int|string $end, callable $callback, int $type = IntlChar::UNICODE_CHAR_NAME): bool` — `ext/intl/uchar/uchar.stub.php:1419`
+- ·· `public static function IntlChar::enumCharTypes(callable $callback): void` — `ext/intl/uchar/uchar.stub.php:1422`
+- ·· `public static function IntlChar::foldCase(int|string $codepoint, int $options = IntlChar::FOLD_CASE_DEFAULT): int|string|null` — `ext/intl/uchar/uchar.stub.php:1425`
+- ·· `public static function IntlChar::forDigit(int $digit, int $base = 10): int` — `ext/intl/uchar/uchar.stub.php:1428`
+- ·· `public static function IntlChar::getBidiPairedBracket(int|string $codepoint): int|string|null` — `ext/intl/uchar/uchar.stub.php:1431`
+- ·· `public static function IntlChar::getBlockCode(int|string $codepoint): ?int` — `ext/intl/uchar/uchar.stub.php:1434`
+- ·· `public static function IntlChar::getCombiningClass(int|string $codepoint): ?int` — `ext/intl/uchar/uchar.stub.php:1437`
+- ·· `public static function IntlChar::getFC_NFKC_Closure(int|string $codepoint): string|false|null` — `ext/intl/uchar/uchar.stub.php:1440`
+- ·· `public static function IntlChar::getIntPropertyMaxValue(int $property): int` — `ext/intl/uchar/uchar.stub.php:1443`
+- ·· `public static function IntlChar::getIntPropertyMinValue(int $property): int` — `ext/intl/uchar/uchar.stub.php:1446`
+- ·· `public static function IntlChar::getIntPropertyValue(int|string $codepoint, int $property): ?int` — `ext/intl/uchar/uchar.stub.php:1449`
+- ·· `public static function IntlChar::getNumericValue(int|string $codepoint): ?float` — `ext/intl/uchar/uchar.stub.php:1452`
+- ·· `public static function IntlChar::getPropertyEnum(string $alias): int` — `ext/intl/uchar/uchar.stub.php:1455`
+- ·· `public static function IntlChar::getPropertyName(int $property, int $type = IntlChar::LONG_PROPERTY_NAME): string|false` — `ext/intl/uchar/uchar.stub.php:1458`
+- ·· `public static function IntlChar::getPropertyValueEnum(int $property, string $name): int` — `ext/intl/uchar/uchar.stub.php:1461`
+- ·· `public static function IntlChar::getPropertyValueName(int $property, int $value, int $type = IntlChar::LONG_PROPERTY_NAME): string|false` — `ext/intl/uchar/uchar.stub.php:1464`
+- ·· `public static function IntlChar::getUnicodeVersion(): array` — `ext/intl/uchar/uchar.stub.php:1467`
+- ·· `public static function IntlChar::hasBinaryProperty(int|string $codepoint, int $property): ?bool` — `ext/intl/uchar/uchar.stub.php:1389`
+- ·· `public static function IntlChar::isalnum(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1470`
+- ·· `public static function IntlChar::isalpha(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1473`
+- ·· `public static function IntlChar::isbase(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1476`
+- ·· `public static function IntlChar::isblank(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1479`
+- ·· `public static function IntlChar::iscntrl(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1482`
+- ·· `public static function IntlChar::isdefined(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1485`
+- ·· `public static function IntlChar::isdigit(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1488`
+- ·· `public static function IntlChar::isgraph(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1491`
+- ·· `public static function IntlChar::isIDIgnorable(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1494`
+- ·· `public static function IntlChar::isIDPart(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1497`
+- ·· `public static function IntlChar::isIDStart(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1500`
+- ·· `public static function IntlChar::isISOControl(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1503`
+- ·· `public static function IntlChar::isJavaIDPart(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1506`
+- ·· `public static function IntlChar::isJavaIDStart(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1509`
+- ·· `public static function IntlChar::isJavaSpaceChar(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1512`
+- ·· `public static function IntlChar::islower(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1515`
+- ·· `public static function IntlChar::isMirrored(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1518`
+- ·· `public static function IntlChar::isprint(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1521`
+- ·· `public static function IntlChar::ispunct(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1524`
+- ·· `public static function IntlChar::isspace(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1527`
+- ·· `public static function IntlChar::istitle(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1530`
+- ·· `public static function IntlChar::isUAlphabetic(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1533`
+- ·· `public static function IntlChar::isULowercase(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1536`
+- ·· `public static function IntlChar::isupper(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1539`
+- ·· `public static function IntlChar::isUUppercase(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1542`
+- ·· `public static function IntlChar::isUWhiteSpace(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1545`
+- ·· `public static function IntlChar::isWhitespace(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1548`
+- ·· `public static function IntlChar::isxdigit(int|string $codepoint): ?bool` — `ext/intl/uchar/uchar.stub.php:1551`
+- ·· `public static function IntlChar::ord(int|string $character): ?int` — `ext/intl/uchar/uchar.stub.php:1554`
+- ·· `public static function IntlChar::tolower(int|string $codepoint): int|string|null` — `ext/intl/uchar/uchar.stub.php:1557`
+- ·· `public static function IntlChar::totitle(int|string $codepoint): int|string|null` — `ext/intl/uchar/uchar.stub.php:1560`
+- ·· `public static function IntlChar::toupper(int|string $codepoint): int|string|null` — `ext/intl/uchar/uchar.stub.php:1563`
+- ·· `public function IntlCodePointBreakIterator::getLastCodePoint(): int` — `ext/intl/breakiterator/breakiterator.stub.php:137`
+- ·· `public function IntlDateFormatter::__construct( ?string $locale, int $dateType = IntlDateFormatter::FULL, int $timeType = IntlDateFormatter::FULL, IntlTimeZone|DateTimeZone|string|null $timezone = null, $calendar = null, ?string $pattern = null )` — `ext/intl/dateformat/dateformat.stub.php:37`
+- ·· `public static function IntlDateFormatter::create( ?string $locale, int $dateType = IntlDateFormatter::FULL, int $timeType = IntlDateFormatter::FULL, IntlTimeZone|DateTimeZone|string|null $timezone = null, IntlCalendar|int|null $calendar = null, ?string $pattern = null ): ?IntlDateFormatter` — `ext/intl/dateformat/dateformat.stub.php:50`
+- ·· `public function IntlDateFormatter::format($datetime): string|false` — `ext/intl/dateformat/dateformat.stub.php:141`
+- ·· `public static function IntlDateFormatter::formatObject($datetime, $format = null, ?string $locale = null): string|false` — `ext/intl/dateformat/dateformat.stub.php:149`
+- ·· `public function IntlDateFormatter::getCalendar(): int|false` — `ext/intl/dateformat/dateformat.stub.php:75`
+- ·· `public function IntlDateFormatter::getCalendarObject(): IntlCalendar|false|null` — `ext/intl/dateformat/dateformat.stub.php:93`
+- ·· `public function IntlDateFormatter::getDateType(): int|false` — `ext/intl/dateformat/dateformat.stub.php:63`
+- ·· `public function IntlDateFormatter::getErrorCode(): int` — `ext/intl/dateformat/dateformat.stub.php:175`
+- ·· `public function IntlDateFormatter::getErrorMessage(): string` — `ext/intl/dateformat/dateformat.stub.php:181`
+- ·· `public function IntlDateFormatter::getLocale(int $type = ULOC_ACTUAL_LOCALE): string|false` — `ext/intl/dateformat/dateformat.stub.php:122`
+- ·· `public function IntlDateFormatter::getPattern(): string|false` — `ext/intl/dateformat/dateformat.stub.php:116`
+- ·· `public function IntlDateFormatter::getTimeType(): int|false` — `ext/intl/dateformat/dateformat.stub.php:69`
+- ·· `public function IntlDateFormatter::getTimeZone(): IntlTimeZone|false` — `ext/intl/dateformat/dateformat.stub.php:99`
+- ·· `public function IntlDateFormatter::getTimeZoneId(): string|false` — `ext/intl/dateformat/dateformat.stub.php:87`
+- ·· `public function IntlDateFormatter::isLenient(): bool` — `ext/intl/dateformat/dateformat.stub.php:134`
+- ·· `public function IntlDateFormatter::localtime(string $string,&$offset = null): array|false` — `ext/intl/dateformat/dateformat.stub.php:169`
+- ·· `public function IntlDateFormatter::parse(string $string,&$offset = null): int|float|false` — `ext/intl/dateformat/dateformat.stub.php:156`
+- ·· `public function IntlDateFormatter::parseToCalendar(string $string,&$offset = null): int|float|false` — `ext/intl/dateformat/dateformat.stub.php:161`
+- ·· `public function IntlDateFormatter::setCalendar(IntlCalendar|int|null $calendar): bool` — `ext/intl/dateformat/dateformat.stub.php:81`
+- ·· `public function IntlDateFormatter::setLenient(bool $lenient): void` — `ext/intl/dateformat/dateformat.stub.php:128`
+- ·· `public function IntlDateFormatter::setPattern(string $pattern): bool` — `ext/intl/dateformat/dateformat.stub.php:110`
+- ·· `public function IntlDateFormatter::setTimeZone(IntlTimeZone|DateTimeZone|string|null $timezone): bool` — `ext/intl/dateformat/dateformat.stub.php:104`
+- ·· `public function IntlDatePatternGenerator::__construct(?string $locale = null)` — `ext/intl/dateformat/datepatterngenerator.stub.php:8`
+- ·· `public static function IntlDatePatternGenerator::create(?string $locale = null): ?IntlDatePatternGenerator` — `ext/intl/dateformat/datepatterngenerator.stub.php:10`
+- ·· `public function IntlDatePatternGenerator::getBestPattern(string $skeleton): string|false` — `ext/intl/dateformat/datepatterngenerator.stub.php:12`
+- ·· `function intlgregcal_create_instance($timezoneOrYear = UNKNOWN, $localeOrMonth = UNKNOWN, $day = UNKNOWN, $hour = UNKNOWN, $minute = UNKNOWN, $second = UNKNOWN): ?IntlGregorianCalendar` — `ext/intl/php_intl.stub.php:281`
+- ·· `function intlgregcal_get_gregorian_change(IntlGregorianCalendar $calendar): float` — `ext/intl/php_intl.stub.php:285`
+- ·· `function intlgregcal_is_leap_year(IntlGregorianCalendar $calendar, int $year): bool` — `ext/intl/php_intl.stub.php:287`
+- ·· `function intlgregcal_set_gregorian_change(IntlGregorianCalendar $calendar, float $timestamp): bool` — `ext/intl/php_intl.stub.php:283`
+- ·· `public function IntlGregorianCalendar::__construct($timezoneOrYear = UNKNOWN, $localeOrMonth = UNKNOWN, $day = UNKNOWN, $hour = UNKNOWN, $minute = UNKNOWN, $second = UNKNOWN)` — `ext/intl/calendar/calendar.stub.php:383`
+- ·· `public static function IntlGregorianCalendar::createFromDate(int $year, int $month, int $dayOfMonth): static` — `ext/intl/calendar/calendar.stub.php:371`
+- ·· `public static function IntlGregorianCalendar::createFromDateTime(int $year, int $month, int $dayOfMonth, int $hour, int $minute, ?int $second = null): static` — `ext/intl/calendar/calendar.stub.php:373`
+- ·· `public function IntlGregorianCalendar::getGregorianChange(): float` — `ext/intl/calendar/calendar.stub.php:395`
+- ·· `public function IntlGregorianCalendar::isLeapYear(int $year): bool` — `ext/intl/calendar/calendar.stub.php:401`
+- ·· `public function IntlGregorianCalendar::setGregorianChange(float $timestamp): bool` — `ext/intl/calendar/calendar.stub.php:389`
+- ·· `public function IntlIterator::current(): mixed` — `ext/intl/common/common.stub.php:739`
+- ·· `public function IntlIterator::key(): mixed` — `ext/intl/common/common.stub.php:742`
+- ·· `public function IntlIterator::next(): void` — `ext/intl/common/common.stub.php:745`
+- ·· `public function IntlIterator::rewind(): void` — `ext/intl/common/common.stub.php:748`
+- ·· `public function IntlIterator::valid(): bool` — `ext/intl/common/common.stub.php:751`
+- ·· `public function IntlListFormatter::__construct(string $locale, int $type = IntlListFormatter::TYPE_AND, int $width = IntlListFormatter::WIDTH_WIDE)` — `ext/intl/listformatter/listformatter.stub.php:43`
+- ·· `public function IntlListFormatter::format(array $strings): string|false` — `ext/intl/listformatter/listformatter.stub.php:45`
+- ·· `public function IntlListFormatter::getErrorCode(): int` — `ext/intl/listformatter/listformatter.stub.php:47`
+- ·· `public function IntlListFormatter::getErrorMessage(): string` — `ext/intl/listformatter/listformatter.stub.php:49`
+- ·· `public function IntlPartsIterator::getBreakIterator(): IntlBreakIterator` — `ext/intl/breakiterator/breakiterator_iterators.stub.php:16`
+- ·· `public function IntlPartsIterator::getRuleStatus(): int` — `ext/intl/breakiterator/breakiterator_iterators.stub.php:19`
+- ·· `public function IntlRuleBasedBreakIterator::__construct(string $rules, bool $compiled = false)` — `ext/intl/breakiterator/breakiterator.stub.php:118`
+- ·· `public function IntlRuleBasedBreakIterator::getBinaryRules(): string|false` — `ext/intl/breakiterator/breakiterator.stub.php:121`
+- ·· `public function IntlRuleBasedBreakIterator::getRules(): string|false` — `ext/intl/breakiterator/breakiterator.stub.php:124`
+- ·· `public function IntlRuleBasedBreakIterator::getRuleStatus(): int` — `ext/intl/breakiterator/breakiterator.stub.php:127`
+- ·· `public function IntlRuleBasedBreakIterator::getRuleStatusVec(): array|false` — `ext/intl/breakiterator/breakiterator.stub.php:130`
+- ·· `private function IntlTimeZone::__construct()` — `ext/intl/timezone/timezone.stub.php:33`
+- ·· `public static function IntlTimeZone::countEquivalentIDs(string $timezoneId): int|false` — `ext/intl/timezone/timezone.stub.php:39`
+- ·· `public static function IntlTimeZone::createDefault(): IntlTimeZone` — `ext/intl/timezone/timezone.stub.php:45`
+- ·· `public static function IntlTimeZone::createEnumeration(string|int|null $countryOrRawOffset = null): IntlIterator|false` — `ext/intl/timezone/timezone.stub.php:51`
+- ·· `public static function IntlTimeZone::createTimeZone(string $timezoneId): ?IntlTimeZone` — `ext/intl/timezone/timezone.stub.php:57`
+- ·· `public static function IntlTimeZone::createTimeZoneIDEnumeration(int $type, ?string $region = null, ?int $rawOffset = null): IntlIterator|false` — `ext/intl/timezone/timezone.stub.php:63`
+- ·· `public static function IntlTimeZone::fromDateTimeZone(DateTimeZone $timezone): ?IntlTimeZone` — `ext/intl/timezone/timezone.stub.php:69`
+- ·· `public static function IntlTimeZone::getCanonicalID(string $timezoneId,&$isSystemId = null): string|false` — `ext/intl/timezone/timezone.stub.php:76`
+- ·· `public function IntlTimeZone::getDisplayName(bool $dst = false, int $style = IntlTimeZone::DISPLAY_LONG, ?string $locale = null): string|false` — `ext/intl/timezone/timezone.stub.php:82`
+- ·· `public function IntlTimeZone::getDSTSavings(): int` — `ext/intl/timezone/timezone.stub.php:88`
+- ·· `public static function IntlTimeZone::getEquivalentID(string $timezoneId, int $offset): string|false` — `ext/intl/timezone/timezone.stub.php:94`
+- ·· `public function IntlTimeZone::getErrorCode(): int|false` — `ext/intl/timezone/timezone.stub.php:100`
+- ·· `public function IntlTimeZone::getErrorMessage(): string|false` — `ext/intl/timezone/timezone.stub.php:106`
+- ·· `public static function IntlTimeZone::getGMT(): IntlTimeZone` — `ext/intl/timezone/timezone.stub.php:112`
+- ·· `public static function IntlTimeZone::getIanaID(string $timezoneId): string|false` — `ext/intl/timezone/timezone.stub.php:118`
+- ·· `public function IntlTimeZone::getID(): string|false` — `ext/intl/timezone/timezone.stub.php:125`
+- ·· `public static function IntlTimeZone::getIDForWindowsID(string $timezoneId, ?string $region = null): string|false` — `ext/intl/timezone/timezone.stub.php:169`
+- ·· `public function IntlTimeZone::getOffset(float $timestamp, bool $local,&$rawOffset,&$dstOffset): bool` — `ext/intl/timezone/timezone.stub.php:133`
+- ·· `public function IntlTimeZone::getRawOffset(): int` — `ext/intl/timezone/timezone.stub.php:139`
+- ·· `public static function IntlTimeZone::getRegion(string $timezoneId): string|false` — `ext/intl/timezone/timezone.stub.php:145`
+- ·· `public static function IntlTimeZone::getTZDataVersion(): string|false` — `ext/intl/timezone/timezone.stub.php:151`
+- ·· `public static function IntlTimeZone::getUnknown(): IntlTimeZone` — `ext/intl/timezone/timezone.stub.php:157`
+- ·· `public static function IntlTimeZone::getWindowsID(string $timezoneId): string|false` — `ext/intl/timezone/timezone.stub.php:163`
+- ·· `public function IntlTimeZone::hasSameRules(IntlTimeZone $other): bool` — `ext/intl/timezone/timezone.stub.php:175`
+- ·· `public function IntlTimeZone::toDateTimeZone(): DateTimeZone|false` — `ext/intl/timezone/timezone.stub.php:181`
+- ·· `public function IntlTimeZone::useDaylightTime(): bool` — `ext/intl/timezone/timezone.stub.php:187`
+- ·· `function intltz_count_equivalent_ids(string $timezoneId): int|false` — `ext/intl/php_intl.stub.php:566`
+- ·· `function intltz_create_default(): IntlTimeZone` — `ext/intl/php_intl.stub.php:568`
+- ·· `function intltz_create_enumeration(string|int|null $countryOrRawOffset = null): IntlIterator|false` — `ext/intl/php_intl.stub.php:570`
+- ·· `function intltz_create_time_zone(string $timezoneId): ?IntlTimeZone` — `ext/intl/php_intl.stub.php:572`
+- ·· `function intltz_create_time_zone_id_enumeration(int $type, ?string $region = null, ?int $rawOffset = null): IntlIterator|false` — `ext/intl/php_intl.stub.php:574`
+- ·· `function intltz_from_date_time_zone(DateTimeZone $timezone): ?IntlTimeZone` — `ext/intl/php_intl.stub.php:576`
+- ·· `function intltz_get_canonical_id(string $timezoneId,&$isSystemId = null): string|false` — `ext/intl/php_intl.stub.php:579`
+- ·· `function intltz_get_display_name(IntlTimeZone $timezone, bool $dst = false, int $style = IntlTimeZone::DISPLAY_LONG, ?string $locale = null): string|false` — `ext/intl/php_intl.stub.php:581`
+- ·· `function intltz_get_dst_savings(IntlTimeZone $timezone): int` — `ext/intl/php_intl.stub.php:583`
+- ·· `function intltz_get_equivalent_id(string $timezoneId, int $offset): string|false` — `ext/intl/php_intl.stub.php:585`
+- ·· `function intltz_get_error_code(IntlTimeZone $timezone): int|false` — `ext/intl/php_intl.stub.php:587`
+- ·· `function intltz_get_error_message(IntlTimeZone $timezone): string|false` — `ext/intl/php_intl.stub.php:589`
+- ·· `function intltz_get_gmt(): IntlTimeZone` — `ext/intl/php_intl.stub.php:591`
+- ·· `function intltz_get_iana_id(string $timezoneId): string|false` — `ext/intl/php_intl.stub.php:620`
+- ·· `function intltz_get_id(IntlTimeZone $timezone): string|false` — `ext/intl/php_intl.stub.php:593`
+- ·· `function intltz_get_id_for_windows_id(string $timezoneId, ?string $region = null): string|false` — `ext/intl/php_intl.stub.php:611`
+- ·· `function intltz_get_offset(IntlTimeZone $timezone, float $timestamp, bool $local,&$rawOffset,&$dstOffset): bool` — `ext/intl/php_intl.stub.php:599`
+- ·· `function intltz_get_raw_offset(IntlTimeZone $timezone): int` — `ext/intl/php_intl.stub.php:601`
+- ·· `function intltz_get_region(string $timezoneId): string|false` — `ext/intl/php_intl.stub.php:603`
+- ·· `function intltz_get_tz_data_version(): string|false` — `ext/intl/php_intl.stub.php:605`
+- ·· `function intltz_get_unknown(): IntlTimeZone` — `ext/intl/php_intl.stub.php:607`
+- ·· `function intltz_get_windows_id(string $timezoneId): string|false` — `ext/intl/php_intl.stub.php:609`
+- ·· `function intltz_has_same_rules(IntlTimeZone $timezone, IntlTimeZone $other): bool` — `ext/intl/php_intl.stub.php:613`
+- ·· `function intltz_to_date_time_zone(IntlTimeZone $timezone): DateTimeZone|false` — `ext/intl/php_intl.stub.php:615`
+- ·· `function intltz_use_daylight_time(IntlTimeZone $timezone): bool` — `ext/intl/php_intl.stub.php:617`
+- ·· `public static function Locale::acceptFromHttp(string $header): string|false` — `ext/intl/locale/locale.stub.php:135`
+- ·· `public static function Locale::addLikelySubtags(string $locale): string|false` — `ext/intl/locale/locale.stub.php:145`
+- ·· `public static function Locale::canonicalize(string $locale): ?string` — `ext/intl/locale/locale.stub.php:129`
+- ·· `public static function Locale::composeLocale(array $subtags): string|false` — `ext/intl/locale/locale.stub.php:99`
+- ·· `public static function Locale::filterMatches(string $languageTag, string $locale, bool $canonicalize = false): ?bool` — `ext/intl/locale/locale.stub.php:117`
+- ·· `public static function Locale::getAllVariants(string $locale): ?array` — `ext/intl/locale/locale.stub.php:111`
+- ·· `public static function Locale::getDefault(): string` — `ext/intl/locale/locale.stub.php:32`
+- ·· `public static function Locale::getDisplayLanguage(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/locale/locale.stub.php:87`
+- ·· `public static function Locale::getDisplayName(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/locale/locale.stub.php:81`
+- ·· `public static function Locale::getDisplayRegion(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/locale/locale.stub.php:75`
+- ·· `public static function Locale::getDisplayScript(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/locale/locale.stub.php:69`
+- ·· `public static function Locale::getDisplayVariant(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/locale/locale.stub.php:93`
+- ·· `public static function Locale::getKeywords(string $locale): array|false|null` — `ext/intl/locale/locale.stub.php:63`
+- ·· `public static function Locale::getPrimaryLanguage(string $locale): ?string` — `ext/intl/locale/locale.stub.php:44`
+- ·· `public static function Locale::getRegion(string $locale): ?string` — `ext/intl/locale/locale.stub.php:56`
+- ·· `public static function Locale::getScript(string $locale): ?string` — `ext/intl/locale/locale.stub.php:50`
+- ·· `public static function Locale::isRightToLeft(string $locale): bool` — `ext/intl/locale/locale.stub.php:140`
+- ·· `public static function Locale::lookup(array $languageTag, string $locale, bool $canonicalize = false, ?string $defaultLocale = null): ?string` — `ext/intl/locale/locale.stub.php:123`
+- ·· `public static function Locale::minimizeSubtags(string $locale): string|false` — `ext/intl/locale/locale.stub.php:150`
+- ·· `public static function Locale::parseLocale(string $locale): ?array` — `ext/intl/locale/locale.stub.php:105`
+- ·· `public static function Locale::setDefault(string $locale): true` — `ext/intl/locale/locale.stub.php:38`
+- ·· `function locale_accept_from_http(string $header): string|false` — `ext/intl/php_intl.stub.php:500`
+- ·· `function locale_add_likely_subtags(string $locale): string|false` — `ext/intl/php_intl.stub.php:504`
+- ·· `function locale_canonicalize(string $locale): ?string` — `ext/intl/php_intl.stub.php:496`
+- ·· `function locale_compose(array $subtags): string|false` — `ext/intl/php_intl.stub.php:488`
+- ·· `function locale_filter_matches(string $languageTag, string $locale, bool $canonicalize = false): ?bool` — `ext/intl/php_intl.stub.php:494`
+- ·· `function locale_get_all_variants(string $locale): ?array` — `ext/intl/php_intl.stub.php:492`
+- ·· `function locale_get_default(): string` — `ext/intl/php_intl.stub.php:462`
+- ·· `function locale_get_display_language(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/php_intl.stub.php:484`
+- ·· `function locale_get_display_name(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/php_intl.stub.php:482`
+- ·· `function locale_get_display_region(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/php_intl.stub.php:480`
+- ·· `function locale_get_display_script(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/php_intl.stub.php:478`
+- ·· `function locale_get_display_variant(string $locale, ?string $displayLocale = null): string|false` — `ext/intl/php_intl.stub.php:486`
+- ·· `function locale_get_keywords(string $locale): array|false|null` — `ext/intl/php_intl.stub.php:476`
+- ·· `function locale_get_primary_language(string $locale): ?string` — `ext/intl/php_intl.stub.php:466`
+- ·· `function locale_get_region(string $locale): ?string` — `ext/intl/php_intl.stub.php:470`
+- ·· `function locale_get_script(string $locale): ?string` — `ext/intl/php_intl.stub.php:468`
+- ·· `function locale_is_right_to_left(string $locale): bool` — `ext/intl/php_intl.stub.php:502`
+- ·· `function locale_lookup(array $languageTag, string $locale, bool $canonicalize = false, ?string $defaultLocale = null): ?string` — `ext/intl/php_intl.stub.php:498`
+- ·· `function locale_minimize_subtags(string $locale): string|false` — `ext/intl/php_intl.stub.php:506`
+- ·· `function locale_parse(string $locale): ?array` — `ext/intl/php_intl.stub.php:490`
+- ·· `function locale_set_default(string $locale): true` — `ext/intl/php_intl.stub.php:464`
+- ·· `public function MessageFormatter::__construct(string $locale, string $pattern)` — `ext/intl/msgformat/msgformat.stub.php:8`
+- ·· `public static function MessageFormatter::create(string $locale, string $pattern): ?MessageFormatter` — `ext/intl/msgformat/msgformat.stub.php:14`
+- ·· `public function MessageFormatter::format(array $values): string|false` — `ext/intl/msgformat/msgformat.stub.php:20`
+- ·· `public static function MessageFormatter::formatMessage(string $locale, string $pattern, array $values): string|false` — `ext/intl/msgformat/msgformat.stub.php:26`
+- ·· `public function MessageFormatter::getErrorCode(): int` — `ext/intl/msgformat/msgformat.stub.php:64`
+- ·· `public function MessageFormatter::getErrorMessage(): string` — `ext/intl/msgformat/msgformat.stub.php:70`
+- ·· `public function MessageFormatter::getLocale(): string` — `ext/intl/msgformat/msgformat.stub.php:58`
+- ·· `public function MessageFormatter::getPattern(): string|false` — `ext/intl/msgformat/msgformat.stub.php:52`
+- ·· `public function MessageFormatter::parse(string $string): array|false` — `ext/intl/msgformat/msgformat.stub.php:33`
+- ·· `public static function MessageFormatter::parseMessage(string $locale, string $pattern, string $message): array|false` — `ext/intl/msgformat/msgformat.stub.php:40`
+- ·· `public function MessageFormatter::setPattern(string $pattern): bool` — `ext/intl/msgformat/msgformat.stub.php:46`
+- ·· `function msgfmt_create(string $locale, string $pattern): ?MessageFormatter` — `ext/intl/php_intl.stub.php:510`
+- ·· `function msgfmt_format(MessageFormatter $formatter, array $values): string|false` — `ext/intl/php_intl.stub.php:512`
+- ·· `function msgfmt_format_message(string $locale, string $pattern, array $values): string|false` — `ext/intl/php_intl.stub.php:514`
+- ·· `function msgfmt_get_error_code(MessageFormatter $formatter): int` — `ext/intl/php_intl.stub.php:534`
+- ·· `function msgfmt_get_error_message(MessageFormatter $formatter): string` — `ext/intl/php_intl.stub.php:536`
+- ·· `function msgfmt_get_locale(MessageFormatter $formatter): string` — `ext/intl/php_intl.stub.php:532`
+- ·· `function msgfmt_get_pattern(MessageFormatter $formatter): string|false` — `ext/intl/php_intl.stub.php:530`
+- ·· `function msgfmt_parse(MessageFormatter $formatter, string $string): array|false` — `ext/intl/php_intl.stub.php:520`
+- ·· `function msgfmt_parse_message(string $locale, string $pattern, string $message): array|false` — `ext/intl/php_intl.stub.php:526`
+- ·· `function msgfmt_set_pattern(MessageFormatter $formatter, string $pattern): bool` — `ext/intl/php_intl.stub.php:528`
+- ·· `public static function Normalizer::getRawDecomposition(string $string, int $form = Normalizer::FORM_C): ?string` — `ext/intl/normalizer/normalizer.stub.php:44`
+- ·· `public static function Normalizer::isNormalized(string $string, int $form = Normalizer::FORM_C): bool` — `ext/intl/normalizer/normalizer.stub.php:38`
+- ·· `public static function Normalizer::normalize(string $string, int $form = Normalizer::FORM_C): string|false` — `ext/intl/normalizer/normalizer.stub.php:32`
+- ·· `function normalizer_get_raw_decomposition(string $string, int $form = Normalizer::FORM_C): ?string` — `ext/intl/php_intl.stub.php:544`
+- ·· `function normalizer_is_normalized(string $string, int $form = Normalizer::FORM_C): bool` — `ext/intl/php_intl.stub.php:542`
+- ·· `function normalizer_normalize(string $string, int $form = Normalizer::FORM_C): string|false` — `ext/intl/php_intl.stub.php:540`
+- ·· `public function NumberFormatter::__construct(string $locale, int $style, ?string $pattern = null)` — `ext/intl/formatter/formatter.stub.php:198`
+- ·· `public static function NumberFormatter::create(string $locale, int $style, ?string $pattern = null): ?NumberFormatter` — `ext/intl/formatter/formatter.stub.php:204`
+- ·· `public function NumberFormatter::format(int|float $num, int $type = NumberFormatter::TYPE_DEFAULT): string|false` — `ext/intl/formatter/formatter.stub.php:210`
+- ·· `public function NumberFormatter::formatCurrency(float $amount, string $currency): string|false` — `ext/intl/formatter/formatter.stub.php:223`
+- ·· `public function NumberFormatter::getAttribute(int $attribute): int|float|false` — `ext/intl/formatter/formatter.stub.php:243`
+- ·· `public function NumberFormatter::getErrorCode(): int` — `ext/intl/formatter/formatter.stub.php:291`
+- ·· `public function NumberFormatter::getErrorMessage(): string` — `ext/intl/formatter/formatter.stub.php:297`
+- ·· `public function NumberFormatter::getLocale(int $type = ULOC_ACTUAL_LOCALE): string|false` — `ext/intl/formatter/formatter.stub.php:285`
+- ·· `public function NumberFormatter::getPattern(): string|false` — `ext/intl/formatter/formatter.stub.php:279`
+- ·· `public function NumberFormatter::getSymbol(int $symbol): string|false` — `ext/intl/formatter/formatter.stub.php:267`
+- ·· `public function NumberFormatter::getTextAttribute(int $attribute): string|false` — `ext/intl/formatter/formatter.stub.php:255`
+- ·· `public function NumberFormatter::parse(string $string, int $type = NumberFormatter::TYPE_DOUBLE,&$offset = null): int|float|false` — `ext/intl/formatter/formatter.stub.php:217`
+- ·· `public function NumberFormatter::parseCurrency(string $string,&$currency,&$offset = null): float|false` — `ext/intl/formatter/formatter.stub.php:231`
+- ·· `public function NumberFormatter::setAttribute(int $attribute, int|float $value): bool` — `ext/intl/formatter/formatter.stub.php:237`
+- ·· `public function NumberFormatter::setPattern(string $pattern): bool` — `ext/intl/formatter/formatter.stub.php:273`
+- ·· `public function NumberFormatter::setSymbol(int $symbol, string $value): bool` — `ext/intl/formatter/formatter.stub.php:261`
+- ·· `public function NumberFormatter::setTextAttribute(int $attribute, string $value): bool` — `ext/intl/formatter/formatter.stub.php:249`
+- ·· `function numfmt_create(string $locale, int $style, ?string $pattern = null): ?NumberFormatter` — `ext/intl/php_intl.stub.php:389`
+- ·· `function numfmt_format(NumberFormatter $formatter, int|float $num, int $type = NumberFormatter::TYPE_DEFAULT): string|false` — `ext/intl/php_intl.stub.php:391`
+- ·· `function numfmt_format_currency(NumberFormatter $formatter, float $amount, string $currency): string|false` — `ext/intl/php_intl.stub.php:396`
+- ·· `function numfmt_get_attribute(NumberFormatter $formatter, int $attribute): int|float|false` — `ext/intl/php_intl.stub.php:406`
+- ·· `function numfmt_get_error_code(NumberFormatter $formatter): int` — `ext/intl/php_intl.stub.php:422`
+- ·· `function numfmt_get_error_message(NumberFormatter $formatter): string` — `ext/intl/php_intl.stub.php:424`
+- ·· `function numfmt_get_locale(NumberFormatter $formatter, int $type = ULOC_ACTUAL_LOCALE): string|false` — `ext/intl/php_intl.stub.php:420`
+- ·· `function numfmt_get_pattern(NumberFormatter $formatter): string|false` — `ext/intl/php_intl.stub.php:418`
+- ·· `function numfmt_get_symbol(NumberFormatter $formatter, int $symbol): string|false` — `ext/intl/php_intl.stub.php:414`
+- ·· `function numfmt_get_text_attribute(NumberFormatter $formatter, int $attribute): string|false` — `ext/intl/php_intl.stub.php:410`
+- ·· `function numfmt_parse(NumberFormatter $formatter, string $string, int $type = NumberFormatter::TYPE_DOUBLE,&$offset = null): int|float|false` — `ext/intl/php_intl.stub.php:394`
+- ·· `function numfmt_parse_currency(NumberFormatter $formatter, string $string,&$currency,&$offset = null): float|false` — `ext/intl/php_intl.stub.php:402`
+- ·· `function numfmt_set_attribute(NumberFormatter $formatter, int $attribute, int|float $value): bool` — `ext/intl/php_intl.stub.php:404`
+- ·· `function numfmt_set_pattern(NumberFormatter $formatter, string $pattern): bool` — `ext/intl/php_intl.stub.php:416`
+- ·· `function numfmt_set_symbol(NumberFormatter $formatter, int $symbol, string $value): bool` — `ext/intl/php_intl.stub.php:412`
+- ·· `function numfmt_set_text_attribute(NumberFormatter $formatter, int $attribute, string $value): bool` — `ext/intl/php_intl.stub.php:408`
+- ·· `public function ResourceBundle::__construct(?string $locale, ?string $bundle, bool $fallback = true)` — `ext/intl/resourcebundle/resourcebundle.stub.php:8`
+- ·· `public function ResourceBundle::count(): int` — `ext/intl/resourcebundle/resourcebundle.stub.php:23`
+- ·· `public static function ResourceBundle::create(?string $locale, ?string $bundle, bool $fallback = true): ?ResourceBundle` — `ext/intl/resourcebundle/resourcebundle.stub.php:14`
+- ·· `public function ResourceBundle::get(string|int $index, bool $fallback = true): ResourceBundle|array|string|int|null` — `ext/intl/resourcebundle/resourcebundle.stub.php:17`
+- ·· `public function ResourceBundle::getErrorCode(): int` — `ext/intl/resourcebundle/resourcebundle.stub.php:36`
+- ·· `public function ResourceBundle::getErrorMessage(): string` — `ext/intl/resourcebundle/resourcebundle.stub.php:42`
+- ·· `public function ResourceBundle::getIterator(): Iterator` — `ext/intl/resourcebundle/resourcebundle.stub.php:44`
+- ·· `public static function ResourceBundle::getLocales(string $bundle): array|false` — `ext/intl/resourcebundle/resourcebundle.stub.php:30`
+- ·· `function resourcebundle_count(ResourceBundle $bundle): int` — `ext/intl/php_intl.stub.php:552`
+- ·· `function resourcebundle_create(?string $locale, ?string $bundle, bool $fallback = true): ?ResourceBundle` — `ext/intl/php_intl.stub.php:548`
+- ·· `function resourcebundle_get(ResourceBundle $bundle, string|int $index, bool $fallback = true): ResourceBundle|array|string|int|null` — `ext/intl/php_intl.stub.php:550`
+- ·· `function resourcebundle_get_error_code(ResourceBundle $bundle): int` — `ext/intl/php_intl.stub.php:560`
+- ·· `function resourcebundle_get_error_message(ResourceBundle $bundle): string` — `ext/intl/php_intl.stub.php:562`
+- ·· `function resourcebundle_locales(string $bundle): array|false` — `ext/intl/php_intl.stub.php:558`
+- ·· `public function Spoofchecker::__construct()` — `ext/intl/spoofchecker/spoofchecker.stub.php:52`
+- ·· `public function Spoofchecker::areConfusable(string $string1, string $string2,&$errorCode = null): bool` — `ext/intl/spoofchecker/spoofchecker.stub.php:64`
+- ·· `public function Spoofchecker::isSuspicious(string $string,&$errorCode = null): bool` — `ext/intl/spoofchecker/spoofchecker.stub.php:58`
+- ·· `public function Spoofchecker::setAllowedChars(string $pattern, int $patternOptions = 0): void` — `ext/intl/spoofchecker/spoofchecker.stub.php:74`
+- ·· `public function Spoofchecker::setAllowedLocales(string $locales): void` — `ext/intl/spoofchecker/spoofchecker.stub.php:67`
+- ·· `public function Spoofchecker::setChecks(int $checks): void` — `ext/intl/spoofchecker/spoofchecker.stub.php:70`
+- ·· `public function Spoofchecker::setRestrictionLevel(int $level): void` — `ext/intl/spoofchecker/spoofchecker.stub.php:73`
+- ·· `final private function Transliterator::__construct()` — `ext/intl/transliterator/transliterator.stub.php:15`
+- ·· `public static function Transliterator::create(string $id, int $direction = Transliterator::FORWARD): ?Transliterator` — `ext/intl/transliterator/transliterator.stub.php:21`
+- ·· `public static function Transliterator::createFromRules(string $rules, int $direction = Transliterator::FORWARD): ?Transliterator` — `ext/intl/transliterator/transliterator.stub.php:27`
+- ·· `public function Transliterator::createInverse(): ?Transliterator` — `ext/intl/transliterator/transliterator.stub.php:33`
+- ·· `public function Transliterator::getErrorCode(): int` — `ext/intl/transliterator/transliterator.stub.php:52`
+- ·· `public function Transliterator::getErrorMessage(): string` — `ext/intl/transliterator/transliterator.stub.php:58`
+- ·· `public static function Transliterator::listIDs(): array|false` — `ext/intl/transliterator/transliterator.stub.php:40`
+- ·· `public function Transliterator::transliterate(string $string, int $start = 0, int $end = -1): string|false` — `ext/intl/transliterator/transliterator.stub.php:46`
+- ·· `function transliterator_create(string $id, int $direction = Transliterator::FORWARD): ?Transliterator` — `ext/intl/php_intl.stub.php:625`
+- ·· `function transliterator_create_from_rules(string $rules, int $direction = Transliterator::FORWARD): ?Transliterator` — `ext/intl/php_intl.stub.php:627`
+- ·· `function transliterator_create_inverse(Transliterator $transliterator): ?Transliterator` — `ext/intl/php_intl.stub.php:635`
+- ·· `function transliterator_get_error_code(Transliterator $transliterator): int` — `ext/intl/php_intl.stub.php:639`
+- ·· `function transliterator_get_error_message(Transliterator $transliterator): string` — `ext/intl/php_intl.stub.php:641`
+- ·· `function transliterator_list_ids(): array|false` — `ext/intl/php_intl.stub.php:633`
+- ·· `function transliterator_transliterate(Transliterator|string $transliterator, string $string, int $start = 0, int $end = -1): string|false` — `ext/intl/php_intl.stub.php:637`
+- ·· `public function UConverter::__construct(?string $destination_encoding = null, ?string $source_encoding = null)` — `ext/intl/converter/converter.stub.php:96`
+- ·· `public function UConverter::convert(string $str, bool $reverse = false): string|false` — `ext/intl/converter/converter.stub.php:99`
+- ·· `public function UConverter::fromUCallback(int $reason, array $source, int $codePoint,&$error): string|int|array|null` — `ext/intl/converter/converter.stub.php:105`
+- ·· `public static function UConverter::getAliases(string $name): array|false|null` — `ext/intl/converter/converter.stub.php:111`
+- ·· `public static function UConverter::getAvailable(): array` — `ext/intl/converter/converter.stub.php:117`
+- ·· `public function UConverter::getDestinationEncoding(): string|false|null` — `ext/intl/converter/converter.stub.php:120`
+- ·· `public function UConverter::getDestinationType(): int|false|null` — `ext/intl/converter/converter.stub.php:123`
+- ·· `public function UConverter::getErrorCode(): int` — `ext/intl/converter/converter.stub.php:126`
+- ·· `public function UConverter::getErrorMessage(): ?string` — `ext/intl/converter/converter.stub.php:129`
+- ·· `public function UConverter::getSourceEncoding(): string|false|null` — `ext/intl/converter/converter.stub.php:132`
+- ·· `public function UConverter::getSourceType(): int|false|null` — `ext/intl/converter/converter.stub.php:135`
+- ·· `public static function UConverter::getStandards(): ?array` — `ext/intl/converter/converter.stub.php:138`
+- ·· `public function UConverter::getSubstChars(): string|false|null` — `ext/intl/converter/converter.stub.php:141`
+- ·· `public static function UConverter::reasonText(int $reason): string` — `ext/intl/converter/converter.stub.php:144`
+- ·· `public function UConverter::setDestinationEncoding(string $encoding): bool` — `ext/intl/converter/converter.stub.php:147`
+- ·· `public function UConverter::setSourceEncoding(string $encoding): bool` — `ext/intl/converter/converter.stub.php:150`
+- ·· `public function UConverter::setSubstChars(string $chars): bool` — `ext/intl/converter/converter.stub.php:153`
+- ·· `public function UConverter::toUCallback(int $reason, string $source, string $codeUnits,&$error): string|int|array|null` — `ext/intl/converter/converter.stub.php:159`
+- ·· `public static function UConverter::transcode(string $str, string $toEncoding, string $fromEncoding, ?array $options = null): string|false` — `ext/intl/converter/converter.stub.php:162`
+
+## ext/json (`6`) — impl `6`, tested `5`
+
+- ✅🧪 `function json_decode(string $json, ?bool $associative = null, int $depth = 512, int $flags = 0): mixed` — `ext/json/json.stub.php:157`
+- ✅🧪 `function json_encode(mixed $value, int $flags = 0, int $depth = 512): string|false` — `ext/json/json.stub.php:155`
+- ✅🧪 `function json_last_error(): int` — `ext/json/json.stub.php:161`
+- ✅🧪 `function json_last_error_msg(): string` — `ext/json/json.stub.php:164`
+- ✅🧪 `function json_validate(string $json, int $depth = 512, int $flags = 0): bool` — `ext/json/json.stub.php:159`
+- ✅· `public function JsonSerializable::jsonSerialize(): mixed` — `ext/json/json.stub.php:169`
+
+## ext/ldap (`60`) — impl `0`, tested `0`
+
+- ·· `function ldap_8859_to_t61(string $value): string|false` — `ext/ldap/ldap.stub.php:789`
+- ·· `function ldap_add(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:709`
+- ·· `function ldap_add_ext(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): LDAP\Result|false` — `ext/ldap/ldap.stub.php:711`
+- ·· `function ldap_bind(LDAP\Connection $ldap, ?string $dn = null, #[\SensitiveParameter] ?string $password = null): bool` — `ext/ldap/ldap.stub.php:645`
+- ·· `function ldap_bind_ext(LDAP\Connection $ldap, ?string $dn = null, #[\SensitiveParameter] ?string $password = null, ?array $controls = null): LDAP\Result|false` — `ext/ldap/ldap.stub.php:647`
+- ·· `function ldap_close(LDAP\Connection $ldap): bool` — `ext/ldap/ldap.stub.php:643`
+- ·· `function ldap_compare(LDAP\Connection $ldap, string $dn, string $attribute, string $value, ?array $controls = null): bool|int` — `ext/ldap/ldap.stub.php:740`
+- ·· `function ldap_connect(?string $uri = null, int $port = 389, string $wallet = UNKNOWN, #[\SensitiveParameter] string $password = UNKNOWN, int $auth_mode = GSLC_SSL_NO_AUTH): LDAP\Connection|false` — `ext/ldap/ldap.stub.php:631`
+- ·· `function ldap_connect(?string $uri = null, int $port = 389): LDAP\Connection|false` — `ext/ldap/ldap.stub.php:637`
+- ·· `function ldap_connect_wallet(?string $uri = null, string $wallet, #[\SensitiveParameter] string $password, int $auth_mode = GSLC_SSL_NO_AUTH): LDAP\Connection|false` — `ext/ldap/ldap.stub.php:634`
+- ·· `function ldap_count_entries(LDAP\Connection $ldap, LDAP\Result $result): int` — `ext/ldap/ldap.stub.php:664`
+- ·· `function ldap_count_references(LDAP\Connection $ldap, LDAP\Result $result): int` — `ext/ldap/ldap.stub.php:753`
+- ·· `function ldap_delete(LDAP\Connection $ldap, string $dn, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:713`
+- ·· `function ldap_delete_ext(LDAP\Connection $ldap, string $dn, ?array $controls = null): LDAP\Result|false` — `ext/ldap/ldap.stub.php:715`
+- ·· `function ldap_dn2ufn(string $dn): string|false` — `ext/ldap/ldap.stub.php:707`
+- ·· `function ldap_err2str(int $errno): string` — `ext/ldap/ldap.stub.php:738`
+- ·· `function ldap_errno(LDAP\Connection $ldap): int` — `ext/ldap/ldap.stub.php:734`
+- ·· `function ldap_error(LDAP\Connection $ldap): string` — `ext/ldap/ldap.stub.php:736`
+- ·· `function ldap_escape(string $value, string $ignore = "", int $flags = 0): string` — `ext/ldap/ldap.stub.php:784`
+- ·· `function ldap_exop(LDAP\Connection $ldap, string $request_oid, ?string $request_data = null, ?array $controls = null,&$response_data = UNKNOWN,&$response_oid = null): LDAP\Result|bool` — `ext/ldap/ldap.stub.php:798`
+- ·· `function ldap_exop_passwd(LDAP\Connection $ldap, string $user = "", #[\SensitiveParameter] string $old_password = "", #[\SensitiveParameter] string $new_password = "",&$controls = null): string|bool` — `ext/ldap/ldap.stub.php:810`
+- ·· `function ldap_exop_refresh(LDAP\Connection $ldap, string $dn, int $ttl): int|false` — `ext/ldap/ldap.stub.php:819`
+- ·· `function ldap_exop_sync(LDAP\Connection $ldap, string $request_oid, ?string $request_data = null, ?array $controls = null,&$response_data = null,&$response_oid = null): LDAP\Result|bool` — `ext/ldap/ldap.stub.php:803`
+- ·· `function ldap_exop_whoami(LDAP\Connection $ldap): string|false` — `ext/ldap/ldap.stub.php:815`
+- ·· `function ldap_explode_dn(string $dn, int $with_attrib): array|false` — `ext/ldap/ldap.stub.php:705`
+- ·· `function ldap_first_attribute(LDAP\Connection $ldap, LDAP\ResultEntry $entry): string|false` — `ext/ldap/ldap.stub.php:676`
+- ·· `function ldap_first_entry(LDAP\Connection $ldap, LDAP\Result $result): LDAP\ResultEntry|false` — `ext/ldap/ldap.stub.php:666`
+- ·· `function ldap_first_reference(LDAP\Connection $ldap, LDAP\Result $result): LDAP\ResultEntry|false` — `ext/ldap/ldap.stub.php:755`
+- ·· `function ldap_free_result(LDAP\Result $result): bool` — `ext/ldap/ldap.stub.php:662`
+- ·· `function ldap_get_attributes(LDAP\Connection $ldap, LDAP\ResultEntry $entry): array` — `ext/ldap/ldap.stub.php:684`
+- ·· `function ldap_get_dn(LDAP\Connection $ldap, LDAP\ResultEntry $entry): string|false` — `ext/ldap/ldap.stub.php:699`
+- ·· `function ldap_get_entries(LDAP\Connection $ldap, LDAP\Result $result): array|false` — `ext/ldap/ldap.stub.php:674`
+- ·· `function ldap_get_option(?LDAP\Connection $ldap, int $option,&$value = null): bool` — `ext/ldap/ldap.stub.php:748`
+- ·· `function ldap_get_values(LDAP\Connection $ldap, LDAP\ResultEntry $entry, string $attribute): array|false` — `ext/ldap/ldap.stub.php:697`
+- ·· `function ldap_get_values_len(LDAP\Connection $ldap, LDAP\ResultEntry $entry, string $attribute): array|false` — `ext/ldap/ldap.stub.php:690`
+- ·· `function ldap_list($ldap, array|string $base, array|string $filter, array $attributes = [], int $attributes_only = 0, int $sizelimit = -1, int $timelimit = -1, int $deref = LDAP_DEREF_NEVER, ?array $controls = null): LDAP\Result|array|false` — `ext/ldap/ldap.stub.php:657`
+- ·· `function ldap_mod_add(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:719`
+- ·· `function ldap_mod_add_ext(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): LDAP\Result|false` — `ext/ldap/ldap.stub.php:721`
+- ·· `function ldap_mod_del(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:730`
+- ·· `function ldap_mod_del_ext(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): LDAP\Result|false` — `ext/ldap/ldap.stub.php:732`
+- ·· `function ldap_mod_replace(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:723`
+- ·· `function ldap_mod_replace_ext(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): LDAP\Result|false` — `ext/ldap/ldap.stub.php:728`
+- ·· `function ldap_modify(LDAP\Connection $ldap, string $dn, array $entry, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:726`
+- ·· `function ldap_modify_batch(LDAP\Connection $ldap, string $dn, array $modifications_info, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:717`
+- ·· `function ldap_next_attribute(LDAP\Connection $ldap, LDAP\ResultEntry $entry): string|false` — `ext/ldap/ldap.stub.php:678`
+- ·· `function ldap_next_entry(LDAP\Connection $ldap, LDAP\ResultEntry $entry): LDAP\ResultEntry|false` — `ext/ldap/ldap.stub.php:668`
+- ·· `function ldap_next_reference(LDAP\Connection $ldap, LDAP\ResultEntry $entry): LDAP\ResultEntry|false` — `ext/ldap/ldap.stub.php:757`
+- ·· `function ldap_parse_exop(LDAP\Connection $ldap, LDAP\Result $result,&$response_data = null,&$response_oid = null): bool` — `ext/ldap/ldap.stub.php:827`
+- ·· `function ldap_parse_reference(LDAP\Connection $ldap, LDAP\ResultEntry $entry,&$referrals): bool` — `ext/ldap/ldap.stub.php:761`
+- ·· `function ldap_parse_result(LDAP\Connection $ldap, LDAP\Result $result,&$error_code,&$matched_dn = null,&$error_message = null,&$referrals = null,&$controls = null): bool` — `ext/ldap/ldap.stub.php:772`
+- ·· `function ldap_read($ldap, array|string $base, array|string $filter, array $attributes = [], int $attributes_only = 0, int $sizelimit = -1, int $timelimit = -1, int $deref = LDAP_DEREF_NEVER, ?array $controls = null): LDAP\Result|array|false` — `ext/ldap/ldap.stub.php:654`
+- ·· `function ldap_rename(LDAP\Connection $ldap, string $dn, string $new_rdn, string $new_parent, bool $delete_old_rdn, ?array $controls = null): bool` — `ext/ldap/ldap.stub.php:743`
+- ·· `function ldap_rename_ext(LDAP\Connection $ldap, string $dn, string $new_rdn, string $new_parent, bool $delete_old_rdn, ?array $controls = null): LDAP\Result|false` — `ext/ldap/ldap.stub.php:745`
+- ·· `function ldap_sasl_bind(LDAP\Connection $ldap, ?string $dn = null, #[\SensitiveParameter] ?string $password = null, ?string $mech = null, ?string $realm = null, ?string $authc_id = null, ?string $authz_id = null, ?string $props = null): bool` — `ext/ldap/ldap.stub.php:650`
+- ·· `function ldap_search($ldap, array|string $base, array|string $filter, array $attributes = [], int $attributes_only = 0, int $sizelimit = -1, int $timelimit = -1, int $deref = LDAP_DEREF_NEVER, ?array $controls = null): LDAP\Result|array|false` — `ext/ldap/ldap.stub.php:660`
+- ·· `function ldap_set_option(?LDAP\Connection $ldap, int $option, $value): bool` — `ext/ldap/ldap.stub.php:751`
+- ·· `function ldap_set_rebind_proc(LDAP\Connection $ldap, ?callable $callback): bool` — `ext/ldap/ldap.stub.php:777`
+- ·· `function ldap_start_tls(LDAP\Connection $ldap): bool` — `ext/ldap/ldap.stub.php:781`
+- ·· `function ldap_t61_to_8859(string $value): string|false` — `ext/ldap/ldap.stub.php:787`
+- ·· `function ldap_unbind(LDAP\Connection $ldap): bool` — `ext/ldap/ldap.stub.php:640`
+
+## ext/libxml (`8`) — impl `0`, tested `0`
+
+- ·· `function libxml_clear_errors(): void` — `ext/libxml/libxml.stub.php:180`
+- ·· `function libxml_disable_entity_loader(bool $disable = true): bool` — `ext/libxml/libxml.stub.php:183`
+- ·· `function libxml_get_errors(): array` — `ext/libxml/libxml.stub.php:178`
+- ·· `function libxml_get_external_entity_loader(): ?callable` — `ext/libxml/libxml.stub.php:187`
+- ·· `function libxml_get_last_error(): LibXMLError|false` — `ext/libxml/libxml.stub.php:175`
+- ·· `function libxml_set_external_entity_loader(?callable $resolver_function): true` — `ext/libxml/libxml.stub.php:185`
+- ·· `function libxml_set_streams_context($context): void` — `ext/libxml/libxml.stub.php:171`
+- ·· `function libxml_use_internal_errors(?bool $use_errors = null): bool` — `ext/libxml/libxml.stub.php:173`
+
+## ext/mbstring (`65`) — impl `0`, tested `0`
+
+- ·· `function mb_check_encoding(array|string|null $value = null, ?string $encoding = null): bool` — `ext/mbstring/mbstring.stub.php:188`
+- ·· `function mb_chr(int $codepoint, ?string $encoding = null): string|false` — `ext/mbstring/mbstring.stub.php:194`
+- ·· `function mb_convert_case(string $string, int $mode, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:130`
+- ·· `function mb_convert_encoding(array|string $string, string $to_encoding, array|string|null $from_encoding = null): array|string|false` — `ext/mbstring/mbstring.stub.php:127`
+- ·· `function mb_convert_kana(string $string, string $mode = "KV", ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:169`
+- ·· `function mb_convert_variables(string $to_encoding, array|string $from_encoding, mixed&$var, mixed&...$vars): string|false` — `ext/mbstring/mbstring.stub.php:172`
+- ·· `function mb_decode_mimeheader(string $string): string` — `ext/mbstring/mbstring.stub.php:166`
+- ·· `function mb_decode_numericentity(string $string, array $map, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:178`
+- ·· `function mb_detect_encoding(string $string, array|string|null $encodings = null, bool $strict = false): string|false` — `ext/mbstring/mbstring.stub.php:149`
+- ·· `function mb_detect_order(array|string|null $encoding = null): array|bool` — `ext/mbstring/mbstring.stub.php:73`
+- ·· `function mb_encode_mimeheader(string $string, ?string $charset = null, ?string $transfer_encoding = null, string $newline = "\r\n", int $indent = 0): string` — `ext/mbstring/mbstring.stub.php:163`
+- ·· `function mb_encode_numericentity(string $string, array $map, ?string $encoding = null, bool $hex = false): string` — `ext/mbstring/mbstring.stub.php:175`
+- ·· `function mb_encoding_aliases(string $encoding): array` — `ext/mbstring/mbstring.stub.php:160`
+- ·· `function mb_ereg(string $pattern, string $string,&$matches = null): bool` — `ext/mbstring/mbstring.stub.php:203`
+- ·· `function mb_ereg_match(string $pattern, string $string, ?string $options = null): bool` — `ext/mbstring/mbstring.stub.php:223`
+- ·· `function mb_ereg_replace(string $pattern, string $replacement, string $string, ?string $options = null): string|false|null` — `ext/mbstring/mbstring.stub.php:209`
+- ·· `function mb_ereg_replace_callback(string $pattern, callable $callback, string $string, ?string $options = null): string|false|null` — `ext/mbstring/mbstring.stub.php:215`
+- ·· `function mb_ereg_search(?string $pattern = null, ?string $options = null): bool` — `ext/mbstring/mbstring.stub.php:225`
+- ·· `function mb_ereg_search_getpos(): int` — `ext/mbstring/mbstring.stub.php:247`
+- ·· `function mb_ereg_search_getregs(): array|false` — `ext/mbstring/mbstring.stub.php:245`
+- ·· `function mb_ereg_search_init(string $string, ?string $pattern = null, ?string $options = null): bool` — `ext/mbstring/mbstring.stub.php:239`
+- ·· `function mb_ereg_search_pos(?string $pattern = null, ?string $options = null): array|false` — `ext/mbstring/mbstring.stub.php:231`
+- ·· `function mb_ereg_search_regs(?string $pattern = null, ?string $options = null): array|false` — `ext/mbstring/mbstring.stub.php:237`
+- ·· `function mb_ereg_search_setpos(int $offset): bool` — `ext/mbstring/mbstring.stub.php:249`
+- ·· `function mb_eregi(string $pattern, string $string,&$matches = null): bool` — `ext/mbstring/mbstring.stub.php:206`
+- ·· `function mb_eregi_replace(string $pattern, string $replacement, string $string, ?string $options = null): string|false|null` — `ext/mbstring/mbstring.stub.php:212`
+- ·· `function mb_get_info(string $type = "all"): array|string|int|false|null` — `ext/mbstring/mbstring.stub.php:186`
+- ·· `function mb_http_input(?string $type = null): array|string|false` — `ext/mbstring/mbstring.stub.php:64`
+- ·· `function mb_http_output(?string $encoding = null): string|bool` — `ext/mbstring/mbstring.stub.php:67`
+- ·· `function mb_internal_encoding(?string $encoding = null): string|bool` — `ext/mbstring/mbstring.stub.php:58`
+- ·· `function mb_language(?string $language = null): string|bool` — `ext/mbstring/mbstring.stub.php:55`
+- ·· `function mb_lcfirst(string $string, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:140`
+- ·· `function mb_list_encodings(): array` — `ext/mbstring/mbstring.stub.php:154`
+- ·· `function mb_ltrim(string $string, ?string $characters = null, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:144`
+- ·· `function mb_ord(string $string, ?string $encoding = null): int|false` — `ext/mbstring/mbstring.stub.php:192`
+- ·· `function mb_output_handler(string $string, int $status): string` — `ext/mbstring/mbstring.stub.php:85`
+- ·· `function mb_parse_str(string $string,&$result): bool` — `ext/mbstring/mbstring.stub.php:82`
+- ·· `function mb_preferred_mime_name(string $encoding): string|false` — `ext/mbstring/mbstring.stub.php:79`
+- ·· `function mb_regex_encoding(?string $encoding = null): string|bool` — `ext/mbstring/mbstring.stub.php:200`
+- ·· `function mb_regex_set_options(?string $options = null): string` — `ext/mbstring/mbstring.stub.php:252`
+- ·· `function mb_rtrim(string $string, ?string $characters = null, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:146`
+- ·· `function mb_scrub(string $string, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:190`
+- ·· `function mb_send_mail(string $to, string $subject, string $message, array|string $additional_headers = [], ?string $additional_params = null): bool` — `ext/mbstring/mbstring.stub.php:180`
+- ·· `function mb_split(string $pattern, string $string, int $limit = -1): array|false` — `ext/mbstring/mbstring.stub.php:221`
+- ·· `function mb_str_pad(string $string, int $length, string $pad_string = " ", int $pad_type = STR_PAD_RIGHT, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:196`
+- ·· `function mb_str_split(string $string, int $length = 1, ?string $encoding = null): array` — `ext/mbstring/mbstring.stub.php:87`
+- ·· `function mb_strcut(string $string, int $start, ?int $length = null, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:117`
+- ·· `function mb_strimwidth(string $string, int $start, int $width, string $trim_marker = "", ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:121`
+- ·· `function mb_stripos(string $haystack, string $needle, int $offset = 0, ?string $encoding = null): int|false` — `ext/mbstring/mbstring.stub.php:95`
+- ·· `function mb_stristr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false` — `ext/mbstring/mbstring.stub.php:106`
+- ·· `function mb_strlen(string $string, ?string $encoding = null): int` — `ext/mbstring/mbstring.stub.php:89`
+- ·· `function mb_strpos(string $haystack, string $needle, int $offset = 0, ?string $encoding = null): int|false` — `ext/mbstring/mbstring.stub.php:91`
+- ·· `function mb_strrchr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false` — `ext/mbstring/mbstring.stub.php:103`
+- ·· `function mb_strrichr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false` — `ext/mbstring/mbstring.stub.php:109`
+- ·· `function mb_strripos(string $haystack, string $needle, int $offset = 0, ?string $encoding = null): int|false` — `ext/mbstring/mbstring.stub.php:97`
+- ·· `function mb_strrpos(string $haystack, string $needle, int $offset = 0, ?string $encoding = null): int|false` — `ext/mbstring/mbstring.stub.php:93`
+- ·· `function mb_strstr(string $haystack, string $needle, bool $before_needle = false, ?string $encoding = null): string|false` — `ext/mbstring/mbstring.stub.php:100`
+- ·· `function mb_strtolower(string $string, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:136`
+- ·· `function mb_strtoupper(string $string, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:133`
+- ·· `function mb_strwidth(string $string, ?string $encoding = null): int` — `ext/mbstring/mbstring.stub.php:119`
+- ·· `function mb_substitute_character(string|int|null $substitute_character = null): string|int|bool` — `ext/mbstring/mbstring.stub.php:76`
+- ·· `function mb_substr(string $string, int $start, ?int $length = null, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:114`
+- ·· `function mb_substr_count(string $haystack, string $needle, ?string $encoding = null): int` — `ext/mbstring/mbstring.stub.php:111`
+- ·· `function mb_trim(string $string, ?string $characters = null, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:142`
+- ·· `function mb_ucfirst(string $string, ?string $encoding = null): string` — `ext/mbstring/mbstring.stub.php:138`
+
+## ext/mysqli (`189`) — impl `0`, tested `0`
+
+- ·· `public function mysqli::__construct( ?string $hostname = null, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?string $database = null, ?int $port = null, ?string $socket = null )` — `ext/mysqli/mysqli.stub.php:719`
+- ·· `public function mysqli::autocommit(bool $enable): bool` — `ext/mysqli/mysqli.stub.php:732`
+- ·· `public function mysqli::begin_transaction(int $flags = 0, ?string $name = null): bool` — `ext/mysqli/mysqli.stub.php:738`
+- ·· `public function mysqli::change_user(string $username, #[\SensitiveParameter] string $password, ?string $database): bool` — `ext/mysqli/mysqli.stub.php:744`
+- ·· `public function mysqli::character_set_name(): string` — `ext/mysqli/mysqli.stub.php:750`
+- ·· `public function mysqli::close(): true` — `ext/mysqli/mysqli.stub.php:756`
+- ·· `public function mysqli::commit(int $flags = 0, ?string $name = null): bool` — `ext/mysqli/mysqli.stub.php:762`
+- ·· `public function mysqli::connect( ?string $hostname = null, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?string $database = null, ?int $port = null, ?string $socket = null ): bool` — `ext/mysqli/mysqli.stub.php:769`
+- ·· `public function mysqli::debug(string $options): true` — `ext/mysqli/mysqli.stub.php:789`
+- ·· `public function mysqli::dump_debug_info(): bool` — `ext/mysqli/mysqli.stub.php:782`
+- ·· `public function mysqli::escape_string(string $string): string` — `ext/mysqli/mysqli.stub.php:914`
+- ·· `public function mysqli::execute_query(string $query, ?array $params = null): mysqli_result|bool` — `ext/mysqli/mysqli.stub.php:800`
+- ·· `public function mysqli::get_charset(): ?object` — `ext/mysqli/mysqli.stub.php:795`
+- ·· `public function mysqli::get_client_info(): string` — `ext/mysqli/mysqli.stub.php:807`
+- ·· `public function mysqli::get_connection_stats(): array` — `ext/mysqli/mysqli.stub.php:814`
+- ·· `public function mysqli::get_server_info(): string` — `ext/mysqli/mysqli.stub.php:820`
+- ·· `public function mysqli::get_warnings(): mysqli_warning|false` — `ext/mysqli/mysqli.stub.php:826`
+- ·· `public function mysqli::init()` — `ext/mysqli/mysqli.stub.php:832`
+- ·· `public function mysqli::kill(int $process_id): bool` — `ext/mysqli/mysqli.stub.php:839`
+- ·· `public function mysqli::more_results(): bool` — `ext/mysqli/mysqli.stub.php:851`
+- ·· `public function mysqli::multi_query(string $query): bool` — `ext/mysqli/mysqli.stub.php:845`
+- ·· `public function mysqli::next_result(): bool` — `ext/mysqli/mysqli.stub.php:857`
+- ·· `public function mysqli::options(int $option, $value): bool` — `ext/mysqli/mysqli.stub.php:957`
+- ·· `public function mysqli::ping(): bool` — `ext/mysqli/mysqli.stub.php:864`
+- ·· `public static function mysqli::poll(?array&$read, ?array&$error, array&$reject, int $seconds, int $microseconds = 0): int|false` — `ext/mysqli/mysqli.stub.php:870`
+- ·· `public function mysqli::prepare(string $query): mysqli_stmt|false` — `ext/mysqli/mysqli.stub.php:876`
+- ·· `public function mysqli::query(string $query, int $result_mode = MYSQLI_STORE_RESULT): mysqli_result|bool` — `ext/mysqli/mysqli.stub.php:882`
+- ·· `public function mysqli::real_connect( ?string $hostname = null, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?string $database = null, ?int $port = null, ?string $socket = null, int $flags = 0 ): bool` — `ext/mysqli/mysqli.stub.php:888`
+- ·· `public function mysqli::real_escape_string(string $string): string` — `ext/mysqli/mysqli.stub.php:902`
+- ·· `public function mysqli::real_query(string $query): bool` — `ext/mysqli/mysqli.stub.php:920`
+- ·· `public function mysqli::reap_async_query(): mysqli_result|bool` — `ext/mysqli/mysqli.stub.php:908`
+- ·· `public function mysqli::refresh(int $flags): bool` — `ext/mysqli/mysqli.stub.php:1013`
+- ·· `public function mysqli::release_savepoint(string $name): bool` — `ext/mysqli/mysqli.stub.php:926`
+- ·· `public function mysqli::rollback(int $flags = 0, ?string $name = null): bool` — `ext/mysqli/mysqli.stub.php:932`
+- ·· `public function mysqli::savepoint(string $name): bool` — `ext/mysqli/mysqli.stub.php:938`
+- ·· `public function mysqli::select_db(string $database): bool` — `ext/mysqli/mysqli.stub.php:944`
+- ·· `public function mysqli::set_charset(string $charset): bool` — `ext/mysqli/mysqli.stub.php:950`
+- ·· `public function mysqli::set_opt(int $option, $value): bool` — `ext/mysqli/mysqli.stub.php:964`
+- ·· `public function mysqli::ssl_set( ?string $key, ?string $certificate, ?string $ca_certificate, ?string $ca_path, ?string $cipher_algos ): true` — `ext/mysqli/mysqli.stub.php:970`
+- ·· `public function mysqli::stat(): string|false` — `ext/mysqli/mysqli.stub.php:982`
+- ·· `public function mysqli::stmt_init(): mysqli_stmt|false` — `ext/mysqli/mysqli.stub.php:988`
+- ·· `public function mysqli::store_result(int $mode = 0): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:994`
+- ·· `public function mysqli::thread_safe(): bool` — `ext/mysqli/mysqli.stub.php:1000`
+- ·· `public function mysqli::use_result(): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:1006`
+- ·· `function mysqli_affected_rows(mysqli $mysql): int|string` — `ext/mysqli/mysqli.stub.php:1331`
+- ·· `function mysqli_autocommit(mysqli $mysql, bool $enable): bool` — `ext/mysqli/mysqli.stub.php:1333`
+- ·· `function mysqli_begin_transaction(mysqli $mysql, int $flags = 0, ?string $name = null): bool` — `ext/mysqli/mysqli.stub.php:1335`
+- ·· `function mysqli_change_user(mysqli $mysql, string $username, #[\SensitiveParameter] string $password, ?string $database): bool` — `ext/mysqli/mysqli.stub.php:1337`
+- ·· `function mysqli_character_set_name(mysqli $mysql): string` — `ext/mysqli/mysqli.stub.php:1340`
+- ·· `function mysqli_close(mysqli $mysql): true` — `ext/mysqli/mysqli.stub.php:1342`
+- ·· `function mysqli_commit(mysqli $mysql, int $flags = 0, ?string $name = null): bool` — `ext/mysqli/mysqli.stub.php:1344`
+- ·· `function mysqli_connect( ?string $hostname = null, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?string $database = null, ?int $port = null, ?string $socket = null ): mysqli|false` — `ext/mysqli/mysqli.stub.php:1349`
+- ·· `function mysqli_connect_errno(): int` — `ext/mysqli/mysqli.stub.php:1358`
+- ·· `function mysqli_connect_error(): ?string` — `ext/mysqli/mysqli.stub.php:1361`
+- ·· `function mysqli_data_seek(mysqli_result $result, int $offset): bool` — `ext/mysqli/mysqli.stub.php:1363`
+- ·· `function mysqli_debug(string $options): true` — `ext/mysqli/mysqli.stub.php:1367`
+- ·· `function mysqli_dump_debug_info(mysqli $mysql): bool` — `ext/mysqli/mysqli.stub.php:1365`
+- ·· `function mysqli_errno(mysqli $mysql): int` — `ext/mysqli/mysqli.stub.php:1369`
+- ·· `function mysqli_error(mysqli $mysql): string` — `ext/mysqli/mysqli.stub.php:1372`
+- ·· `function mysqli_error_list(mysqli $mysql): array` — `ext/mysqli/mysqli.stub.php:1378`
+- ·· `function mysqli_escape_string(mysqli $mysql, string $string): string` — `ext/mysqli/mysqli.stub.php:1543`
+- ·· `function mysqli_execute(mysqli_stmt $statement, ?array $params = null): bool` — `ext/mysqli/mysqli.stub.php:1384`
+- ·· `function mysqli_execute_query(mysqli $mysql, string $query, ?array $params = null): mysqli_result|bool` — `ext/mysqli/mysqli.stub.php:1386`
+- ·· `function mysqli_fetch_all(mysqli_result $result, int $mode = MYSQLI_NUM): array` — `ext/mysqli/mysqli.stub.php:1410`
+- ·· `function mysqli_fetch_array(mysqli_result $result, int $mode = MYSQLI_BOTH): array|null|false` — `ext/mysqli/mysqli.stub.php:1416`
+- ·· `function mysqli_fetch_assoc(mysqli_result $result): array|null|false` — `ext/mysqli/mysqli.stub.php:1422`
+- ·· `function mysqli_fetch_column(mysqli_result $result, int $column = 0): null|int|float|string|false` — `ext/mysqli/mysqli.stub.php:1433`
+- ·· `function mysqli_fetch_field(mysqli_result $result): object|false` — `ext/mysqli/mysqli.stub.php:1389`
+- ·· `function mysqli_fetch_field_direct(mysqli_result $result, int $index): object|false` — `ext/mysqli/mysqli.stub.php:1398`
+- ·· `function mysqli_fetch_fields(mysqli_result $result): array` — `ext/mysqli/mysqli.stub.php:1395`
+- ·· `function mysqli_fetch_lengths(mysqli_result $result): array|false` — `ext/mysqli/mysqli.stub.php:1404`
+- ·· `function mysqli_fetch_object(mysqli_result $result, string $class = "stdClass", array $constructor_args = []): object|null|false` — `ext/mysqli/mysqli.stub.php:1425`
+- ·· `function mysqli_fetch_row(mysqli_result $result): array|null|false` — `ext/mysqli/mysqli.stub.php:1431`
+- ·· `function mysqli_field_count(mysqli $mysql): int` — `ext/mysqli/mysqli.stub.php:1435`
+- ·· `function mysqli_field_seek(mysqli_result $result, int $index): true` — `ext/mysqli/mysqli.stub.php:1437`
+- ·· `function mysqli_field_tell(mysqli_result $result): int` — `ext/mysqli/mysqli.stub.php:1439`
+- ·· `function mysqli_free_result(mysqli_result $result): void` — `ext/mysqli/mysqli.stub.php:1441`
+- ·· `function mysqli_get_charset(mysqli $mysql): ?object` — `ext/mysqli/mysqli.stub.php:1456`
+- ·· `function mysqli_get_client_info(?mysqli $mysql = null): string` — `ext/mysqli/mysqli.stub.php:1459`
+- ·· `function mysqli_get_client_stats(): array` — `ext/mysqli/mysqli.stub.php:1453`
+- ·· `function mysqli_get_client_version(): int` — `ext/mysqli/mysqli.stub.php:1461`
+- ·· `function mysqli_get_connection_stats(mysqli $mysql): array` — `ext/mysqli/mysqli.stub.php:1447`
+- ·· `function mysqli_get_host_info(mysqli $mysql): string` — `ext/mysqli/mysqli.stub.php:1470`
+- ·· `function mysqli_get_links_stats(): array` — `ext/mysqli/mysqli.stub.php:1467`
+- ·· `function mysqli_get_proto_info(mysqli $mysql): int` — `ext/mysqli/mysqli.stub.php:1472`
+- ·· `function mysqli_get_server_info(mysqli $mysql): string` — `ext/mysqli/mysqli.stub.php:1475`
+- ·· `function mysqli_get_server_version(mysqli $mysql): int` — `ext/mysqli/mysqli.stub.php:1477`
+- ·· `function mysqli_get_warnings(mysqli $mysql): mysqli_warning|false` — `ext/mysqli/mysqli.stub.php:1480`
+- ·· `function mysqli_info(mysqli $mysql): ?string` — `ext/mysqli/mysqli.stub.php:1486`
+- ·· `function mysqli_init(): mysqli|false` — `ext/mysqli/mysqli.stub.php:1483`
+- ·· `function mysqli_insert_id(mysqli $mysql): int|string` — `ext/mysqli/mysqli.stub.php:1489`
+- ·· `function mysqli_kill(mysqli $mysql, int $process_id): bool` — `ext/mysqli/mysqli.stub.php:1492`
+- ·· `function mysqli_more_results(mysqli $mysql): bool` — `ext/mysqli/mysqli.stub.php:1494`
+- ·· `function mysqli_multi_query(mysqli $mysql, string $query): bool` — `ext/mysqli/mysqli.stub.php:1496`
+- ·· `function mysqli_next_result(mysqli $mysql): bool` — `ext/mysqli/mysqli.stub.php:1498`
+- ·· `function mysqli_num_fields(mysqli_result $result): int` — `ext/mysqli/mysqli.stub.php:1500`
+- ·· `function mysqli_num_rows(mysqli_result $result): int|string` — `ext/mysqli/mysqli.stub.php:1503`
+- ·· `function mysqli_options(mysqli $mysql, int $option, $value): bool` — `ext/mysqli/mysqli.stub.php:1506`
+- ·· `function mysqli_ping(mysqli $mysql): bool` — `ext/mysqli/mysqli.stub.php:1515`
+- ·· `function mysqli_poll(?array&$read, ?array&$error, array&$reject, int $seconds, int $microseconds = 0): int|false` — `ext/mysqli/mysqli.stub.php:1517`
+- ·· `function mysqli_prepare(mysqli $mysql, string $query): mysqli_stmt|false` — `ext/mysqli/mysqli.stub.php:1520`
+- ·· `function mysqli_query(mysqli $mysql, string $query, int $result_mode = MYSQLI_STORE_RESULT): mysqli_result|bool` — `ext/mysqli/mysqli.stub.php:1525`
+- ·· `function mysqli_real_connect( mysqli $mysql, ?string $hostname = null, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?string $database = null, ?int $port = null, ?string $socket = null, int $flags = 0 ): bool` — `ext/mysqli/mysqli.stub.php:1527`
+- ·· `function mysqli_real_escape_string(mysqli $mysql, string $string): string` — `ext/mysqli/mysqli.stub.php:1540`
+- ·· `function mysqli_real_query(mysqli $mysql, string $query): bool` — `ext/mysqli/mysqli.stub.php:1545`
+- ·· `function mysqli_reap_async_query(mysqli $mysql): mysqli_result|bool` — `ext/mysqli/mysqli.stub.php:1548`
+- ·· `function mysqli_refresh(mysqli $mysql, int $flags): bool` — `ext/mysqli/mysqli.stub.php:1655`
+- ·· `function mysqli_release_savepoint(mysqli $mysql, string $name): bool` — `ext/mysqli/mysqli.stub.php:1550`
+- ·· `function mysqli_report(int $flags): true` — `ext/mysqli/mysqli.stub.php:1522`
+- ·· `public function mysqli_result::__construct(mysqli $mysql, int $result_mode = MYSQLI_STORE_RESULT)` — `ext/mysqli/mysqli.stub.php:1044`
+- ·· `public function mysqli_result::close(): void` — `ext/mysqli/mysqli.stub.php:1050`
+- ·· `public function mysqli_result::data_seek(int $offset): bool` — `ext/mysqli/mysqli.stub.php:1062`
+- ·· `public function mysqli_result::fetch_all(int $mode = MYSQLI_NUM): array` — `ext/mysqli/mysqli.stub.php:1088`
+- ·· `public function mysqli_result::fetch_array(int $mode = MYSQLI_BOTH): array|null|false` — `ext/mysqli/mysqli.stub.php:1095`
+- ·· `public function mysqli_result::fetch_assoc(): array|null|false` — `ext/mysqli/mysqli.stub.php:1102`
+- ·· `public function mysqli_result::fetch_column(int $column = 0): null|int|float|string|false` — `ext/mysqli/mysqli.stub.php:1118`
+- ·· `public function mysqli_result::fetch_field(): object|false` — `ext/mysqli/mysqli.stub.php:1068`
+- ·· `public function mysqli_result::fetch_field_direct(int $index): object|false` — `ext/mysqli/mysqli.stub.php:1081`
+- ·· `public function mysqli_result::fetch_fields(): array` — `ext/mysqli/mysqli.stub.php:1075`
+- ·· `public function mysqli_result::fetch_object(string $class = "stdClass", array $constructor_args = []): object|null|false` — `ext/mysqli/mysqli.stub.php:1108`
+- ·· `public function mysqli_result::fetch_row(): array|null|false` — `ext/mysqli/mysqli.stub.php:1115`
+- ·· `public function mysqli_result::field_seek(int $index): true` — `ext/mysqli/mysqli.stub.php:1124`
+- ·· `public function mysqli_result::free(): void` — `ext/mysqli/mysqli.stub.php:1056`
+- ·· `public function mysqli_result::free_result(): void` — `ext/mysqli/mysqli.stub.php:1130`
+- ·· `public function mysqli_result::getIterator(): Iterator` — `ext/mysqli/mysqli.stub.php:1132`
+- ·· `function mysqli_rollback(mysqli $mysql, int $flags = 0, ?string $name = null): bool` — `ext/mysqli/mysqli.stub.php:1552`
+- ·· `function mysqli_savepoint(mysqli $mysql, string $name): bool` — `ext/mysqli/mysqli.stub.php:1554`
+- ·· `function mysqli_select_db(mysqli $mysql, string $database): bool` — `ext/mysqli/mysqli.stub.php:1556`
+- ·· `function mysqli_set_charset(mysqli $mysql, string $charset): bool` — `ext/mysqli/mysqli.stub.php:1558`
+- ·· `function mysqli_set_opt(mysqli $mysql, int $option, $value): bool` — `ext/mysqli/mysqli.stub.php:1512`
+- ·· `public function mysqli_sql_exception::getSqlState(): string` — `ext/mysqli/mysqli.stub.php:1327`
+- ·· `function mysqli_sqlstate(mysqli $mysql): string` — `ext/mysqli/mysqli.stub.php:1628`
+- ·· `function mysqli_ssl_set( mysqli $mysql, ?string $key, ?string $certificate, ?string $ca_certificate, ?string $ca_path, ?string $cipher_algos ): true` — `ext/mysqli/mysqli.stub.php:1630`
+- ·· `function mysqli_stat(mysqli $mysql): string|false` — `ext/mysqli/mysqli.stub.php:1640`
+- ·· `public function mysqli_stmt::__construct(mysqli $mysql, ?string $query = null)` — `ext/mysqli/mysqli.stub.php:1193`
+- ·· `public function mysqli_stmt::attr_get(int $attribute): int` — `ext/mysqli/mysqli.stub.php:1199`
+- ·· `public function mysqli_stmt::attr_set(int $attribute, int $value): bool` — `ext/mysqli/mysqli.stub.php:1205`
+- ·· `public function mysqli_stmt::bind_param(string $types, mixed&...$vars): bool` — `ext/mysqli/mysqli.stub.php:1211`
+- ·· `public function mysqli_stmt::bind_result(mixed&...$vars): bool` — `ext/mysqli/mysqli.stub.php:1217`
+- ·· `public function mysqli_stmt::close(): true` — `ext/mysqli/mysqli.stub.php:1223`
+- ·· `public function mysqli_stmt::data_seek(int $offset): void` — `ext/mysqli/mysqli.stub.php:1229`
+- ·· `public function mysqli_stmt::execute(?array $params = null): bool` — `ext/mysqli/mysqli.stub.php:1235`
+- ·· `public function mysqli_stmt::fetch(): ?bool` — `ext/mysqli/mysqli.stub.php:1241`
+- ·· `public function mysqli_stmt::free_result(): void` — `ext/mysqli/mysqli.stub.php:1283`
+- ·· `public function mysqli_stmt::get_result(): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:1307`
+- ·· `public function mysqli_stmt::get_warnings(): mysqli_warning|false` — `ext/mysqli/mysqli.stub.php:1247`
+- ·· `public function mysqli_stmt::more_results(): bool` — `ext/mysqli/mysqli.stub.php:1259`
+- ·· `public function mysqli_stmt::next_result(): bool` — `ext/mysqli/mysqli.stub.php:1265`
+- ·· `public function mysqli_stmt::num_rows(): int|string` — `ext/mysqli/mysqli.stub.php:1271`
+- ·· `public function mysqli_stmt::prepare(string $query): bool` — `ext/mysqli/mysqli.stub.php:1295`
+- ·· `public function mysqli_stmt::reset(): bool` — `ext/mysqli/mysqli.stub.php:1289`
+- ·· `public function mysqli_stmt::result_metadata(): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:1253`
+- ·· `public function mysqli_stmt::send_long_data(int $param_num, string $data): bool` — `ext/mysqli/mysqli.stub.php:1277`
+- ·· `public function mysqli_stmt::store_result(): bool` — `ext/mysqli/mysqli.stub.php:1301`
+- ·· `function mysqli_stmt_affected_rows(mysqli_stmt $statement): int|string` — `ext/mysqli/mysqli.stub.php:1561`
+- ·· `function mysqli_stmt_attr_get(mysqli_stmt $statement, int $attribute): int` — `ext/mysqli/mysqli.stub.php:1563`
+- ·· `function mysqli_stmt_attr_set(mysqli_stmt $statement, int $attribute, int $value): bool` — `ext/mysqli/mysqli.stub.php:1565`
+- ·· `function mysqli_stmt_bind_param(mysqli_stmt $statement, string $types, mixed&...$vars): bool` — `ext/mysqli/mysqli.stub.php:1567`
+- ·· `function mysqli_stmt_bind_result(mysqli_stmt $statement, mixed&...$vars): bool` — `ext/mysqli/mysqli.stub.php:1569`
+- ·· `function mysqli_stmt_close(mysqli_stmt $statement): true` — `ext/mysqli/mysqli.stub.php:1571`
+- ·· `function mysqli_stmt_data_seek(mysqli_stmt $statement, int $offset): void` — `ext/mysqli/mysqli.stub.php:1573`
+- ·· `function mysqli_stmt_errno(mysqli_stmt $statement): int` — `ext/mysqli/mysqli.stub.php:1575`
+- ·· `function mysqli_stmt_error(mysqli_stmt $statement): string` — `ext/mysqli/mysqli.stub.php:1578`
+- ·· `function mysqli_stmt_error_list(mysqli_stmt $statement): array` — `ext/mysqli/mysqli.stub.php:1584`
+- ·· `function mysqli_stmt_execute(mysqli_stmt $statement, ?array $params = null): bool` — `ext/mysqli/mysqli.stub.php:1380`
+- ·· `function mysqli_stmt_fetch(mysqli_stmt $statement): ?bool` — `ext/mysqli/mysqli.stub.php:1586`
+- ·· `function mysqli_stmt_field_count(mysqli_stmt $statement): int` — `ext/mysqli/mysqli.stub.php:1588`
+- ·· `function mysqli_stmt_free_result(mysqli_stmt $statement): void` — `ext/mysqli/mysqli.stub.php:1590`
+- ·· `function mysqli_stmt_get_result(mysqli_stmt $statement): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:1593`
+- ·· `function mysqli_stmt_get_warnings(mysqli_stmt $statement): mysqli_warning|false` — `ext/mysqli/mysqli.stub.php:1596`
+- ·· `function mysqli_stmt_init(mysqli $mysql): mysqli_stmt|false` — `ext/mysqli/mysqli.stub.php:1599`
+- ·· `function mysqli_stmt_insert_id(mysqli_stmt $statement): int|string` — `ext/mysqli/mysqli.stub.php:1602`
+- ·· `function mysqli_stmt_more_results(mysqli_stmt $statement): bool` — `ext/mysqli/mysqli.stub.php:1604`
+- ·· `function mysqli_stmt_next_result(mysqli_stmt $statement): bool` — `ext/mysqli/mysqli.stub.php:1606`
+- ·· `function mysqli_stmt_num_rows(mysqli_stmt $statement): int|string` — `ext/mysqli/mysqli.stub.php:1609`
+- ·· `function mysqli_stmt_param_count(mysqli_stmt $statement): int` — `ext/mysqli/mysqli.stub.php:1611`
+- ·· `function mysqli_stmt_prepare(mysqli_stmt $statement, string $query): bool` — `ext/mysqli/mysqli.stub.php:1613`
+- ·· `function mysqli_stmt_reset(mysqli_stmt $statement): bool` — `ext/mysqli/mysqli.stub.php:1615`
+- ·· `function mysqli_stmt_result_metadata(mysqli_stmt $statement): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:1618`
+- ·· `function mysqli_stmt_send_long_data(mysqli_stmt $statement, int $param_num, string $data): bool` — `ext/mysqli/mysqli.stub.php:1620`
+- ·· `function mysqli_stmt_sqlstate(mysqli_stmt $statement): string` — `ext/mysqli/mysqli.stub.php:1625`
+- ·· `function mysqli_stmt_store_result(mysqli_stmt $statement): bool` — `ext/mysqli/mysqli.stub.php:1622`
+- ·· `function mysqli_store_result(mysqli $mysql, int $mode = 0): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:1643`
+- ·· `function mysqli_thread_id(mysqli $mysql): int` — `ext/mysqli/mysqli.stub.php:1645`
+- ·· `function mysqli_thread_safe(): bool` — `ext/mysqli/mysqli.stub.php:1647`
+- ·· `function mysqli_use_result(mysqli $mysql): mysqli_result|false` — `ext/mysqli/mysqli.stub.php:1650`
+- ·· `private function mysqli_warning::__construct()` — `ext/mysqli/mysqli.stub.php:1318`
+- ·· `public function mysqli_warning::next(): bool` — `ext/mysqli/mysqli.stub.php:1320`
+- ·· `function mysqli_warning_count(mysqli $mysql): int` — `ext/mysqli/mysqli.stub.php:1652`
+
+## ext/odbc (`48`) — impl `0`, tested `0`
+
+- ·· `function odbc_autocommit(Odbc\Connection $odbc, ?bool $enable = null): int|bool` — `ext/odbc/odbc.stub.php:390`
+- ·· `function odbc_binmode(Odbc\Result $statement, int $mode): true` — `ext/odbc/odbc.stub.php:330`
+- ·· `function odbc_close(Odbc\Connection $odbc): void` — `ext/odbc/odbc.stub.php:369`
+- ·· `function odbc_close_all(): void` — `ext/odbc/odbc.stub.php:328`
+- ·· `function odbc_columnprivileges(Odbc\Connection $odbc, ?string $catalog, string $schema, string $table, string $column): Odbc\Result|false` — `ext/odbc/odbc.stub.php:422`
+- ·· `function odbc_columns(Odbc\Connection $odbc, ?string $catalog = null, ?string $schema = null, ?string $table = null, ?string $column = null): Odbc\Result|false` — `ext/odbc/odbc.stub.php:404`
+- ·· `function odbc_commit(Odbc\Connection $odbc): bool` — `ext/odbc/odbc.stub.php:392`
+- ·· `function odbc_connect(string $dsn, ?string $user = null, #[\SensitiveParameter] ?string $password = null, int $cursor_option = SQL_CUR_USE_DRIVER): Odbc\Connection|false` — `ext/odbc/odbc.stub.php:365`
+- ·· `function odbc_connection_string_is_quoted(string $str): bool` — `ext/odbc/odbc.stub.php:426`
+- ·· `function odbc_connection_string_quote(string $str): string` — `ext/odbc/odbc.stub.php:430`
+- ·· `function odbc_connection_string_should_quote(string $str): bool` — `ext/odbc/odbc.stub.php:428`
+- ·· `function odbc_cursor(Odbc\Result $statement): string|false` — `ext/odbc/odbc.stub.php:338`
+- ·· `function odbc_data_source(Odbc\Connection $odbc, int $fetch_type): array|null|false` — `ext/odbc/odbc.stub.php:340`
+- ·· `function odbc_do(Odbc\Connection $odbc, string $query): Odbc\Result|false` — `ext/odbc/odbc.stub.php:345`
+- ·· `function odbc_error(?Odbc\Connection $odbc = null): string` — `ext/odbc/odbc.stub.php:396`
+- ·· `function odbc_errormsg(?Odbc\Connection $odbc = null): string` — `ext/odbc/odbc.stub.php:398`
+- ·· `function odbc_exec(Odbc\Connection $odbc, string $query): Odbc\Result|false` — `ext/odbc/odbc.stub.php:342`
+- ·· `function odbc_execute(Odbc\Result $statement, array $params = []): bool` — `ext/odbc/odbc.stub.php:336`
+- ·· `function odbc_fetch_array(Odbc\Result $statement, ?int $row = null): array|false` — `ext/odbc/odbc.stub.php:349`
+- ·· `function odbc_fetch_into(Odbc\Result $statement,&$array, ?int $row = null): int|false` — `ext/odbc/odbc.stub.php:354`
+- ·· `function odbc_fetch_object(Odbc\Result $statement, ?int $row = null): stdClass|false` — `ext/odbc/odbc.stub.php:347`
+- ·· `function odbc_fetch_row(Odbc\Result $statement, ?int $row = null): bool` — `ext/odbc/odbc.stub.php:356`
+- ·· `function odbc_field_len(Odbc\Result $statement, int $field): int|false` — `ext/odbc/odbc.stub.php:381`
+- ·· `function odbc_field_name(Odbc\Result $statement, int $field): string|false` — `ext/odbc/odbc.stub.php:377`
+- ·· `function odbc_field_num(Odbc\Result $statement, string $field): int|false` — `ext/odbc/odbc.stub.php:388`
+- ·· `function odbc_field_precision(Odbc\Result $statement, int $field): int|false` — `ext/odbc/odbc.stub.php:384`
+- ·· `function odbc_field_scale(Odbc\Result $statement, int $field): int|false` — `ext/odbc/odbc.stub.php:386`
+- ·· `function odbc_field_type(Odbc\Result $statement, int $field): string|false` — `ext/odbc/odbc.stub.php:379`
+- ·· `function odbc_foreignkeys(Odbc\Connection $odbc, ?string $pk_catalog, string $pk_schema, string $pk_table, string $fk_catalog, string $fk_schema, string $fk_table): Odbc\Result|false` — `ext/odbc/odbc.stub.php:414`
+- ·· `function odbc_free_result(Odbc\Result $statement): true` — `ext/odbc/odbc.stub.php:363`
+- ·· `function odbc_gettypeinfo(Odbc\Connection $odbc, int $data_type = 0): Odbc\Result|false` — `ext/odbc/odbc.stub.php:406`
+- ·· `function odbc_longreadlen(Odbc\Result $statement, int $length): true` — `ext/odbc/odbc.stub.php:332`
+- ·· `function odbc_next_result(Odbc\Result $statement): bool` — `ext/odbc/odbc.stub.php:373`
+- ·· `function odbc_num_fields(Odbc\Result $statement): int` — `ext/odbc/odbc.stub.php:375`
+- ·· `function odbc_num_rows(Odbc\Result $statement): int` — `ext/odbc/odbc.stub.php:371`
+- ·· `function odbc_pconnect(string $dsn, ?string $user = null, #[\SensitiveParameter] ?string $password = null, int $cursor_option = SQL_CUR_USE_DRIVER): Odbc\Connection|false` — `ext/odbc/odbc.stub.php:367`
+- ·· `function odbc_prepare(Odbc\Connection $odbc, string $query): Odbc\Result|false` — `ext/odbc/odbc.stub.php:334`
+- ·· `function odbc_primarykeys(Odbc\Connection $odbc, ?string $catalog, string $schema, string $table): Odbc\Result|false` — `ext/odbc/odbc.stub.php:408`
+- ·· `function odbc_procedurecolumns(Odbc\Connection $odbc, ?string $catalog = null, ?string $schema = null, ?string $procedure = null, ?string $column = null): Odbc\Result|false` — `ext/odbc/odbc.stub.php:410`
+- ·· `function odbc_procedures(Odbc\Connection $odbc, ?string $catalog = null, ?string $schema = null, ?string $procedure = null): Odbc\Result|false` — `ext/odbc/odbc.stub.php:412`
+- ·· `function odbc_result(Odbc\Result $statement, string|int $field): string|bool|null` — `ext/odbc/odbc.stub.php:358`
+- ·· `function odbc_result_all(Odbc\Result $statement, string $format = ""): int|false` — `ext/odbc/odbc.stub.php:361`
+- ·· `function odbc_rollback(Odbc\Connection $odbc): bool` — `ext/odbc/odbc.stub.php:394`
+- ·· `function odbc_setoption(Odbc\Connection|Odbc\Result $odbc, int $which, int $option, int $value): bool` — `ext/odbc/odbc.stub.php:400`
+- ·· `function odbc_specialcolumns(Odbc\Connection $odbc, int $type, ?string $catalog, string $schema, string $table, int $scope, int $nullable): Odbc\Result|false` — `ext/odbc/odbc.stub.php:416`
+- ·· `function odbc_statistics(Odbc\Connection $odbc, ?string $catalog, string $schema, string $table, int $unique, int $accuracy): Odbc\Result|false` — `ext/odbc/odbc.stub.php:418`
+- ·· `function odbc_tableprivileges(Odbc\Connection $odbc, ?string $catalog, string $schema, string $table): Odbc\Result|false` — `ext/odbc/odbc.stub.php:420`
+- ·· `function odbc_tables(Odbc\Connection $odbc, ?string $catalog = null, ?string $schema = null, ?string $table = null, ?string $types = null): Odbc\Result|false` — `ext/odbc/odbc.stub.php:402`
+
+## ext/opcache (`8`) — impl `0`, tested `0`
+
+- ·· `function opcache_compile_file(string $filename): bool` — `ext/opcache/opcache.stub.php:13`
+- ·· `function opcache_get_configuration(): array|false` — `ext/opcache/opcache.stub.php:23`
+- ·· `function opcache_get_status(bool $include_scripts = true): array|false` — `ext/opcache/opcache.stub.php:11`
+- ·· `function opcache_invalidate(string $filename, bool $force = false): bool` — `ext/opcache/opcache.stub.php:15`
+- ·· `function opcache_is_script_cached(string $filename): bool` — `ext/opcache/opcache.stub.php:25`
+- ·· `function opcache_is_script_cached_in_file_cache(string $filename): bool` — `ext/opcache/opcache.stub.php:27`
+- ·· `function opcache_jit_blacklist(Closure $closure): void` — `ext/opcache/opcache.stub.php:17`
+- ·· `function opcache_reset(): bool` — `ext/opcache/opcache.stub.php:5`
+
+## ext/openssl (`66`) — impl `0`, tested `0`
+
+- ·· `function openssl_cipher_iv_length(string $cipher_algo): int|false` — `ext/openssl/openssl.stub.php:669`
+- ·· `function openssl_cipher_key_length(string $cipher_algo): int|false` — `ext/openssl/openssl.stub.php:671`
+- ·· `function openssl_cms_decrypt(string $input_filename, string $output_filename, #[\SensitiveParameter] $certificate, #[\SensitiveParameter] $private_key = null, int $encoding = OPENSSL_ENCODING_SMIME): bool` — `ext/openssl/openssl.stub.php:587`
+- ·· `function openssl_cms_encrypt(string $input_filename, string $output_filename, $certificate, ?array $headers, int $flags = 0, int $encoding = OPENSSL_ENCODING_SMIME, string|int $cipher_algo = OPENSSL_CIPHER_AES_128_CBC): bool` — `ext/openssl/openssl.stub.php:576`
+- ·· `function openssl_cms_read(string $input_filename,&$certificates): bool` — `ext/openssl/openssl.stub.php:590`
+- ·· `function openssl_cms_sign(string $input_filename, string $output_filename, OpenSSLCertificate|string $certificate, #[\SensitiveParameter] $private_key, ?array $headers, int $flags = 0, int $encoding = OPENSSL_ENCODING_SMIME, ?string $untrusted_certificates_filename = null): bool` — `ext/openssl/openssl.stub.php:581`
+- ·· `function openssl_cms_verify(string $input_filename, int $flags = 0, ?string $certificates = null, array $ca_info = [], ?string $untrusted_certificates_filename = null, ?string $content = null, ?string $pk7 = null, ?string $sigfile = null, int $encoding = OPENSSL_ENCODING_SMIME): bool` — `ext/openssl/openssl.stub.php:573`
+- ·· `function openssl_csr_export(OpenSSLCertificateSigningRequest|string $csr,&$output, bool $no_text = true): bool` — `ext/openssl/openssl.stub.php:484`
+- ·· `function openssl_csr_export_to_file(OpenSSLCertificateSigningRequest|string $csr, string $output_filename, bool $no_text = true): bool` — `ext/openssl/openssl.stub.php:481`
+- ·· `function openssl_csr_get_public_key(OpenSSLCertificateSigningRequest|string $csr, bool $short_names = true): OpenSSLAsymmetricKey|false` — `ext/openssl/openssl.stub.php:502`
+- ·· `function openssl_csr_get_subject(OpenSSLCertificateSigningRequest|string $csr, bool $short_names = true): array|false` — `ext/openssl/openssl.stub.php:500`
+- ·· `function openssl_csr_new(array $distinguished_names, #[\SensitiveParameter]&$private_key, ?array $options = null, ?array $extra_attributes = null): OpenSSLCertificateSigningRequest|bool` — `ext/openssl/openssl.stub.php:494`
+- ·· `function openssl_csr_sign(OpenSSLCertificateSigningRequest|string $csr, OpenSSLCertificate|string|null $ca_certificate, #[\SensitiveParameter] $private_key, int $days, ?array $options = null, int $serial = 0, ?string $serial_hex = null): OpenSSLCertificate|false` — `ext/openssl/openssl.stub.php:489`
+- ·· `function openssl_decrypt(string $data, string $cipher_algo, #[\SensitiveParameter] string $passphrase, int $options = 0, string $iv = "", ?string $tag = null, string $aad = ""): string|false` — `ext/openssl/openssl.stub.php:667`
+- ·· `function openssl_dh_compute_key(string $public_key, #[\SensitiveParameter] OpenSSLAsymmetricKey $private_key): string|false` — `ext/openssl/openssl.stub.php:673`
+- ·· `function openssl_digest(string $data, string $digest_algo, bool $binary = false): string|false` — `ext/openssl/openssl.stub.php:660`
+- ·· `function openssl_encrypt(#[\SensitiveParameter] string $data, string $cipher_algo, #[\SensitiveParameter] string $passphrase, int $options = 0, string $iv = "",&$tag = null, string $aad = "", int $tag_length = 16): string|false` — `ext/openssl/openssl.stub.php:665`
+- ·· `function openssl_error_string(): string|false` — `ext/openssl/openssl.stub.php:616`
+- ·· `function openssl_free_key(OpenSSLAsymmetricKey $key): void` — `ext/openssl/openssl.stub.php:533`
+- ·· `function openssl_get_cert_locations(): array` — `ext/openssl/openssl.stub.php:696`
+- ·· `function openssl_get_cipher_methods(bool $aliases = false): array` — `ext/openssl/openssl.stub.php:650`
+- ·· `function openssl_get_curve_names(): array|false` — `ext/openssl/openssl.stub.php:657`
+- ·· `function openssl_get_md_methods(bool $aliases = false): array` — `ext/openssl/openssl.stub.php:644`
+- ·· `function openssl_get_privatekey(#[\SensitiveParameter] $private_key, #[\SensitiveParameter] ?string $passphrase = null): OpenSSLAsymmetricKey|false` — `ext/openssl/openssl.stub.php:544`
+- ·· `function openssl_get_publickey($public_key): OpenSSLAsymmetricKey|false` — `ext/openssl/openssl.stub.php:524`
+- ·· `function openssl_open(string $data, #[\SensitiveParameter]&$output, string $encrypted_key, #[\SensitiveParameter] $private_key, string $cipher_algo, ?string $iv = null): bool` — `ext/openssl/openssl.stub.php:638`
+- ·· `function openssl_password_hash(string $algo, #[\SensitiveParameter] string $password, array $options = []): string` — `ext/openssl/openssl.stub.php:699`
+- ·· `function openssl_password_verify(string $algo, #[\SensitiveParameter] string $password, string $hash): bool` — `ext/openssl/openssl.stub.php:700`
+- ·· `function openssl_pbkdf2(#[\SensitiveParameter] string $password, string $salt, int $key_length, int $iterations, string $digest_algo = "sha1"): string|false` — `ext/openssl/openssl.stub.php:552`
+- ·· `function openssl_pkcs12_export(OpenSSLCertificate|string $certificate,&$output, #[\SensitiveParameter] $private_key, #[\SensitiveParameter] string $passphrase, array $options = []): bool` — `ext/openssl/openssl.stub.php:474`
+- ·· `function openssl_pkcs12_export_to_file(OpenSSLCertificate|string $certificate, string $output_filename, #[\SensitiveParameter] $private_key, #[\SensitiveParameter] string $passphrase, array $options = []): bool` — `ext/openssl/openssl.stub.php:468`
+- ·· `function openssl_pkcs12_read(string $pkcs12,&$certificates, #[\SensitiveParameter] string $passphrase): bool` — `ext/openssl/openssl.stub.php:479`
+- ·· `function openssl_pkcs7_decrypt(string $input_filename, string $output_filename, #[\SensitiveParameter] $certificate, #[\SensitiveParameter] $private_key = null): bool` — `ext/openssl/openssl.stub.php:568`
+- ·· `function openssl_pkcs7_encrypt(string $input_filename, string $output_filename, $certificate, ?array $headers, int $flags = 0, int $cipher_algo = OPENSSL_CIPHER_AES_128_CBC): bool` — `ext/openssl/openssl.stub.php:557`
+- ·· `function openssl_pkcs7_read(string $data,&$certificates): bool` — `ext/openssl/openssl.stub.php:571`
+- ·· `function openssl_pkcs7_sign(string $input_filename, string $output_filename, OpenSSLCertificate|string $certificate, #[\SensitiveParameter] $private_key, ?array $headers, int $flags = PKCS7_DETACHED, ?string $untrusted_certificates_filename = null): bool` — `ext/openssl/openssl.stub.php:562`
+- ·· `function openssl_pkcs7_verify(string $input_filename, int $flags, ?string $signers_certificates_filename = null, array $ca_info = [], ?string $untrusted_certificates_filename = null, ?string $content = null, ?string $output_filename = null): bool|int` — `ext/openssl/openssl.stub.php:554`
+- ·· `function openssl_pkey_derive($public_key, #[\SensitiveParameter] $private_key, int $key_length = 0): string|false` — `ext/openssl/openssl.stub.php:679`
+- ·· `function openssl_pkey_export(#[\SensitiveParameter] $key,&$output, #[\SensitiveParameter] ?string $passphrase = null, ?array $options = null): bool` — `ext/openssl/openssl.stub.php:515`
+- ·· `function openssl_pkey_export_to_file(#[\SensitiveParameter] $key, string $output_filename, #[\SensitiveParameter] ?string $passphrase = null, ?array $options = null): bool` — `ext/openssl/openssl.stub.php:509`
+- ·· `function openssl_pkey_free(OpenSSLAsymmetricKey $key): void` — `ext/openssl/openssl.stub.php:527`
+- ·· `function openssl_pkey_get_details(OpenSSLAsymmetricKey $key): array|false` — `ext/openssl/openssl.stub.php:550`
+- ·· `function openssl_pkey_get_private(#[\SensitiveParameter] $private_key, #[\SensitiveParameter] ?string $passphrase = null): OpenSSLAsymmetricKey|false` — `ext/openssl/openssl.stub.php:538`
+- ·· `function openssl_pkey_get_public($public_key): OpenSSLAsymmetricKey|false` — `ext/openssl/openssl.stub.php:518`
+- ·· `function openssl_pkey_new(?array $options = null): OpenSSLAsymmetricKey|false` — `ext/openssl/openssl.stub.php:504`
+- ·· `function openssl_private_decrypt(string $data, #[\SensitiveParameter]&$decrypted_data, #[\SensitiveParameter] $private_key, int $padding = OPENSSL_PKCS1_PADDING, ?string $digest_algo = null): bool` — `ext/openssl/openssl.stub.php:602`
+- ·· `function openssl_private_encrypt(#[\SensitiveParameter] string $data,&$encrypted_data, #[\SensitiveParameter] $private_key, int $padding = OPENSSL_PKCS1_PADDING): bool` — `ext/openssl/openssl.stub.php:596`
+- ·· `function openssl_public_decrypt(string $data, #[\SensitiveParameter]&$decrypted_data, $public_key, int $padding = OPENSSL_PKCS1_PADDING): bool` — `ext/openssl/openssl.stub.php:614`
+- ·· `function openssl_public_encrypt(#[\SensitiveParameter] string $data,&$encrypted_data, $public_key, int $padding = OPENSSL_PKCS1_PADDING, ?string $digest_algo = null): bool` — `ext/openssl/openssl.stub.php:608`
+- ·· `function openssl_random_pseudo_bytes(int $length,&$strong_result = null): string` — `ext/openssl/openssl.stub.php:682`
+- ·· `function openssl_seal(#[\SensitiveParameter] string $data,&$sealed_data,&$encrypted_keys, array $public_key, string $cipher_algo,&$iv = null): int|false` — `ext/openssl/openssl.stub.php:632`
+- ·· `function openssl_sign(string $data,&$signature, #[\SensitiveParameter] $private_key, string|int $algorithm = OPENSSL_ALGO_SHA1, int $padding = 0): bool` — `ext/openssl/openssl.stub.php:622`
+- ·· `function openssl_spki_export(string $spki): string|false` — `ext/openssl/openssl.stub.php:688`
+- ·· `function openssl_spki_export_challenge(string $spki): string|false` — `ext/openssl/openssl.stub.php:690`
+- ·· `function openssl_spki_new(#[\SensitiveParameter] OpenSSLAsymmetricKey $private_key, string $challenge, int $digest_algo = OPENSSL_ALGO_MD5): string|false` — `ext/openssl/openssl.stub.php:684`
+- ·· `function openssl_spki_verify(string $spki): bool` — `ext/openssl/openssl.stub.php:686`
+- ·· `function openssl_verify(string $data, string $signature, $public_key, string|int $algorithm = OPENSSL_ALGO_SHA1, int $padding = 0): int|false` — `ext/openssl/openssl.stub.php:625`
+- ·· `function openssl_x509_check_private_key(OpenSSLCertificate|string $certificate, #[\SensitiveParameter] $private_key): bool` — `ext/openssl/openssl.stub.php:447`
+- ·· `function openssl_x509_checkpurpose(OpenSSLCertificate|string $certificate, int $purpose, array $ca_info = [], ?string $untrusted_certificates_file = null): bool|int` — `ext/openssl/openssl.stub.php:458`
+- ·· `function openssl_x509_export(OpenSSLCertificate|string $certificate,&$output, bool $no_text = true): bool` — `ext/openssl/openssl.stub.php:440`
+- ·· `function openssl_x509_export_to_file(OpenSSLCertificate|string $certificate, string $output_filename, bool $no_text = true): bool` — `ext/openssl/openssl.stub.php:437`
+- ·· `function openssl_x509_fingerprint(OpenSSLCertificate|string $certificate, string $digest_algo = "sha1", bool $binary = false): string|false` — `ext/openssl/openssl.stub.php:442`
+- ·· `function openssl_x509_free(OpenSSLCertificate $certificate): void` — `ext/openssl/openssl.stub.php:463`
+- ·· `function openssl_x509_parse(OpenSSLCertificate|string $certificate, bool $short_names = true): array|false` — `ext/openssl/openssl.stub.php:456`
+- ·· `function openssl_x509_read(OpenSSLCertificate|string $certificate): OpenSSLCertificate|false` — `ext/openssl/openssl.stub.php:460`
+- ·· `function openssl_x509_verify(OpenSSLCertificate|string $certificate, $public_key): int` — `ext/openssl/openssl.stub.php:450`
+
+## ext/pcntl (`34`) — impl `0`, tested `0`
+
+- ·· `function pcntl_alarm(int $seconds): int` — `ext/pcntl/pcntl.stub.php:1063`
+- ·· `function pcntl_async_signals(?bool $enable = null): bool` — `ext/pcntl/pcntl.stub.php:1080`
+- ·· `function pcntl_errno(): int` — `ext/pcntl/pcntl.stub.php:1068`
+- ·· `function pcntl_exec(string $path, array $args = [], array $env_vars = []): false` — `ext/pcntl/pcntl.stub.php:1061`
+- ·· `function pcntl_fork(): int` — `ext/pcntl/pcntl.stub.php:1000`
+- ·· `function pcntl_forkx(int $flags): int` — `ext/pcntl/pcntl.stub.php:1091`
+- ·· `function pcntl_get_last_error(): int` — `ext/pcntl/pcntl.stub.php:1065`
+- ·· `function pcntl_getcpu(): int` — `ext/pcntl/pcntl.stub.php:1104`
+- ·· `function pcntl_getcpuaffinity(?int $process_id = null): array|false` — `ext/pcntl/pcntl.stub.php:1099`
+- ·· `function pcntl_getpriority(?int $process_id = null, int $mode = PRIO_PROCESS): int|false` — `ext/pcntl/pcntl.stub.php:1071`
+- ·· `function pcntl_getqos_class(): Pcntl\QosClass` — `ext/pcntl/pcntl.stub.php:1107`
+- ·· `function pcntl_rfork(int $flags, int $signal = 0): int` — `ext/pcntl/pcntl.stub.php:1087`
+- ·· `function pcntl_setcpuaffinity(?int $process_id = null, array $cpu_ids = []): bool` — `ext/pcntl/pcntl.stub.php:1100`
+- ·· `function pcntl_setns(?int $process_id = null, int $nstype = CLONE_NEWNET): bool` — `ext/pcntl/pcntl.stub.php:1095`
+- ·· `function pcntl_setpriority(int $priority, ?int $process_id = null, int $mode = PRIO_PROCESS): bool` — `ext/pcntl/pcntl.stub.php:1075`
+- ·· `function pcntl_setqos_class(Pcntl\QosClass $qos_class = Pcntl\QosClass::Default): void` — `ext/pcntl/pcntl.stub.php:1108`
+- ·· `function pcntl_signal(int $signal, $handler, bool $restart_syscalls = true): bool` — `ext/pcntl/pcntl.stub.php:1023`
+- ·· `function pcntl_signal_dispatch(): bool` — `ext/pcntl/pcntl.stub.php:1028`
+- ·· `function pcntl_signal_get_handler(int $signal)` — `ext/pcntl/pcntl.stub.php:1026`
+- ·· `function pcntl_sigprocmask(int $mode, array $signals,&$old_signals = null): bool` — `ext/pcntl/pcntl.stub.php:1032`
+- ·· `function pcntl_sigtimedwait(array $signals,&$info = [], int $seconds = 0, int $nanoseconds = 0): int|false` — `ext/pcntl/pcntl.stub.php:1041`
+- ·· `function pcntl_sigwaitinfo(array $signals,&$info = []): int|false` — `ext/pcntl/pcntl.stub.php:1038`
+- ·· `function pcntl_strerror(int $error_code): string` — `ext/pcntl/pcntl.stub.php:1078`
+- ·· `function pcntl_unshare(int $flags): bool` — `ext/pcntl/pcntl.stub.php:1083`
+- ·· `function pcntl_wait(&$status, int $flags = 0,&$resource_usage = []): int` — `ext/pcntl/pcntl.stub.php:1020`
+- ·· `function pcntl_waitid(int $idtype = P_ALL, ?int $id = null,&$info = [], int $flags = WEXITED,&$resource_usage = []): bool` — `ext/pcntl/pcntl.stub.php:1013`
+- ·· `function pcntl_waitpid(int $process_id,&$status, int $flags = 0,&$resource_usage = []): int` — `ext/pcntl/pcntl.stub.php:1006`
+- ·· `function pcntl_wexitstatus(int $status): int|false` — `ext/pcntl/pcntl.stub.php:1055`
+- ·· `function pcntl_wifcontinued(int $status): bool` — `ext/pcntl/pcntl.stub.php:1050`
+- ·· `function pcntl_wifexited(int $status): bool` — `ext/pcntl/pcntl.stub.php:1045`
+- ·· `function pcntl_wifsignaled(int $status): bool` — `ext/pcntl/pcntl.stub.php:1053`
+- ·· `function pcntl_wifstopped(int $status): bool` — `ext/pcntl/pcntl.stub.php:1047`
+- ·· `function pcntl_wstopsig(int $status): int|false` — `ext/pcntl/pcntl.stub.php:1059`
+- ·· `function pcntl_wtermsig(int $status): int|false` — `ext/pcntl/pcntl.stub.php:1057`
+
+## ext/pcre (`11`) — impl `9`, tested `7`
+
+- ·· `function preg_filter(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1,&$count = null): string|array|null` — `ext/pcre/php_pcre.stub.php:121`
+- ✅🧪 `function preg_grep(string $pattern, array $array, int $flags = 0): array|false` — `ext/pcre/php_pcre.stub.php:142`
+- ✅🧪 `function preg_last_error(): int` — `ext/pcre/php_pcre.stub.php:144`
+- ✅· `function preg_last_error_msg(): string` — `ext/pcre/php_pcre.stub.php:146`
+- ✅🧪 `function preg_match(string $pattern, string $subject,&$matches = null, int $flags = 0, int $offset = 0): int|false` — `ext/pcre/php_pcre.stub.php:105`
+- ✅🧪 `function preg_match_all(string $pattern, string $subject,&$matches = null, int $flags = 0, int $offset = 0): int|false` — `ext/pcre/php_pcre.stub.php:108`
+- ✅🧪 `function preg_quote(string $str, ?string $delimiter = null): string` — `ext/pcre/php_pcre.stub.php:139`
+- ✅🧪 `function preg_replace(string|array $pattern, string|array $replacement, string|array $subject, int $limit = -1,&$count = null): string|array|null` — `ext/pcre/php_pcre.stub.php:115`
+- ✅· `function preg_replace_callback(string|array $pattern, callable $callback, string|array $subject, int $limit = -1,&$count = null, int $flags = 0): string|array|null` — `ext/pcre/php_pcre.stub.php:127`
+- ·· `function preg_replace_callback_array(array $pattern, string|array $subject, int $limit = -1,&$count = null, int $flags = 0): string|array|null` — `ext/pcre/php_pcre.stub.php:130`
+- ✅🧪 `function preg_split(string $pattern, string $subject, int $limit = -1, int $flags = 0): array|false` — `ext/pcre/php_pcre.stub.php:136`
+
+## ext/pdo (`37`) — impl `0`, tested `0`
+
+- ·· `public function PDO::__construct(string $dsn, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?array $options = null)` — `ext/pdo/pdo_dbh.stub.php:167`
+- ·· `public function PDO::beginTransaction(): bool` — `ext/pdo/pdo_dbh.stub.php:177`
+- ·· `public function PDO::commit(): bool` — `ext/pdo/pdo_dbh.stub.php:180`
+- ·· `public static function PDO::connect( string $dsn, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?array $options = null ): static` — `ext/pdo/pdo_dbh.stub.php:169`
+- ·· `public function PDO::errorCode(): ?string` — `ext/pdo/pdo_dbh.stub.php:183`
+- ·· `public function PDO::errorInfo(): array` — `ext/pdo/pdo_dbh.stub.php:186`
+- ·· `public function PDO::exec(string $statement): int|false` — `ext/pdo/pdo_dbh.stub.php:189`
+- ·· `public function PDO::getAttribute(int $attribute): mixed` — `ext/pdo/pdo_dbh.stub.php:192`
+- ·· `public static function PDO::getAvailableDrivers(): array` — `ext/pdo/pdo_dbh.stub.php:195`
+- ·· `public function PDO::inTransaction(): bool` — `ext/pdo/pdo_dbh.stub.php:198`
+- ·· `public function PDO::lastInsertId(?string $name = null): string|false` — `ext/pdo/pdo_dbh.stub.php:201`
+- ·· `public function PDO::prepare(string $query, array $options = []): PDOStatement|false` — `ext/pdo/pdo_dbh.stub.php:204`
+- ·· `public function PDO::query(string $query, ?int $fetchMode = null, mixed ...$fetchModeArgs): PDOStatement|false` — `ext/pdo/pdo_dbh.stub.php:207`
+- ·· `public function PDO::quote(string $string, int $type = PDO::PARAM_STR): string|false` — `ext/pdo/pdo_dbh.stub.php:210`
+- ·· `public function PDO::rollBack(): bool` — `ext/pdo/pdo_dbh.stub.php:213`
+- ·· `public function PDO::setAttribute(int $attribute, mixed $value): bool` — `ext/pdo/pdo_dbh.stub.php:216`
+- ·· `function pdo_drivers(): array` — `ext/pdo/pdo.stub.php:16`
+- ·· `public function PDOStatement::bindColumn(string|int $column, mixed&$var, int $type = PDO::PARAM_STR, int $maxLength = 0, mixed $driverOptions = null): bool` — `ext/pdo/pdo_stmt.stub.php:11`
+- ·· `public function PDOStatement::bindParam(string|int $param, mixed&$var, int $type = PDO::PARAM_STR, int $maxLength = 0, mixed $driverOptions = null): bool` — `ext/pdo/pdo_stmt.stub.php:14`
+- ·· `public function PDOStatement::bindValue(string|int $param, mixed $value, int $type = PDO::PARAM_STR): bool` — `ext/pdo/pdo_stmt.stub.php:17`
+- ·· `public function PDOStatement::closeCursor(): bool` — `ext/pdo/pdo_stmt.stub.php:20`
+- ·· `public function PDOStatement::columnCount(): int` — `ext/pdo/pdo_stmt.stub.php:23`
+- ·· `public function PDOStatement::debugDumpParams(): ?bool` — `ext/pdo/pdo_stmt.stub.php:26`
+- ·· `public function PDOStatement::errorCode(): ?string` — `ext/pdo/pdo_stmt.stub.php:29`
+- ·· `public function PDOStatement::errorInfo(): array` — `ext/pdo/pdo_stmt.stub.php:32`
+- ·· `public function PDOStatement::execute(?array $params = null): bool` — `ext/pdo/pdo_stmt.stub.php:35`
+- ·· `public function PDOStatement::fetch(int $mode = PDO::FETCH_DEFAULT, int $cursorOrientation = PDO::FETCH_ORI_NEXT, int $cursorOffset = 0): mixed` — `ext/pdo/pdo_stmt.stub.php:38`
+- ·· `public function PDOStatement::fetchAll(int $mode = PDO::FETCH_DEFAULT, mixed ...$args): array` — `ext/pdo/pdo_stmt.stub.php:41`
+- ·· `public function PDOStatement::fetchColumn(int $column = 0): mixed` — `ext/pdo/pdo_stmt.stub.php:44`
+- ·· `public function PDOStatement::fetchObject(?string $class = "stdClass", array $constructorArgs = []): object|false` — `ext/pdo/pdo_stmt.stub.php:47`
+- ·· `public function PDOStatement::getAttribute(int $name): mixed` — `ext/pdo/pdo_stmt.stub.php:50`
+- ·· `public function PDOStatement::getColumnMeta(int $column): array|false` — `ext/pdo/pdo_stmt.stub.php:53`
+- ·· `public function PDOStatement::getIterator(): Iterator` — `ext/pdo/pdo_stmt.stub.php:67`
+- ·· `public function PDOStatement::nextRowset(): bool` — `ext/pdo/pdo_stmt.stub.php:56`
+- ·· `public function PDOStatement::rowCount(): int` — `ext/pdo/pdo_stmt.stub.php:59`
+- ·· `public function PDOStatement::setAttribute(int $attribute, mixed $value): bool` — `ext/pdo/pdo_stmt.stub.php:62`
+- ·· `public function PDOStatement::setFetchMode(int $mode, mixed ...$args): true` — `ext/pdo/pdo_stmt.stub.php:65`
+
+## ext/pdo_firebird (`1`) — impl `0`, tested `0`
+
+- ·· `public static function Pdo\Firebird::getApiVersion(): int` — `ext/pdo_firebird/pdo_firebird.stub.php:37`
+
+## ext/pdo_mysql (`1`) — impl `0`, tested `0`
+
+- ·· `public function Pdo\Mysql::getWarningCount(): int` — `ext/pdo_mysql/pdo_mysql.stub.php:76`
+
+## ext/pdo_pgsql (`20`) — impl `0`, tested `0`
+
+- ·· `public function Pdo\Pgsql::copyFromArray(string $tableName, array $rows, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): bool` — `ext/pdo_pgsql/pdo_pgsql.stub.php:43`
+- ·· `public function Pdo\Pgsql::copyFromFile(string $tableName, string $filename, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): bool` — `ext/pdo_pgsql/pdo_pgsql.stub.php:45`
+- ·· `public function Pdo\Pgsql::copyToArray(string $tableName, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): array|false` — `ext/pdo_pgsql/pdo_pgsql.stub.php:47`
+- ·· `public function Pdo\Pgsql::copyToFile(string $tableName, string $filename, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): bool` — `ext/pdo_pgsql/pdo_pgsql.stub.php:49`
+- ·· `public function Pdo\Pgsql::escapeIdentifier(string $input): string` — `ext/pdo_pgsql/pdo_pgsql.stub.php:41`
+- ·· `public function Pdo\Pgsql::getNotify(int $fetchMode = \PDO::FETCH_DEFAULT, int $timeoutMilliseconds = 0): array|false` — `ext/pdo_pgsql/pdo_pgsql.stub.php:61`
+- ·· `public function Pdo\Pgsql::getPid(): int` — `ext/pdo_pgsql/pdo_pgsql.stub.php:63`
+- ·· `public function Pdo\Pgsql::lobCreate(): string|false` — `ext/pdo_pgsql/pdo_pgsql.stub.php:51`
+- ·· `public function Pdo\Pgsql::lobOpen(string $oid, string $mode = "rb")` — `ext/pdo_pgsql/pdo_pgsql.stub.php:57`
+- ·· `public function Pdo\Pgsql::lobUnlink(string $oid): bool` — `ext/pdo_pgsql/pdo_pgsql.stub.php:59`
+- ·· `public function Pdo\Pgsql::setNoticeCallback(?callable $callback): void` — `ext/pdo_pgsql/pdo_pgsql.stub.php:65`
+- ·· `public function PDO_PGSql_Ext::pgsqlCopyFromArray(string $tableName, array|Traversable $rows, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): bool` — `ext/pdo_pgsql/pgsql_driver.stub.php:11`
+- ·· `public function PDO_PGSql_Ext::pgsqlCopyFromFile(string $tableName, string $filename, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): bool` — `ext/pdo_pgsql/pgsql_driver.stub.php:14`
+- ·· `public function PDO_PGSql_Ext::pgsqlCopyToArray(string $tableName, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): array|false` — `ext/pdo_pgsql/pgsql_driver.stub.php:17`
+- ·· `public function PDO_PGSql_Ext::pgsqlCopyToFile(string $tableName, string $filename, string $separator = "\t", string $nullAs = "\\\\N", ?string $fields = null): bool` — `ext/pdo_pgsql/pgsql_driver.stub.php:20`
+- ·· `public function PDO_PGSql_Ext::pgsqlGetNotify(int $fetchMode = PDO::FETCH_DEFAULT, int $timeoutMilliseconds = 0): array|false` — `ext/pdo_pgsql/pgsql_driver.stub.php:32`
+- ·· `public function PDO_PGSql_Ext::pgsqlGetPid(): int` — `ext/pdo_pgsql/pgsql_driver.stub.php:35`
+- ·· `public function PDO_PGSql_Ext::pgsqlLOBCreate(): string|false` — `ext/pdo_pgsql/pgsql_driver.stub.php:23`
+- ·· `public function PDO_PGSql_Ext::pgsqlLOBOpen(string $oid, string $mode = "rb")` — `ext/pdo_pgsql/pgsql_driver.stub.php:26`
+- ·· `public function PDO_PGSql_Ext::pgsqlLOBUnlink(string $oid): bool` — `ext/pdo_pgsql/pgsql_driver.stub.php:29`
+
+## ext/pdo_sqlite (`9`) — impl `0`, tested `0`
+
+- ·· `public function Pdo\Sqlite::createAggregate( string $name, callable $step, callable $finalize, int $numArgs = -1 ): bool` — `ext/pdo_sqlite/pdo_sqlite.stub.php:66`
+- ·· `public function Pdo\Sqlite::createCollation(string $name, callable $callback): bool` — `ext/pdo_sqlite/pdo_sqlite.stub.php:74`
+- ·· `public function Pdo\Sqlite::createFunction( string $function_name, callable $callback, int $num_args = -1, int $flags = 0 ): bool` — `ext/pdo_sqlite/pdo_sqlite.stub.php:76`
+- ·· `public function Pdo\Sqlite::loadExtension(string $name): void` — `ext/pdo_sqlite/pdo_sqlite.stub.php:84`
+- ·· `public function Pdo\Sqlite::openBlob( string $table, string $column, int $rowid, ?string $dbname = "main", int $flags = \Pdo\Sqlite::OPEN_READONLY )` — `ext/pdo_sqlite/pdo_sqlite.stub.php:88`
+- ·· `public function Pdo\Sqlite::setAuthorizer(?callable $callback): void` — `ext/pdo_sqlite/pdo_sqlite.stub.php:96`
+- ·· `public function PDO_SQLite_Ext::sqliteCreateAggregate(string $name, callable $step, callable $finalize, int $numArgs = -1): bool` — `ext/pdo_sqlite/sqlite_driver.stub.php:14`
+- ·· `public function PDO_SQLite_Ext::sqliteCreateCollation(string $name, callable $callback): bool` — `ext/pdo_sqlite/sqlite_driver.stub.php:17`
+- ·· `public function PDO_SQLite_Ext::sqliteCreateFunction(string $name, callable $callback, int $numArgs = -1, int $flags = 0): bool` — `ext/pdo_sqlite/sqlite_driver.stub.php:11`
+
+## ext/pgsql (`124`) — impl `0`, tested `0`
+
+- ·· `function pg_affected_rows(PgSql\Result $result): int` — `ext/pgsql/pgsql.stub.php:570`
+- ·· `function pg_cancel_query(PgSql\Connection $connection): bool` — `ext/pgsql/pgsql.stub.php:894`
+- ·· `function pg_change_password(PgSql\Connection $connection, string $user, #[\SensitiveParameter] string $password): bool` — `ext/pgsql/pgsql.stub.php:963`
+- ·· `function pg_client_encoding(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:834`
+- ·· `function pg_clientencoding(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:840`
+- ·· `function pg_close(?PgSql\Connection $connection = null): true` — `ext/pgsql/pgsql.stub.php:474`
+- ·· `function pg_close_stmt(Pgsql\Connection $connection, string $statement_name): PgSql\Result|false` — `ext/pgsql/pgsql.stub.php:977`
+- ·· `function pg_cmdtuples(PgSql\Result $result): int` — `ext/pgsql/pgsql.stub.php:576`
+- ·· `function pg_connect(string $connection_string, int $flags = 0): PgSql\Connection|false` — `ext/pgsql/pgsql.stub.php:468`
+- ·· `function pg_connect_poll(PgSql\Connection $connection): int` — `ext/pgsql/pgsql.stub.php:472`
+- ·· `function pg_connection_busy(PgSql\Connection $connection): bool` — `ext/pgsql/pgsql.stub.php:896`
+- ·· `function pg_connection_reset(PgSql\Connection $connection): bool` — `ext/pgsql/pgsql.stub.php:892`
+- ·· `function pg_connection_status(PgSql\Connection $connection): int` — `ext/pgsql/pgsql.stub.php:888`
+- ·· `function pg_consume_input(PgSql\Connection $connection): bool` — `ext/pgsql/pgsql.stub.php:926`
+- ·· `function pg_convert(PgSql\Connection $connection, string $table_name, array $values, int $flags = 0): array|false` — `ext/pgsql/pgsql.stub.php:940`
+- ·· `function pg_copy_from(PgSql\Connection $connection, string $table_name, array|Traversable $rows, string $separator = "\t", string $null_as = "\\\\N"): bool` — `ext/pgsql/pgsql.stub.php:853`
+- ·· `function pg_copy_to(PgSql\Connection $connection, string $table_name, string $separator = "\t", string $null_as = "\\\\N"): array|false` — `ext/pgsql/pgsql.stub.php:851`
+- ·· `function pg_dbname(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:477`
+- ·· `function pg_delete(PgSql\Connection $connection, string $table_name, array $conditions, int $flags = PGSQL_DML_EXEC): string|bool` — `ext/pgsql/pgsql.stub.php:949`
+- ·· `function pg_end_copy(?PgSql\Connection $connection = null): bool` — `ext/pgsql/pgsql.stub.php:842`
+- ·· `function pg_errormessage(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:485`
+- ·· `function pg_escape_bytea($connection, string $string = UNKNOWN): string` — `ext/pgsql/pgsql.stub.php:865`
+- ·· `function pg_escape_identifier($connection, string $string = UNKNOWN): string|false` — `ext/pgsql/pgsql.stub.php:880`
+- ·· `function pg_escape_literal($connection, string $string = UNKNOWN): string|false` — `ext/pgsql/pgsql.stub.php:874`
+- ·· `function pg_escape_string($connection, string $string = UNKNOWN): string` — `ext/pgsql/pgsql.stub.php:859`
+- ·· `function pg_exec($connection, string $query = UNKNOWN): PgSql\Result|false` — `ext/pgsql/pgsql.stub.php:532`
+- ·· `function pg_execute($connection, $statement_name, array $params = UNKNOWN): PgSql\Result|false` — `ext/pgsql/pgsql.stub.php:552`
+- ·· `function pg_fetch_all(PgSql\Result $result, int $mode = PGSQL_ASSOC): array` — `ext/pgsql/pgsql.stub.php:656`
+- ·· `function pg_fetch_all_columns(PgSql\Result $result, int $field = 0): array` — `ext/pgsql/pgsql.stub.php:662`
+- ·· `function pg_fetch_array(PgSql\Result $result, ?int $row = null, int $mode = PGSQL_BOTH): array|false` — `ext/pgsql/pgsql.stub.php:647`
+- ·· `function pg_fetch_assoc(PgSql\Result $result, ?int $row = null): array|false` — `ext/pgsql/pgsql.stub.php:641`
+- ·· `function pg_fetch_object(PgSql\Result $result, ?int $row = null, string $class = "stdClass", array $constructor_args = []): object|false` — `ext/pgsql/pgsql.stub.php:650`
+- ·· `function pg_fetch_result(PgSql\Result $result, $row, string|int $field = UNKNOWN): string|false|null` — `ext/pgsql/pgsql.stub.php:622`
+- ·· `function pg_fetch_row(PgSql\Result $result, ?int $row = null, int $mode = PGSQL_NUM): array|false` — `ext/pgsql/pgsql.stub.php:635`
+- ·· `function pg_field_is_null(PgSql\Result $result, $row, string|int $field = UNKNOWN): int|false` — `ext/pgsql/pgsql.stub.php:676`
+- ·· `function pg_field_name(PgSql\Result $result, int $field): string` — `ext/pgsql/pgsql.stub.php:583`
+- ·· `function pg_field_num(PgSql\Result $result, string $field): int` — `ext/pgsql/pgsql.stub.php:610`
+- ·· `function pg_field_prtlen(PgSql\Result $result, $row, string|int $field = UNKNOWN): int|false` — `ext/pgsql/pgsql.stub.php:667`
+- ·· `function pg_field_size(PgSql\Result $result, int $field): int` — `ext/pgsql/pgsql.stub.php:591`
+- ·· `function pg_field_table(PgSql\Result $result, int $field, bool $oid_only = false): string|int|false` — `ext/pgsql/pgsql.stub.php:580`
+- ·· `function pg_field_type(PgSql\Result $result, int $field): string` — `ext/pgsql/pgsql.stub.php:599`
+- ·· `function pg_field_type_oid(PgSql\Result $result, int $field): string|int` — `ext/pgsql/pgsql.stub.php:608`
+- ·· `function pg_fieldisnull(PgSql\Result $result, $row, string|int $field = UNKNOWN): int|false` — `ext/pgsql/pgsql.stub.php:682`
+- ·· `function pg_fieldname(PgSql\Result $result, int $field): string` — `ext/pgsql/pgsql.stub.php:589`
+- ·· `function pg_fieldnum(PgSql\Result $result, string $field): int` — `ext/pgsql/pgsql.stub.php:616`
+- ·· `function pg_fieldprtlen(PgSql\Result $result, $row, string|int $field = UNKNOWN): int|false` — `ext/pgsql/pgsql.stub.php:673`
+- ·· `function pg_fieldsize(PgSql\Result $result, int $field): int` — `ext/pgsql/pgsql.stub.php:597`
+- ·· `function pg_fieldtype(PgSql\Result $result, int $field): string` — `ext/pgsql/pgsql.stub.php:605`
+- ·· `function pg_flush(PgSql\Connection $connection): int|bool` — `ext/pgsql/pgsql.stub.php:928`
+- ·· `function pg_free_result(PgSql\Result $result): bool` — `ext/pgsql/pgsql.stub.php:684`
+- ·· `function pg_freeresult(PgSql\Result $result): bool` — `ext/pgsql/pgsql.stub.php:690`
+- ·· `function pg_get_notify(PgSql\Connection $connection, int $mode = PGSQL_ASSOC): array|false` — `ext/pgsql/pgsql.stub.php:916`
+- ·· `function pg_get_pid(PgSql\Connection $connection): int` — `ext/pgsql/pgsql.stub.php:918`
+- ·· `function pg_get_result(PgSql\Connection $connection): PgSql\Result|false` — `ext/pgsql/pgsql.stub.php:907`
+- ·· `function pg_getlastoid(PgSql\Result $result): string|int|false` — `ext/pgsql/pgsql.stub.php:699`
+- ·· `function pg_host(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:497`
+- ·· `function pg_insert(PgSql\Connection $connection, string $table_name, array $values, int $flags = PGSQL_DML_EXEC): PgSql\Result|string|bool` — `ext/pgsql/pgsql.stub.php:943`
+- ·· `function pg_jit(?PgSql\Connection $connection = null): array` — `ext/pgsql/pgsql.stub.php:509`
+- ·· `function pg_last_error(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:479`
+- ·· `function pg_last_notice(PgSql\Connection $connection, int $mode = PGSQL_NOTICE_LAST): array|string|bool` — `ext/pgsql/pgsql.stub.php:578`
+- ·· `function pg_last_oid(PgSql\Result $result): string|int|false` — `ext/pgsql/pgsql.stub.php:693`
+- ·· `function pg_lo_close(PgSql\Lob $lob): bool` — `ext/pgsql/pgsql.stub.php:749`
+- ·· `function pg_lo_create($connection = UNKNOWN, $oid = UNKNOWN): string|int|false` — `ext/pgsql/pgsql.stub.php:710`
+- ·· `function pg_lo_export($connection, $oid = UNKNOWN, $filename = UNKNOWN): bool` — `ext/pgsql/pgsql.stub.php:804`
+- ·· `function pg_lo_import($connection, $filename = UNKNOWN, $oid = UNKNOWN): string|int|false` — `ext/pgsql/pgsql.stub.php:788`
+- ·· `function pg_lo_open($connection, $oid = UNKNOWN, string $mode = UNKNOWN): PgSql\Lob|false` — `ext/pgsql/pgsql.stub.php:739`
+- ·· `function pg_lo_read(PgSql\Lob $lob, int $length = 8192): string|false` — `ext/pgsql/pgsql.stub.php:758`
+- ·· `function pg_lo_read_all(PgSql\Lob $lob): int` — `ext/pgsql/pgsql.stub.php:774`
+- ·· `function pg_lo_seek(PgSql\Lob $lob, int $offset, int $whence = SEEK_CUR): bool` — `ext/pgsql/pgsql.stub.php:815`
+- ·· `function pg_lo_tell(PgSql\Lob $lob): int` — `ext/pgsql/pgsql.stub.php:817`
+- ·· `function pg_lo_truncate(PgSql\Lob $lob, int $size): bool` — `ext/pgsql/pgsql.stub.php:819`
+- ·· `function pg_lo_unlink($connection, $oid = UNKNOWN): bool` — `ext/pgsql/pgsql.stub.php:724`
+- ·· `function pg_lo_write(PgSql\Lob $lob, string $data, ?int $length = null): int|false` — `ext/pgsql/pgsql.stub.php:766`
+- ·· `function pg_loclose(PgSql\Lob $lob): bool` — `ext/pgsql/pgsql.stub.php:755`
+- ·· `function pg_locreate($connection = UNKNOWN, $oid = UNKNOWN): string|int|false` — `ext/pgsql/pgsql.stub.php:718`
+- ·· `function pg_loexport($connection, $oid = UNKNOWN, $filename = UNKNOWN): bool` — `ext/pgsql/pgsql.stub.php:813`
+- ·· `function pg_loimport($connection, $filename = UNKNOWN, $oid = UNKNOWN): string|int|false` — `ext/pgsql/pgsql.stub.php:797`
+- ·· `function pg_loopen($connection, $oid = UNKNOWN, string $mode = UNKNOWN): PgSql\Lob|false` — `ext/pgsql/pgsql.stub.php:747`
+- ·· `function pg_loread(PgSql\Lob $lob, int $length = 8192): string|false` — `ext/pgsql/pgsql.stub.php:764`
+- ·· `function pg_loreadall(PgSql\Lob $lob): int` — `ext/pgsql/pgsql.stub.php:780`
+- ·· `function pg_lounlink($connection, $oid = UNKNOWN): bool` — `ext/pgsql/pgsql.stub.php:732`
+- ·· `function pg_lowrite(PgSql\Lob $lob, string $data, ?int $length = null): int|false` — `ext/pgsql/pgsql.stub.php:772`
+- ·· `function pg_meta_data(PgSql\Connection $connection, string $table_name, bool $extended = false): array|false` — `ext/pgsql/pgsql.stub.php:934`
+- ·· `function pg_num_fields(PgSql\Result $result): int` — `ext/pgsql/pgsql.stub.php:562`
+- ·· `function pg_num_rows(PgSql\Result $result): int` — `ext/pgsql/pgsql.stub.php:554`
+- ·· `function pg_numfields(PgSql\Result $result): int` — `ext/pgsql/pgsql.stub.php:568`
+- ·· `function pg_numrows(PgSql\Result $result): int` — `ext/pgsql/pgsql.stub.php:560`
+- ·· `function pg_options(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:488`
+- ·· `function pg_parameter_status($connection, string $name = UNKNOWN): string|false` — `ext/pgsql/pgsql.stub.php:518`
+- ·· `function pg_pconnect(string $connection_string, int $flags = 0): PgSql\Connection|false` — `ext/pgsql/pgsql.stub.php:470`
+- ·· `function pg_ping(?PgSql\Connection $connection = null): bool` — `ext/pgsql/pgsql.stub.php:520`
+- ·· `function pg_port(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:491`
+- ·· `function pg_prepare($connection, string $statement_name, string $query = UNKNOWN): PgSql\Result|false` — `ext/pgsql/pgsql.stub.php:545`
+- ·· `function pg_put_copy_data(PgSql\Connection $connection, string $cmd): int` — `ext/pgsql/pgsql.stub.php:965`
+- ·· `function pg_put_copy_end(PgSql\Connection $connection, ?string $error = null): int` — `ext/pgsql/pgsql.stub.php:966`
+- ·· `function pg_put_line($connection, string $query = UNKNOWN): bool` — `ext/pgsql/pgsql.stub.php:845`
+- ·· `function pg_query($connection, string $query = UNKNOWN): PgSql\Result|false` — `ext/pgsql/pgsql.stub.php:526`
+- ·· `function pg_query_params($connection, $query, array $params = UNKNOWN): PgSql\Result|false` — `ext/pgsql/pgsql.stub.php:539`
+- ·· `function pg_result(PgSql\Result $result, $row, string|int $field = UNKNOWN): string|false|null` — `ext/pgsql/pgsql.stub.php:629`
+- ·· `function pg_result_error(PgSql\Result $result): string|false` — `ext/pgsql/pgsql.stub.php:883`
+- ·· `function pg_result_error_field(PgSql\Result $result, int $field_code): string|false|null` — `ext/pgsql/pgsql.stub.php:886`
+- ·· `function pg_result_memory_size(PgSql\Result $result): int` — `ext/pgsql/pgsql.stub.php:960`
+- ·· `function pg_result_seek(PgSql\Result $result, int $row): bool` — `ext/pgsql/pgsql.stub.php:664`
+- ·· `function pg_result_status(PgSql\Result $result, int $mode = PGSQL_STATUS_LONG): string|int` — `ext/pgsql/pgsql.stub.php:910`
+- ·· `function pg_select(PgSql\Connection $connection, string $table_name, array $conditions = [], int $flags = PGSQL_DML_EXEC, int $mode = PGSQL_ASSOC): array|string|false` — `ext/pgsql/pgsql.stub.php:955`
+- ·· `function pg_send_execute(PgSql\Connection $connection, string $statement_name, array $params): int|bool` — `ext/pgsql/pgsql.stub.php:904`
+- ·· `function pg_send_prepare(PgSql\Connection $connection, string $statement_name, string $query): int|bool` — `ext/pgsql/pgsql.stub.php:902`
+- ·· `function pg_send_query(PgSql\Connection $connection, string $query): int|bool` — `ext/pgsql/pgsql.stub.php:898`
+- ·· `function pg_send_query_params(PgSql\Connection $connection, string $query, array $params): int|bool` — `ext/pgsql/pgsql.stub.php:900`
+- ·· `function pg_service(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:512`
+- ·· `function pg_set_chunked_rows_size(PgSql\Connection $connection, int $size): bool` — `ext/pgsql/pgsql.stub.php:974`
+- ·· `function pg_set_client_encoding($connection, string $encoding = UNKNOWN): int` — `ext/pgsql/pgsql.stub.php:825`
+- ·· `function pg_set_error_context_visibility(PgSql\Connection $connection, int $visibility): int` — `ext/pgsql/pgsql.stub.php:957`
+- ·· `function pg_set_error_verbosity($connection, int $verbosity = UNKNOWN): int|false` — `ext/pgsql/pgsql.stub.php:822`
+- ·· `function pg_setclientencoding($connection, string $encoding = UNKNOWN): int` — `ext/pgsql/pgsql.stub.php:832`
+- ·· `function pg_socket(PgSql\Connection $connection)` — `ext/pgsql/pgsql.stub.php:924`
+- ·· `function pg_socket_poll($socket, int $read, int $write, int $timeout = -1): int` — `ext/pgsql/pgsql.stub.php:971`
+- ·· `function pg_trace(string $filename, string $mode = "w", ?PgSql\Connection $connection = null, int $trace_mode = 0): bool` — `ext/pgsql/pgsql.stub.php:701`
+- ·· `function pg_transaction_status(PgSql\Connection $connection): int` — `ext/pgsql/pgsql.stub.php:890`
+- ·· `function pg_tty(?PgSql\Connection $connection = null): string` — `ext/pgsql/pgsql.stub.php:494`
+- ·· `function pg_unescape_bytea(string $string): string` — `ext/pgsql/pgsql.stub.php:868`
+- ·· `function pg_untrace(?PgSql\Connection $connection = null): true` — `ext/pgsql/pgsql.stub.php:703`
+- ·· `function pg_update(PgSql\Connection $connection, string $table_name, array $values, array $conditions, int $flags = PGSQL_DML_EXEC): string|bool` — `ext/pgsql/pgsql.stub.php:946`
+- ·· `function pg_version(?PgSql\Connection $connection = null): array` — `ext/pgsql/pgsql.stub.php:503`
+
+## ext/phar (`127`) — impl `0`, tested `0`
+
+- ·· `public function Phar::__construct(string $filename, int $flags = FilesystemIterator::SKIP_DOTS|FilesystemIterator::UNIX_PATHS, ?string $alias = null)` — `ext/phar/phar_object.stub.php:76`
+- ·· `public function Phar::__destruct()` — `ext/phar/phar_object.stub.php:78`
+- ·· `public function Phar::addEmptyDir(string $directory): void` — `ext/phar/phar_object.stub.php:81`
+- ·· `public function Phar::addFile(string $filename, ?string $localName = null): void` — `ext/phar/phar_object.stub.php:84`
+- ·· `public function Phar::addFromString(string $localName, string $contents): void` — `ext/phar/phar_object.stub.php:87`
+- ·· `final public static function Phar::apiVersion(): string` — `ext/phar/phar_object.stub.php:213`
+- ·· `public function Phar::buildFromDirectory(string $directory, string $pattern = ""): array` — `ext/phar/phar_object.stub.php:90`
+- ·· `public function Phar::buildFromIterator(Traversable $iterator, ?string $baseDirectory = null): array` — `ext/phar/phar_object.stub.php:93`
+- ·· `final public static function Phar::canCompress(int $compression = 0): bool` — `ext/phar/phar_object.stub.php:215`
+- ·· `final public static function Phar::canWrite(): bool` — `ext/phar/phar_object.stub.php:217`
+- ·· `public function Phar::compress(int $compression, ?string $extension = null): ?Phar` — `ext/phar/phar_object.stub.php:102`
+- ·· `public function Phar::compressFiles(int $compression): void` — `ext/phar/phar_object.stub.php:96`
+- ·· `public function Phar::convertToData(?int $format = null, ?int $compression = null, ?string $extension = null): ?PharData` — `ext/phar/phar_object.stub.php:111`
+- ·· `public function Phar::convertToExecutable(?int $format = null, ?int $compression = null, ?string $extension = null): ?Phar` — `ext/phar/phar_object.stub.php:108`
+- ·· `public function Phar::copy(string $from, string $to): true` — `ext/phar/phar_object.stub.php:114`
+- ·· `public function Phar::count(int $mode = COUNT_NORMAL): int` — `ext/phar/phar_object.stub.php:117`
+- ·· `final public static function Phar::createDefaultStub(?string $index = null, ?string $webIndex = null): string` — `ext/phar/phar_object.stub.php:219`
+- ·· `public function Phar::decompress(?string $extension = null): ?Phar` — `ext/phar/phar_object.stub.php:105`
+- ·· `public function Phar::decompressFiles(): true` — `ext/phar/phar_object.stub.php:99`
+- ·· `public function Phar::delete(string $localName): true` — `ext/phar/phar_object.stub.php:120`
+- ·· `public function Phar::delMetadata(): true` — `ext/phar/phar_object.stub.php:123`
+- ·· `public function Phar::extractTo(string $directory, array|string|null $files = null, bool $overwrite = false): bool` — `ext/phar/phar_object.stub.php:126`
+- ·· `public function Phar::getAlias(): ?string` — `ext/phar/phar_object.stub.php:129`
+- ·· `public function Phar::getMetadata(array $unserializeOptions = []): mixed` — `ext/phar/phar_object.stub.php:135`
+- ·· `public function Phar::getModified(): bool` — `ext/phar/phar_object.stub.php:138`
+- ·· `public function Phar::getPath(): string` — `ext/phar/phar_object.stub.php:132`
+- ·· `public function Phar::getSignature(): array|false` — `ext/phar/phar_object.stub.php:141`
+- ·· `public function Phar::getStub(): string` — `ext/phar/phar_object.stub.php:144`
+- ·· `final public static function Phar::getSupportedCompression(): array` — `ext/phar/phar_object.stub.php:221`
+- ·· `final public static function Phar::getSupportedSignatures(): array` — `ext/phar/phar_object.stub.php:223`
+- ·· `public function Phar::getVersion(): string` — `ext/phar/phar_object.stub.php:147`
+- ·· `public function Phar::hasMetadata(): bool` — `ext/phar/phar_object.stub.php:150`
+- ·· `final public static function Phar::interceptFileFuncs(): void` — `ext/phar/phar_object.stub.php:225`
+- ·· `public function Phar::isBuffering(): bool` — `ext/phar/phar_object.stub.php:153`
+- ·· `public function Phar::isCompressed(): int|false` — `ext/phar/phar_object.stub.php:156`
+- ·· `public function Phar::isFileFormat(int $format): bool` — `ext/phar/phar_object.stub.php:159`
+- ·· `final public static function Phar::isValidPharFilename(string $filename, bool $executable = true): bool` — `ext/phar/phar_object.stub.php:227`
+- ·· `public function Phar::isWritable(): bool` — `ext/phar/phar_object.stub.php:162`
+- ·· `final public static function Phar::loadPhar(string $filename, ?string $alias = null): bool` — `ext/phar/phar_object.stub.php:229`
+- ·· `final public static function Phar::mapPhar(?string $alias = null, int $offset = 0): bool` — `ext/phar/phar_object.stub.php:231`
+- ·· `final public static function Phar::mount(string $pharPath, string $externalPath): void` — `ext/phar/phar_object.stub.php:235`
+- ·· `final public static function Phar::mungServer(array $variables): void` — `ext/phar/phar_object.stub.php:237`
+- ·· `public function Phar::offsetExists($localName): bool` — `ext/phar/phar_object.stub.php:168`
+- ·· `public function Phar::offsetGet($localName): SplFileInfo` — `ext/phar/phar_object.stub.php:174`
+- ·· `public function Phar::offsetSet($localName, $value): void` — `ext/phar/phar_object.stub.php:181`
+- ·· `public function Phar::offsetUnset($localName): void` — `ext/phar/phar_object.stub.php:187`
+- ·· `final public static function Phar::running(bool $returnPhar = true): string` — `ext/phar/phar_object.stub.php:233`
+- ·· `public function Phar::setAlias(string $alias): true` — `ext/phar/phar_object.stub.php:190`
+- ·· `public function Phar::setDefaultStub(?string $index = null, ?string $webIndex = null): true` — `ext/phar/phar_object.stub.php:193`
+- ·· `public function Phar::setMetadata(mixed $metadata): void` — `ext/phar/phar_object.stub.php:196`
+- ·· `public function Phar::setSignatureAlgorithm(int $algo, ?string $privateKey = null): void` — `ext/phar/phar_object.stub.php:199`
+- ·· `public function Phar::setStub($stub, int $length = UNKNOWN): true` — `ext/phar/phar_object.stub.php:205`
+- ·· `public function Phar::startBuffering(): void` — `ext/phar/phar_object.stub.php:208`
+- ·· `public function Phar::stopBuffering(): void` — `ext/phar/phar_object.stub.php:211`
+- ·· `final public static function Phar::unlinkArchive(string $filename): true` — `ext/phar/phar_object.stub.php:239`
+- ·· `final public static function Phar::webPhar( ?string $alias = null, ?string $index = null, ?string $fileNotFoundScript = null, array $mimeTypes = [], ?callable $rewrite = null): void` — `ext/phar/phar_object.stub.php:241`
+- ·· `public function PharData::__construct(string $filename, int $flags = FilesystemIterator::SKIP_DOTS|FilesystemIterator::UNIX_PATHS, ?string $alias = null, int $format = 0)` — `ext/phar/phar_object.stub.php:249`
+- ·· `public function PharData::__destruct()` — `ext/phar/phar_object.stub.php:252`
+- ·· `public function PharData::addEmptyDir(string $directory): void` — `ext/phar/phar_object.stub.php:258`
+- ·· `public function PharData::addFile(string $filename, ?string $localName = null): void` — `ext/phar/phar_object.stub.php:264`
+- ·· `public function PharData::addFromString(string $localName, string $contents): void` — `ext/phar/phar_object.stub.php:270`
+- ·· `final public static function PharData::apiVersion(): string` — `ext/phar/phar_object.stub.php:494`
+- ·· `public function PharData::buildFromDirectory(string $directory, string $pattern = ""): array` — `ext/phar/phar_object.stub.php:276`
+- ·· `public function PharData::buildFromIterator(Traversable $iterator, ?string $baseDirectory = null): array` — `ext/phar/phar_object.stub.php:282`
+- ·· `final public static function PharData::canCompress(int $compression = 0): bool` — `ext/phar/phar_object.stub.php:497`
+- ·· `final public static function PharData::canWrite(): bool` — `ext/phar/phar_object.stub.php:500`
+- ·· `public function PharData::compress(int $compression, ?string $extension = null): ?PharData` — `ext/phar/phar_object.stub.php:300`
+- ·· `public function PharData::compressFiles(int $compression): void` — `ext/phar/phar_object.stub.php:288`
+- ·· `public function PharData::convertToData(?int $format = null, ?int $compression = null, ?string $extension = null): ?PharData` — `ext/phar/phar_object.stub.php:318`
+- ·· `public function PharData::convertToExecutable(?int $format = null, ?int $compression = null, ?string $extension = null): ?Phar` — `ext/phar/phar_object.stub.php:312`
+- ·· `public function PharData::copy(string $from, string $to): true` — `ext/phar/phar_object.stub.php:324`
+- ·· `public function PharData::count(int $mode = COUNT_NORMAL): int` — `ext/phar/phar_object.stub.php:330`
+- ·· `final public static function PharData::createDefaultStub(?string $index = null, ?string $webIndex = null): string` — `ext/phar/phar_object.stub.php:503`
+- ·· `public function PharData::decompress(?string $extension = null): ?PharData` — `ext/phar/phar_object.stub.php:306`
+- ·· `public function PharData::decompressFiles(): true` — `ext/phar/phar_object.stub.php:294`
+- ·· `public function PharData::delete(string $localName): true` — `ext/phar/phar_object.stub.php:336`
+- ·· `public function PharData::delMetadata(): true` — `ext/phar/phar_object.stub.php:342`
+- ·· `public function PharData::extractTo(string $directory, array|string|null $files = null, bool $overwrite = false): bool` — `ext/phar/phar_object.stub.php:348`
+- ·· `public function PharData::getAlias(): ?string` — `ext/phar/phar_object.stub.php:354`
+- ·· `public function PharData::getMetadata(array $unserializeOptions = []): mixed` — `ext/phar/phar_object.stub.php:366`
+- ·· `public function PharData::getModified(): bool` — `ext/phar/phar_object.stub.php:372`
+- ·· `public function PharData::getPath(): string` — `ext/phar/phar_object.stub.php:360`
+- ·· `public function PharData::getSignature(): array|false` — `ext/phar/phar_object.stub.php:378`
+- ·· `public function PharData::getStub(): string` — `ext/phar/phar_object.stub.php:384`
+- ·· `final public static function PharData::getSupportedCompression(): array` — `ext/phar/phar_object.stub.php:506`
+- ·· `final public static function PharData::getSupportedSignatures(): array` — `ext/phar/phar_object.stub.php:509`
+- ·· `public function PharData::getVersion(): string` — `ext/phar/phar_object.stub.php:390`
+- ·· `public function PharData::hasMetadata(): bool` — `ext/phar/phar_object.stub.php:396`
+- ·· `final public static function PharData::interceptFileFuncs(): void` — `ext/phar/phar_object.stub.php:512`
+- ·· `public function PharData::isBuffering(): bool` — `ext/phar/phar_object.stub.php:402`
+- ·· `public function PharData::isCompressed(): int|false` — `ext/phar/phar_object.stub.php:408`
+- ·· `public function PharData::isFileFormat(int $format): bool` — `ext/phar/phar_object.stub.php:414`
+- ·· `final public static function PharData::isValidPharFilename(string $filename, bool $executable = true): bool` — `ext/phar/phar_object.stub.php:515`
+- ·· `public function PharData::isWritable(): bool` — `ext/phar/phar_object.stub.php:420`
+- ·· `final public static function PharData::loadPhar(string $filename, ?string $alias = null): bool` — `ext/phar/phar_object.stub.php:518`
+- ·· `final public static function PharData::mapPhar(?string $alias = null, int $offset = 0): bool` — `ext/phar/phar_object.stub.php:521`
+- ·· `final public static function PharData::mount(string $pharPath, string $externalPath): void` — `ext/phar/phar_object.stub.php:527`
+- ·· `final public static function PharData::mungServer(array $variables): void` — `ext/phar/phar_object.stub.php:530`
+- ·· `public function PharData::offsetExists($localName): bool` — `ext/phar/phar_object.stub.php:427`
+- ·· `public function PharData::offsetGet($localName): SplFileInfo` — `ext/phar/phar_object.stub.php:434`
+- ·· `public function PharData::offsetSet($localName, $value): void` — `ext/phar/phar_object.stub.php:442`
+- ·· `public function PharData::offsetUnset($localName): void` — `ext/phar/phar_object.stub.php:449`
+- ·· `final public static function PharData::running(bool $returnPhar = true): string` — `ext/phar/phar_object.stub.php:524`
+- ·· `public function PharData::setAlias(string $alias): bool` — `ext/phar/phar_object.stub.php:455`
+- ·· `public function PharData::setDefaultStub(?string $index = null, ?string $webIndex = null): bool` — `ext/phar/phar_object.stub.php:461`
+- ·· `public function PharData::setMetadata(mixed $metadata): void` — `ext/phar/phar_object.stub.php:467`
+- ·· `public function PharData::setSignatureAlgorithm(int $algo, ?string $privateKey = null): void` — `ext/phar/phar_object.stub.php:473`
+- ·· `public function PharData::setStub($stub, int $length = UNKNOWN): true` — `ext/phar/phar_object.stub.php:479`
+- ·· `public function PharData::startBuffering(): void` — `ext/phar/phar_object.stub.php:485`
+- ·· `public function PharData::stopBuffering(): void` — `ext/phar/phar_object.stub.php:491`
+- ·· `final public static function PharData::unlinkArchive(string $filename): true` — `ext/phar/phar_object.stub.php:533`
+- ·· `final public static function PharData::webPhar( ?string $alias = null, ?string $index = null, ?string $fileNotFoundScript = null, array $mimeTypes = [], ?callable $rewrite = null): void` — `ext/phar/phar_object.stub.php:536`
+- ·· `public function PharFileInfo::__construct(string $filename)` — `ext/phar/phar_object.stub.php:543`
+- ·· `public function PharFileInfo::__destruct()` — `ext/phar/phar_object.stub.php:545`
+- ·· `public function PharFileInfo::chmod(int $perms): void` — `ext/phar/phar_object.stub.php:548`
+- ·· `public function PharFileInfo::compress(int $compression): true` — `ext/phar/phar_object.stub.php:551`
+- ·· `public function PharFileInfo::decompress(): true` — `ext/phar/phar_object.stub.php:554`
+- ·· `public function PharFileInfo::delMetadata(): true` — `ext/phar/phar_object.stub.php:557`
+- ·· `public function PharFileInfo::getCompressedSize(): int` — `ext/phar/phar_object.stub.php:560`
+- ·· `public function PharFileInfo::getContent(): string` — `ext/phar/phar_object.stub.php:566`
+- ·· `public function PharFileInfo::getCRC32(): int` — `ext/phar/phar_object.stub.php:563`
+- ·· `public function PharFileInfo::getMetadata(array $unserializeOptions = []): mixed` — `ext/phar/phar_object.stub.php:569`
+- ·· `public function PharFileInfo::getPharFlags(): int` — `ext/phar/phar_object.stub.php:572`
+- ·· `public function PharFileInfo::hasMetadata(): bool` — `ext/phar/phar_object.stub.php:575`
+- ·· `public function PharFileInfo::isCompressed(?int $compression = null): bool` — `ext/phar/phar_object.stub.php:578`
+- ·· `public function PharFileInfo::isCRCChecked(): bool` — `ext/phar/phar_object.stub.php:581`
+- ·· `public function PharFileInfo::setMetadata(mixed $metadata): void` — `ext/phar/phar_object.stub.php:584`
+
+## ext/posix (`41`) — impl `0`, tested `0`
+
+- ·· `function posix_access(string $filename, int $flags = 0): bool` — `ext/posix/posix.stub.php:401`
+- ·· `function posix_ctermid(): string|false` — `ext/posix/posix.stub.php:382`
+- ·· `function posix_eaccess(string $filename, int $flags = 0): bool` — `ext/posix/posix.stub.php:404`
+- ·· `function posix_errno(): int` — `ext/posix/posix.stub.php:446`
+- ·· `function posix_fpathconf($file_descriptor, int $name): int|false` — `ext/posix/posix.stub.php:462`
+- ·· `function posix_get_last_error(): int` — `ext/posix/posix.stub.php:443`
+- ·· `function posix_getcwd(): string|false` — `ext/posix/posix.stub.php:391`
+- ·· `function posix_getegid(): int` — `ext/posix/posix.stub.php:334`
+- ·· `function posix_geteuid(): int` — `ext/posix/posix.stub.php:324`
+- ·· `function posix_getgid(): int` — `ext/posix/posix.stub.php:330`
+- ·· `function posix_getgrgid(int $group_id): array|false` — `ext/posix/posix.stub.php:417`
+- ·· `function posix_getgrnam(string $name): array|false` — `ext/posix/posix.stub.php:411`
+- ·· `function posix_getgroups(): array|false` — `ext/posix/posix.stub.php:345`
+- ·· `function posix_getlogin(): string|false` — `ext/posix/posix.stub.php:349`
+- ·· `function posix_getpgid(int $process_id): int|false` — `ext/posix/posix.stub.php:361`
+- ·· `function posix_getpgrp(): int` — `ext/posix/posix.stub.php:352`
+- ·· `function posix_getpid(): int` — `ext/posix/posix.stub.php:316`
+- ·· `function posix_getppid(): int` — `ext/posix/posix.stub.php:318`
+- ·· `function posix_getpwnam(string $username): array|false` — `ext/posix/posix.stub.php:423`
+- ·· `function posix_getpwuid(int $user_id): array|false` — `ext/posix/posix.stub.php:429`
+- ·· `function posix_getrlimit(?int $resource = null): array|false` — `ext/posix/posix.stub.php:436`
+- ·· `function posix_getsid(int $process_id): int|false` — `ext/posix/posix.stub.php:365`
+- ·· `function posix_getuid(): int` — `ext/posix/posix.stub.php:320`
+- ·· `function posix_initgroups(string $username, int $group_id): bool` — `ext/posix/posix.stub.php:451`
+- ·· `function posix_isatty($file_descriptor): bool` — `ext/posix/posix.stub.php:389`
+- ·· `function posix_kill(int $process_id, int $signal): bool` — `ext/posix/posix.stub.php:314`
+- ·· `function posix_mkfifo(string $filename, int $permissions): bool` — `ext/posix/posix.stub.php:394`
+- ·· `function posix_mknod(string $filename, int $flags, int $major = 0, int $minor = 0): bool` — `ext/posix/posix.stub.php:398`
+- ·· `function posix_pathconf(string $path, int $name): int|false` — `ext/posix/posix.stub.php:457`
+- ·· `function posix_setegid(int $group_id): bool` — `ext/posix/posix.stub.php:337`
+- ·· `function posix_seteuid(int $user_id): bool` — `ext/posix/posix.stub.php:327`
+- ·· `function posix_setgid(int $group_id): bool` — `ext/posix/posix.stub.php:332`
+- ·· `function posix_setpgid(int $process_id, int $process_group_id): bool` — `ext/posix/posix.stub.php:358`
+- ·· `function posix_setrlimit(int $resource, int $soft_limit, int $hard_limit): bool` — `ext/posix/posix.stub.php:440`
+- ·· `function posix_setsid(): int` — `ext/posix/posix.stub.php:355`
+- ·· `function posix_setuid(int $user_id): bool` — `ext/posix/posix.stub.php:322`
+- ·· `function posix_strerror(int $error_code): string` — `ext/posix/posix.stub.php:448`
+- ·· `function posix_sysconf(int $conf_id): int` — `ext/posix/posix.stub.php:454`
+- ·· `function posix_times(): array|false` — `ext/posix/posix.stub.php:378`
+- ·· `function posix_ttyname($file_descriptor): string|false` — `ext/posix/posix.stub.php:386`
+- ·· `function posix_uname(): array|false` — `ext/posix/posix.stub.php:372`
+
+## ext/random (`41`) — impl `2`, tested `2`
+
+- ·· `function getrandmax(): int` — `ext/random/random.stub.php:37`
+- ·· `function lcg_value(): float` — `ext/random/random.stub.php:19`
+- ·· `function mt_getrandmax(): int` — `ext/random/random.stub.php:31`
+- ·· `function mt_rand(int $min = UNKNOWN, int $max = UNKNOWN): int` — `ext/random/random.stub.php:28`
+- ·· `function mt_srand(?int $seed = null, int $mode = MT_RAND_MT19937): void` — `ext/random/random.stub.php:21`
+- ·· `function rand(int $min = UNKNOWN, int $max = UNKNOWN): int` — `ext/random/random.stub.php:26`
+- ·· `public function Random\Engine::generate(): string` — `ext/random/random.stub.php:124`
+- ·· `public function Random\Engine\Mt19937::__construct(int|null $seed = null, int $mode = MT_RAND_MT19937)` — `ext/random/random.stub.php:52`
+- ·· `public function Random\Engine\Mt19937::__debugInfo(): array` — `ext/random/random.stub.php:60`
+- ·· `public function Random\Engine\Mt19937::__serialize(): array` — `ext/random/random.stub.php:56`
+- ·· `public function Random\Engine\Mt19937::__unserialize(array $data): void` — `ext/random/random.stub.php:58`
+- ·· `public function Random\Engine\Mt19937::generate(): string` — `ext/random/random.stub.php:54`
+- ·· `public function Random\Engine\PcgOneseq128XslRr64::__construct(string|int|null $seed = null)` — `ext/random/random.stub.php:68`
+- ·· `public function Random\Engine\PcgOneseq128XslRr64::__debugInfo(): array` — `ext/random/random.stub.php:82`
+- ·· `public function Random\Engine\PcgOneseq128XslRr64::__serialize(): array` — `ext/random/random.stub.php:76`
+- ·· `public function Random\Engine\PcgOneseq128XslRr64::__unserialize(array $data): void` — `ext/random/random.stub.php:79`
+- ·· `public function Random\Engine\PcgOneseq128XslRr64::generate(): string` — `ext/random/random.stub.php:71`
+- ·· `public function Random\Engine\PcgOneseq128XslRr64::jump(int $advance): void` — `ext/random/random.stub.php:73`
+- ·· `public function Random\Engine\Secure::generate(): string` — `ext/random/random.stub.php:116`
+- ·· `public function Random\Engine\Xoshiro256StarStar::__construct(string|int|null $seed = null)` — `ext/random/random.stub.php:90`
+- ·· `public function Random\Engine\Xoshiro256StarStar::__debugInfo(): array` — `ext/random/random.stub.php:106`
+- ·· `public function Random\Engine\Xoshiro256StarStar::__serialize(): array` — `ext/random/random.stub.php:100`
+- ·· `public function Random\Engine\Xoshiro256StarStar::__unserialize(array $data): void` — `ext/random/random.stub.php:103`
+- ·· `public function Random\Engine\Xoshiro256StarStar::generate(): string` — `ext/random/random.stub.php:93`
+- ·· `public function Random\Engine\Xoshiro256StarStar::jump(): void` — `ext/random/random.stub.php:95`
+- ·· `public function Random\Engine\Xoshiro256StarStar::jumpLong(): void` — `ext/random/random.stub.php:97`
+- ·· `public function Random\Randomizer::__construct(?Engine $engine = null)` — `ext/random/random.stub.php:138`
+- ·· `public function Random\Randomizer::__serialize(): array` — `ext/random/random.stub.php:158`
+- ·· `public function Random\Randomizer::__unserialize(array $data): void` — `ext/random/random.stub.php:160`
+- ·· `public function Random\Randomizer::getBytes(int $length): string` — `ext/random/random.stub.php:148`
+- ·· `public function Random\Randomizer::getBytesFromString(string $string, int $length): string` — `ext/random/random.stub.php:150`
+- ·· `public function Random\Randomizer::getFloat(float $min, float $max, IntervalBoundary $boundary = IntervalBoundary::ClosedOpen): float` — `ext/random/random.stub.php:144`
+- ·· `public function Random\Randomizer::getInt(int $min, int $max): int` — `ext/random/random.stub.php:146`
+- ·· `public function Random\Randomizer::nextFloat(): float` — `ext/random/random.stub.php:142`
+- ·· `public function Random\Randomizer::nextInt(): int` — `ext/random/random.stub.php:140`
+- ·· `public function Random\Randomizer::pickArrayKeys(array $array, int $num): array` — `ext/random/random.stub.php:156`
+- ·· `public function Random\Randomizer::shuffleArray(array $array): array` — `ext/random/random.stub.php:152`
+- ·· `public function Random\Randomizer::shuffleBytes(string $bytes): string` — `ext/random/random.stub.php:154`
+- ✅🧪 `function random_bytes(int $length): string` — `ext/random/random.stub.php:40`
+- ✅🧪 `function random_int(int $min, int $max): int` — `ext/random/random.stub.php:42`
+- ·· `function srand(?int $seed = null, int $mode = MT_RAND_MT19937): void` — `ext/random/random.stub.php:24`
+
+## ext/readline (`13`) — impl `0`, tested `0`
+
+- ·· `function readline(?string $prompt = null): string|false` — `ext/readline/readline.stub.php:11`
+- ·· `function readline_add_history(string $prompt): true` — `ext/readline/readline.stub.php:16`
+- ·· `function readline_callback_handler_install(string $prompt, callable $callback): true` — `ext/readline/readline.stub.php:36`
+- ·· `function readline_callback_handler_remove(): bool` — `ext/readline/readline.stub.php:40`
+- ·· `function readline_callback_read_char(): void` — `ext/readline/readline.stub.php:38`
+- ·· `function readline_clear_history(): true` — `ext/readline/readline.stub.php:18`
+- ·· `function readline_completion_function(callable $callback): bool` — `ext/readline/readline.stub.php:32`
+- ·· `function readline_info(?string $var_name = null, $value = null): mixed` — `ext/readline/readline.stub.php:14`
+- ·· `function readline_list_history(): array` — `ext/readline/readline.stub.php:25`
+- ·· `function readline_on_new_line(): void` — `ext/readline/readline.stub.php:45`
+- ·· `function readline_read_history(?string $filename = null): bool` — `ext/readline/readline.stub.php:28`
+- ·· `function readline_redisplay(): void` — `ext/readline/readline.stub.php:42`
+- ·· `function readline_write_history(?string $filename = null): bool` — `ext/readline/readline.stub.php:30`
+
+## ext/reflection (`280`) — impl `0`, tested `32`
+
+- ·· `public static function Reflection::getModifierNames(int $modifiers): array` — `ext/reflection/php_reflection.stub.php:12`
+- ·· `private function ReflectionAttribute::__clone(): void` — `ext/reflection/php_reflection.stub.php:850`
+- ·· `private function ReflectionAttribute::__construct()` — `ext/reflection/php_reflection.stub.php:852`
+- ·· `public function ReflectionAttribute::__toString(): string` — `ext/reflection/php_reflection.stub.php:848`
+- ·· `public function ReflectionAttribute::getArguments(): array` — `ext/reflection/php_reflection.stub.php:845`
+- ·· `public function ReflectionAttribute::getName(): string` — `ext/reflection/php_reflection.stub.php:842`
+- ·· `public function ReflectionAttribute::getTarget(): int` — `ext/reflection/php_reflection.stub.php:843`
+- ·· `public function ReflectionAttribute::isRepeated(): bool` — `ext/reflection/php_reflection.stub.php:844`
+- ·· `public function ReflectionAttribute::newInstance(): object` — `ext/reflection/php_reflection.stub.php:846`
+- ·· `private function ReflectionClass::__clone(): void` — `ext/reflection/php_reflection.stub.php:256`
+- ·🧪 `public function ReflectionClass::__construct(object|string $objectOrClass)` — `ext/reflection/php_reflection.stub.php:258`
+- ·· `public function ReflectionClass::__toString(): string` — `ext/reflection/php_reflection.stub.php:260`
+- ·🧪 `public function ReflectionClass::getAttributes(?string $name = null, int $flags = 0): array` — `ext/reflection/php_reflection.stub.php:435`
+- ·🧪 `public function ReflectionClass::getConstant(string $name): mixed` — `ext/reflection/php_reflection.stub.php:323`
+- ·🧪 `public function ReflectionClass::getConstants(?int $filter = null): array` — `ext/reflection/php_reflection.stub.php:317`
+- ·🧪 `public function ReflectionClass::getConstructor(): ?ReflectionMethod` — `ext/reflection/php_reflection.stub.php:293`
+- ·· `public function ReflectionClass::getDefaultProperties(): array` — `ext/reflection/php_reflection.stub.php:406`
+- ·· `public function ReflectionClass::getDocComment(): string|false` — `ext/reflection/php_reflection.stub.php:290`
+- ·· `public function ReflectionClass::getEndLine(): int|false` — `ext/reflection/php_reflection.stub.php:287`
+- ·· `public function ReflectionClass::getExtension(): ?ReflectionExtension` — `ext/reflection/php_reflection.stub.php:421`
+- ·🧪 `public function ReflectionClass::getExtensionName(): string|false` — `ext/reflection/php_reflection.stub.php:424`
+- ·· `public function ReflectionClass::getFileName(): string|false` — `ext/reflection/php_reflection.stub.php:281`
+- ·🧪 `public function ReflectionClass::getInterfaceNames(): array` — `ext/reflection/php_reflection.stub.php:332`
+- ·· `public function ReflectionClass::getInterfaces(): array` — `ext/reflection/php_reflection.stub.php:329`
+- ·· `public function ReflectionClass::getLazyInitializer(object $object): ?callable` — `ext/reflection/php_reflection.stub.php:388`
+- ·🧪 `public function ReflectionClass::getMethod(string $name): ReflectionMethod` — `ext/reflection/php_reflection.stub.php:299`
+- ·🧪 `public function ReflectionClass::getMethods(?int $filter = null): array` — `ext/reflection/php_reflection.stub.php:302`
+- ·· `public function ReflectionClass::getModifiers(): int` — `ext/reflection/php_reflection.stub.php:360`
+- ·🧪 `public function ReflectionClass::getName(): string` — `ext/reflection/php_reflection.stub.php:263`
+- ·· `public function ReflectionClass::getNamespaceName(): string` — `ext/reflection/php_reflection.stub.php:430`
+- ·· `public function ReflectionClass::getParentClass(): ReflectionClass|false` — `ext/reflection/php_reflection.stub.php:391`
+- ·🧪 `public function ReflectionClass::getProperties(?int $filter = null): array` — `ext/reflection/php_reflection.stub.php:311`
+- ·🧪 `public function ReflectionClass::getProperty(string $name): ReflectionProperty` — `ext/reflection/php_reflection.stub.php:308`
+- ·🧪 `public function ReflectionClass::getReflectionConstant(string $name): ReflectionClassConstant|false` — `ext/reflection/php_reflection.stub.php:326`
+- ·· `public function ReflectionClass::getReflectionConstants(?int $filter = null): array` — `ext/reflection/php_reflection.stub.php:320`
+- ·· `public function ReflectionClass::getShortName(): string` — `ext/reflection/php_reflection.stub.php:433`
+- ·🧪 `public function ReflectionClass::getStartLine(): int|false` — `ext/reflection/php_reflection.stub.php:284`
+- ·· `public function ReflectionClass::getStaticProperties(): array` — `ext/reflection/php_reflection.stub.php:397`
+- ·· `public function ReflectionClass::getStaticPropertyValue(string $name, mixed $default = UNKNOWN): mixed` — `ext/reflection/php_reflection.stub.php:400`
+- ·· `public function ReflectionClass::getTraitAliases(): array` — `ext/reflection/php_reflection.stub.php:344`
+- ·· `public function ReflectionClass::getTraitNames(): array` — `ext/reflection/php_reflection.stub.php:341`
+- ·· `public function ReflectionClass::getTraits(): array` — `ext/reflection/php_reflection.stub.php:338`
+- ·· `public function ReflectionClass::hasConstant(string $name): bool` — `ext/reflection/php_reflection.stub.php:314`
+- ·· `public function ReflectionClass::hasMethod(string $name): bool` — `ext/reflection/php_reflection.stub.php:296`
+- ·· `public function ReflectionClass::hasProperty(string $name): bool` — `ext/reflection/php_reflection.stub.php:305`
+- ·· `public function ReflectionClass::implementsInterface(ReflectionClass|string $interface): bool` — `ext/reflection/php_reflection.stub.php:418`
+- ·· `public function ReflectionClass::initializeLazyObject(object $object): object` — `ext/reflection/php_reflection.stub.php:382`
+- ·· `public function ReflectionClass::inNamespace(): bool` — `ext/reflection/php_reflection.stub.php:427`
+- ·🧪 `public function ReflectionClass::isAbstract(): bool` — `ext/reflection/php_reflection.stub.php:352`
+- ·· `public function ReflectionClass::isAnonymous(): bool` — `ext/reflection/php_reflection.stub.php:272`
+- ·· `public function ReflectionClass::isCloneable(): bool` — `ext/reflection/php_reflection.stub.php:278`
+- ·🧪 `public function ReflectionClass::isEnum(): bool` — `ext/reflection/php_reflection.stub.php:349`
+- ·🧪 `public function ReflectionClass::isFinal(): bool` — `ext/reflection/php_reflection.stub.php:355`
+- ·· `public function ReflectionClass::isInstance(object $object): bool` — `ext/reflection/php_reflection.stub.php:363`
+- ·🧪 `public function ReflectionClass::isInstantiable(): bool` — `ext/reflection/php_reflection.stub.php:275`
+- ·🧪 `public function ReflectionClass::isInterface(): bool` — `ext/reflection/php_reflection.stub.php:335`
+- ·· `public function ReflectionClass::isInternal(): bool` — `ext/reflection/php_reflection.stub.php:266`
+- ·· `public function ReflectionClass::isIterable(): bool` — `ext/reflection/php_reflection.stub.php:409`
+- ·· `public function ReflectionClass::isIterateable(): bool` — `ext/reflection/php_reflection.stub.php:415`
+- ·· `public function ReflectionClass::isReadOnly(): bool` — `ext/reflection/php_reflection.stub.php:357`
+- ·· `public function ReflectionClass::isSubclassOf(ReflectionClass|string $class): bool` — `ext/reflection/php_reflection.stub.php:394`
+- ·· `public function ReflectionClass::isTrait(): bool` — `ext/reflection/php_reflection.stub.php:347`
+- ·· `public function ReflectionClass::isUninitializedLazyObject(object $object): bool` — `ext/reflection/php_reflection.stub.php:384`
+- ·· `public function ReflectionClass::isUserDefined(): bool` — `ext/reflection/php_reflection.stub.php:269`
+- ·· `public function ReflectionClass::markLazyObjectAsInitialized(object $object): object` — `ext/reflection/php_reflection.stub.php:386`
+- ·🧪 `public function ReflectionClass::newInstance(mixed ...$args): object` — `ext/reflection/php_reflection.stub.php:366`
+- ·🧪 `public function ReflectionClass::newInstanceArgs(array $args = []): ?object` — `ext/reflection/php_reflection.stub.php:372`
+- ·· `public function ReflectionClass::newInstanceWithoutConstructor(): object` — `ext/reflection/php_reflection.stub.php:369`
+- ·· `public function ReflectionClass::newLazyGhost(callable $initializer, int $options = 0): object` — `ext/reflection/php_reflection.stub.php:374`
+- ·· `public function ReflectionClass::newLazyProxy(callable $factory, int $options = 0): object` — `ext/reflection/php_reflection.stub.php:376`
+- ·· `public function ReflectionClass::resetAsLazyGhost(object $object, callable $initializer, int $options = 0): void` — `ext/reflection/php_reflection.stub.php:378`
+- ·· `public function ReflectionClass::resetAsLazyProxy(object $object, callable $factory, int $options = 0): void` — `ext/reflection/php_reflection.stub.php:380`
+- ·· `public function ReflectionClass::setStaticPropertyValue(string $name, mixed $value): void` — `ext/reflection/php_reflection.stub.php:403`
+- ·· `private function ReflectionClassConstant::__clone(): void` — `ext/reflection/php_reflection.stub.php:592`
+- ·🧪 `public function ReflectionClassConstant::__construct(object|string $class, string $constant)` — `ext/reflection/php_reflection.stub.php:594`
+- ·· `public function ReflectionClassConstant::__toString(): string` — `ext/reflection/php_reflection.stub.php:596`
+- ·· `public function ReflectionClassConstant::getAttributes(?string $name = null, int $flags = 0): array` — `ext/reflection/php_reflection.stub.php:624`
+- ·· `public function ReflectionClassConstant::getDeclaringClass(): ReflectionClass` — `ext/reflection/php_reflection.stub.php:619`
+- ·· `public function ReflectionClassConstant::getDocComment(): string|false` — `ext/reflection/php_reflection.stub.php:622`
+- ·· `public function ReflectionClassConstant::getModifiers(): int` — `ext/reflection/php_reflection.stub.php:616`
+- ·· `public function ReflectionClassConstant::getName(): string` — `ext/reflection/php_reflection.stub.php:599`
+- ·· `public function ReflectionClassConstant::getType(): ?ReflectionType` — `ext/reflection/php_reflection.stub.php:632`
+- ·· `public function ReflectionClassConstant::getValue(): mixed` — `ext/reflection/php_reflection.stub.php:602`
+- ·· `public function ReflectionClassConstant::hasType(): bool` — `ext/reflection/php_reflection.stub.php:630`
+- ·· `public function ReflectionClassConstant::isDeprecated(): bool` — `ext/reflection/php_reflection.stub.php:628`
+- ·🧪 `public function ReflectionClassConstant::isEnumCase(): bool` — `ext/reflection/php_reflection.stub.php:626`
+- ·· `public function ReflectionClassConstant::isFinal(): bool` — `ext/reflection/php_reflection.stub.php:613`
+- ·· `public function ReflectionClassConstant::isPrivate(): bool` — `ext/reflection/php_reflection.stub.php:608`
+- ·· `public function ReflectionClassConstant::isProtected(): bool` — `ext/reflection/php_reflection.stub.php:611`
+- ·· `public function ReflectionClassConstant::isPublic(): bool` — `ext/reflection/php_reflection.stub.php:605`
+- ·· `public function ReflectionConstant::__construct(string $name)` — `ext/reflection/php_reflection.stub.php:911`
+- ·· `public function ReflectionConstant::__toString(): string` — `ext/reflection/php_reflection.stub.php:929`
+- ·· `public function ReflectionConstant::getAttributes(?string $name = null, int $flags = 0): array` — `ext/reflection/php_reflection.stub.php:931`
+- ·· `public function ReflectionConstant::getExtension(): ?ReflectionExtension` — `ext/reflection/php_reflection.stub.php:925`
+- ·· `public function ReflectionConstant::getExtensionName(): string|false` — `ext/reflection/php_reflection.stub.php:927`
+- ·· `public function ReflectionConstant::getFileName(): string|false` — `ext/reflection/php_reflection.stub.php:923`
+- ·· `public function ReflectionConstant::getName(): string` — `ext/reflection/php_reflection.stub.php:913`
+- ·· `public function ReflectionConstant::getNamespaceName(): string` — `ext/reflection/php_reflection.stub.php:915`
+- ·· `public function ReflectionConstant::getShortName(): string` — `ext/reflection/php_reflection.stub.php:917`
+- ·· `public function ReflectionConstant::getValue(): mixed` — `ext/reflection/php_reflection.stub.php:919`
+- ·· `public function ReflectionConstant::isDeprecated(): bool` — `ext/reflection/php_reflection.stub.php:921`
+- ·🧪 `public function ReflectionEnum::__construct(object|string $objectOrClass)` — `ext/reflection/php_reflection.stub.php:857`
+- ·🧪 `public function ReflectionEnum::getBackingType(): ?ReflectionNamedType` — `ext/reflection/php_reflection.stub.php:867`
+- ·· `public function ReflectionEnum::getCase(string $name): ReflectionEnumUnitCase` — `ext/reflection/php_reflection.stub.php:861`
+- ·🧪 `public function ReflectionEnum::getCases(): array` — `ext/reflection/php_reflection.stub.php:863`
+- ·🧪 `public function ReflectionEnum::hasCase(string $name): bool` — `ext/reflection/php_reflection.stub.php:859`
+- ·🧪 `public function ReflectionEnum::isBacked(): bool` — `ext/reflection/php_reflection.stub.php:865`
+- ·· `public function ReflectionEnumBackedCase::__construct(object|string $class, string $constant)` — `ext/reflection/php_reflection.stub.php:882`
+- ·· `public function ReflectionEnumBackedCase::getBackingValue(): int|string` — `ext/reflection/php_reflection.stub.php:884`
+- ·🧪 `public function ReflectionEnumUnitCase::__construct(object|string $class, string $constant)` — `ext/reflection/php_reflection.stub.php:872`
+- ·· `public function ReflectionEnumUnitCase::getEnum(): ReflectionEnum` — `ext/reflection/php_reflection.stub.php:874`
+- ·· `public function ReflectionEnumUnitCase::getValue(): UnitEnum` — `ext/reflection/php_reflection.stub.php:877`
+- ·· `private function ReflectionExtension::__clone(): void` — `ext/reflection/php_reflection.stub.php:753`
+- ·· `public function ReflectionExtension::__construct(string $name)` — `ext/reflection/php_reflection.stub.php:755`
+- ·· `public function ReflectionExtension::__toString(): string` — `ext/reflection/php_reflection.stub.php:757`
+- ·· `public function ReflectionExtension::getClasses(): array` — `ext/reflection/php_reflection.stub.php:775`
+- ·· `public function ReflectionExtension::getClassNames(): array` — `ext/reflection/php_reflection.stub.php:778`
+- ·· `public function ReflectionExtension::getConstants(): array` — `ext/reflection/php_reflection.stub.php:769`
+- ·· `public function ReflectionExtension::getDependencies(): array` — `ext/reflection/php_reflection.stub.php:781`
+- ·· `public function ReflectionExtension::getFunctions(): array` — `ext/reflection/php_reflection.stub.php:766`
+- ·· `public function ReflectionExtension::getINIEntries(): array` — `ext/reflection/php_reflection.stub.php:772`
+- ·· `public function ReflectionExtension::getName(): string` — `ext/reflection/php_reflection.stub.php:760`
+- ·· `public function ReflectionExtension::getVersion(): ?string` — `ext/reflection/php_reflection.stub.php:763`
+- ·· `public function ReflectionExtension::info(): void` — `ext/reflection/php_reflection.stub.php:784`
+- ·· `public function ReflectionExtension::isPersistent(): bool` — `ext/reflection/php_reflection.stub.php:787`
+- ·· `public function ReflectionExtension::isTemporary(): bool` — `ext/reflection/php_reflection.stub.php:790`
+- ·· `public function ReflectionFiber::__construct(Fiber $fiber)` — `ext/reflection/php_reflection.stub.php:890`
+- ·· `public function ReflectionFiber::getCallable(): callable` — `ext/reflection/php_reflection.stub.php:898`
+- ·· `public function ReflectionFiber::getExecutingFile(): ?string` — `ext/reflection/php_reflection.stub.php:894`
+- ·· `public function ReflectionFiber::getExecutingLine(): ?int` — `ext/reflection/php_reflection.stub.php:896`
+- ·· `public function ReflectionFiber::getFiber(): Fiber` — `ext/reflection/php_reflection.stub.php:892`
+- ·· `public function ReflectionFiber::getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT): array` — `ext/reflection/php_reflection.stub.php:900`
+- ·🧪 `public function ReflectionFunction::__construct(Closure|string $function)` — `ext/reflection/php_reflection.stub.php:122`
+- ·· `public function ReflectionFunction::__toString(): string` — `ext/reflection/php_reflection.stub.php:124`
+- ·· `public function ReflectionFunction::getClosure(): Closure` — `ext/reflection/php_reflection.stub.php:141`
+- ·· `public function ReflectionFunction::invoke(mixed ...$args): mixed` — `ext/reflection/php_reflection.stub.php:135`
+- ·· `public function ReflectionFunction::invokeArgs(array $args): mixed` — `ext/reflection/php_reflection.stub.php:138`
+- ·· `public function ReflectionFunction::isAnonymous(): bool` — `ext/reflection/php_reflection.stub.php:126`
+- ·· `public function ReflectionFunction::isDisabled(): bool` — `ext/reflection/php_reflection.stub.php:132`
+- ·· `private function ReflectionFunctionAbstract::__clone(): void` — `ext/reflection/php_reflection.stub.php:25`
+- ·· `public function ReflectionFunctionAbstract::getAttributes(?string $name = null, int $flags = 0): array` — `ext/reflection/php_reflection.stub.php:114`
+- ·· `public function ReflectionFunctionAbstract::getClosureCalledClass(): ?ReflectionClass` — `ext/reflection/php_reflection.stub.php:58`
+- ·· `public function ReflectionFunctionAbstract::getClosureScopeClass(): ?ReflectionClass` — `ext/reflection/php_reflection.stub.php:55`
+- ·· `public function ReflectionFunctionAbstract::getClosureThis(): ?object` — `ext/reflection/php_reflection.stub.php:52`
+- ·· `public function ReflectionFunctionAbstract::getClosureUsedVariables(): array` — `ext/reflection/php_reflection.stub.php:60`
+- ·· `public function ReflectionFunctionAbstract::getDocComment(): string|false` — `ext/reflection/php_reflection.stub.php:63`
+- ·· `public function ReflectionFunctionAbstract::getEndLine(): int|false` — `ext/reflection/php_reflection.stub.php:66`
+- ·· `public function ReflectionFunctionAbstract::getExtension(): ?ReflectionExtension` — `ext/reflection/php_reflection.stub.php:69`
+- ·· `public function ReflectionFunctionAbstract::getExtensionName(): string|false` — `ext/reflection/php_reflection.stub.php:72`
+- ·· `public function ReflectionFunctionAbstract::getFileName(): string|false` — `ext/reflection/php_reflection.stub.php:75`
+- ·· `public function ReflectionFunctionAbstract::getName(): string` — `ext/reflection/php_reflection.stub.php:78`
+- ·· `public function ReflectionFunctionAbstract::getNamespaceName(): string` — `ext/reflection/php_reflection.stub.php:81`
+- ·· `public function ReflectionFunctionAbstract::getNumberOfParameters(): int` — `ext/reflection/php_reflection.stub.php:84`
+- ·· `public function ReflectionFunctionAbstract::getNumberOfRequiredParameters(): int` — `ext/reflection/php_reflection.stub.php:87`
+- ·· `public function ReflectionFunctionAbstract::getParameters(): array` — `ext/reflection/php_reflection.stub.php:90`
+- ·· `public function ReflectionFunctionAbstract::getReturnType(): ?ReflectionType` — `ext/reflection/php_reflection.stub.php:108`
+- ·· `public function ReflectionFunctionAbstract::getShortName(): string` — `ext/reflection/php_reflection.stub.php:93`
+- ·· `public function ReflectionFunctionAbstract::getStartLine(): int|false` — `ext/reflection/php_reflection.stub.php:96`
+- ·· `public function ReflectionFunctionAbstract::getStaticVariables(): array` — `ext/reflection/php_reflection.stub.php:99`
+- ·· `public function ReflectionFunctionAbstract::getTentativeReturnType(): ?ReflectionType` — `ext/reflection/php_reflection.stub.php:112`
+- ·· `public function ReflectionFunctionAbstract::hasReturnType(): bool` — `ext/reflection/php_reflection.stub.php:105`
+- ·· `public function ReflectionFunctionAbstract::hasTentativeReturnType(): bool` — `ext/reflection/php_reflection.stub.php:110`
+- ·· `public function ReflectionFunctionAbstract::inNamespace(): bool` — `ext/reflection/php_reflection.stub.php:28`
+- ·· `public function ReflectionFunctionAbstract::isClosure(): bool` — `ext/reflection/php_reflection.stub.php:31`
+- ·· `public function ReflectionFunctionAbstract::isDeprecated(): bool` — `ext/reflection/php_reflection.stub.php:34`
+- ·· `public function ReflectionFunctionAbstract::isGenerator(): bool` — `ext/reflection/php_reflection.stub.php:43`
+- ·· `public function ReflectionFunctionAbstract::isInternal(): bool` — `ext/reflection/php_reflection.stub.php:37`
+- ·· `public function ReflectionFunctionAbstract::isStatic(): bool` — `ext/reflection/php_reflection.stub.php:49`
+- ·· `public function ReflectionFunctionAbstract::isUserDefined(): bool` — `ext/reflection/php_reflection.stub.php:40`
+- ·· `public function ReflectionFunctionAbstract::isVariadic(): bool` — `ext/reflection/php_reflection.stub.php:46`
+- ·· `public function ReflectionFunctionAbstract::returnsReference(): bool` — `ext/reflection/php_reflection.stub.php:102`
+- ·· `public function ReflectionGenerator::__construct(Generator $generator)` — `ext/reflection/php_reflection.stub.php:147`
+- ·· `public function ReflectionGenerator::getExecutingFile(): string` — `ext/reflection/php_reflection.stub.php:151`
+- ·· `public function ReflectionGenerator::getExecutingGenerator(): Generator` — `ext/reflection/php_reflection.stub.php:159`
+- ·· `public function ReflectionGenerator::getExecutingLine(): int` — `ext/reflection/php_reflection.stub.php:149`
+- ·· `public function ReflectionGenerator::getFunction(): ReflectionFunctionAbstract` — `ext/reflection/php_reflection.stub.php:155`
+- ·· `public function ReflectionGenerator::getThis(): ?object` — `ext/reflection/php_reflection.stub.php:157`
+- ·· `public function ReflectionGenerator::getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT): array` — `ext/reflection/php_reflection.stub.php:153`
+- ·· `public function ReflectionGenerator::isClosed(): bool` — `ext/reflection/php_reflection.stub.php:161`
+- ·· `public function ReflectionIntersectionType::getTypes(): array` — `ext/reflection/php_reflection.stub.php:744`
+- ·· `public function ReflectionMethod::__construct(object|string $objectOrMethod, ?string $method = null)` — `ext/reflection/php_reflection.stub.php:181`
+- ·· `public function ReflectionMethod::__toString(): string` — `ext/reflection/php_reflection.stub.php:185`
+- ·· `public static function ReflectionMethod::createFromMethodName(string $method): static` — `ext/reflection/php_reflection.stub.php:183`
+- ·· `public function ReflectionMethod::getClosure(?object $object = null): Closure` — `ext/reflection/php_reflection.stub.php:209`
+- ·· `public function ReflectionMethod::getDeclaringClass(): ReflectionClass` — `ext/reflection/php_reflection.stub.php:221`
+- ·· `public function ReflectionMethod::getModifiers(): int` — `ext/reflection/php_reflection.stub.php:212`
+- ·· `public function ReflectionMethod::getPrototype(): ReflectionMethod` — `ext/reflection/php_reflection.stub.php:224`
+- ·· `public function ReflectionMethod::hasPrototype(): bool` — `ext/reflection/php_reflection.stub.php:226`
+- ·· `public function ReflectionMethod::invoke(?object $object, mixed ...$args): mixed` — `ext/reflection/php_reflection.stub.php:215`
+- ·· `public function ReflectionMethod::invokeArgs(?object $object, array $args): mixed` — `ext/reflection/php_reflection.stub.php:218`
+- ·· `public function ReflectionMethod::isAbstract(): bool` — `ext/reflection/php_reflection.stub.php:197`
+- ·· `public function ReflectionMethod::isConstructor(): bool` — `ext/reflection/php_reflection.stub.php:203`
+- ·· `public function ReflectionMethod::isDestructor(): bool` — `ext/reflection/php_reflection.stub.php:206`
+- ·· `public function ReflectionMethod::isFinal(): bool` — `ext/reflection/php_reflection.stub.php:200`
+- ·· `public function ReflectionMethod::isPrivate(): bool` — `ext/reflection/php_reflection.stub.php:191`
+- ·· `public function ReflectionMethod::isProtected(): bool` — `ext/reflection/php_reflection.stub.php:194`
+- ·· `public function ReflectionMethod::isPublic(): bool` — `ext/reflection/php_reflection.stub.php:188`
+- ·· `public function ReflectionMethod::setAccessible(bool $accessible): void` — `ext/reflection/php_reflection.stub.php:230`
+- ·· `public function ReflectionNamedType::getName(): string` — `ext/reflection/php_reflection.stub.php:731`
+- ·· `public function ReflectionNamedType::isBuiltin(): bool` — `ext/reflection/php_reflection.stub.php:734`
+- ·· `public function ReflectionObject::__construct(object $object)` — `ext/reflection/php_reflection.stub.php:440`
+- ·· `private function ReflectionParameter::__clone(): void` — `ext/reflection/php_reflection.stub.php:641`
+- ·· `public function ReflectionParameter::__construct($function, int|string $param)` — `ext/reflection/php_reflection.stub.php:644`
+- ·· `public function ReflectionParameter::__toString(): string` — `ext/reflection/php_reflection.stub.php:646`
+- ·· `public function ReflectionParameter::allowsNull(): bool` — `ext/reflection/php_reflection.stub.php:688`
+- ·· `public function ReflectionParameter::canBePassedByValue(): bool` — `ext/reflection/php_reflection.stub.php:655`
+- ·· `public function ReflectionParameter::getAttributes(?string $name = null, int $flags = 0): array` — `ext/reflection/php_reflection.stub.php:713`
+- ·· `public function ReflectionParameter::getClass(): ?ReflectionClass` — `ext/reflection/php_reflection.stub.php:667`
+- ·· `public function ReflectionParameter::getDeclaringClass(): ?ReflectionClass` — `ext/reflection/php_reflection.stub.php:661`
+- ·· `public function ReflectionParameter::getDeclaringFunction(): ReflectionFunctionAbstract` — `ext/reflection/php_reflection.stub.php:658`
+- ·· `public function ReflectionParameter::getDefaultValue(): mixed` — `ext/reflection/php_reflection.stub.php:700`
+- ·· `public function ReflectionParameter::getDefaultValueConstantName(): ?string` — `ext/reflection/php_reflection.stub.php:706`
+- ·· `public function ReflectionParameter::getName(): string` — `ext/reflection/php_reflection.stub.php:649`
+- ·· `public function ReflectionParameter::getPosition(): int` — `ext/reflection/php_reflection.stub.php:691`
+- ·· `public function ReflectionParameter::getType(): ?ReflectionType` — `ext/reflection/php_reflection.stub.php:673`
+- ·· `public function ReflectionParameter::hasType(): bool` — `ext/reflection/php_reflection.stub.php:670`
+- ·· `public function ReflectionParameter::isArray(): bool` — `ext/reflection/php_reflection.stub.php:679`
+- ·· `public function ReflectionParameter::isCallable(): bool` — `ext/reflection/php_reflection.stub.php:685`
+- ·· `public function ReflectionParameter::isDefaultValueAvailable(): bool` — `ext/reflection/php_reflection.stub.php:697`
+- ·· `public function ReflectionParameter::isDefaultValueConstant(): bool` — `ext/reflection/php_reflection.stub.php:703`
+- ·· `public function ReflectionParameter::isOptional(): bool` — `ext/reflection/php_reflection.stub.php:694`
+- ·· `public function ReflectionParameter::isPassedByReference(): bool` — `ext/reflection/php_reflection.stub.php:652`
+- ·· `public function ReflectionParameter::isPromoted(): bool` — `ext/reflection/php_reflection.stub.php:711`
+- ·· `public function ReflectionParameter::isVariadic(): bool` — `ext/reflection/php_reflection.stub.php:709`
+- ·· `private function ReflectionProperty::__clone(): void` — `ext/reflection/php_reflection.stub.php:477`
+- ·🧪 `public function ReflectionProperty::__construct(object|string $class, string $property)` — `ext/reflection/php_reflection.stub.php:479`
+- ·· `public function ReflectionProperty::__toString(): string` — `ext/reflection/php_reflection.stub.php:481`
+- ·· `public function ReflectionProperty::getAttributes(?string $name = null, int $flags = 0): array` — `ext/reflection/php_reflection.stub.php:562`
+- ·· `public function ReflectionProperty::getDeclaringClass(): ReflectionClass` — `ext/reflection/php_reflection.stub.php:540`
+- ·· `public function ReflectionProperty::getDefaultValue(): mixed` — `ext/reflection/php_reflection.stub.php:560`
+- ·· `public function ReflectionProperty::getDocComment(): string|false` — `ext/reflection/php_reflection.stub.php:543`
+- ·· `public function ReflectionProperty::getHook(PropertyHookType $type): ?ReflectionMethod` — `ext/reflection/php_reflection.stub.php:571`
+- ·· `public function ReflectionProperty::getHooks(): array` — `ext/reflection/php_reflection.stub.php:567`
+- ·· `public function ReflectionProperty::getMangledName(): string` — `ext/reflection/php_reflection.stub.php:486`
+- ·🧪 `public function ReflectionProperty::getModifiers(): int` — `ext/reflection/php_reflection.stub.php:537`
+- ·· `public function ReflectionProperty::getName(): string` — `ext/reflection/php_reflection.stub.php:484`
+- ·· `public function ReflectionProperty::getRawValue(object $object): mixed` — `ext/reflection/php_reflection.stub.php:494`
+- ·· `public function ReflectionProperty::getSettableType(): ?ReflectionType` — `ext/reflection/php_reflection.stub.php:552`
+- ·· `public function ReflectionProperty::getType(): ?ReflectionType` — `ext/reflection/php_reflection.stub.php:550`
+- ·· `public function ReflectionProperty::getValue(?object $object = null): mixed` — `ext/reflection/php_reflection.stub.php:489`
+- ·· `public function ReflectionProperty::hasDefaultValue(): bool` — `ext/reflection/php_reflection.stub.php:557`
+- ·· `public function ReflectionProperty::hasHook(PropertyHookType $type): bool` — `ext/reflection/php_reflection.stub.php:569`
+- ·· `public function ReflectionProperty::hasHooks(): bool` — `ext/reflection/php_reflection.stub.php:564`
+- ·· `public function ReflectionProperty::hasType(): bool` — `ext/reflection/php_reflection.stub.php:555`
+- ·· `public function ReflectionProperty::isAbstract(): bool` — `ext/reflection/php_reflection.stub.php:530`
+- ·· `public function ReflectionProperty::isDefault(): bool` — `ext/reflection/php_reflection.stub.php:526`
+- ·· `public function ReflectionProperty::isDynamic(): bool` — `ext/reflection/php_reflection.stub.php:528`
+- ·· `public function ReflectionProperty::isFinal(): bool` — `ext/reflection/php_reflection.stub.php:573`
+- ·· `public function ReflectionProperty::isInitialized(?object $object = null): bool` — `ext/reflection/php_reflection.stub.php:505`
+- ·· `public function ReflectionProperty::isLazy(object $object): bool` — `ext/reflection/php_reflection.stub.php:502`
+- ·· `public function ReflectionProperty::isPrivate(): bool` — `ext/reflection/php_reflection.stub.php:511`
+- ·· `public function ReflectionProperty::isPrivateSet(): bool` — `ext/reflection/php_reflection.stub.php:516`
+- ·· `public function ReflectionProperty::isPromoted(): bool` — `ext/reflection/php_reflection.stub.php:534`
+- ·· `public function ReflectionProperty::isProtected(): bool` — `ext/reflection/php_reflection.stub.php:514`
+- ·· `public function ReflectionProperty::isProtectedSet(): bool` — `ext/reflection/php_reflection.stub.php:518`
+- ·· `public function ReflectionProperty::isPublic(): bool` — `ext/reflection/php_reflection.stub.php:508`
+- ·· `public function ReflectionProperty::isReadOnly(): bool` — `ext/reflection/php_reflection.stub.php:523`
+- ·· `public function ReflectionProperty::isStatic(): bool` — `ext/reflection/php_reflection.stub.php:521`
+- ·· `public function ReflectionProperty::isVirtual(): bool` — `ext/reflection/php_reflection.stub.php:532`
+- ·· `public function ReflectionProperty::setAccessible(bool $accessible): void` — `ext/reflection/php_reflection.stub.php:547`
+- ·· `public function ReflectionProperty::setRawValue(object $object, mixed $value): void` — `ext/reflection/php_reflection.stub.php:496`
+- ·· `public function ReflectionProperty::setRawValueWithoutLazyInitialization(object $object, mixed $value): void` — `ext/reflection/php_reflection.stub.php:498`
+- ·· `public function ReflectionProperty::setValue(mixed $objectOrValue, mixed $value = UNKNOWN): void` — `ext/reflection/php_reflection.stub.php:492`
+- ·· `public function ReflectionProperty::skipLazyInitialization(object $object): void` — `ext/reflection/php_reflection.stub.php:500`
+- ·· `private function ReflectionReference::__clone(): void` — `ext/reflection/php_reflection.stub.php:829`
+- ·· `private function ReflectionReference::__construct()` — `ext/reflection/php_reflection.stub.php:831`
+- ·· `public static function ReflectionReference::fromArrayElement(array $array, int|string $key): ?ReflectionReference` — `ext/reflection/php_reflection.stub.php:824`
+- ·· `public function ReflectionReference::getId(): string` — `ext/reflection/php_reflection.stub.php:826`
+- ·· `private function ReflectionType::__clone(): void` — `ext/reflection/php_reflection.stub.php:720`
+- ·· `public function ReflectionType::__toString(): string` — `ext/reflection/php_reflection.stub.php:725`
+- ·· `public function ReflectionType::allowsNull(): bool` — `ext/reflection/php_reflection.stub.php:723`
+- ·· `public function ReflectionUnionType::getTypes(): array` — `ext/reflection/php_reflection.stub.php:739`
+- ·· `private function ReflectionZendExtension::__clone(): void` — `ext/reflection/php_reflection.stub.php:799`
+- ·· `public function ReflectionZendExtension::__construct(string $name)` — `ext/reflection/php_reflection.stub.php:801`
+- ·· `public function ReflectionZendExtension::__toString(): string` — `ext/reflection/php_reflection.stub.php:803`
+- ·· `public function ReflectionZendExtension::getAuthor(): string` — `ext/reflection/php_reflection.stub.php:812`
+- ·· `public function ReflectionZendExtension::getCopyright(): string` — `ext/reflection/php_reflection.stub.php:818`
+- ·· `public function ReflectionZendExtension::getName(): string` — `ext/reflection/php_reflection.stub.php:806`
+- ·· `public function ReflectionZendExtension::getURL(): string` — `ext/reflection/php_reflection.stub.php:815`
+- ·· `public function ReflectionZendExtension::getVersion(): string` — `ext/reflection/php_reflection.stub.php:809`
+
+## ext/session (`39`) — impl `0`, tested `0`
+
+- ·· `function session_abort(): bool` — `ext/session/session.stub.php:56`
+- ·· `function session_cache_expire(?int $value = null): int|false` — `ext/session/session.stub.php:86`
+- ·· `function session_cache_limiter(?string $value = null): string|false` — `ext/session/session.stub.php:84`
+- ·· `function session_commit(): bool` — `ext/session/session.stub.php:65`
+- ·· `function session_create_id(string $prefix = ""): string|false` — `ext/session/session.stub.php:33`
+- ·· `function session_decode(string $data): bool` — `ext/session/session.stub.php:37`
+- ·· `function session_destroy(): bool` — `ext/session/session.stub.php:42`
+- ·· `function session_encode(): string|false` — `ext/session/session.stub.php:40`
+- ·· `function session_gc(): int|false` — `ext/session/session.stub.php:46`
+- ·· `function session_get_cookie_params(): array` — `ext/session/session.stub.php:52`
+- ·· `function session_id(?string $id = null): string|false` — `ext/session/session.stub.php:30`
+- ·· `function session_module_name(?string $module = null): string|false` — `ext/session/session.stub.php:25`
+- ·· `function session_name(?string $name = null): string|false` — `ext/session/session.stub.php:22`
+- ·· `function session_regenerate_id(bool $delete_old_session = false): bool` — `ext/session/session.stub.php:35`
+- ·· `function session_register_shutdown(): void` — `ext/session/session.stub.php:62`
+- ·· `function session_reset(): bool` — `ext/session/session.stub.php:58`
+- ·· `function session_save_path(?string $path = null): string|false` — `ext/session/session.stub.php:28`
+- ·· `function session_set_cookie_params(array|int $lifetime_or_options, ?string $path = null, ?string $domain = null, ?bool $secure = null, ?bool $httponly = null): bool` — `ext/session/session.stub.php:88`
+- ·· `function session_set_save_handler( $open, $close = UNKNOWN, callable $read = UNKNOWN, callable $write = UNKNOWN, callable $destroy = UNKNOWN, callable $gc = UNKNOWN, ?callable $create_sid = null, ?callable $validate_sid = null, ?callable $update_timestamp = null ): bool` — `ext/session/session.stub.php:71`
+- ·· `function session_start(array $options = []): bool` — `ext/session/session.stub.php:90`
+- ·· `function session_status(): int` — `ext/session/session.stub.php:60`
+- ·· `function session_unset(): bool` — `ext/session/session.stub.php:44`
+- ·· `function session_write_close(): bool` — `ext/session/session.stub.php:54`
+- ·· `public function SessionHandler::close(): bool` — `ext/session/session.stub.php:134`
+- ·· `public function SessionHandler::create_sid(): string` — `ext/session/session.stub.php:149`
+- ·· `public function SessionHandler::destroy(string $id): bool` — `ext/session/session.stub.php:143`
+- ·· `public function SessionHandler::gc(int $max_lifetime): int|false` — `ext/session/session.stub.php:146`
+- ·· `public function SessionHandler::open(string $path, string $name): bool` — `ext/session/session.stub.php:131`
+- ·· `public function SessionHandler::read(string $id): string|false` — `ext/session/session.stub.php:137`
+- ·· `public function SessionHandler::write(string $id, string $data): bool` — `ext/session/session.stub.php:140`
+- ·· `public function SessionHandlerInterface::close(): bool` — `ext/session/session.stub.php:98`
+- ·· `public function SessionHandlerInterface::destroy(string $id): bool` — `ext/session/session.stub.php:107`
+- ·· `public function SessionHandlerInterface::gc(int $max_lifetime): int|false` — `ext/session/session.stub.php:110`
+- ·· `public function SessionHandlerInterface::open(string $path, string $name): bool` — `ext/session/session.stub.php:95`
+- ·· `public function SessionHandlerInterface::read(string $id): string|false` — `ext/session/session.stub.php:101`
+- ·· `public function SessionHandlerInterface::write(string $id, string $data): bool` — `ext/session/session.stub.php:104`
+- ·· `public function SessionIdInterface::create_sid(): string` — `ext/session/session.stub.php:116`
+- ·· `public function SessionUpdateTimestampHandlerInterface::updateTimestamp(string $id, string $data): bool` — `ext/session/session.stub.php:125`
+- ·· `public function SessionUpdateTimestampHandlerInterface::validateId(string $id): bool` — `ext/session/session.stub.php:122`
+
+## ext/shmop (`6`) — impl `0`, tested `0`
+
+- ·· `function shmop_close(Shmop $shmop): void` — `ext/shmop/shmop.stub.php:16`
+- ·· `function shmop_delete(Shmop $shmop): bool` — `ext/shmop/shmop.stub.php:22`
+- ·· `function shmop_open(int $key, string $mode, int $permissions, int $size): Shmop|false` — `ext/shmop/shmop.stub.php:11`
+- ·· `function shmop_read(Shmop $shmop, int $offset, int $size): string` — `ext/shmop/shmop.stub.php:13`
+- ·· `function shmop_size(Shmop $shmop): int` — `ext/shmop/shmop.stub.php:18`
+- ·· `function shmop_write(Shmop $shmop, string $data, int $offset): int` — `ext/shmop/shmop.stub.php:20`
+
+## ext/simplexml (`25`) — impl `0`, tested `0`
+
+- ·· `function simplexml_import_dom(object $node, ?string $class_name = SimpleXMLElement::class): ?SimpleXMLElement` — `ext/simplexml/simplexml.stub.php:9`
+- ·· `function simplexml_load_file(string $filename, ?string $class_name = SimpleXMLElement::class, int $options = 0, string $namespace_or_prefix = "", bool $is_prefix = false): SimpleXMLElement|false` — `ext/simplexml/simplexml.stub.php:5`
+- ·· `function simplexml_load_string(string $data, ?string $class_name = SimpleXMLElement::class, int $options = 0, string $namespace_or_prefix = "", bool $is_prefix = false): SimpleXMLElement|false` — `ext/simplexml/simplexml.stub.php:7`
+- ·· `public function SimpleXMLElement::__construct(string $data, int $options = 0, bool $dataIsURL = false, string $namespaceOrPrefix = "", bool $isPrefix = false)` — `ext/simplexml/simplexml.stub.php:41`
+- ·· `public function SimpleXMLElement::__debugInfo(): ?array` — `ext/simplexml/simplexml.stub.php:54`
+- ·· `public function SimpleXMLElement::__toString(): string` — `ext/simplexml/simplexml.stub.php:52`
+- ·· `public function SimpleXMLElement::addAttribute(string $qualifiedName, string $value, ?string $namespace = null): void` — `ext/simplexml/simplexml.stub.php:47`
+- ·· `public function SimpleXMLElement::addChild(string $qualifiedName, ?string $value = null, ?string $namespace = null): ?SimpleXMLElement` — `ext/simplexml/simplexml.stub.php:44`
+- ·· `public function SimpleXMLElement::asXML(?string $filename = null): string|bool` — `ext/simplexml/simplexml.stub.php:21`
+- ·· `public function SimpleXMLElement::attributes(?string $namespaceOrPrefix = null, bool $isPrefix = false): ?SimpleXMLElement` — `ext/simplexml/simplexml.stub.php:39`
+- ·· `public function SimpleXMLElement::children(?string $namespaceOrPrefix = null, bool $isPrefix = false): ?SimpleXMLElement` — `ext/simplexml/simplexml.stub.php:36`
+- ·· `public function SimpleXMLElement::count(): int` — `ext/simplexml/simplexml.stub.php:57`
+- ·· `public function SimpleXMLElement::current(): SimpleXMLElement` — `ext/simplexml/simplexml.stub.php:66`
+- ·· `public function SimpleXMLElement::getChildren(): ?SimpleXMLElement` — `ext/simplexml/simplexml.stub.php:78`
+- ·· `public function SimpleXMLElement::getDocNamespaces(bool $recursive = false, bool $fromRoot = true): array|false` — `ext/simplexml/simplexml.stub.php:33`
+- ·· `public function SimpleXMLElement::getName(): string` — `ext/simplexml/simplexml.stub.php:50`
+- ·· `public function SimpleXMLElement::getNamespaces(bool $recursive = false): array` — `ext/simplexml/simplexml.stub.php:30`
+- ·· `public function SimpleXMLElement::hasChildren(): bool` — `ext/simplexml/simplexml.stub.php:75`
+- ·· `public function SimpleXMLElement::key(): string` — `ext/simplexml/simplexml.stub.php:69`
+- ·· `public function SimpleXMLElement::next(): void` — `ext/simplexml/simplexml.stub.php:72`
+- ·· `public function SimpleXMLElement::registerXPathNamespace(string $prefix, string $namespace): bool` — `ext/simplexml/simplexml.stub.php:18`
+- ·· `public function SimpleXMLElement::rewind(): void` — `ext/simplexml/simplexml.stub.php:60`
+- ·· `public function SimpleXMLElement::saveXML(?string $filename = null): string|bool` — `ext/simplexml/simplexml.stub.php:27`
+- ·· `public function SimpleXMLElement::valid(): bool` — `ext/simplexml/simplexml.stub.php:63`
+- ·· `public function SimpleXMLElement::xpath(string $expression): array|null|false` — `ext/simplexml/simplexml.stub.php:15`
+
+## ext/snmp (`33`) — impl `0`, tested `0`
+
+- ·· `function snmp2_get(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): mixed` — `ext/snmp/snmp.stub.php:137`
+- ·· `function snmp2_getnext(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): mixed` — `ext/snmp/snmp.stub.php:139`
+- ·· `function snmp2_real_walk(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): array|false` — `ext/snmp/snmp.stub.php:143`
+- ·· `function snmp2_set(string $hostname, string $community, array|string $object_id, array|string $type, array|string $value, int $timeout = -1, int $retries = -1): bool` — `ext/snmp/snmp.stub.php:145`
+- ·· `function snmp2_walk(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): array|false` — `ext/snmp/snmp.stub.php:141`
+- ·· `function snmp3_get( string $hostname, string $security_name, string $security_level, string $auth_protocol, string $auth_passphrase, string $privacy_protocol, string $privacy_passphrase, array|string $object_id, int $timeout = -1, int $retries = -1): mixed` — `ext/snmp/snmp.stub.php:147`
+- ·· `function snmp3_getnext( string $hostname, string $security_name, string $security_level, string $auth_protocol, string $auth_passphrase, string $privacy_protocol, string $privacy_passphrase, array|string $object_id, int $timeout = -1, int $retries = -1): mixed` — `ext/snmp/snmp.stub.php:153`
+- ·· `function snmp3_real_walk( string $hostname, string $security_name, string $security_level, string $auth_protocol, string $auth_passphrase, string $privacy_protocol, string $privacy_passphrase, array|string $object_id, int $timeout = -1, int $retries = -1): array|false` — `ext/snmp/snmp.stub.php:165`
+- ·· `function snmp3_set( string $hostname, string $security_name, string $security_level, string $auth_protocol, string $auth_passphrase, string $privacy_protocol, string $privacy_passphrase, array|string $object_id, array|string $type, array|string $value, int $timeout = -1, int $retries = -1): bool` — `ext/snmp/snmp.stub.php:171`
+- ·· `function snmp3_walk( string $hostname, string $security_name, string $security_level, string $auth_protocol, string $auth_passphrase, string $privacy_protocol, string $privacy_passphrase, array|string $object_id, int $timeout = -1, int $retries = -1): array|false` — `ext/snmp/snmp.stub.php:159`
+- ·· `public function SNMP::__construct(int $version, string $hostname, string $community, int $timeout = -1, int $retries = -1)` — `ext/snmp/snmp.stub.php:222`
+- ·· `public function SNMP::close(): bool` — `ext/snmp/snmp.stub.php:225`
+- ·· `public function SNMP::get(array|string $objectId, bool $preserveKeys = false): mixed` — `ext/snmp/snmp.stub.php:234`
+- ·· `public function SNMP::getErrno(): int` — `ext/snmp/snmp.stub.php:246`
+- ·· `public function SNMP::getError(): string` — `ext/snmp/snmp.stub.php:249`
+- ·· `public function SNMP::getnext(array|string $objectId): mixed` — `ext/snmp/snmp.stub.php:237`
+- ·· `public function SNMP::set(array|string $objectId, array|string $type, array|string $value): bool` — `ext/snmp/snmp.stub.php:243`
+- ·· `public function SNMP::setSecurity( string $securityLevel, string $authProtocol = "", string $authPassphrase = "", string $privacyProtocol = "", string $privacyPassphrase = "", string $contextName = "", string $contextEngineId = ""): bool` — `ext/snmp/snmp.stub.php:228`
+- ·· `public function SNMP::walk(array|string $objectId, bool $suffixAsKey = false, int $maxRepetitions = -1, int $nonRepeaters = -1): array|false` — `ext/snmp/snmp.stub.php:240`
+- ·· `function snmp_get_quick_print(): bool` — `ext/snmp/snmp.stub.php:126`
+- ·· `function snmp_get_valueretrieval(): int` — `ext/snmp/snmp.stub.php:180`
+- ·· `function snmp_read_mib(string $filename): bool` — `ext/snmp/snmp.stub.php:182`
+- ·· `function snmp_set_enum_print(bool $enable): true` — `ext/snmp/snmp.stub.php:130`
+- ·· `function snmp_set_oid_numeric_print(int $format): true` — `ext/snmp/snmp.stub.php:135`
+- ·· `function snmp_set_oid_output_format(int $format): true` — `ext/snmp/snmp.stub.php:132`
+- ·· `function snmp_set_quick_print(bool $enable): true` — `ext/snmp/snmp.stub.php:128`
+- ·· `function snmp_set_valueretrieval(int $method): true` — `ext/snmp/snmp.stub.php:178`
+- ·· `function snmpget(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): mixed` — `ext/snmp/snmp.stub.php:113`
+- ·· `function snmpgetnext(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): mixed` — `ext/snmp/snmp.stub.php:115`
+- ·· `function snmprealwalk(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): array|false` — `ext/snmp/snmp.stub.php:119`
+- ·· `function snmpset(string $hostname, string $community, array|string $object_id, array|string $type, array|string $value, int $timeout = -1, int $retries = -1): bool` — `ext/snmp/snmp.stub.php:124`
+- ·· `function snmpwalk(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): array|false` — `ext/snmp/snmp.stub.php:117`
+- ·· `function snmpwalkoid(string $hostname, string $community, array|string $object_id, int $timeout = -1, int $retries = -1): array|false` — `ext/snmp/snmp.stub.php:122`
+
+## ext/soap (`31`) — impl `0`, tested `0`
+
+- ·· `function is_soap_fault(mixed $object): bool` — `ext/soap/soap.stub.php:450`
+- ·· `public function SoapClient::__call(string $name, array $args): mixed` — `ext/soap/soap.stub.php:580`
+- ·· `public function SoapClient::__construct(?string $wsdl, array $options = [])` — `ext/soap/soap.stub.php:577`
+- ·· `public function SoapClient::__doRequest(string $request, string $location, string $action, int $version, bool $oneWay = false, ?string $uriParserClass = null): ?string` — `ext/soap/soap.stub.php:608`
+- ·· `public function SoapClient::__getCookies(): array` — `ext/soap/soap.stub.php:614`
+- ·· `public function SoapClient::__getFunctions(): ?array` — `ext/soap/soap.stub.php:590`
+- ·· `public function SoapClient::__getLastRequest(): ?string` — `ext/soap/soap.stub.php:596`
+- ·· `public function SoapClient::__getLastRequestHeaders(): ?string` — `ext/soap/soap.stub.php:602`
+- ·· `public function SoapClient::__getLastResponse(): ?string` — `ext/soap/soap.stub.php:599`
+- ·· `public function SoapClient::__getLastResponseHeaders(): ?string` — `ext/soap/soap.stub.php:605`
+- ·· `public function SoapClient::__getTypes(): ?array` — `ext/soap/soap.stub.php:593`
+- ·· `public function SoapClient::__setCookie(string $name, ?string $value = null): void` — `ext/soap/soap.stub.php:611`
+- ·· `public function SoapClient::__setLocation(?string $location = null): ?string` — `ext/soap/soap.stub.php:623`
+- ·· `public function SoapClient::__setSoapHeaders($headers = null): bool` — `ext/soap/soap.stub.php:620`
+- ·· `public function SoapClient::__soapCall(string $name, array $args, ?array $options = null, $inputHeaders = null,&$outputHeaders = null): mixed` — `ext/soap/soap.stub.php:587`
+- ·· `public function SoapFault::__construct(array|string|null $code, string $string, ?string $actor = null, mixed $details = null, ?string $name = null, mixed $headerFault = null, string $lang = "")` — `ext/soap/soap.stub.php:482`
+- ·· `public function SoapFault::__toString(): string` — `ext/soap/soap.stub.php:484`
+- ·· `public function SoapHeader::__construct(string $namespace, string $name, mixed $data = UNKNOWN, bool $mustUnderstand = false, string|int|null $actor = null)` — `ext/soap/soap.stub.php:468`
+- ·· `public function SoapParam::__construct(mixed $data, string $name)` — `ext/soap/soap.stub.php:457`
+- ·· `public function SoapServer::__construct(?string $wsdl, array $options = [])` — `ext/soap/soap.stub.php:503`
+- ·· `public function SoapServer::__getLastResponse(): ?string` — `ext/soap/soap.stub.php:532`
+- ·· `public function SoapServer::addFunction($functions): void` — `ext/soap/soap.stub.php:527`
+- ·· `public function SoapServer::addSoapHeader(SoapHeader $header): void` — `ext/soap/soap.stub.php:509`
+- ·· `public function SoapServer::fault(string $code, string $string, string $actor = "", mixed $details = null, string $name = "", string $lang = ""): void` — `ext/soap/soap.stub.php:506`
+- ·· `public function SoapServer::getFunctions(): array` — `ext/soap/soap.stub.php:521`
+- ·· `public function SoapServer::handle(?string $request = null): void` — `ext/soap/soap.stub.php:530`
+- ·· `public function SoapServer::setClass(string $class, mixed ...$args): void` — `ext/soap/soap.stub.php:515`
+- ·· `public function SoapServer::setObject(object $object): void` — `ext/soap/soap.stub.php:518`
+- ·· `public function SoapServer::setPersistence(int $mode): void` — `ext/soap/soap.stub.php:512`
+- ·· `public function SoapVar::__construct(mixed $data, ?int $encoding, ?string $typeName = null, ?string $typeNamespace = null, ?string $nodeName = null, ?string $nodeNamespace = null)` — `ext/soap/soap.stub.php:496`
+- ·· `function use_soap_error_handler(bool $enable = true): bool` — `ext/soap/soap.stub.php:448`
+
+## ext/sockets (`40`) — impl `0`, tested `0`
+
+- ·· `function socket_accept(Socket $socket): Socket|false` — `ext/sockets/sockets.stub.php:2072`
+- ·· `function socket_addrinfo_bind(AddressInfo $address): Socket|false` — `ext/sockets/sockets.stub.php:2178`
+- ·· `function socket_addrinfo_connect(AddressInfo $address): Socket|false` — `ext/sockets/sockets.stub.php:2176`
+- ·· `function socket_addrinfo_explain(AddressInfo $address): array` — `ext/sockets/sockets.stub.php:2184`
+- ·· `function socket_addrinfo_lookup(string $host, ?string $service = null, array $hints = []): array|false` — `ext/sockets/sockets.stub.php:2174`
+- ·· `function socket_atmark(Socket $socket): bool` — `ext/sockets/sockets.stub.php:2151`
+- ·· `function socket_bind(Socket $socket, string $address, int $port = 0): bool` — `ext/sockets/sockets.stub.php:2104`
+- ·· `function socket_clear_error(?Socket $socket = null): void` — `ext/sockets/sockets.stub.php:2156`
+- ·· `function socket_close(Socket $socket): void` — `ext/sockets/sockets.stub.php:2080`
+- ·· `function socket_cmsg_space(int $level, int $type, int $num = 0): ?int` — `ext/sockets/sockets.stub.php:2168`
+- ·· `function socket_connect(Socket $socket, string $address, ?int $port = null): bool` — `ext/sockets/sockets.stub.php:2100`
+- ·· `function socket_create(int $domain, int $type, int $protocol): Socket|false` — `ext/sockets/sockets.stub.php:2098`
+- ·· `function socket_create_listen(int $port, int $backlog = SOMAXCONN): Socket|false` — `ext/sockets/sockets.stub.php:2070`
+- ·· `function socket_create_pair(int $domain, int $type, int $protocol,&$pair): bool` — `ext/sockets/sockets.stub.php:2143`
+- ·· `function socket_export_stream(Socket $socket)` — `ext/sockets/sockets.stub.php:2162`
+- ·· `function socket_get_option(Socket $socket, int $level, int $option): array|int|false` — `ext/sockets/sockets.stub.php:2124`
+- ·· `function socket_getopt(Socket $socket, int $level, int $option): array|int|false` — `ext/sockets/sockets.stub.php:2130`
+- ·· `function socket_getpeername(Socket $socket,&$address,&$port = null): bool` — `ext/sockets/sockets.stub.php:2096`
+- ·· `function socket_getsockname(Socket $socket,&$address,&$port = null): bool` — `ext/sockets/sockets.stub.php:2090`
+- ·· `function socket_import_stream($stream): Socket|false` — `ext/sockets/sockets.stub.php:2159`
+- ·· `function socket_last_error(?Socket $socket = null): int` — `ext/sockets/sockets.stub.php:2154`
+- ·· `function socket_listen(Socket $socket, int $backlog = 0): bool` — `ext/sockets/sockets.stub.php:2078`
+- ·· `function socket_read(Socket $socket, int $length, int $mode = PHP_BINARY_READ): string|false` — `ext/sockets/sockets.stub.php:2084`
+- ·· `function socket_recv(Socket $socket,&$data, int $length, int $flags): int|false` — `ext/sockets/sockets.stub.php:2107`
+- ·· `function socket_recvfrom(Socket $socket,&$data, int $length, int $flags,&$address,&$port = null): int|false` — `ext/sockets/sockets.stub.php:2116`
+- ·· `function socket_recvmsg(Socket $socket, array&$message, int $flags = 0): int|false` — `ext/sockets/sockets.stub.php:2166`
+- ·· `function socket_select(?array&$read, ?array&$write, ?array&$except, ?int $seconds, int $microseconds = 0): int|false` — `ext/sockets/sockets.stub.php:2068`
+- ·· `function socket_send(Socket $socket, string $data, int $length, int $flags): int|false` — `ext/sockets/sockets.stub.php:2109`
+- ·· `function socket_sendmsg(Socket $socket, array $message, int $flags = 0): int|false` — `ext/sockets/sockets.stub.php:2164`
+- ·· `function socket_sendto(Socket $socket, string $data, int $length, int $flags, string $address, ?int $port = null): int|false` — `ext/sockets/sockets.stub.php:2118`
+- ·· `function socket_set_block(Socket $socket): bool` — `ext/sockets/sockets.stub.php:2076`
+- ·· `function socket_set_nonblock(Socket $socket): bool` — `ext/sockets/sockets.stub.php:2074`
+- ·· `function socket_set_option(Socket $socket, int $level, int $option, $value): bool` — `ext/sockets/sockets.stub.php:2133`
+- ·· `function socket_setopt(Socket $socket, int $level, int $option, $value): bool` — `ext/sockets/sockets.stub.php:2139`
+- ·· `function socket_shutdown(Socket $socket, int $mode = 2): bool` — `ext/sockets/sockets.stub.php:2147`
+- ·· `function socket_strerror(int $error_code): string` — `ext/sockets/sockets.stub.php:2102`
+- ·· `function socket_write(Socket $socket, string $data, ?int $length = null): int|false` — `ext/sockets/sockets.stub.php:2082`
+- ·· `function socket_wsaprotocol_info_export(Socket $socket, int $process_id): string|false` — `ext/sockets/sockets.stub.php:2187`
+- ·· `function socket_wsaprotocol_info_import(string $info_id): Socket|false` — `ext/sockets/sockets.stub.php:2189`
+- ·· `function socket_wsaprotocol_info_release(string $info_id): bool` — `ext/sockets/sockets.stub.php:2191`
+
+## ext/sodium (`110`) — impl `0`, tested `0`
+
+- ·· `function sodium_add(string&$string1, string $string2): void` — `ext/sodium/libsodium.stub.php:775`
+- ·· `function sodium_base642bin(#[\SensitiveParameter] string $string, int $id, string $ignore = ""): string` — `ext/sodium/libsodium.stub.php:796`
+- ·· `function sodium_bin2base64(#[\SensitiveParameter] string $string, int $id): string` — `ext/sodium/libsodium.stub.php:794`
+- ·· `function sodium_bin2hex(#[\SensitiveParameter] string $string): string` — `ext/sodium/libsodium.stub.php:789`
+- ·· `function sodium_compare(#[\SensitiveParameter] string $string1, #[\SensitiveParameter] string $string2): int` — `ext/sodium/libsodium.stub.php:777`
+- ·· `function sodium_crypto_aead_aegis128l_decrypt(string $ciphertext, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string|false` — `ext/sodium/libsodium.stub.php:557`
+- ·· `function sodium_crypto_aead_aegis128l_encrypt(#[\SensitiveParameter] string $message, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:559`
+- ·· `function sodium_crypto_aead_aegis128l_keygen(): string` — `ext/sodium/libsodium.stub.php:561`
+- ·· `function sodium_crypto_aead_aegis256_decrypt(string $ciphertext, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string|false` — `ext/sodium/libsodium.stub.php:565`
+- ·· `function sodium_crypto_aead_aegis256_encrypt(#[\SensitiveParameter] string $message, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:567`
+- ·· `function sodium_crypto_aead_aegis256_keygen(): string` — `ext/sodium/libsodium.stub.php:569`
+- ·· `function sodium_crypto_aead_aes256gcm_decrypt(string $ciphertext, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string|false` — `ext/sodium/libsodium.stub.php:549`
+- ·· `function sodium_crypto_aead_aes256gcm_encrypt(#[\SensitiveParameter] string $message, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:551`
+- ·· `function sodium_crypto_aead_aes256gcm_is_available(): bool` — `ext/sodium/libsodium.stub.php:546`
+- ·· `function sodium_crypto_aead_aes256gcm_keygen(): string` — `ext/sodium/libsodium.stub.php:553`
+- ·· `function sodium_crypto_aead_chacha20poly1305_decrypt(string $ciphertext, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string|false` — `ext/sodium/libsodium.stub.php:572`
+- ·· `function sodium_crypto_aead_chacha20poly1305_encrypt(#[\SensitiveParameter] string $message, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:574`
+- ·· `function sodium_crypto_aead_chacha20poly1305_ietf_decrypt(string $ciphertext, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string|false` — `ext/sodium/libsodium.stub.php:578`
+- ·· `function sodium_crypto_aead_chacha20poly1305_ietf_encrypt(#[\SensitiveParameter] string $message, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:580`
+- ·· `function sodium_crypto_aead_chacha20poly1305_ietf_keygen(): string` — `ext/sodium/libsodium.stub.php:582`
+- ·· `function sodium_crypto_aead_chacha20poly1305_keygen(): string` — `ext/sodium/libsodium.stub.php:576`
+- ·· `function sodium_crypto_aead_xchacha20poly1305_ietf_decrypt(string $ciphertext, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string|false` — `ext/sodium/libsodium.stub.php:585`
+- ·· `function sodium_crypto_aead_xchacha20poly1305_ietf_encrypt(#[\SensitiveParameter] string $message, string $additional_data, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:589`
+- ·· `function sodium_crypto_aead_xchacha20poly1305_ietf_keygen(): string` — `ext/sodium/libsodium.stub.php:587`
+- ·· `function sodium_crypto_auth(string $message, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:592`
+- ·· `function sodium_crypto_auth_keygen(): string` — `ext/sodium/libsodium.stub.php:594`
+- ·· `function sodium_crypto_auth_verify(string $mac, string $message, #[\SensitiveParameter] string $key): bool` — `ext/sodium/libsodium.stub.php:596`
+- ·· `function sodium_crypto_box(#[\SensitiveParameter] string $message, string $nonce, #[\SensitiveParameter] string $key_pair): string` — `ext/sodium/libsodium.stub.php:598`
+- ·· `function sodium_crypto_box_keypair(): string` — `ext/sodium/libsodium.stub.php:600`
+- ·· `function sodium_crypto_box_keypair_from_secretkey_and_publickey(#[\SensitiveParameter] string $secret_key, string $public_key): string` — `ext/sodium/libsodium.stub.php:604`
+- ·· `function sodium_crypto_box_open(string $ciphertext, string $nonce, #[\SensitiveParameter] string $key_pair): string|false` — `ext/sodium/libsodium.stub.php:606`
+- ·· `function sodium_crypto_box_publickey(#[\SensitiveParameter] string $key_pair): string` — `ext/sodium/libsodium.stub.php:608`
+- ·· `function sodium_crypto_box_publickey_from_secretkey(#[\SensitiveParameter] string $secret_key): string` — `ext/sodium/libsodium.stub.php:610`
+- ·· `function sodium_crypto_box_seal(#[\SensitiveParameter] string $message, string $public_key): string` — `ext/sodium/libsodium.stub.php:612`
+- ·· `function sodium_crypto_box_seal_open(string $ciphertext, #[\SensitiveParameter] string $key_pair): string|false` — `ext/sodium/libsodium.stub.php:614`
+- ·· `function sodium_crypto_box_secretkey(#[\SensitiveParameter] string $key_pair): string` — `ext/sodium/libsodium.stub.php:616`
+- ·· `function sodium_crypto_box_seed_keypair(#[\SensitiveParameter] string $seed): string` — `ext/sodium/libsodium.stub.php:602`
+- ·· `function sodium_crypto_core_ristretto255_add(string $p, string $q): string` — `ext/sodium/libsodium.stub.php:619`
+- ·· `function sodium_crypto_core_ristretto255_from_hash(string $s): string` — `ext/sodium/libsodium.stub.php:621`
+- ·· `function sodium_crypto_core_ristretto255_is_valid_point(string $s): bool` — `ext/sodium/libsodium.stub.php:623`
+- ·· `function sodium_crypto_core_ristretto255_random(): string` — `ext/sodium/libsodium.stub.php:625`
+- ·· `function sodium_crypto_core_ristretto255_scalar_add(string $x, string $y): string` — `ext/sodium/libsodium.stub.php:627`
+- ·· `function sodium_crypto_core_ristretto255_scalar_complement(string $s): string` — `ext/sodium/libsodium.stub.php:629`
+- ·· `function sodium_crypto_core_ristretto255_scalar_invert(string $s): string` — `ext/sodium/libsodium.stub.php:631`
+- ·· `function sodium_crypto_core_ristretto255_scalar_mul(string $x, string $y): string` — `ext/sodium/libsodium.stub.php:633`
+- ·· `function sodium_crypto_core_ristretto255_scalar_negate(string $s): string` — `ext/sodium/libsodium.stub.php:635`
+- ·· `function sodium_crypto_core_ristretto255_scalar_random(): string` — `ext/sodium/libsodium.stub.php:637`
+- ·· `function sodium_crypto_core_ristretto255_scalar_reduce(string $s): string` — `ext/sodium/libsodium.stub.php:639`
+- ·· `function sodium_crypto_core_ristretto255_scalar_sub(string $x, string $y): string` — `ext/sodium/libsodium.stub.php:641`
+- ·· `function sodium_crypto_core_ristretto255_sub(string $p, string $q): string` — `ext/sodium/libsodium.stub.php:643`
+- ·· `function sodium_crypto_generichash(string $message, #[\SensitiveParameter] string $key = "", int $length = SODIUM_CRYPTO_GENERICHASH_BYTES): string` — `ext/sodium/libsodium.stub.php:665`
+- ·· `function sodium_crypto_generichash_final(string&$state, int $length = SODIUM_CRYPTO_GENERICHASH_BYTES): string` — `ext/sodium/libsodium.stub.php:673`
+- ·· `function sodium_crypto_generichash_init(#[\SensitiveParameter] string $key = "", int $length = SODIUM_CRYPTO_GENERICHASH_BYTES): string` — `ext/sodium/libsodium.stub.php:669`
+- ·· `function sodium_crypto_generichash_keygen(): string` — `ext/sodium/libsodium.stub.php:667`
+- ·· `function sodium_crypto_generichash_update(string&$state, string $message): true` — `ext/sodium/libsodium.stub.php:671`
+- ·· `function sodium_crypto_kdf_derive_from_key(int $subkey_length, int $subkey_id, string $context, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:675`
+- ·· `function sodium_crypto_kdf_keygen(): string` — `ext/sodium/libsodium.stub.php:677`
+- ·· `function sodium_crypto_kx_client_session_keys(#[\SensitiveParameter] string $client_key_pair, string $server_key): array` — `ext/sodium/libsodium.stub.php:657`
+- ·· `function sodium_crypto_kx_keypair(): string` — `ext/sodium/libsodium.stub.php:646`
+- ·· `function sodium_crypto_kx_publickey(#[\SensitiveParameter] string $key_pair): string` — `ext/sodium/libsodium.stub.php:648`
+- ·· `function sodium_crypto_kx_secretkey(#[\SensitiveParameter] string $key_pair): string` — `ext/sodium/libsodium.stub.php:650`
+- ·· `function sodium_crypto_kx_seed_keypair(#[\SensitiveParameter] string $seed): string` — `ext/sodium/libsodium.stub.php:652`
+- ·· `function sodium_crypto_kx_server_session_keys(#[\SensitiveParameter] string $server_key_pair, string $client_key): array` — `ext/sodium/libsodium.stub.php:663`
+- ·· `function sodium_crypto_pwhash(int $length, #[\SensitiveParameter] string $password, string $salt, int $opslimit, int $memlimit, int $algo = SODIUM_CRYPTO_PWHASH_ALG_DEFAULT): string` — `ext/sodium/libsodium.stub.php:680`
+- ·· `function sodium_crypto_pwhash_scryptsalsa208sha256(int $length, #[\SensitiveParameter] string $password, string $salt, int $opslimit, int $memlimit): string` — `ext/sodium/libsodium.stub.php:692`
+- ·· `function sodium_crypto_pwhash_scryptsalsa208sha256_str(#[\SensitiveParameter] string $password, int $opslimit, int $memlimit): string` — `ext/sodium/libsodium.stub.php:694`
+- ·· `function sodium_crypto_pwhash_scryptsalsa208sha256_str_verify(string $hash, #[\SensitiveParameter] string $password): bool` — `ext/sodium/libsodium.stub.php:696`
+- ·· `function sodium_crypto_pwhash_str(#[\SensitiveParameter] string $password, int $opslimit, int $memlimit): string` — `ext/sodium/libsodium.stub.php:682`
+- ·· `function sodium_crypto_pwhash_str_needs_rehash(string $password, int $opslimit, int $memlimit): bool` — `ext/sodium/libsodium.stub.php:688`
+- ·· `function sodium_crypto_pwhash_str_verify(string $hash, #[\SensitiveParameter] string $password): bool` — `ext/sodium/libsodium.stub.php:684`
+- ·· `function sodium_crypto_scalarmult(string $n, string $p): string` — `ext/sodium/libsodium.stub.php:699`
+- ·· `function sodium_crypto_scalarmult_base(#[\SensitiveParameter] string $secret_key): string` — `ext/sodium/libsodium.stub.php:802`
+- ·· `function sodium_crypto_scalarmult_ristretto255(string $n, string $p): string` — `ext/sodium/libsodium.stub.php:702`
+- ·· `function sodium_crypto_scalarmult_ristretto255_base(string $n): string` — `ext/sodium/libsodium.stub.php:704`
+- ·· `function sodium_crypto_secretbox(#[\SensitiveParameter] string $message, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:707`
+- ·· `function sodium_crypto_secretbox_keygen(): string` — `ext/sodium/libsodium.stub.php:709`
+- ·· `function sodium_crypto_secretbox_open(string $ciphertext, string $nonce, #[\SensitiveParameter] string $key): string|false` — `ext/sodium/libsodium.stub.php:711`
+- ·· `function sodium_crypto_secretstream_xchacha20poly1305_init_pull(string $header, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:723`
+- ·· `function sodium_crypto_secretstream_xchacha20poly1305_init_push(#[\SensitiveParameter] string $key): array` — `ext/sodium/libsodium.stub.php:719`
+- ·· `function sodium_crypto_secretstream_xchacha20poly1305_keygen(): string` — `ext/sodium/libsodium.stub.php:714`
+- ·· `function sodium_crypto_secretstream_xchacha20poly1305_pull(string&$state, string $ciphertext, string $additional_data = ""): array|false` — `ext/sodium/libsodium.stub.php:726`
+- ·· `function sodium_crypto_secretstream_xchacha20poly1305_push(string&$state, #[\SensitiveParameter] string $message, string $additional_data = "", int $tag = SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_MESSAGE): string` — `ext/sodium/libsodium.stub.php:721`
+- ·· `function sodium_crypto_secretstream_xchacha20poly1305_rekey(string&$state): void` — `ext/sodium/libsodium.stub.php:728`
+- ·· `function sodium_crypto_shorthash(string $message, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:731`
+- ·· `function sodium_crypto_shorthash_keygen(): string` — `ext/sodium/libsodium.stub.php:733`
+- ·· `function sodium_crypto_sign(string $message, #[\SensitiveParameter] string $secret_key): string` — `ext/sodium/libsodium.stub.php:735`
+- ·· `function sodium_crypto_sign_detached(string $message, #[\SensitiveParameter] string $secret_key): string` — `ext/sodium/libsodium.stub.php:737`
+- ·· `function sodium_crypto_sign_ed25519_pk_to_curve25519(string $public_key): string` — `ext/sodium/libsodium.stub.php:739`
+- ·· `function sodium_crypto_sign_ed25519_sk_to_curve25519(#[\SensitiveParameter] string $secret_key): string` — `ext/sodium/libsodium.stub.php:741`
+- ·· `function sodium_crypto_sign_keypair(): string` — `ext/sodium/libsodium.stub.php:743`
+- ·· `function sodium_crypto_sign_keypair_from_secretkey_and_publickey(#[\SensitiveParameter] string $secret_key, string $public_key): string` — `ext/sodium/libsodium.stub.php:745`
+- ·· `function sodium_crypto_sign_open(string $signed_message, string $public_key): string|false` — `ext/sodium/libsodium.stub.php:747`
+- ·· `function sodium_crypto_sign_publickey(#[\SensitiveParameter] string $key_pair): string` — `ext/sodium/libsodium.stub.php:749`
+- ·· `function sodium_crypto_sign_publickey_from_secretkey(#[\SensitiveParameter] string $secret_key): string` — `ext/sodium/libsodium.stub.php:753`
+- ·· `function sodium_crypto_sign_secretkey(#[\SensitiveParameter] string $key_pair): string` — `ext/sodium/libsodium.stub.php:751`
+- ·· `function sodium_crypto_sign_seed_keypair(#[\SensitiveParameter] string $seed): string` — `ext/sodium/libsodium.stub.php:755`
+- ·· `function sodium_crypto_sign_verify_detached(string $signature, string $message, string $public_key): bool` — `ext/sodium/libsodium.stub.php:757`
+- ·· `function sodium_crypto_stream(int $length, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:759`
+- ·· `function sodium_crypto_stream_keygen(): string` — `ext/sodium/libsodium.stub.php:761`
+- ·· `function sodium_crypto_stream_xchacha20(int $length, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:766`
+- ·· `function sodium_crypto_stream_xchacha20_keygen(): string` — `ext/sodium/libsodium.stub.php:768`
+- ·· `function sodium_crypto_stream_xchacha20_xor(#[\SensitiveParameter] string $message, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:770`
+- ·· `function sodium_crypto_stream_xchacha20_xor_ic(#[\SensitiveParameter] string $message, string $nonce, int $counter, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:772`
+- ·· `function sodium_crypto_stream_xor(#[\SensitiveParameter] string $message, string $nonce, #[\SensitiveParameter] string $key): string` — `ext/sodium/libsodium.stub.php:763`
+- ·· `function sodium_hex2bin(#[\SensitiveParameter] string $string, string $ignore = ""): string` — `ext/sodium/libsodium.stub.php:791`
+- ·· `function sodium_increment(string&$string): void` — `ext/sodium/libsodium.stub.php:779`
+- ·· `function sodium_memcmp(#[\SensitiveParameter] string $string1, #[\SensitiveParameter] string $string2): int` — `ext/sodium/libsodium.stub.php:781`
+- ·· `function sodium_memzero(#[\SensitiveParameter] string&$string): void` — `ext/sodium/libsodium.stub.php:783`
+- ·· `function sodium_pad(#[\SensitiveParameter] string $string, int $block_size): string` — `ext/sodium/libsodium.stub.php:785`
+- ·· `function sodium_unpad(#[\SensitiveParameter] string $string, int $block_size): string` — `ext/sodium/libsodium.stub.php:787`
+
+## ext/spl (`387`) — impl `218`, tested `38`
+
+- ✅🧪 `public function AppendIterator::__construct()` — `ext/spl/spl_iterators.stub.php:311`
+- ✅🧪 `public function AppendIterator::append(Iterator $iterator): void` — `ext/spl/spl_iterators.stub.php:314`
+- ✅· `public function AppendIterator::current(): mixed` — `ext/spl/spl_iterators.stub.php:323`
+- ✅· `public function AppendIterator::getArrayIterator(): ArrayIterator` — `ext/spl/spl_iterators.stub.php:332`
+- ✅· `public function AppendIterator::getIteratorIndex(): ?int` — `ext/spl/spl_iterators.stub.php:329`
+- ✅🧪 `public function AppendIterator::next(): void` — `ext/spl/spl_iterators.stub.php:326`
+- ✅· `public function AppendIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:317`
+- ✅· `public function AppendIterator::valid(): bool` — `ext/spl/spl_iterators.stub.php:320`
+- ✅🧪 `public function ArrayIterator::__construct(array|object $array = [], int $flags = 0)` — `ext/spl/spl_array.stub.php:94`
+- ✅· `public function ArrayIterator::__debugInfo(): array` — `ext/spl/spl_array.stub.php:232`
+- ✅· `public function ArrayIterator::__serialize(): array` — `ext/spl/spl_array.stub.php:202`
+- ✅· `public function ArrayIterator::__unserialize(array $data): void` — `ext/spl/spl_array.stub.php:208`
+- ✅🧪 `public function ArrayIterator::append(mixed $value): void` — `ext/spl/spl_array.stub.php:124`
+- ✅· `public function ArrayIterator::asort(int $flags = SORT_REGULAR): true` — `ext/spl/spl_array.stub.php:154`
+- ✅🧪 `public function ArrayIterator::count(): int` — `ext/spl/spl_array.stub.php:136`
+- ✅🧪 `public function ArrayIterator::current(): mixed` — `ext/spl/spl_array.stub.php:214`
+- ✅· `public function ArrayIterator::getArrayCopy(): array` — `ext/spl/spl_array.stub.php:130`
+- ✅· `public function ArrayIterator::getFlags(): int` — `ext/spl/spl_array.stub.php:142`
+- ✅· `public function ArrayIterator::key(): string|int|null` — `ext/spl/spl_array.stub.php:217`
+- ✅· `public function ArrayIterator::ksort(int $flags = SORT_REGULAR): true` — `ext/spl/spl_array.stub.php:160`
+- ✅· `public function ArrayIterator::natcasesort(): true` — `ext/spl/spl_array.stub.php:184`
+- ✅· `public function ArrayIterator::natsort(): true` — `ext/spl/spl_array.stub.php:178`
+- ✅· `public function ArrayIterator::next(): void` — `ext/spl/spl_array.stub.php:220`
+- ✅· `public function ArrayIterator::offsetExists(mixed $key): bool` — `ext/spl/spl_array.stub.php:100`
+- ✅· `public function ArrayIterator::offsetGet(mixed $key): mixed` — `ext/spl/spl_array.stub.php:106`
+- ✅· `public function ArrayIterator::offsetSet(mixed $key, mixed $value): void` — `ext/spl/spl_array.stub.php:112`
+- ✅· `public function ArrayIterator::offsetUnset(mixed $key): void` — `ext/spl/spl_array.stub.php:118`
+- ✅🧪 `public function ArrayIterator::rewind(): void` — `ext/spl/spl_array.stub.php:211`
+- ✅· `public function ArrayIterator::seek(int $offset): void` — `ext/spl/spl_array.stub.php:226`
+- ✅· `public function ArrayIterator::serialize(): string` — `ext/spl/spl_array.stub.php:196`
+- ✅· `public function ArrayIterator::setFlags(int $flags): void` — `ext/spl/spl_array.stub.php:148`
+- ✅· `public function ArrayIterator::uasort(callable $callback): true` — `ext/spl/spl_array.stub.php:166`
+- ✅· `public function ArrayIterator::uksort(callable $callback): true` — `ext/spl/spl_array.stub.php:172`
+- ✅· `public function ArrayIterator::unserialize(string $data): void` — `ext/spl/spl_array.stub.php:190`
+- ✅· `public function ArrayIterator::valid(): bool` — `ext/spl/spl_array.stub.php:223`
+- ✅🧪 `public function ArrayObject::__construct(array|object $array = [], int $flags = 0, string $iteratorClass = ArrayIterator::class)` — `ext/spl/spl_array.stub.php:12`
+- ✅· `public function ArrayObject::__debugInfo(): array` — `ext/spl/spl_array.stub.php:84`
+- ✅· `public function ArrayObject::__serialize(): array` — `ext/spl/spl_array.stub.php:66`
+- ✅· `public function ArrayObject::__unserialize(array $data): void` — `ext/spl/spl_array.stub.php:69`
+- ✅🧪 `public function ArrayObject::append(mixed $value): void` — `ext/spl/spl_array.stub.php:27`
+- ✅· `public function ArrayObject::asort(int $flags = SORT_REGULAR): true` — `ext/spl/spl_array.stub.php:42`
+- ✅· `public function ArrayObject::count(): int` — `ext/spl/spl_array.stub.php:33`
+- ✅· `public function ArrayObject::exchangeArray(array|object $array): array` — `ext/spl/spl_array.stub.php:75`
+- ✅· `public function ArrayObject::getArrayCopy(): array` — `ext/spl/spl_array.stub.php:30`
+- ✅· `public function ArrayObject::getFlags(): int` — `ext/spl/spl_array.stub.php:36`
+- ✅· `public function ArrayObject::getIterator(): Iterator` — `ext/spl/spl_array.stub.php:72`
+- ✅· `public function ArrayObject::getIteratorClass(): string` — `ext/spl/spl_array.stub.php:81`
+- ✅· `public function ArrayObject::ksort(int $flags = SORT_REGULAR): true` — `ext/spl/spl_array.stub.php:45`
+- ✅· `public function ArrayObject::natcasesort(): true` — `ext/spl/spl_array.stub.php:57`
+- ✅· `public function ArrayObject::natsort(): true` — `ext/spl/spl_array.stub.php:54`
+- ✅🧪 `public function ArrayObject::offsetExists(mixed $key): bool` — `ext/spl/spl_array.stub.php:15`
+- ✅· `public function ArrayObject::offsetGet(mixed $key): mixed` — `ext/spl/spl_array.stub.php:18`
+- ✅🧪 `public function ArrayObject::offsetSet(mixed $key, mixed $value): void` — `ext/spl/spl_array.stub.php:21`
+- ✅🧪 `public function ArrayObject::offsetUnset(mixed $key): void` — `ext/spl/spl_array.stub.php:24`
+- ✅· `public function ArrayObject::serialize(): string` — `ext/spl/spl_array.stub.php:63`
+- ✅· `public function ArrayObject::setFlags(int $flags): void` — `ext/spl/spl_array.stub.php:39`
+- ✅· `public function ArrayObject::setIteratorClass(string $iteratorClass): void` — `ext/spl/spl_array.stub.php:78`
+- ✅· `public function ArrayObject::uasort(callable $callback): true` — `ext/spl/spl_array.stub.php:48`
+- ✅· `public function ArrayObject::uksort(callable $callback): true` — `ext/spl/spl_array.stub.php:51`
+- ✅· `public function ArrayObject::unserialize(string $data): void` — `ext/spl/spl_array.stub.php:60`
+- ·· `public function CachingIterator::__construct(Iterator $iterator, int $flags = CachingIterator::CALL_TOSTRING)` — `ext/spl/spl_iterators.stub.php:225`
+- ·· `public function CachingIterator::__toString(): string` — `ext/spl/spl_iterators.stub.php:239`
+- ·· `public function CachingIterator::count(): int` — `ext/spl/spl_iterators.stub.php:275`
+- ·· `public function CachingIterator::getCache(): array` — `ext/spl/spl_iterators.stub.php:272`
+- ·· `public function CachingIterator::getFlags(): int` — `ext/spl/spl_iterators.stub.php:242`
+- ·· `public function CachingIterator::hasNext(): bool` — `ext/spl/spl_iterators.stub.php:237`
+- ·· `public function CachingIterator::next(): void` — `ext/spl/spl_iterators.stub.php:234`
+- ·· `public function CachingIterator::offsetExists($key): bool` — `ext/spl/spl_iterators.stub.php:269`
+- ·· `public function CachingIterator::offsetGet($key): mixed` — `ext/spl/spl_iterators.stub.php:251`
+- ·· `public function CachingIterator::offsetSet($key, mixed $value): void` — `ext/spl/spl_iterators.stub.php:257`
+- ·· `public function CachingIterator::offsetUnset($key): void` — `ext/spl/spl_iterators.stub.php:263`
+- ·· `public function CachingIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:228`
+- ·· `public function CachingIterator::setFlags(int $flags): void` — `ext/spl/spl_iterators.stub.php:245`
+- ·· `public function CachingIterator::valid(): bool` — `ext/spl/spl_iterators.stub.php:231`
+- ·· `public function CallbackFilterIterator::__construct(Iterator $iterator, callable $callback)` — `ext/spl/spl_iterators.stub.php:25`
+- ·· `public function CallbackFilterIterator::accept(): bool` — `ext/spl/spl_iterators.stub.php:28`
+- ·· `function class_implements($object_or_class, bool $autoload = true): array|false` — `ext/spl/php_spl.stub.php:10`
+- ·· `function class_parents($object_or_class, bool $autoload = true): array|false` — `ext/spl/php_spl.stub.php:17`
+- ·· `function class_uses($object_or_class, bool $autoload = true): array|false` — `ext/spl/php_spl.stub.php:24`
+- ·· `public function DirectoryIterator::__construct(string $directory)` — `ext/spl/spl_directory.stub.php:106`
+- ·· `public function DirectoryIterator::__toString(): string` — `ext/spl/spl_directory.stub.php:145`
+- ·· `public function DirectoryIterator::current(): mixed` — `ext/spl/spl_directory.stub.php:136`
+- ·· `public function DirectoryIterator::getBasename(string $suffix = ""): string` — `ext/spl/spl_directory.stub.php:115`
+- ·· `public function DirectoryIterator::getExtension(): string` — `ext/spl/spl_directory.stub.php:112`
+- ·· `public function DirectoryIterator::getFilename(): string` — `ext/spl/spl_directory.stub.php:109`
+- ·· `public function DirectoryIterator::isDot(): bool` — `ext/spl/spl_directory.stub.php:118`
+- ·· `public function DirectoryIterator::key(): mixed` — `ext/spl/spl_directory.stub.php:130`
+- ·· `public function DirectoryIterator::next(): void` — `ext/spl/spl_directory.stub.php:139`
+- ·· `public function DirectoryIterator::rewind(): void` — `ext/spl/spl_directory.stub.php:121`
+- ·· `public function DirectoryIterator::seek(int $offset): void` — `ext/spl/spl_directory.stub.php:142`
+- ·· `public function DirectoryIterator::valid(): bool` — `ext/spl/spl_directory.stub.php:124`
+- ✅· `public function EmptyIterator::current(): never` — `ext/spl/spl_iterators.stub.php:8`
+- ✅· `public function EmptyIterator::key(): never` — `ext/spl/spl_iterators.stub.php:14`
+- ✅· `public function EmptyIterator::next(): void` — `ext/spl/spl_iterators.stub.php:11`
+- ✅· `public function EmptyIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:20`
+- ✅· `public function EmptyIterator::valid(): false` — `ext/spl/spl_iterators.stub.php:17`
+- ·· `public function FilesystemIterator::__construct(string $directory, int $flags = FilesystemIterator::KEY_AS_PATHNAME|FilesystemIterator::CURRENT_AS_FILEINFO|FilesystemIterator::SKIP_DOTS)` — `ext/spl/spl_directory.stub.php:175`
+- ·· `public function FilesystemIterator::current(): string|SplFileInfo|FilesystemIterator` — `ext/spl/spl_directory.stub.php:184`
+- ·· `public function FilesystemIterator::getFlags(): int` — `ext/spl/spl_directory.stub.php:187`
+- ·· `public function FilesystemIterator::key(): string` — `ext/spl/spl_directory.stub.php:181`
+- ·· `public function FilesystemIterator::rewind(): void` — `ext/spl/spl_directory.stub.php:178`
+- ·· `public function FilesystemIterator::setFlags(int $flags): void` — `ext/spl/spl_directory.stub.php:190`
+- ·· `public function FilterIterator::__construct(Iterator $iterator)` — `ext/spl/spl_iterators.stub.php:153`
+- ·· `abstract public function FilterIterator::accept(): bool` — `ext/spl/spl_iterators.stub.php:151`
+- ·· `public function FilterIterator::next(): void` — `ext/spl/spl_iterators.stub.php:159`
+- ·· `public function FilterIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:156`
+- ·· `public function GlobIterator::__construct(string $pattern, int $flags = FilesystemIterator::KEY_AS_PATHNAME|FilesystemIterator::CURRENT_AS_FILEINFO)` — `ext/spl/spl_directory.stub.php:212`
+- ·· `public function GlobIterator::count(): int` — `ext/spl/spl_directory.stub.php:215`
+- ·· `public function InfiniteIterator::__construct(Iterator $iterator)` — `ext/spl/spl_iterators.stub.php:337`
+- ·· `public function InfiniteIterator::next(): void` — `ext/spl/spl_iterators.stub.php:340`
+- ·· `function iterator_apply(Traversable $iterator, callable $callback, ?array $args = null): int` — `ext/spl/php_spl.stub.php:49`
+- ·· `function iterator_count(iterable $iterator): int` — `ext/spl/php_spl.stub.php:51`
+- ·· `function iterator_to_array(iterable $iterator, bool $preserve_keys = true): array` — `ext/spl/php_spl.stub.php:53`
+- ✅🧪 `public function IteratorIterator::__construct(Traversable $iterator, ?string $class = null)` — `ext/spl/spl_iterators.stub.php:127`
+- ✅· `public function IteratorIterator::current(): mixed` — `ext/spl/spl_iterators.stub.php:142`
+- ✅· `public function IteratorIterator::getInnerIterator(): ?Iterator` — `ext/spl/spl_iterators.stub.php:130`
+- ✅· `public function IteratorIterator::key(): mixed` — `ext/spl/spl_iterators.stub.php:139`
+- ✅· `public function IteratorIterator::next(): void` — `ext/spl/spl_iterators.stub.php:145`
+- ✅· `public function IteratorIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:133`
+- ✅· `public function IteratorIterator::valid(): bool` — `ext/spl/spl_iterators.stub.php:136`
+- ✅🧪 `public function LimitIterator::__construct(Iterator $iterator, int $offset = 0, int $limit = -1)` — `ext/spl/spl_iterators.stub.php:192`
+- ✅· `public function LimitIterator::getPosition(): int` — `ext/spl/spl_iterators.stub.php:207`
+- ✅· `public function LimitIterator::next(): void` — `ext/spl/spl_iterators.stub.php:201`
+- ✅· `public function LimitIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:195`
+- ✅· `public function LimitIterator::seek(int $offset): int` — `ext/spl/spl_iterators.stub.php:204`
+- ✅· `public function LimitIterator::valid(): bool` — `ext/spl/spl_iterators.stub.php:198`
+- ·· `public function MultipleIterator::__construct(int $flags = MultipleIterator::MIT_NEED_ALL|MultipleIterator::MIT_KEYS_NUMERIC)` — `ext/spl/spl_observer.stub.php:130`
+- ·· `public function MultipleIterator::__debugInfo(): array` — `ext/spl/spl_observer.stub.php:169`
+- ·· `public function MultipleIterator::attachIterator(Iterator $iterator, string|int|null $info = null): void` — `ext/spl/spl_observer.stub.php:139`
+- ·· `public function MultipleIterator::containsIterator(Iterator $iterator): bool` — `ext/spl/spl_observer.stub.php:145`
+- ·· `public function MultipleIterator::countIterators(): int` — `ext/spl/spl_observer.stub.php:148`
+- ·· `public function MultipleIterator::current(): array` — `ext/spl/spl_observer.stub.php:160`
+- ·· `public function MultipleIterator::detachIterator(Iterator $iterator): void` — `ext/spl/spl_observer.stub.php:142`
+- ·· `public function MultipleIterator::getFlags(): int` — `ext/spl/spl_observer.stub.php:133`
+- ·· `public function MultipleIterator::key(): array` — `ext/spl/spl_observer.stub.php:157`
+- ·· `public function MultipleIterator::next(): void` — `ext/spl/spl_observer.stub.php:163`
+- ·· `public function MultipleIterator::rewind(): void` — `ext/spl/spl_observer.stub.php:151`
+- ·· `public function MultipleIterator::setFlags(int $flags): void` — `ext/spl/spl_observer.stub.php:136`
+- ·· `public function MultipleIterator::valid(): bool` — `ext/spl/spl_observer.stub.php:154`
+- ·· `public function NoRewindIterator::__construct(Iterator $iterator)` — `ext/spl/spl_iterators.stub.php:291`
+- ·· `public function NoRewindIterator::current(): mixed` — `ext/spl/spl_iterators.stub.php:303`
+- ·· `public function NoRewindIterator::key(): mixed` — `ext/spl/spl_iterators.stub.php:300`
+- ·· `public function NoRewindIterator::next(): void` — `ext/spl/spl_iterators.stub.php:306`
+- ·· `public function NoRewindIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:294`
+- ·· `public function NoRewindIterator::valid(): bool` — `ext/spl/spl_iterators.stub.php:297`
+- ·· `public function OuterIterator::getInnerIterator(): ?Iterator` — `ext/spl/spl_iterators.stub.php:122`
+- ·· `public function ParentIterator::__construct(RecursiveIterator $iterator)` — `ext/spl/spl_iterators.stub.php:175`
+- ·· `public function ParentIterator::accept(): bool` — `ext/spl/spl_iterators.stub.php:181`
+- ✅· `public function RecursiveArrayIterator::getChildren(): ?RecursiveArrayIterator` — `ext/spl/spl_array.stub.php:244`
+- ✅· `public function RecursiveArrayIterator::hasChildren(): bool` — `ext/spl/spl_array.stub.php:241`
+- ·· `public function RecursiveCachingIterator::__construct(Iterator $iterator, int $flags = RecursiveCachingIterator::CALL_TOSTRING)` — `ext/spl/spl_iterators.stub.php:280`
+- ·· `public function RecursiveCachingIterator::getChildren(): ?RecursiveCachingIterator` — `ext/spl/spl_iterators.stub.php:286`
+- ·· `public function RecursiveCachingIterator::hasChildren(): bool` — `ext/spl/spl_iterators.stub.php:283`
+- ·· `public function RecursiveCallbackFilterIterator::__construct(RecursiveIterator $iterator, callable $callback)` — `ext/spl/spl_iterators.stub.php:33`
+- ·· `public function RecursiveCallbackFilterIterator::getChildren(): RecursiveCallbackFilterIterator` — `ext/spl/spl_iterators.stub.php:42`
+- ·· `public function RecursiveCallbackFilterIterator::hasChildren(): bool` — `ext/spl/spl_iterators.stub.php:39`
+- ·· `public function RecursiveDirectoryIterator::__construct(string $directory, int $flags = FilesystemIterator::KEY_AS_PATHNAME|FilesystemIterator::CURRENT_AS_FILEINFO)` — `ext/spl/spl_directory.stub.php:195`
+- ·· `public function RecursiveDirectoryIterator::getChildren(): RecursiveDirectoryIterator` — `ext/spl/spl_directory.stub.php:201`
+- ·· `public function RecursiveDirectoryIterator::getSubPath(): string` — `ext/spl/spl_directory.stub.php:204`
+- ·· `public function RecursiveDirectoryIterator::getSubPathname(): string` — `ext/spl/spl_directory.stub.php:207`
+- ·· `public function RecursiveDirectoryIterator::hasChildren(bool $allowLinks = false): bool` — `ext/spl/spl_directory.stub.php:198`
+- ·· `public function RecursiveFilterIterator::__construct(RecursiveIterator $iterator)` — `ext/spl/spl_iterators.stub.php:164`
+- ·· `public function RecursiveFilterIterator::getChildren(): ?RecursiveFilterIterator` — `ext/spl/spl_iterators.stub.php:170`
+- ·· `public function RecursiveFilterIterator::hasChildren(): bool` — `ext/spl/spl_iterators.stub.php:167`
+- ·· `public function RecursiveIterator::getChildren(): ?RecursiveIterator` — `ext/spl/spl_iterators.stub.php:51`
+- ·· `public function RecursiveIterator::hasChildren(): bool` — `ext/spl/spl_iterators.stub.php:48`
+- ·· `public function RecursiveIteratorIterator::__construct(Traversable $iterator, int $mode = RecursiveIteratorIterator::LEAVES_ONLY, int $flags = 0)` — `ext/spl/spl_iterators.stub.php:65`
+- ·· `public function RecursiveIteratorIterator::beginChildren(): void` — `ext/spl/spl_iterators.stub.php:104`
+- ·· `public function RecursiveIteratorIterator::beginIteration(): void` — `ext/spl/spl_iterators.stub.php:92`
+- ·· `public function RecursiveIteratorIterator::callGetChildren(): ?RecursiveIterator` — `ext/spl/spl_iterators.stub.php:101`
+- ·· `public function RecursiveIteratorIterator::callHasChildren(): bool` — `ext/spl/spl_iterators.stub.php:98`
+- ·· `public function RecursiveIteratorIterator::current(): mixed` — `ext/spl/spl_iterators.stub.php:77`
+- ·· `public function RecursiveIteratorIterator::endChildren(): void` — `ext/spl/spl_iterators.stub.php:107`
+- ·· `public function RecursiveIteratorIterator::endIteration(): void` — `ext/spl/spl_iterators.stub.php:95`
+- ·· `public function RecursiveIteratorIterator::getDepth(): int` — `ext/spl/spl_iterators.stub.php:83`
+- ·· `public function RecursiveIteratorIterator::getInnerIterator(): RecursiveIterator` — `ext/spl/spl_iterators.stub.php:89`
+- ·· `public function RecursiveIteratorIterator::getMaxDepth(): int|false` — `ext/spl/spl_iterators.stub.php:116`
+- ·· `public function RecursiveIteratorIterator::getSubIterator(?int $level = null): ?RecursiveIterator` — `ext/spl/spl_iterators.stub.php:86`
+- ·· `public function RecursiveIteratorIterator::key(): mixed` — `ext/spl/spl_iterators.stub.php:74`
+- ·· `public function RecursiveIteratorIterator::next(): void` — `ext/spl/spl_iterators.stub.php:80`
+- ·· `public function RecursiveIteratorIterator::nextElement(): void` — `ext/spl/spl_iterators.stub.php:110`
+- ·· `public function RecursiveIteratorIterator::rewind(): void` — `ext/spl/spl_iterators.stub.php:68`
+- ·· `public function RecursiveIteratorIterator::setMaxDepth(int $maxDepth = -1): void` — `ext/spl/spl_iterators.stub.php:113`
+- ·· `public function RecursiveIteratorIterator::valid(): bool` — `ext/spl/spl_iterators.stub.php:71`
+- ·· `public function RecursiveRegexIterator::__construct(RecursiveIterator $iterator, string $pattern, int $mode = RecursiveRegexIterator::MATCH, int $flags = 0, int $pregFlags = 0)` — `ext/spl/spl_iterators.stub.php:391`
+- ·· `public function RecursiveRegexIterator::accept(): bool` — `ext/spl/spl_iterators.stub.php:394`
+- ·· `public function RecursiveRegexIterator::getChildren(): RecursiveRegexIterator` — `ext/spl/spl_iterators.stub.php:403`
+- ·· `public function RecursiveRegexIterator::hasChildren(): bool` — `ext/spl/spl_iterators.stub.php:400`
+- ·· `public function RecursiveTreeIterator::__construct( RecursiveIterator|IteratorAggregate $iterator, int $flags = RecursiveTreeIterator::BYPASS_KEY, int $cachingIteratorFlags = CachingIterator::CATCH_GET_CHILD, int $mode = RecursiveTreeIterator::SELF_FIRST )` — `ext/spl/spl_iterators.stub.php:425`
+- ·· `public function RecursiveTreeIterator::current(): mixed` — `ext/spl/spl_iterators.stub.php:436`
+- ·· `public function RecursiveTreeIterator::getEntry(): string` — `ext/spl/spl_iterators.stub.php:448`
+- ·· `public function RecursiveTreeIterator::getPostfix(): string` — `ext/spl/spl_iterators.stub.php:451`
+- ·· `public function RecursiveTreeIterator::getPrefix(): string` — `ext/spl/spl_iterators.stub.php:439`
+- ·· `public function RecursiveTreeIterator::key(): mixed` — `ext/spl/spl_iterators.stub.php:433`
+- ·· `public function RecursiveTreeIterator::setPostfix(string $postfix): void` — `ext/spl/spl_iterators.stub.php:442`
+- ·· `public function RecursiveTreeIterator::setPrefixPart(int $part, string $value): void` — `ext/spl/spl_iterators.stub.php:445`
+- ·· `public function RegexIterator::__construct(Iterator $iterator, string $pattern, int $mode = RegexIterator::MATCH, int $flags = 0, int $pregFlags = 0)` — `ext/spl/spl_iterators.stub.php:362`
+- ·· `public function RegexIterator::accept(): bool` — `ext/spl/spl_iterators.stub.php:365`
+- ·· `public function RegexIterator::getFlags(): int` — `ext/spl/spl_iterators.stub.php:374`
+- ·· `public function RegexIterator::getMode(): int` — `ext/spl/spl_iterators.stub.php:368`
+- ·· `public function RegexIterator::getPregFlags(): int` — `ext/spl/spl_iterators.stub.php:383`
+- ·· `public function RegexIterator::getRegex(): string` — `ext/spl/spl_iterators.stub.php:380`
+- ·· `public function RegexIterator::setFlags(int $flags): void` — `ext/spl/spl_iterators.stub.php:377`
+- ·· `public function RegexIterator::setMode(int $mode): void` — `ext/spl/spl_iterators.stub.php:371`
+- ·· `public function RegexIterator::setPregFlags(int $pregFlags): void` — `ext/spl/spl_iterators.stub.php:386`
+- ·· `public function SeekableIterator::seek(int $offset): void` — `ext/spl/spl_iterators.stub.php:187`
+- ·· `function spl_autoload(string $class, ?string $file_extensions = null): void` — `ext/spl/php_spl.stub.php:26`
+- ✅· `function spl_autoload_call(string $class): void` — `ext/spl/php_spl.stub.php:28`
+- ·· `function spl_autoload_extensions(?string $file_extensions = null): string` — `ext/spl/php_spl.stub.php:30`
+- ✅🧪 `function spl_autoload_functions(): array` — `ext/spl/php_spl.stub.php:32`
+- ✅🧪 `function spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool` — `ext/spl/php_spl.stub.php:34`
+- ✅🧪 `function spl_autoload_unregister(callable $callback): bool` — `ext/spl/php_spl.stub.php:36`
+- ·· `function spl_classes(): array` — `ext/spl/php_spl.stub.php:42`
+- ✅· `function spl_object_hash(object $object): string` — `ext/spl/php_spl.stub.php:45`
+- ✅🧪 `function spl_object_id(object $object): int` — `ext/spl/php_spl.stub.php:47`
+- ✅· `public function SplDoublyLinkedList::__debugInfo(): array` — `ext/spl/spl_dllist.stub.php:38`
+- ✅· `public function SplDoublyLinkedList::__serialize(): array` — `ext/spl/spl_dllist.stub.php:101`
+- ✅· `public function SplDoublyLinkedList::__unserialize(array $data): void` — `ext/spl/spl_dllist.stub.php:104`
+- ✅· `public function SplDoublyLinkedList::add(int $index, mixed $value): void` — `ext/spl/spl_dllist.stub.php:17`
+- ✅🧪 `public function SplDoublyLinkedList::bottom(): mixed` — `ext/spl/spl_dllist.stub.php:35`
+- ✅· `public function SplDoublyLinkedList::count(): int` — `ext/spl/spl_dllist.stub.php:41`
+- ✅🧪 `public function SplDoublyLinkedList::current(): mixed` — `ext/spl/spl_dllist.stub.php:80`
+- ✅· `public function SplDoublyLinkedList::getIteratorMode(): int` — `ext/spl/spl_dllist.stub.php:50`
+- ✅· `public function SplDoublyLinkedList::isEmpty(): bool` — `ext/spl/spl_dllist.stub.php:44`
+- ✅· `public function SplDoublyLinkedList::key(): int` — `ext/spl/spl_dllist.stub.php:83`
+- ✅🧪 `public function SplDoublyLinkedList::next(): void` — `ext/spl/spl_dllist.stub.php:89`
+- ✅🧪 `public function SplDoublyLinkedList::offsetExists($index): bool` — `ext/spl/spl_dllist.stub.php:56`
+- ✅· `public function SplDoublyLinkedList::offsetGet($index): mixed` — `ext/spl/spl_dllist.stub.php:62`
+- ✅· `public function SplDoublyLinkedList::offsetSet($index, mixed $value): void` — `ext/spl/spl_dllist.stub.php:68`
+- ✅🧪 `public function SplDoublyLinkedList::offsetUnset($index): void` — `ext/spl/spl_dllist.stub.php:74`
+- ✅· `public function SplDoublyLinkedList::pop(): mixed` — `ext/spl/spl_dllist.stub.php:20`
+- ✅· `public function SplDoublyLinkedList::prev(): void` — `ext/spl/spl_dllist.stub.php:86`
+- ✅🧪 `public function SplDoublyLinkedList::push(mixed $value): void` — `ext/spl/spl_dllist.stub.php:26`
+- ✅🧪 `public function SplDoublyLinkedList::rewind(): void` — `ext/spl/spl_dllist.stub.php:77`
+- ✅· `public function SplDoublyLinkedList::serialize(): string` — `ext/spl/spl_dllist.stub.php:98`
+- ✅· `public function SplDoublyLinkedList::setIteratorMode(int $mode): int` — `ext/spl/spl_dllist.stub.php:47`
+- ✅· `public function SplDoublyLinkedList::shift(): mixed` — `ext/spl/spl_dllist.stub.php:23`
+- ✅· `public function SplDoublyLinkedList::top(): mixed` — `ext/spl/spl_dllist.stub.php:32`
+- ✅· `public function SplDoublyLinkedList::unserialize(string $data): void` — `ext/spl/spl_dllist.stub.php:95`
+- ✅· `public function SplDoublyLinkedList::unshift(mixed $value): void` — `ext/spl/spl_dllist.stub.php:29`
+- ✅🧪 `public function SplDoublyLinkedList::valid(): bool` — `ext/spl/spl_dllist.stub.php:92`
+- ✅🧪 `public function SplFileInfo::__construct(string $filename)` — `ext/spl/spl_directory.stub.php:8`
+- ✅· `public function SplFileInfo::__debugInfo(): array` — `ext/spl/spl_directory.stub.php:98`
+- ✅· `public function SplFileInfo::__toString(): string` — `ext/spl/spl_directory.stub.php:95`
+- ✅· `final public function SplFileInfo::_bad_state_ex(): void` — `ext/spl/spl_directory.stub.php:101`
+- ✅· `public function SplFileInfo::getATime(): int|false` — `ext/spl/spl_directory.stub.php:41`
+- ✅· `public function SplFileInfo::getBasename(string $suffix = ""): string` — `ext/spl/spl_directory.stub.php:20`
+- ✅· `public function SplFileInfo::getCTime(): int|false` — `ext/spl/spl_directory.stub.php:47`
+- ✅· `public function SplFileInfo::getExtension(): string` — `ext/spl/spl_directory.stub.php:17`
+- ✅· `public function SplFileInfo::getFileInfo(?string $class = null): SplFileInfo` — `ext/spl/spl_directory.stub.php:77`
+- ✅· `public function SplFileInfo::getFilename(): string` — `ext/spl/spl_directory.stub.php:14`
+- ✅· `public function SplFileInfo::getGroup(): int|false` — `ext/spl/spl_directory.stub.php:38`
+- ✅· `public function SplFileInfo::getInode(): int|false` — `ext/spl/spl_directory.stub.php:29`
+- ✅· `public function SplFileInfo::getLinkTarget(): string|false` — `ext/spl/spl_directory.stub.php:71`
+- ✅· `public function SplFileInfo::getMTime(): int|false` — `ext/spl/spl_directory.stub.php:44`
+- ✅· `public function SplFileInfo::getOwner(): int|false` — `ext/spl/spl_directory.stub.php:35`
+- ✅· `public function SplFileInfo::getPath(): string` — `ext/spl/spl_directory.stub.php:11`
+- ✅· `public function SplFileInfo::getPathInfo(?string $class = null): ?SplFileInfo` — `ext/spl/spl_directory.stub.php:80`
+- ✅· `public function SplFileInfo::getPathname(): string` — `ext/spl/spl_directory.stub.php:23`
+- ✅· `public function SplFileInfo::getPerms(): int|false` — `ext/spl/spl_directory.stub.php:26`
+- ✅· `public function SplFileInfo::getRealPath(): string|false` — `ext/spl/spl_directory.stub.php:74`
+- ✅· `public function SplFileInfo::getSize(): int|false` — `ext/spl/spl_directory.stub.php:32`
+- ✅· `public function SplFileInfo::getType(): string|false` — `ext/spl/spl_directory.stub.php:50`
+- ✅· `public function SplFileInfo::isDir(): bool` — `ext/spl/spl_directory.stub.php:65`
+- ✅· `public function SplFileInfo::isExecutable(): bool` — `ext/spl/spl_directory.stub.php:59`
+- ✅· `public function SplFileInfo::isFile(): bool` — `ext/spl/spl_directory.stub.php:62`
+- ✅· `public function SplFileInfo::isLink(): bool` — `ext/spl/spl_directory.stub.php:68`
+- ✅· `public function SplFileInfo::isReadable(): bool` — `ext/spl/spl_directory.stub.php:56`
+- ✅· `public function SplFileInfo::isWritable(): bool` — `ext/spl/spl_directory.stub.php:53`
+- ✅· `public function SplFileInfo::openFile(string $mode = "r", bool $useIncludePath = false, $context = null): SplFileObject` — `ext/spl/spl_directory.stub.php:86`
+- ✅· `public function SplFileInfo::setFileClass(string $class = SplFileObject::class): void` — `ext/spl/spl_directory.stub.php:89`
+- ✅· `public function SplFileInfo::setInfoClass(string $class = SplFileInfo::class): void` — `ext/spl/spl_directory.stub.php:92`
+- ✅🧪 `public function SplFileObject::__construct(string $filename, string $mode = "r", bool $useIncludePath = false, $context = null)` — `ext/spl/spl_directory.stub.php:230`
+- ✅· `public function SplFileObject::__toString(): string` — `ext/spl/spl_directory.stub.php:328`
+- ✅🧪 `public function SplFileObject::current(): string|array|false` — `ext/spl/spl_directory.stub.php:293`
+- ✅· `public function SplFileObject::eof(): bool` — `ext/spl/spl_directory.stub.php:236`
+- ✅· `public function SplFileObject::fflush(): bool` — `ext/spl/spl_directory.stub.php:266`
+- ✅· `public function SplFileObject::fgetc(): string|false` — `ext/spl/spl_directory.stub.php:275`
+- ✅· `public function SplFileObject::fgetcsv(string $separator = ", ", string $enclosure = "\"", string $escape = "\\"): array|false` — `ext/spl/spl_directory.stub.php:248`
+- ✅· `public function SplFileObject::fgets(): string` — `ext/spl/spl_directory.stub.php:242`
+- ✅· `public function SplFileObject::flock(int $operation,&$wouldBlock = null): bool` — `ext/spl/spl_directory.stub.php:263`
+- ✅· `public function SplFileObject::fpassthru(): int` — `ext/spl/spl_directory.stub.php:278`
+- ✅· `public function SplFileObject::fputcsv(array $fields, string $separator = ", ", string $enclosure = "\"", string $escape = "\\", string $eol = "\n"): int|false` — `ext/spl/spl_directory.stub.php:251`
+- ✅· `public function SplFileObject::fread(int $length): string|false` — `ext/spl/spl_directory.stub.php:245`
+- ✅· `public function SplFileObject::fscanf(string $format, mixed&...$vars): array|int|null` — `ext/spl/spl_directory.stub.php:281`
+- ✅· `public function SplFileObject::fseek(int $offset, int $whence = SEEK_SET): int` — `ext/spl/spl_directory.stub.php:272`
+- ✅· `public function SplFileObject::fstat(): array` — `ext/spl/spl_directory.stub.php:287`
+- ✅· `public function SplFileObject::ftell(): int|false` — `ext/spl/spl_directory.stub.php:269`
+- ✅· `public function SplFileObject::ftruncate(int $size): bool` — `ext/spl/spl_directory.stub.php:290`
+- ✅· `public function SplFileObject::fwrite(string $data, ?int $length = null): int|false` — `ext/spl/spl_directory.stub.php:284`
+- ✅· `public function SplFileObject::getChildren(): null` — `ext/spl/spl_directory.stub.php:317`
+- ✅· `public function SplFileObject::getCsvControl(): array` — `ext/spl/spl_directory.stub.php:257`
+- ✅· `public function SplFileObject::getCurrentLine(): string` — `ext/spl/spl_directory.stub.php:326`
+- ✅· `public function SplFileObject::getFlags(): int` — `ext/spl/spl_directory.stub.php:305`
+- ✅· `public function SplFileObject::getMaxLineLen(): int` — `ext/spl/spl_directory.stub.php:311`
+- ✅· `public function SplFileObject::hasChildren(): false` — `ext/spl/spl_directory.stub.php:314`
+- ✅· `public function SplFileObject::key(): int` — `ext/spl/spl_directory.stub.php:296`
+- ✅🧪 `public function SplFileObject::next(): void` — `ext/spl/spl_directory.stub.php:299`
+- ✅· `public function SplFileObject::rewind(): void` — `ext/spl/spl_directory.stub.php:233`
+- ✅· `public function SplFileObject::seek(int $line): void` — `ext/spl/spl_directory.stub.php:320`
+- ✅· `public function SplFileObject::setCsvControl(string $separator = ", ", string $enclosure = "\"", string $escape = "\\"): void` — `ext/spl/spl_directory.stub.php:254`
+- ✅· `public function SplFileObject::setFlags(int $flags): void` — `ext/spl/spl_directory.stub.php:302`
+- ✅· `public function SplFileObject::setMaxLineLen(int $maxLength): void` — `ext/spl/spl_directory.stub.php:308`
+- ✅· `public function SplFileObject::valid(): bool` — `ext/spl/spl_directory.stub.php:239`
+- ✅🧪 `public function SplFixedArray::__construct(int $size = 0)` — `ext/spl/spl_fixedarray.stub.php:7`
+- ✅· `public function SplFixedArray::__serialize(): array` — `ext/spl/spl_fixedarray.stub.php:13`
+- ✅· `public function SplFixedArray::__unserialize(array $data): void` — `ext/spl/spl_fixedarray.stub.php:15`
+- ✅· `public function SplFixedArray::__wakeup(): void` — `ext/spl/spl_fixedarray.stub.php:11`
+- ✅· `public function SplFixedArray::count(): int` — `ext/spl/spl_fixedarray.stub.php:18`
+- ✅· `public static function SplFixedArray::fromArray(array $array, bool $preserveKeys = true): SplFixedArray` — `ext/spl/spl_fixedarray.stub.php:24`
+- ✅· `public function SplFixedArray::getIterator(): Iterator` — `ext/spl/spl_fixedarray.stub.php:56`
+- ✅🧪 `public function SplFixedArray::getSize(): int` — `ext/spl/spl_fixedarray.stub.php:27`
+- ✅· `public function SplFixedArray::jsonSerialize(): array` — `ext/spl/spl_fixedarray.stub.php:61`
+- ✅🧪 `public function SplFixedArray::offsetExists($index): bool` — `ext/spl/spl_fixedarray.stub.php:36`
+- ✅· `public function SplFixedArray::offsetGet($index): mixed` — `ext/spl/spl_fixedarray.stub.php:42`
+- ✅· `public function SplFixedArray::offsetSet($index, mixed $value): void` — `ext/spl/spl_fixedarray.stub.php:48`
+- ✅· `public function SplFixedArray::offsetUnset($index): void` — `ext/spl/spl_fixedarray.stub.php:54`
+- ✅🧪 `public function SplFixedArray::setSize(int $size): true` — `ext/spl/spl_fixedarray.stub.php:30`
+- ✅🧪 `public function SplFixedArray::toArray(): array` — `ext/spl/spl_fixedarray.stub.php:21`
+- ·· `public function SplHeap::__debugInfo(): array` — `ext/spl/spl_heap.stub.php:135`
+- ·· `public function SplHeap::__serialize(): array` — `ext/spl/spl_heap.stub.php:138`
+- ·· `public function SplHeap::__unserialize(array $data): void` — `ext/spl/spl_heap.stub.php:141`
+- ·· `abstract protected function SplHeap::compare(mixed $value1, mixed $value2): int` — `ext/spl/spl_heap.stub.php:129`
+- ·· `public function SplHeap::count(): int` — `ext/spl/spl_heap.stub.php:105`
+- ·· `public function SplHeap::current(): mixed` — `ext/spl/spl_heap.stub.php:114`
+- ·· `public function SplHeap::extract(): mixed` — `ext/spl/spl_heap.stub.php:96`
+- ·· `public function SplHeap::insert(mixed $value): true` — `ext/spl/spl_heap.stub.php:99`
+- ·· `public function SplHeap::isCorrupted(): bool` — `ext/spl/spl_heap.stub.php:132`
+- ·· `public function SplHeap::isEmpty(): bool` — `ext/spl/spl_heap.stub.php:108`
+- ·· `public function SplHeap::key(): int` — `ext/spl/spl_heap.stub.php:117`
+- ·· `public function SplHeap::next(): void` — `ext/spl/spl_heap.stub.php:120`
+- ·· `public function SplHeap::recoverFromCorruption(): true` — `ext/spl/spl_heap.stub.php:126`
+- ·· `public function SplHeap::rewind(): void` — `ext/spl/spl_heap.stub.php:111`
+- ·· `public function SplHeap::top(): mixed` — `ext/spl/spl_heap.stub.php:102`
+- ·· `public function SplHeap::valid(): bool` — `ext/spl/spl_heap.stub.php:123`
+- ·· `protected function SplMaxHeap::compare(mixed $value1, mixed $value2): int` — `ext/spl/spl_heap.stub.php:153`
+- ·· `protected function SplMinHeap::compare(mixed $value1, mixed $value2): int` — `ext/spl/spl_heap.stub.php:147`
+- ✅· `public function SplObjectStorage::__debugInfo(): array` — `ext/spl/spl_observer.stub.php:116`
+- ✅· `public function SplObjectStorage::__serialize(): array` — `ext/spl/spl_observer.stub.php:110`
+- ✅· `public function SplObjectStorage::__unserialize(array $data): void` — `ext/spl/spl_observer.stub.php:113`
+- ✅· `public function SplObjectStorage::addAll(SplObjectStorage $storage): int` — `ext/spl/spl_observer.stub.php:38`
+- ✅· `public function SplObjectStorage::attach(object $object, mixed $info = null): void` — `ext/spl/spl_observer.stub.php:27`
+- ✅· `public function SplObjectStorage::contains(object $object): bool` — `ext/spl/spl_observer.stub.php:35`
+- ✅· `public function SplObjectStorage::count(int $mode = COUNT_NORMAL): int` — `ext/spl/spl_observer.stub.php:53`
+- ✅· `public function SplObjectStorage::current(): object` — `ext/spl/spl_observer.stub.php:65`
+- ✅· `public function SplObjectStorage::detach(object $object): void` — `ext/spl/spl_observer.stub.php:31`
+- ✅· `public function SplObjectStorage::getHash(object $object): string` — `ext/spl/spl_observer.stub.php:107`
+- ✅🧪 `public function SplObjectStorage::getInfo(): mixed` — `ext/spl/spl_observer.stub.php:47`
+- ✅· `public function SplObjectStorage::key(): int` — `ext/spl/spl_observer.stub.php:62`
+- ✅· `public function SplObjectStorage::next(): void` — `ext/spl/spl_observer.stub.php:68`
+- ✅· `public function SplObjectStorage::offsetExists($object): bool` — `ext/spl/spl_observer.stub.php:84`
+- ✅· `public function SplObjectStorage::offsetGet($object): mixed` — `ext/spl/spl_observer.stub.php:90`
+- ✅· `public function SplObjectStorage::offsetSet($object, mixed $info = null): void` — `ext/spl/spl_observer.stub.php:97`
+- ✅· `public function SplObjectStorage::offsetUnset($object): void` — `ext/spl/spl_observer.stub.php:104`
+- ✅· `public function SplObjectStorage::removeAll(SplObjectStorage $storage): int` — `ext/spl/spl_observer.stub.php:41`
+- ✅· `public function SplObjectStorage::removeAllExcept(SplObjectStorage $storage): int` — `ext/spl/spl_observer.stub.php:44`
+- ✅· `public function SplObjectStorage::rewind(): void` — `ext/spl/spl_observer.stub.php:56`
+- ✅· `public function SplObjectStorage::seek(int $offset): void` — `ext/spl/spl_observer.stub.php:70`
+- ✅· `public function SplObjectStorage::serialize(): string` — `ext/spl/spl_observer.stub.php:76`
+- ✅🧪 `public function SplObjectStorage::setInfo(mixed $info): void` — `ext/spl/spl_observer.stub.php:50`
+- ✅· `public function SplObjectStorage::unserialize(string $data): void` — `ext/spl/spl_observer.stub.php:73`
+- ✅· `public function SplObjectStorage::valid(): bool` — `ext/spl/spl_observer.stub.php:59`
+- ·· `public function SplObserver::update(SplSubject $subject): void` — `ext/spl/spl_observer.stub.php:8`
+- ·· `public function SplPriorityQueue::__debugInfo(): array` — `ext/spl/spl_heap.stub.php:84`
+- ·· `public function SplPriorityQueue::__serialize(): array` — `ext/spl/spl_heap.stub.php:87`
+- ·· `public function SplPriorityQueue::__unserialize(array $data): void` — `ext/spl/spl_heap.stub.php:90`
+- ·· `public function SplPriorityQueue::compare(mixed $priority1, mixed $priority2): int` — `ext/spl/spl_heap.stub.php:15`
+- ·· `public function SplPriorityQueue::count(): int` — `ext/spl/spl_heap.stub.php:33`
+- ·· `public function SplPriorityQueue::current(): mixed` — `ext/spl/spl_heap.stub.php:48`
+- ·· `public function SplPriorityQueue::extract(): mixed` — `ext/spl/spl_heap.stub.php:27`
+- ·· `public function SplPriorityQueue::getExtractFlags(): int` — `ext/spl/spl_heap.stub.php:81`
+- ·· `public function SplPriorityQueue::insert(mixed $value, mixed $priority): true` — `ext/spl/spl_heap.stub.php:18`
+- ·· `public function SplPriorityQueue::isCorrupted(): bool` — `ext/spl/spl_heap.stub.php:78`
+- ·· `public function SplPriorityQueue::isEmpty(): bool` — `ext/spl/spl_heap.stub.php:39`
+- ·· `public function SplPriorityQueue::key(): int` — `ext/spl/spl_heap.stub.php:54`
+- ·· `public function SplPriorityQueue::next(): void` — `ext/spl/spl_heap.stub.php:60`
+- ·· `public function SplPriorityQueue::recoverFromCorruption(): true` — `ext/spl/spl_heap.stub.php:72`
+- ·· `public function SplPriorityQueue::rewind(): void` — `ext/spl/spl_heap.stub.php:45`
+- ·· `public function SplPriorityQueue::setExtractFlags(int $flags): int` — `ext/spl/spl_heap.stub.php:21`
+- ·· `public function SplPriorityQueue::top(): mixed` — `ext/spl/spl_heap.stub.php:24`
+- ·· `public function SplPriorityQueue::valid(): bool` — `ext/spl/spl_heap.stub.php:66`
+- ✅· `public function SplQueue::dequeue(): mixed` — `ext/spl/spl_dllist.stub.php:119`
+- ✅· `public function SplQueue::enqueue(mixed $value): void` — `ext/spl/spl_dllist.stub.php:113`
+- ·· `public function SplSubject::attach(SplObserver $observer): void` — `ext/spl/spl_observer.stub.php:14`
+- ·· `public function SplSubject::detach(SplObserver $observer): void` — `ext/spl/spl_observer.stub.php:17`
+- ·· `public function SplSubject::notify(): void` — `ext/spl/spl_observer.stub.php:20`
+- ✅· `public function SplTempFileObject::__construct(int $maxMemory = 2 * 1024 * 1024)` — `ext/spl/spl_directory.stub.php:333`
+
+## ext/sqlite3 (`45`) — impl `0`, tested `0`
+
+- ·· `public function SQLite3::__construct(string $filename, int $flags = SQLITE3_OPEN_READWRITE|SQLITE3_OPEN_CREATE, string $encryptionKey = "")` — `ext/sqlite3/sqlite3.stub.php:165`
+- ·· `public function SQLite3::backup(SQLite3 $destination, string $sourceDatabase = "main", string $destinationDatabase = "main"): bool` — `ext/sqlite3/sqlite3.stub.php:204`
+- ·· `public function SQLite3::busyTimeout(int $milliseconds): bool` — `ext/sqlite3/sqlite3.stub.php:195`
+- ·· `public function SQLite3::changes(): int` — `ext/sqlite3/sqlite3.stub.php:192`
+- ·· `public function SQLite3::close(): bool` — `ext/sqlite3/sqlite3.stub.php:174`
+- ·· `public function SQLite3::createAggregate(string $name, callable $stepCallback, callable $finalCallback, int $argCount = -1): bool` — `ext/sqlite3/sqlite3.stub.php:226`
+- ·· `public function SQLite3::createCollation(string $name, callable $callback): bool` — `ext/sqlite3/sqlite3.stub.php:229`
+- ·· `public function SQLite3::createFunction(string $name, callable $callback, int $argCount = -1, int $flags = 0): bool` — `ext/sqlite3/sqlite3.stub.php:223`
+- ·· `public function SQLite3::enableExceptions(bool $enable = false): bool` — `ext/sqlite3/sqlite3.stub.php:235`
+- ·· `public function SQLite3::enableExtendedResultCodes(bool $enable = true): bool` — `ext/sqlite3/sqlite3.stub.php:238`
+- ·· `public static function SQLite3::escapeString(string $string): string` — `ext/sqlite3/sqlite3.stub.php:208`
+- ·· `public function SQLite3::exec(string $query): bool` — `ext/sqlite3/sqlite3.stub.php:214`
+- ·· `public function SQLite3::lastErrorCode(): int` — `ext/sqlite3/sqlite3.stub.php:183`
+- ·· `public function SQLite3::lastErrorMsg(): string` — `ext/sqlite3/sqlite3.stub.php:189`
+- ·· `public function SQLite3::lastExtendedErrorCode(): int` — `ext/sqlite3/sqlite3.stub.php:186`
+- ·· `public function SQLite3::lastInsertRowID(): int` — `ext/sqlite3/sqlite3.stub.php:180`
+- ·· `public function SQLite3::loadExtension(string $name): bool` — `ext/sqlite3/sqlite3.stub.php:199`
+- ·· `public function SQLite3::open(string $filename, int $flags = SQLITE3_OPEN_READWRITE|SQLITE3_OPEN_CREATE, string $encryptionKey = ""): void` — `ext/sqlite3/sqlite3.stub.php:171`
+- ·· `public function SQLite3::openBlob(string $table, string $column, int $rowid, string $database = "main", int $flags = SQLITE3_OPEN_READONLY)` — `ext/sqlite3/sqlite3.stub.php:232`
+- ·· `public function SQLite3::prepare(string $query): SQLite3Stmt|false` — `ext/sqlite3/sqlite3.stub.php:211`
+- ·· `public function SQLite3::query(string $query): SQLite3Result|false` — `ext/sqlite3/sqlite3.stub.php:217`
+- ·· `public function SQLite3::querySingle(string $query, bool $entireRow = false): mixed` — `ext/sqlite3/sqlite3.stub.php:220`
+- ·· `public function SQLite3::setAuthorizer(?callable $callback): bool` — `ext/sqlite3/sqlite3.stub.php:241`
+- ·· `public static function SQLite3::version(): array` — `ext/sqlite3/sqlite3.stub.php:177`
+- ·· `private function SQLite3Result::__construct()` — `ext/sqlite3/sqlite3.stub.php:291`
+- ·· `public function SQLite3Result::columnName(int $column): string|false` — `ext/sqlite3/sqlite3.stub.php:297`
+- ·· `public function SQLite3Result::columnType(int $column): int|false` — `ext/sqlite3/sqlite3.stub.php:300`
+- ·· `public function SQLite3Result::fetchAll(int $mode = SQLITE3_BOTH): array|false` — `ext/sqlite3/sqlite3.stub.php:305`
+- ·· `public function SQLite3Result::fetchArray(int $mode = SQLITE3_BOTH): array|false` — `ext/sqlite3/sqlite3.stub.php:303`
+- ·· `public function SQLite3Result::finalize(): true` — `ext/sqlite3/sqlite3.stub.php:311`
+- ·· `public function SQLite3Result::numColumns(): int` — `ext/sqlite3/sqlite3.stub.php:294`
+- ·· `public function SQLite3Result::reset(): bool` — `ext/sqlite3/sqlite3.stub.php:308`
+- ·· `private function SQLite3Stmt::__construct(SQLite3 $sqlite3, string $query)` — `ext/sqlite3/sqlite3.stub.php:247`
+- ·· `public function SQLite3Stmt::bindParam(string|int $param, mixed&$var, int $type = SQLITE3_TEXT): bool` — `ext/sqlite3/sqlite3.stub.php:250`
+- ·· `public function SQLite3Stmt::bindValue(string|int $param, mixed $value, int $type = SQLITE3_TEXT): bool` — `ext/sqlite3/sqlite3.stub.php:253`
+- ·· `public function SQLite3Stmt::busy(): bool` — `ext/sqlite3/sqlite3.stub.php:276`
+- ·· `public function SQLite3Stmt::clear(): bool` — `ext/sqlite3/sqlite3.stub.php:256`
+- ·· `public function SQLite3Stmt::close(): true` — `ext/sqlite3/sqlite3.stub.php:259`
+- ·· `public function SQLite3Stmt::execute(): SQLite3Result|false` — `ext/sqlite3/sqlite3.stub.php:262`
+- ·· `public function SQLite3Stmt::explain(): int` — `ext/sqlite3/sqlite3.stub.php:283`
+- ·· `public function SQLite3Stmt::getSQL(bool $expand = false): string|false` — `ext/sqlite3/sqlite3.stub.php:265`
+- ·· `public function SQLite3Stmt::paramCount(): int` — `ext/sqlite3/sqlite3.stub.php:268`
+- ·· `public function SQLite3Stmt::readOnly(): bool` — `ext/sqlite3/sqlite3.stub.php:271`
+- ·· `public function SQLite3Stmt::reset(): bool` — `ext/sqlite3/sqlite3.stub.php:274`
+- ·· `public function SQLite3Stmt::setExplain(int $mode): bool` — `ext/sqlite3/sqlite3.stub.php:284`
+
+## ext/standard (`557`) — impl `266`, tested `245`
+
+- ✅🧪 `function abs(int|float $num): int|float` — `ext/standard/basic_functions.stub.php:3101`
+- ·· `function acos(float $num): float` — `ext/standard/basic_functions.stub.php:3136`
+- ·· `function acosh(float $num): float` — `ext/standard/basic_functions.stub.php:3160`
+- ·· `function addcslashes(string $string, string $characters): string` — `ext/standard/basic_functions.stub.php:2491`
+- ✅🧪 `function addslashes(string $string): string` — `ext/standard/basic_functions.stub.php:2496`
+- ✅🧪 `function array_all(array $array, callable $callback): bool` — `ext/standard/basic_functions.stub.php:1871`
+- ✅🧪 `function array_any(array $array, callable $callback): bool` — `ext/standard/basic_functions.stub.php:1869`
+- ·· `function array_change_key_case(array $array, int $case = CASE_LOWER): array` — `ext/standard/basic_functions.stub.php:1743`
+- ✅🧪 `function array_chunk(array $array, int $length, bool $preserve_keys = false): array` — `ext/standard/basic_functions.stub.php:1890`
+- ✅🧪 `function array_column(array $array, int|string|null $column_key, int|string|null $index_key = null): array` — `ext/standard/basic_functions.stub.php:1722`
+- ✅🧪 `function array_combine(array $keys, array $values): array` — `ext/standard/basic_functions.stub.php:1895`
+- ·· `function array_count_values(array $array): array` — `ext/standard/basic_functions.stub.php:1716`
+- ✅🧪 `function array_diff(array $array, array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1808`
+- ✅🧪 `function array_diff_assoc(array $array, array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1820`
+- ·· `function array_diff_key(array $array, array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1797`
+- ·· `function array_diff_uassoc(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1826`
+- ·· `function array_diff_ukey(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1803`
+- ✅🧪 `function array_fill(int $start_index, int $count, mixed $value): array` — `ext/standard/basic_functions.stub.php:1637`
+- ·· `function array_fill_keys(array $keys, mixed $value): array` — `ext/standard/basic_functions.stub.php:1640`
+- ✅🧪 `function array_filter(array $array, ?callable $callback = null, int $mode = 0): array` — `ext/standard/basic_functions.stub.php:1863`
+- ✅🧪 `function array_find(array $array, callable $callback): mixed` — `ext/standard/basic_functions.stub.php:1865`
+- ✅· `function array_find_key(array $array, callable $callback): mixed` — `ext/standard/basic_functions.stub.php:1867`
+- ·· `function array_first(array $array): mixed` — `ext/standard/basic_functions.stub.php:1698`
+- ✅🧪 `function array_flip(array $array): array` — `ext/standard/basic_functions.stub.php:1737`
+- ✅🧪 `function array_intersect(array $array, array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1764`
+- ✅🧪 `function array_intersect_assoc(array $array, array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1775`
+- ·· `function array_intersect_key(array $array, array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1754`
+- ✅🧪 `function array_intersect_uassoc(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1786`
+- ✅🧪 `function array_intersect_ukey(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1759`
+- ✅🧪 `function array_is_list(array $array): bool` — `ext/standard/basic_functions.stub.php:1898`
+- ✅🧪 `function array_key_exists($key, array $array): bool` — `ext/standard/basic_functions.stub.php:1879`
+- ✅🧪 `function array_key_first(array $array): int|string|null` — `ext/standard/basic_functions.stub.php:1688`
+- ✅🧪 `function array_key_last(array $array): int|string|null` — `ext/standard/basic_functions.stub.php:1693`
+- ✅🧪 `function array_keys(array $array, mixed $filter_value = UNKNOWN, bool $strict = false): array` — `ext/standard/basic_functions.stub.php:1683`
+- ·· `function array_last(array $array): mixed` — `ext/standard/basic_functions.stub.php:1703`
+- ✅🧪 `function array_map(?callable $callback, array $array, array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1873`
+- ✅🧪 `function array_merge(array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1662`
+- ✅🧪 `function array_merge_recursive(array ...$arrays): array` — `ext/standard/basic_functions.stub.php:1667`
+- ✅🧪 `function array_multisort(&$array,&...$rest): true` — `ext/standard/basic_functions.stub.php:1846`
+- ✅🧪 `function array_pad(array $array, int $length, mixed $value): array` — `ext/standard/basic_functions.stub.php:1730`
+- ✅🧪 `function array_pop(array&$array): mixed` — `ext/standard/basic_functions.stub.php:1646`
+- ·· `function array_product(array $array): int|float` — `ext/standard/basic_functions.stub.php:1859`
+- ✅🧪 `function array_push(array&$array, mixed ...$values): int` — `ext/standard/basic_functions.stub.php:1552`
+- ✅🧪 `function array_rand(array $array, int $num = 1): int|string|array` — `ext/standard/basic_functions.stub.php:1849`
+- ✅🧪 `function array_reduce(array $array, callable $callback, mixed $initial = null): mixed` — `ext/standard/basic_functions.stub.php:1861`
+- ✅🧪 `function array_replace(array $array, array ...$replacements): array` — `ext/standard/basic_functions.stub.php:1672`
+- ✅🧪 `function array_replace_recursive(array $array, array ...$replacements): array` — `ext/standard/basic_functions.stub.php:1677`
+- ✅🧪 `function array_reverse(array $array, bool $preserve_keys = false): array` — `ext/standard/basic_functions.stub.php:1728`
+- ✅🧪 `function array_search(mixed $needle, array $haystack, bool $strict = false): int|string|false` — `ext/standard/basic_functions.stub.php:1623`
+- ✅🧪 `function array_shift(array&$array): mixed` — `ext/standard/basic_functions.stub.php:1648`
+- ✅🧪 `function array_slice(array $array, int $offset, ?int $length = null, bool $preserve_keys = false): array` — `ext/standard/basic_functions.stub.php:1657`
+- ✅🧪 `function array_splice(array&$array, int $offset, ?int $length = null, mixed $replacement = []): array` — `ext/standard/basic_functions.stub.php:1652`
+- ·· `function array_sum(array $array): int|float` — `ext/standard/basic_functions.stub.php:1854`
+- ·· `function array_udiff(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1814`
+- ·· `function array_udiff_assoc(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1832`
+- ·· `function array_udiff_uassoc(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1838`
+- ✅🧪 `function array_uintersect(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1769`
+- ·· `function array_uintersect_assoc(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1781`
+- ✅🧪 `function array_uintersect_uassoc(array $array, ...$rest): array` — `ext/standard/basic_functions.stub.php:1791`
+- ✅🧪 `function array_unique(array $array, int $flags = SORT_STRING): array` — `ext/standard/basic_functions.stub.php:1748`
+- ✅🧪 `function array_unshift(array&$array, mixed ...$values): int` — `ext/standard/basic_functions.stub.php:1650`
+- ✅🧪 `function array_values(array $array): array` — `ext/standard/basic_functions.stub.php:1709`
+- ✅🧪 `function array_walk(array|object&$array, callable $callback, mixed $arg = UNKNOWN): true` — `ext/standard/basic_functions.stub.php:1609`
+- ✅🧪 `function array_walk_recursive(array|object&$array, callable $callback, mixed $arg = UNKNOWN): true` — `ext/standard/basic_functions.stub.php:1611`
+- ✅🧪 `function arsort(array&$array, int $flags = SORT_REGULAR): true` — `ext/standard/basic_functions.stub.php:1570`
+- ·· `function asin(float $num): float` — `ext/standard/basic_functions.stub.php:3133`
+- ·· `function asinh(float $num): float` — `ext/standard/basic_functions.stub.php:3157`
+- ✅🧪 `function asort(array&$array, int $flags = SORT_REGULAR): true` — `ext/standard/basic_functions.stub.php:1568`
+- ·· `function assert(mixed $assertion, Throwable|string|null $description = null): bool` — `ext/standard/basic_functions.stub.php:2266`
+- ·· `function assert_options(int $option, mixed $value = UNKNOWN): mixed` — `ext/standard/basic_functions.stub.php:2269`
+- ·· `function atan(float $num): float` — `ext/standard/basic_functions.stub.php:3139`
+- ·· `function atan2(float $y, float $x): float` — `ext/standard/basic_functions.stub.php:3145`
+- ·· `function atanh(float $num): float` — `ext/standard/basic_functions.stub.php:3142`
+- ✅🧪 `function base64_decode(string $string, bool $strict = false): string|false` — `ext/standard/basic_functions.stub.php:1912`
+- ✅🧪 `function base64_encode(string $string): string` — `ext/standard/basic_functions.stub.php:1906`
+- ·· `function base_convert(string $num, int $from_base, int $to_base): string` — `ext/standard/basic_functions.stub.php:3239`
+- ✅🧪 `function basename(string $path, string $suffix = ""): string` — `ext/standard/basic_functions.stub.php:2357`
+- ✅🧪 `function bin2hex(string $string): string` — `ext/standard/basic_functions.stub.php:2277`
+- ·· `function bindec(string $binary_string): int|float` — `ext/standard/basic_functions.stub.php:3208`
+- ✅🧪 `function boolval(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3600`
+- ✅🧪 `function call_user_func(callable $callback, mixed ...$args): mixed` — `ext/standard/basic_functions.stub.php:1972`
+- ✅🧪 `function call_user_func_array(callable $callback, array $args): mixed` — `ext/standard/basic_functions.stub.php:1974`
+- ✅🧪 `function ceil(int|float $num): float` — `ext/standard/basic_functions.stub.php:3104`
+- ✅🧪 `function chdir(string $directory): bool` — `ext/standard/basic_functions.stub.php:2650`
+- ·· `function checkdnsrr(string $hostname, string $type = "MX"): bool` — `ext/standard/basic_functions.stub.php:2132`
+- ·· `function chgrp(string $filename, string|int $group): bool` — `ext/standard/basic_functions.stub.php:2926`
+- ·· `function chmod(string $filename, int $permissions): bool` — `ext/standard/basic_functions.stub.php:2934`
+- ·· `function chop(string $string, string $characters = " \n\r\t\v\0"): string` — `ext/standard/basic_functions.stub.php:2313`
+- ·· `function chown(string $filename, string|int $user): bool` — `ext/standard/basic_functions.stub.php:2924`
+- ✅🧪 `function chr(int $codepoint): string` — `ext/standard/basic_functions.stub.php:2458`
+- ·· `function chroot(string $directory): bool` — `ext/standard/basic_functions.stub.php:2653`
+- ·· `function chunk_split(string $string, int $length = 76, string $separator = "\r\n"): string` — `ext/standard/basic_functions.stub.php:2430`
+- ✅🧪 `function clearstatcache(bool $clear_realpath_cache = false, string $filename = ""): void` — `ext/standard/basic_functions.stub.php:2940`
+- ✅🧪 `function closedir($dir_handle = null): void` — `ext/standard/basic_functions.stub.php:2648`
+- ·· `function closelog(): true` — `ext/standard/basic_functions.stub.php:2205`
+- ·· `function compact($var_name, ...$var_names): array` — `ext/standard/basic_functions.stub.php:1634`
+- ·· `function config_get_hash(): array` — `ext/standard/basic_functions.stub.php:2069`
+- ·· `function connection_aborted(): int` — `ext/standard/basic_functions.stub.php:2019`
+- ·· `function connection_status(): int` — `ext/standard/basic_functions.stub.php:2021`
+- ✅· `function constant(string $name): mixed` — `ext/standard/basic_functions.stub.php:1916`
+- ✅🧪 `function convert_uudecode(string $string): string|false` — `ext/standard/basic_functions.stub.php:3767`
+- ✅🧪 `function convert_uuencode(string $string): string` — `ext/standard/basic_functions.stub.php:3761`
+- ✅🧪 `function copy(string $from, string $to, $context = null): bool` — `ext/standard/basic_functions.stub.php:2824`
+- ·· `function cos(float $num): float` — `ext/standard/basic_functions.stub.php:3127`
+- ·· `function cosh(float $num): float` — `ext/standard/basic_functions.stub.php:3151`
+- ✅🧪 `function count(Countable|array $value, int $mode = COUNT_NORMAL): int` — `ext/standard/basic_functions.stub.php:1559`
+- ·· `function count_chars(string $string, int $mode = 0): array|string` — `ext/standard/basic_functions.stub.php:2562`
+- ✅🧪 `function crc32(string $string): int` — `ext/standard/basic_functions.stub.php:2091`
+- ·· `function crypt(#[\SensitiveParameter] string $string, string $salt): string` — `ext/standard/basic_functions.stub.php:2096`
+- ✅🧪 `function current(array|object $array): mixed` — `ext/standard/basic_functions.stub.php:1590`
+- ·· `function debug_zval_dump(mixed $value, mixed ...$values): void` — `ext/standard/basic_functions.stub.php:3776`
+- ✅🧪 `function decbin(int $num): string` — `ext/standard/basic_functions.stub.php:3220`
+- ·· `function dechex(int $num): string` — `ext/standard/basic_functions.stub.php:3233`
+- ·· `function decoct(int $num): string` — `ext/standard/basic_functions.stub.php:3226`
+- ·· `function deg2rad(float $num): float` — `ext/standard/basic_functions.stub.php:3202`
+- ·· `function dir(string $directory, $context = null): Directory|false` — `ext/standard/basic_functions.stub.php:2645`
+- ·· `public function Directory::close(): void` — `ext/standard/dir.stub.php:99`
+- ·· `public function Directory::read(): string|false` — `ext/standard/dir.stub.php:103`
+- ·· `public function Directory::rewind(): void` — `ext/standard/dir.stub.php:101`
+- ✅🧪 `function dirname(string $path, int $levels = 1): string` — `ext/standard/basic_functions.stub.php:2364`
+- ·· `function disk_free_space(string $directory): float|false` — `ext/standard/basic_functions.stub.php:2944`
+- ·· `function disk_total_space(string $directory): float|false` — `ext/standard/basic_functions.stub.php:2942`
+- ·· `function diskfreespace(string $directory): float|false` — `ext/standard/basic_functions.stub.php:2947`
+- ·· `function dl(string $extension_filename): bool` — `ext/standard/dl.stub.php:3`
+- ·· `function dns_check_record(string $hostname, string $type = "MX"): bool` — `ext/standard/basic_functions.stub.php:2129`
+- ·· `function dns_get_mx(string $hostname,&$hosts,&$weights = null): bool` — `ext/standard/basic_functions.stub.php:2146`
+- ·· `function dns_get_record(string $hostname, int $type = DNS_ANY,&$authoritative_name_servers = null,&$additional_records = null, bool $raw = false): array|false` — `ext/standard/basic_functions.stub.php:2140`
+- ·· `function doubleval(mixed $value): float` — `ext/standard/basic_functions.stub.php:3595`
+- ✅🧪 `function end(array|object&$array): mixed` — `ext/standard/basic_functions.stub.php:1582`
+- ·· `function error_clear_last(): void` — `ext/standard/basic_functions.stub.php:1970`
+- ·· `function error_get_last(): ?array` — `ext/standard/basic_functions.stub.php:1968`
+- ·· `function error_log(string $message, int $message_type = 0, ?string $destination = null, ?string $additional_headers = null): bool` — `ext/standard/basic_functions.stub.php:1962`
+- ·· `function escapeshellarg(string $arg): string` — `ext/standard/basic_functions.stub.php:2702`
+- ·· `function escapeshellcmd(string $command): string` — `ext/standard/basic_functions.stub.php:2699`
+- ✅🧪 `function exec(string $command,&$output = null,&$result_code = null): string|false` — `ext/standard/basic_functions.stub.php:2687`
+- ·· `function exp(float $num): float` — `ext/standard/basic_functions.stub.php:3187`
+- ✅🧪 `function explode(string $separator, string $string, int $limit = PHP_INT_MAX): array` — `ext/standard/basic_functions.stub.php:2329`
+- ·· `function expm1(float $num): float` — `ext/standard/basic_functions.stub.php:3163`
+- ·· `function extract(array&$array, int $flags = EXTR_OVERWRITE, string $prefix = ""): int` — `ext/standard/basic_functions.stub.php:1626`
+- ✅🧪 `function fclose($stream): bool` — `ext/standard/basic_functions.stub.php:2746`
+- ·· `function fdatasync($stream): bool` — `ext/standard/basic_functions.stub.php:2806`
+- ✅🧪 `function fdiv(float $num1, float $num2): float` — `ext/standard/basic_functions.stub.php:3255`
+- ✅🧪 `function feof($stream): bool` — `ext/standard/basic_functions.stub.php:2749`
+- ✅🧪 `function fflush($stream): bool` — `ext/standard/basic_functions.stub.php:2800`
+- ✅🧪 `function fgetc($stream): string|false` — `ext/standard/basic_functions.stub.php:2752`
+- ·· `function fgetcsv($stream, ?int $length = null, string $separator = ", ", string $enclosure = "\"", string $escape = "\\"): array|false` — `ext/standard/basic_functions.stub.php:2862`
+- ✅🧪 `function fgets($stream, ?int $length = null): string|false` — `ext/standard/basic_functions.stub.php:2758`
+- ·· `function file(string $filename, int $flags = 0, $context = null): array|false` — `ext/standard/basic_functions.stub.php:2840`
+- ✅🧪 `function file_exists(string $filename): bool` — `ext/standard/basic_functions.stub.php:2895`
+- ✅🧪 `function file_get_contents(string $filename, bool $use_include_path = false, $context = null, int $offset = 0, ?int $length = null): string|false` — `ext/standard/basic_functions.stub.php:2846`
+- ✅🧪 `function file_put_contents(string $filename, mixed $data, int $flags = 0, $context = null): int|false` — `ext/standard/basic_functions.stub.php:2852`
+- ·· `function fileatime(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2876`
+- ·· `function filectime(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2878`
+- ·· `function filegroup(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2880`
+- ·· `function fileinode(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2882`
+- ✅· `function filemtime(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2884`
+- ·· `function fileowner(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2886`
+- ·· `function fileperms(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2888`
+- ✅🧪 `function filesize(string $filename): int|false` — `ext/standard/basic_functions.stub.php:2890`
+- ✅🧪 `function filetype(string $filename): string|false` — `ext/standard/basic_functions.stub.php:2893`
+- ✅· `function floatval(mixed $value): float` — `ext/standard/basic_functions.stub.php:3592`
+- ·· `function flock($stream, int $operation,&$would_block = null): bool` — `ext/standard/basic_functions.stub.php:2717`
+- ✅🧪 `function floor(int|float $num): float` — `ext/standard/basic_functions.stub.php:3107`
+- ✅🧪 `function flush(): void` — `ext/standard/basic_functions.stub.php:1940`
+- ✅· `function fmod(float $num1, float $num2): float` — `ext/standard/basic_functions.stub.php:3250`
+- ·· `function fnmatch(string $pattern, string $filename, int $flags = 0): bool` — `ext/standard/basic_functions.stub.php:2868`
+- ✅🧪 `function fopen(string $filename, string $mode, bool $use_include_path = false, $context = null)` — `ext/standard/basic_functions.stub.php:2771`
+- ✅🧪 `function forward_static_call(callable $callback, mixed ...$args): mixed` — `ext/standard/basic_functions.stub.php:1976`
+- ·· `function forward_static_call_array(callable $callback, array $args): mixed` — `ext/standard/basic_functions.stub.php:1978`
+- ·· `function fpassthru($stream): int` — `ext/standard/basic_functions.stub.php:2781`
+- ·· `function fpow(float $num, float $exponent): float` — `ext/standard/basic_functions.stub.php:3260`
+- ✅🧪 `function fprintf($stream, string $format, mixed ...$values): int` — `ext/standard/basic_functions.stub.php:2970`
+- ·· `function fputcsv($stream, array $fields, string $separator = ", ", string $enclosure = "\"", string $escape = "\\", string $eol = "\n"): int|false` — `ext/standard/basic_functions.stub.php:2855`
+- ·· `function fputs($stream, string $data, ?int $length = null): int|false` — `ext/standard/basic_functions.stub.php:2815`
+- ✅🧪 `function fread($stream, int $length): string|false` — `ext/standard/basic_functions.stub.php:2764`
+- ·· `function fscanf($stream, string $format, mixed&...$vars): array|int|false|null` — `ext/standard/basic_functions.stub.php:2778`
+- ✅🧪 `function fseek($stream, int $offset, int $whence = SEEK_SET): int` — `ext/standard/basic_functions.stub.php:2794`
+- ·· `function fsockopen(string $hostname, int $port = -1,&$error_code = null,&$error_message = null, ?float $timeout = null)` — `ext/standard/basic_functions.stub.php:2983`
+- ·· `function fstat($stream): array|false` — `ext/standard/basic_functions.stub.php:2791`
+- ·· `function fsync($stream): bool` — `ext/standard/basic_functions.stub.php:2803`
+- ✅🧪 `function ftell($stream): int|false` — `ext/standard/basic_functions.stub.php:2797`
+- ·· `function ftok(string $filename, string $project_id): int` — `ext/standard/basic_functions.stub.php:2165`
+- ✅🧪 `function ftruncate($stream, int $size): bool` — `ext/standard/basic_functions.stub.php:2784`
+- ✅🧪 `function fwrite($stream, string $data, ?int $length = null): int|false` — `ext/standard/basic_functions.stub.php:2809`
+- ·· `function get_browser(?string $user_agent = null, bool $return_array = false): object|array|false` — `ext/standard/basic_functions.stub.php:2086`
+- ✅🧪 `function get_cfg_var(string $option): string|array|false` — `ext/standard/basic_functions.stub.php:1960`
+- ✅🧪 `function get_current_user(): string` — `ext/standard/basic_functions.stub.php:1957`
+- ✅· `function get_debug_type(mixed $value): string` — `ext/standard/basic_functions.stub.php:3580`
+- ·· `function get_headers(string $url, bool $associative = false, $context = null): array|false` — `ext/standard/basic_functions.stub.php:3725`
+- ·· `function get_html_translation_table(int $table = HTML_SPECIALCHARS, int $flags = ENT_QUOTES|ENT_SUBSTITUTE|ENT_HTML401, string $encoding = "UTF-8"): array` — `ext/standard/basic_functions.stub.php:2260`
+- ·· `function get_include_path(): string|false` — `ext/standard/basic_functions.stub.php:2014`
+- ·· `function get_meta_tags(string $filename, bool $use_include_path = false): array|false` — `ext/standard/basic_functions.stub.php:2723`
+- ✅🧪 `function getcwd(): string|false` — `ext/standard/basic_functions.stub.php:2657`
+- ✅🧪 `function getenv(?string $name = null, bool $local_only = false): string|array|false` — `ext/standard/basic_functions.stub.php:1927`
+- ·· `function gethostbyaddr(string $ip): string|false` — `ext/standard/basic_functions.stub.php:2117`
+- ·· `function gethostbyname(string $hostname): string` — `ext/standard/basic_functions.stub.php:2120`
+- ·· `function gethostbynamel(string $hostname): array|false` — `ext/standard/basic_functions.stub.php:2126`
+- ·· `function gethostname(): string|false` — `ext/standard/basic_functions.stub.php:2113`
+- ·· `function getimagesize(string $filename,&$image_info = null): array|false` — `ext/standard/basic_functions.stub.php:3027`
+- ·· `function getimagesizefromstring(string $string,&$image_info = null): array|false` — `ext/standard/basic_functions.stub.php:3034`
+- ·· `function getlastmod(): int|false` — `ext/standard/basic_functions.stub.php:2190`
+- ·· `function getmxrr(string $hostname,&$hosts,&$weights = null): bool` — `ext/standard/basic_functions.stub.php:2153`
+- ·· `function getmygid(): int|false` — `ext/standard/basic_functions.stub.php:2184`
+- ·· `function getmyinode(): int|false` — `ext/standard/basic_functions.stub.php:2188`
+- ·· `function getmypid(): int|false` — `ext/standard/basic_functions.stub.php:2186`
+- ·· `function getmyuid(): int|false` — `ext/standard/basic_functions.stub.php:2182`
+- ·· `function getopt(string $short_options, array $long_options = [],&$rest_index = null): array|false` — `ext/standard/basic_functions.stub.php:1938`
+- ·· `function getprotobyname(string $protocol): int|false` — `ext/standard/basic_functions.stub.php:2035`
+- ·· `function getprotobynumber(int $protocol): string|false` — `ext/standard/basic_functions.stub.php:2040`
+- ·· `function getrusage(int $mode = 0): array|false` — `ext/standard/basic_functions.stub.php:3280`
+- ·· `function getservbyname(string $service, string $protocol): int|false` — `ext/standard/basic_functions.stub.php:2026`
+- ·· `function getservbyport(int $port, string $protocol): string|false` — `ext/standard/basic_functions.stub.php:2031`
+- ·· `function gettimeofday(bool $as_float = false): array|float` — `ext/standard/basic_functions.stub.php:3272`
+- ✅🧪 `function gettype(mixed $value): string` — `ext/standard/basic_functions.stub.php:3575`
+- ✅🧪 `function glob(string $pattern, int $flags = 0): array|false` — `ext/standard/basic_functions.stub.php:2678`
+- ·· `function header(string $header, bool $replace = true, int $response_code = 0): void` — `ext/standard/basic_functions.stub.php:2222`
+- ·· `function header_register_callback(callable $callback): bool` — `ext/standard/basic_functions.stub.php:1494`
+- ·· `function header_remove(?string $name = null): void` — `ext/standard/basic_functions.stub.php:2224`
+- ·· `function headers_list(): array` — `ext/standard/basic_functions.stub.php:2242`
+- ·· `function headers_sent(&$filename = null,&$line = null): bool` — `ext/standard/basic_functions.stub.php:2236`
+- ·· `function hebrev(string $string, int $max_chars_per_line = 0): string` — `ext/standard/basic_functions.stub.php:2526`
+- ✅🧪 `function hex2bin(string $string): string|false` — `ext/standard/basic_functions.stub.php:2283`
+- ·· `function hexdec(string $hex_string): int|float` — `ext/standard/basic_functions.stub.php:3211`
+- ·· `function highlight_file(string $filename, bool $return = false): string|bool` — `ext/standard/basic_functions.stub.php:1983`
+- ·· `function highlight_string(string $string, bool $return = false): string|true` — `ext/standard/basic_functions.stub.php:1992`
+- ✅🧪 `function hrtime(bool $as_number = false): array|int|float|false` — `ext/standard/basic_functions.stub.php:2170`
+- ·· `function html_entity_decode(string $string, int $flags = ENT_QUOTES|ENT_SUBSTITUTE|ENT_HTML401, ?string $encoding = null): string` — `ext/standard/basic_functions.stub.php:2251`
+- ✅· `function htmlentities(string $string, int $flags = ENT_QUOTES|ENT_SUBSTITUTE|ENT_HTML401, ?string $encoding = null, bool $double_encode = true): string` — `ext/standard/basic_functions.stub.php:2254`
+- ✅🧪 `function htmlspecialchars(string $string, int $flags = ENT_QUOTES|ENT_SUBSTITUTE|ENT_HTML401, ?string $encoding = null, bool $double_encode = true): string` — `ext/standard/basic_functions.stub.php:2247`
+- ✅🧪 `function htmlspecialchars_decode(string $string, int $flags = ENT_QUOTES|ENT_SUBSTITUTE|ENT_HTML401): string` — `ext/standard/basic_functions.stub.php:2249`
+- ✅🧪 `function http_build_query(array|object $data, string $numeric_prefix = "", ?string $arg_separator = null, int $encoding_type = PHP_QUERY_RFC1738): string` — `ext/standard/basic_functions.stub.php:2995`
+- ·· `function http_clear_last_response_headers(): void` — `ext/standard/basic_functions.stub.php:2999`
+- ·· `function http_get_last_response_headers(): ?array` — `ext/standard/basic_functions.stub.php:2997`
+- ·· `function http_response_code(int $response_code = 0): int|bool` — `ext/standard/basic_functions.stub.php:2230`
+- ·· `function hypot(float $x, float $y): float` — `ext/standard/basic_functions.stub.php:3199`
+- ·· `function ignore_user_abort(?bool $enable = null): int` — `ext/standard/basic_functions.stub.php:2023`
+- ·· `function image_type_to_extension(int $image_type, bool $include_dot = true): string|false` — `ext/standard/basic_functions.stub.php:3020`
+- ·· `function image_type_to_mime_type(int $image_type): string` — `ext/standard/basic_functions.stub.php:3014`
+- ✅🧪 `function implode(string|array $separator, ?array $array = null): string` — `ext/standard/basic_functions.stub.php:2336`
+- ✅🧪 `function in_array(mixed $needle, array $haystack, bool $strict = false): bool` — `ext/standard/basic_functions.stub.php:1618`
+- ·· `function inet_ntop(string $ip): string|false` — `ext/standard/basic_functions.stub.php:2211`
+- ·· `function inet_pton(string $ip): string|false` — `ext/standard/basic_functions.stub.php:2214`
+- ·· `function ini_alter(string $option, string|int|float|bool|null $value): string|false` — `ext/standard/basic_functions.stub.php:2005`
+- ✅🧪 `function ini_get(string $option): string|false` — `ext/standard/basic_functions.stub.php:1994`
+- ✅· `function ini_get_all(?string $extension = null, bool $details = true): array|false` — `ext/standard/basic_functions.stub.php:2000`
+- ·· `function ini_parse_quantity(string $shorthand): int` — `ext/standard/basic_functions.stub.php:2009`
+- ·· `function ini_restore(string $option): void` — `ext/standard/basic_functions.stub.php:2007`
+- ✅🧪 `function ini_set(string $option, string|int|float|bool|null $value): string|false` — `ext/standard/basic_functions.stub.php:2002`
+- ✅🧪 `function intdiv(int $num1, int $num2): int` — `ext/standard/basic_functions.stub.php:3178`
+- ✅· `function intval(mixed $value, int $base = 10): int` — `ext/standard/basic_functions.stub.php:3587`
+- ·· `function ip2long(string $ip): int|false` — `ext/standard/basic_functions.stub.php:1918`
+- ·· `function iptcembed(string $iptc_data, string $filename, int $spool = 0): string|bool` — `ext/standard/basic_functions.stub.php:3069`
+- ·· `function iptcparse(string $iptc_block): array|false` — `ext/standard/basic_functions.stub.php:3075`
+- ✅🧪 `function is_array(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3655`
+- ✅🧪 `function is_bool(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3620`
+- ·🧪 `function is_callable(mixed $value, bool $syntax_only = false,&$callable_name = null): bool` — `ext/standard/basic_functions.stub.php:3668`
+- ✅· `function is_countable(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3678`
+- ✅🧪 `function is_dir(string $filename): bool` — `ext/standard/basic_functions.stub.php:2908`
+- ·· `function is_double(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3639`
+- ·🧪 `function is_executable(string $filename): bool` — `ext/standard/basic_functions.stub.php:2904`
+- ✅🧪 `function is_file(string $filename): bool` — `ext/standard/basic_functions.stub.php:2906`
+- ✅🧪 `function is_finite(float $num): bool` — `ext/standard/basic_functions.stub.php:3172`
+- ✅🧪 `function is_float(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3636`
+- ✅🧪 `function is_infinite(float $num): bool` — `ext/standard/basic_functions.stub.php:3181`
+- ✅🧪 `function is_int(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3625`
+- ·· `function is_integer(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3628`
+- ✅· `function is_iterable(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3673`
+- ✅🧪 `function is_link(string $filename): bool` — `ext/standard/basic_functions.stub.php:2910`
+- ·· `function is_long(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3631`
+- ✅🧪 `function is_nan(float $num): bool` — `ext/standard/basic_functions.stub.php:3175`
+- ✅🧪 `function is_null(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3610`
+- ·· `function is_numeric(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3645`
+- ✅🧪 `function is_object(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3660`
+- ✅🧪 `function is_readable(string $filename): bool` — `ext/standard/basic_functions.stub.php:2902`
+- ✅🧪 `function is_resource(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3615`
+- ✅🧪 `function is_scalar(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3665`
+- ✅🧪 `function is_string(mixed $value): bool` — `ext/standard/basic_functions.stub.php:3650`
+- ·· `function is_uploaded_file(string $filename): bool` — `ext/standard/basic_functions.stub.php:2047`
+- ✅· `function is_writable(string $filename): bool` — `ext/standard/basic_functions.stub.php:2897`
+- ·· `function is_writeable(string $filename): bool` — `ext/standard/basic_functions.stub.php:2900`
+- ·🧪 `function join(string|array $separator, ?array $array = null): string` — `ext/standard/basic_functions.stub.php:2339`
+- ✅🧪 `function key(array|object $array): int|string|null` — `ext/standard/basic_functions.stub.php:1595`
+- ✅🧪 `function key_exists($key, array $array): bool` — `ext/standard/basic_functions.stub.php:1885`
+- ✅🧪 `function krsort(array&$array, int $flags = SORT_REGULAR): true` — `ext/standard/basic_functions.stub.php:1554`
+- ✅🧪 `function ksort(array&$array, int $flags = SORT_REGULAR): true` — `ext/standard/basic_functions.stub.php:1556`
+- ✅· `function lcfirst(string $string): string` — `ext/standard/basic_functions.stub.php:2464`
+- ·· `function lchgrp(string $filename, string|int $group): bool` — `ext/standard/basic_functions.stub.php:2931`
+- ·· `function lchown(string $filename, string|int $user): bool` — `ext/standard/basic_functions.stub.php:2929`
+- ·· `function levenshtein(string $string1, string $string2, int $insertion_cost = 1, int $replacement_cost = 1, int $deletion_cost = 1): int` — `ext/standard/basic_functions.stub.php:3079`
+- ·· `function link(string $target, string $link): bool` — `ext/standard/basic_functions.stub.php:3091`
+- ·· `function linkinfo(string $path): int|false` — `ext/standard/basic_functions.stub.php:3087`
+- ·· `function localeconv(): array` — `ext/standard/basic_functions.stub.php:2570`
+- ·🧪 `function log(float $num, float $base = M_E): float` — `ext/standard/basic_functions.stub.php:3190`
+- ·· `function log10(float $num): float` — `ext/standard/basic_functions.stub.php:3193`
+- ·· `function log1p(float $num): float` — `ext/standard/basic_functions.stub.php:3166`
+- ·· `function long2ip(int $ip): string` — `ext/standard/basic_functions.stub.php:1921`
+- ✅· `function lstat(string $filename): array|false` — `ext/standard/basic_functions.stub.php:2922`
+- ✅🧪 `function ltrim(string $string, string $characters = " \n\r\t\v\0"): string` — `ext/standard/basic_functions.stub.php:2316`
+- ·· `function mail(string $to, string $subject, string $message, array|string $additional_headers = [], string $additional_params = ""): bool` — `ext/standard/basic_functions.stub.php:3096`
+- ✅🧪 `function max(mixed $value, mixed ...$values): mixed` — `ext/standard/basic_functions.stub.php:1607`
+- ✅🧪 `function md5(string $string, bool $binary = false): string` — `ext/standard/basic_functions.stub.php:2175`
+- ·· `function md5_file(string $filename, bool $binary = false): string|false` — `ext/standard/basic_functions.stub.php:2178`
+- ·· `function memory_get_peak_usage(bool $real_usage = false): int` — `ext/standard/basic_functions.stub.php:3788`
+- ·· `function memory_get_usage(bool $real_usage = false): int` — `ext/standard/basic_functions.stub.php:3786`
+- ·· `function memory_reset_peak_usage(): void` — `ext/standard/basic_functions.stub.php:3790`
+- ·· `function metaphone(string $string, int $max_phonemes = 0): string` — `ext/standard/basic_functions.stub.php:2219`
+- ·· `function microtime(bool $as_float = false): string|float` — `ext/standard/basic_functions.stub.php:3266`
+- ✅🧪 `function min(mixed $value, mixed ...$values): mixed` — `ext/standard/basic_functions.stub.php:1601`
+- ✅🧪 `function mkdir(string $directory, int $permissions = 0777, bool $recursive = false, $context = null): bool` — `ext/standard/basic_functions.stub.php:2818`
+- ·· `function move_uploaded_file(string $from, string $to): bool` — `ext/standard/basic_functions.stub.php:2049`
+- ✅🧪 `function natcasesort(array&$array): true` — `ext/standard/basic_functions.stub.php:1566`
+- ✅🧪 `function natsort(array&$array): true` — `ext/standard/basic_functions.stub.php:1564`
+- ·· `function net_get_interfaces(): array|false` — `ext/standard/basic_functions.stub.php:2159`
+- ✅🧪 `function next(array|object&$array): mixed` — `ext/standard/basic_functions.stub.php:1586`
+- ·· `function nl2br(string $string, bool $use_xhtml = true): string` — `ext/standard/basic_functions.stub.php:2531`
+- ·· `function nl_langinfo(int $item): string|false` — `ext/standard/basic_functions.stub.php:2297`
+- ✅🧪 `function number_format(float $num, int $decimals = 0, ?string $decimal_separator = ".", ?string $thousands_separator = ", "): string` — `ext/standard/basic_functions.stub.php:3245`
+- ·· `function ob_clean(): bool` — `ext/standard/basic_functions.stub.php:1503`
+- ✅🧪 `function ob_end_clean(): bool` — `ext/standard/basic_functions.stub.php:1507`
+- ✅🧪 `function ob_end_flush(): bool` — `ext/standard/basic_functions.stub.php:1505`
+- ·· `function ob_flush(): bool` — `ext/standard/basic_functions.stub.php:1501`
+- ✅🧪 `function ob_get_clean(): string|false` — `ext/standard/basic_functions.stub.php:1513`
+- ✅🧪 `function ob_get_contents(): string|false` — `ext/standard/basic_functions.stub.php:1515`
+- ·· `function ob_get_flush(): string|false` — `ext/standard/basic_functions.stub.php:1510`
+- ✅🧪 `function ob_get_length(): int|false` — `ext/standard/basic_functions.stub.php:1519`
+- ✅🧪 `function ob_get_level(): int` — `ext/standard/basic_functions.stub.php:1517`
+- ·· `function ob_get_status(bool $full_status = false): array` — `ext/standard/basic_functions.stub.php:1531`
+- ·· `function ob_implicit_flush(bool $enable = true): void` — `ext/standard/basic_functions.stub.php:1533`
+- ·· `function ob_list_handlers(): array` — `ext/standard/basic_functions.stub.php:1525`
+- ✅🧪 `function ob_start($callback = null, int $chunk_size = 0, int $flags = PHP_OUTPUT_HANDLER_STDFLAGS): bool` — `ext/standard/basic_functions.stub.php:1499`
+- ·· `function octdec(string $octal_string): int|float` — `ext/standard/basic_functions.stub.php:3214`
+- ✅🧪 `function opendir(string $directory, $context = null)` — `ext/standard/basic_functions.stub.php:2639`
+- ·· `function openlog(string $prefix, int $flags, int $facility): true` — `ext/standard/basic_functions.stub.php:2203`
+- ✅🧪 `function ord(string $character): int` — `ext/standard/basic_functions.stub.php:2452`
+- ·· `function output_add_rewrite_var(string $name, string $value): bool` — `ext/standard/basic_functions.stub.php:1537`
+- ·· `function output_reset_rewrite_vars(): bool` — `ext/standard/basic_functions.stub.php:1535`
+- ✅🧪 `function pack(string $format, mixed ...$values): string` — `ext/standard/basic_functions.stub.php:3289`
+- ·· `function parse_ini_file(string $filename, bool $process_sections = false, int $scanner_mode = INI_SCANNER_NORMAL): array|false` — `ext/standard/basic_functions.stub.php:2055`
+- ·· `function parse_ini_string(string $ini_string, bool $process_sections = false, int $scanner_mode = INI_SCANNER_NORMAL): array|false` — `ext/standard/basic_functions.stub.php:2062`
+- ·· `function parse_str(string $string,&$result): void` — `ext/standard/basic_functions.stub.php:2546`
+- ✅🧪 `function parse_url(string $url, int $component = -1): int|string|array|null|false` — `ext/standard/basic_functions.stub.php:3694`
+- ✅· `function passthru(string $command,&$result_code = null): false|null` — `ext/standard/basic_functions.stub.php:2696`
+- ·· `function password_algos(): array` — `ext/standard/basic_functions.stub.php:3318`
+- ·· `function password_get_info(string $hash): array` — `ext/standard/basic_functions.stub.php:3304`
+- ·· `function password_hash(#[\SensitiveParameter] string $password, string|int|null $algo, array $options = []): string` — `ext/standard/basic_functions.stub.php:3309`
+- ·· `function password_needs_rehash(string $hash, string|int|null $algo, array $options = []): bool` — `ext/standard/basic_functions.stub.php:3311`
+- ·· `function password_verify(#[\SensitiveParameter] string $password, string $hash): bool` — `ext/standard/basic_functions.stub.php:3313`
+- ✅🧪 `function pathinfo(string $path, int $flags = PATHINFO_ALL): array|string` — `ext/standard/basic_functions.stub.php:2370`
+- ✅· `function pclose($handle): int` — `ext/standard/basic_functions.stub.php:2726`
+- ·· `function pfsockopen(string $hostname, int $port = -1,&$error_code = null,&$error_message = null, ?float $timeout = null)` — `ext/standard/basic_functions.stub.php:2990`
+- ·· `function php_ini_loaded_file(): string|false` — `ext/standard/basic_functions.stub.php:3064`
+- ·· `function php_ini_scanned_files(): string|false` — `ext/standard/basic_functions.stub.php:3061`
+- ✅🧪 `function php_sapi_name(): string|false` — `ext/standard/basic_functions.stub.php:3052`
+- ·· `function php_strip_whitespace(string $filename): string` — `ext/standard/basic_functions.stub.php:1989`
+- ✅🧪 `function php_uname(string $mode = "a"): string` — `ext/standard/basic_functions.stub.php:3058`
+- ·· `public function php_user_filter::filter($in, $out,&$consumed, bool $closing): int` — `ext/standard/user_filters.stub.php:50`
+- ·· `public function php_user_filter::onClose(): void` — `ext/standard/user_filters.stub.php:56`
+- ·· `public function php_user_filter::onCreate(): bool` — `ext/standard/user_filters.stub.php:53`
+- ·· `function phpcredits(int $flags = CREDITS_ALL): true` — `ext/standard/basic_functions.stub.php:3046`
+- ·· `function phpinfo(int $flags = INFO_ALL): true` — `ext/standard/basic_functions.stub.php:3038`
+- ·🧪 `function phpversion(?string $extension = null): string|false` — `ext/standard/basic_functions.stub.php:3044`
+- ·· `function pi(): float` — `ext/standard/basic_functions.stub.php:3169`
+- ✅· `function popen(string $command, string $mode)` — `ext/standard/basic_functions.stub.php:2732`
+- ·· `function pos(array|object $array): mixed` — `ext/standard/basic_functions.stub.php:1593`
+- ✅🧪 `function pow(mixed $num, mixed $exponent): int|float|object` — `ext/standard/basic_functions.stub.php:3184`
+- ✅🧪 `function prev(array|object&$array): mixed` — `ext/standard/basic_functions.stub.php:1584`
+- ✅🧪 `function print_r(mixed $value, bool $return = false): string|true` — `ext/standard/basic_functions.stub.php:2017`
+- ✅🧪 `function printf(string $format, mixed ...$values): int` — `ext/standard/basic_functions.stub.php:2962`
+- ✅🧪 `function proc_close($process): int` — `ext/standard/basic_functions.stub.php:3331`
+- ✅· `function proc_get_status($process): array` — `ext/standard/basic_functions.stub.php:3341`
+- ·· `function proc_nice(int $priority): bool` — `ext/standard/basic_functions.stub.php:2708`
+- ✅🧪 `function proc_open(array|string $command, array $descriptor_spec,&$pipes, ?string $cwd = null, ?array $env_vars = null, ?array $options = null)` — `ext/standard/basic_functions.stub.php:3328`
+- ·· `function proc_terminate($process, int $signal = 15): bool` — `ext/standard/basic_functions.stub.php:3334`
+- ✅🧪 `function putenv(string $assignment): bool` — `ext/standard/basic_functions.stub.php:1930`
+- ·· `function quoted_printable_decode(string $string): string` — `ext/standard/basic_functions.stub.php:3350`
+- ·· `function quoted_printable_encode(string $string): string` — `ext/standard/basic_functions.stub.php:3356`
+- ✅🧪 `function quotemeta(string $string): string` — `ext/standard/basic_functions.stub.php:2449`
+- ·· `function rad2deg(float $num): float` — `ext/standard/basic_functions.stub.php:3205`
+- ✅🧪 `function range(string|int|float $start, string|int|float $end, int|float $step = 1): array` — `ext/standard/basic_functions.stub.php:1642`
+- ✅🧪 `function rawurldecode(string $string): string` — `ext/standard/basic_functions.stub.php:3718`
+- ✅🧪 `function rawurlencode(string $string): string` — `ext/standard/basic_functions.stub.php:3712`
+- ✅· `function readdir($dir_handle = null): string|false` — `ext/standard/basic_functions.stub.php:2666`
+- ✅🧪 `function readfile(string $filename, bool $use_include_path = false, $context = null): int|false` — `ext/standard/basic_functions.stub.php:2735`
+- ·· `function readlink(string $path): string|false` — `ext/standard/basic_functions.stub.php:3085`
+- ✅🧪 `function realpath(string $path): string|false` — `ext/standard/basic_functions.stub.php:2865`
+- ·· `function realpath_cache_get(): array` — `ext/standard/basic_functions.stub.php:2953`
+- ·· `function realpath_cache_size(): int` — `ext/standard/basic_functions.stub.php:2955`
+- ·· `function register_shutdown_function(callable $callback, mixed ...$args): void` — `ext/standard/basic_functions.stub.php:1980`
+- ·· `function register_tick_function(callable $callback, mixed ...$args): bool` — `ext/standard/basic_functions.stub.php:2043`
+- ✅🧪 `function rename(string $from, string $to, $context = null): bool` — `ext/standard/basic_functions.stub.php:2821`
+- ·· `function request_parse_body(?array $options = null): array` — `ext/standard/basic_functions.stub.php:3006`
+- ✅🧪 `function reset(array|object&$array): mixed` — `ext/standard/basic_functions.stub.php:1588`
+- ✅🧪 `function rewind($stream): bool` — `ext/standard/basic_functions.stub.php:2738`
+- ✅· `function rewinddir($dir_handle = null): void` — `ext/standard/basic_functions.stub.php:2660`
+- ✅🧪 `function rmdir(string $directory, $context = null): bool` — `ext/standard/basic_functions.stub.php:2741`
+- ✅🧪 `function round(int|float $num, int $precision = 0, int|RoundingMode $mode = RoundingMode::HalfAwayFromZero): float` — `ext/standard/basic_functions.stub.php:3121`
+- ✅🧪 `function rsort(array&$array, int $flags = SORT_REGULAR): true` — `ext/standard/basic_functions.stub.php:1574`
+- ✅🧪 `function rtrim(string $string, string $characters = " \n\r\t\v\0"): string` — `ext/standard/basic_functions.stub.php:2310`
+- ·· `function sapi_windows_cp_conv(int|string $in_codepage, int|string $out_codepage, string $subject): ?string` — `ext/standard/basic_functions.stub.php:3804`
+- ·· `function sapi_windows_cp_get(string $kind = ""): int` — `ext/standard/basic_functions.stub.php:3802`
+- ·· `function sapi_windows_cp_is_utf8(): bool` — `ext/standard/basic_functions.stub.php:3806`
+- ·· `function sapi_windows_cp_set(int $codepage): bool` — `ext/standard/basic_functions.stub.php:3800`
+- ·· `function sapi_windows_generate_ctrl_event(int $event, int $pid = 0): bool` — `ext/standard/basic_functions.stub.php:3810`
+- ·· `function sapi_windows_set_ctrl_handler(?callable $handler, bool $add = true): bool` — `ext/standard/basic_functions.stub.php:3808`
+- ·· `function sapi_windows_vt100_support($stream, ?bool $enable = null): bool` — `ext/standard/basic_functions.stub.php:3552`
+- ✅🧪 `function scandir(string $directory, int $sorting_order = SCANDIR_SORT_ASCENDING, $context = null): array|false` — `ext/standard/basic_functions.stub.php:2673`
+- ✅🧪 `function serialize(mixed $value): string` — `ext/standard/basic_functions.stub.php:3782`
+- ·· `function set_file_buffer($stream, int $size): int` — `ext/standard/basic_functions.stub.php:3496`
+- ·· `function set_include_path(string $include_path): string|false` — `ext/standard/basic_functions.stub.php:2012`
+- ·· `function set_time_limit(int $seconds): bool` — `ext/standard/basic_functions.stub.php:1490`
+- ·· `function setcookie(string $name, string $value = "", array|int $expires_or_options = 0, string $path = "", string $domain = "", bool $secure = false, bool $httponly = false): bool` — `ext/standard/basic_functions.stub.php:2228`
+- ✅🧪 `function setlocale(int $category, $locales, ...$rest): string|false` — `ext/standard/basic_functions.stub.php:2543`
+- ·· `function setrawcookie(string $name, string $value = "", array|int $expires_or_options = 0, string $path = "", string $domain = "", bool $secure = false, bool $httponly = false): bool` — `ext/standard/basic_functions.stub.php:2226`
+- ·· `function settype(mixed&$var, string $type): bool` — `ext/standard/basic_functions.stub.php:3582`
+- ✅🧪 `function sha1(string $string, bool $binary = false): string` — `ext/standard/basic_functions.stub.php:2195`
+- ·· `function sha1_file(string $filename, bool $binary = false): string|false` — `ext/standard/basic_functions.stub.php:2198`
+- ✅· `function shell_exec(string $command): string|false|null` — `ext/standard/basic_functions.stub.php:2705`
+- ·· `function show_source(string $filename, bool $return = false): string|bool` — `ext/standard/basic_functions.stub.php:1986`
+- ✅🧪 `function shuffle(array&$array): true` — `ext/standard/basic_functions.stub.php:1644`
+- ·· `function similar_text(string $string1, string $string2,&$percent = null): int` — `ext/standard/basic_functions.stub.php:2486`
+- ·· `function sin(float $num): float` — `ext/standard/basic_functions.stub.php:3124`
+- ·· `function sinh(float $num): float` — `ext/standard/basic_functions.stub.php:3148`
+- ✅🧪 `function sizeof(Countable|array $value, int $mode = COUNT_NORMAL): int` — `ext/standard/basic_functions.stub.php:1562`
+- ·· `function sleep(int $seconds): int` — `ext/standard/basic_functions.stub.php:1942`
+- ·· `function socket_get_status($stream): array` — `ext/standard/basic_functions.stub.php:3521`
+- ·· `function socket_set_blocking($stream, bool $enable): bool` — `ext/standard/basic_functions.stub.php:3508`
+- ·· `function socket_set_timeout($stream, int $seconds, int $microseconds = 0): bool` — `ext/standard/basic_functions.stub.php:3567`
+- ✅🧪 `function sort(array&$array, int $flags = SORT_REGULAR): true` — `ext/standard/basic_functions.stub.php:1572`
+- ·· `function soundex(string $string): string` — `ext/standard/basic_functions.stub.php:3361`
+- ✅🧪 `function sprintf(string $format, mixed ...$values): string` — `ext/standard/basic_functions.stub.php:2960`
+- ✅🧪 `function sqrt(float $num): float` — `ext/standard/basic_functions.stub.php:3196`
+- ·· `function sscanf(string $string, string $format, mixed&...$vars): array|int|null` — `ext/standard/basic_functions.stub.php:2585`
+- ✅🧪 `function stat(string $filename): array|false` — `ext/standard/basic_functions.stub.php:2916`
+- ✅🧪 `function str_contains(string $haystack, string $needle): bool` — `ext/standard/basic_functions.stub.php:2415`
+- ·· `function str_decrement(string $string): string` — `ext/standard/basic_functions.stub.php:2354`
+- ✅🧪 `function str_ends_with(string $haystack, string $needle): bool` — `ext/standard/basic_functions.stub.php:2424`
+- ·· `function str_getcsv(string $string, string $separator = ", ", string $enclosure = "\"", string $escape = "\\"): array` — `ext/standard/basic_functions.stub.php:2552`
+- ·· `function str_increment(string $string): string` — `ext/standard/basic_functions.stub.php:2352`
+- ·· `function str_ireplace(array|string $search, array|string $replace, string|array $subject,&$count = null): string|array` — `ext/standard/basic_functions.stub.php:2523`
+- ✅🧪 `function str_pad(string $string, int $length, string $pad_string = " ", int $pad_type = STR_PAD_RIGHT): string` — `ext/standard/basic_functions.stub.php:2579`
+- ✅🧪 `function str_repeat(string $string, int $times): string` — `ext/standard/basic_functions.stub.php:2555`
+- ✅🧪 `function str_replace(array|string $search, array|string $replace, string|array $subject,&$count = null): string|array` — `ext/standard/basic_functions.stub.php:2516`
+- ·· `function str_rot13(string $string): string` — `ext/standard/basic_functions.stub.php:2591`
+- ·· `function str_shuffle(string $string): string` — `ext/standard/basic_functions.stub.php:2594`
+- ·· `function str_split(string $string, int $length = 1): array` — `ext/standard/basic_functions.stub.php:2606`
+- ✅🧪 `function str_starts_with(string $haystack, string $needle): bool` — `ext/standard/basic_functions.stub.php:2421`
+- ·· `function str_word_count(string $string, int $format = 0, ?string $characters = null): array|int` — `ext/standard/basic_functions.stub.php:2600`
+- ·· `function strchr(string $haystack, string $needle, bool $before_needle = false): string|false` — `ext/standard/basic_functions.stub.php:2387`
+- ·· `function strcoll(string $string1, string $string2): int` — `ext/standard/basic_functions.stub.php:2300`
+- ✅🧪 `function strcspn(string $string, string $characters, int $offset = 0, ?int $length = null): int` — `ext/standard/basic_functions.stub.php:2293`
+- ·· `function stream_bucket_append($brigade, StreamBucket $bucket): void` — `ext/standard/basic_functions.stub.php:3739`
+- ·· `function stream_bucket_make_writeable($brigade): ?StreamBucket` — `ext/standard/basic_functions.stub.php:3733`
+- ·· `function stream_bucket_new($stream, string $buffer): StreamBucket` — `ext/standard/basic_functions.stub.php:3745`
+- ·· `function stream_bucket_prepend($brigade, StreamBucket $bucket): void` — `ext/standard/basic_functions.stub.php:3736`
+- ✅🧪 `function stream_context_create(?array $options = null, ?array $params = null)` — `ext/standard/basic_functions.stub.php:3371`
+- ·· `function stream_context_get_default(?array $options = null)` — `ext/standard/basic_functions.stub.php:3396`
+- ✅· `function stream_context_get_options($stream_or_context): array` — `ext/standard/basic_functions.stub.php:3393`
+- ·· `function stream_context_get_params($context): array` — `ext/standard/basic_functions.stub.php:3381`
+- ·· `function stream_context_set_default(array $options)` — `ext/standard/basic_functions.stub.php:3399`
+- ✅· `function stream_context_set_option($context, array|string $wrapper_or_options, ?string $option_name = null, mixed $value = UNKNOWN): true` — `ext/standard/basic_functions.stub.php:3384`
+- ·· `function stream_context_set_options($context, array $options): true` — `ext/standard/basic_functions.stub.php:3387`
+- ·· `function stream_context_set_params($context, array $params): true` — `ext/standard/basic_functions.stub.php:3374`
+- ✅🧪 `function stream_copy_to_stream($from, $to, ?int $length = null, int $offset = 0): int|false` — `ext/standard/basic_functions.stub.php:3478`
+- ·· `function stream_filter_append($stream, string $filter_name, int $mode = 0, mixed $params = UNKNOWN)` — `ext/standard/basic_functions.stub.php:3411`
+- ·· `function stream_filter_prepend($stream, string $filter_name, int $mode = 0, mixed $params = UNKNOWN)` — `ext/standard/basic_functions.stub.php:3405`
+- ·· `function stream_filter_register(string $filter_name, string $class): bool` — `ext/standard/basic_functions.stub.php:3753`
+- ·· `function stream_filter_remove($stream_filter): bool` — `ext/standard/basic_functions.stub.php:3414`
+- ✅🧪 `function stream_get_contents($stream, ?int $length = null, int $offset = -1): string|false` — `ext/standard/basic_functions.stub.php:3484`
+- ·· `function stream_get_filters(): array` — `ext/standard/basic_functions.stub.php:3751`
+- ·· `function stream_get_line($stream, int $length, string $ending = ""): string|false` — `ext/standard/basic_functions.stub.php:3527`
+- ✅🧪 `function stream_get_meta_data($stream): array` — `ext/standard/basic_functions.stub.php:3514`
+- ·· `function stream_get_transports(): array` — `ext/standard/basic_functions.stub.php:3542`
+- ✅· `function stream_get_wrappers(): array` — `ext/standard/basic_functions.stub.php:3536`
+- ✅🧪 `function stream_is_local($stream): bool` — `ext/standard/basic_functions.stub.php:3545`
+- ✅· `function stream_isatty($stream): bool` — `ext/standard/basic_functions.stub.php:3548`
+- ·· `function stream_register_wrapper(string $protocol, string $class, int $flags = 0): bool` — `ext/standard/basic_functions.stub.php:1544`
+- ✅· `function stream_resolve_include_path(string $filename): string|false` — `ext/standard/basic_functions.stub.php:3530`
+- ·· `function stream_select(?array&$read, ?array&$write, ?array&$except, ?int $seconds, ?int $microseconds = null): int|false` — `ext/standard/basic_functions.stub.php:3365`
+- ·· `function stream_set_blocking($stream, bool $enable): bool` — `ext/standard/basic_functions.stub.php:3502`
+- ·· `function stream_set_chunk_size($stream, int $size): int` — `ext/standard/basic_functions.stub.php:3556`
+- ·· `function stream_set_read_buffer($stream, int $size): int` — `ext/standard/basic_functions.stub.php:3499`
+- ·· `function stream_set_timeout($stream, int $seconds, int $microseconds = 0): bool` — `ext/standard/basic_functions.stub.php:3560`
+- ·· `function stream_set_write_buffer($stream, int $size): int` — `ext/standard/basic_functions.stub.php:3490`
+- ·· `function stream_socket_accept($socket, ?float $timeout = null,&$peer_name = null)` — `ext/standard/basic_functions.stub.php:3440`
+- ·· `function stream_socket_client(string $address,&$error_code = null,&$error_message = null, ?float $timeout = null, int $flags = STREAM_CLIENT_CONNECT, $context = null)` — `ext/standard/basic_functions.stub.php:3423`
+- ·· `function stream_socket_enable_crypto($stream, bool $enable, ?int $crypto_method = null, $session_stream = null): int|bool` — `ext/standard/basic_functions.stub.php:3459`
+- ·· `function stream_socket_get_name($socket, bool $remote): string|false` — `ext/standard/basic_functions.stub.php:3443`
+- ·· `function stream_socket_pair(int $domain, int $type, int $protocol): array|false` — `ext/standard/basic_functions.stub.php:3471`
+- ·· `function stream_socket_recvfrom($socket, int $length, int $flags = 0,&$address = null): string|false` — `ext/standard/basic_functions.stub.php:3450`
+- ·· `function stream_socket_sendto($socket, string $data, int $flags = 0, string $address = ""): int|false` — `ext/standard/basic_functions.stub.php:3453`
+- ·· `function stream_socket_server(string $address,&$error_code = null,&$error_message = null, int $flags = STREAM_SERVER_BIND|STREAM_SERVER_LISTEN, $context = null)` — `ext/standard/basic_functions.stub.php:3432`
+- ·· `function stream_socket_shutdown($stream, int $mode): bool` — `ext/standard/basic_functions.stub.php:3463`
+- ·· `function stream_supports_lock($stream): bool` — `ext/standard/basic_functions.stub.php:3487`
+- ·· `function stream_wrapper_register(string $protocol, string $class, int $flags = 0): bool` — `ext/standard/basic_functions.stub.php:1541`
+- ·· `function stream_wrapper_restore(string $protocol): bool` — `ext/standard/basic_functions.stub.php:1548`
+- ·· `function stream_wrapper_unregister(string $protocol): bool` — `ext/standard/basic_functions.stub.php:1546`
+- ✅🧪 `function strip_tags(string $string, array|string|null $allowed_tags = null): string` — `ext/standard/basic_functions.stub.php:2537`
+- ✅🧪 `function stripcslashes(string $string): string` — `ext/standard/basic_functions.stub.php:2502`
+- ✅🧪 `function stripos(string $haystack, string $needle, int $offset = 0): int|false` — `ext/standard/basic_functions.stub.php:2397`
+- ✅🧪 `function stripslashes(string $string): string` — `ext/standard/basic_functions.stub.php:2508`
+- ✅🧪 `function stristr(string $haystack, string $needle, bool $before_needle = false): string|false` — `ext/standard/basic_functions.stub.php:2376`
+- ✅🧪 `function strnatcasecmp(string $string1, string $string2): int` — `ext/standard/basic_functions.stub.php:2572`
+- ✅🧪 `function strnatcmp(string $string1, string $string2): int` — `ext/standard/basic_functions.stub.php:2564`
+- ✅🧪 `function strpbrk(string $string, string $characters): string|false` — `ext/standard/basic_functions.stub.php:2612`
+- ✅🧪 `function strpos(string $haystack, string $needle, int $offset = 0): int|false` — `ext/standard/basic_functions.stub.php:2394`
+- ·· `function strptime(string $timestamp, string $format): array|false` — `ext/standard/basic_functions.stub.php:2106`
+- ✅🧪 `function strrchr(string $haystack, string $needle, bool $before_needle = false): string|false` — `ext/standard/basic_functions.stub.php:2409`
+- ✅🧪 `function strrev(string $string): string` — `ext/standard/basic_functions.stub.php:2483`
+- ✅🧪 `function strripos(string $haystack, string $needle, int $offset = 0): int|false` — `ext/standard/basic_functions.stub.php:2403`
+- ✅🧪 `function strrpos(string $haystack, string $needle, int $offset = 0): int|false` — `ext/standard/basic_functions.stub.php:2400`
+- ✅🧪 `function strspn(string $string, string $characters, int $offset = 0, ?int $length = null): int` — `ext/standard/basic_functions.stub.php:2288`
+- ✅🧪 `function strstr(string $haystack, string $needle, bool $before_needle = false): string|false` — `ext/standard/basic_functions.stub.php:2384`
+- ✅🧪 `function strtok(string $string, ?string $token = null): string|false` — `ext/standard/basic_functions.stub.php:2344`
+- ✅🧪 `function strtolower(string $string): string` — `ext/standard/basic_functions.stub.php:2350`
+- ✅🧪 `function strtoupper(string $string): string` — `ext/standard/basic_functions.stub.php:2347`
+- ✅🧪 `function strtr(string $string, string|array $from, ?string $to = null): string` — `ext/standard/basic_functions.stub.php:2477`
+- ✅🧪 `function strval(mixed $value): string` — `ext/standard/basic_functions.stub.php:3605`
+- ✅🧪 `function substr(string $string, int $offset, ?int $length = null): string` — `ext/standard/basic_functions.stub.php:2437`
+- ✅🧪 `function substr_compare(string $haystack, string $needle, int $offset, ?int $length = null, bool $case_insensitive = false): int` — `ext/standard/basic_functions.stub.php:2617`
+- ✅🧪 `function substr_count(string $haystack, string $needle, int $offset = 0, ?int $length = null): int` — `ext/standard/basic_functions.stub.php:2577`
+- ✅🧪 `function substr_replace(array|string $string, array|string $replace, array|int $offset, array|int|null $length = null): string|array` — `ext/standard/basic_functions.stub.php:2443`
+- ·· `function symlink(string $target, string $link): bool` — `ext/standard/basic_functions.stub.php:3089`
+- ·· `function sys_get_temp_dir(): string` — `ext/standard/basic_functions.stub.php:2872`
+- ·· `function sys_getloadavg(): array|false` — `ext/standard/basic_functions.stub.php:2077`
+- ·· `function syslog(int $priority, string $message): true` — `ext/standard/basic_functions.stub.php:2207`
+- ✅🧪 `function system(string $command,&$result_code = null): string|false` — `ext/standard/basic_functions.stub.php:2693`
+- ·· `function tan(float $num): float` — `ext/standard/basic_functions.stub.php:3130`
+- ·· `function tanh(float $num): float` — `ext/standard/basic_functions.stub.php:3154`
+- ✅🧪 `function tempnam(string $directory, string $prefix): string|false` — `ext/standard/basic_functions.stub.php:2827`
+- ·· `function time_nanosleep(int $seconds, int $nanoseconds): array|bool` — `ext/standard/basic_functions.stub.php:1951`
+- ·· `function time_sleep_until(float $timestamp): bool` — `ext/standard/basic_functions.stub.php:1953`
+- ✅🧪 `function tmpfile()` — `ext/standard/basic_functions.stub.php:2833`
+- ✅🧪 `function touch(string $filename, ?int $mtime = null, ?int $atime = null): bool` — `ext/standard/basic_functions.stub.php:2937`
+- ✅🧪 `function trim(string $string, string $characters = " \n\r\t\v\0"): string` — `ext/standard/basic_functions.stub.php:2307`
+- ✅🧪 `function uasort(array&$array, callable $callback): true` — `ext/standard/basic_functions.stub.php:1578`
+- ✅🧪 `function ucfirst(string $string): string` — `ext/standard/basic_functions.stub.php:2461`
+- ✅🧪 `function ucwords(string $string, string $separators = " \t\r\n\f\v"): string` — `ext/standard/basic_functions.stub.php:2470`
+- ✅🧪 `function uksort(array&$array, callable $callback): true` — `ext/standard/basic_functions.stub.php:1580`
+- ·· `function umask(?int $mask = null): int` — `ext/standard/basic_functions.stub.php:2743`
+- ✅🧪 `function uniqid(string $prefix = "", bool $more_entropy = false): string` — `ext/standard/basic_functions.stub.php:3684`
+- ✅🧪 `function unlink(string $filename, $context = null): bool` — `ext/standard/basic_functions.stub.php:2849`
+- ✅🧪 `function unpack(string $format, string $string, int $offset = 0): array|false` — `ext/standard/basic_functions.stub.php:3296`
+- ·· `function unregister_tick_function(callable $callback): void` — `ext/standard/basic_functions.stub.php:2045`
+- ✅🧪 `function unserialize(string $data, array $options = []): mixed` — `ext/standard/basic_functions.stub.php:3784`
+- ✅🧪 `function urldecode(string $string): string` — `ext/standard/basic_functions.stub.php:3706`
+- ✅🧪 `function urlencode(string $string): string` — `ext/standard/basic_functions.stub.php:3700`
+- ✅🧪 `function usleep(int $microseconds): void` — `ext/standard/basic_functions.stub.php:1944`
+- ✅🧪 `function usort(array&$array, callable $callback): true` — `ext/standard/basic_functions.stub.php:1576`
+- ·· `function utf8_decode(string $string): string` — `ext/standard/basic_functions.stub.php:2631`
+- ·· `function utf8_encode(string $string): string` — `ext/standard/basic_functions.stub.php:2624`
+- ✅🧪 `function var_dump(mixed $value, mixed ...$values): void` — `ext/standard/basic_functions.stub.php:3771`
+- ✅🧪 `function var_export(mixed $value, bool $return = false): ?string` — `ext/standard/basic_functions.stub.php:3774`
+- ✅🧪 `function version_compare(string $version1, string $version2, ?string $operator = null): int|bool` — `ext/standard/basic_functions.stub.php:3795`
+- ✅🧪 `function vfprintf($stream, string $format, array $values): int` — `ext/standard/basic_functions.stub.php:2973`
+- ✅🧪 `function vprintf(string $format, array $values): int` — `ext/standard/basic_functions.stub.php:2964`
+- ✅🧪 `function vsprintf(string $format, array $values): string` — `ext/standard/basic_functions.stub.php:2967`
+- ✅🧪 `function wordwrap(string $string, int $width = 75, string $break = "\n", bool $cut_long_words = false): string` — `ext/standard/basic_functions.stub.php:2322`
+
+## ext/sysvmsg (`7`) — impl `0`, tested `0`
+
+- ·· `function msg_get_queue(int $key, int $permissions = 0666): SysvMessageQueue|false` — `ext/sysvmsg/sysvmsg.stub.php:39`
+- ·· `function msg_queue_exists(int $key): bool` — `ext/sysvmsg/sysvmsg.stub.php:68`
+- ·· `function msg_receive( SysvMessageQueue $queue, int $desired_message_type,&$received_message_type, int $max_message_size, mixed&$message, bool $unserialize = true, int $flags = 0,&$error_code = null ): bool` — `ext/sysvmsg/sysvmsg.stub.php:51`
+- ·· `function msg_remove_queue(SysvMessageQueue $queue): bool` — `ext/sysvmsg/sysvmsg.stub.php:62`
+- ·· `function msg_send(SysvMessageQueue $queue, int $message_type, $message, bool $serialize = true, bool $blocking = true,&$error_code = null): bool` — `ext/sysvmsg/sysvmsg.stub.php:45`
+- ·· `function msg_set_queue(SysvMessageQueue $queue, array $data): bool` — `ext/sysvmsg/sysvmsg.stub.php:66`
+- ·· `function msg_stat_queue(SysvMessageQueue $queue): array|false` — `ext/sysvmsg/sysvmsg.stub.php:64`
+
+## ext/sysvsem (`4`) — impl `0`, tested `0`
+
+- ·· `function sem_acquire(SysvSemaphore $semaphore, bool $non_blocking = false): bool` — `ext/sysvsem/sysvsem.stub.php:15`
+- ·· `function sem_get(int $key, int $max_acquire = 1, int $permissions = 0666, bool $auto_release = true): SysvSemaphore|false` — `ext/sysvsem/sysvsem.stub.php:13`
+- ·· `function sem_release(SysvSemaphore $semaphore): bool` — `ext/sysvsem/sysvsem.stub.php:17`
+- ·· `function sem_remove(SysvSemaphore $semaphore): bool` — `ext/sysvsem/sysvsem.stub.php:19`
+
+## ext/sysvshm (`7`) — impl `0`, tested `0`
+
+- ·· `function shm_attach(int $key, ?int $size = null, int $permissions = 0666): SysvSharedMemory|false` — `ext/sysvshm/sysvshm.stub.php:13`
+- ·· `function shm_detach(SysvSharedMemory $shm): true` — `ext/sysvshm/sysvshm.stub.php:15`
+- ·· `function shm_get_var(SysvSharedMemory $shm, int $key): mixed` — `ext/sysvshm/sysvshm.stub.php:23`
+- ·· `function shm_has_var(SysvSharedMemory $shm, int $key): bool` — `ext/sysvshm/sysvshm.stub.php:17`
+- ·· `function shm_put_var(SysvSharedMemory $shm, int $key, mixed $value): bool` — `ext/sysvshm/sysvshm.stub.php:21`
+- ·· `function shm_remove(SysvSharedMemory $shm): bool` — `ext/sysvshm/sysvshm.stub.php:19`
+- ·· `function shm_remove_var(SysvSharedMemory $shm, int $key): bool` — `ext/sysvshm/sysvshm.stub.php:25`
+
+## ext/tidy (`55`) — impl `0`, tested `0`
+
+- ·· `public function tidy::__construct(?string $filename = null, array|string|null $config = null, ?string $encoding = null, bool $useIncludePath = false)` — `ext/tidy/tidy.stub.php:869`
+- ·· `public function tidy::body(): ?tidyNode` — `ext/tidy/tidy.stub.php:973`
+- ·· `public function tidy::cleanRepair(): bool` — `ext/tidy/tidy.stub.php:881`
+- ·· `public function tidy::diagnose(): bool` — `ext/tidy/tidy.stub.php:905`
+- ·· `public function tidy::getConfig(): array` — `ext/tidy/tidy.stub.php:917`
+- ·· `public function tidy::getHtmlVer(): int` — `ext/tidy/tidy.stub.php:929`
+- ·· `public function tidy::getOpt(string $option): string|int|bool` — `ext/tidy/tidy.stub.php:875`
+- ·· `public function tidy::getOptDoc(string $option): string|false` — `ext/tidy/tidy.stub.php:936`
+- ·· `public function tidy::getRelease(): string` — `ext/tidy/tidy.stub.php:911`
+- ·· `public function tidy::getStatus(): int` — `ext/tidy/tidy.stub.php:923`
+- ·· `public function tidy::head(): ?tidyNode` — `ext/tidy/tidy.stub.php:961`
+- ·· `public function tidy::html(): ?tidyNode` — `ext/tidy/tidy.stub.php:967`
+- ·· `public function tidy::isXhtml(): bool` — `ext/tidy/tidy.stub.php:943`
+- ·· `public function tidy::isXml(): bool` — `ext/tidy/tidy.stub.php:949`
+- ·· `public function tidy::parseFile(string $filename, array|string|null $config = null, ?string $encoding = null, bool $useIncludePath = false): bool` — `ext/tidy/tidy.stub.php:884`
+- ·· `public function tidy::parseString(string $string, array|string|null $config = null, ?string $encoding = null): bool` — `ext/tidy/tidy.stub.php:887`
+- ·· `public static function tidy::repairFile(string $filename, array|string|null $config = null, ?string $encoding = null, bool $useIncludePath = false): string|false` — `ext/tidy/tidy.stub.php:899`
+- ·· `public static function tidy::repairString(string $string, array|string|null $config = null, ?string $encoding = null): string|false` — `ext/tidy/tidy.stub.php:893`
+- ·· `public function tidy::root(): ?tidyNode` — `ext/tidy/tidy.stub.php:955`
+- ·· `function tidy_access_count(tidy $tidy): int` — `ext/tidy/tidy.stub.php:850`
+- ·· `function tidy_clean_repair(tidy $tidy): bool` — `ext/tidy/tidy.stub.php:822`
+- ·· `function tidy_config_count(tidy $tidy): int` — `ext/tidy/tidy.stub.php:852`
+- ·· `function tidy_diagnose(tidy $tidy): bool` — `ext/tidy/tidy.stub.php:828`
+- ·· `function tidy_error_count(tidy $tidy): int` — `ext/tidy/tidy.stub.php:846`
+- ·· `function tidy_get_body(tidy $tidy): ?tidyNode` — `ext/tidy/tidy.stub.php:862`
+- ·· `function tidy_get_config(tidy $tidy): array` — `ext/tidy/tidy.stub.php:836`
+- ·· `function tidy_get_error_buffer(tidy $tidy): string|false` — `ext/tidy/tidy.stub.php:816`
+- ·· `function tidy_get_head(tidy $tidy): ?tidyNode` — `ext/tidy/tidy.stub.php:860`
+- ·· `function tidy_get_html(tidy $tidy): ?tidyNode` — `ext/tidy/tidy.stub.php:858`
+- ·· `function tidy_get_html_ver(tidy $tidy): int` — `ext/tidy/tidy.stub.php:840`
+- ·· `function tidy_get_opt_doc(tidy $tidy, string $option): string|false` — `ext/tidy/tidy.stub.php:833`
+- ·· `function tidy_get_output(tidy $tidy): string` — `ext/tidy/tidy.stub.php:818`
+- ·· `function tidy_get_release(): string` — `ext/tidy/tidy.stub.php:830`
+- ·· `function tidy_get_root(tidy $tidy): ?tidyNode` — `ext/tidy/tidy.stub.php:856`
+- ·· `function tidy_get_status(tidy $tidy): int` — `ext/tidy/tidy.stub.php:838`
+- ·· `function tidy_getopt(tidy $tidy, string $option): string|int|bool` — `ext/tidy/tidy.stub.php:854`
+- ·· `function tidy_is_xhtml(tidy $tidy): bool` — `ext/tidy/tidy.stub.php:842`
+- ·· `function tidy_is_xml(tidy $tidy): bool` — `ext/tidy/tidy.stub.php:844`
+- ·· `function tidy_parse_file(string $filename, array|string|null $config = null, ?string $encoding = null, bool $useIncludePath = false): tidy|false` — `ext/tidy/tidy.stub.php:820`
+- ·· `function tidy_parse_string(string $string, array|string|null $config = null, ?string $encoding = null): tidy|false` — `ext/tidy/tidy.stub.php:814`
+- ·· `function tidy_repair_file(string $filename, array|string|null $config = null, ?string $encoding = null, bool $useIncludePath = false): string|false` — `ext/tidy/tidy.stub.php:826`
+- ·· `function tidy_repair_string(string $string, array|string|null $config = null, ?string $encoding = null): string|false` — `ext/tidy/tidy.stub.php:824`
+- ·· `function tidy_warning_count(tidy $tidy): int` — `ext/tidy/tidy.stub.php:848`
+- ·· `private function tidyNode::__construct()` — `ext/tidy/tidy.stub.php:988`
+- ·· `public function tidyNode::getNextSibling(): ?tidyNode` — `ext/tidy/tidy.stub.php:1010`
+- ·· `public function tidyNode::getParent(): ?tidyNode` — `ext/tidy/tidy.stub.php:1006`
+- ·· `public function tidyNode::getPreviousSibling(): ?tidyNode` — `ext/tidy/tidy.stub.php:1008`
+- ·· `public function tidyNode::hasChildren(): bool` — `ext/tidy/tidy.stub.php:990`
+- ·· `public function tidyNode::hasSiblings(): bool` — `ext/tidy/tidy.stub.php:992`
+- ·· `public function tidyNode::isAsp(): bool` — `ext/tidy/tidy.stub.php:1002`
+- ·· `public function tidyNode::isComment(): bool` — `ext/tidy/tidy.stub.php:994`
+- ·· `public function tidyNode::isHtml(): bool` — `ext/tidy/tidy.stub.php:996`
+- ·· `public function tidyNode::isJste(): bool` — `ext/tidy/tidy.stub.php:1000`
+- ·· `public function tidyNode::isPhp(): bool` — `ext/tidy/tidy.stub.php:1004`
+- ·· `public function tidyNode::isText(): bool` — `ext/tidy/tidy.stub.php:998`
+
+## ext/tokenizer (`8`) — impl `8`, tested `4`
+
+- ✅· `final public function PhpToken::__construct(int $id, string $text, int $line = -1, int $pos = -1)` — `ext/tokenizer/tokenizer.stub.php:25`
+- ✅· `public function PhpToken::__toString(): string` — `ext/tokenizer/tokenizer.stub.php:34`
+- ✅🧪 `public function PhpToken::getTokenName(): ?string` — `ext/tokenizer/tokenizer.stub.php:32`
+- ✅· `public function PhpToken::is($kind): bool` — `ext/tokenizer/tokenizer.stub.php:28`
+- ✅· `public function PhpToken::isIgnorable(): bool` — `ext/tokenizer/tokenizer.stub.php:30`
+- ✅🧪 `public static function PhpToken::tokenize(string $code, int $flags = 0): array` — `ext/tokenizer/tokenizer.stub.php:23`
+- ✅🧪 `function token_get_all(string $code, int $flags = 0): array` — `ext/tokenizer/tokenizer.stub.php:11`
+- ✅🧪 `function token_name(int $id): string` — `ext/tokenizer/tokenizer.stub.php:13`
+
+## ext/uri (`61`) — impl `0`, tested `0`
+
+- ·· `public function Uri\Rfc3986\Uri::__construct(string $uri, ?\Uri\Rfc3986\Uri $baseUrl = null)` — `ext/uri/php_uri.stub.php:34`
+- ·· `public function Uri\Rfc3986\Uri::__debugInfo(): array` — `ext/uri/php_uri.stub.php:96`
+- ·· `public function Uri\Rfc3986\Uri::__serialize(): array` — `ext/uri/php_uri.stub.php:92`
+- ·· `public function Uri\Rfc3986\Uri::__unserialize(array $data): void` — `ext/uri/php_uri.stub.php:94`
+- ·· `public function Uri\Rfc3986\Uri::equals(\Uri\Rfc3986\Uri $uri, \Uri\UriComparisonMode $comparisonMode = \Uri\UriComparisonMode::ExcludeFragment): bool` — `ext/uri/php_uri.stub.php:84`
+- ·· `public function Uri\Rfc3986\Uri::getFragment(): ?string` — `ext/uri/php_uri.stub.php:78`
+- ·· `public function Uri\Rfc3986\Uri::getHost(): ?string` — `ext/uri/php_uri.stub.php:56`
+- ·· `public function Uri\Rfc3986\Uri::getPassword(): ?string` — `ext/uri/php_uri.stub.php:52`
+- ·· `public function Uri\Rfc3986\Uri::getPath(): string` — `ext/uri/php_uri.stub.php:66`
+- ·· `public function Uri\Rfc3986\Uri::getPort(): ?int` — `ext/uri/php_uri.stub.php:62`
+- ·· `public function Uri\Rfc3986\Uri::getQuery(): ?string` — `ext/uri/php_uri.stub.php:72`
+- ·· `public function Uri\Rfc3986\Uri::getRawFragment(): ?string` — `ext/uri/php_uri.stub.php:80`
+- ·· `public function Uri\Rfc3986\Uri::getRawHost(): ?string` — `ext/uri/php_uri.stub.php:58`
+- ·· `public function Uri\Rfc3986\Uri::getRawPassword(): ?string` — `ext/uri/php_uri.stub.php:54`
+- ·· `public function Uri\Rfc3986\Uri::getRawPath(): string` — `ext/uri/php_uri.stub.php:68`
+- ·· `public function Uri\Rfc3986\Uri::getRawQuery(): ?string` — `ext/uri/php_uri.stub.php:74`
+- ·· `public function Uri\Rfc3986\Uri::getRawScheme(): ?string` — `ext/uri/php_uri.stub.php:38`
+- ·· `public function Uri\Rfc3986\Uri::getRawUserInfo(): ?string` — `ext/uri/php_uri.stub.php:44`
+- ·· `public function Uri\Rfc3986\Uri::getRawUsername(): ?string` — `ext/uri/php_uri.stub.php:50`
+- ·· `public function Uri\Rfc3986\Uri::getScheme(): ?string` — `ext/uri/php_uri.stub.php:36`
+- ·· `public function Uri\Rfc3986\Uri::getUserInfo(): ?string` — `ext/uri/php_uri.stub.php:42`
+- ·· `public function Uri\Rfc3986\Uri::getUsername(): ?string` — `ext/uri/php_uri.stub.php:48`
+- ·· `public static function Uri\Rfc3986\Uri::parse(string $uri, ?\Uri\Rfc3986\Uri $baseUrl = null): ?static` — `ext/uri/php_uri.stub.php:32`
+- ·· `public function Uri\Rfc3986\Uri::resolve(string $uri): static` — `ext/uri/php_uri.stub.php:90`
+- ·· `public function Uri\Rfc3986\Uri::toRawString(): string` — `ext/uri/php_uri.stub.php:88`
+- ·· `public function Uri\Rfc3986\Uri::toString(): string` — `ext/uri/php_uri.stub.php:86`
+- ·· `public function Uri\Rfc3986\Uri::withFragment(?string $fragment): static` — `ext/uri/php_uri.stub.php:82`
+- ·· `public function Uri\Rfc3986\Uri::withHost(?string $host): static` — `ext/uri/php_uri.stub.php:60`
+- ·· `public function Uri\Rfc3986\Uri::withPath(string $path): static` — `ext/uri/php_uri.stub.php:70`
+- ·· `public function Uri\Rfc3986\Uri::withPort(?int $port): static` — `ext/uri/php_uri.stub.php:64`
+- ·· `public function Uri\Rfc3986\Uri::withQuery(?string $query): static` — `ext/uri/php_uri.stub.php:76`
+- ·· `public function Uri\Rfc3986\Uri::withScheme(?string $scheme): static` — `ext/uri/php_uri.stub.php:40`
+- ·· `public function Uri\Rfc3986\Uri::withUserInfo(#[\SensitiveParameter] ?string $userinfo): static` — `ext/uri/php_uri.stub.php:46`
+- ·· `public function Uri\WhatWg\InvalidUrlException::__construct(string $message = "", array $errors = [], int $code = 0, ?\Throwable $previous = null)` — `ext/uri/php_uri.stub.php:106`
+- ·· `public function Uri\WhatWg\Url::__construct(string $uri, ?\Uri\WhatWg\Url $baseUrl = null,&$softErrors = null)` — `ext/uri/php_uri.stub.php:159`
+- ·· `public function Uri\WhatWg\Url::__debugInfo(): array` — `ext/uri/php_uri.stub.php:219`
+- ·· `public function Uri\WhatWg\Url::__serialize(): array` — `ext/uri/php_uri.stub.php:215`
+- ·· `public function Uri\WhatWg\Url::__unserialize(array $data): void` — `ext/uri/php_uri.stub.php:217`
+- ·· `public function Uri\WhatWg\Url::equals(\Uri\WhatWg\Url $url, \Uri\UriComparisonMode $comparisonMode = \Uri\UriComparisonMode::ExcludeFragment): bool` — `ext/uri/php_uri.stub.php:206`
+- ·· `public function Uri\WhatWg\Url::getAsciiHost(): ?string` — `ext/uri/php_uri.stub.php:175`
+- ·· `public function Uri\WhatWg\Url::getFragment(): ?string` — `ext/uri/php_uri.stub.php:201`
+- ·· `public function Uri\WhatWg\Url::getPassword(): ?string` — `ext/uri/php_uri.stub.php:171`
+- ·· `public function Uri\WhatWg\Url::getPath(): string` — `ext/uri/php_uri.stub.php:189`
+- ·· `public function Uri\WhatWg\Url::getPort(): ?int` — `ext/uri/php_uri.stub.php:183`
+- ·· `public function Uri\WhatWg\Url::getQuery(): ?string` — `ext/uri/php_uri.stub.php:195`
+- ·· `public function Uri\WhatWg\Url::getScheme(): string` — `ext/uri/php_uri.stub.php:161`
+- ·· `public function Uri\WhatWg\Url::getUnicodeHost(): ?string` — `ext/uri/php_uri.stub.php:177`
+- ·· `public function Uri\WhatWg\Url::getUsername(): ?string` — `ext/uri/php_uri.stub.php:166`
+- ·· `public static function Uri\WhatWg\Url::parse(string $uri, ?\Uri\WhatWg\Url $baseUrl = null,&$errors = null): ?static` — `ext/uri/php_uri.stub.php:156`
+- ·· `public function Uri\WhatWg\Url::resolve(string $uri,&$softErrors = null): static` — `ext/uri/php_uri.stub.php:213`
+- ·· `public function Uri\WhatWg\Url::toAsciiString(): string` — `ext/uri/php_uri.stub.php:208`
+- ·· `public function Uri\WhatWg\Url::toUnicodeString(): string` — `ext/uri/php_uri.stub.php:210`
+- ·· `public function Uri\WhatWg\Url::withFragment(?string $fragment): static` — `ext/uri/php_uri.stub.php:204`
+- ·· `public function Uri\WhatWg\Url::withHost(?string $host): static` — `ext/uri/php_uri.stub.php:180`
+- ·· `public function Uri\WhatWg\Url::withPassword(#[\SensitiveParameter] ?string $password): static` — `ext/uri/php_uri.stub.php:173`
+- ·· `public function Uri\WhatWg\Url::withPath(string $path): static` — `ext/uri/php_uri.stub.php:192`
+- ·· `public function Uri\WhatWg\Url::withPort(?int $port): static` — `ext/uri/php_uri.stub.php:186`
+- ·· `public function Uri\WhatWg\Url::withQuery(?string $query): static` — `ext/uri/php_uri.stub.php:198`
+- ·· `public function Uri\WhatWg\Url::withScheme(string $scheme): static` — `ext/uri/php_uri.stub.php:163`
+- ·· `public function Uri\WhatWg\Url::withUsername(?string $username): static` — `ext/uri/php_uri.stub.php:168`
+- ·· `public function Uri\WhatWg\UrlValidationError::__construct(string $context, \Uri\WhatWg\UrlValidationErrorType $type, bool $failure)` — `ext/uri/php_uri.stub.php:149`
+
+## ext/xml (`22`) — impl `0`, tested `0`
+
+- ·· `function xml_error_string(int $error_code): ?string` — `ext/xml/xml.stub.php:184`
+- ·· `function xml_get_current_byte_index(XMLParser $parser): int` — `ext/xml/xml.stub.php:190`
+- ·· `function xml_get_current_column_number(XMLParser $parser): int` — `ext/xml/xml.stub.php:188`
+- ·· `function xml_get_current_line_number(XMLParser $parser): int` — `ext/xml/xml.stub.php:186`
+- ·· `function xml_get_error_code(XMLParser $parser): int` — `ext/xml/xml.stub.php:181`
+- ·· `function xml_parse(XMLParser $parser, string $data, bool $is_final = false): int` — `ext/xml/xml.stub.php:173`
+- ·· `function xml_parse_into_struct(XMLParser $parser, string $data,&$values,&$index = null): int|false` — `ext/xml/xml.stub.php:179`
+- ·· `function xml_parser_create(?string $encoding = null): XMLParser` — `ext/xml/xml.stub.php:148`
+- ·· `function xml_parser_create_ns(?string $encoding = null, string $separator = ": "): XMLParser` — `ext/xml/xml.stub.php:150`
+- ·· `function xml_parser_free(XMLParser $parser): bool` — `ext/xml/xml.stub.php:193`
+- ·· `function xml_parser_get_option(XMLParser $parser, int $option): string|int|bool` — `ext/xml/xml.stub.php:199`
+- ·· `function xml_parser_set_option(XMLParser $parser, int $option, $value): bool` — `ext/xml/xml.stub.php:196`
+- ·· `function xml_set_character_data_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:157`
+- ·· `function xml_set_default_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:161`
+- ·· `function xml_set_element_handler(XMLParser $parser, callable|string|null $start_handler, callable|string|null $end_handler): true` — `ext/xml/xml.stub.php:155`
+- ·· `function xml_set_end_namespace_decl_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:171`
+- ·· `function xml_set_external_entity_ref_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:167`
+- ·· `function xml_set_notation_decl_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:165`
+- ·· `function xml_set_object(XMLParser $parser, object $object): true` — `ext/xml/xml.stub.php:153`
+- ·· `function xml_set_processing_instruction_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:159`
+- ·· `function xml_set_start_namespace_decl_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:169`
+- ·· `function xml_set_unparsed_entity_decl_handler(XMLParser $parser, callable|string|null $handler): true` — `ext/xml/xml.stub.php:163`
+
+## ext/xmlreader (`28`) — impl `0`, tested `0`
+
+- ·· `public function XMLReader::close(): true` — `ext/xmlreader/php_xmlreader.stub.php:145`
+- ·· `public function XMLReader::expand(?DOMNode $baseNode = null): DOMNode|false` — `ext/xmlreader/php_xmlreader.stub.php:224`
+- ·· `public static function XMLReader::fromStream($stream, ?string $encoding = null, int $flags = 0, ?string $documentUri = null): static` — `ext/xmlreader/php_xmlreader.stub.php:195`
+- ·· `public static function XMLReader::fromString(string $source, ?string $encoding = null, int $flags = 0): static` — `ext/xmlreader/php_xmlreader.stub.php:221`
+- ·· `public static function XMLReader::fromUri(string $uri, ?string $encoding = null, int $flags = 0): static` — `ext/xmlreader/php_xmlreader.stub.php:192`
+- ·· `public function XMLReader::getAttribute(string $name): ?string` — `ext/xmlreader/php_xmlreader.stub.php:148`
+- ·· `public function XMLReader::getAttributeNo(int $index): ?string` — `ext/xmlreader/php_xmlreader.stub.php:151`
+- ·· `public function XMLReader::getAttributeNs(string $name, string $namespace): ?string` — `ext/xmlreader/php_xmlreader.stub.php:154`
+- ·· `public function XMLReader::getParserProperty(int $property): bool` — `ext/xmlreader/php_xmlreader.stub.php:157`
+- ·· `public function XMLReader::isValid(): bool` — `ext/xmlreader/php_xmlreader.stub.php:160`
+- ·· `public function XMLReader::lookupNamespace(string $prefix): ?string` — `ext/xmlreader/php_xmlreader.stub.php:163`
+- ·· `public function XMLReader::moveToAttribute(string $name): bool` — `ext/xmlreader/php_xmlreader.stub.php:166`
+- ·· `public function XMLReader::moveToAttributeNo(int $index): bool` — `ext/xmlreader/php_xmlreader.stub.php:169`
+- ·· `public function XMLReader::moveToAttributeNs(string $name, string $namespace): bool` — `ext/xmlreader/php_xmlreader.stub.php:172`
+- ·· `public function XMLReader::moveToElement(): bool` — `ext/xmlreader/php_xmlreader.stub.php:175`
+- ·· `public function XMLReader::moveToFirstAttribute(): bool` — `ext/xmlreader/php_xmlreader.stub.php:178`
+- ·· `public function XMLReader::moveToNextAttribute(): bool` — `ext/xmlreader/php_xmlreader.stub.php:181`
+- ·· `public function XMLReader::next(?string $name = null): bool` — `ext/xmlreader/php_xmlreader.stub.php:187`
+- ·· `public static function XMLReader::open(string $uri, ?string $encoding = null, int $flags = 0)` — `ext/xmlreader/php_xmlreader.stub.php:190`
+- ·· `public function XMLReader::read(): bool` — `ext/xmlreader/php_xmlreader.stub.php:184`
+- ·· `public function XMLReader::readInnerXml(): string` — `ext/xmlreader/php_xmlreader.stub.php:198`
+- ·· `public function XMLReader::readOuterXml(): string` — `ext/xmlreader/php_xmlreader.stub.php:201`
+- ·· `public function XMLReader::readString(): string` — `ext/xmlreader/php_xmlreader.stub.php:204`
+- ·· `public function XMLReader::setParserProperty(int $property, bool $value): bool` — `ext/xmlreader/php_xmlreader.stub.php:210`
+- ·· `public function XMLReader::setRelaxNGSchema(?string $filename): bool` — `ext/xmlreader/php_xmlreader.stub.php:213`
+- ·· `public function XMLReader::setRelaxNGSchemaSource(?string $source): bool` — `ext/xmlreader/php_xmlreader.stub.php:216`
+- ·· `public function XMLReader::setSchema(?string $filename): bool` — `ext/xmlreader/php_xmlreader.stub.php:207`
+- ·· `public static function XMLReader::XML(string $source, ?string $encoding = null, int $flags = 0)` — `ext/xmlreader/php_xmlreader.stub.php:219`
+
+## ext/xmlwriter (`87`) — impl `0`, tested `0`
+
+- ·· `public function XMLWriter::endAttribute(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:146`
+- ·· `public function XMLWriter::endCdata(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:230`
+- ·· `public function XMLWriter::endComment(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:134`
+- ·· `public function XMLWriter::endDocument(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:260`
+- ·· `public function XMLWriter::endDtd(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:278`
+- ·· `public function XMLWriter::endDtdAttlist(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:314`
+- ·· `public function XMLWriter::endDtdElement(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:296`
+- ·· `public function XMLWriter::endDtdEntity(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:332`
+- ·· `public function XMLWriter::endElement(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:176`
+- ·· `public function XMLWriter::endPi(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:212`
+- ·· `public function XMLWriter::flush(bool $empty = true): string|int` — `ext/xmlwriter/php_xmlwriter.stub.php:350`
+- ·· `public function XMLWriter::fullEndElement(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:182`
+- ·· `public function XMLWriter::openMemory(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:105`
+- ·· `public function XMLWriter::openUri(string $uri): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:96`
+- ·· `public function XMLWriter::outputMemory(bool $flush = true): string` — `ext/xmlwriter/php_xmlwriter.stub.php:344`
+- ·· `public function XMLWriter::setIndent(bool $enable): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:116`
+- ·· `public function XMLWriter::setIndentString(string $indentation): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:122`
+- ·· `public function XMLWriter::startAttribute(string $name): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:140`
+- ·· `public function XMLWriter::startAttributeNs(?string $prefix, string $name, ?string $namespace): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:158`
+- ·· `public function XMLWriter::startCdata(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:224`
+- ·· `public function XMLWriter::startComment(): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:128`
+- ·· `public function XMLWriter::startDocument(?string $version = "1.0", ?string $encoding = null, ?string $standalone = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:254`
+- ·· `public function XMLWriter::startDtd(string $qualifiedName, ?string $publicId = null, ?string $systemId = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:272`
+- ·· `public function XMLWriter::startDtdAttlist(string $name): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:308`
+- ·· `public function XMLWriter::startDtdElement(string $qualifiedName): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:290`
+- ·· `public function XMLWriter::startDtdEntity(string $name, bool $isParam): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:326`
+- ·· `public function XMLWriter::startElement(string $name): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:170`
+- ·· `public function XMLWriter::startElementNs(?string $prefix, string $name, ?string $namespace): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:188`
+- ·· `public function XMLWriter::startPi(string $target): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:206`
+- ·· `public function XMLWriter::text(string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:242`
+- ·· `public static function XMLWriter::toMemory(): static` — `ext/xmlwriter/php_xmlwriter.stub.php:107`
+- ·· `public static function XMLWriter::toStream($stream): static` — `ext/xmlwriter/php_xmlwriter.stub.php:110`
+- ·· `public static function XMLWriter::toUri(string $uri): static` — `ext/xmlwriter/php_xmlwriter.stub.php:98`
+- ·· `public function XMLWriter::writeAttribute(string $name, string $value): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:152`
+- ·· `public function XMLWriter::writeAttributeNs(?string $prefix, string $name, ?string $namespace, string $value): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:164`
+- ·· `public function XMLWriter::writeCdata(string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:236`
+- ·· `public function XMLWriter::writeComment(string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:266`
+- ·· `public function XMLWriter::writeDtd(string $name, ?string $publicId = null, ?string $systemId = null, ?string $content = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:284`
+- ·· `public function XMLWriter::writeDtdAttlist(string $name, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:320`
+- ·· `public function XMLWriter::writeDtdElement(string $name, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:302`
+- ·· `public function XMLWriter::writeDtdEntity(string $name, string $content, bool $isParam = false, ?string $publicId = null, ?string $systemId = null, ?string $notationData = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:338`
+- ·· `public function XMLWriter::writeElement(string $name, ?string $content = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:194`
+- ·· `public function XMLWriter::writeElementNs(?string $prefix, string $name, ?string $namespace, ?string $content = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:200`
+- ·· `public function XMLWriter::writePi(string $target, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:218`
+- ·· `public function XMLWriter::writeRaw(string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:248`
+- ·· `function xmlwriter_end_attribute(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:19`
+- ·· `function xmlwriter_end_cdata(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:47`
+- ·· `function xmlwriter_end_comment(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:15`
+- ·· `function xmlwriter_end_document(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:57`
+- ·· `function xmlwriter_end_dtd(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:63`
+- ·· `function xmlwriter_end_dtd_attlist(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:75`
+- ·· `function xmlwriter_end_dtd_element(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:69`
+- ·· `function xmlwriter_end_dtd_entity(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:81`
+- ·· `function xmlwriter_end_element(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:29`
+- ·· `function xmlwriter_end_pi(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:41`
+- ·· `function xmlwriter_flush(XMLWriter $writer, bool $empty = true): string|int` — `ext/xmlwriter/php_xmlwriter.stub.php:87`
+- ·· `function xmlwriter_full_end_element(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:31`
+- ·· `function xmlwriter_open_memory(): XMLWriter|false` — `ext/xmlwriter/php_xmlwriter.stub.php:7`
+- ·· `function xmlwriter_open_uri(string $uri): XMLWriter|false` — `ext/xmlwriter/php_xmlwriter.stub.php:5`
+- ·· `function xmlwriter_output_memory(XMLWriter $writer, bool $flush = true): string` — `ext/xmlwriter/php_xmlwriter.stub.php:85`
+- ·· `function xmlwriter_set_indent(XMLWriter $writer, bool $enable): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:9`
+- ·· `function xmlwriter_set_indent_string(XMLWriter $writer, string $indentation): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:11`
+- ·· `function xmlwriter_start_attribute(XMLWriter $writer, string $name): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:17`
+- ·· `function xmlwriter_start_attribute_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:23`
+- ·· `function xmlwriter_start_cdata(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:45`
+- ·· `function xmlwriter_start_comment(XMLWriter $writer): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:13`
+- ·· `function xmlwriter_start_document(XMLWriter $writer, ?string $version = "1.0", ?string $encoding = null, ?string $standalone = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:55`
+- ·· `function xmlwriter_start_dtd(XMLWriter $writer, string $qualifiedName, ?string $publicId = null, ?string $systemId = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:61`
+- ·· `function xmlwriter_start_dtd_attlist(XMLWriter $writer, string $name): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:73`
+- ·· `function xmlwriter_start_dtd_element(XMLWriter $writer, string $qualifiedName): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:67`
+- ·· `function xmlwriter_start_dtd_entity(XMLWriter $writer, string $name, bool $isParam): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:79`
+- ·· `function xmlwriter_start_element(XMLWriter $writer, string $name): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:27`
+- ·· `function xmlwriter_start_element_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:33`
+- ·· `function xmlwriter_start_pi(XMLWriter $writer, string $target): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:39`
+- ·· `function xmlwriter_text(XMLWriter $writer, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:51`
+- ·· `function xmlwriter_write_attribute(XMLWriter $writer, string $name, string $value): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:21`
+- ·· `function xmlwriter_write_attribute_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace, string $value): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:25`
+- ·· `function xmlwriter_write_cdata(XMLWriter $writer, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:49`
+- ·· `function xmlwriter_write_comment(XMLWriter $writer, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:59`
+- ·· `function xmlwriter_write_dtd(XMLWriter $writer, string $name, ?string $publicId = null, ?string $systemId = null, ?string $content = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:65`
+- ·· `function xmlwriter_write_dtd_attlist(XMLWriter $writer, string $name, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:77`
+- ·· `function xmlwriter_write_dtd_element(XMLWriter $writer, string $name, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:71`
+- ·· `function xmlwriter_write_dtd_entity(XMLWriter $writer, string $name, string $content, bool $isParam = false, ?string $publicId = null, ?string $systemId = null, ?string $notationData = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:83`
+- ·· `function xmlwriter_write_element(XMLWriter $writer, string $name, ?string $content = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:35`
+- ·· `function xmlwriter_write_element_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace, ?string $content = null): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:37`
+- ·· `function xmlwriter_write_pi(XMLWriter $writer, string $target, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:43`
+- ·· `function xmlwriter_write_raw(XMLWriter $writer, string $content): bool` — `ext/xmlwriter/php_xmlwriter.stub.php:53`
+
+## ext/xsl (`13`) — impl `0`, tested `0`
+
+- ·· `public function XSLTProcessor::getParameter(string $namespace, string $name): string|false` — `ext/xsl/php_xsl.stub.php:107`
+- ·· `public function XSLTProcessor::getSecurityPrefs(): int` — `ext/xsl/php_xsl.stub.php:127`
+- ·· `public function XSLTProcessor::hasExsltSupport(): bool` — `ext/xsl/php_xsl.stub.php:113`
+- ·· `public function XSLTProcessor::importStylesheet(object $stylesheet): bool` — `ext/xsl/php_xsl.stub.php:83`
+- ·· `public function XSLTProcessor::registerPHPFunctionNS(string $namespaceURI, string $name, callable $callable): void` — `ext/xsl/php_xsl.stub.php:118`
+- ·· `public function XSLTProcessor::registerPHPFunctions(array|string|null $functions = null): void` — `ext/xsl/php_xsl.stub.php:116`
+- ·· `public function XSLTProcessor::removeParameter(string $namespace, string $name): bool` — `ext/xsl/php_xsl.stub.php:110`
+- ·· `public function XSLTProcessor::setParameter(string $namespace, array|string $name, ?string $value = null): bool` — `ext/xsl/php_xsl.stub.php:104`
+- ·· `public function XSLTProcessor::setProfiling(?string $filename): true` — `ext/xsl/php_xsl.stub.php:121`
+- ·· `public function XSLTProcessor::setSecurityPrefs(int $preferences): int` — `ext/xsl/php_xsl.stub.php:124`
+- ·· `public function XSLTProcessor::transformToDoc(object $document, ?string $returnClass = null): object|false` — `ext/xsl/php_xsl.stub.php:89`
+- ·· `public function XSLTProcessor::transformToUri(object $document, string $uri): int` — `ext/xsl/php_xsl.stub.php:95`
+- ·· `public function XSLTProcessor::transformToXml(object $document): string|null|false` — `ext/xsl/php_xsl.stub.php:101`
+
+## ext/zip (`62`) — impl `0`, tested `0`
+
+- ·· `function zip_close($zip): void` — `ext/zip/php_zip.stub.php:15`
+- ·· `function zip_entry_close($zip_entry): bool` — `ext/zip/php_zip.stub.php:35`
+- ·· `function zip_entry_compressedsize($zip_entry): int|false` — `ext/zip/php_zip.stub.php:53`
+- ·· `function zip_entry_compressionmethod($zip_entry): string|false` — `ext/zip/php_zip.stub.php:65`
+- ·· `function zip_entry_filesize($zip_entry): int|false` — `ext/zip/php_zip.stub.php:59`
+- ·· `function zip_entry_name($zip_entry): string|false` — `ext/zip/php_zip.stub.php:47`
+- ·· `function zip_entry_open($zip_dp, $zip_entry, string $mode = "rb"): bool` — `ext/zip/php_zip.stub.php:29`
+- ·· `function zip_entry_read($zip_entry, int $len = 1024): string|false` — `ext/zip/php_zip.stub.php:41`
+- ·· `function zip_open(string $filename)` — `ext/zip/php_zip.stub.php:9`
+- ·· `function zip_read($zip)` — `ext/zip/php_zip.stub.php:22`
+- ·· `public function ZipArchive::addEmptyDir(string $dirname, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:668`
+- ·· `public function ZipArchive::addFile(string $filepath, string $entryname = "", int $start = 0, int $length = ZipArchive::LENGTH_TO_END, int $flags = ZipArchive::FL_OVERWRITE): bool` — `ext/zip/php_zip.stub.php:674`
+- ·· `public function ZipArchive::addFromString(string $name, string $content, int $flags = ZipArchive::FL_OVERWRITE): bool` — `ext/zip/php_zip.stub.php:671`
+- ·· `public function ZipArchive::addGlob(string $pattern, int $flags = 0, array $options = []): array|false` — `ext/zip/php_zip.stub.php:680`
+- ·· `public function ZipArchive::addPattern(string $pattern, string $path = ".", array $options = []): array|false` — `ext/zip/php_zip.stub.php:683`
+- ·· `public function ZipArchive::clearError(): void` — `ext/zip/php_zip.stub.php:665`
+- ·· `public function ZipArchive::close(): bool` — `ext/zip/php_zip.stub.php:657`
+- ·· `public function ZipArchive::count(): int` — `ext/zip/php_zip.stub.php:660`
+- ·· `public function ZipArchive::deleteIndex(int $index): bool` — `ext/zip/php_zip.stub.php:722`
+- ·· `public function ZipArchive::deleteName(string $name): bool` — `ext/zip/php_zip.stub.php:725`
+- ·· `public function ZipArchive::extractTo(string $pathto, array|string|null $files = null): bool` — `ext/zip/php_zip.stub.php:752`
+- ·· `public function ZipArchive::getArchiveComment(int $flags = 0): string|false` — `ext/zip/php_zip.stub.php:695`
+- ·· `public function ZipArchive::getArchiveFlag(int $flag, int $flags = 0): int` — `ext/zip/php_zip.stub.php:699`
+- ·· `public function ZipArchive::getCommentIndex(int $index, int $flags = 0): string|false` — `ext/zip/php_zip.stub.php:716`
+- ·· `public function ZipArchive::getCommentName(string $name, int $flags = 0): string|false` — `ext/zip/php_zip.stub.php:719`
+- ·· `public function ZipArchive::getExternalAttributesIndex(int $index,&$opsys,&$attr, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:788`
+- ·· `public function ZipArchive::getExternalAttributesName(string $name,&$opsys,&$attr, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:781`
+- ·· `public function ZipArchive::getFromIndex(int $index, int $len = 0, int $flags = 0): string|false` — `ext/zip/php_zip.stub.php:758`
+- ·· `public function ZipArchive::getFromName(string $name, int $len = 0, int $flags = 0): string|false` — `ext/zip/php_zip.stub.php:755`
+- ·· `public function ZipArchive::getNameIndex(int $index, int $flags = 0): string|false` — `ext/zip/php_zip.stub.php:737`
+- ·· `public function ZipArchive::getStatusString(): string` — `ext/zip/php_zip.stub.php:663`
+- ·· `public function ZipArchive::getStream(string $name)` — `ext/zip/php_zip.stub.php:767`
+- ·· `public function ZipArchive::getStreamIndex(int $index, int $flags = 0)` — `ext/zip/php_zip.stub.php:761`
+- ·· `public function ZipArchive::getStreamName(string $name, int $flags = 0)` — `ext/zip/php_zip.stub.php:764`
+- ·· `public static function ZipArchive::isCompressionMethodSupported(int $method, bool $enc = true): bool` — `ext/zip/php_zip.stub.php:820`
+- ·· `public static function ZipArchive::isEncryptionMethodSupported(int $method, bool $enc = true): bool` — `ext/zip/php_zip.stub.php:822`
+- ·· `public function ZipArchive::locateName(string $name, int $flags = 0): int|false` — `ext/zip/php_zip.stub.php:734`
+- ·· `public function ZipArchive::open(string $filename, int $flags = 0): bool|int` — `ext/zip/php_zip.stub.php:649`
+- ·· `public function ZipArchive::registerCancelCallback(callable $callback): bool` — `ext/zip/php_zip.stub.php:816`
+- ·· `public function ZipArchive::registerProgressCallback(float $rate, callable $callback): bool` — `ext/zip/php_zip.stub.php:811`
+- ·· `public function ZipArchive::renameIndex(int $index, string $new_name): bool` — `ext/zip/php_zip.stub.php:686`
+- ·· `public function ZipArchive::renameName(string $name, string $new_name): bool` — `ext/zip/php_zip.stub.php:689`
+- ·· `public function ZipArchive::replaceFile(string $filepath, int $index, int $start = 0, int $length = ZipArchive::LENGTH_TO_END, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:677`
+- ·· `public function ZipArchive::setArchiveComment(string $comment): bool` — `ext/zip/php_zip.stub.php:692`
+- ·· `public function ZipArchive::setArchiveFlag(int $flag, int $value): bool` — `ext/zip/php_zip.stub.php:697`
+- ·· `public function ZipArchive::setCommentIndex(int $index, string $comment): bool` — `ext/zip/php_zip.stub.php:702`
+- ·· `public function ZipArchive::setCommentName(string $name, string $comment): bool` — `ext/zip/php_zip.stub.php:705`
+- ·· `public function ZipArchive::setCompressionIndex(int $index, int $method, int $compflags = 0): bool` — `ext/zip/php_zip.stub.php:795`
+- ·· `public function ZipArchive::setCompressionName(string $name, int $method, int $compflags = 0): bool` — `ext/zip/php_zip.stub.php:792`
+- ·· `public function ZipArchive::setEncryptionIndex(int $index, int $method, #[\SensitiveParameter] ?string $password = null): bool` — `ext/zip/php_zip.stub.php:806`
+- ·· `public function ZipArchive::setEncryptionName(string $name, int $method, #[\SensitiveParameter] ?string $password = null): bool` — `ext/zip/php_zip.stub.php:801`
+- ·· `public function ZipArchive::setExternalAttributesIndex(int $index, int $opsys, int $attr, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:774`
+- ·· `public function ZipArchive::setExternalAttributesName(string $name, int $opsys, int $attr, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:771`
+- ·· `public function ZipArchive::setMtimeIndex(int $index, int $timestamp, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:709`
+- ·· `public function ZipArchive::setMtimeName(string $name, int $timestamp, int $flags = 0): bool` — `ext/zip/php_zip.stub.php:712`
+- ·· `public function ZipArchive::setPassword(#[\SensitiveParameter] string $password): bool` — `ext/zip/php_zip.stub.php:654`
+- ·· `public function ZipArchive::statIndex(int $index, int $flags = 0): array|false` — `ext/zip/php_zip.stub.php:731`
+- ·· `public function ZipArchive::statName(string $name, int $flags = 0): array|false` — `ext/zip/php_zip.stub.php:728`
+- ·· `public function ZipArchive::unchangeAll(): bool` — `ext/zip/php_zip.stub.php:743`
+- ·· `public function ZipArchive::unchangeArchive(): bool` — `ext/zip/php_zip.stub.php:740`
+- ·· `public function ZipArchive::unchangeIndex(int $index): bool` — `ext/zip/php_zip.stub.php:746`
+- ·· `public function ZipArchive::unchangeName(string $name): bool` — `ext/zip/php_zip.stub.php:749`
+
+## ext/zlib (`30`) — impl `0`, tested `0`
+
+- ·· `function deflate_add(DeflateContext $context, string $data, int $flush_mode = ZLIB_SYNC_FLUSH): string|false` — `ext/zlib/zlib.stub.php:275`
+- ·· `function deflate_init(int $encoding, array|object $options = []): DeflateContext|false` — `ext/zlib/zlib.stub.php:273`
+- ·· `function gzclose($stream): bool` — `ext/zlib/zlib.stub.php:229`
+- ·· `function gzcompress(string $data, int $level = -1, int $encoding = ZLIB_ENCODING_DEFLATE): string|false` — `ext/zlib/zlib.stub.php:195`
+- ·· `function gzdecode(string $data, int $max_length = 0): string|false` — `ext/zlib/zlib.stub.php:201`
+- ·· `function gzdeflate(string $data, int $level = -1, int $encoding = ZLIB_ENCODING_RAW): string|false` — `ext/zlib/zlib.stub.php:189`
+- ·· `function gzencode(string $data, int $level = -1, int $encoding = ZLIB_ENCODING_GZIP): string|false` — `ext/zlib/zlib.stub.php:192`
+- ·· `function gzeof($stream): bool` — `ext/zlib/zlib.stub.php:235`
+- ·· `function gzfile(string $filename, bool $use_include_path = false): array|false` — `ext/zlib/zlib.stub.php:172`
+- ·· `function gzgetc($stream): string|false` — `ext/zlib/zlib.stub.php:241`
+- ·· `function gzgets($stream, ?int $length = null): string|false` — `ext/zlib/zlib.stub.php:271`
+- ·· `function gzinflate(string $data, int $max_length = 0): string|false` — `ext/zlib/zlib.stub.php:198`
+- ·· `function gzopen(string $filename, string $mode, bool $use_include_path = false)` — `ext/zlib/zlib.stub.php:178`
+- ·· `function gzpassthru($stream): int` — `ext/zlib/zlib.stub.php:247`
+- ·· `function gzputs($stream, string $data, ?int $length = null): int|false` — `ext/zlib/zlib.stub.php:217`
+- ·· `function gzread($stream, int $length): string|false` — `ext/zlib/zlib.stub.php:265`
+- ·· `function gzrewind($stream): bool` — `ext/zlib/zlib.stub.php:223`
+- ·· `function gzseek($stream, int $offset, int $whence = SEEK_SET): int` — `ext/zlib/zlib.stub.php:253`
+- ·· `function gztell($stream): int|false` — `ext/zlib/zlib.stub.php:259`
+- ·· `function gzuncompress(string $data, int $max_length = 0): string|false` — `ext/zlib/zlib.stub.php:204`
+- ·· `function gzwrite($stream, string $data, ?int $length = null): int|false` — `ext/zlib/zlib.stub.php:210`
+- ·· `function inflate_add(InflateContext $context, string $data, int $flush_mode = ZLIB_SYNC_FLUSH): string|false` — `ext/zlib/zlib.stub.php:279`
+- ·· `function inflate_get_read_len(InflateContext $context): int` — `ext/zlib/zlib.stub.php:283`
+- ·· `function inflate_get_status(InflateContext $context): int` — `ext/zlib/zlib.stub.php:281`
+- ·· `function inflate_init(int $encoding, array|object $options = []): InflateContext|false` — `ext/zlib/zlib.stub.php:277`
+- ·· `function ob_gzhandler(string $data, int $flags): string|false` — `ext/zlib/zlib.stub.php:163`
+- ·· `function readgzfile(string $filename, bool $use_include_path = false): int|false` — `ext/zlib/zlib.stub.php:180`
+- ·· `function zlib_decode(string $data, int $max_length = 0): string|false` — `ext/zlib/zlib.stub.php:186`
+- ·· `function zlib_encode(string $data, int $encoding, int $level = -1): string|false` — `ext/zlib/zlib.stub.php:183`
+- ·· `function zlib_get_coding_type(): string|false` — `ext/zlib/zlib.stub.php:166`
+
+## sapi/apache2handler (`10`) — impl `0`, tested `0`
+
+- ·· `function apache_get_modules(): array` — `sapi/apache2handler/php_functions.stub.php:24`
+- ·· `function apache_get_version(): string|false` — `sapi/apache2handler/php_functions.stub.php:22`
+- ·· `function apache_getenv(string $variable, bool $walk_to_top = false): string|false` — `sapi/apache2handler/php_functions.stub.php:20`
+- ·· `function apache_lookup_uri(string $filename): object|false` — `sapi/apache2handler/php_functions.stub.php:5`
+- ·· `function apache_note(string $note_name, ?string $note_value = null): string|false` — `sapi/apache2handler/php_functions.stub.php:16`
+- ·· `function apache_request_headers(): array` — `sapi/apache2handler/php_functions.stub.php:9`
+- ·· `function apache_response_headers(): array` — `sapi/apache2handler/php_functions.stub.php:14`
+- ·· `function apache_setenv(string $variable, string $value, bool $walk_to_top = false): bool` — `sapi/apache2handler/php_functions.stub.php:18`
+- ·· `function getallheaders(): array` — `sapi/apache2handler/php_functions.stub.php:12`
+- ·· `function virtual(string $uri): bool` — `sapi/apache2handler/php_functions.stub.php:7`
+
+## sapi/cgi (`4`) — impl `0`, tested `0`
+
+- ·· `function apache_child_terminate(): void` — `sapi/cgi/cgi_main.stub.php:5`
+- ·· `function apache_request_headers(): array` — `sapi/cgi/cgi_main.stub.php:7`
+- ·· `function apache_response_headers(): array` — `sapi/cgi/cgi_main.stub.php:12`
+- ·· `function getallheaders(): array` — `sapi/cgi/cgi_main.stub.php:10`
+
+## sapi/cli (`5`) — impl `0`, tested `0`
+
+- ·· `function apache_request_headers(): array` — `sapi/cli/php_cli_server.stub.php:3`
+- ·· `function apache_response_headers(): array` — `sapi/cli/php_cli_server.stub.php:5`
+- ·· `function cli_get_process_title(): ?string` — `sapi/cli/php_cli_process_title.stub.php:5`
+- ·· `function cli_set_process_title(string $title): bool` — `sapi/cli/php_cli_process_title.stub.php:3`
+- ·· `function getallheaders(): array` — `sapi/cli/php_cli_server.stub.php:7`
+
+## sapi/fpm (`4`) — impl `0`, tested `0`
+
+- ·· `function apache_request_headers(): array` — `sapi/fpm/fpm/fpm_main.stub.php:7`
+- ·· `function fastcgi_finish_request(): bool` — `sapi/fpm/fpm/fpm_main.stub.php:5`
+- ·· `function fpm_get_status(): array|false` — `sapi/fpm/fpm/fpm_main.stub.php:12`
+- ·· `function getallheaders(): array` — `sapi/fpm/fpm/fpm_main.stub.php:10`
+
+## sapi/litespeed (`7`) — impl `0`, tested `0`
+
+- ·· `function apache_get_modules(): array` — `sapi/litespeed/lsapi_main.stub.php:18`
+- ·· `function apache_request_headers(): array` — `sapi/litespeed/lsapi_main.stub.php:11`
+- ·· `function apache_response_headers(): array|false` — `sapi/litespeed/lsapi_main.stub.php:16`
+- ·· `function getallheaders(): array` — `sapi/litespeed/lsapi_main.stub.php:8`
+- ·· `function litespeed_finish_request(): bool` — `sapi/litespeed/lsapi_main.stub.php:20`
+- ·· `function litespeed_request_headers(): array` — `sapi/litespeed/lsapi_main.stub.php:5`
+- ·· `function litespeed_response_headers(): array|false` — `sapi/litespeed/lsapi_main.stub.php:13`
+
+## sapi/phpdbg (`11`) — impl `0`, tested `0`
+
+- ·· `function phpdbg_break_file(string $file, int $line): void` — `sapi/phpdbg/phpdbg.stub.php:29`
+- ·· `function phpdbg_break_function(string $function): void` — `sapi/phpdbg/phpdbg.stub.php:33`
+- ·· `function phpdbg_break_method(string $class, string $method): void` — `sapi/phpdbg/phpdbg.stub.php:31`
+- ·· `function phpdbg_break_next(): void` — `sapi/phpdbg/phpdbg.stub.php:27`
+- ·· `function phpdbg_clear(): void` — `sapi/phpdbg/phpdbg.stub.php:41`
+- ·· `function phpdbg_color(int $element, string $color): void` — `sapi/phpdbg/phpdbg.stub.php:35`
+- ·· `function phpdbg_end_oplog(array $options = []): ?array` — `sapi/phpdbg/phpdbg.stub.php:45`
+- ·· `function phpdbg_exec(string $context): string|bool` — `sapi/phpdbg/phpdbg.stub.php:39`
+- ·· `function phpdbg_get_executable(array $options = []): array` — `sapi/phpdbg/phpdbg.stub.php:47`
+- ·· `function phpdbg_prompt(string $string): void` — `sapi/phpdbg/phpdbg.stub.php:37`
+- ·· `function phpdbg_start_oplog(): void` — `sapi/phpdbg/phpdbg.stub.php:43`
+
