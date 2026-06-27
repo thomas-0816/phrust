@@ -23,6 +23,9 @@ pub type ClosurePayloadRef<'a> = (
     &'a Vec<ClosureCaptureValue>,
     Option<&'a ObjectRef>,
     Option<&'a ClosureDebugInfo>,
+    Option<&'a String>,
+    Option<&'a String>,
+    Option<&'a String>,
 );
 
 /// Runtime callable values.
@@ -46,6 +49,12 @@ pub enum CallableValue {
         bound_this: Option<ObjectRef>,
         /// Optional source metadata used by debug output.
         debug: Option<ClosureDebugInfo>,
+        /// Lexical class scope captured when the closure was created.
+        scope_class: Option<String>,
+        /// Late-bound class captured when the closure was created.
+        called_class: Option<String>,
+        /// Declaring class captured when the closure was created.
+        declaring_class: Option<String>,
     },
     /// Internal builtin resolved by deterministic builtin name.
     InternalBuiltin {
@@ -236,6 +245,9 @@ impl Value {
             captures,
             bound_this: None,
             debug: None,
+            scope_class: None,
+            called_class: None,
+            declaring_class: None,
         })
     }
 
@@ -252,6 +264,9 @@ impl Value {
             captures,
             bound_this: None,
             debug,
+            scope_class: None,
+            called_class: None,
+            declaring_class: None,
         })
     }
 
@@ -270,6 +285,33 @@ impl Value {
             captures,
             bound_this,
             debug,
+            scope_class: None,
+            called_class: None,
+            declaring_class: None,
+        })
+    }
+
+    /// Creates a runtime closure callable value with PHP debug metadata, an
+    /// optional bound `$this`, and lexical class context.
+    #[must_use]
+    pub fn closure_with_debug_this_and_context(
+        function: u32,
+        captures: Vec<ClosureCaptureValue>,
+        debug: Option<ClosureDebugInfo>,
+        bound_this: Option<ObjectRef>,
+        scope_class: Option<String>,
+        called_class: Option<String>,
+        declaring_class: Option<String>,
+    ) -> Self {
+        Self::Callable(CallableValue::Closure {
+            id: next_object_id(),
+            function,
+            captures,
+            bound_this,
+            debug,
+            scope_class,
+            called_class,
+            declaring_class,
         })
     }
 
@@ -324,8 +366,19 @@ impl Value {
                 captures,
                 bound_this,
                 debug,
+                scope_class,
+                called_class,
+                declaring_class,
                 ..
-            }) => Some((*function, captures, bound_this.as_ref(), debug.as_ref())),
+            }) => Some((
+                *function,
+                captures,
+                bound_this.as_ref(),
+                debug.as_ref(),
+                scope_class.as_ref(),
+                called_class.as_ref(),
+                declaring_class.as_ref(),
+            )),
             _ => None,
         }
     }

@@ -15,6 +15,8 @@ pub enum DiagnosticId {
     InvalidPropertyPromotion,
     /// Closure use captures duplicate a parameter name.
     ClosureUseDuplicatesParameter,
+    /// Closure use captures an auto-global variable.
+    ClosureUseAutoGlobal,
     /// Closure use captures the same variable more than once.
     DuplicateClosureUseVariable,
     /// HIR lowering expected a child node that recovery syntax omitted.
@@ -100,6 +102,7 @@ impl DiagnosticId {
             Self::InvalidParameterDefault => "E_PHP_INVALID_PARAMETER_DEFAULT",
             Self::InvalidPropertyPromotion => "E_PHP_INVALID_PROPERTY_PROMOTION",
             Self::ClosureUseDuplicatesParameter => "E_PHP_CLOSURE_USE_DUPLICATES_PARAMETER",
+            Self::ClosureUseAutoGlobal => "E_PHP_CLOSURE_USE_AUTO_GLOBAL",
             Self::DuplicateClosureUseVariable => "E_PHP_DUPLICATE_CLOSURE_USE_VARIABLE",
             Self::HirMissingChild => "E_PHP_HIR_MISSING_CHILD",
             Self::DuplicateUseAlias => "E_PHP_DUPLICATE_USE_ALIAS",

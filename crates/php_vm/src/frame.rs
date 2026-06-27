@@ -198,6 +198,8 @@ pub struct Frame {
     /// PHP-visible arguments supplied to this call after default/variadic
     /// normalization.
     pub arguments: Vec<Value>,
+    /// Backtrace-visible arguments with redaction and named variadic labels.
+    pub trace_arguments: Vec<FrameTraceArgument>,
     /// Source span of the call site that activated this frame, when known.
     pub call_span: Option<IrSpan>,
     /// Registers for the function.
@@ -232,6 +234,7 @@ impl Frame {
             called_class: None,
             declaring_class: None,
             arguments: Vec::new(),
+            trace_arguments: Vec::new(),
             call_span: None,
             registers: RegisterFile::new(register_count),
             locals: LocalFile::new(local_count),
@@ -253,6 +256,7 @@ impl Frame {
             called_class: context.called_class,
             declaring_class: context.declaring_class,
             arguments: Vec::new(),
+            trace_arguments: Vec::new(),
             call_span: context.call_span,
             registers: RegisterFile::new(register_count),
             locals: LocalFile::new(local_count),
@@ -268,6 +272,7 @@ impl Frame {
         self.declaring_class = None;
         self.call_span = None;
         self.arguments.clear();
+        self.trace_arguments.clear();
         self.registers.clear_for_reuse();
         self.locals.clear_for_reuse();
         self.reuse_eligible = false;
@@ -287,10 +292,18 @@ impl Frame {
         self.declaring_class = context.declaring_class;
         self.call_span = context.call_span;
         self.arguments.clear();
+        self.trace_arguments.clear();
         self.registers.reset_for_function(register_count);
         self.locals.reset_for_function(local_count);
         self.reuse_eligible = false;
     }
+}
+
+/// One argument as PHP stack traces should render it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameTraceArgument {
+    pub name: Option<String>,
+    pub value: Value,
 }
 
 /// Minimal call stack container.

@@ -9836,6 +9836,7 @@ impl DebugFormatter {
                 captures,
                 bound_this,
                 debug: Some(debug),
+                ..
             } => {
                 let has_static = !captures.is_empty();
                 let has_this = bound_this.is_some();

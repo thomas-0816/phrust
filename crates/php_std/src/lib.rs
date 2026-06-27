@@ -645,6 +645,8 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("copy", "standard"))
                 .with_function(FunctionDescriptor::php("count", "standard"))
                 .with_function(FunctionDescriptor::php("crc32", "standard"))
+                .with_function(FunctionDescriptor::php("debug_backtrace", "standard"))
+                .with_function(FunctionDescriptor::php("debug_print_backtrace", "standard"))
                 .with_function(FunctionDescriptor::php("defined", "standard"))
                 .with_function(FunctionDescriptor::php("dirname", "standard"))
                 .with_function(FunctionDescriptor::php("enum_exists", "standard"))
@@ -681,6 +683,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("fwrite", "standard"))
                 .with_function(FunctionDescriptor::php("get_current_user", "standard"))
                 .with_function(FunctionDescriptor::php("get_cfg_var", "standard"))
+                .with_function(FunctionDescriptor::php("get_called_class", "standard"))
                 .with_function(FunctionDescriptor::php("get_class", "standard"))
                 .with_function(FunctionDescriptor::php("get_class_methods", "standard"))
                 .with_function(FunctionDescriptor::php("get_class_vars", "standard"))
@@ -1702,6 +1705,8 @@ mod tests {
             "call_user_func",
             "call_user_func_array",
             "forward_static_call",
+            "debug_backtrace",
+            "debug_print_backtrace",
             "func_get_arg",
             "func_get_args",
             "func_num_args",
@@ -1712,6 +1717,7 @@ mod tests {
             "property_exists",
             "is_a",
             "is_subclass_of",
+            "get_called_class",
             "get_class",
             "get_class_methods",
             "get_class_vars",

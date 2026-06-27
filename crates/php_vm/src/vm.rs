@@ -11,7 +11,7 @@ use crate::compiled_unit::CompiledUnit;
 #[cfg(feature = "jit-cranelift")]
 use crate::counters::JitCompileDescriptor;
 use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
-use crate::frame::{CallStack, Frame, FrameActivationContext};
+use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument};
 use crate::include::{IncludeLoader, include_path_file_fingerprint};
 use crate::inline_cache::{
     AutoloadClassLookupCacheKey, AutoloadClassLookupCacheTarget, AutoloadClassLookupEpochs,
@@ -345,6 +345,7 @@ struct PreparedArg {
 
 struct PreparedArguments {
     args: Vec<PreparedArg>,
+    trace_args: Vec<FrameTraceArgument>,
     diagnostics: Vec<RuntimeDiagnostic>,
 }
 
@@ -6057,6 +6058,7 @@ impl Vm {
             let frame_reuse_blocked_reason = frame_reuse_call_shape_reason
                 .or_else(|| frame_reuse_prepared_args_blocked_reason(&prepared.args));
             let args = prepared.args;
+            let trace_args = prepared.trace_args;
             for diagnostic in prepared.diagnostics {
                 let handled = match self.dispatch_error_handler(
                     compiled,
@@ -6142,8 +6144,11 @@ impl Vm {
                 )
             };
             self.record_counter_frame_activation(reused_frame);
-            stack.current_mut().expect("frame was pushed").arguments =
-                args.iter().map(|arg| arg.value.clone()).collect();
+            {
+                let frame = stack.current_mut().expect("frame was pushed");
+                frame.arguments = args.iter().map(|arg| arg.value.clone()).collect();
+                frame.trace_arguments = trace_args;
+            }
             if let Err(message) = initialize_captures(function, call.captures, stack) {
                 let result = self.runtime_error(output, compiled, stack, message);
                 stack.pop_recycle();
@@ -6909,6 +6914,14 @@ impl Vm {
                         {
                             object.set_property("line", Value::Int(line));
                         }
+                        object.set_property(
+                            "trace",
+                            Value::Array(debug_backtrace_array(compiled, stack, 1, 0)),
+                        );
+                        object.set_property(
+                            "trace_string",
+                            Value::string(capture_backtrace_string(compiled, stack).into_bytes()),
+                        );
                         if let Err(message) = stack
                             .current_mut()
                             .expect("frame was pushed")
@@ -6959,6 +6972,29 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
+                        if is_instantiable_internal_throwable(&class_name) {
+                            let object = match new_internal_throwable_object(
+                                compiled,
+                                stack,
+                                &class_name,
+                                &values,
+                                instruction.span,
+                            ) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if is_std_class_runtime_class(&class_name) {
                             if !values.is_empty() {
                                 return self.runtime_error(
@@ -7227,6 +7263,35 @@ impl Vm {
                                 );
                             }
                             let object = ObjectRef::new(&std_class_entry());
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_instantiable_internal_throwable(class_name) {
+                            let values = match read_call_args(unit, stack, args) {
+                                Ok(values) => values,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            let object = match new_internal_throwable_object(
+                                compiled,
+                                stack,
+                                class_name,
+                                &values,
+                                instruction.span,
+                            ) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                             if let Err(message) = stack
                                 .current_mut()
                                 .expect("frame was pushed")
@@ -8922,6 +8987,26 @@ impl Vm {
                     } => {
                         let object = match read_operand(unit, stack, *object) {
                             Ok(Value::Object(object)) => object,
+                            Ok(Value::Callable(_)) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    format!(
+                                        "E_PHP_VM_DYNAMIC_PROPERTY_ERROR: Cannot create dynamic property Closure::${property}"
+                                    ),
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
                             Ok(other) => {
                                 return self.runtime_error(
                                     output,
@@ -11540,11 +11625,14 @@ impl Vm {
                             .get(function.index())
                             .filter(|closure| closure.flags.is_closure && !closure.flags.is_static)
                             .and_then(|_| current_this_object(compiled, stack));
-                        let value = Value::closure_with_debug_and_this(
+                        let value = Value::closure_with_debug_this_and_context(
                             function.raw(),
                             captured,
                             closure_debug_info(compiled, *function),
                             bound_this,
+                            current_scope_class(compiled, stack),
+                            current_called_class(compiled, stack),
+                            current_scope_class(compiled, stack),
                         );
                         if let Err(message) = stack
                             .current_mut()
@@ -11562,7 +11650,15 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        let Some((function, captures, bound_this, debug)) = callee.as_closure()
+                        let Some((
+                            function,
+                            captures,
+                            bound_this,
+                            debug,
+                            scope_class,
+                            called_class,
+                            declaring_class,
+                        )) = callee.as_closure()
                         else {
                             return self.runtime_error(
                                 output,
@@ -11582,6 +11678,13 @@ impl Vm {
                             .with_call_span(instruction.span);
                         if let Some(bound_this) = bound_this {
                             call = call.with_this(bound_this.clone());
+                        }
+                        if let Some(scope_class) = scope_class {
+                            call = call.with_class_context(
+                                scope_class.clone(),
+                                called_class.unwrap_or(scope_class).clone(),
+                                declaring_class.unwrap_or(scope_class).clone(),
+                            );
                         }
                         let closure_owner =
                             closure_owner_for_function(compiled, state, function, debug);
@@ -12355,16 +12458,27 @@ impl Vm {
                 captures,
                 bound_this,
                 debug,
+                scope_class,
+                called_class,
+                declaring_class,
                 ..
             }) => {
                 let mut call = FunctionCall::new(args, captures).with_optional_call_span(call_span);
                 let closure_owner =
                     closure_owner_for_function(compiled, state, function, debug.as_ref());
-                if let Some(bound_this) = bound_this {
-                    let scope_class = bound_this.class_name();
-                    if closure_function_has_this_local(&closure_owner, function) {
-                        call = call.with_this(bound_this);
-                    }
+                if let Some(bound_this) = bound_this
+                    && closure_function_has_this_local(&closure_owner, function)
+                {
+                    call = call.with_this(bound_this);
+                }
+                if let Some(scope_class) = scope_class {
+                    call = call.with_class_context(
+                        scope_class.clone(),
+                        called_class.unwrap_or_else(|| scope_class.clone()),
+                        declaring_class.unwrap_or_else(|| scope_class.clone()),
+                    );
+                } else if let Some(this_value) = call.this_value.as_ref() {
+                    let scope_class = this_value.class_name();
                     call =
                         call.with_class_context(scope_class.clone(), scope_class.clone(), scope_class);
                 }
@@ -12419,6 +12533,11 @@ impl Vm {
                 }
                 if is_process_builtin_name(&name) {
                     return self.call_process_builtin(compiled, &name, args, output, stack);
+                }
+                if is_pcre_callback_builtin_name(&name) {
+                    return self.call_pcre_callback_builtin(
+                        compiled, &name, args, output, stack, state,
+                    );
                 }
                 let values = match call_builtin_args_to_positional(
                     compiled, &name, args, output, stack, state,
@@ -13248,6 +13367,187 @@ impl Vm {
                 format!("E_PHP_VM_UNKNOWN_PROCESS_BUILTIN: {name}"),
             ),
         }
+    }
+
+    fn call_pcre_callback_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        args: Vec<CallArgument>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        let values =
+            match call_builtin_args_to_positional(compiled, name, args, output, stack, state) {
+                Ok(values) => values,
+                Err(InternalBuiltinArgError::Message(message)) => {
+                    return self.runtime_error(output, compiled, stack, message);
+                }
+                Err(InternalBuiltinArgError::Fatal(result)) => return *result,
+            };
+        let result = match name {
+            "preg_replace_callback" => {
+                self.call_preg_replace_callback_builtin(compiled, values, output, stack, state)
+            }
+            _ => Err(ArrayCallbackError::Message(format!(
+                "E_PHP_VM_UNKNOWN_PCRE_CALLBACK_BUILTIN: {name}"
+            ))),
+        };
+        match result {
+            Ok(value) => VmResult::success(output.clone(), Some(value)),
+            Err(ArrayCallbackError::Runtime(result)) => *result,
+            Err(ArrayCallbackError::BuiltinType { function, actual }) => {
+                array_callback_type_error(output, compiled, stack, function, &actual)
+            }
+            Err(ArrayCallbackError::Message(message)) => {
+                self.runtime_error(output, compiled, stack, message)
+            }
+        }
+    }
+
+    fn call_preg_replace_callback_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        args: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, ArrayCallbackError> {
+        if !(3..=5).contains(&args.len()) {
+            return Err(ArrayCallbackError::Message(
+                "E_PHP_VM_BUILTIN_ARITY: preg_replace_callback expects three to five argument(s)"
+                    .to_owned(),
+            ));
+        }
+        let pattern = to_string(&args[0]).map_err(|message| {
+            ArrayCallbackError::Message(format!(
+                "preg_replace_callback: pattern must be string-compatible: {message}"
+            ))
+        })?;
+        let callback = args[1].clone();
+        validate_array_callback_arg(
+            compiled,
+            state,
+            "preg_replace_callback",
+            2,
+            "callback",
+            false,
+            &callback,
+        )?;
+        let limit = args
+            .get(3)
+            .map(to_int)
+            .transpose()
+            .map_err(|message| {
+                ArrayCallbackError::Message(format!("preg_replace_callback: {message}"))
+            })?
+            .unwrap_or(-1);
+        let mut cache = php_runtime::pcre::PcreCache::default();
+        let compiled_pattern = match cache.compile(&pattern) {
+            Ok(compiled_pattern) => compiled_pattern,
+            Err(_) => return Ok(Value::Bool(false)),
+        };
+        let mut count = 0i64;
+        let value = match effective_value(&args[2]) {
+            Value::Array(array) => {
+                let mut replaced = PhpArray::new();
+                for (key, value) in array.iter() {
+                    let text = to_string(value).map_err(|message| {
+                        ArrayCallbackError::Message(format!(
+                            "preg_replace_callback: subject must be string-compatible: {message}"
+                        ))
+                    })?;
+                    let bytes = self.preg_replace_callback_bytes(
+                        compiled,
+                        &compiled_pattern,
+                        callback.clone(),
+                        text.as_bytes(),
+                        limit,
+                        &mut count,
+                        output,
+                        stack,
+                        state,
+                    )?;
+                    replaced.insert(key.clone(), Value::string(bytes));
+                }
+                Value::Array(replaced)
+            }
+            subject => {
+                let text = to_string(&subject).map_err(|message| {
+                    ArrayCallbackError::Message(format!(
+                        "preg_replace_callback: subject must be string-compatible: {message}"
+                    ))
+                })?;
+                let bytes = self.preg_replace_callback_bytes(
+                    compiled,
+                    &compiled_pattern,
+                    callback,
+                    text.as_bytes(),
+                    limit,
+                    &mut count,
+                    output,
+                    stack,
+                    state,
+                )?;
+                Value::string(bytes)
+            }
+        };
+        if let Some(Value::Reference(cell)) = args.get(4) {
+            cell.set(Value::Int(count));
+        }
+        Ok(value)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preg_replace_callback_bytes(
+        &self,
+        compiled: &CompiledUnit,
+        pattern: &php_runtime::pcre::CompiledPattern,
+        callback: Value,
+        subject: &[u8],
+        limit: i64,
+        count: &mut i64,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Vec<u8>, ArrayCallbackError> {
+        let mut replaced = Vec::new();
+        let mut last_end = 0usize;
+        for captures in pattern.captures_iter(subject) {
+            let captures = captures.map_err(|error| {
+                let error = php_runtime::pcre::PcreFailure::from(error);
+                ArrayCallbackError::Message(format!(
+                    "E_PHP_RUNTIME_PCRE_ERROR: {}",
+                    error.message()
+                ))
+            })?;
+            let Some(full) = captures.get(0) else {
+                continue;
+            };
+            if limit >= 0 && *count >= limit {
+                break;
+            }
+            replaced.extend_from_slice(&subject[last_end..full.start()]);
+            let callback_result = self.invoke_array_callback(
+                compiled,
+                callback.clone(),
+                vec![php_runtime::pcre::captures_to_array(&captures, 0)],
+                output,
+                stack,
+                state,
+            )?;
+            let callback_text = to_string(&callback_result).map_err(|message| {
+                ArrayCallbackError::Message(format!(
+                    "preg_replace_callback: callback result must be string-compatible: {message}"
+                ))
+            })?;
+            replaced.extend_from_slice(callback_text.as_bytes());
+            last_end = full.end();
+            *count += 1;
+        }
+        replaced.extend_from_slice(&subject[last_end..]);
+        Ok(replaced)
     }
 
     fn call_array_callback_builtin(
@@ -14202,16 +14502,27 @@ impl Vm {
                 captures,
                 bound_this,
                 debug,
+                scope_class,
+                called_class,
+                declaring_class,
                 ..
             }) => {
                 let mut call = FunctionCall::new(args, captures).running_fiber(fiber);
                 let closure_owner =
                     closure_owner_for_function(compiled, state, function, debug.as_ref());
-                if let Some(bound_this) = bound_this {
-                    let scope_class = bound_this.class_name();
-                    if closure_function_has_this_local(&closure_owner, function) {
-                        call = call.with_this(bound_this);
-                    }
+                if let Some(bound_this) = bound_this
+                    && closure_function_has_this_local(&closure_owner, function)
+                {
+                    call = call.with_this(bound_this);
+                }
+                if let Some(scope_class) = scope_class {
+                    call = call.with_class_context(
+                        scope_class.clone(),
+                        called_class.unwrap_or_else(|| scope_class.clone()),
+                        declaring_class.unwrap_or_else(|| scope_class.clone()),
+                    );
+                } else if let Some(this_value) = call.this_value.as_ref() {
+                    let scope_class = this_value.class_name();
                     call = call.with_class_context(
                         scope_class.clone(),
                         scope_class.clone(),
@@ -14308,6 +14619,16 @@ impl Vm {
         if is_process_builtin_name(&normalized) {
             return self.call_process_builtin(compiled, &normalized, args, output, stack);
         }
+        if is_pcre_callback_builtin_name(&normalized) {
+            return self.call_pcre_callback_builtin(
+                compiled,
+                &normalized,
+                args,
+                output,
+                stack,
+                state,
+            );
+        }
         if is_array_callback_builtin_name(&normalized) {
             return self.call_array_callback_builtin(
                 compiled,
@@ -14397,6 +14718,12 @@ impl Vm {
         if is_process_builtin_name(name) {
             return Some(FunctionCallCacheTarget::Builtin {
                 kind: FunctionCallBuiltinKind::Process,
+                name: name.to_owned(),
+            });
+        }
+        if is_pcre_callback_builtin_name(name) {
+            return Some(FunctionCallCacheTarget::Builtin {
+                kind: FunctionCallBuiltinKind::PcreCallback,
                 name: name.to_owned(),
             });
         }
@@ -14495,6 +14822,9 @@ impl Vm {
                 }
                 FunctionCallBuiltinKind::Process => {
                     self.call_process_builtin(compiled, &name, args, output, stack)
+                }
+                FunctionCallBuiltinKind::PcreCallback => {
+                    self.call_pcre_callback_builtin(compiled, &name, args, output, stack, state)
                 }
                 FunctionCallBuiltinKind::ArrayCallback => {
                     self.call_array_callback_builtin(compiled, &name, args, output, stack, state)
@@ -17902,8 +18232,15 @@ impl Vm {
             "forward_static_call" => {
                 self.call_forward_static_call_builtin(compiled, values, output, stack, state)
             }
-            "func_get_args" | "func_num_args" | "func_get_arg" => {
+            "func_get_args"
+            | "func_num_args"
+            | "func_get_arg"
+            | "debug_backtrace"
+            | "debug_print_backtrace" => {
                 self.call_function_context_builtin(compiled, name, values, output, stack)
+            }
+            "get_called_class" => {
+                self.call_get_called_class_builtin(compiled, values, output, stack, state)
             }
             "is_subclass_of" => {
                 self.call_is_subclass_of_builtin(compiled, values, output, stack, state)
@@ -18337,6 +18674,9 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
     ) -> VmResult {
+        if matches!(name, "debug_backtrace" | "debug_print_backtrace") {
+            return self.call_debug_backtrace_builtin(compiled, name, values, output, stack);
+        }
         let Some(frame) = stack.current() else {
             return self.runtime_error(
                 output,
@@ -18428,6 +18768,96 @@ impl Vm {
                 format!("E_PHP_VM_UNKNOWN_CALL_CONTEXT_BUILTIN: {name}"),
             ),
         }
+    }
+
+    fn call_debug_backtrace_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        values: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+    ) -> VmResult {
+        if values.len() > 2 {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!("E_PHP_VM_CALL_CONTEXT_ARITY: {name} expects zero to two arguments"),
+            );
+        }
+        let options = match values.first() {
+            Some(value) => match to_int(value) {
+                Ok(value) => value,
+                Err(message) => return self.runtime_error(output, compiled, stack, message),
+            },
+            None => {
+                if name == "debug_backtrace" {
+                    1
+                } else {
+                    0
+                }
+            }
+        };
+        let limit = match values.get(1) {
+            Some(value) => match to_int(value) {
+                Ok(value) if value >= 0 => value as usize,
+                Ok(_) => {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!("E_PHP_VM_CALL_CONTEXT_LIMIT: {name} limit must be non-negative"),
+                    );
+                }
+                Err(message) => return self.runtime_error(output, compiled, stack, message),
+            },
+            None => 0,
+        };
+        if name == "debug_print_backtrace" {
+            let text = capture_debug_print_backtrace_string(compiled, stack, options, limit);
+            if !text.is_empty() {
+                output.write_test_str(&text);
+                output.write_bytes(b"\n");
+            }
+            return VmResult::success(output.clone(), Some(Value::Null));
+        }
+        VmResult::success(
+            output.clone(),
+            Some(Value::Array(debug_backtrace_array(
+                compiled, stack, options, limit,
+            ))),
+        )
+    }
+
+    fn call_get_called_class_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        values: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &ExecutionState,
+    ) -> VmResult {
+        if !values.is_empty() {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                "E_PHP_VM_CALL_CONTEXT_ARITY: get_called_class expects no arguments",
+            );
+        }
+        let Some(called_class) = current_called_class(compiled, stack) else {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                "E_PHP_VM_CALL_CONTEXT: get_called_class is not available outside class scope",
+            );
+        };
+        let display_name = lookup_class_in_state(compiled, state, &called_class)
+            .map(|class| class.display_name)
+            .unwrap_or(called_class);
+        VmResult::success(output.clone(), Some(Value::string(display_name)))
     }
 
     fn call_is_subclass_of_builtin(
@@ -19184,6 +19614,11 @@ fn internal_throwable_instanceof(object_class: &str, target_class: &str) -> Opti
     }
 }
 
+fn is_instantiable_internal_throwable(class_name: &str) -> bool {
+    normalize_class_name(class_name) != "throwable"
+        && internal_throwable_instanceof(class_name, "throwable").is_some()
+}
+
 fn throwable_class_name(value: &Value) -> String {
     match value {
         Value::Object(object) => internal_throwable_display_name(&object.class_name()),
@@ -19218,6 +19653,14 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
             throwable_property("code", Value::Int(0), RuntimeType::Int),
             throwable_property("file", Value::string(Vec::new()), RuntimeType::String),
             throwable_property("line", Value::Int(0), RuntimeType::Int),
+            RuntimeClassPropertyEntry {
+                name: "trace".to_owned(),
+                default: Value::Array(PhpArray::new()),
+                type_: None,
+                flags: RuntimeClassPropertyFlags::default(),
+                hooks: RuntimeClassPropertyHooks::default(),
+                attributes: Vec::new(),
+            },
         ],
         constants: Vec::new(),
         enum_cases: Vec::new(),
@@ -19227,6 +19670,49 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
         flags: RuntimeClassFlags::default(),
     };
     Ok(ObjectRef::new(&class))
+}
+
+fn new_internal_throwable_object(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    class_name: &str,
+    args: &[CallArgument],
+    span: php_ir::IrSpan,
+) -> Result<ObjectRef, String> {
+    if args.len() > 3 {
+        return Err(format!(
+            "E_PHP_VM_TOO_MANY_ARGS: {}::__construct() expects at most 3 arguments, {} given",
+            internal_throwable_display_name(class_name),
+            args.len()
+        ));
+    }
+    let message = args
+        .first()
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| Value::string(Vec::new()));
+    let object = make_exception_object(class_name, &message)?;
+    if let Some(code) = args.get(1) {
+        object.set_property("code", code.value.clone());
+    }
+    if let Some(previous) = args.get(2) {
+        object.set_property("previous", previous.value.clone());
+    }
+    let display_span = runtime_source_span(compiled, span);
+    if let Some(file) = display_span.file {
+        object.set_property("file", Value::string(file.into_bytes()));
+    }
+    if let Some(line) = source_span_display_line(compiled, span, false) {
+        object.set_property("line", Value::Int(line));
+    }
+    object.set_property(
+        "trace",
+        Value::Array(debug_backtrace_array(compiled, stack, 1, 0)),
+    );
+    object.set_property(
+        "trace_string",
+        Value::string(capture_backtrace_string(compiled, stack).into_bytes()),
+    );
+    Ok(object)
 }
 
 fn std_class_entry() -> RuntimeClassEntry {
@@ -19261,6 +19747,7 @@ fn internal_throwable_method_value(
                 | "getprevious"
                 | "gettraceasstring"
                 | "gettrace"
+                | "__tostring"
         )
     {
         return Err(format!(
@@ -19279,14 +19766,52 @@ fn internal_throwable_method_value(
             .get_property("file")
             .unwrap_or_else(|| Value::string(Vec::new()))),
         "getprevious" => Ok(object.get_property("previous").unwrap_or(Value::Null)),
-        // Trace capture is not modeled yet; top-level throws render `#0 {main}`.
-        "gettraceasstring" => Ok(Value::string(b"#0 {main}".to_vec())),
-        "gettrace" => Ok(Value::Array(PhpArray::new())),
+        "gettraceasstring" => Ok(Value::string(throwable_trace_string(object).into_bytes())),
+        "gettrace" => Ok(object
+            .get_property("trace")
+            .unwrap_or_else(|| Value::Array(PhpArray::new()))),
+        "__tostring" => Ok(Value::string(throwable_string(object).into_bytes())),
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_METHOD: method {}::{method} is not declared",
             object.class_name()
         )),
     }
+}
+
+fn throwable_trace_string(object: &ObjectRef) -> String {
+    object
+        .get_property("trace_string")
+        .and_then(|value| to_string(&value).ok())
+        .map(|value| value.to_string_lossy())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "#0 {main}".to_owned())
+}
+
+fn throwable_string(object: &ObjectRef) -> String {
+    let class_name = internal_throwable_display_name(&object.class_name());
+    let message = object
+        .get_property("message")
+        .and_then(|value| to_string(&value).ok())
+        .map(|value| value.to_string_lossy())
+        .unwrap_or_default();
+    let file = object
+        .get_property("file")
+        .and_then(|value| to_string(&value).ok())
+        .map(|value| value.to_string_lossy())
+        .unwrap_or_default();
+    let line = match object.get_property("line") {
+        Some(Value::Int(line)) => line,
+        _ => 0,
+    };
+    let heading = if message.is_empty() {
+        format!("{class_name} in {file}:{line}")
+    } else {
+        format!("{class_name}: {message} in {file}:{line}")
+    };
+    format!(
+        "{heading}\nStack trace:\n{}",
+        throwable_trace_string(object)
+    )
 }
 
 fn handle_throw(
@@ -23201,8 +23726,28 @@ fn bind_closure_callable_value(callable: CallableValue, bound_this: Option<Objec
             function,
             captures,
             debug,
+            scope_class,
+            called_class,
+            declaring_class,
             ..
-        } => Value::closure_with_debug_and_this(function, captures, debug, bound_this),
+        } => Value::closure_with_debug_this_and_context(
+            function,
+            captures,
+            debug,
+            bound_this.clone(),
+            bound_this
+                .as_ref()
+                .map(ObjectRef::class_name)
+                .or(scope_class),
+            bound_this
+                .as_ref()
+                .map(ObjectRef::class_name)
+                .or(called_class),
+            bound_this
+                .as_ref()
+                .map(ObjectRef::class_name)
+                .or(declaring_class),
+        ),
         CallableValue::BoundMethod {
             target,
             method,
@@ -23481,11 +24026,14 @@ fn current_closure_value(compiled: &CompiledUnit, stack: &CallStack) -> Result<V
     let bound_this = (!function.flags.is_static)
         .then(|| current_this_object(compiled, stack))
         .flatten();
-    Ok(Value::closure_with_debug_and_this(
+    Ok(Value::closure_with_debug_this_and_context(
         frame.function.raw(),
         captures,
         closure_debug_info(compiled, frame.function),
         bound_this,
+        current_scope_class(compiled, stack),
+        current_called_class(compiled, stack),
+        current_scope_class(compiled, stack),
     ))
 }
 
@@ -24990,9 +25538,12 @@ fn is_symbol_introspection_builtin_name(name: &str) -> bool {
             | "call_user_func"
             | "call_user_func_array"
             | "forward_static_call"
+            | "debug_backtrace"
+            | "debug_print_backtrace"
             | "func_get_arg"
             | "func_get_args"
             | "func_num_args"
+            | "get_called_class"
             | "interface_exists"
             | "trait_exists"
             | "enum_exists"
@@ -25090,12 +25641,18 @@ fn error_handler_callback_from_value(
             captures,
             bound_this,
             debug,
+            scope_class,
+            called_class,
+            declaring_class,
         }) => Ok(CallableValue::Closure {
             id,
             function,
             captures,
             bound_this,
             debug,
+            scope_class,
+            called_class,
+            declaring_class,
         }),
         Value::Callable(CallableValue::InternalBuiltin { name }) => {
             if BuiltinRegistry::new().contains(&name) {
@@ -25150,12 +25707,18 @@ fn autoload_callback_from_value(
             captures,
             bound_this,
             debug,
+            scope_class,
+            called_class,
+            declaring_class,
         }) => Ok(CallableValue::Closure {
             id,
             function,
             captures,
             bound_this,
             debug,
+            scope_class,
+            called_class,
+            declaring_class,
         }),
         Value::Callable(CallableValue::InternalBuiltin { name }) => {
             if BuiltinRegistry::new().contains(&name) {
@@ -26432,6 +26995,172 @@ fn stack_trace(compiled: &CompiledUnit, stack: &CallStack) -> Vec<RuntimeStackFr
         .collect()
 }
 
+fn debug_backtrace_array(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    options: i64,
+    limit: usize,
+) -> PhpArray {
+    let ignore_args = options & 2 != 0;
+    let mut trace = PhpArray::new();
+    for frame in debug_backtrace_frames(compiled, stack, limit) {
+        let mut entry = PhpArray::new();
+        let (file, line) = frame_source_location(compiled, frame);
+        if !file.is_empty() {
+            entry.insert(string_key("file"), Value::string(file));
+        }
+        if line > 0 {
+            entry.insert(string_key("line"), Value::Int(line));
+        }
+        entry.insert(
+            string_key("function"),
+            Value::string(frame_function_display_name(compiled, frame)),
+        );
+        if !ignore_args {
+            entry.insert(
+                string_key("args"),
+                Value::Array(frame_trace_args_array(frame)),
+            );
+        }
+        trace.append(Value::Array(entry));
+    }
+    trace
+}
+
+fn capture_debug_print_backtrace_string(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    options: i64,
+    limit: usize,
+) -> String {
+    let ignore_args = options & 2 != 0;
+    debug_backtrace_frames(compiled, stack, limit)
+        .into_iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let (file, line) = frame_source_location(compiled, frame);
+            let args = if ignore_args {
+                String::new()
+            } else {
+                format_frame_trace_args(frame)
+            };
+            format!(
+                "#{index} {file}({line}): {}({args})",
+                frame_function_display_name(compiled, frame)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn debug_backtrace_frames<'a>(
+    compiled: &CompiledUnit,
+    stack: &'a CallStack,
+    limit: usize,
+) -> Vec<&'a Frame> {
+    let frames = stack.frames().iter().rev().filter(|frame| {
+        compiled
+            .unit()
+            .functions
+            .get(frame.function.index())
+            .is_some_and(|function| !function.flags.is_top_level)
+    });
+    if limit == 0 {
+        frames.collect()
+    } else {
+        frames.take(limit).collect()
+    }
+}
+
+fn string_key(name: &str) -> ArrayKey {
+    ArrayKey::String(PhpString::from_test_str(name))
+}
+
+fn frame_source_location(compiled: &CompiledUnit, frame: &Frame) -> (String, i64) {
+    let function = compiled.unit().functions.get(frame.function.index());
+    let display_span = frame
+        .call_span
+        .or_else(|| function.map(|function| function.span));
+    let file = display_span
+        .and_then(|span| compiled.unit().files.get(span.file.index()))
+        .map(|file| file.path.clone())
+        .unwrap_or_default();
+    let line = display_span
+        .and_then(|span| source_span_display_line(compiled, span, false))
+        .or_else(|| display_span.map(|span| i64::from(span.start)))
+        .unwrap_or(0);
+    (file, line)
+}
+
+fn frame_function_display_name(compiled: &CompiledUnit, frame: &Frame) -> String {
+    let Some(function) = compiled.unit().functions.get(frame.function.index()) else {
+        return "{closure}".to_owned();
+    };
+    if function.flags.is_closure {
+        let span = runtime_source_span(compiled, function.span);
+        return format!(
+            "{{closure:{}:{}}}",
+            span.file.unwrap_or_default(),
+            source_span_display_line(compiled, function.span, false)
+                .unwrap_or_else(|| i64::from(function.span.start))
+        );
+    }
+    if function.flags.is_method && function.name.contains("::") {
+        let has_this = function
+            .locals
+            .iter()
+            .position(|local| local == "this")
+            .and_then(|index| frame.locals.get(LocalId::new(index as u32)))
+            .is_some_and(|value| matches!(value, Value::Object(_)));
+        if has_this {
+            return function.name.replacen("::", "->", 1);
+        }
+    }
+    function.name.clone()
+}
+
+fn frame_trace_args_array(frame: &Frame) -> PhpArray {
+    if frame.trace_arguments.is_empty() {
+        return PhpArray::from_packed(frame.arguments.clone());
+    }
+    let mut array = PhpArray::new();
+    for arg in &frame.trace_arguments {
+        if let Some(name) = &arg.name {
+            array.insert(
+                ArrayKey::String(PhpString::from(name.as_str())),
+                arg.value.clone(),
+            );
+        } else {
+            array.append(arg.value.clone());
+        }
+    }
+    array
+}
+
+fn format_frame_trace_args(frame: &Frame) -> String {
+    if frame.trace_arguments.is_empty() {
+        return frame
+            .arguments
+            .iter()
+            .map(format_trace_arg)
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
+    frame
+        .trace_arguments
+        .iter()
+        .map(|arg| {
+            let value = format_trace_arg(&arg.value);
+            if let Some(name) = &arg.name {
+                format!("{name}: {value}")
+            } else {
+                value
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Renders one argument as it appears in a PHP stack trace.
 fn format_trace_arg(value: &Value) -> String {
     match value {
@@ -26467,34 +27196,16 @@ fn format_trace_arg(value: &Value) -> String {
 
 /// Renders a frame's `Class->method(args)` / `func(args)` call descriptor.
 fn format_trace_call(compiled: &CompiledUnit, frame: &Frame) -> String {
-    let Some(function) = compiled.unit().functions.get(frame.function.index()) else {
+    if compiled
+        .unit()
+        .functions
+        .get(frame.function.index())
+        .is_none()
+    {
         return "{closure}()".to_owned();
-    };
-    let args = frame
-        .arguments
-        .iter()
-        .map(format_trace_arg)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let name = if function.flags.is_closure {
-        "{closure}".to_owned()
-    } else if function.flags.is_method && function.name.contains("::") {
-        // PHP renders instance calls with `->` and static calls with `::`; a
-        // bound `$this` local distinguishes them.
-        let has_this = function
-            .locals
-            .iter()
-            .position(|local| local == "this")
-            .and_then(|index| frame.locals.get(LocalId::new(index as u32)))
-            .is_some_and(|value| matches!(value, Value::Object(_)));
-        if has_this {
-            function.name.replacen("::", "->", 1)
-        } else {
-            function.name.clone()
-        }
-    } else {
-        function.name.clone()
-    };
+    }
+    let args = format_frame_trace_args(frame);
+    let name = frame_function_display_name(compiled, frame);
     format!("{name}({args})")
 }
 
@@ -26853,7 +27564,7 @@ fn validate_static_method_callable_acquisition(
     };
     if !resolved.method.flags.is_static {
         return Err(format!(
-            "E_PHP_VM_FIRST_CLASS_CALLABLE_NON_STATIC_METHOD: Failed to create closure from callable: non-static method {}::{}() cannot be called statically",
+            "E_PHP_VM_FIRST_CLASS_CALLABLE_NON_STATIC_METHOD: Non-static method {}::{}() cannot be called statically",
             resolved.class.display_name, method
         ));
     }
@@ -26957,6 +27668,7 @@ fn is_callable_builtin_name(name: &str) -> bool {
         || is_output_buffering_builtin_name(name)
         || is_environment_builtin_name(name)
         || is_process_builtin_name(name)
+        || is_pcre_callback_builtin_name(name)
         || is_array_callback_builtin_name(name)
         || is_array_sort_builtin_name(name)
 }
@@ -27249,6 +27961,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         "E_PHP_STD_VALUE_ERROR" => "ValueError",
         "E_PHP_VM_TOO_FEW_ARGS" | "E_PHP_VM_TOO_MANY_ARGS" => "ArgumentCountError",
         "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE" => "Error",
+        "E_PHP_VM_UNKNOWN_NAMED_ARG" => "Error",
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",
         "E_PHP_VM_STRING_OFFSET_TYPE" => "TypeError",
@@ -27262,6 +27975,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_UNKNOWN_STATIC_PROPERTY"
         | "E_PHP_VM_NON_STATIC_METHOD_CALL"
         | "E_PHP_VM_CURRENT_CLOSURE"
+        | "E_PHP_VM_DYNAMIC_PROPERTY_ERROR"
         | "E_PHP_VM_PRIVATE_CLASS_CONSTANT_ACCESS"
         | "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS"
         | "E_PHP_VM_METHOD_CALL_NON_OBJECT" => "Error",
@@ -27388,8 +28102,7 @@ fn prepare_arguments(
                     continue;
                 }
                 return Err(format!(
-                    "E_PHP_VM_UNKNOWN_NAMED_ARG: function {} has no parameter ${name}",
-                    function.name
+                    "E_PHP_VM_UNKNOWN_NAMED_ARG: Unknown named parameter ${name}"
                 ));
             };
             if function.params[index].variadic {
@@ -27478,9 +28191,15 @@ fn prepare_arguments(
     }
 
     let mut prepared = Vec::with_capacity(function.params.len());
+    let mut trace_args = Vec::new();
     let mut diagnostics = Vec::new();
     for (index, param) in function.params.iter().enumerate() {
         if param.variadic {
+            let sensitive = param_is_sensitive(param);
+            trace_args.extend(variadic_tail.iter().map(|arg| FrameTraceArgument {
+                name: arg.key.clone(),
+                value: trace_value_for_param(&arg.value, sensitive),
+            }));
             prepared.push(PreparedArg {
                 value: variadic_array(variadic_tail),
                 reference: None,
@@ -27510,6 +28229,10 @@ fn prepare_arguments(
             } else {
                 None
             };
+            trace_args.push(FrameTraceArgument {
+                name: None,
+                value: trace_value_for_param(&arg.value, param_is_sensitive(param)),
+            });
             prepared.push(PreparedArg {
                 value: arg.value,
                 reference,
@@ -27521,8 +28244,13 @@ fn prepare_arguments(
                     function.name, param.name
                 ));
             }
+            let value = inline_constant_value(default);
+            trace_args.push(FrameTraceArgument {
+                name: None,
+                value: trace_value_for_param(&value, param_is_sensitive(param)),
+            });
             prepared.push(PreparedArg {
-                value: inline_constant_value(default),
+                value,
                 reference: None,
             });
         } else if param.required {
@@ -27537,9 +28265,14 @@ fn prepare_arguments(
             ));
         }
     }
+    trace_args.extend(extra_positional.iter().map(|arg| FrameTraceArgument {
+        name: None,
+        value: arg.value.clone(),
+    }));
     prepared.extend(extra_positional);
     Ok(PreparedArguments {
         args: prepared,
+        trace_args,
         diagnostics,
     })
 }
@@ -27653,6 +28386,43 @@ fn variadic_array(args: Vec<VariadicTailArg>) -> Value {
         }
     }
     Value::Array(array)
+}
+
+fn param_is_sensitive(param: &IrParam) -> bool {
+    param.attributes.iter().any(|attribute| {
+        attribute_name_matches_sensitive(attribute.resolved_name.as_deref())
+            || attribute_name_matches_sensitive(attribute.fallback_name.as_deref())
+            || attribute_name_matches_sensitive(Some(&attribute.name))
+    })
+}
+
+fn attribute_name_matches_sensitive(name: Option<&str>) -> bool {
+    name.and_then(|name| name.rsplit('\\').next())
+        .is_some_and(|name| name.eq_ignore_ascii_case("SensitiveParameter"))
+}
+
+fn trace_value_for_param(value: &Value, sensitive: bool) -> Value {
+    if sensitive {
+        sensitive_parameter_value()
+    } else {
+        value.clone()
+    }
+}
+
+fn sensitive_parameter_value() -> Value {
+    Value::Object(ObjectRef::new(&RuntimeClassEntry {
+        name: "SensitiveParameterValue".to_owned(),
+        parent: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor_id: None,
+        flags: RuntimeClassFlags::default(),
+    }))
 }
 
 /// PHP's `zend_zval_type_name`-style name used in `TypeError` messages: the
@@ -28566,6 +29336,10 @@ fn is_array_callback_builtin_name(name: &str) -> bool {
     )
 }
 
+fn is_pcre_callback_builtin_name(name: &str) -> bool {
+    matches!(name, "preg_replace_callback")
+}
+
 fn is_array_sort_builtin_name(name: &str) -> bool {
     matches!(
         name,
@@ -29426,6 +30200,7 @@ fn call_builtin_args_to_positional(
         }
         let bind_by_ref = (function == "str_replace" && index == 3)
             || (matches!(function, "preg_match" | "preg_match_all") && index == 2)
+            || (function == "preg_replace_callback" && index == 4)
             || (matches!(
                 function,
                 "array_pop"
@@ -29472,6 +30247,7 @@ fn internal_builtin_by_ref_param_name(function: &str, index: usize) -> &'static 
     match (function, index) {
         ("str_replace", 3) => "count",
         ("preg_match" | "preg_match_all", 2) => "matches",
+        ("preg_replace_callback", 4) => "count",
         (_, 0) => "array",
         _ => "arg",
     }
@@ -30687,7 +31463,13 @@ mod tests {
             const LOCAL_CONST = 41;
             function local_fn() {}
             interface I {}
-            class A { public $x; public function m() {} }
+            class A {
+                public $x;
+                public function m() {}
+                public function called() { return get_called_class(); }
+                public function closureCalled() { $f = function () { return get_called_class(); }; return $f(); }
+                public static function staticCalled() { return get_called_class(); }
+            }
             class B extends A implements I {}
             enum E { case One; }
             $b = new B();
@@ -30703,6 +31485,9 @@ mod tests {
             echo '|', property_exists($b, 'dyn') ? 'Y' : 'y';
             echo '|', is_subclass_of('B', 'A') ? 'S' : 's';
             echo '|', is_subclass_of('B', 'A', false) ? 'bad' : 'N';
+            echo '|', $b->called();
+            echo '|', $b->closureCalled();
+            echo '|', B::staticCalled();
             echo '|', get_class($b);
             echo '|', get_parent_class('B');
             echo '|', in_array('B', get_declared_classes(), true) ? 'DC' : 'dc';
@@ -30713,7 +31498,7 @@ mod tests {
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.to_string_lossy(),
-            "D|41|F|C|I|E|M|P|Y|S|N|B|A|DC|DI"
+            "D|41|F|C|I|E|M|P|Y|S|N|B|B|B|B|A|DC|DI"
         );
     }
 
@@ -35680,7 +36465,15 @@ echo perf_jit_unstable_types_debug(4), "\n";
         let unknown =
             execute_source("<?php function one($value) { return $value; } one(missing: 1);");
         assert_eq!(unknown.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(unknown.diagnostics[0].id(), "E_PHP_VM_UNKNOWN_NAMED_ARG");
+        assert_eq!(unknown.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
+        assert!(
+            unknown
+                .output
+                .to_string_lossy()
+                .contains("Uncaught Error: Unknown named parameter $missing"),
+            "{}",
+            unknown.output.to_string_lossy()
+        );
 
         let duplicate =
             execute_source("<?php function one($value) { return $value; } one(1, value: 2);");

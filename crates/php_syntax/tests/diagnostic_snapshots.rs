@@ -10,6 +10,10 @@ const CASES: &[(&str, &str)] = &[
         "expressions_basic_invalid",
         "invalid/expressions_basic_invalid.php",
     ),
+    (
+        "function_call_arguments_invalid",
+        "invalid/function_call_arguments_invalid.php",
+    ),
     ("functions_invalid", "invalid/functions_invalid.php"),
     ("types_invalid", "invalid/types_invalid.php"),
     ("recovery_bad_attribute", "recovery/bad_attribute.php"),

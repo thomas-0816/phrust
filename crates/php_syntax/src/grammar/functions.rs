@@ -226,6 +226,9 @@ fn parse_optional_closure_use_list(parser: &mut Parser<'_>) {
 
     while !parser.is_eof() && !parser.at(symbol(b')')) {
         bump_trivia(parser);
+        if parser.at(symbol(b')')) {
+            break;
+        }
         if parser.at(symbol(b',')) {
             parser.bump();
             continue;

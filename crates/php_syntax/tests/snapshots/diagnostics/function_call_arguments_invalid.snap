@@ -1,0 +1,19 @@
+fixture: invalid/function_call_arguments_invalid.php
+roundtrip_ok: true
+diagnostics:
+- id: unexpected_token
+  span: 73..74
+  expected: []
+  message: "syntax error, unexpected token \",\""
+- id: unexpected_token
+  span: 86..87
+  expected: [")"]
+  message: "syntax error, unexpected token \",\", expecting \")\""
+- id: unexpected_token
+  span: 99..100
+  expected: [")"]
+  message: "syntax error, unexpected token \",\", expecting \")\""
+- id: unexpected_token
+  span: 111..112
+  expected: []
+  message: "syntax error, unexpected token \",\""

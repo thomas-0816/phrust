@@ -6,8 +6,8 @@ use php_bytecode_cache::{
 use php_ir::{LoweringOptions, lower_frontend_result, verify_unit};
 use php_optimizer::{OptimizationLevel, OptimizationReport, PassContext, PassPipeline};
 use php_runtime::{ExitStatus, FilesystemCapabilities, RuntimeContext};
-use php_semantics::{FrontendResult, Severity, analyze_source};
-use php_source::TextRange;
+use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::DiagnosticId};
+use php_source::{SourceText, TextRange};
 use php_vm::{
     ExecutionFormat, IncludeLoader, InlineCacheMode, JitBlacklistMode, JitMode, QuickeningMode,
     SuperinstructionMode, TieringOptions, Vm, VmOptions,
@@ -500,9 +500,10 @@ fn runtime_context_for(
 
 fn write_frontend_diagnostics<W: Write>(stderr: &mut W, pipeline: &Pipeline) -> Result<(), String> {
     for diagnostic in pipeline.frontend.parser_diagnostics() {
-        write_span_line(
+        write_parser_diagnostic(
             stderr,
             &pipeline.path,
+            &pipeline.source,
             diagnostic.span,
             diagnostic.id.as_str(),
             &diagnostic.message,
@@ -511,6 +512,16 @@ fn write_frontend_diagnostics<W: Write>(stderr: &mut W, pipeline: &Pipeline) -> 
     for diagnostic in pipeline.frontend.semantic_diagnostics() {
         if diagnostic.severity() == Severity::Error {
             if let Some(span) = diagnostic.span() {
+                if semantic_diagnostic_uses_php_fatal_line(diagnostic.id()) {
+                    write_php_fatal_line(
+                        stderr,
+                        &pipeline.path,
+                        &pipeline.source,
+                        span,
+                        diagnostic.message(),
+                    )?;
+                    continue;
+                }
                 write_span_line(
                     stderr,
                     &pipeline.path,
@@ -590,6 +601,30 @@ fn write_trace<W: Write>(stderr: &mut W, trace: &[String]) -> Result<(), String>
     Ok(())
 }
 
+fn write_php_parse_error_line<W: Write>(
+    stderr: &mut W,
+    path: &str,
+    source: &str,
+    span: TextRange,
+    message: &str,
+) -> Result<(), String> {
+    let line = SourceText::new(source).line_col(span.start()).line;
+    writeln!(stderr, "Parse error: {message} in {path} on line {line}")
+        .map_err(|error| error.to_string())
+}
+
+fn write_php_fatal_line<W: Write>(
+    stderr: &mut W,
+    path: &str,
+    source: &str,
+    span: TextRange,
+    message: &str,
+) -> Result<(), String> {
+    let line = SourceText::new(source).line_col(span.start()).line;
+    writeln!(stderr, "Fatal error: {message} in {path} on line {line}")
+        .map_err(|error| error.to_string())
+}
+
 fn write_span_line<W: Write>(
     stderr: &mut W,
     path: &str,
@@ -607,6 +642,30 @@ fn write_span_line<W: Write>(
         message
     )
     .map_err(|error| error.to_string())
+}
+
+fn write_parser_diagnostic<W: Write>(
+    stderr: &mut W,
+    path: &str,
+    source: &str,
+    span: TextRange,
+    id: &str,
+    message: &str,
+) -> Result<(), String> {
+    if message.starts_with("syntax error,") {
+        write_php_parse_error_line(stderr, path, source, span, message)
+    } else {
+        write_span_line(stderr, path, span, id, message)
+    }
+}
+
+fn semantic_diagnostic_uses_php_fatal_line(id: DiagnosticId) -> bool {
+    matches!(
+        id,
+        DiagnosticId::ClosureUseDuplicatesParameter
+            | DiagnosticId::DuplicateClosureUseVariable
+            | DiagnosticId::ClosureUseAutoGlobal
+    )
 }
 
 fn parse_path_and_json(args: &[String]) -> Result<(&str, bool), String> {

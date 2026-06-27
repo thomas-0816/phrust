@@ -6,7 +6,7 @@ use crate::parser::precedence::{
     PREFIX_RIGHT_BP, PRINT_RIGHT_BP, TERNARY_BP, binary_operator, is_assignment_operator,
 };
 use crate::recovery;
-use crate::{SyntaxKind, SyntaxNodeKind};
+use crate::{ParseDiagnosticId, SyntaxKind, SyntaxNodeKind};
 use php_lexer::{TokenKind, TokenName};
 
 /// Parses an expression using binding powers.
@@ -508,6 +508,7 @@ fn parse_clone_expression(parser: &mut Parser<'_>) {
 fn parse_call_tail(parser: &mut Parser<'_>) {
     let call = parser.start();
     parser.bump();
+    let mut saw_argument = false;
 
     while !parser.is_eof() && !parser.at(symbol(b')')) {
         bump_trivia(parser);
@@ -515,11 +516,21 @@ fn parse_call_tail(parser: &mut Parser<'_>) {
             break;
         }
         if parser.at(symbol(b',')) {
+            let (message, expected) = if saw_argument {
+                (
+                    "syntax error, unexpected token \",\", expecting \")\"",
+                    &[")"][..],
+                )
+            } else {
+                ("syntax error, unexpected token \",\"", &[][..])
+            };
+            parser.error_expected_with_id(ParseDiagnosticId::UnexpectedToken, message, expected);
             parser.bump();
             continue;
         }
 
         parse_argument(parser);
+        saw_argument = true;
 
         bump_trivia(parser);
         if parser.at(symbol(b',')) {

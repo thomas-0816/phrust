@@ -358,10 +358,17 @@ impl SignatureLowerer<'_> {
         let parameter_names: HashSet<&str> = parameters.iter().map(Parameter::name).collect();
         let mut seen_captures = HashSet::<&str>::new();
         for capture in closure_use {
+            if is_auto_global_name(&capture.name) {
+                self.error(
+                    DiagnosticId::ClosureUseAutoGlobal,
+                    "Cannot use auto-global as lexical variable",
+                    capture.span,
+                );
+            }
             if !seen_captures.insert(capture.name.as_str()) {
                 self.error(
                     DiagnosticId::DuplicateClosureUseVariable,
-                    format!("closure use variable `{}` is duplicated", capture.name),
+                    format!("Cannot use variable {} twice", capture.name),
                     capture.span,
                 );
             }
@@ -369,7 +376,7 @@ impl SignatureLowerer<'_> {
                 self.error(
                     DiagnosticId::ClosureUseDuplicatesParameter,
                     format!(
-                        "closure use variable `{}` duplicates a parameter",
+                        "Cannot use lexical variable {} as a parameter name",
                         capture.name
                     ),
                     capture.span,
@@ -423,6 +430,21 @@ impl SignatureLowerer<'_> {
             span,
         ));
     }
+}
+
+fn is_auto_global_name(name: &str) -> bool {
+    matches!(
+        name,
+        "$GLOBALS"
+            | "$_SERVER"
+            | "$_GET"
+            | "$_POST"
+            | "$_FILES"
+            | "$_COOKIE"
+            | "$_SESSION"
+            | "$_REQUEST"
+            | "$_ENV"
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1019,6 +1041,29 @@ mod tests {
                 .into_diagnostics()
                 .iter()
                 .any(|diagnostic| diagnostic.id() == DiagnosticId::DuplicateClosureUseVariable)
+        );
+    }
+
+    #[test]
+    fn diagnoses_closure_use_auto_globals() {
+        let parse = parse_source_file("<?php $f = function () use ($GLOBALS): void {};");
+        let root = source_file(parse.root()).expect("source");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", 0));
+        let mut reporter = DiagnosticReporter::new();
+        collect_signatures_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        assert!(
+            reporter
+                .into_diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.id() == DiagnosticId::ClosureUseAutoGlobal)
         );
     }
 }

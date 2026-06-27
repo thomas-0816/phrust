@@ -228,7 +228,7 @@ mod tests {
         assert!(format!("{unresolved:?}").contains("unresolved_dynamic"));
         assert!(matches!(
             closure.as_closure(),
-            Some((7, captures, None, None)) if captures.len() == 1
+            Some((7, captures, None, None, None, None, None)) if captures.len() == 1
         ));
     }
 }

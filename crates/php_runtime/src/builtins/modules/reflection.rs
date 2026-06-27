@@ -50,6 +50,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "debug_backtrace",
+        core::builtin_symbol_introspection_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "debug_print_backtrace",
+        core::builtin_symbol_introspection_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "func_get_args",
         core::builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
@@ -61,6 +71,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new(
         "function_exists",
+        core::builtin_symbol_introspection_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "get_called_class",
         core::builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
