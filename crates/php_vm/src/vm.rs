@@ -23705,7 +23705,8 @@ fn closure_static_method_value(
                 output,
                 source_span,
             )?;
-            let callable = acquire_callable_value(compiled, state, stack, callable)?;
+            let callable = acquire_callable_value(compiled, state, stack, callable)
+                .map_err(closure_from_callable_error)?;
             Ok(closure_from_acquired_callable(callable))
         }
         "bind" => {
@@ -23834,6 +23835,24 @@ fn closure_from_acquired_callable(callable: Value) -> Value {
         }
         other => other,
     }
+}
+
+fn closure_from_callable_error(message: String) -> String {
+    let (id, reason) = message
+        .split_once(": ")
+        .filter(|(id, _)| id.starts_with("E_"))
+        .map_or(
+            (
+                "E_PHP_VM_FIRST_CLASS_CALLABLE_NOT_CALLABLE",
+                message.as_str(),
+            ),
+            |(id, reason)| (id, reason),
+        );
+    let mut reason = reason.to_owned();
+    if let Some(first) = reason.get_mut(0..1) {
+        first.make_ascii_lowercase();
+    }
+    format!("{id}: Failed to create closure from callable: {reason}")
 }
 
 fn resolve_closure_from_callable_relative_value(
@@ -37117,6 +37136,19 @@ echo perf_jit_unstable_types_debug(4), "\n";
         );
         assert!(returned.status.is_success(), "{:?}", returned.status);
         assert_eq!(returned.output.as_bytes(), b"9");
+    }
+
+    #[test]
+    fn closure_from_callable_wraps_non_static_static_method_error() {
+        let result = execute_source(
+            "<?php class A { public function method() {} } try { Closure::fromCallable(['A', 'method']); } catch (TypeError $e) { echo $e->getMessage(); }",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"Failed to create closure from callable: non-static method A::method() cannot be called statically"
+        );
     }
 
     #[test]
