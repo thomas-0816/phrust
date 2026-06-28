@@ -812,7 +812,7 @@ runtime-fixtures:
     printf '1\n' > "$tmp_dir/includes-once.expected"; \
     cmp "$tmp_dir/includes-once.expected" "$tmp_dir/includes-once.out"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/includes/include-missing.php > "$tmp_dir/includes-missing.out" 2> "$tmp_dir/includes-missing.err"; \
-    printf 'before|\nWarning: include(%s/fixtures/runtime/valid/includes/lib/missing.php): Failed to open stream: No such file or directory in %s/fixtures/runtime/valid/includes/include-missing.php on line 4\nafter\n' "$PWD" "$PWD" > "$tmp_dir/includes-missing.expected"; \
+    printf 'before|\nWarning: include(%s/fixtures/runtime/valid/includes/lib/missing.php): Failed to open stream: No such file or directory in %s/fixtures/runtime/valid/includes/include-missing.php on line 4\n\nWarning: include(): Failed opening '\''%s/fixtures/runtime/valid/includes/lib/missing.php'\'' for inclusion (include_path='\''.'\'') in %s/fixtures/runtime/valid/includes/include-missing.php on line 4\nafter\n' "$PWD" "$PWD" "$PWD" "$PWD" > "$tmp_dir/includes-missing.expected"; \
     cmp "$tmp_dir/includes-missing.expected" "$tmp_dir/includes-missing.out"; \
     grep -q 'E_PHP_VM_INCLUDE_MISSING' "$tmp_dir/includes-missing.err"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/objects/instantiate.php > "$tmp_dir/objects-instantiate.out"; \

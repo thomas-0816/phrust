@@ -2,17 +2,25 @@
 
 - Priority: 2
 - Selected manifest: `tests/phpt/manifests/modules/phpt.runner.selected.jsonl`
-- Current counts: 0 PASS, 0 SKIP, 0 FAIL, 437 BORK from 0 corpus candidates
+- Last focused run: 2026-06-28
+- Current selected-gate counts: 3 PASS, 197 SKIP, 0 FAIL, 0 BORK from 200 selected cases
 
 ## Scope
 
 - PHPT section handling
 - expectation matching
 - runner BORK reduction
+- safe local `FILE_EXTERNAL` and `EXPECT*_EXTERNAL` materialization
+- lossy non-UTF8 PHPT source classification
+- explicit target capability skips before execution
 
 ## Non-Scope
 
 - VM feature implementation
+- SAPI implementation
+- phpdbg behavior
+- CGI request emulation
+- terminal-dependent stdio capture behavior
 
 ## Relevant PHPT Paths
 
@@ -65,12 +73,16 @@
 ## Target Gates
 
 - `nix develop -c just phpt-runner-smoke`
+- `TARGET_PHP=target/debug/phrust-php PHPT_TARGET_MODE=php-cli nix develop -c just phpt-dev-module MODULE=phpt.runner`
 
 ## Known Gaps
 
-- `needs-triage`: 320
-- `runtime-unsupported-feature`: 135
+- malformed or non-UTF8 PHPT sources remain tracked as runner gaps in triage
+- unsupported sections and unsupported expectation forms remain tracked by BORK subclass
+- SAPI/phpdbg/CGI and terminal-dependent stdio tests skip with concrete target-mode reasons
+- `ext/standard/tests/hrtime/hrtime.phpt` skips under `php-cli` target mode because the flaky busy loop exceeds the current VM step limit
 
 ## Next Step
 
-Reduce runner-owned BORKs before attributing failures to the engine.
+Keep reducing runner-owned BORK subclasses while routing SAPI, target VM, and
+terminal-dependent behavior to their owning modules.

@@ -26439,13 +26439,22 @@ fn emit_include_failure_output(
     let (file, line) = source_span_file_line(compiled, span)
         .unwrap_or_else(|| ("<unknown>".to_owned(), i64::from(span.start)));
     if display_errors_enabled(state) && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+        let function_name = include_kind_function_name(kind);
         output.write_bytes(
             format!(
-                "\nWarning: {}({target}): Failed to open stream: {reason} in {file} on line {line}\n",
-                include_kind_function_name(kind),
+                "\nWarning: {function_name}({target}): Failed to open stream: {reason} in {file} on line {line}\n",
             )
             .as_bytes(),
         );
+        if matches!(kind, IncludeKind::Include | IncludeKind::IncludeOnce) {
+            let include_path = state.ini.get("include_path").unwrap_or(".");
+            output.write_bytes(
+                format!(
+                    "\nWarning: {function_name}(): Failed opening '{target}' for inclusion (include_path='{include_path}') in {file} on line {line}\n"
+                )
+                .as_bytes(),
+            );
+        }
     }
     if matches!(kind, IncludeKind::Require | IncludeKind::RequireOnce)
         && display_errors_enabled(state)
@@ -33320,6 +33329,11 @@ mod tests {
         );
         assert!(
             include_output.contains("Failed to open stream: No such file or directory"),
+            "{include_output}"
+        );
+        assert!(
+            include_output.contains("Warning: include(): Failed opening '")
+                && include_output.contains("' for inclusion (include_path='"),
             "{include_output}"
         );
         assert!(include_output.ends_with("after\n"), "{include_output}");

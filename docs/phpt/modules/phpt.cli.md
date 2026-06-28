@@ -2,20 +2,48 @@
 
 - Priority: 3
 - Selected manifest: `tests/phpt/manifests/modules/phpt.cli.selected.jsonl`
-- Current counts: 3 PASS, 17 SKIP, 256 FAIL, 0 BORK from 350 corpus candidates
+- Last focused run: 2026-06-28
+- Current selected-gate counts: 3 PASS, 200 SKIP, 0 FAIL, 0 BORK from 203 selected cases
 
 ## Scope
 
 - target binary discovery
 - PHP CLI compatible invocation
 - argv/stdin/ini plumbing
+- `phrust-php -v`
+- `phrust-php -r 'code'`
+- `phrust-php -n`
+- repeated `-d key=value`
+- script execution with argv
+- STDIN
+- `$argc`, `$argv`
+- `$_SERVER['argc']`, `$_SERVER['argv']`
+- exit-code mapping
 
 ## Non-Scope
 
 - full SAPI emulation
 - CGI/FPM behavior
+- phpdbg
+- Apache module behavior
+- CLI built-in HTTP server
+- process-control helpers used to spawn nested PHP commands
+- process-title and stdio descriptor rebinding APIs
+- CLI `--ini` introspection and `-R` line-processing modes
+- unrelated runtime/frontend gaps required by some upstream `sapi/cli` tests
 
-## Relevant PHPT Paths
+## Selected PHPT Coverage
+
+The selected manifest starts with generated Prompt 1B contract fixtures:
+
+- `tests/phpt/generated/phpt.cli/argv-argc-superglobals.phpt`
+- `tests/phpt/generated/phpt.cli/ini-overrides.phpt`
+- `tests/phpt/generated/phpt.cli/stdin.phpt`
+
+The remaining selected upstream PHPTs are retained as explicit non-scope
+coverage and skip with concrete reasons under `PHPT_TARGET_MODE=php-cli`.
+
+## Relevant Upstream PHPT Paths
 
 - `tests/basic/011_register_argc_argv_disabled.phpt`
 - `sapi/phpdbg/tests/gh12962.phpt`
@@ -66,13 +94,24 @@
 ## Target Gates
 
 - `nix develop -c just phpt-target-smoke`
+- `TARGET_PHP=target/debug/phrust-php PHPT_TARGET_MODE=php-cli nix develop -c just phpt-dev-module MODULE=phpt.cli`
 
 ## Known Gaps
 
-- `runtime-unsupported-feature`: 217
-- `runtime-error-or-diagnostic`: 42
-- `runtime-output-mismatch`: 16
+- `FPM not available in php-cli target mode`: 141 selected skips
+- `CLI built-in web server not available in php-cli target mode`: 39 selected skips
+- `CLI process-control APIs not available in php-cli target mode`: 6 selected skips
+- `process-control functions are outside the Prompt 1B CLI contract`: 5 selected skips
+- `CLI stdio descriptor rebinding not available in php-cli target mode`: 3 selected skips
+- `phpdbg not available in php-cli target mode`: 2 selected skips
+- `CLI --ini introspection not available in php-cli target mode`: 1 selected skip
+- `CLI -R line-processing mode not available in php-cli target mode`: 1 selected skip
+- `include-path expression runtime gap outside the Prompt 1B CLI contract`: 1 selected skip
+- `STDOUT default-parameter lowering is outside the Prompt 1B CLI contract`: 1 selected skip
 
 ## Next Step
 
-Keep target invocation deterministic for upstream PHPT execution.
+Keep target invocation deterministic for upstream PHPT execution and route
+non-scope SAPI, HTTP server, process-control, and unrelated runtime/frontend
+gaps to their owning modules instead of measuring them as Prompt 1B CLI
+contract failures.

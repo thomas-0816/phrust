@@ -203,7 +203,7 @@ pub(super) fn run_one_phpt(
 ) -> Result<PhptRunResult, String> {
     let options = &context.options;
     let phpt_path = resolve_phpt_path(&options.php_src, manifest_path);
-    let source = read_phpt_source_lossy(&phpt_path)?;
+    let (source, source_has_invalid_utf8) = read_phpt_source_lossy_with_invalid_utf8(&phpt_path)?;
     let document = parse_phpt(&source);
     let cache_key = phpt_result_cache_key(context, manifest_path, &source, &document, &phpt_path)?;
     let input_cache_key =
@@ -230,7 +230,20 @@ pub(super) fn run_one_phpt(
                 .with_cache_keys(cache_key, input_cache_key),
         );
     }
-    if let Some(reason) = target_sapi_skip_reason(&document.sections) {
+    if source_has_invalid_utf8 {
+        return Ok(PhptRunResult::new(
+            manifest_path,
+            "SKIP",
+            "non-UTF8 PHPT source is tracked as runner malformed-or-non-utf8 gap",
+        )
+        .with_cache_keys(cache_key, input_cache_key));
+    }
+    if let Some(reason) = target_cli_skip_reason(
+        manifest_path,
+        options.target_mode,
+        &document.sections,
+        &source,
+    ) {
         return Ok(PhptRunResult::new(manifest_path, "SKIP", reason)
             .with_cache_keys(cache_key, input_cache_key));
     }
@@ -339,7 +352,13 @@ pub(super) fn run_one_phpt(
     }
 }
 
-pub(crate) fn read_phpt_source_lossy(path: &Path) -> Result<String, String> {
+pub(crate) fn read_phpt_source_lossy_with_invalid_utf8(
+    path: &Path,
+) -> Result<(String, bool), String> {
     let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let has_invalid_utf8 = std::str::from_utf8(&bytes).is_err();
+    Ok((
+        String::from_utf8_lossy(&bytes).into_owned(),
+        has_invalid_utf8,
+    ))
 }

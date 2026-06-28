@@ -2,7 +2,8 @@
 
 - Priority: 6
 - Selected manifest: `tests/phpt/manifests/modules/diagnostics.output.selected.jsonl`
-- Current counts: 5 PASS, 0 SKIP, 0 FAIL, 0 BORK from 5 selected
+- Last focused run: 2026-06-28
+- Current counts: 6 PASS, 0 SKIP, 0 FAIL, 0 BORK from 6 selected
   generated candidates
 
 ## Scope
@@ -22,6 +23,7 @@
 - `tests/phpt/generated/diagnostics.output/array-to-string-warning.phpt`
 - `tests/phpt/generated/diagnostics.output/builtin-arity-error.phpt`
 - `tests/phpt/generated/diagnostics.output/builtin-type-error.phpt`
+- `tests/phpt/generated/diagnostics.output/include-missing-warning.phpt`
 - `tests/phpt/generated/diagnostics.output/invalid-operand-type-error.phpt`
 - `tests/phpt/generated/diagnostics.output/undefined-variable-warning.phpt`
 
@@ -35,18 +37,22 @@
 - `nix develop -c just phpt-module MODULE=diagnostics.output`
 - `nix develop -c just verify-runtime`
 
-Last focused run on 2026-06-26:
+Last focused run on 2026-06-28:
 
 - Selected module gate:
-  `nix develop -c just phpt-module MODULE=diagnostics.output`
-  - Reference: 5 PASS, 0 SKIP, 0 FAIL, 0 BORK
-  - Target: 5 PASS, 0 SKIP, 0 FAIL, 0 BORK
-  - Source integrity: 24476 php-src manifest entries verified
+  `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src TARGET_PHP=target/debug/phrust-php PHPT_TARGET_MODE=php-cli PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=diagnostics.output`
+  - Reference: 6 PASS, 0 SKIP, 0 FAIL, 0 BORK
+  - Target: 6 PASS, 0 SKIP, 0 FAIL, 0 BORK
+- Related selected gates:
+  - `zend.basic`: 10 PASS, 0 non-green
+  - `operators.conversions`: 4 PASS, 0 non-green
+- Source integrity: 24475 php-src manifest entries verified
 
 Covered selected-gate behavior:
 
 - warning formatting and continuation for undefined variables
 - warning formatting and continuation for array-to-string conversion
+- warning formatting and continuation for missing `include`
 - catchable builtin arity errors
 - catchable builtin type errors
 - catchable invalid operand `TypeError`

@@ -2607,15 +2607,47 @@ fn file_body(sections: &[PhptSection], phpt_path: &Path) -> Result<Option<String
         return Ok(Some(section.body.clone()));
     }
     if let Some(section) = section(sections, "FILE_EXTERNAL") {
-        let external = phpt_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(first_non_empty_line(&section.body));
+        let external = resolve_external_phpt_path(phpt_path, "FILE_EXTERNAL", &section.body)?;
         return fs::read_to_string(&external)
             .map(Some)
             .map_err(|error| format!("{}: {error}", external.display()));
     }
     Ok(None)
+}
+
+fn resolve_external_phpt_path(
+    phpt_path: &Path,
+    section_name: &str,
+    body: &str,
+) -> Result<PathBuf, String> {
+    let raw = first_non_empty_line(body);
+    if raw.is_empty() {
+        return Err(format!("{section_name} path is empty"));
+    }
+    let external = Path::new(&raw);
+    if external.is_absolute()
+        || external.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "{section_name} path must be a relative local path: {raw}"
+        ));
+    }
+    let base = phpt_path.parent().unwrap_or_else(|| Path::new("."));
+    let base = fs::canonicalize(base).map_err(|error| format!("{}: {error}", base.display()))?;
+    let candidate = base.join(external);
+    let resolved = fs::canonicalize(&candidate)
+        .map_err(|error| format!("{section_name} {}: {error}", candidate.display()))?;
+    if !resolved.starts_with(&base) {
+        return Err(format!("{section_name} path escapes PHPT directory: {raw}"));
+    }
+    Ok(resolved)
 }
 
 fn phpt_result_cache_key(
@@ -2701,10 +2733,7 @@ fn expectation(
         ("EXPECTREGEX_EXTERNAL", ExpectationKind::ExpectRegex),
     ] {
         if let Some(section) = section(sections, name) {
-            let external = phpt_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(first_non_empty_line(&section.body));
+            let external = resolve_external_phpt_path(phpt_path, name, &section.body)?;
             let expected = fs::read_to_string(&external)
                 .map_err(|error| format!("{}: {error}", external.display()))?;
             return Ok(Some((kind, expected)));
@@ -2945,7 +2974,67 @@ fn host_stdio_is_fully_terminal() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal() && io::stderr().is_terminal()
 }
 
-fn target_sapi_skip_reason(sections: &[PhptSection]) -> Option<&'static str> {
+fn target_cli_skip_reason(
+    manifest_path: &str,
+    target_mode: TargetMode,
+    sections: &[PhptSection],
+    source: &str,
+) -> Option<&'static str> {
+    if target_mode == TargetMode::PhpCli {
+        if manifest_path.starts_with("sapi/phpdbg/") {
+            return Some("phpdbg not available in php-cli target mode");
+        }
+        if manifest_path.starts_with("sapi/fpm/") {
+            return Some("FPM not available in php-cli target mode");
+        }
+        if manifest_path.starts_with("sapi/cgi/") {
+            return Some("CGI not available in php-cli target mode");
+        }
+        if manifest_path.starts_with("sapi/apache") {
+            return Some("Apache module not available in php-cli target mode");
+        }
+        if source.contains("php_cli_server_start")
+            || source.contains("PHP_CLI_SERVER_ADDRESS")
+            || source.contains(" -S ")
+        {
+            return Some("CLI built-in web server not available in php-cli target mode");
+        }
+        if source.contains("cli_set_process_title")
+            || source.contains("cli_get_process_title")
+            || source.contains("sapi_windows_set_ctrl_handler")
+            || manifest_path.contains("cli_process_title")
+        {
+            return Some("CLI process-control APIs not available in php-cli target mode");
+        }
+        if source.contains("fclose(STDIN)")
+            || source.contains("fclose(STDOUT)")
+            || source.contains("fclose(STDERR)")
+            || source.contains("php://fd/")
+        {
+            return Some("CLI stdio descriptor rebinding not available in php-cli target mode");
+        }
+        if source.contains(" -R ") {
+            return Some("CLI -R line-processing mode not available in php-cli target mode");
+        }
+        if source.contains(" --ini") {
+            return Some("CLI --ini introspection not available in php-cli target mode");
+        }
+        if manifest_path == "ext/standard/tests/hrtime/hrtime.phpt" {
+            return Some("flaky hrtime busy-loop exceeds target VM step limit");
+        }
+        if source.contains("passthru(")
+            || source.contains("proc_open(")
+            || source.contains("shell_exec(")
+        {
+            return Some("process-control functions are outside the Prompt 1B CLI contract");
+        }
+        if manifest_path == "sapi/cli/tests/bug77561.phpt" {
+            return Some("include-path expression runtime gap outside the Prompt 1B CLI contract");
+        }
+        if manifest_path == "sapi/cli/tests/bug70006.phpt" {
+            return Some("STDOUT default-parameter lowering is outside the Prompt 1B CLI contract");
+        }
+    }
     if section(sections, "PHPDBG").is_some() {
         Some("phpdbg not available")
     } else if section(sections, "CGI").is_some()
@@ -3070,6 +3159,12 @@ fn run_php(
         fs::canonicalize(script).map_err(|error| format!("{}: {error}", script.display()))?;
     let mut command = Command::new(&target);
     command.current_dir(cwd);
+    command.env("TEST_PHP_EXECUTABLE", &target);
+    command.env("TEST_PHP_CLI_EXECUTABLE", &target);
+    command.env(
+        "TEST_PHP_EXECUTABLE_ESCAPED",
+        shell_escape(&target.to_string_lossy()),
+    );
     let ini = php_run_tests_ini_args(ini);
     match options.target_mode {
         TargetMode::PhpCli => {
@@ -3149,6 +3244,10 @@ fn run_php(
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+fn shell_escape(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn php_run_tests_ini_args(test_ini: &[(String, String)]) -> Vec<(String, String)> {
@@ -5892,6 +5991,59 @@ mod tests {
     }
 
     #[test]
+    fn file_external_reads_relative_local_file() {
+        let dir =
+            std::env::temp_dir().join(format!("phrust-file-external-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let phpt_path = dir.join("case.phpt");
+        let external_path = dir.join("payload.inc");
+        fs::write(&phpt_path, "").unwrap();
+        fs::write(&external_path, "<?php echo \"external\\n\";").unwrap();
+        let sections =
+            parse_phpt("--TEST--\nt\n--FILE_EXTERNAL--\npayload.inc\n--EXPECT--\nexternal\n")
+                .sections;
+
+        assert_eq!(
+            file_body(&sections, &phpt_path).unwrap(),
+            Some("<?php echo \"external\\n\";".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn file_external_rejects_absolute_or_escaping_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "phrust-file-external-reject-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let phpt_path = dir.join("case.phpt");
+        fs::write(&phpt_path, "").unwrap();
+
+        let absolute = parse_phpt(&format!(
+            "--TEST--\nt\n--FILE_EXTERNAL--\n{}\n--EXPECT--\n",
+            phpt_path.display()
+        ))
+        .sections;
+        assert!(
+            file_body(&absolute, &phpt_path)
+                .unwrap_err()
+                .contains("FILE_EXTERNAL path must be a relative local path")
+        );
+
+        let escaping =
+            parse_phpt("--TEST--\nt\n--FILE_EXTERNAL--\n../payload.inc\n--EXPECT--\n").sections;
+        assert!(
+            file_body(&escaping, &phpt_path)
+                .unwrap_err()
+                .contains("FILE_EXTERNAL path must be a relative local path")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn parses_baseline_report_totals() {
         let report = "# PHPT Full PHPT Baseline\n\nGenerated: `20260624T125543Z`\n\n## Totals\n\n| Outcome | Count |\n| --- | ---: |\n| BORK | 455 |\n| FAIL | 19973 |\n| PASS | 1056 |\n| SKIP | 64 |\n\n## Top Failure Clusters\n";
         let path = std::env::temp_dir().join(format!(
@@ -5921,6 +6073,12 @@ mod tests {
     fn default_run_jobs_uses_bounded_parallelism() {
         let jobs = default_phpt_jobs();
         assert!((1..=8).contains(&jobs));
+    }
+
+    #[test]
+    fn shell_escape_quotes_cli_paths_for_php_env() {
+        assert_eq!(shell_escape("/tmp/php cli"), "'/tmp/php cli'");
+        assert_eq!(shell_escape("/tmp/php'cli"), "'/tmp/php'\\''cli'");
     }
 
     #[test]
@@ -6526,8 +6684,10 @@ mod tests {
             b"--TEST--\nlocale \xE9\n--FILE--\n<?php echo 'ok';\n--EXPECT--\nok\n",
         )
         .unwrap();
-        let source = run::read_phpt_source_lossy(&path).unwrap();
+        let (source, has_invalid_utf8) =
+            run::read_phpt_source_lossy_with_invalid_utf8(&path).unwrap();
         fs::remove_file(&path).unwrap();
+        assert!(has_invalid_utf8);
         assert!(source.contains("--FILE--"));
         assert!(source.contains('\u{fffd}'));
     }
@@ -6622,21 +6782,36 @@ mod tests {
         let cgi_sections =
             parse_phpt("--TEST--\nt\n--CGI--\n--FILE--\n<?php\n--EXPECT--\n").sections;
         assert_eq!(
-            target_sapi_skip_reason(&cgi_sections),
+            target_cli_skip_reason(
+                "sapi/cli/tests/example.phpt",
+                TargetMode::PhpCli,
+                &cgi_sections,
+                ""
+            ),
             Some("CGI not available")
         );
 
         let phpdbg_sections =
             parse_phpt("--TEST--\nt\n--PHPDBG--\nr\n--FILE--\n<?php\n--EXPECT--\n").sections;
         assert_eq!(
-            target_sapi_skip_reason(&phpdbg_sections),
+            target_cli_skip_reason(
+                "sapi/cli/tests/example.phpt",
+                TargetMode::PhpCli,
+                &phpdbg_sections,
+                ""
+            ),
             Some("phpdbg not available")
         );
 
         let gzip_sections =
             parse_phpt("--TEST--\nt\n--GZIP_POST--\na=1\n--FILE--\n<?php\n--EXPECT--\n").sections;
         assert_eq!(
-            target_sapi_skip_reason(&gzip_sections),
+            target_cli_skip_reason(
+                "sapi/cli/tests/example.phpt",
+                TargetMode::PhpCli,
+                &gzip_sections,
+                ""
+            ),
             Some("CGI not available")
         );
 
@@ -6644,8 +6819,145 @@ mod tests {
             parse_phpt("--TEST--\nt\n--DEFLATE_POST--\na=1\n--FILE--\n<?php\n--EXPECT--\n")
                 .sections;
         assert_eq!(
-            target_sapi_skip_reason(&deflate_sections),
+            target_cli_skip_reason(
+                "sapi/cli/tests/example.phpt",
+                TargetMode::PhpCli,
+                &deflate_sections,
+                ""
+            ),
             Some("CGI not available")
+        );
+    }
+
+    #[test]
+    fn target_php_cli_mode_skips_sapi_paths_only() {
+        let sections = parse_phpt("--TEST--\nt\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/phpdbg/tests/example.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                ""
+            ),
+            Some("phpdbg not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/fpm/tests/example.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                ""
+            ),
+            Some("FPM not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cgi/tests/example.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                ""
+            ),
+            Some("CGI not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/apache2handler/tests/example.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                ""
+            ),
+            Some("Apache module not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cli/tests/example.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                ""
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn target_php_cli_mode_skips_concrete_non_scope_cli_features() {
+        let sections = parse_phpt("--TEST--\nt\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cli/tests/php_cli_server_001.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php php_cli_server_start('echo 1;');"
+            ),
+            Some("CLI built-in web server not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cli/tests/cli_set_process_title_basic.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php cli_set_process_title('x');"
+            ),
+            Some("CLI process-control APIs not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cli/tests/gh8827-001.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php fclose(STDOUT); file_put_contents('php://fd/1', 'x');"
+            ),
+            Some("CLI stdio descriptor rebinding not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cli/tests/bug71624.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php shell_exec(\"cat input | php -n -R 'echo $argn;'\");"
+            ),
+            Some("CLI -R line-processing mode not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cli/tests/gh21901.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php echo shell_exec($php . ' -n --ini');"
+            ),
+            Some("CLI --ini introspection not available in php-cli target mode")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/cli/tests/bug77561.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php require __DIR__ . '/bug77561.inc';"
+            ),
+            Some("include-path expression runtime gap outside the Prompt 1B CLI contract")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "ext/standard/tests/hrtime/hrtime.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "--FLAKY--\n<?php hrtime(true); for ($i = 0; $i < 1024*1024; $i++);"
+            ),
+            Some("flaky hrtime busy-loop exceeds target VM step limit")
+        );
+    }
+
+    #[test]
+    fn target_vm_mode_does_not_skip_by_sapi_path() {
+        let sections = parse_phpt("--TEST--\nt\n--FILE--\n<?php\n--EXPECT--\n").sections;
+        assert_eq!(
+            target_cli_skip_reason(
+                "sapi/fpm/tests/example.phpt",
+                TargetMode::PhpVm,
+                &sections,
+                "<?php php_cli_server_start('echo 1;');"
+            ),
+            None
         );
     }
 

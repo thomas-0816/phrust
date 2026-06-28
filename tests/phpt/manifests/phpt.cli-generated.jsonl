@@ -1,0 +1,3 @@
+{"path":"tests/phpt/generated/phpt.cli/argv-argc-superglobals.phpt","source":"generated","provenance":"Prompt 1B CLI argv and argc contract"}
+{"path":"tests/phpt/generated/phpt.cli/ini-overrides.phpt","source":"generated","provenance":"Prompt 1B CLI -d/INI runtime visibility contract"}
+{"path":"tests/phpt/generated/phpt.cli/stdin.phpt","source":"generated","provenance":"Prompt 1B CLI STDIN contract"}
