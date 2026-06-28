@@ -26,3 +26,5 @@ This directory contains the functional module plan for PHPT-driven runtime compl
 | 20 | [spl](spl.md) | 520 | 39 | 3 | 478 | 0 | Build on stable object, array, iterator, and filesystem layers. |
 | 21 | [reflection](reflection.md) | 304 | 11 | 1 | 292 | 0 | Expose generated arginfo and semantic metadata through Reflection APIs. |
 | 22 | [extension.policy](extension.policy.md) | 9006 | 468 | 525 | 7757 | 0 | Classify extension failures without hiding them from full regression. |
+
+The `extension.policy` module is the merged projection for `phpt/ext-policy-orchestration`, `phpt/ext-text-i18n`, `phpt/ext-xml-soap`, and `phpt/ext-data-platform`. Its counts stay tied to the committed full baseline; module docs and manifests classify extension ownership without removing failures from PHPT bookkeeping.

@@ -1397,12 +1397,12 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         required_for_core: false,
         required_for_composer: false,
         required_for_framework: true,
-        needs_stub: true,
+        needs_stub: false,
         needs_implementation: true,
-        implementation_class: "MVP",
+        implementation_class: "real-implementation-required",
         fixture_or_phpt_example: "ext/pdo_sqlite/tests/bug33841.phpt",
         planned_solution_layer: "future database extension layer",
-        next_action: "Plan SQLite-backed PDO only after PDO contracts are explicit.",
+        next_action: "Keep unavailable until PDO core and real SQLite-backed semantics exist.",
     },
     ExtensionPolicySpec {
         extension: "sqlite3",
@@ -1410,25 +1410,25 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         required_for_core: false,
         required_for_composer: false,
         required_for_framework: true,
-        needs_stub: true,
+        needs_stub: false,
         needs_implementation: true,
-        implementation_class: "MVP",
+        implementation_class: "real-implementation-required",
         fixture_or_phpt_example: "ext/sqlite3/tests/sqlite3_01_open.phpt",
         planned_solution_layer: "future database extension layer",
-        next_action: "Plan a deterministic local SQLite MVP after filesystem policy is stable.",
+        next_action: "Choose an approved SQLite dependency and implement real query semantics before enabling.",
     },
     ExtensionPolicySpec {
         extension: "mysqli",
-        policy: "optional",
+        policy: "out-of-scope",
         required_for_core: false,
         required_for_composer: false,
         required_for_framework: false,
-        needs_stub: true,
+        needs_stub: false,
         needs_implementation: false,
-        implementation_class: "stub-only",
+        implementation_class: "out-of-scope",
         fixture_or_phpt_example: "ext/mysqli/tests/mysqli_connect.phpt",
-        planned_solution_layer: "future database extension layer",
-        next_action: "Treat as database-extension work, not a blocker for core PHPT green.",
+        planned_solution_layer: "future optional database extension package",
+        next_action: "Keep network database support out of scope unless explicitly accepted.",
     },
     ExtensionPolicySpec {
         extension: "mysqlnd",
@@ -1527,12 +1527,12 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         required_for_core: false,
         required_for_composer: false,
         required_for_framework: true,
-        needs_stub: true,
+        needs_stub: false,
         needs_implementation: true,
-        implementation_class: "MVP",
+        implementation_class: "real-implementation-required",
         fixture_or_phpt_example: "ext/session/tests/session_basic2.phpt",
-        planned_solution_layer: "php_runtime session module",
-        next_action: "Implement deterministic local session state only after filesystem primitives are stable.",
+        planned_solution_layer: "future request/runtime state layer",
+        next_action: "Implement deterministic CLI-only session state only after request-local state and superglobals are ready.",
     },
     ExtensionPolicySpec {
         extension: "sapi",
@@ -4573,6 +4573,7 @@ fn render_modules_readme(triage: &PhptTriage) -> String {
             spec.next_step
         ));
     }
+    out.push_str("\nThe `extension.policy` module is the merged projection for `phpt/ext-policy-orchestration`, `phpt/ext-text-i18n`, `phpt/ext-xml-soap`, and `phpt/ext-data-platform`. Its counts stay tied to the committed full baseline; module docs and manifests classify extension ownership without removing failures from PHPT bookkeeping.\n");
     out
 }
 
@@ -6339,7 +6340,7 @@ mod tests {
             )
         );
         assert!(report.contains(
-            "| pdo_sqlite | required-framework | 4 | 0 | 1 | 3 | 0 | none | no | no | yes | MVP |"
+            "| pdo_sqlite | required-framework | 4 | 0 | 1 | 3 | 0 | none | no | no | yes | real-implementation-required |"
         ));
     }
 

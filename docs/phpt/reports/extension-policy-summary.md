@@ -40,9 +40,9 @@ acceptance:
 | --- | --- | --- |
 | `mbstring` | Composer and framework checks commonly require real UTF-8 string behavior. | `php_std` / `php_runtime` string builtins |
 | `phar` | Composer package workflows require read-only PHAR behavior. | `php_runtime` filesystem/archive layer |
-| `session` | Framework smoke tests commonly require deterministic local session state. | `php_runtime` session module |
-| `pdo_sqlite` | Framework and offline database smoke tests can use SQLite-backed PDO. | future database extension layer |
-| `sqlite3` | Direct SQLite APIs are useful for deterministic local framework-style tests. | future database extension layer |
+| `session` | Framework smoke tests commonly require deterministic local session state, but no CLI MVP is enabled yet. | future request/runtime state layer |
+| `pdo_sqlite` | Framework and offline database smoke tests can use SQLite-backed PDO, but it needs real PDO and SQLite semantics before enabling. | future database extension layer |
+| `sqlite3` | Direct SQLite APIs are useful for deterministic local framework-style tests, but require an approved SQLite dependency and real query execution. | future database extension layer |
 
 ## Stub-Only Or Optional
 
@@ -57,7 +57,6 @@ behavior:
 | `simplexml` | `optional`, `stub-only` until XML support exists |
 | `xsl` | `optional`, `stub-only` until DOM/XML support exists |
 | `pdo` | `optional`, `stub-only` central PDO contracts before drivers |
-| `mysqli` | `optional`, `stub-only` database extension surface |
 | `intl` | `optional`, `stub-only` ICU-facing surface |
 
 ## Explicitly Out Of Scope
@@ -68,6 +67,7 @@ progress in the current branch:
 | Extension | Reason |
 | --- | --- |
 | `soap` | SOAP protocol/server behavior is extension-specific and not core runtime correctness. |
+| `mysqli` | Network database client behavior is outside the current data/platform scope. |
 | `mysqlnd` | No standalone PHPT corpus rows are indexed; MySQL driver internals are out of scope. |
 | `gd` | Image-processing behavior is extension-specific. |
 | `opcache` | Opcache/JIT behavior is excluded from runtime correctness scope. |

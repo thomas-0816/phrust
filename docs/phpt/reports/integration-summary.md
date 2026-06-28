@@ -11,6 +11,18 @@ without hand-editing full-run state.
 4. `phpt/ext-data-platform`
 5. final full-regression refresh branch if needed
 
+## Post-Merge Status
+
+The four extension-policy branches are integrated on `main`. Conflict
+ownership is resolved by keeping central policy/report structure from
+`phpt/ext-policy-orchestration`, text/i18n module behavior from
+`phpt/ext-text-i18n`, XML/SOAP module behavior from `phpt/ext-xml-soap`, and
+data/platform module policy from `phpt/ext-data-platform`.
+
+No full-baseline acceptance is part of this integration pass. A full regression
+run may report new fingerprints, but committed baseline manifests must remain
+unchanged unless `PHPT_ACCEPT_BASELINE=1` is explicitly approved.
+
 ## Branch Ownership
 
 | Branch | Owned scope | Avoids |
@@ -50,6 +62,10 @@ nix develop -c just verify-runtime
 Use `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php`
 and `PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src` when
 reference-backed checks need the local oracle.
+
+For the repository-local full-regression command, require
+`$PWD/third_party/php-src/sapi/cli/php` to exist before running the exact
+`REFERENCE_PHP=$PWD/third_party/php-src/sapi/cli/php PHPT_RUN_FULL=1` gate.
 
 ## Full-Regression Refresh Protocol
 
