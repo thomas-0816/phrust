@@ -4,6 +4,7 @@ exclude = ["crates/php_bench"]
 members = [
     "crates/php_ast",
     "crates/php_bytecode_cache",
+    "crates/php_executor",
     "crates/php_frontend_cli",
     "crates/php_ir",
     "crates/php_jit",
@@ -15,6 +16,7 @@ members = [
     "crates/php_phpt_tools",
     "crates/php_runtime",
     "crates/php_semantics",
+    "crates/php_server",
     "crates/php_source",
     "crates/php_std",
     "crates/php_syntax",

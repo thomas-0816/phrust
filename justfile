@@ -45,6 +45,10 @@ help:
       '  just runtime-diff         Compare runtime output with PHP reference when configured' \
       '  just runtime-known-gaps   Validate runtime known-gap catalog' \
       '' \
+      'Server:' \
+      '  just server-smoke         Run integrated web server smoke checks' \
+      '  just server-benchmark-smoke Run short optional server benchmark smoke' \
+      '' \
       'Standard library and compatibility:' \
       '  just diff-stdlib          Run standard-library differential gate' \
       '  just diff-streams         Run streams differential gate' \
@@ -105,6 +109,12 @@ runtime-hardening-lints:
 
 test:
     RUST_MIN_STACK="${PHRUST_RUST_MIN_STACK:-8388608}" cargo test --workspace
+
+server-smoke:
+    scripts/server/smoke.sh
+
+server-benchmark-smoke:
+    scripts/server/benchmark_smoke.sh
 
 test-lexer:
     cargo test -p php_lexer

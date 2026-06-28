@@ -3,7 +3,8 @@
 use crate::{
     FilesystemCapabilities, IniRegistry, OutputBuffer, PHP_E_DEPRECATED, PHP_E_WARNING, PcreCache,
     PhpDiagnosticChannel, PhpDiagnosticDisplayOptions, ReferenceCell, ResourceTable,
-    RuntimeDiagnostic, RuntimeSeverity, SessionState, Value, datetime, emit_php_diagnostic, pcre,
+    RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity, SessionState, Value, datetime,
+    emit_php_diagnostic, pcre,
 };
 use std::path::{Path, PathBuf};
 
@@ -117,6 +118,8 @@ pub struct BuiltinContext<'a> {
     default_timezone: String,
     filesystem: FilesystemCapabilities,
     resources: Option<&'a mut ResourceTable>,
+    http_response: RuntimeHttpResponseState,
+    http_response_state: Option<&'a mut RuntimeHttpResponseState>,
     pcre_cache: PcreCache,
     preg_last_error: pcre::PcreLastErrorState,
     preg_last_error_state: Option<&'a mut pcre::PcreLastErrorState>,
@@ -142,6 +145,8 @@ impl<'a> BuiltinContext<'a> {
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
             filesystem: FilesystemCapabilities::none(),
             resources: None,
+            http_response: RuntimeHttpResponseState::default(),
+            http_response_state: None,
             pcre_cache: PcreCache::default(),
             preg_last_error: pcre::PcreLastErrorState::default(),
             preg_last_error_state: None,
@@ -172,6 +177,8 @@ impl<'a> BuiltinContext<'a> {
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
             filesystem,
             resources,
+            http_response: RuntimeHttpResponseState::default(),
+            http_response_state: None,
             pcre_cache: PcreCache::default(),
             preg_last_error: pcre::PcreLastErrorState::default(),
             preg_last_error_state: None,
@@ -308,6 +315,27 @@ impl<'a> BuiltinContext<'a> {
     /// Request-local resource table for stream builtins.
     pub fn resources(&mut self) -> Option<&mut ResourceTable> {
         self.resources.as_deref_mut()
+    }
+
+    /// Sets request-local HTTP response state.
+    pub fn set_http_response_state(&mut self, state: &'a mut RuntimeHttpResponseState) {
+        self.http_response_state = Some(state);
+    }
+
+    /// Current request-local HTTP response state.
+    #[must_use]
+    pub fn http_response(&self) -> &RuntimeHttpResponseState {
+        self.http_response_state
+            .as_deref()
+            .unwrap_or(&self.http_response)
+    }
+
+    /// Mutable request-local HTTP response state.
+    pub fn http_response_mut(&mut self) -> &mut RuntimeHttpResponseState {
+        match self.http_response_state.as_deref_mut() {
+            Some(state) => state,
+            None => &mut self.http_response,
+        }
     }
 
     /// Sets request-local `strtok` state.

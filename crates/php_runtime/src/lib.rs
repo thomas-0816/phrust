@@ -52,7 +52,9 @@ pub use callable::{
     ClosurePayload,
 };
 pub use context::{
-    ErrorReporting, ProcessCapability, RuntimeContext, RuntimeIniOptions, StrictTypesInfo,
+    ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
+    RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeRequestMode,
+    StrictTypesInfo, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
 };
 pub use convert::{
     ArithmeticNumber, NumericValue, compare, equal, identical, reset_float_string_precision,

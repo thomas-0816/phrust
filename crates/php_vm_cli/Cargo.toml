@@ -19,6 +19,7 @@ path = "src/bin/phrust_php.rs"
 
 [dependencies]
 php_bytecode_cache = { path = "../php_bytecode_cache" }
+php_executor = { path = "../php_executor" }
 php_ir = { path = "../php_ir" }
 php_jit = { path = "../php_jit", optional = true }
 php_optimizer = { path = "../php_optimizer" }

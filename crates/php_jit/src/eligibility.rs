@@ -1587,15 +1587,24 @@ fn check_instruction(
         | InstructionKind::CloneObject { .. }
         | InstructionKind::CloneWith { .. }
         | InstructionKind::InstanceOf { .. }
+        | InstructionKind::DynamicInstanceOf { .. }
         | InstructionKind::FetchProperty { .. }
+        | InstructionKind::FetchDynamicProperty { .. }
         | InstructionKind::IssetProperty { .. }
+        | InstructionKind::IssetDynamicProperty { .. }
         | InstructionKind::EmptyProperty { .. }
+        | InstructionKind::EmptyDynamicProperty { .. }
         | InstructionKind::IssetPropertyDim { .. }
         | InstructionKind::EmptyPropertyDim { .. }
         | InstructionKind::UnsetProperty { .. }
+        | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::FetchStaticProperty { .. }
+        | InstructionKind::IssetStaticProperty { .. }
+        | InstructionKind::EmptyStaticProperty { .. }
         | InstructionKind::FetchClassConstant { .. }
+        | InstructionKind::FetchObjectClassName { .. }
         | InstructionKind::AssignProperty { .. }
+        | InstructionKind::AssignDynamicProperty { .. }
         | InstructionKind::AssignStaticProperty { .. } => {
             rejected.push(JitEligibilityReason::instruction(
                 "JIT_ELIGIBILITY_REJECT_OBJECT_OPCODE",

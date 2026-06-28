@@ -59,12 +59,12 @@ use php_runtime::{
     ClosureDebugInfo, ClosurePayload, ExecutionStatus, FiberRef, FiberState, GcEntityId,
     GcEntityKind, GeneratorRef, GeneratorState, GlobalSymbolTable, NumericValue, ObjectRef,
     OutputBuffer, PhpArray, PhpArrayKind, PhpString, ProcessCapability, ReferenceCell,
-    RuntimeContext, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame,
-    RuntimeType, Slot, Value, compare, division_by_zero_mvp, emit_php_diagnostic, equal,
-    error_reporting_allows_level, identical, reset_float_string_precision, runtime_type_name,
-    set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
-    to_string, undefined_function, undefined_variable_warning, unsupported_feature,
-    value_matches_runtime_type, value_type_name,
+    RuntimeContext, RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity,
+    RuntimeSourceSpan, RuntimeStackFrame, RuntimeType, Slot, Value, compare, division_by_zero_mvp,
+    emit_php_diagnostic, equal, error_reporting_allows_level, identical,
+    reset_float_string_precision, runtime_type_name, set_float_string_precision,
+    to_arithmetic_number, to_bool, to_float, to_int, to_number, to_string, undefined_function,
+    undefined_variable_warning, unsupported_feature, value_matches_runtime_type, value_type_name,
 };
 use php_runtime::{GcRoot, GcRootKind, GcSnapshot, ResourceTable, scan_roots};
 use std::cell::RefCell;
@@ -827,6 +827,7 @@ struct ExecutionState {
     mb_internal_encoding: String,
     preg_last_error: php_runtime::pcre::PcreLastErrorState,
     json_last_error: i64,
+    http_response: RuntimeHttpResponseState,
     session: php_runtime::SessionState,
     sqlite: php_runtime::SqliteState,
     error_handlers: Vec<ErrorHandlerEntry>,
@@ -1568,6 +1569,7 @@ impl VmResult {
             status: ExecutionStatus::success(),
             output,
             diagnostics: Vec::new(),
+            http_response: RuntimeHttpResponseState::default(),
             return_value,
             yielded: None,
             fiber_suspension: None,
@@ -1587,6 +1589,7 @@ impl VmResult {
             status: ExecutionStatus::success(),
             output,
             diagnostics,
+            http_response: RuntimeHttpResponseState::default(),
             return_value,
             yielded: None,
             fiber_suspension: None,
@@ -1606,6 +1609,7 @@ impl VmResult {
             status: ExecutionStatus::runtime_error(message),
             output,
             diagnostics: vec![diagnostic],
+            http_response: RuntimeHttpResponseState::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1621,6 +1625,7 @@ impl VmResult {
             status: ExecutionStatus::compile_error(message),
             output,
             diagnostics: Vec::new(),
+            http_response: RuntimeHttpResponseState::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1636,6 +1641,7 @@ impl VmResult {
             status: ExecutionStatus::unsupported(message),
             output,
             diagnostics: Vec::new(),
+            http_response: RuntimeHttpResponseState::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1657,6 +1663,7 @@ impl VmResult {
             ),
             output,
             diagnostics: Vec::new(),
+            http_response: RuntimeHttpResponseState::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1781,6 +1788,7 @@ impl Vm {
                             trace: Vec::new(),
                             counters: None,
                             tiering_stats: None,
+                            http_response: RuntimeHttpResponseState::default(),
                         }
                     } else {
                         self.record_counter_bytecode_unsupported_fallback();
@@ -1836,6 +1844,7 @@ impl Vm {
         let output_len = output.len();
         let output_stats = output.stats();
         result.output = output.clone();
+        result.http_response = state.http_response;
         if self.options.trace || self.options.trace_runtime {
             result.trace = self.trace.borrow().clone();
         }
@@ -12841,6 +12850,7 @@ impl Vm {
                                 trace: Vec::new(),
                                 counters: None,
                                 tiering_stats: None,
+                                http_response: RuntimeHttpResponseState::default(),
                             };
                         };
                         foreach_iterators.insert(
@@ -15050,6 +15060,7 @@ impl Vm {
                             trace: Vec::new(),
                             counters: None,
                             tiering_stats: None,
+                            http_response: RuntimeHttpResponseState::default(),
                         };
                     }
                     InstructionKind::RuntimeError {
@@ -19214,6 +19225,7 @@ impl Vm {
                     trace: Vec::new(),
                     counters: None,
                     tiering_stats: None,
+                    http_response: RuntimeHttpResponseState::default(),
                 })
             }
         }
@@ -34437,6 +34449,7 @@ fn execute_builtin_entry(
     context.set_preg_last_error_state(&mut state.preg_last_error);
     context.set_json_last_error(state.json_last_error);
     context.set_strtok_state(&mut state.strtok_state);
+    context.set_http_response_state(&mut state.http_response);
     context.set_mb_internal_encoding(if state.mb_internal_encoding.is_empty() {
         "UTF-8".to_owned()
     } else {

@@ -1,6 +1,9 @@
 use crate::counters::VmCounters;
 use crate::tiering::TieringStats;
-use php_runtime::{ExecutionStatus, OutputBuffer, ReferenceCell, RuntimeDiagnostic, Value};
+use php_runtime::{
+    ExecutionStatus, OutputBuffer, ReferenceCell, RuntimeDiagnostic, RuntimeHttpResponseState,
+    Value,
+};
 
 /// Execution result.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11,6 +14,8 @@ pub struct VmResult {
     pub output: OutputBuffer,
     /// Structured runtime diagnostics emitted during execution.
     pub diagnostics: Vec<RuntimeDiagnostic>,
+    /// Request-local HTTP response state accumulated by web-response builtins.
+    pub http_response: RuntimeHttpResponseState,
     /// Return value when execution returned successfully.
     pub return_value: Option<Value>,
     pub(super) yielded: Option<super::GeneratorYield>,

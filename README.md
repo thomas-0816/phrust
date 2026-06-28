@@ -69,6 +69,18 @@ The executable path used by tests is:
 target/debug/php-vm
 ```
 
+## Running the integrated web server
+
+Run the in-process HTTP server against the basic app fixture:
+
+```bash
+nix develop -c cargo run -p php_server --bin phrust-server -- --docroot fixtures/server/apps/basic/public --listen 127.0.0.1:8080
+```
+
+`phrust-server` executes PHP through the workspace frontend, runtime, and VM in
+the server process. It does not use FPM, FastCGI, CGI, Apache, `mod_php`, or an
+external PHP process fallback.
+
 ## Repository Layout
 
 ```text
@@ -80,6 +92,8 @@ crates/php_semantics/    semantic frontend, HIR, symbols, diagnostics
 crates/php_ir/           bytecode/IR boundary
 crates/php_runtime/      runtime values and builtins
 crates/php_vm/           interpreter VM
+crates/php_executor/     reusable in-process PHP execution API
+crates/php_server/       integrated HTTP server MVP
 crates/php_vm_cli/       developer CLI for VM execution
 crates/php_phpt_tools/   PHPT indexing, execution, and reporting tools
 docs/                    architecture, ADRs, contracts, audits

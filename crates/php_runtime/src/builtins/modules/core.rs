@@ -87,6 +87,22 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_environment_requires_vm,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("header", builtin_header, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "headers_list",
+        builtin_headers_list,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "headers_sent",
+        builtin_headers_sent,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "http_response_code",
+        builtin_http_response_code,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "gc_collect_cycles",
         builtin_gc_collect_cycles,
@@ -449,6 +465,101 @@ pub(in crate::builtins::modules) fn builtin_set_time_limit(
         ));
     }
     Ok(Value::Bool(true))
+}
+
+pub(in crate::builtins::modules) fn builtin_header(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=3).contains(&args.len()) {
+        return Err(arity_error("header", "one to three argument(s)"));
+    }
+    let header = string_arg("header", &args[0])?.to_string_lossy();
+    let replace = args
+        .get(1)
+        .map_or(Ok(true), to_bool)
+        .map_err(|message| conversion_error("header", message))?;
+    let response_code = match args.get(2) {
+        Some(Value::Null) | None => None,
+        Some(value) => {
+            let code = to_int(value).map_err(|message| conversion_error("header", message))?;
+            if code == 0 {
+                None
+            } else if (100..=599).contains(&code) {
+                Some(code as u16)
+            } else {
+                context.php_warning(
+                    "E_PHP_RUNTIME_INVALID_HEADER",
+                    format!("header(): invalid HTTP response code {code}"),
+                    span,
+                );
+                return Ok(Value::Null);
+            }
+        }
+    };
+    if let Err(message) =
+        context
+            .http_response_mut()
+            .add_header_line(&header, replace, response_code)
+    {
+        context.php_warning(
+            "E_PHP_RUNTIME_INVALID_HEADER",
+            format!("header(): {message}"),
+            span,
+        );
+    }
+    Ok(Value::Null)
+}
+
+pub(in crate::builtins::modules) fn builtin_headers_list(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("headers_list", &args, 0)?;
+    Ok(Value::Array(PhpArray::from_packed(
+        context
+            .http_response()
+            .headers_list()
+            .into_iter()
+            .map(Value::string)
+            .collect(),
+    )))
+}
+
+pub(in crate::builtins::modules) fn builtin_headers_sent(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 2 {
+        return Err(arity_error("headers_sent", "zero to two argument(s)"));
+    }
+    Ok(Value::Bool(context.http_response().headers_sent))
+}
+
+pub(in crate::builtins::modules) fn builtin_http_response_code(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 1 {
+        return Err(arity_error("http_response_code", "zero or one argument(s)"));
+    }
+    let previous = context.http_response().status_code;
+    let Some(value) = args.first() else {
+        return Ok(Value::Int(i64::from(previous)));
+    };
+    if matches!(value, Value::Null) {
+        return Ok(Value::Int(i64::from(previous)));
+    }
+    let code = to_int(value).map_err(|message| conversion_error("http_response_code", message))?;
+    if !(100..=599).contains(&code) {
+        return Ok(Value::Bool(false));
+    }
+    context.http_response_mut().set_status_code(code as u16);
+    Ok(Value::Int(i64::from(previous)))
 }
 
 /// Monotonic per-process counter mixed into `uniqid(..., true)` so that two

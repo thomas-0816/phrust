@@ -1,0 +1,14 @@
+[package]
+name = "php_executor"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+php_ir = { path = "../php_ir" }
+php_optimizer = { path = "../php_optimizer" }
+php_runtime = { path = "../php_runtime" }
+php_semantics = { path = "../php_semantics" }
+php_source = { path = "../php_source" }
+php_vm = { path = "../php_vm" }
