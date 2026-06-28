@@ -1,0 +1,16 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"spl.fixed-array",
+  "priority":20,
+  "selected_manifest":"tests/phpt/manifests/modules/spl.fixed-array.selected.jsonl",
+  "corpus_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["SplFixedArray construction, count, sizing, ArrayAccess, toArray, and foreach"],
+  "non_scope":["full exception wording","serialization"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=spl.fixed-array"],
+  "next_step":"Tighten exception parity and serialization before selecting broader upstream SplFixedArray tests."
+}

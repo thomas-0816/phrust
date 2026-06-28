@@ -1,0 +1,16 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"spl.file",
+  "priority":20,
+  "selected_manifest":"tests/phpt/manifests/modules/spl.file.selected.jsonl",
+  "corpus_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["SplFileInfo, SplFileObject, and SplTempFileObject local-file metadata and line iteration"],
+  "non_scope":["locking","chmod/chown","CSV full flag matrix","full seek modes","write-through file object semantics"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=spl.file"],
+  "next_step":"Add write-through and CSV fixtures after the stream-backed SPL file model is expanded."
+}

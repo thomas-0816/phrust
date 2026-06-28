@@ -1,0 +1,1 @@
+{"path":"tests/phpt/generated/spl.array-object/array-object-mvp.phpt","module":"spl.array-object","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-spl-v1","reason":"ArrayObject MVP ArrayAccess, Countable, foreach, getArrayCopy, exchangeArray, and append coverage"}

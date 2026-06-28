@@ -11,6 +11,7 @@ pub mod generated;
 pub mod introspection;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 /// Descriptor for one PHP extension.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -325,6 +326,13 @@ impl ExtensionRegistry {
     /// Returns the default standard-library infrastructure registry.
     #[must_use]
     pub fn standard_library() -> Self {
+        static STANDARD_LIBRARY: OnceLock<ExtensionRegistry> = OnceLock::new();
+        STANDARD_LIBRARY
+            .get_or_init(Self::build_standard_library)
+            .clone()
+    }
+
+    fn build_standard_library() -> Self {
         Self::from_extensions([
             ExtensionDescriptor::new("core")
                 .with_class(ClassDescriptor::new("Closure", "core", ClassKind::Class))
@@ -1269,6 +1277,8 @@ impl ExtensionRegistry {
                     ClassKind::Class,
                 )),
             ExtensionDescriptor::new("spl")
+                .with_function(FunctionDescriptor::php("iterator_count", "spl"))
+                .with_function(FunctionDescriptor::php("iterator_to_array", "spl"))
                 .with_function(FunctionDescriptor::php("spl_autoload_call", "spl"))
                 .with_function(FunctionDescriptor::php("spl_autoload_functions", "spl"))
                 .with_function(FunctionDescriptor::php("spl_autoload_register", "spl"))
@@ -1377,9 +1387,19 @@ impl ExtensionRegistry {
                     ClassKind::Class,
                 ))
                 .with_class(ClassDescriptor::new(
+                    "RecursiveIterator",
+                    "spl",
+                    ClassKind::Interface,
+                ))
+                .with_class(ClassDescriptor::new(
                     "RuntimeException",
                     "spl",
                     ClassKind::Class,
+                ))
+                .with_class(ClassDescriptor::new(
+                    "SeekableIterator",
+                    "spl",
+                    ClassKind::Interface,
                 ))
                 .with_class(ClassDescriptor::new(
                     "Serializable",
@@ -2289,6 +2309,8 @@ mod tests {
             "Countable",
             "Iterator",
             "IteratorAggregate",
+            "RecursiveIterator",
+            "SeekableIterator",
             "Serializable",
             "Traversable",
         ] {

@@ -1,2 +1,7 @@
+[env]
+# Several VM recursion and inline-cache fixtures exceed the platform default
+# Rust test-thread stack on macOS debug builds.
+RUST_MIN_STACK = "33554432"
+
 [target.'cfg(unix)']
-runner = "env RUST_MIN_STACK=8388608"
+runner = "env RUST_MIN_STACK=33554432"

@@ -2,74 +2,101 @@
 
 - Priority: 20
 - Selected manifest: `tests/phpt/manifests/modules/spl.selected.jsonl`
-- Current counts: 39 PASS, 3 SKIP, 478 FAIL, 0 BORK from 520 corpus candidates
+- Prompt 20 generated counts: 8 PASS, 0 SKIP, 0 FAIL, 0 BORK from 8 selected fixtures
+- Aggregate selected counts after adding prompt fixtures: 17 PASS, 2 SKIP, 189 FAIL, 0 BORK from 208 selected fixtures
+- Full upstream corpus baseline: 39 PASS, 3 SKIP, 478 FAIL, 0 BORK from 520 corpus candidates
 
 ## Scope
 
-- core SPL interfaces and common collections
+- Prompt 20 generated SPL MVP submodule fixtures
+- Submodules:
+  - `spl.interfaces`
+  - `spl.array-iterator`
+  - `spl.array-object`
+  - `spl.fixed-array`
+  - `spl.object-storage`
+  - `spl.doubly-linked-list`
+  - `spl.file`
+  - `spl.autoload`
 
 ## Non-Scope
 
 - full SPL API parity
+- broad upstream `ext/spl` corpus parity
+- heaps, priority queues, directory iterators, caching iterators, recursive iterator iterator, observer subject APIs, and serialization parity
 
-## Relevant PHPT Paths
+## Selected PHPT Paths
 
-- `ext/spl/tests/unserialize_errors.phpt`
-- `ext/spl/tests/unserialize.phpt`
-- `ext/spl/tests/splfixedarray_json_encode.phpt`
-- `ext/spl/tests/spl_recursive_iterator_iterator_key_case.phpt`
-- `ext/spl/tests/spl_pqueue_gc.phpt`
-- `ext/spl/tests/spl_pq_top_error_empty.phpt`
-- `ext/spl/tests/spl_pq_top_error_corrupt.phpt`
-- `ext/spl/tests/spl_pq_top_basic.phpt`
-- `ext/spl/tests/spl_limit_iterator_check_limits.phpt`
-- `ext/spl/tests/spl_iterator_to_array_error.phpt`
-- `ext/spl/tests/spl_iterator_recursive_getiterator_error.phpt`
-- `ext/spl/tests/spl_iterator_iterator_constructor.phpt`
-- `ext/spl/tests/spl_iterator_getcallchildren.phpt`
-- `ext/spl/tests/spl_iterator_caching_getcache_error.phpt`
-- `ext/spl/tests/spl_iterator_caching_count_error.phpt`
-- `ext/spl/tests/spl_iterator_caching_count_basic.phpt`
-- `ext/spl/tests/spl_iterator_apply_with_trampoline.phpt`
-- `ext/spl/tests/spl_iterator_apply_error_001.phpt`
-- `ext/spl/tests/spl_iterator_apply_error.phpt`
-- `ext/spl/tests/spl_heap_iteration_error.phpt`
-- `ext/spl/tests/spl_heap_isempty.phpt`
-- `ext/spl/tests/spl_heap_is_empty_basic.phpt`
-- `ext/spl/tests/spl_heap_count_basic.phpt`
-- `ext/spl/tests/spl_fileinfo_getlinktarget_basic.phpt`
-- `ext/spl/tests/spl_fileinfo_getextension_leadingdot.phpt`
-- `ext/spl/tests/spl_cachingiterator___toString_basic.phpt`
-- `ext/spl/tests/spl_caching_iterator_constructor_flags.phpt`
-- `ext/spl/tests/spl_autoload_warn_on_false_do_throw.phpt`
-- `ext/spl/tests/spl_autoload_unregister_without_registrations.phpt`
-- `ext/spl/tests/spl_autoload_throw_with_spl_autoloader_call_as_autoloader.phpt`
-- `ext/spl/tests/spl_autoload_called_scope.phpt`
-- `ext/spl/tests/spl_autoload_call_basic.phpt`
-- `ext/spl/tests/spl_autoload_bug48541.phpt`
-- `ext/spl/tests/spl_autoload_014.phpt`
-- `ext/spl/tests/spl_autoload_013.phpt`
-- `ext/spl/tests/spl_autoload_012.phpt`
-- `ext/spl/tests/spl_autoload_011.phpt`
-- `ext/spl/tests/spl_autoload_010.phpt`
-- `ext/spl/tests/spl_autoload_009.phpt`
-- `ext/spl/tests/spl_autoload_008.phpt`
+- `tests/phpt/generated/spl.interfaces/interface-method-surface.phpt`
+- `tests/phpt/generated/spl.array-iterator/iterator-mvps.phpt`
+- `tests/phpt/generated/spl.array-object/array-object-mvp.phpt`
+- `tests/phpt/generated/spl.fixed-array/fixed-array-mvp.phpt`
+- `tests/phpt/generated/spl.object-storage/object-storage-mvp.phpt`
+- `tests/phpt/generated/spl.doubly-linked-list/linear-containers-mvp.phpt`
+- `tests/phpt/generated/spl.file/file-classes-mvp.phpt`
+- `tests/phpt/generated/spl.autoload/autoload-mvp.phpt`
 
 ## Relevant php-src Source Areas
 
-- `ext/spl/tests/`
+- `ext/spl/php_spl.c`
+- `ext/spl/spl_array.c`
+- `ext/spl/spl_directory.c`
+- `ext/spl/spl_dllist.c`
+- `ext/spl/spl_fixedarray.c`
+- `ext/spl/spl_observer.c`
 
 ## Target Gates
 
-- `nix develop -c just phpt-module MODULE=spl`
+- Prompt submodules: `nix develop -c just phpt-dev-module MODULE=spl.<submodule>`
+- Aggregate selected: `nix develop -c just phpt-dev-module MODULE=spl`
+- `nix develop -c just diff-spl-reflection`
+- `nix develop -c just verify-phpt`
+- `nix develop -c just verify-stdlib`
+
+The prompt submodule gates are green. The aggregate `spl` gate remains red
+because the pre-existing upstream selected SPL batch still has 189 target
+non-green outcomes; adding the prompt fixtures did not add BORKs or new prompt
+fixture failures.
+
+## Subarea Failure Snapshot
+
+| Subarea | Before FAIL/BORK | Selected After FAIL/BORK | Remaining gaps |
+| --- | ---: | ---: | --- |
+| `spl.interfaces` | unknown from full corpus split | 0/0 | full interface inheritance and exact reflection metadata beyond selected methods |
+| `spl.array-iterator` | unknown from full corpus split | 0/0 | flags, serialization, mutation by reference, deep recursive iterator APIs |
+| `spl.array-object` | unknown from full corpus split | 0/0 | flags, object property mode, serialization, nested by-reference writes |
+| `spl.fixed-array` | unknown from full corpus split | 0/0 | exact exception text and serialization |
+| `spl.object-storage` | unknown from full corpus split | 0/0 | info edge cases, serialization, lvalue object-key bracket semantics |
+| `spl.doubly-linked-list` | unknown from full corpus split | 0/0 | iterator mode matrix, serialization, exhaustive exception parity |
+| `spl.file` | unknown from full corpus split | 0/0 | write-through file object semantics, locking, ownership/mode changes, CSV flag matrix, full seek modes |
+| `spl.autoload` | unknown from full corpus split | 0/0 | prepend/throw exactness and default `spl_autoload` namespace/path conventions |
+| aggregate legacy selected batch | 196/0 | 189/0 | heaps, caching iterators, serialization, advanced autoload, catchable constructor `ValueError`s, FPM/daemon-style tests, full file APIs |
 
 ## Known Gaps
 
-- `runtime-error-or-diagnostic`: 361
-- `runtime-unsupported-feature`: 71
-- `runtime-output-mismatch`: 60
-- `frontend-parse-or-compile`: 1
+- `runtime-error-or-diagnostic`: 361 upstream SPL corpus candidates
+- `runtime-unsupported-feature`: 71 upstream SPL corpus candidates
+- `runtime-output-mismatch`: 60 upstream SPL corpus candidates
+- `frontend-parse-or-compile`: 1 upstream SPL corpus candidate
+- `STDLIB-GAP-SPL-INTERFACE-METHOD-SURFACES`
+- `STDLIB-GAP-SPL-AUTOLOAD-ADVANCED`
+- `STDLIB-GAP-SPL-OBJECT-HASH-PARITY`
+- `STDLIB-GAP-SPL-ITERATOR-MUTATION-EDGES`
+- `STDLIB-GAP-SPL-ITERATOR-FULL-API`
+- `STDLIB-GAP-SPL-CONTAINER-FULL-API`
+- `STDLIB-GAP-SPL-CONTAINER-NESTED-ARRAYACCESS`
+- `STDLIB-GAP-SPL-FILE-FULL-API`
+- `STDLIB-GAP-SPL-FILE-CSV-FLAGS`
+
+## Closed During Prompt 20
+
+- `SplFileInfo::getExtension()` now covers leading-dot basenames such as `.test`.
+- `json_encode(new SplFixedArray(...))` now emits array-shaped JSON instead of internal storage properties.
+- Userland classes can implement internal SPL interfaces such as `Countable`,
+  and `count($object)` dispatches to their `count()` method.
+- `iterator_count()` and `iterator_to_array()` now cover array inputs and the
+  existing Traversable/ArrayIterator MVP path.
 
 ## Next Step
 
-Build on stable object, array, iterator, and filesystem layers.
+Expand the selected manifests with upstream `ext/spl` tests one subarea at a time after each documented gap is closed.

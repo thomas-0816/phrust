@@ -1,0 +1,1 @@
+{"path":"tests/phpt/generated/spl.fixed-array/fixed-array-mvp.phpt","module":"spl.fixed-array","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-spl-v1","reason":"SplFixedArray MVP sizing, ArrayAccess, toArray, and foreach coverage"}

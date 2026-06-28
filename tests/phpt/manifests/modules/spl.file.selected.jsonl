@@ -1,0 +1,1 @@
+{"path":"tests/phpt/generated/spl.file/file-classes-mvp.phpt","module":"spl.file","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-spl-v1","reason":"SplFileInfo, SplFileObject, and SplTempFileObject MVP metadata and line iteration coverage"}

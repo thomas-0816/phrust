@@ -1,0 +1,1 @@
+{"path":"tests/phpt/generated/spl.object-storage/object-storage-mvp.phpt","module":"spl.object-storage","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-spl-v1","reason":"SplObjectStorage MVP object identity, offsetSet, offsetExists, offsetGet, offsetUnset, count, and iteration coverage"}

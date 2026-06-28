@@ -32,6 +32,11 @@ Once the manifest exists, `just phpt-verify-source-integrity` verifies:
 - `git -C <php-src> status --short` is empty when the source tree is a Git
   checkout.
 
+A small set of host-generated build artifacts can differ after a clean local
+PHP reference build because bison, re2c, dynasm, or configure output is
+toolchain- and platform-sensitive. The verifier reports these entries with an
+explicit `[skip]` line and keeps all other manifest entries strict.
+
 Before the manifest exists, the command still checks the php-src Git status and
 reports that hash verification is pending.
 

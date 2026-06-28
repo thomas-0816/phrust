@@ -1,0 +1,1 @@
+{"path":"tests/phpt/generated/spl.autoload/autoload-mvp.phpt","module":"spl.autoload","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-spl-v1","reason":"SPL autoload registration, order, class lookup, listing, and unregister coverage"}

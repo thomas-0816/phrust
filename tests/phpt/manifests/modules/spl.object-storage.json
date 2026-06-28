@@ -1,0 +1,16 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"spl.object-storage",
+  "priority":20,
+  "selected_manifest":"tests/phpt/manifests/modules/spl.object-storage.selected.jsonl",
+  "corpus_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["SplObjectStorage offsetSet, offsetExists, offsetGet, offsetUnset, count, foreach, and simple object identity keys"],
+  "non_scope":["info data edge cases","serialization","object-key bracket lvalue edge cases"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=spl.object-storage"],
+  "next_step":"Expand with upstream object storage fixtures after lvalue and serialization gaps close."
+}

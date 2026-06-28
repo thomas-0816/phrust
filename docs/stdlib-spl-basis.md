@@ -9,10 +9,12 @@ registry and exposes the Composer-facing SPL basis:
 - `spl_autoload_unregister`
 - `spl_autoload_functions`
 - `spl_autoload_call`
+- `iterator_count`
+- `iterator_to_array`
 - `spl_object_id`
 - `spl_object_hash`
 - `Traversable`, `Iterator`, `IteratorAggregate`, `ArrayAccess`, `Countable`,
-  and `Serializable`
+  `SeekableIterator`, `RecursiveIterator`, and `Serializable`
 - SPL `LogicException` and `RuntimeException` hierarchy classes
 
 Autoload stack state remains owned by the VM execution state. Runtime builtin
@@ -39,8 +41,11 @@ The MVP snapshots array/object sources into runtime iterator objects and support
 the methods required by Standard library foreach interop: `rewind()`, `valid()`,
 `current()`, `key()`, `next()`, `count()`, `getArrayCopy()`, and
 `AppendIterator::append()`/`addIterator()`. The VM recognizes these objects for
-foreach, `instanceof` checks against the relevant SPL interfaces/classes, and
-`count()` over Countable iterator MVP objects.
+foreach, `instanceof` checks against the relevant SPL interfaces/classes
+including `SeekableIterator`/`RecursiveIterator` where selected fixtures require
+them, `count()` over Countable iterator MVP objects, and MVP
+`iterator_count()`/`iterator_to_array()` support for arrays and the same
+Traversable object path.
 
 Work item adds Composer/framework-facing SPL container MVPs:
 
@@ -64,7 +69,7 @@ Work item adds SPL file class MVPs:
 - `SplFileObject`
 - `SplTempFileObject`
 
-`SplFileInfo` exposes path, basename, realpath, size, mtime, and simple file
+`SplFileInfo` exposes path, basename, realpath, size, mtime, and simple file/dir
 predicates through the VM's existing root-constrained filesystem capability
 policy. `SplFileObject` loads allowed local files into deterministic line
 storage and supports `fgets()`, `fgetcsv()` with a simple delimiter MVP,

@@ -9,8 +9,8 @@
   "fail_count":478,
   "bork_count":0,
   "known_failure_count":493,
-  "scope":["core SPL interfaces and common collections"],
+  "scope":["core SPL interfaces and common collections","Prompt 20 generated SPL MVP submodule fixtures"],
   "non_scope":["full SPL API parity"],
-  "target_gates":["nix develop -c just phpt-module MODULE=spl"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=spl"],
   "next_step":"Build on stable object, array, iterator, and filesystem layers."
 }

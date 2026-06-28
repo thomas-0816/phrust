@@ -1,0 +1,16 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"spl.array-object",
+  "priority":20,
+  "selected_manifest":"tests/phpt/manifests/modules/spl.array-object.selected.jsonl",
+  "corpus_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["ArrayObject ArrayAccess, Countable, foreach, getArrayCopy, exchangeArray, append, and offset operations"],
+  "non_scope":["flags","object property mode edge cases","serialization","nested by-reference ArrayAccess writes"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=spl.array-object"],
+  "next_step":"Add upstream ArrayObject edge fixtures when property-mode and serialization support exist."
+}

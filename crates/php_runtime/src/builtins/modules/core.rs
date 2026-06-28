@@ -1825,6 +1825,9 @@ pub(in crate::builtins::modules) fn php_value_to_json(
             }
         }
         Value::Object(object) => {
+            if let Some(json) = spl_fixed_array_to_json(&object, flags) {
+                return json;
+            }
             let mut json = JsonMap::new();
             for (name, value) in object.properties_snapshot() {
                 json.insert(name, php_value_to_json(&value, flags)?);
@@ -1837,6 +1840,42 @@ pub(in crate::builtins::modules) fn php_value_to_json(
         | Value::Callable(_)
         | Value::Reference(_) => Err(JSON_ERROR_SYNTAX),
     }
+}
+
+fn spl_fixed_array_to_json(object: &ObjectRef, flags: i64) -> Option<Result<JsonValue, i64>> {
+    if !object.class_name().eq_ignore_ascii_case("splfixedarray") {
+        return None;
+    }
+    let Some(Value::Array(entries)) = object.get_property("__entries") else {
+        return Some(Ok(JsonValue::Array(Vec::new())));
+    };
+
+    let mut indexed_entries = Vec::new();
+    for (_, entry) in entries.iter() {
+        let Value::Array(pair) = deref_value(entry) else {
+            continue;
+        };
+        let index = match pair.get(&ArrayKey::Int(0)).map(deref_value) {
+            Some(Value::Int(index)) if index >= 0 => index as usize,
+            _ => continue,
+        };
+        let value = pair.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
+        indexed_entries.push((index, value));
+    }
+
+    let size = indexed_entries
+        .iter()
+        .map(|(index, _)| *index)
+        .max()
+        .map_or(0, |index| index.saturating_add(1));
+    let mut elements = vec![JsonValue::Null; size];
+    for (index, value) in indexed_entries {
+        elements[index] = match php_value_to_json(&value, flags) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+    }
+    Some(Ok(JsonValue::Array(elements)))
 }
 
 pub(in crate::builtins::modules) fn json_to_php_value(

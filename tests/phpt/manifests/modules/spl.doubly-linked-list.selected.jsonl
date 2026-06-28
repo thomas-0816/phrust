@@ -1,0 +1,1 @@
+{"path":"tests/phpt/generated/spl.doubly-linked-list/linear-containers-mvp.phpt","module":"spl.doubly-linked-list","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-spl-v1","reason":"SplDoublyLinkedList, SplStack, and SplQueue MVP linear container behavior"}

@@ -2835,6 +2835,16 @@ impl Vm {
         if let Some(result) = self.try_execute_direct_count_array(name, &values, output) {
             return result;
         }
+        if let Some(result) =
+            self.try_execute_countable_object(name, &values, output, stack, state, compiled)
+        {
+            return result;
+        }
+        if let Some(result) =
+            self.try_execute_iterator_function(name, &values, output, stack, state, compiled)
+        {
+            return result;
+        }
         self.record_array_count_fast_path_if_applicable(name, &values);
         let values = match self
             .coerce_internal_builtin_string_args(name, values, compiled, output, stack, state)
@@ -2895,6 +2905,193 @@ impl Vm {
             output.clone(),
             Some(Value::Int(array.len() as i64)),
         ))
+    }
+
+    fn try_execute_countable_object(
+        &self,
+        name: &str,
+        values: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> Option<VmResult> {
+        if name != "count" || !(1..=2).contains(&values.len()) {
+            return None;
+        }
+        let Value::Object(object) = effective_value(&values[0]) else {
+            return None;
+        };
+        let class_name = object.class_name();
+        let is_countable = internal_spl_container_instanceof(&class_name, "Countable")
+            .or_else(|| internal_spl_iterator_instanceof(&class_name, "Countable"))
+            .unwrap_or(false)
+            || class_implements_in_state(
+                compiled,
+                state,
+                &class_name,
+                "Countable",
+                &mut Vec::new(),
+            )
+            .unwrap_or(false);
+        if !is_countable {
+            return None;
+        }
+        Some(self.call_object_method_callable(
+            compiled,
+            object,
+            "count",
+            Vec::new(),
+            None,
+            output,
+            stack,
+            state,
+        ))
+    }
+
+    fn try_execute_iterator_function(
+        &self,
+        name: &str,
+        values: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> Option<VmResult> {
+        match name {
+            "iterator_count" => {
+                Some(self.execute_iterator_count(values, output, stack, state, compiled))
+            }
+            "iterator_to_array" => {
+                Some(self.execute_iterator_to_array(values, output, stack, state, compiled))
+            }
+            _ => None,
+        }
+    }
+
+    fn execute_iterator_count(
+        &self,
+        values: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> VmResult {
+        if values.len() != 1 {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_ITERATOR_COUNT_ARITY: iterator_count expects exactly 1 argument, {} given",
+                    values.len()
+                ),
+            );
+        }
+        let mut iterator = match self.foreach_iterator_from_value(
+            compiled,
+            effective_value(&values[0]),
+            output,
+            stack,
+            state,
+        ) {
+            Ok(iterator) => {
+                let mut iterators = HashMap::new();
+                iterators.insert(RegId::new(0), iterator);
+                iterators
+            }
+            Err(result) => return result,
+        };
+        let mut count = 0_i64;
+        loop {
+            match self.next_foreach_value(
+                compiled,
+                output,
+                stack,
+                state,
+                &mut iterator,
+                RegId::new(0),
+                false,
+            ) {
+                Ok(Some(_)) => count += 1,
+                Ok(None) => return VmResult::success(output.clone(), Some(Value::Int(count))),
+                Err(result) => return result,
+            }
+        }
+    }
+
+    fn execute_iterator_to_array(
+        &self,
+        values: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> VmResult {
+        if !(1..=2).contains(&values.len()) {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_ITERATOR_TO_ARRAY_ARITY: iterator_to_array expects 1 or 2 arguments, {} given",
+                    values.len()
+                ),
+            );
+        }
+        let preserve_keys = match values.get(1) {
+            Some(value) => match to_bool(value) {
+                Ok(value) => value,
+                Err(message) => return self.runtime_error(output, compiled, stack, message),
+            },
+            None => true,
+        };
+        let mut iterator = match self.foreach_iterator_from_value(
+            compiled,
+            effective_value(&values[0]),
+            output,
+            stack,
+            state,
+        ) {
+            Ok(iterator) => {
+                let mut iterators = HashMap::new();
+                iterators.insert(RegId::new(0), iterator);
+                iterators
+            }
+            Err(result) => return result,
+        };
+        let mut result = PhpArray::new();
+        loop {
+            match self.next_foreach_value(
+                compiled,
+                output,
+                stack,
+                state,
+                &mut iterator,
+                RegId::new(0),
+                true,
+            ) {
+                Ok(Some((key, value))) => {
+                    if preserve_keys {
+                        let Some(key) = key else {
+                            result.append(value);
+                            continue;
+                        };
+                        let key = match array_key_from_value(&key) {
+                            Ok(key) => key,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        result.insert(key, value);
+                    } else {
+                        result.append(value);
+                    }
+                }
+                Ok(None) => return VmResult::success(output.clone(), Some(Value::Array(result))),
+                Err(result) => return result,
+            }
+        }
     }
 
     fn coerce_internal_builtin_string_args(
@@ -21437,6 +21634,12 @@ fn reflection_internal_class_object(class_name: &str) -> Result<ObjectRef, Strin
 
 fn internal_class_interfaces(class_name: &str) -> Vec<String> {
     match normalize_class_name(class_name).as_str() {
+        "iterator" | "iteratoraggregate" => {
+            ["Traversable"].into_iter().map(str::to_owned).collect()
+        }
+        "seekableiterator" | "recursiveiterator" => {
+            ["Iterator"].into_iter().map(str::to_owned).collect()
+        }
         "arrayobject" => [
             "IteratorAggregate",
             "ArrayAccess",
@@ -21446,7 +21649,17 @@ fn internal_class_interfaces(class_name: &str) -> Vec<String> {
         .into_iter()
         .map(str::to_owned)
         .collect(),
-        "arrayiterator" | "recursivearrayiterator" => [
+        "arrayiterator" => [
+            "SeekableIterator",
+            "ArrayAccess",
+            "Serializable",
+            "Countable",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        "recursivearrayiterator" => [
+            "RecursiveIterator",
             "SeekableIterator",
             "ArrayAccess",
             "Serializable",
@@ -22486,6 +22699,15 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
         if class.flags.is_interface {
             for interface in &class.interfaces {
                 let Some(parent) = compiled.lookup_class(interface) else {
+                    if is_internal_interface(interface) {
+                        continue;
+                    }
+                    if internal_class_kind(interface).is_some() {
+                        return Err(format!(
+                            "E_PHP_VM_INTERFACE_EXTENDS_CLASS: interface {} cannot extend non-interface {}",
+                            class.name, interface
+                        ));
+                    }
                     return Err(format!(
                         "E_PHP_VM_UNKNOWN_INTERFACE: interface {} extends missing interface {}",
                         class.name, interface
@@ -22525,6 +22747,16 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
 
         for interface in &class.interfaces {
             let Some(interface_class) = compiled.lookup_class(interface) else {
+                if is_internal_interface(interface) {
+                    validate_internal_interface_implementation(compiled, class, interface)?;
+                    continue;
+                }
+                if internal_class_kind(interface).is_some() {
+                    return Err(format!(
+                        "E_PHP_VM_IMPLEMENTS_NON_INTERFACE: class {} implements non-interface {}",
+                        class.name, interface
+                    ));
+                }
                 return Err(format!(
                     "E_PHP_VM_UNKNOWN_INTERFACE: class {} implements missing interface {}",
                     class.name, interface
@@ -22541,6 +22773,42 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
 
         if !class.flags.is_abstract {
             validate_no_unimplemented_abstract_methods(compiled, class)?;
+        }
+    }
+    Ok(())
+}
+
+fn internal_class_kind(class_name: &str) -> Option<php_std::ClassKind> {
+    php_std::ExtensionRegistry::standard_library()
+        .enabled_class(class_name)
+        .map(php_std::ClassDescriptor::kind)
+}
+
+fn is_internal_interface(class_name: &str) -> bool {
+    internal_class_kind(class_name) == Some(php_std::ClassKind::Interface)
+}
+
+fn validate_internal_interface_implementation(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+    interface_name: &str,
+) -> Result<(), String> {
+    for parent_name in internal_class_interfaces(interface_name) {
+        validate_internal_interface_implementation(compiled, class, &parent_name)?;
+    }
+    for expected in php_std::generated::arginfo::class_methods(interface_name) {
+        let resolved = lookup_method_in_hierarchy(compiled, class, expected.name, None)?
+            .ok_or_else(|| {
+                format!(
+                    "E_PHP_VM_INTERFACE_METHOD_MISSING: class {} must implement {}::{}",
+                    class.name, interface_name, expected.name
+                )
+            })?;
+        if resolved.method.flags.is_private || resolved.method.flags.is_protected {
+            return Err(format!(
+                "E_PHP_VM_INTERFACE_METHOD_VISIBILITY: class {} method {} must be public for interface {}",
+                class.name, expected.name, interface_name
+            ));
         }
     }
     Ok(())
@@ -22601,6 +22869,10 @@ fn validate_interface_implementation(
 ) -> Result<(), String> {
     for parent_name in &interface.interfaces {
         let Some(parent) = compiled.lookup_class(parent_name) else {
+            if is_internal_interface(parent_name) {
+                validate_internal_interface_implementation(compiled, class, parent_name)?;
+                continue;
+            }
             return Err(format!(
                 "E_PHP_VM_UNKNOWN_INTERFACE: interface {} extends missing interface {}",
                 interface.name, parent_name
@@ -23439,6 +23711,11 @@ fn interface_or_extends(
         return Ok(true);
     }
     let Some(interface) = compiled.lookup_class(&interface_name) else {
+        for parent in internal_class_interfaces(&interface_name) {
+            if interface_or_extends(compiled, &parent, &target_name, seen)? {
+                return Ok(true);
+            }
+        }
         return Ok(false);
     };
     if seen.iter().any(|name| name == &interface_name) {
@@ -24804,6 +25081,11 @@ fn internal_spl_iterator_instanceof(object_class: &str, target_class: &str) -> O
             object_class.as_str(),
             "arrayiterator" | "recursivearrayiterator"
         ),
+        "seekableiterator" => matches!(
+            object_class.as_str(),
+            "arrayiterator" | "recursivearrayiterator"
+        ),
+        "recursiveiterator" => object_class == "recursivearrayiterator",
         "appenditerator" => object_class == "appenditerator",
         "arrayiterator" => {
             object_class == "arrayiterator" || object_class == "recursivearrayiterator"
@@ -24967,6 +25249,10 @@ fn spl_iterator_class(class_name: &str) -> RuntimeClassEntry {
         "arrayiterator" | "recursivearrayiterator"
     ) {
         interfaces.push("ArrayAccess".to_owned());
+        interfaces.push("SeekableIterator".to_owned());
+    }
+    if normalized == "recursivearrayiterator" {
+        interfaces.push("RecursiveIterator".to_owned());
     }
     RuntimeClassEntry {
         name: normalize_class_name(class_name),
@@ -25645,6 +25931,9 @@ fn internal_spl_file_instanceof(object_class: &str, target_class: &str) -> Optio
         "traversable" | "iterator" => {
             matches!(object_class.as_str(), "splfileobject" | "spltempfileobject")
         }
+        "seekableiterator" | "recursiveiterator" => {
+            matches!(object_class.as_str(), "splfileobject" | "spltempfileobject")
+        }
         _ => false,
     })
 }
@@ -25727,6 +26016,15 @@ fn call_spl_file_method(
             }
             Ok(Value::string(base.into_bytes()))
         }
+        "getextension" => {
+            validate_spl_iterator_arg_count(&class_name, &args, 0, 0)?;
+            let base = spl_file_basename(&spl_file_path(object));
+            let extension = base
+                .rsplit_once('.')
+                .map(|(_, extension)| extension)
+                .unwrap_or("");
+            Ok(Value::string(extension.as_bytes().to_vec()))
+        }
         "getpath" => {
             validate_spl_iterator_arg_count(&class_name, &args, 0, 0)?;
             let path = spl_file_path(object);
@@ -25774,6 +26072,14 @@ fn call_spl_file_method(
                     .unwrap_or(false),
             ))
         }
+        "isdir" => {
+            validate_spl_iterator_arg_count(&class_name, &args, 0, 0)?;
+            Ok(Value::Bool(
+                spl_file_metadata(object, runtime_context)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false),
+            ))
+        }
         "isreadable" => {
             validate_spl_iterator_arg_count(&class_name, &args, 0, 0)?;
             let path = spl_file_resolve_path(&spl_file_path(object), runtime_context);
@@ -25788,6 +26094,12 @@ fn call_spl_file_method(
         }
         "eof" => {
             validate_spl_iterator_arg_count(&class_name, &args, 0, 0)?;
+            if normalized_class == "spltempfileobject"
+                && spl_position(object) == 0
+                && spl_file_content(object).is_empty()
+            {
+                return Ok(Value::Bool(false));
+            }
             Ok(Value::Bool(
                 spl_position(object) >= spl_file_lines(object).len(),
             ))
@@ -25859,7 +26171,12 @@ fn spl_file_class(class_name: &str) -> RuntimeClassEntry {
             _ => None,
         },
         interfaces: if matches!(normalized.as_str(), "splfileobject" | "spltempfileobject") {
-            vec!["Iterator".to_owned(), "Traversable".to_owned()]
+            vec![
+                "Iterator".to_owned(),
+                "Traversable".to_owned(),
+                "SeekableIterator".to_owned(),
+                "RecursiveIterator".to_owned(),
+            ]
         } else {
             Vec::new()
         },
@@ -27348,6 +27665,7 @@ fn class_implements_in_state(
     target_name: &str,
     seen: &mut Vec<String>,
 ) -> Result<bool, String> {
+    let target_name = normalize_class_name(target_name);
     let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
         return Ok(false);
     };
@@ -27366,7 +27684,7 @@ fn class_implements_in_state(
                 compiled,
                 state,
                 &interface,
-                target_name,
+                &target_name,
                 &mut Vec::new(),
             )?
         {
@@ -27375,7 +27693,7 @@ fn class_implements_in_state(
         }
     }
     if let Some(parent) = class.parent.as_deref()
-        && class_implements_in_state(compiled, state, parent, target_name, seen)?
+        && class_implements_in_state(compiled, state, parent, &target_name, seen)?
     {
         seen.pop();
         return Ok(true);
@@ -27392,10 +27710,16 @@ fn interface_extends_in_state(
     seen: &mut Vec<String>,
 ) -> Result<bool, String> {
     let interface_name = normalize_class_name(interface_name);
+    let target_name = normalize_class_name(target_name);
     if interface_name == target_name {
         return Ok(true);
     }
     let Some(interface) = lookup_class_in_state(compiled, state, &interface_name) else {
+        for parent in internal_class_interfaces(&interface_name) {
+            if interface_extends_in_state(compiled, state, &parent, &target_name, seen)? {
+                return Ok(true);
+            }
+        }
         return Ok(false);
     };
     if seen.iter().any(|name| name == &interface_name) {
@@ -27406,7 +27730,7 @@ fn interface_extends_in_state(
     }
     seen.push(interface_name);
     for parent in &interface.interfaces {
-        if interface_extends_in_state(compiled, state, parent, target_name, seen)? {
+        if interface_extends_in_state(compiled, state, parent, &target_name, seen)? {
             seen.pop();
             return Ok(true);
         }
@@ -38536,6 +38860,26 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     #[test]
+    fn spl_iterator_functions_cover_arrays_and_array_iterator_mvp() {
+        let result = execute_source(
+            r#"<?php
+            echo iterator_count([]), "|", iterator_count(["a" => 1, "b" => 2]), "|";
+            var_dump(iterator_to_array(["a" => 1, "b" => 2, 5 => 3]));
+            var_dump(iterator_to_array(["a" => 1, "b" => 2, 5 => 3], false));
+            $it = new ArrayIterator(["x" => 7, "y" => 8]);
+            echo iterator_count($it), "|";
+            var_dump(iterator_to_array($it));
+            "#,
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "0|2|array(3) {\n  [\"a\"]=>\n  int(1)\n  [\"b\"]=>\n  int(2)\n  [5]=>\n  int(3)\n}\narray(3) {\n  [0]=>\n  int(1)\n  [1]=>\n  int(2)\n  [2]=>\n  int(3)\n}\n2|array(2) {\n  [\"x\"]=>\n  int(7)\n  [\"y\"]=>\n  int(8)\n}\n"
+        );
+    }
+
+    #[test]
     fn spl_iterator_wrappers_limit_empty_and_append_iterate() {
         let result = execute_source(
             r#"<?php
@@ -38586,6 +38930,25 @@ echo perf_jit_unstable_types_debug(4), "\n";
             result.output.as_bytes(),
             b"recursive|array|iterator|traversable|countable|k=v"
         );
+    }
+
+    #[test]
+    fn spl_userland_countable_uses_internal_interface_metadata() {
+        let result = execute_source(
+            r#"<?php
+            class Counted implements Countable {
+                public function count(): int {
+                    return 4;
+                }
+            }
+            $value = new Counted();
+            echo ($value instanceof Countable) ? "countable|" : "no|";
+            echo count($value);
+            "#,
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"countable|4");
     }
 
     #[test]
@@ -38731,7 +39094,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(result.output.as_bytes(), b"php://temp|0|eof");
+        assert_eq!(result.output.as_bytes(), b"php://temp|0|data");
     }
 
     #[test]

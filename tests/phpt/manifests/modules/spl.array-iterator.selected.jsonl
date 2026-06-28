@@ -1,0 +1,1 @@
+{"path":"tests/phpt/generated/spl.array-iterator/iterator-mvps.phpt","module":"spl.array-iterator","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-spl-v1","reason":"ArrayIterator, IteratorIterator, RecursiveArrayIterator, LimitIterator, EmptyIterator, and AppendIterator MVP behavior"}
