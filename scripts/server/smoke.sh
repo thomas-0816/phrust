@@ -42,10 +42,16 @@ cat > "$docroot/query.php" <<'PHP'
 <?php
 echo $_GET["name"], "\n";
 PHP
+cat > "$docroot/preload.txt" <<'EOF'
+hello.php
+EOF
 
 "${CARGO_TARGET_DIR:-target}/debug/phrust-server" \
   --listen 127.0.0.1:0 \
   --docroot "$docroot" \
+  --script-cache-max-entries 8 \
+  --script-cache-preload "$docroot/preload.txt" \
+  --enable-cache-clear-endpoint \
   >"$log_file" 2>&1 &
 server_pid="$!"
 
@@ -78,5 +84,18 @@ assert_body '/healthz' 'ok'
 assert_body '/static.txt' 'static smoke'
 assert_body '/hello.php' 'hello'
 assert_body '/query.php?name=phrust' 'phrust'
+
+metrics="$(curl -fsS "http://$address/__phrust/metrics")"
+if ! grep -q '^phrust_server_script_cache_preload_successes_total 1$' <<<"$metrics"; then
+  printf '%s\n' '[fail] metrics did not report one script-cache preload success'
+  printf '%s\n' "$metrics"
+  exit 1
+fi
+
+clear_body="$(curl -fsS -X POST "http://$address/__phrust/cache/clear")"
+if [[ "$clear_body" != 'cache cleared' ]]; then
+  printf '[fail] cache clear expected %q got %q\n' 'cache cleared' "$clear_body"
+  exit 1
+fi
 
 printf '%s\n' '[ok] phrust-server smoke passed'

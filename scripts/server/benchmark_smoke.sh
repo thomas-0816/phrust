@@ -27,6 +27,8 @@ PHP
 "${CARGO_TARGET_DIR:-target}/release/phrust-server" \
   --listen 127.0.0.1:0 \
   --docroot "$docroot" \
+  --script-cache-max-entries 64 \
+  --script-cache-check-interval-ms 50 \
   >"$log_file" 2>&1 &
 server_pid="$!"
 

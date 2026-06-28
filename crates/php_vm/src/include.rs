@@ -1,12 +1,12 @@
 //! Local include/require loader for the runtime VM MVP.
 
 use crate::compiled_unit::CompiledUnit;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::UNIX_EPOCH;
@@ -42,6 +42,7 @@ pub struct ResolvedIncludePath {
 pub struct IncludeCache {
     resolution_shards: Vec<Mutex<HashMap<IncludeResolutionKey, ResolvedIncludePath>>>,
     compile_shards: Vec<Mutex<HashMap<CompiledIncludeKey, Arc<CompiledUnit>>>>,
+    compile_locks: Vec<IncludeCompileLockShard>,
     stats: IncludeCacheCounters,
 }
 
@@ -56,6 +57,9 @@ impl IncludeCache {
                 .collect(),
             compile_shards: (0..shard_count)
                 .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
+            compile_locks: (0..shard_count)
+                .map(|_| IncludeCompileLockShard::default())
                 .collect(),
             stats: IncludeCacheCounters::default(),
         }
@@ -106,38 +110,72 @@ impl IncludeCache {
         loader: &IncludeLoader,
         resolved: &ResolvedIncludePath,
     ) -> Result<Arc<CompiledUnit>, String> {
-        let key = CompiledIncludeKey::new(resolved);
-        let shard_index = self.compile_shard_index(&key);
-        {
-            let mut shard = self.compile_shards[shard_index]
-                .lock()
-                .expect("compiled include cache shard mutex poisoned");
-            let stale = remove_stale_compiled_include_entries(&mut shard, &key);
-            if stale > 0 {
-                self.stats
-                    .stale_invalidations
-                    .fetch_add(stale as u64, Ordering::Relaxed);
-            }
-            if let Some(compiled) = shard.get(&key) {
-                self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
-                return Ok(Arc::clone(compiled));
-            }
-        }
-        self.stats.compile_misses.fetch_add(1, Ordering::Relaxed);
-        let compiled = match compile_include(loader, resolved) {
-            Ok(compiled) => {
-                let compiled = Arc::new(compiled);
+        loop {
+            let key = CompiledIncludeKey::new(resolved);
+            let shard_index = self.compile_shard_index(&key);
+            {
                 let mut shard = self.compile_shards[shard_index]
                     .lock()
                     .expect("compiled include cache shard mutex poisoned");
-                Ok(Arc::clone(shard.entry(key).or_insert(compiled)))
+                let stale = remove_stale_compiled_include_entries(&mut shard, &key);
+                if stale > 0 {
+                    self.stats
+                        .stale_invalidations
+                        .fetch_add(stale as u64, Ordering::Relaxed);
+                }
+                if let Some(compiled) = shard.get(&key) {
+                    self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(Arc::clone(compiled));
+                }
             }
-            Err(message) => {
-                self.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
-                Err(message)
+
+            let Some(_permit) = self.try_begin_compile(&resolved.canonical_path) else {
+                self.wait_for_compile(&resolved.canonical_path);
+                continue;
+            };
+
+            {
+                let shard = self.compile_shards[shard_index]
+                    .lock()
+                    .expect("compiled include cache shard mutex poisoned");
+                if let Some(compiled) = shard.get(&key) {
+                    self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(Arc::clone(compiled));
+                }
             }
-        }?;
-        Ok(compiled)
+
+            self.stats.compile_misses.fetch_add(1, Ordering::Relaxed);
+            let compiled = match compile_include(loader, resolved) {
+                Ok(compiled) => {
+                    let compiled = Arc::new(compiled);
+                    let mut shard = self.compile_shards[shard_index]
+                        .lock()
+                        .expect("compiled include cache shard mutex poisoned");
+                    Ok(Arc::clone(shard.entry(key).or_insert(compiled)))
+                }
+                Err(message) => {
+                    self.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
+                    Err(message)
+                }
+            }?;
+            return Ok(compiled);
+        }
+    }
+
+    /// Clears cached include resolutions and compiled include units.
+    pub fn clear(&self) {
+        for shard in &self.resolution_shards {
+            shard
+                .lock()
+                .expect("include resolution cache shard mutex poisoned")
+                .clear();
+        }
+        for shard in &self.compile_shards {
+            shard
+                .lock()
+                .expect("compiled include cache shard mutex poisoned")
+                .clear();
+        }
     }
 
     /// Returns current cache counters.
@@ -163,6 +201,41 @@ impl IncludeCache {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
         (hasher.finish() as usize) % self.compile_shards.len()
+    }
+
+    fn compile_lock_shard_index(&self, path: &Path) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut hasher);
+        (hasher.finish() as usize) % self.compile_locks.len()
+    }
+
+    fn try_begin_compile(&self, path: &Path) -> Option<IncludeCompilePermit<'_>> {
+        let shard = &self.compile_locks[self.compile_lock_shard_index(path)];
+        let mut in_progress = shard
+            .in_progress
+            .lock()
+            .expect("include compile lock shard mutex poisoned");
+        if !in_progress.insert(path.to_path_buf()) {
+            return None;
+        }
+        Some(IncludeCompilePermit {
+            shard,
+            path: path.to_path_buf(),
+        })
+    }
+
+    fn wait_for_compile(&self, path: &Path) {
+        let shard = &self.compile_locks[self.compile_lock_shard_index(path)];
+        let mut in_progress = shard
+            .in_progress
+            .lock()
+            .expect("include compile lock shard mutex poisoned");
+        while in_progress.contains(path) {
+            in_progress = shard
+                .condvar
+                .wait(in_progress)
+                .expect("include compile lock shard mutex poisoned");
+        }
     }
 }
 
@@ -191,6 +264,29 @@ struct IncludeCacheCounters {
     compile_misses: AtomicU64,
     stale_invalidations: AtomicU64,
     compile_errors: AtomicU64,
+}
+
+#[derive(Debug, Default)]
+struct IncludeCompileLockShard {
+    in_progress: Mutex<HashSet<PathBuf>>,
+    condvar: Condvar,
+}
+
+struct IncludeCompilePermit<'a> {
+    shard: &'a IncludeCompileLockShard,
+    path: PathBuf,
+}
+
+impl Drop for IncludeCompilePermit<'_> {
+    fn drop(&mut self) {
+        let mut in_progress = self
+            .shard
+            .in_progress
+            .lock()
+            .expect("include compile lock shard mutex poisoned");
+        in_progress.remove(&self.path);
+        self.shard.condvar.notify_all();
+    }
 }
 
 /// Root-constrained local include loader.

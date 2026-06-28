@@ -98,6 +98,8 @@ struct ServerMetrics {
     upload_files_rejected: AtomicU64,
     execution_timeouts: AtomicU64,
     execution_deadline_disabled: AtomicU64,
+    script_cache_preload_successes: AtomicU64,
+    script_cache_preload_failures: AtomicU64,
 }
 
 impl ServerMetrics {
@@ -115,6 +117,14 @@ impl ServerMetrics {
         cache: php_executor::CompiledScriptCacheStats,
         include_cache: IncludeCacheStats,
     ) -> String {
+        let shard_entries = cache
+            .entries_by_shard
+            .iter()
+            .enumerate()
+            .map(|(shard, entries)| {
+                format!("phrust_server_script_cache_shard_entries{{shard=\"{shard}\"}} {entries}\n")
+            })
+            .collect::<String>();
         format!(
             "# phrust-server MVP internal metrics\n\
 phrust_server_requests_total {}\n\
@@ -136,6 +146,11 @@ phrust_server_script_cache_misses_total {}\n\
 phrust_server_script_cache_stale_invalidations_total {}\n\
 phrust_server_script_cache_compile_errors_total {}\n\
 phrust_server_script_cache_entries {}\n\
+phrust_server_script_cache_evictions_total {}\n\
+phrust_server_script_cache_compile_in_progress {}\n\
+{}\
+phrust_server_script_cache_preload_successes_total {}\n\
+phrust_server_script_cache_preload_failures_total {}\n\
 phrust_server_include_resolution_hits_total {}\n\
 phrust_server_include_resolution_misses_total {}\n\
 phrust_server_include_compile_hits_total {}\n\
@@ -161,6 +176,11 @@ phrust_server_include_compile_errors_total {}\n",
             cache.stale_invalidations,
             cache.compile_errors,
             cache.entries,
+            cache.evictions,
+            cache.compile_in_progress,
+            shard_entries,
+            self.script_cache_preload_successes.load(Ordering::Relaxed),
+            self.script_cache_preload_failures.load(Ordering::Relaxed),
             include_cache.resolution_hits,
             include_cache.resolution_misses,
             include_cache.compile_hits,
@@ -175,6 +195,7 @@ phrust_server_include_compile_errors_total {}\n",
 pub enum ServerError {
     Config(ConfigError),
     Io(std::io::Error),
+    Preload(String),
 }
 
 impl fmt::Display for ServerError {
@@ -182,6 +203,7 @@ impl fmt::Display for ServerError {
         match self {
             Self::Config(error) => write!(f, "{error}"),
             Self::Io(error) => write!(f, "{error}"),
+            Self::Preload(error) => write!(f, "{error}"),
         }
     }
 }
@@ -204,6 +226,8 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let docroot = config.validated_docroot()?;
     let listener = TcpListener::bind(config.listen).await?;
     let local_addr = listener.local_addr()?;
+    let script_cache_preload = config.script_cache_preload.clone();
+    let strict_preload = config.strict_preload;
     let session_store = Arc::new(SessionStore::new(config.session_save_path));
     if config.sessions_enabled {
         session_store
@@ -218,6 +242,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             index: config.index,
             front_controller: config.front_controller,
             metrics_endpoint_enabled: config.metrics_endpoint_enabled,
+            cache_clear_endpoint_enabled: config.cache_clear_endpoint_enabled,
         },
         max_body_bytes: config.max_body_bytes,
         multipart_config: MultipartConfig {
@@ -233,7 +258,11 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         max_in_flight: config.max_in_flight,
         metrics: Arc::new(ServerMetrics::default()),
         script_cache: Arc::new(if config.script_cache_enabled {
-            CompiledScriptCache::new(config.script_cache_shards)
+            CompiledScriptCache::new_with_limits(
+                config.script_cache_shards,
+                config.script_cache_max_entries,
+                Duration::from_millis(config.script_cache_check_interval_ms),
+            )
         } else {
             CompiledScriptCache::disabled()
         }),
@@ -247,7 +276,73 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         session_lock: Arc::new(Mutex::new(())),
         local_addr,
     });
+    preload_script_cache(&state, script_cache_preload.as_deref(), strict_preload)?;
     serve_until_shutdown(listener, state).await;
+    Ok(())
+}
+
+fn preload_script_cache(
+    state: &AppState,
+    preload_file: Option<&Path>,
+    strict: bool,
+) -> Result<(), ServerError> {
+    let Some(preload_file) = preload_file else {
+        return Ok(());
+    };
+    let contents = match std::fs::read_to_string(preload_file) {
+        Ok(contents) => contents,
+        Err(error) => {
+            state
+                .metrics
+                .script_cache_preload_failures
+                .fetch_add(1, Ordering::Relaxed);
+            let message = format!(
+                "script cache preload file `{}` cannot be read: {error}",
+                preload_file.display()
+            );
+            if strict {
+                return Err(ServerError::Preload(message));
+            }
+            warn!("{message}");
+            return Ok(());
+        }
+    };
+    for (line_index, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let raw_path = PathBuf::from(trimmed);
+        let script_path = if raw_path.is_absolute() {
+            raw_path
+        } else {
+            state.route_config.docroot.join(raw_path)
+        };
+        match state.compile_script(&script_path) {
+            Ok(_) => {
+                state
+                    .metrics
+                    .script_cache_preload_successes
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) => {
+                state
+                    .metrics
+                    .script_cache_preload_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                let message = format!(
+                    "script cache preload entry {} in `{}` failed for `{}`: {error:?}",
+                    line_index + 1,
+                    preload_file.display(),
+                    script_path.display()
+                );
+                if strict {
+                    return Err(ServerError::Preload(message));
+                }
+                warn!("{message}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -335,6 +430,7 @@ async fn handle(
             ),
             "text/plain; charset=UTF-8",
         ),
+        ResolvedRoute::CacheClear => clear_cache_response(&state, peer),
         ResolvedRoute::StaticFile { path, metadata } => {
             state
                 .metrics
@@ -371,6 +467,15 @@ async fn handle(
     };
     state.metrics.record_response(response.status());
     response
+}
+
+fn clear_cache_response(state: &AppState, peer: SocketAddr) -> Response<ResponseBody> {
+    if !peer.ip().is_loopback() {
+        return response::text(StatusCode::FORBIDDEN, "forbidden\n");
+    }
+    state.script_cache.clear();
+    state.include_cache.clear();
+    response::text(StatusCode::OK, "cache cleared\n")
 }
 
 struct PartsAndBody {
@@ -902,35 +1007,7 @@ mod tests {
         let fixture = ServerCacheFixture::new();
         fixture.write("<?php echo \"cached\";");
         let cache = Arc::new(CompiledScriptCache::new(1));
-        let state = AppState {
-            route_config: RouteConfig {
-                docroot: fixture.root.clone(),
-                index: "index.php".to_string(),
-                front_controller: None,
-                metrics_endpoint_enabled: true,
-            },
-            max_body_bytes: 1024,
-            multipart_config: MultipartConfig {
-                upload_temp_dir: fixture.root.join("uploads"),
-                max_upload_files: 32,
-                max_upload_file_bytes: 1024,
-            },
-            request_timeout: Duration::from_secs(30),
-            execution_time_limit: Some(Duration::from_secs(30)),
-            in_flight: Arc::new(Semaphore::new(1)),
-            max_in_flight: 1,
-            metrics: Arc::new(ServerMetrics::default()),
-            script_cache: Arc::clone(&cache),
-            include_cache: Arc::new(IncludeCache::new(1)),
-            session_config: SessionConfig {
-                enabled: false,
-                cookie_name: "PHPSESSID".to_string(),
-                cookie_path: "/".to_string(),
-            },
-            session_store: Arc::new(SessionStore::new(fixture.root.join("sessions"))),
-            session_lock: Arc::new(Mutex::new(())),
-            local_addr: "127.0.0.1:8080".parse().expect("local addr"),
-        };
+        let state = test_state(&fixture, Arc::clone(&cache), false);
 
         let first = state
             .compile_script(&fixture.path)
@@ -943,6 +1020,107 @@ mod tests {
         assert!(second.hit);
         assert_eq!(cache.cache_stats().hits, 1);
         assert_eq!(cache.cache_stats().misses, 1);
+    }
+
+    #[test]
+    fn preload_script_cache_compiles_entries_and_reports_metrics() {
+        let fixture = ServerCacheFixture::new();
+        let first = fixture.write_named("first.php", "<?php echo \"first\";");
+        let second = fixture.write_named("second.php", "<?php echo \"second\";");
+        let preload = fixture.root.join("preload.txt");
+        std::fs::write(&preload, "first.php\nsecond.php\n").expect("write preload list");
+        let cache = Arc::new(CompiledScriptCache::new_with_limits(2, 8, Duration::ZERO));
+        let state = test_state(&fixture, Arc::clone(&cache), false);
+
+        preload_script_cache(&state, Some(&preload), true).expect("preload scripts");
+
+        let stats = cache.cache_stats();
+        assert_eq!(stats.entries, 2);
+        assert_eq!(
+            state
+                .metrics
+                .script_cache_preload_successes
+                .load(Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            state
+                .metrics
+                .script_cache_preload_failures
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert!(state.compile_script(&first).expect("first cached").hit);
+        assert!(state.compile_script(&second).expect("second cached").hit);
+    }
+
+    #[test]
+    fn clear_cache_response_removes_script_cache_entries() {
+        let fixture = ServerCacheFixture::new();
+        fixture.write("<?php echo \"clear\";");
+        let cache = Arc::new(CompiledScriptCache::new(1));
+        let state = test_state(&fixture, Arc::clone(&cache), true);
+        state
+            .compile_script(&fixture.path)
+            .expect("compile before clear");
+        assert_eq!(cache.cache_stats().entries, 1);
+
+        let response =
+            clear_cache_response(&state, "127.0.0.1:45000".parse().expect("loopback peer"));
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(cache.cache_stats().entries, 0);
+    }
+
+    #[test]
+    fn clear_cache_response_rejects_non_loopback_peers() {
+        let fixture = ServerCacheFixture::new();
+        let cache = Arc::new(CompiledScriptCache::new(1));
+        let state = test_state(&fixture, cache, true);
+
+        let response = clear_cache_response(
+            &state,
+            "192.0.2.10:45000".parse().expect("non-loopback peer"),
+        );
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    fn test_state(
+        fixture: &ServerCacheFixture,
+        cache: Arc<CompiledScriptCache>,
+        cache_clear_endpoint_enabled: bool,
+    ) -> AppState {
+        AppState {
+            route_config: RouteConfig {
+                docroot: fixture.root.clone(),
+                index: "index.php".to_string(),
+                front_controller: None,
+                metrics_endpoint_enabled: true,
+                cache_clear_endpoint_enabled,
+            },
+            max_body_bytes: 1024,
+            multipart_config: MultipartConfig {
+                upload_temp_dir: fixture.root.join("uploads"),
+                max_upload_files: 32,
+                max_upload_file_bytes: 1024,
+            },
+            request_timeout: Duration::from_secs(30),
+            execution_time_limit: Some(Duration::from_secs(30)),
+            in_flight: Arc::new(Semaphore::new(1)),
+            max_in_flight: 1,
+            metrics: Arc::new(ServerMetrics::default()),
+            script_cache: cache,
+            include_cache: Arc::new(IncludeCache::new(1)),
+            session_config: SessionConfig {
+                enabled: false,
+                cookie_name: "PHPSESSID".to_string(),
+                cookie_path: "/".to_string(),
+            },
+            session_store: Arc::new(SessionStore::new(fixture.root.join("sessions"))),
+            session_lock: Arc::new(Mutex::new(())),
+            local_addr: "127.0.0.1:8080".parse().expect("local addr"),
+        }
     }
 
     struct ServerCacheFixture {
@@ -967,6 +1145,12 @@ mod tests {
 
         fn write(&self, source: &str) {
             std::fs::write(&self.path, source).expect("write server cache fixture");
+        }
+
+        fn write_named(&self, relative: &str, source: &str) -> PathBuf {
+            let path = self.root.join(relative);
+            std::fs::write(&path, source).expect("write server cache fixture");
+            path
         }
     }
 

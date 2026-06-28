@@ -11,6 +11,8 @@ const DEFAULT_MAX_UPLOAD_FILES: usize = 32;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_EXECUTION_MS: u64 = 30_000;
 const DEFAULT_SCRIPT_CACHE_SHARDS: usize = 16;
+const DEFAULT_SCRIPT_CACHE_MAX_ENTRIES: usize = 4096;
+const DEFAULT_SCRIPT_CACHE_CHECK_INTERVAL_MS: u64 = 0;
 const DEFAULT_SESSION_COOKIE_NAME: &str = "PHPSESSID";
 const DEFAULT_SESSION_COOKIE_PATH: &str = "/";
 
@@ -35,6 +37,11 @@ pub struct ServerConfig {
     pub metrics_endpoint_enabled: bool,
     pub script_cache_enabled: bool,
     pub script_cache_shards: usize,
+    pub script_cache_max_entries: usize,
+    pub script_cache_preload: Option<PathBuf>,
+    pub script_cache_check_interval_ms: u64,
+    pub strict_preload: bool,
+    pub cache_clear_endpoint_enabled: bool,
     pub help: bool,
 }
 
@@ -88,6 +95,11 @@ impl ServerConfig {
         let mut metrics_endpoint_enabled = true;
         let mut script_cache_enabled = true;
         let mut script_cache_shards = DEFAULT_SCRIPT_CACHE_SHARDS;
+        let mut script_cache_max_entries = DEFAULT_SCRIPT_CACHE_MAX_ENTRIES;
+        let mut script_cache_preload = None;
+        let mut script_cache_check_interval_ms = DEFAULT_SCRIPT_CACHE_CHECK_INTERVAL_MS;
+        let mut strict_preload = false;
+        let mut cache_clear_endpoint_enabled = false;
         let mut help = false;
         let mut args = args.into_iter().map(Into::into);
 
@@ -151,6 +163,19 @@ impl ServerConfig {
                     script_cache_shards =
                         parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
                 }
+                "--script-cache-max-entries" => {
+                    script_cache_max_entries =
+                        parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                "--script-cache-preload" => {
+                    script_cache_preload = Some(PathBuf::from(required_value(&arg, &mut args)?));
+                }
+                "--script-cache-check-interval-ms" => {
+                    script_cache_check_interval_ms =
+                        parse_nonnegative_u64(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                "--strict-preload" => strict_preload = true,
+                "--enable-cache-clear-endpoint" => cache_clear_endpoint_enabled = true,
                 _ if arg.starts_with('-') => {
                     return Err(ConfigError::new(format!("unknown flag `{arg}`")));
                 }
@@ -179,6 +204,11 @@ impl ServerConfig {
                 metrics_endpoint_enabled,
                 script_cache_enabled,
                 script_cache_shards,
+                script_cache_max_entries,
+                script_cache_preload,
+                script_cache_check_interval_ms,
+                strict_preload,
+                cache_clear_endpoint_enabled,
                 help,
             });
         }
@@ -204,6 +234,11 @@ impl ServerConfig {
             metrics_endpoint_enabled,
             script_cache_enabled,
             script_cache_shards,
+            script_cache_max_entries,
+            script_cache_preload,
+            script_cache_check_interval_ms,
+            strict_preload,
+            cache_clear_endpoint_enabled,
             help,
         })
     }
@@ -231,6 +266,11 @@ Options:\n\
   --disable-metrics-endpoint   disable GET /__phrust/metrics\n\
   --no-script-cache            disable process-local compiled script cache\n\
   --script-cache-shards <n>    compiled script cache shard count (default: 16)\n\
+  --script-cache-max-entries <n> maximum compiled script cache entries (default: 4096)\n\
+  --script-cache-preload <file> preload newline-delimited script paths at startup\n\
+  --script-cache-check-interval-ms <n> skip stat checks for this many milliseconds (default: 0)\n\
+  --strict-preload             fail startup when preload entries cannot compile\n\
+  --enable-cache-clear-endpoint enable loopback-only POST /__phrust/cache/clear\n\
   --help                       show this help\n"
     }
 
@@ -287,6 +327,12 @@ fn parse_positive_u64(flag: &str, value: &str) -> Result<u64, ConfigError> {
         )));
     }
     Ok(parsed)
+}
+
+fn parse_nonnegative_u64(flag: &str, value: &str) -> Result<u64, ConfigError> {
+    value
+        .parse::<u64>()
+        .map_err(|error| ConfigError::new(format!("invalid {flag} `{value}`: {error}")))
 }
 
 fn validate_index(index: &str) -> Result<(), ConfigError> {
@@ -372,6 +418,11 @@ mod tests {
         assert!(config.metrics_endpoint_enabled);
         assert!(config.script_cache_enabled);
         assert_eq!(config.script_cache_shards, 16);
+        assert_eq!(config.script_cache_max_entries, 4096);
+        assert_eq!(config.script_cache_preload, None);
+        assert_eq!(config.script_cache_check_interval_ms, 0);
+        assert!(!config.strict_preload);
+        assert!(!config.cache_clear_endpoint_enabled);
         assert!(config.front_controller.is_none());
         assert!(!config.help);
         assert!(config.max_in_flight > 0);
@@ -414,6 +465,14 @@ mod tests {
             "--no-script-cache",
             "--script-cache-shards",
             "3",
+            "--script-cache-max-entries",
+            "64",
+            "--script-cache-preload",
+            "preload.txt",
+            "--script-cache-check-interval-ms",
+            "25",
+            "--strict-preload",
+            "--enable-cache-clear-endpoint",
         ])
         .unwrap();
 
@@ -435,6 +494,14 @@ mod tests {
         assert!(!config.metrics_endpoint_enabled);
         assert!(!config.script_cache_enabled);
         assert_eq!(config.script_cache_shards, 3);
+        assert_eq!(config.script_cache_max_entries, 64);
+        assert_eq!(
+            config.script_cache_preload,
+            Some(PathBuf::from("preload.txt"))
+        );
+        assert_eq!(config.script_cache_check_interval_ms, 25);
+        assert!(config.strict_preload);
+        assert!(config.cache_clear_endpoint_enabled);
     }
 
     #[test]
@@ -507,6 +574,23 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "--max-execution-ms must be greater than zero"
+        );
+
+        let error = ServerConfig::parse_from(["--docroot", "public", "--script-cache-shards", "0"])
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "--script-cache-shards must be greater than zero"
+        );
+
+        let error =
+            ServerConfig::parse_from(["--docroot", "public", "--script-cache-max-entries", "0"])
+                .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "--script-cache-max-entries must be greater than zero"
         );
     }
 

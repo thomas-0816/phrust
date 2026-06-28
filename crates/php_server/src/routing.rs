@@ -9,12 +9,14 @@ pub struct RouteConfig {
     pub index: String,
     pub front_controller: Option<PathBuf>,
     pub metrics_endpoint_enabled: bool,
+    pub cache_clear_endpoint_enabled: bool,
 }
 
 #[derive(Clone, Debug)]
 pub enum ResolvedRoute {
     Health,
     Metrics,
+    CacheClear,
     StaticFile {
         path: PathBuf,
         metadata: Metadata,
@@ -39,6 +41,16 @@ pub fn resolve_route(method: &str, path: &str, config: &RouteConfig) -> Resolved
         }
         return if method == "GET" {
             ResolvedRoute::Metrics
+        } else {
+            ResolvedRoute::MethodNotAllowed
+        };
+    }
+    if path == "/__phrust/cache/clear" {
+        if !config.cache_clear_endpoint_enabled {
+            return ResolvedRoute::NotFound;
+        }
+        return if method == "POST" {
+            ResolvedRoute::CacheClear
         } else {
             ResolvedRoute::MethodNotAllowed
         };
@@ -300,6 +312,36 @@ mod tests {
     }
 
     #[test]
+    fn hides_cache_clear_endpoint_by_default() {
+        let fixture = Fixture::new();
+
+        assert!(matches!(
+            resolve_route(
+                "POST",
+                "/__phrust/cache/clear",
+                &fixture.config("index.html")
+            ),
+            ResolvedRoute::NotFound
+        ));
+    }
+
+    #[test]
+    fn maps_cache_clear_endpoint_when_enabled() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config("index.html");
+        config.cache_clear_endpoint_enabled = true;
+
+        assert!(matches!(
+            resolve_route("POST", "/__phrust/cache/clear", &config),
+            ResolvedRoute::CacheClear
+        ));
+        assert!(matches!(
+            resolve_route("GET", "/__phrust/cache/clear", &config),
+            ResolvedRoute::MethodNotAllowed
+        ));
+    }
+
+    #[test]
     fn maps_front_controller_for_missing_path() {
         let fixture = Fixture::new();
         fixture.write("index.php", "<?php echo \"front\";");
@@ -337,6 +379,7 @@ mod tests {
                 index: index.to_string(),
                 front_controller: None,
                 metrics_endpoint_enabled: true,
+                cache_clear_endpoint_enabled: false,
             }
         }
     }

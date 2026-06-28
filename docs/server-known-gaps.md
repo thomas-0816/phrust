@@ -13,8 +13,10 @@ Known gaps:
   `upload` strict, Prompt 03 added upload movement builtins, Prompt 04 made
   `cookie` strict, Prompt 05 made `session` strict, Prompt 06 made
   `output-buffer` strict, and Prompt 07 added cooperative PHP execution
-  deadlines. Future sections remain explicit skips until their owning
-  implementation prompts make them strict.
+  deadlines, Prompt 08 added shared include caching, and Prompt 09 added
+  bounded script-cache controls plus local cache clearing. Future sections
+  remain explicit skips until their owning implementation prompts make them
+  strict.
 - Multipart form uploads populate `$_POST` fields and `$_FILES` metadata,
   including scalar fields and `files[]`-style arrays. `is_uploaded_file()` and
   `move_uploaded_file()` are implemented for request-local uploads.
@@ -32,7 +34,9 @@ Known gaps:
 - Static file serving is simple in-memory response construction; sendfile and
   static streaming are not optimized yet.
 - The compiled script cache is process-local only.
-- There is no cross-process cache sharing or cache invalidation protocol.
+- Cache invalidation is local to one process through an explicitly enabled
+  loopback-only admin endpoint; there is no cross-process cache sharing or
+  invalidation protocol.
 - The server handles a bounded in-flight request set, but it is not a complete
   production process manager.
 - Include/require resolution is limited to deterministic allowed roots derived

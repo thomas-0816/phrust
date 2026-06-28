@@ -125,6 +125,38 @@ Web requests allow includes under the public docroot and its parent app root so
 compatibility fixtures can keep non-public helpers outside `public/`. Compiled
 include artifacts remain in memory only and are never serialized to disk.
 
+## Script Cache Controls
+
+The server owns a bounded process-local compiled script cache for request entry
+scripts. It is configured with `--script-cache-shards` and
+`--script-cache-max-entries`; entries are distributed across shards and each
+shard evicts approximately least-recently-used entries when it exceeds its
+share of the configured limit. The cache key includes the canonical path,
+source fingerprint, source hash, source path, optimization level, and compiler
+fingerprint.
+
+By default the cache checks file metadata on every lookup so local development
+sees edits immediately. Operators can set
+`--script-cache-check-interval-ms <n>` to skip repeated stat checks for hot
+entries during that interval. Concurrent requests for the same missing script
+share a per-path compile guard so only one request compiles the miss while the
+others wait for the populated entry.
+
+`--script-cache-preload <file>` reads a newline-delimited list of absolute
+paths or docroot-relative paths at startup and compiles those scripts through
+the same cache path as requests. Blank lines and `#` comments are ignored.
+Preload failures warn and continue by default; `--strict-preload` turns preload
+read or compile failures into startup failures.
+
+Local cache invalidation is disabled by default. When explicitly enabled with
+`--enable-cache-clear-endpoint`, `POST /__phrust/cache/clear` clears process
+local entry-script and include caches, and the handler still rejects
+non-loopback peers. There is no remote or cross-process invalidation protocol.
+
+Metrics expose script cache hits, misses, entries, entries by shard, stale
+invalidations, compile errors, evictions, in-progress compiles, and preload
+success/failure totals under `/__phrust/metrics`.
+
 ## Expected Acceptance Commands
 
 Prompt 00 baseline:
