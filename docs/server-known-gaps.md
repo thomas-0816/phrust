@@ -5,22 +5,25 @@ through the phrust lexer, parser, frontend, runtime, VM, and request-local HTTP
 context; it is not an FPM, FastCGI, CGI, Apache module, or external PHP process
 adapter.
 
-Known gaps:
+Implemented Wave 2 surface:
 
-- Wave 2 compatibility fixtures and `server-compat-smoke` now exist as the
-  incremental harness for closing these gaps. Prompt 00 made `static` strict,
-  Prompt 01 made URL-encoded `input` strict, Prompt 02 made scalar multipart
-  `upload` strict, Prompt 03 added upload movement builtins, Prompt 04 made
-  `cookie` strict, Prompt 05 made `session` strict, Prompt 06 made
-  `output-buffer` strict, and Prompt 07 added cooperative PHP execution
-  deadlines, Prompt 08 added shared include caching, and Prompt 09 added
-  bounded script-cache controls plus local cache clearing. Prompt 10 replaced
-  the MVP static path with streaming, validators, byte ranges, and
-  precompressed sidecars. Future sections remain explicit skips until their
-  owning implementation prompts make them strict.
-- Multipart form uploads populate `$_POST` fields and `$_FILES` metadata,
-  including scalar fields and `files[]`-style arrays. `is_uploaded_file()` and
-  `move_uploaded_file()` are implemented for request-local uploads.
+- `server-compat-smoke all` is strict for static files, nested URL-encoded
+  input, bounded multipart uploads, `$_FILES`, upload movement builtins,
+  cookies, persistent sessions, output-buffer basics, and include execution.
+- The server has cooperative PHP execution deadlines, process-local include and
+  entry-script caches, bounded/preloaded script-cache controls, loopback-only
+  cache clearing, streaming static files, validators, byte ranges,
+  precompressed sidecars, config-file support, access logs, metrics token
+  protection, and Rustls HTTP/1.1 TLS termination.
+
+Remaining known gaps:
+
+- The implemented server is an MVP compatibility layer, not full PHP SAPI
+  compatibility. It does not emulate FPM process management, Apache module
+  globals, Zend extension ABI behavior, complete INI handling, Opcache parity,
+  or the full matrix of web-server environment variables.
+- Multipart form uploads cover bounded scalar and array-shaped fixture cases.
+  More exotic PHP upload matrix behavior remains outside current coverage.
 - PHP execution deadlines are cooperative VM dispatch checks. Blocking native
   builtins are not interrupted mid-call; timeout is observed when control
   returns to VM dispatch.
@@ -30,8 +33,8 @@ Known gaps:
 - Header support covers common `header()`, `headers_list()`, `headers_sent()`,
   and `http_response_code()` behavior, but full PHP header edge cases are not
   complete.
-- TLS termination is not part of the MVP server.
-- HTTP/2 and HTTP/3 are not part of the MVP server.
+- TLS termination supports Rustls HTTP/1.1 and advertises `http/1.1` through
+  ALPN. HTTP/2 and HTTP/3 are not implemented.
 - Static file serving streams from Tokio file I/O and supports validators,
   byte ranges, and precompressed sidecars. Sendfile is not implemented.
 - The compiled script cache is process-local only.

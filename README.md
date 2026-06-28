@@ -85,11 +85,10 @@ nix develop -c cargo run -p php_server --bin phrust-server -- --docroot fixtures
 the server process. It does not use FPM, FastCGI, CGI, Apache, `mod_php`, or an
 external PHP process fallback.
 
-Static file reads, route filesystem metadata checks, and PHP compile/execute
-work are isolated behind Tokio blocking tasks. `--request-timeout-ms` currently
-covers request body reads only; once PHP execution starts, the VM has no safe
-preemptive cancellation hook, so execution is bounded by the server in-flight
-request limit rather than a per-script timeout.
+Static file reads, route filesystem metadata checks, and PHP execution stay on
+the integrated server path. `--request-timeout-ms` bounds request body reads;
+PHP execution is bounded by the cooperative `--max-execution-ms` deadline and
+the server in-flight request limit.
 
 The server uses the process-local compiled-script cache described in
 `docs/cache-architecture.md`; the CLI bytecode artifact cache remains a separate
@@ -99,6 +98,19 @@ Runtime and VM public imports should use the facades documented in
 `docs/api-facades.md`: `php_runtime::api` / `php_vm::api` for stable execution
 surfaces and `php_runtime::experimental` / `php_vm::experimental` for local
 instrumentation and experiments.
+
+Useful server checks:
+
+```bash
+nix develop -c just server-smoke
+nix develop -c just server-compat-smoke all
+nix develop -c just server-tls-smoke
+nix develop -c just server-benchmark-smoke
+```
+
+Server configuration supports CLI flags and an optional simple TOML-style
+`--config <path>` file. See `docs/server-wave2-functionality.md` for config,
+access-log, metrics-token, cache, and TLS options.
 
 ## Repository Layout
 

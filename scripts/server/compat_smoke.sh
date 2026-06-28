@@ -258,11 +258,6 @@ run_include() {
   printf '%s\n' '[ok] server compat include passed'
 }
 
-skip_section() {
-  local name="$1"
-  printf '[skip] server compat %s awaits its Wave 2 implementation prompt.\n' "$name"
-}
-
 case "$section" in
   static)
     run_static

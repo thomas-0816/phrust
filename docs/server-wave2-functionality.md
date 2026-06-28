@@ -35,6 +35,17 @@ Planned functionality:
 - Production-oriented config, access logs, metrics hardening, TLS, and optional
   HTTP/2 transport.
 
+Final implemented status:
+
+- Prompts 00 through 12 are implemented and committed as focused slices.
+- `server-compat-smoke all` is strict for every compatibility section currently
+  listed in the harness; there are no Wave 2 placeholder skips.
+- HTTP/2 remains intentionally unimplemented. TLS is HTTP/1.1 over Rustls with
+  `http/1.1` ALPN.
+- Remaining gaps are tracked in `docs/server-known-gaps.md`; this wave improves
+  standalone operability but does not turn the integrated server into full PHP
+  SAPI compatibility.
+
 ## Out Of Scope
 
 Wave 2 does not introduce FPM, FastCGI, CGI, Apache modules, `mod_php`,
