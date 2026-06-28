@@ -60,7 +60,8 @@ can run named sections:
 - `output-buffer`
 - `all`
 
-Prompt 00 only makes `static` strict. Later prompts make their corresponding
+Prompt 00 makes `static` strict. Prompt 01 makes `input` strict for nested
+URL-encoded query and form data. Later prompts make their corresponding
 sections strict as support lands.
 
 ## Expected Acceptance Commands

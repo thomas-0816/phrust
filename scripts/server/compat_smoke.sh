@@ -61,9 +61,27 @@ assert_body() {
   local path="$1"
   local expected="$2"
   local actual
-  actual="$(curl -fsS "http://$address$path")"
+  actual="$(curl -g -fsS "http://$address$path")"
   if [[ "$actual" != "$expected" ]]; then
     printf '[fail] %s expected %q got %q\n' "$path" "$expected" "$actual"
+    exit 1
+  fi
+}
+
+assert_post_body() {
+  local path="$1"
+  local body="$2"
+  local expected="$3"
+  local actual
+  actual="$(
+    curl -g -fsS \
+      -X POST \
+      -H 'Content-Type: application/x-www-form-urlencoded' \
+      --data "$body" \
+      "http://$address$path"
+  )"
+  if [[ "$actual" != "$expected" ]]; then
+    printf '[fail] POST %s expected %q got %q\n' "$path" "$expected" "$actual"
     exit 1
   fi
 }
@@ -71,6 +89,14 @@ assert_body() {
 run_static() {
   assert_body '/static.txt' 'compat static fixture'
   printf '%s\n' '[ok] server compat static passed'
+}
+
+run_input() {
+  assert_post_body \
+    '/input.php?user[name]=Ada&ids[]=1&ids[]=2' \
+    'form[title]=Hello' \
+    $'user=Ada\nids=1,2\npost=Hello\nrequest=Ada'
+  printf '%s\n' '[ok] server compat input passed'
 }
 
 skip_section() {
@@ -83,7 +109,7 @@ case "$section" in
     run_static
     ;;
   input)
-    skip_section input
+    run_input
     ;;
   upload)
     skip_section upload
@@ -99,7 +125,7 @@ case "$section" in
     ;;
   all)
     run_static
-    skip_section input
+    run_input
     skip_section upload
     skip_section cookie
     skip_section session

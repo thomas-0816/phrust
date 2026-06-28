@@ -10,6 +10,10 @@ pub struct RuntimeIniOptions {
     pub error_reporting: ErrorReporting,
     /// Placeholder for display_errors-style behavior.
     pub display_errors: bool,
+    /// Maximum decoded input variables materialized into each superglobal.
+    pub max_input_vars: usize,
+    /// Maximum PHP-style bracket nesting materialized for input names.
+    pub max_input_nesting_level: usize,
 }
 
 impl Default for RuntimeIniOptions {
@@ -17,6 +21,8 @@ impl Default for RuntimeIniOptions {
         Self {
             error_reporting: ErrorReporting::default(),
             display_errors: true,
+            max_input_vars: 1000,
+            max_input_nesting_level: 64,
         }
     }
 }
@@ -383,6 +389,11 @@ impl RuntimeContext {
             "display_errors",
             if self.ini.display_errors { "1" } else { "0" },
         );
+        let _ = registry.set("max_input_vars", self.ini.max_input_vars.to_string());
+        let _ = registry.set(
+            "max_input_nesting_level",
+            self.ini.max_input_nesting_level.to_string(),
+        );
         for (name, value) in &self.ini_overrides {
             let _ = registry.set(name, value.clone());
         }
@@ -486,21 +497,23 @@ impl RuntimeContext {
 
     fn get_array(&self) -> PhpArray {
         match &self.request_mode {
-            RuntimeRequestMode::Http(request) => pairs_array(&request.parsed_get),
+            RuntimeRequestMode::Http(request) => input_pairs_array(&request.parsed_get, &self.ini),
             RuntimeRequestMode::Cli => PhpArray::new(),
         }
     }
 
     fn post_array(&self) -> PhpArray {
         match &self.request_mode {
-            RuntimeRequestMode::Http(request) => pairs_array(&request.parsed_post),
+            RuntimeRequestMode::Http(request) => input_pairs_array(&request.parsed_post, &self.ini),
             RuntimeRequestMode::Cli => PhpArray::new(),
         }
     }
 
     fn cookie_array(&self) -> PhpArray {
         match &self.request_mode {
-            RuntimeRequestMode::Http(request) => pairs_array(&request.parsed_cookie),
+            RuntimeRequestMode::Http(request) => {
+                flat_pairs_array(&request.parsed_cookie, &self.ini)
+            }
             RuntimeRequestMode::Cli => PhpArray::new(),
         }
     }
@@ -509,9 +522,10 @@ impl RuntimeContext {
         match &self.request_mode {
             RuntimeRequestMode::Http(request) => {
                 let mut array = PhpArray::new();
-                insert_pairs(&mut array, &request.parsed_get);
-                insert_pairs(&mut array, &request.parsed_post);
-                insert_pairs(&mut array, &request.parsed_cookie);
+                let mut builder = InputArrayBuilder::new(&self.ini);
+                builder.insert_pairs(&mut array, &request.parsed_get);
+                builder.insert_pairs(&mut array, &request.parsed_post);
+                builder.insert_flat_pairs(&mut array, &request.parsed_cookie);
                 array
             }
             RuntimeRequestMode::Cli => PhpArray::new(),
@@ -521,6 +535,10 @@ impl RuntimeContext {
 
 fn string_key(value: &str) -> ArrayKey {
     ArrayKey::String(PhpString::from_test_str(value))
+}
+
+fn input_key(value: &str) -> ArrayKey {
+    ArrayKey::from_php_string(PhpString::from_test_str(value))
 }
 
 fn http_server_array(request: &RuntimeHttpRequestContext) -> PhpArray {
@@ -575,20 +593,143 @@ fn header_server_name(name: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn pairs_array(pairs: &[(String, String)]) -> PhpArray {
+fn input_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) -> PhpArray {
     let mut array = PhpArray::new();
-    insert_pairs(&mut array, pairs);
+    InputArrayBuilder::new(ini).insert_pairs(&mut array, pairs);
     array
 }
 
-fn insert_pairs(array: &mut PhpArray, pairs: &[(String, String)]) {
-    for (key, value) in pairs {
-        insert_string(array, key, value);
+fn flat_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) -> PhpArray {
+    let mut array = PhpArray::new();
+    InputArrayBuilder::new(ini).insert_flat_pairs(&mut array, pairs);
+    array
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum InputKeySegment {
+    Key(ArrayKey),
+    Append,
+}
+
+struct InputArrayBuilder {
+    remaining_vars: usize,
+    max_input_nesting_level: usize,
+}
+
+impl InputArrayBuilder {
+    fn new(ini: &RuntimeIniOptions) -> Self {
+        Self {
+            remaining_vars: ini.max_input_vars,
+            max_input_nesting_level: ini.max_input_nesting_level,
+        }
+    }
+
+    fn insert_pairs(&mut self, array: &mut PhpArray, pairs: &[(String, String)]) {
+        for (key, value) in pairs {
+            if !self.consume_var() {
+                break;
+            }
+            let Some(segments) = parse_input_key_segments(key, self.max_input_nesting_level) else {
+                continue;
+            };
+            insert_input_value(array, &segments, value);
+        }
+    }
+
+    fn insert_flat_pairs(&mut self, array: &mut PhpArray, pairs: &[(String, String)]) {
+        for (key, value) in pairs {
+            if !self.consume_var() {
+                break;
+            }
+            insert_string(array, key, value);
+        }
+    }
+
+    fn consume_var(&mut self) -> bool {
+        if self.remaining_vars == 0 {
+            return false;
+        }
+        self.remaining_vars -= 1;
+        true
     }
 }
 
 fn insert_string(array: &mut PhpArray, key: &str, value: &str) {
     array.insert(string_key(key), Value::string(value.as_bytes().to_vec()));
+}
+
+fn parse_input_key_segments(key: &str, max_nesting_level: usize) -> Option<Vec<InputKeySegment>> {
+    if key.is_empty() {
+        return None;
+    }
+    let Some(first_bracket) = key.find('[') else {
+        return Some(vec![InputKeySegment::Key(input_key(key))]);
+    };
+    if first_bracket == 0 {
+        return Some(vec![InputKeySegment::Key(input_key(key))]);
+    }
+
+    let mut segments = vec![InputKeySegment::Key(input_key(&key[..first_bracket]))];
+    let mut rest = &key[first_bracket..];
+    while !rest.is_empty() {
+        if !rest.starts_with('[') {
+            return Some(vec![InputKeySegment::Key(input_key(key))]);
+        }
+        let Some(close) = rest.find(']') else {
+            return Some(vec![InputKeySegment::Key(input_key(key))]);
+        };
+        let part = &rest[1..close];
+        segments.push(if part.is_empty() {
+            InputKeySegment::Append
+        } else {
+            InputKeySegment::Key(input_key(part))
+        });
+        if segments.len().saturating_sub(1) > max_nesting_level {
+            return None;
+        }
+        rest = &rest[close + 1..];
+    }
+    Some(segments)
+}
+
+fn insert_input_value(array: &mut PhpArray, segments: &[InputKeySegment], value: &str) {
+    insert_input_at(array, segments, Value::string(value.as_bytes().to_vec()));
+}
+
+fn insert_input_at(array: &mut PhpArray, segments: &[InputKeySegment], value: Value) {
+    let Some((head, tail)) = segments.split_first() else {
+        return;
+    };
+    if tail.is_empty() {
+        match head {
+            InputKeySegment::Key(key) => {
+                array.insert(key.clone(), value);
+            }
+            InputKeySegment::Append => {
+                array.append(value);
+            }
+        }
+        return;
+    }
+
+    match head {
+        InputKeySegment::Key(key) => {
+            if !matches!(array.get(key), Some(Value::Array(_))) {
+                array.insert(key.clone(), Value::Array(PhpArray::new()));
+            }
+            let Some(Value::Array(child)) = array.get_mut(key) else {
+                unreachable!("input child was just initialized as an array")
+            };
+            insert_input_at(child, tail, value);
+        }
+        InputKeySegment::Append => {
+            let key = array.append(Value::Array(PhpArray::new()));
+            let Some(Value::Array(child)) = array.get_mut(&key) else {
+                unreachable!("input append child was just initialized as an array")
+            };
+            insert_input_at(child, tail, value);
+        }
+    }
 }
 
 #[must_use]
@@ -668,8 +809,9 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, StrictTypesInfo,
-        parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
+        RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions,
+        StrictTypesInfo, input_pairs_array, parse_cookie_header, parse_form_urlencoded_body,
+        parse_query_string,
     };
     use crate::{ArrayKey, PhpString, Value};
 
@@ -683,7 +825,14 @@ mod tests {
         assert_eq!(context.include_path.len(), 1);
         assert_eq!(context.ini.error_reporting.mask, -1);
         assert!(context.ini.display_errors);
+        assert_eq!(context.ini.max_input_vars, 1000);
+        assert_eq!(context.ini.max_input_nesting_level, 64);
         assert_eq!(context.ini_registry().get("include_path"), Some("."));
+        assert_eq!(context.ini_registry().get("max_input_vars"), Some("1000"));
+        assert_eq!(
+            context.ini_registry().get("max_input_nesting_level"),
+            Some("64")
+        );
         assert_eq!(context.process, super::ProcessCapability::Disabled);
         assert!(context.strict_types.is_empty());
     }
@@ -879,6 +1028,83 @@ mod tests {
     }
 
     #[test]
+    fn http_nested_inputs_populate_get_post_and_request() {
+        let mut request = http_request();
+        request.parsed_get =
+            parse_query_string("user[name]=Ada&ids[]=1&ids[]=2&user[address][city]=Berlin");
+        request.parsed_post = parse_form_urlencoded_body(b"form[title]=Hello");
+        let context = RuntimeContext::controlled_http(request);
+
+        let get = global_array(&context, "_GET");
+        assert_path_string(&get, &[str_key("user"), str_key("name")], "Ada");
+        assert_path_string(&get, &[str_key("ids"), int_key(0)], "1");
+        assert_path_string(&get, &[str_key("ids"), int_key(1)], "2");
+        assert_path_string(
+            &get,
+            &[str_key("user"), str_key("address"), str_key("city")],
+            "Berlin",
+        );
+
+        let post = global_array(&context, "_POST");
+        assert_path_string(&post, &[str_key("form"), str_key("title")], "Hello");
+
+        let request = global_array(&context, "_REQUEST");
+        assert_path_string(&request, &[str_key("user"), str_key("name")], "Ada");
+        assert_path_string(&request, &[str_key("ids"), int_key(0)], "1");
+        assert_path_string(&request, &[str_key("form"), str_key("title")], "Hello");
+    }
+
+    #[test]
+    fn cli_input_superglobals_remain_empty() {
+        let context = RuntimeContext::controlled_cli("script.php", Vec::new());
+
+        assert!(global_array(&context, "_GET").is_empty());
+        assert!(global_array(&context, "_POST").is_empty());
+        assert!(global_array(&context, "_COOKIE").is_empty());
+        assert!(global_array(&context, "_REQUEST").is_empty());
+    }
+
+    #[test]
+    fn input_array_builder_supports_php_style_key_forms() {
+        let pairs = parse_query_string(
+            "a=1&a=2&list[]=1&list[]=2&indexed[0]=x&indexed[1]=y&user[name]=Ada&user[address][city]=Berlin",
+        );
+        let array = input_pairs_array(&pairs, &RuntimeIniOptions::default());
+
+        assert_string(&array, "a", "2");
+        assert_path_string(&array, &[str_key("list"), int_key(0)], "1");
+        assert_path_string(&array, &[str_key("list"), int_key(1)], "2");
+        assert_path_string(&array, &[str_key("indexed"), int_key(0)], "x");
+        assert_path_string(&array, &[str_key("indexed"), int_key(1)], "y");
+        assert_path_string(&array, &[str_key("user"), str_key("name")], "Ada");
+        assert_path_string(
+            &array,
+            &[str_key("user"), str_key("address"), str_key("city")],
+            "Berlin",
+        );
+    }
+
+    #[test]
+    fn input_array_builder_applies_explicit_limits() {
+        let ini = RuntimeIniOptions {
+            max_input_vars: 2,
+            max_input_nesting_level: 1,
+            ..RuntimeIniOptions::default()
+        };
+        let pairs = parse_query_string("a=1&b=2&c=3");
+        let array = input_pairs_array(&pairs, &ini);
+
+        assert_string(&array, "a", "1");
+        assert_string(&array, "b", "2");
+        assert!(array.get(&str_key("c")).is_none());
+
+        let nested =
+            input_pairs_array(&parse_query_string("ok[name]=Ada&too[deep][name]=no"), &ini);
+        assert_path_string(&nested, &[str_key("ok"), str_key("name")], "Ada");
+        assert!(nested.get(&str_key("too")).is_none());
+    }
+
+    #[test]
     fn http_context_still_does_not_import_host_env() {
         let context = RuntimeContext::controlled_http(http_request());
 
@@ -941,5 +1167,32 @@ mod tests {
             array.get(&ArrayKey::String(PhpString::from_test_str(key))),
             Some(&Value::string(expected.as_bytes().to_vec()))
         );
+    }
+
+    fn assert_path_string(array: &crate::PhpArray, path: &[ArrayKey], expected: &str) {
+        assert_eq!(
+            value_at_path(array, path),
+            Some(&Value::string(expected.as_bytes().to_vec()))
+        );
+    }
+
+    fn value_at_path<'a>(array: &'a crate::PhpArray, path: &[ArrayKey]) -> Option<&'a Value> {
+        let (first, rest) = path.split_first()?;
+        let mut value = array.get(first)?;
+        for key in rest {
+            let Value::Array(child) = value else {
+                return None;
+            };
+            value = child.get(key)?;
+        }
+        Some(value)
+    }
+
+    fn str_key(value: &str) -> ArrayKey {
+        ArrayKey::String(PhpString::from_test_str(value))
+    }
+
+    fn int_key(value: i64) -> ArrayKey {
+        ArrayKey::Int(value)
     }
 }

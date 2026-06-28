@@ -90,13 +90,15 @@ impl IniRegistry {
     }
 }
 
-fn default_entries() -> [(&'static str, &'static str); 8] {
+fn default_entries() -> [(&'static str, &'static str); 10] {
     [
         ("date.timezone", "UTC"),
         ("default_charset", "UTF-8"),
         ("display_errors", "1"),
         ("error_reporting", "-1"),
         ("include_path", "."),
+        ("max_input_nesting_level", "64"),
+        ("max_input_vars", "1000"),
         ("memory_limit", "128M"),
         ("precision", "14"),
         ("serialize_precision", "-1"),
@@ -136,6 +138,8 @@ mod tests {
                 "display_errors",
                 "error_reporting",
                 "include_path",
+                "max_input_nesting_level",
+                "max_input_vars",
                 "memory_limit",
                 "precision",
                 "serialize_precision"
