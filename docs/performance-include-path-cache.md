@@ -28,6 +28,14 @@ Counters:
 - `include_path_ic_misses`
 - `include_path_ic_invalidations`
 - `include_path_ic_guard_failures`
+- `include_graph_hits`
+- `include_graph_misses`
+- `invalidations_by_reason.file_fingerprint_changed`
+- `invalidations_by_reason.include_path_epoch_or_guard`
+- `fallback_by_path_semantics.missing_path`
+- `fallback_by_path_semantics.stream_wrapper`
+- `fallback_by_path_semantics.phar_stream`
+- `fallback_by_path_semantics.outside_allowed_root`
 
 Validation:
 

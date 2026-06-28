@@ -129,6 +129,12 @@ pub struct VmCounters {
     pub register_files_allocated: u64,
     pub register_files_reused: u64,
     pub frame_reuse_blocked_by_reason: BTreeMap<String, u64>,
+    pub call_frame_layout_observed: BTreeMap<String, u64>,
+    pub tiny_frame_candidates: u64,
+    pub specialized_frame_hits: u64,
+    pub generic_frame_fallback_by_reason: BTreeMap<String, u64>,
+    pub arg_array_avoided: u64,
+    pub heap_frame_avoided: u64,
     pub frame_alias_state: BTreeMap<String, u64>,
     pub alias_state_transitions: BTreeMap<String, u64>,
     pub fast_path_disabled_by_reference: u64,
@@ -195,6 +201,12 @@ pub struct VmCounters {
     pub builtin_fast_stub_hits: BTreeMap<String, u64>,
     pub builtin_fast_stub_misses: BTreeMap<String, u64>,
     pub builtin_fast_stub_fallback_by_reason: BTreeMap<String, u64>,
+    pub builtin_intrinsic_candidates: u64,
+    pub intrinsic_hits: BTreeMap<String, u64>,
+    pub intrinsic_misses: BTreeMap<String, u64>,
+    pub intrinsic_fallback_by_reason: BTreeMap<String, u64>,
+    pub specialized_builtin_opcode_hits: BTreeMap<String, u64>,
+    pub slow_path_calls_by_reason: BTreeMap<String, u64>,
     pub call_ic_megamorphic_fallbacks: u64,
     pub local_slot_fast_path_hits: u64,
     pub local_slot_fast_path_misses: u64,
@@ -203,6 +215,13 @@ pub struct VmCounters {
     pub type_checks: u64,
     pub includes: u64,
     pub autoloads: u64,
+    pub include_graph_hits: u64,
+    pub include_graph_misses: u64,
+    pub autoload_graph_hits: u64,
+    pub autoload_graph_misses: u64,
+    pub negative_lookup_hits: u64,
+    pub invalidations_by_reason: BTreeMap<String, u64>,
+    pub fallback_by_path_semantics: BTreeMap<String, u64>,
     pub string_concats: u64,
     pub string_concat_fast_path_hits: u64,
     pub string_concat_fast_path_misses: u64,
@@ -395,6 +414,48 @@ impl VmCounters {
         self.autoloads += 1;
     }
 
+    pub(crate) fn record_include_graph_hit(&mut self) {
+        self.include_graph_hits += 1;
+    }
+
+    pub(crate) fn record_include_graph_miss(&mut self) {
+        self.include_graph_misses += 1;
+    }
+
+    pub(crate) fn record_autoload_graph_hit(&mut self) {
+        self.autoload_graph_hits += 1;
+    }
+
+    pub(crate) fn record_autoload_graph_miss(&mut self) {
+        self.autoload_graph_misses += 1;
+    }
+
+    pub(crate) fn record_negative_lookup_hit(&mut self) {
+        self.negative_lookup_hits += 1;
+    }
+
+    pub(crate) fn record_invalidation_by_reason(&mut self, reason: &str) {
+        *self
+            .invalidations_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn record_fallback_by_path_semantics(&mut self, reason: &str) {
+        *self
+            .fallback_by_path_semantics
+            .entry(reason.to_owned())
+            .or_default() += 1;
+        self.record_slow_path_call(&format!("include_autoload.{reason}"));
+    }
+
+    pub(crate) fn record_slow_path_call(&mut self, reason: &str) {
+        *self
+            .slow_path_calls_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
+    }
+
     pub(crate) fn record_frame_activation(
         &mut self,
         reused: bool,
@@ -436,6 +497,36 @@ impl VmCounters {
             self.record_alias_state(AliasState::EscapedReference);
             self.fast_path_disabled_by_reference += 1;
         }
+    }
+
+    pub(crate) fn record_call_frame_layout(&mut self, layout: &str) {
+        *self
+            .call_frame_layout_observed
+            .entry(layout.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn record_tiny_frame_candidate(&mut self) {
+        self.tiny_frame_candidates += 1;
+    }
+
+    pub(crate) fn record_specialized_frame_hit(&mut self) {
+        self.specialized_frame_hits += 1;
+    }
+
+    pub(crate) fn record_generic_frame_fallback(&mut self, reason: &str) {
+        *self
+            .generic_frame_fallback_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn record_arg_array_avoided(&mut self) {
+        self.arg_array_avoided += 1;
+    }
+
+    pub(crate) fn record_heap_frame_avoided(&mut self) {
+        self.heap_frame_avoided += 1;
     }
 
     pub(crate) fn record_alias_state(&mut self, state: AliasState) {
@@ -619,6 +710,7 @@ impl VmCounters {
             .concat_fallback_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
+        self.record_slow_path_call(&format!("concat.{reason}"));
     }
 
     pub(crate) fn record_packed_dim_fast_path(&mut self, hit: bool) {
@@ -674,6 +766,7 @@ impl VmCounters {
             .array_fast_path_fallback_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
+        self.record_slow_path_call(&format!("array.{reason}"));
     }
 
     fn record_array_fast_path_hit(&mut self, family: &str) {
@@ -734,6 +827,7 @@ impl VmCounters {
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_known_call_slow_call(&mut self) {
         self.known_call_slow_calls += 1;
+        self.record_slow_path_call("jit.known_call");
     }
 
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
@@ -759,6 +853,7 @@ impl VmCounters {
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_property_load_slow_call(&mut self) {
         self.property_load_slow_calls += 1;
+        self.record_slow_path_call("jit.property_load");
     }
 
     pub(crate) fn record_array_count_fast_path_hit(&mut self) {
@@ -801,6 +896,13 @@ impl VmCounters {
         self.output_buffer_flushes = stats.flushes;
         self.output_fast_appends = stats.fast_appends;
         self.output_slow_appends_by_reason = stats.slow_appends_by_reason;
+        let slow_appends = self.output_slow_appends_by_reason.clone();
+        for (reason, count) in slow_appends {
+            *self
+                .slow_path_calls_by_reason
+                .entry(format!("output.{reason}"))
+                .or_default() += count;
+        }
     }
 
     pub(crate) fn record_internal_function_dispatch(&mut self) {
@@ -849,6 +951,28 @@ impl VmCounters {
             .builtin_fast_stub_fallback_by_reason
             .entry(format!("{name}.{reason}"))
             .or_default() += 1;
+        self.record_slow_path_call(&format!("builtin_stub.{name}.{reason}"));
+    }
+
+    pub(crate) fn record_builtin_intrinsic_candidate(&mut self) {
+        self.builtin_intrinsic_candidates += 1;
+    }
+
+    pub(crate) fn record_intrinsic(&mut self, name: &str, hit: bool) {
+        let map = if hit {
+            &mut self.intrinsic_hits
+        } else {
+            &mut self.intrinsic_misses
+        };
+        *map.entry(name.to_owned()).or_default() += 1;
+    }
+
+    pub(crate) fn record_intrinsic_fallback(&mut self, name: &str, reason: &str) {
+        *self
+            .intrinsic_fallback_by_reason
+            .entry(format!("{name}.{reason}"))
+            .or_default() += 1;
+        self.record_slow_path_call(&format!("builtin_intrinsic.{name}.{reason}"));
     }
 
     pub(crate) fn record_call_ic_megamorphic_fallback(&mut self) {
@@ -860,6 +984,7 @@ impl VmCounters {
             .property_ic_fallback_reasons
             .entry(reason.to_owned())
             .or_default() += 1;
+        self.record_slow_path_call(&format!("property_fetch.{reason}"));
     }
 
     pub(crate) fn record_property_assign_ic_fallback(&mut self, reason: &str) {
@@ -867,6 +992,7 @@ impl VmCounters {
             .property_assign_ic_fallback_reasons
             .entry(reason.to_owned())
             .or_default() += 1;
+        self.record_slow_path_call(&format!("property_assign.{reason}"));
         match reason {
             "layout_epoch_mismatch"
             | "receiver_class_mismatch"
@@ -1054,6 +1180,7 @@ impl VmCounters {
     #[allow(dead_code)]
     pub(crate) fn record_jit_slow_path_call(&mut self) {
         self.jit_slow_path_calls += 1;
+        self.record_slow_path_call("jit.generic");
     }
 
     #[allow(dead_code)]
@@ -1105,9 +1232,11 @@ impl VmCounters {
             }
             if observation.kind == Some(InlineCacheKind::IncludePath) {
                 self.include_path_ic_hits += 1;
+                self.record_include_graph_hit();
             }
             if observation.kind == Some(InlineCacheKind::AutoloadClassLookup) {
                 self.autoload_class_lookup_ic_hits += 1;
+                self.record_autoload_graph_hit();
             }
         }
         if observation.miss {
@@ -1126,18 +1255,22 @@ impl VmCounters {
             }
             if observation.kind == Some(InlineCacheKind::IncludePath) {
                 self.include_path_ic_misses += 1;
+                self.record_include_graph_miss();
             }
             if observation.kind == Some(InlineCacheKind::AutoloadClassLookup) {
                 self.autoload_class_lookup_ic_misses += 1;
+                self.record_autoload_graph_miss();
             }
         }
         if observation.invalidation {
             self.inline_cache_invalidations += 1;
             if observation.kind == Some(InlineCacheKind::IncludePath) {
                 self.include_path_ic_invalidations += 1;
+                self.record_invalidation_by_reason("include_path_epoch_or_guard");
             }
             if observation.kind == Some(InlineCacheKind::AutoloadClassLookup) {
                 self.autoload_class_lookup_ic_invalidations += 1;
+                self.record_invalidation_by_reason("autoload_lookup_epoch_or_guard");
             }
         }
         if observation.guard_failure {
@@ -1518,6 +1651,37 @@ impl VmCounters {
         );
         push_string_u64_map_field(
             &mut json,
+            "call_frame_layout_observed",
+            &self.call_frame_layout_observed,
+            true,
+        );
+        push_field(
+            &mut json,
+            "tiny_frame_candidates",
+            self.tiny_frame_candidates,
+            true,
+        );
+        push_field(
+            &mut json,
+            "specialized_frame_hits",
+            self.specialized_frame_hits,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "generic_frame_fallback_by_reason",
+            &self.generic_frame_fallback_by_reason,
+            true,
+        );
+        push_field(&mut json, "arg_array_avoided", self.arg_array_avoided, true);
+        push_field(
+            &mut json,
+            "heap_frame_avoided",
+            self.heap_frame_avoided,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
             "frame_alias_state",
             &self.frame_alias_state,
             true,
@@ -1879,6 +2043,32 @@ impl VmCounters {
         );
         push_field(
             &mut json,
+            "builtin_intrinsic_candidates",
+            self.builtin_intrinsic_candidates,
+            true,
+        );
+        push_string_u64_map_field(&mut json, "intrinsic_hits", &self.intrinsic_hits, true);
+        push_string_u64_map_field(&mut json, "intrinsic_misses", &self.intrinsic_misses, true);
+        push_string_u64_map_field(
+            &mut json,
+            "intrinsic_fallback_by_reason",
+            &self.intrinsic_fallback_by_reason,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "specialized_builtin_opcode_hits",
+            &self.specialized_builtin_opcode_hits,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "slow_path_calls_by_reason",
+            &self.slow_path_calls_by_reason,
+            true,
+        );
+        push_field(
+            &mut json,
             "call_ic_megamorphic_fallbacks",
             self.call_ic_megamorphic_fallbacks,
             true,
@@ -1900,6 +2090,48 @@ impl VmCounters {
         push_field(&mut json, "type_checks", self.type_checks, true);
         push_field(&mut json, "includes", self.includes, true);
         push_field(&mut json, "autoloads", self.autoloads, true);
+        push_field(
+            &mut json,
+            "include_graph_hits",
+            self.include_graph_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "include_graph_misses",
+            self.include_graph_misses,
+            true,
+        );
+        push_field(
+            &mut json,
+            "autoload_graph_hits",
+            self.autoload_graph_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "autoload_graph_misses",
+            self.autoload_graph_misses,
+            true,
+        );
+        push_field(
+            &mut json,
+            "negative_lookup_hits",
+            self.negative_lookup_hits,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "invalidations_by_reason",
+            &self.invalidations_by_reason,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "fallback_by_path_semantics",
+            &self.fallback_by_path_semantics,
+            true,
+        );
         push_field(&mut json, "string_concats", self.string_concats, true);
         push_field(
             &mut json,
@@ -3171,6 +3403,12 @@ mod tests {
         counters.record_frame_activation(false, 4, 3);
         counters.record_frame_activation(true, 4, 3);
         counters.record_frame_reuse_blocked("by_ref_param");
+        counters.record_call_frame_layout("tiny_leaf_frame");
+        counters.record_tiny_frame_candidate();
+        counters.record_specialized_frame_hit();
+        counters.record_generic_frame_fallback("class_context");
+        counters.record_arg_array_avoided();
+        counters.record_heap_frame_avoided();
         counters.record_alias_state(AliasState::NoReferencesObserved);
         counters.record_alias_state_transition(
             AliasState::NoReferencesObserved,
@@ -3246,6 +3484,13 @@ mod tests {
         counters.record_builtin_fast_stub("strlen", false);
         counters.record_builtin_fast_stub("strlen", true);
         counters.record_builtin_fast_stub_fallback("strlen", "type");
+        counters.record_builtin_intrinsic_candidate();
+        counters.record_intrinsic("str_contains", true);
+        counters.record_intrinsic("str_contains", false);
+        counters.record_intrinsic_fallback("str_contains", "type");
+        counters
+            .specialized_builtin_opcode_hits
+            .insert("strlen".to_string(), 1);
         counters.record_call_ic_megamorphic_fallback();
         counters.record_property_ic_fallback("layout_epoch_mismatch");
         counters.record_property_assign_ic_fallback("layout_epoch_mismatch");
@@ -3280,6 +3525,13 @@ mod tests {
         counters.record_jit_compile_cache_hit();
         counters.record_jit_compile_cache_miss();
         counters.record_jit_compile_cache_invalidation();
+        counters.record_include_graph_hit();
+        counters.record_include_graph_miss();
+        counters.record_autoload_graph_hit();
+        counters.record_autoload_graph_miss();
+        counters.record_negative_lookup_hit();
+        counters.record_invalidation_by_reason("file_fingerprint_changed");
+        counters.record_fallback_by_path_semantics("missing_path");
         counters.record_inline_cache(InlineCacheObservation {
             candidate: true,
             slot_allocated: true,
@@ -3385,6 +3637,20 @@ mod tests {
             Some(&1)
         );
         assert_eq!(
+            counters.call_frame_layout_observed.get("tiny_leaf_frame"),
+            Some(&1)
+        );
+        assert_eq!(counters.tiny_frame_candidates, 1);
+        assert_eq!(counters.specialized_frame_hits, 1);
+        assert_eq!(
+            counters
+                .generic_frame_fallback_by_reason
+                .get("class_context"),
+            Some(&1)
+        );
+        assert_eq!(counters.arg_array_avoided, 1);
+        assert_eq!(counters.heap_frame_avoided, 1);
+        assert_eq!(
             counters.frame_alias_state.get("no_references_observed"),
             Some(&1)
         );
@@ -3474,6 +3740,12 @@ mod tests {
                 .get("object_to_string"),
             Some(&1)
         );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("output.object_to_string"),
+            Some(&1)
+        );
         assert_eq!(counters.internal_function_dispatches, 1);
         assert_eq!(counters.internal_function_dispatch_cache_hits, 1);
         assert_eq!(counters.internal_function_dispatch_cache_misses, 1);
@@ -3490,11 +3762,42 @@ mod tests {
                 .get("strlen.type"),
             Some(&1)
         );
+        assert_eq!(counters.builtin_intrinsic_candidates, 1);
+        assert_eq!(counters.intrinsic_hits.get("str_contains"), Some(&1));
+        assert_eq!(counters.intrinsic_misses.get("str_contains"), Some(&1));
+        assert_eq!(
+            counters
+                .intrinsic_fallback_by_reason
+                .get("str_contains.type"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("builtin_stub.strlen.type"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("builtin_intrinsic.str_contains.type"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters.specialized_builtin_opcode_hits.get("strlen"),
+            Some(&1)
+        );
         assert_eq!(counters.call_ic_megamorphic_fallbacks, 1);
         assert_eq!(
             counters
                 .property_ic_fallback_reasons
                 .get("layout_epoch_mismatch"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("property_fetch.layout_epoch_mismatch"),
             Some(&1)
         );
         assert_eq!(counters.property_assign_ic_hits, 1);
@@ -3513,6 +3816,12 @@ mod tests {
                 .get("type_mismatch"),
             Some(&1)
         );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("property_assign.type_mismatch"),
+            Some(&1)
+        );
         assert_eq!(counters.local_slot_fast_path_hits, 1);
         assert_eq!(counters.local_slot_fast_path_misses, 1);
         assert_eq!(counters.string_concat_fast_path_hits, 1);
@@ -3520,6 +3829,12 @@ mod tests {
         assert_eq!(counters.concat_prealloc_hits, 1);
         assert_eq!(
             counters.concat_fallback_by_reason.get("scalar_conversion"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("concat.scalar_conversion"),
             Some(&1)
         );
         assert_eq!(counters.autoloads, 1);
@@ -3610,6 +3925,26 @@ mod tests {
             counters.array_fast_path_fallback_by_reason.get("overflow"),
             Some(&1)
         );
+        assert_eq!(
+            counters.slow_path_calls_by_reason.get("array.bounds"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("array.layout_or_key"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("array.layout_or_element"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters.slow_path_calls_by_reason.get("array.overflow"),
+            Some(&1)
+        );
         assert_eq!(counters.known_call_fast_hits, 1);
         assert_eq!(counters.known_call_guard_exits, 1);
         assert_eq!(counters.known_call_slow_calls, 1);
@@ -3620,9 +3955,42 @@ mod tests {
         assert_eq!(counters.property_load_slow_calls, 1);
         assert_eq!(counters.jit_overflow_exits, 1);
         assert_eq!(counters.jit_slow_path_calls, 1);
+        assert_eq!(
+            counters.slow_path_calls_by_reason.get("jit.known_call"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters.slow_path_calls_by_reason.get("jit.property_load"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters.slow_path_calls_by_reason.get("jit.generic"),
+            Some(&1)
+        );
         assert_eq!(counters.jit_compile_cache_hits, 1);
         assert_eq!(counters.jit_compile_cache_misses, 1);
         assert_eq!(counters.jit_compile_cache_invalidations, 1);
+        assert_eq!(counters.include_graph_hits, 2);
+        assert_eq!(counters.include_graph_misses, 2);
+        assert_eq!(counters.autoload_graph_hits, 2);
+        assert_eq!(counters.autoload_graph_misses, 2);
+        assert_eq!(counters.negative_lookup_hits, 1);
+        assert_eq!(
+            counters
+                .invalidations_by_reason
+                .get("file_fingerprint_changed"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters.fallback_by_path_semantics.get("missing_path"),
+            Some(&1)
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("include_autoload.missing_path"),
+            Some(&1)
+        );
         assert_eq!(counters.inline_cache_observations, 8);
         assert_eq!(counters.inline_cache_slots, 8);
         assert_eq!(counters.inline_cache_function_slots, 1);
@@ -3707,6 +4075,12 @@ mod tests {
         assert!(json.contains("\"register_files_allocated\": 0"));
         assert!(json.contains("\"register_files_reused\": 0"));
         assert!(json.contains("\"frame_reuse_blocked_by_reason\": {}"));
+        assert!(json.contains("\"call_frame_layout_observed\": {}"));
+        assert!(json.contains("\"tiny_frame_candidates\": 0"));
+        assert!(json.contains("\"specialized_frame_hits\": 0"));
+        assert!(json.contains("\"generic_frame_fallback_by_reason\": {}"));
+        assert!(json.contains("\"arg_array_avoided\": 0"));
+        assert!(json.contains("\"heap_frame_avoided\": 0"));
         assert!(json.contains("\"frame_alias_state\": {}"));
         assert!(json.contains("\"alias_state_transitions\": {}"));
         assert!(json.contains("\"fast_path_disabled_by_reference\": 0"));
@@ -3772,6 +4146,12 @@ mod tests {
         assert!(json.contains("\"builtin_fast_stub_hits\": {}"));
         assert!(json.contains("\"builtin_fast_stub_misses\": {}"));
         assert!(json.contains("\"builtin_fast_stub_fallback_by_reason\": {}"));
+        assert!(json.contains("\"builtin_intrinsic_candidates\": 0"));
+        assert!(json.contains("\"intrinsic_hits\": {}"));
+        assert!(json.contains("\"intrinsic_misses\": {}"));
+        assert!(json.contains("\"intrinsic_fallback_by_reason\": {}"));
+        assert!(json.contains("\"specialized_builtin_opcode_hits\": {}"));
+        assert!(json.contains("\"slow_path_calls_by_reason\": {}"));
         assert!(json.contains("\"call_ic_megamorphic_fallbacks\": 0"));
         assert!(json.contains("\"local_slot_fast_path_hits\": 0"));
         assert!(json.contains("\"local_slot_fast_path_misses\": 0"));
@@ -3851,6 +4231,13 @@ mod tests {
         assert!(json.contains("\"inline_cache_polymorphic\": 0"));
         assert!(json.contains("\"inline_cache_megamorphic\": 0"));
         assert!(json.contains("\"inline_cache_disabled\": 0"));
+        assert!(json.contains("\"include_graph_hits\": 0"));
+        assert!(json.contains("\"include_graph_misses\": 0"));
+        assert!(json.contains("\"autoload_graph_hits\": 0"));
+        assert!(json.contains("\"autoload_graph_misses\": 0"));
+        assert!(json.contains("\"negative_lookup_hits\": 0"));
+        assert!(json.contains("\"invalidations_by_reason\": {}"));
+        assert!(json.contains("\"fallback_by_path_semantics\": {}"));
         assert!(json.contains("\"method_ic_hits\": 0"));
         assert!(json.contains("\"method_ic_misses\": 0"));
         assert!(json.contains("\"method_ic_polymorphic_hits\": 0"));

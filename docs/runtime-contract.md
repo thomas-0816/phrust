@@ -238,7 +238,10 @@ returns, generator/fiber continuations, class contexts, shared top-level locals,
 try/finally bodies, and object-allocation bodies that may retain
 destructor-sensitive values. Frame/register counters include
 `frames_allocated`, `frames_reused`, `register_files_allocated`,
-`register_files_reused`, and `frame_reuse_blocked_by_reason`; the older
+`register_files_reused`, `frame_reuse_blocked_by_reason`,
+`call_frame_layout_observed`, `tiny_frame_candidates`,
+`specialized_frame_hits`, `generic_frame_fallback_by_reason`,
+`arg_array_avoided`, and `heap_frame_avoided`; the older
 `frame_allocations` and `frame_reuses` keys remain for compatibility. FPE-19
 also reports the same safe reuse boundary through request-arena counters:
 `request_arena_allocations`, `request_arena_bytes`, `request_pool_resets`,

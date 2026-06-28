@@ -8,5 +8,8 @@ for ($i = 0; $i < 8; $i++) {
     $sum += is_int($i) ? 1 : 0;
     $sum += count(array_values($assoc));
     $sum += strlen(strtolower("ABC"));
+    $sum += str_contains("abcdef", "cd") ? 1 : 0;
+    $sum += str_starts_with("abcdef", "ab") ? 1 : 0;
+    $sum += str_ends_with("abcdef", "ef") ? 1 : 0;
 }
 echo "stdlib:", $sum, "\n";

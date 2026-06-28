@@ -106,6 +106,11 @@ blocked until future focused work:
 - output-buffer callback state;
 - cross-region trace linking and invalidation.
 
+FPE-28 region profiles consume current VM counters and IR/source-map metadata
+to classify future candidate regions, but they do not add the missing resume
+state above. Their exception, `try`/`finally`, generator, and fiber entries are
+rejection metadata, not executable deopt support.
+
 Future Cranelift, baseline-native, quickening, or trace-JIT work must consume
 this VM-owned metadata or extend it with equivalent tests before it can claim a
 safe mid-region resume.

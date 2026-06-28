@@ -18,10 +18,6 @@ if (!extension_loaded('json')) {
     $issues[] = 'json extension';
 }
 
-if (extension_loaded('mbstring')) {
-    $issues[] = 'unexpected mbstring extension';
-}
-
 if (!function_exists('json_encode')) {
     $issues[] = 'json_encode';
 }

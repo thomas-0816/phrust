@@ -1433,6 +1433,98 @@ fn frame_reuse_prepared_args_blocked_reason(prepared_args: &[PreparedArg]) -> Op
         .then_some("by_ref_argument")
 }
 
+fn call_frame_layout_class(function: &IrFunction, call: &FunctionCall<'_>) -> &'static str {
+    if function.flags.is_generator
+        || call.running_generator.is_some()
+        || call.resume_continuation.is_some()
+    {
+        return "generator_frame";
+    }
+    if call.running_fiber.is_some() || call.resume_fiber_continuation.is_some() {
+        return "fiber_frame";
+    }
+    if call.shared_top_level_locals.is_some() || function.flags.is_top_level {
+        return "include_eval_frame";
+    }
+    if function.flags.is_closure || !call.captures.is_empty() || !function.captures.is_empty() {
+        return "closure_frame";
+    }
+    if call.args.iter().any(|arg| arg.name.is_some())
+        || function.params.iter().any(|param| param.variadic)
+    {
+        return "variadic_named_argument_frame";
+    }
+    if call.by_ref_warning_callable_name.is_some() {
+        return "dynamic_reflection_call_frame";
+    }
+    if call.this_value.is_some()
+        || call.scope_class.is_some()
+        || call.called_class.is_some()
+        || call.declaring_class.is_some()
+        || function.flags.is_method
+    {
+        return "known_method_frame";
+    }
+    if function_is_specialized_tiny_leaf_candidate(function, call.args.len()) {
+        return "tiny_leaf_frame";
+    }
+    "known_function_frame"
+}
+
+fn function_is_specialized_tiny_leaf_candidate(
+    function: &IrFunction,
+    supplied_arg_count: usize,
+) -> bool {
+    !function.flags.is_top_level
+        && !function.flags.is_method
+        && !function.flags.is_closure
+        && !function.flags.is_generator
+        && !function.returns_by_ref
+        && function.return_type.is_none()
+        && function.captures.is_empty()
+        && function.params.len() == supplied_arg_count
+        && function
+            .params
+            .iter()
+            .all(|param| !param.by_ref && !param.variadic && param.type_.is_none())
+        && !function_has_try_or_finally(function)
+        && !function_may_hold_destructor_sensitive_value(function)
+        && !method_body_has_inline_blocker(function)
+}
+
+fn specialized_call_frame_fallback_reason(
+    layout: &str,
+    frame_reuse_blocked_reason: Option<&'static str>,
+    args: &[PreparedArg],
+) -> Option<&'static str> {
+    if layout == "tiny_leaf_frame" && frame_reuse_blocked_reason.is_none() {
+        return None;
+    }
+    match layout {
+        "known_method_frame" => Some("class_context"),
+        "closure_frame" => Some("closure"),
+        "variadic_named_argument_frame" => Some("named_or_variadic"),
+        "generator_frame" => Some("generator"),
+        "fiber_frame" => Some("fiber"),
+        "include_eval_frame" => Some("include_eval"),
+        "dynamic_reflection_call_frame" => Some("dynamic_reflection"),
+        "known_function_frame" | "tiny_leaf_frame" => frame_reuse_blocked_reason
+            .or_else(|| {
+                args.iter()
+                    .any(|arg| arg.reference.is_some())
+                    .then_some("by_ref_argument")
+            })
+            .or(Some("not_tiny_leaf")),
+        _ => frame_reuse_blocked_reason
+            .or_else(|| {
+                args.iter()
+                    .any(|arg| arg.reference.is_some())
+                    .then_some("by_ref_argument")
+            })
+            .or(Some("unsupported_layout")),
+    }
+}
+
 fn function_has_try_or_finally(function: &IrFunction) -> bool {
     function.blocks.iter().any(|block| {
         block.instructions.iter().any(|instruction| {
@@ -1976,6 +2068,47 @@ impl Vm {
         }
     }
 
+    fn record_counter_negative_lookup_hit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_negative_lookup_hit();
+        }
+    }
+
+    fn record_counter_invalidation_by_reason(&self, reason: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_invalidation_by_reason(reason);
+        }
+    }
+
+    fn record_counter_fallback_by_path_semantics(&self, reason: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_fallback_by_path_semantics(reason);
+        }
+    }
+
+    fn record_include_graph_resolution_fallback(&self, path: &str, message: &str) {
+        if php_runtime::phar::is_phar_uri(path) {
+            self.record_counter_fallback_by_path_semantics("phar_stream");
+        } else if path.contains("://") {
+            self.record_counter_fallback_by_path_semantics("stream_wrapper");
+        } else if message.contains("OUTSIDE_ROOT") {
+            self.record_counter_fallback_by_path_semantics("outside_allowed_root");
+        } else if message.contains("MISSING") {
+            self.record_counter_fallback_by_path_semantics("missing_path");
+        } else {
+            self.record_counter_fallback_by_path_semantics("loader_error");
+        }
+    }
+
     fn record_counter_frame_activation(&self, reused: bool, register_count: u32, local_count: u32) {
         if !self.options.collect_counters {
             return;
@@ -1992,6 +2125,60 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_frame_reuse_blocked(reason);
+        }
+    }
+
+    fn record_counter_call_frame_layout(&self, layout: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_call_frame_layout(layout);
+        }
+    }
+
+    fn record_counter_tiny_frame_candidate(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_tiny_frame_candidate();
+        }
+    }
+
+    fn record_counter_specialized_frame_hit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_specialized_frame_hit();
+        }
+    }
+
+    fn record_counter_generic_frame_fallback(&self, reason: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_generic_frame_fallback(reason);
+        }
+    }
+
+    fn record_counter_arg_array_avoided(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_arg_array_avoided();
+        }
+    }
+
+    fn record_counter_heap_frame_avoided(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_heap_frame_avoided();
         }
     }
 
@@ -3480,6 +3667,33 @@ impl Vm {
         }
     }
 
+    fn record_counter_builtin_intrinsic_candidate(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_builtin_intrinsic_candidate();
+        }
+    }
+
+    fn record_counter_intrinsic(&self, name: &str, hit: bool) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_intrinsic(name, hit);
+        }
+    }
+
+    fn record_counter_intrinsic_fallback(&self, name: &str, reason: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_intrinsic_fallback(name, reason);
+        }
+    }
+
     fn record_counter_call_ic_megamorphic_fallback(&self) {
         if !self.options.collect_counters {
             return;
@@ -3570,15 +3784,17 @@ impl Vm {
         if !fast_builtin_stub_supported(name) {
             return None;
         }
+        self.record_counter_builtin_intrinsic_candidate();
         let Some(result) = fast_builtin_stub_result(name, values) else {
+            let fallback_reason = fast_builtin_stub_fallback_reason(name, values);
             self.record_counter_builtin_fast_stub(name, false);
-            self.record_counter_builtin_fast_stub_fallback(
-                name,
-                fast_builtin_stub_fallback_reason(values),
-            );
+            self.record_counter_builtin_fast_stub_fallback(name, fallback_reason);
+            self.record_counter_intrinsic(name, false);
+            self.record_counter_intrinsic_fallback(name, fallback_reason);
             return None;
         };
         self.record_counter_builtin_fast_stub(name, true);
+        self.record_counter_intrinsic(name, true);
         if name == "count" {
             self.record_counter_array_count_fast_path_hit();
             self.record_counter_internal_count_array_direct_fast_path_hit();
@@ -6852,6 +7068,7 @@ impl Vm {
                 && call.running_fiber.is_none();
             let frame_reuse_call_shape_reason =
                 frame_reuse_call_shape_blocked_reason(function, &call);
+            let frame_layout = call_frame_layout_class(function, &call);
             let prepared = match arguments::prepare_arguments(
                 compiled,
                 function,
@@ -6890,6 +7107,19 @@ impl Vm {
             };
             let frame_reuse_blocked_reason = frame_reuse_call_shape_reason
                 .or_else(|| frame_reuse_prepared_args_blocked_reason(&prepared.args));
+            self.record_counter_call_frame_layout(frame_layout);
+            let specialized_frame_fallback = specialized_call_frame_fallback_reason(
+                frame_layout,
+                frame_reuse_blocked_reason,
+                &prepared.args,
+            );
+            let specialized_tiny_frame = specialized_frame_fallback.is_none();
+            if frame_layout == "tiny_leaf_frame" {
+                self.record_counter_tiny_frame_candidate();
+            }
+            if let Some(reason) = specialized_frame_fallback {
+                self.record_counter_generic_frame_fallback(reason);
+            }
             let args = prepared.args;
             let trace_args = prepared.trace_args;
             for diagnostic in prepared.diagnostics {
@@ -6981,10 +7211,22 @@ impl Vm {
                 function.register_count,
                 function.local_count,
             );
+            if specialized_tiny_frame {
+                self.record_counter_specialized_frame_hit();
+                if reused_frame {
+                    self.record_counter_heap_frame_avoided();
+                }
+            }
             {
                 let frame = stack.current_mut().expect("frame was pushed");
-                frame.arguments = args.iter().map(|arg| arg.value.clone()).collect();
-                frame.trace_arguments = trace_args;
+                if specialized_tiny_frame {
+                    if !args.is_empty() {
+                        self.record_counter_arg_array_avoided();
+                    }
+                } else {
+                    frame.arguments = args.iter().map(|arg| arg.value.clone()).collect();
+                    frame.trace_arguments = trace_args;
+                }
             }
             if let Err(message) = initialize_captures(function, call.captures, stack) {
                 let result = self.runtime_error(output, compiled, stack, message);
@@ -21688,6 +21930,7 @@ impl Vm {
                 .map(Path::to_path_buf),
         };
         let loaded = if php_runtime::phar::is_phar_uri(&path) {
+            self.record_counter_fallback_by_path_semantics("phar_stream");
             match load_phar_include(&path, &cwd, &self.options.runtime_context.filesystem) {
                 Ok(loaded) => loaded,
                 Err(message) => {
@@ -21704,6 +21947,7 @@ impl Vm {
             }
         } else {
             let Some(loader) = &self.options.include_loader else {
+                self.record_counter_fallback_by_path_semantics("loader_disabled");
                 return include_failure(
                     output,
                     compiled,
@@ -21753,6 +21997,7 @@ impl Vm {
                             block_id,
                             instruction_id,
                         );
+                        self.record_counter_invalidation_by_reason("file_fingerprint_changed");
                         match loader.resolve_with_include_path(
                             including_file.as_deref(),
                             &path,
@@ -21789,6 +22034,7 @@ impl Vm {
                                 }
                             }
                             Err(message) => {
+                                self.record_include_graph_resolution_fallback(&path, &message);
                                 return include_failure(
                                     output,
                                     compiled,
@@ -21839,6 +22085,7 @@ impl Vm {
                         }
                     }
                     Err(message) => {
+                        self.record_include_graph_resolution_fallback(&path, &message);
                         return include_failure(
                             output,
                             compiled,
@@ -23028,6 +23275,9 @@ impl Vm {
                         if class_like_exists_direct(compiled, state, class_name, kind) {
                             return Ok(true);
                         }
+                        self.record_counter_invalidation_by_reason(
+                            "autoload_positive_target_missing",
+                        );
                         self.invalidate_autoload_class_inline_cache(
                             unit_key,
                             function,
@@ -23035,7 +23285,10 @@ impl Vm {
                             instruction,
                         );
                     }
-                    AutoloadClassLookupCacheTarget::Negative => return Ok(false),
+                    AutoloadClassLookupCacheTarget::Negative => {
+                        self.record_counter_negative_lookup_hit();
+                        return Ok(false);
+                    }
                 }
             }
         }
@@ -32047,6 +32300,7 @@ fn validate_generator_arg_count(
     Ok(())
 }
 
+#[cold]
 fn include_failure(
     output: &mut OutputBuffer,
     compiled: &CompiledUnit,
@@ -32100,6 +32354,7 @@ fn include_failure_id(message: &str) -> &str {
         .unwrap_or("E_PHP_VM_INCLUDE_ERROR")
 }
 
+#[cold]
 fn emit_include_failure_output(
     output: &mut OutputBuffer,
     compiled: &CompiledUnit,
@@ -32152,6 +32407,7 @@ fn emit_include_failure_output(
     }
 }
 
+#[cold]
 fn include_failure_target_and_reason(message: &str) -> Option<(&str, String)> {
     let id = include_failure_id(message);
     if !matches!(id, "E_PHP_VM_INCLUDE_MISSING" | "E_PHP_VM_INCLUDE_READ") {
@@ -34736,33 +34992,74 @@ fn internal_function_dispatch_cacheable(name: &str) -> bool {
 fn fast_builtin_stub_supported(name: &str) -> bool {
     matches!(
         name,
-        "strlen" | "count" | "is_int" | "is_string" | "is_array"
+        "strlen"
+            | "count"
+            | "is_int"
+            | "is_string"
+            | "is_array"
+            | "str_contains"
+            | "str_starts_with"
+            | "str_ends_with"
+            | "strtolower"
     )
 }
 
 fn fast_builtin_stub_result(name: &str, values: &[Value]) -> Option<Value> {
-    if values.len() != 1 || matches!(values.first(), Some(Value::Reference(_))) {
+    if values.len() != fast_builtin_stub_expected_arity(name)
+        || values
+            .iter()
+            .any(|value| matches!(value, Value::Reference(_)))
+    {
         return None;
     }
-    let value = values.first()?;
-    match (name, value) {
-        ("strlen", Value::String(string)) => Some(Value::Int(string.len() as i64)),
-        ("count", Value::Array(array)) => Some(Value::Int(array.len() as i64)),
-        ("is_int", value) => Some(Value::Bool(matches!(value, Value::Int(_)))),
-        ("is_string", value) => Some(Value::Bool(matches!(value, Value::String(_)))),
-        ("is_array", value) => Some(Value::Bool(matches!(value, Value::Array(_)))),
+    match (name, values) {
+        ("strlen", [Value::String(string)]) => Some(Value::Int(string.len() as i64)),
+        ("count", [Value::Array(array)]) => Some(Value::Int(array.len() as i64)),
+        ("is_int", [value]) => Some(Value::Bool(matches!(value, Value::Int(_)))),
+        ("is_string", [value]) => Some(Value::Bool(matches!(value, Value::String(_)))),
+        ("is_array", [value]) => Some(Value::Bool(matches!(value, Value::Array(_)))),
+        ("str_contains", [Value::String(haystack), Value::String(needle)]) => Some(Value::Bool(
+            byte_slice_contains(haystack.as_bytes(), needle.as_bytes()),
+        )),
+        ("str_starts_with", [Value::String(haystack), Value::String(needle)]) => Some(Value::Bool(
+            haystack.as_bytes().starts_with(needle.as_bytes()),
+        )),
+        ("str_ends_with", [Value::String(haystack), Value::String(needle)]) => Some(Value::Bool(
+            haystack.as_bytes().ends_with(needle.as_bytes()),
+        )),
+        ("strtolower", [Value::String(string)]) => Some(Value::string(
+            php_source::byte_kernel::ascii_lowercase_copy(string.as_bytes()),
+        )),
         _ => None,
     }
 }
 
-fn fast_builtin_stub_fallback_reason(values: &[Value]) -> &'static str {
-    if values.len() != 1 {
+fn fast_builtin_stub_expected_arity(name: &str) -> usize {
+    match name {
+        "str_contains" | "str_starts_with" | "str_ends_with" => 2,
+        _ => 1,
+    }
+}
+
+#[cold]
+fn fast_builtin_stub_fallback_reason(name: &str, values: &[Value]) -> &'static str {
+    if values.len() != fast_builtin_stub_expected_arity(name) {
         return "arity";
     }
-    if matches!(values.first(), Some(Value::Reference(_))) {
+    if values
+        .iter()
+        .any(|value| matches!(value, Value::Reference(_)))
+    {
         return "by_ref";
     }
     "type"
+}
+
+fn byte_slice_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 fn execute_builtin_entry(
@@ -36165,10 +36462,12 @@ fn write_exact_echo_batch(output: &mut OutputBuffer, parts: &[ExactEchoBatchPart
     output.write_fast_slices(&slices);
 }
 
+#[cold]
 fn concat_fallback_reason(lhs: &Value, rhs: &Value) -> Option<&'static str> {
     concat_operand_fallback_reason(lhs).or_else(|| concat_operand_fallback_reason(rhs))
 }
 
+#[cold]
 fn concat_operand_fallback_reason(value: &Value) -> Option<&'static str> {
     match value {
         Value::String(_) => None,
@@ -37176,7 +37475,9 @@ fn call_builtin_args_to_positional(
     stack: &mut CallStack,
     state: &mut ExecutionState,
 ) -> Result<Vec<Value>, InternalBuiltinArgError> {
-    let args = if function == "round" && args.iter().any(|arg| arg.name.is_some()) {
+    let args = if internal_builtin_generated_named_args_supported(function)
+        && args.iter().any(|arg| arg.name.is_some())
+    {
         call_internal_builtin_named_args_to_positional(function, args)?
     } else {
         args
@@ -37232,6 +37533,13 @@ fn call_builtin_args_to_positional(
         values.push(arg.value);
     }
     Ok(values)
+}
+
+fn internal_builtin_generated_named_args_supported(function: &str) -> bool {
+    matches!(
+        function,
+        "round" | "str_contains" | "str_starts_with" | "str_ends_with" | "strtolower"
+    )
 }
 
 fn call_internal_builtin_named_args_to_positional(
@@ -39330,6 +39638,13 @@ mod tests {
             Some(&1),
             "{counters:?}"
         );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("output.object_to_string"),
+            Some(&1),
+            "{counters:?}"
+        );
         assert!(counters.output_fast_appends >= 2, "{counters:?}");
 
         let root =
@@ -39372,6 +39687,20 @@ mod tests {
             counters
                 .output_slow_appends_by_reason
                 .get("resource_conversion"),
+            Some(&1),
+            "{counters:?}"
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("output.array_conversion_warning"),
+            Some(&1),
+            "{counters:?}"
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("output.resource_conversion"),
             Some(&1),
             "{counters:?}"
         );
@@ -39553,6 +39882,13 @@ good"
             Some(&1),
             "{counters:?}"
         );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("concat.scalar_conversion"),
+            Some(&1),
+            "{counters:?}"
+        );
 
         let object = execute_source_with_options(
             "<?php
@@ -39576,6 +39912,13 @@ good"
         assert!(counters.concat_prealloc_hits >= 1, "{counters:?}");
         assert_eq!(
             counters.concat_fallback_by_reason.get("object_to_string"),
+            Some(&1),
+            "{counters:?}"
+        );
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("concat.object_to_string"),
             Some(&1),
             "{counters:?}"
         );
@@ -39759,7 +40102,13 @@ good"
 
     #[test]
     fn include_missing_warns_and_continues_but_require_missing_fails() {
-        let include = execute_fixture_file("fixtures/runtime/valid/includes/include-missing.php");
+        let include = execute_fixture_file_with_options(
+            "fixtures/runtime/valid/includes/include-missing.php",
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+        );
         assert!(include.status.is_success(), "{:?}", include.status);
         let include_output = String::from_utf8_lossy(include.output.as_bytes());
         assert!(
@@ -39778,8 +40127,22 @@ good"
         assert!(include_output.ends_with("after\n"), "{include_output}");
         assert_eq!(include.diagnostics[0].id(), "E_PHP_VM_INCLUDE_MISSING");
         assert_eq!(include.diagnostics[0].severity(), RuntimeSeverity::Warning);
+        let counters = include.counters.expect("counters should be collected");
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("include_autoload.missing_path"),
+            Some(&1),
+            "{counters:?}"
+        );
 
-        let require = execute_fixture_file("fixtures/runtime/invalid/includes/require-missing.php");
+        let require = execute_fixture_file_with_options(
+            "fixtures/runtime/invalid/includes/require-missing.php",
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+        );
         assert_eq!(require.status.exit_status(), ExitStatus::RuntimeError);
         let require_output = String::from_utf8_lossy(require.output.as_bytes());
         assert!(
@@ -39798,6 +40161,14 @@ good"
         assert_eq!(
             require.diagnostics[0].severity(),
             RuntimeSeverity::FatalError
+        );
+        let counters = require.counters.expect("counters should be collected");
+        assert_eq!(
+            counters
+                .slow_path_calls_by_reason
+                .get("include_autoload.missing_path"),
+            Some(&1),
+            "{counters:?}"
         );
     }
 
@@ -40097,6 +40468,38 @@ good"
         let counters = result.counters.expect("counters");
         assert!(counters.autoload_class_lookup_ic_hits > 0, "{counters:?}");
         assert!(counters.autoload_class_lookup_ic_misses > 0, "{counters:?}");
+        assert!(counters.autoload_graph_hits > 0, "{counters:?}");
+        assert!(counters.autoload_graph_misses > 0, "{counters:?}");
+        assert_eq!(counters.negative_lookup_hits, 0, "{counters:?}");
+    }
+
+    #[test]
+    fn autoload_lookup_cache_records_negative_hits_without_side_effects() {
+        let source = "<?php
+            function perf_missing_no_autoload() {
+                return class_exists('PerfNegativeCacheMissing', false);
+            }
+            for ($i = 0; $i < 4; $i++) {
+                echo perf_missing_no_autoload() ? 'bad' : 'miss';
+            }
+            ";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.to_string_lossy(), "missmissmissmiss");
+        let counters = result.counters.expect("counters");
+        assert!(counters.autoload_class_lookup_ic_hits > 0, "{counters:?}");
+        assert!(counters.autoload_class_lookup_ic_misses > 0, "{counters:?}");
+        assert!(counters.autoload_graph_hits > 0, "{counters:?}");
+        assert!(counters.autoload_graph_misses > 0, "{counters:?}");
+        assert!(counters.negative_lookup_hits > 0, "{counters:?}");
     }
 
     #[test]
@@ -40240,6 +40643,8 @@ good"
         assert!(counters.inline_cache_include_path_slots > 0, "{counters:?}");
         assert!(counters.include_path_ic_hits > 0, "{counters:?}");
         assert!(counters.include_path_ic_misses > 0, "{counters:?}");
+        assert!(counters.include_graph_hits > 0, "{counters:?}");
+        assert!(counters.include_graph_misses > 0, "{counters:?}");
     }
 
     #[test]
@@ -40315,6 +40720,12 @@ good"
         assert_eq!(on.diagnostics.len(), 1);
         assert_eq!(off.diagnostics[0].id(), on.diagnostics[0].id());
         assert_eq!(off.diagnostics[0].severity(), on.diagnostics[0].severity());
+        let counters = on.counters.expect("counters");
+        assert_eq!(
+            counters.fallback_by_path_semantics.get("missing_path"),
+            Some(&1),
+            "{counters:?}"
+        );
     }
 
     #[test]
@@ -40380,6 +40791,60 @@ good"
         assert_eq!(probe.kind, Some(InlineCacheKind::IncludePath));
         assert!(event.invalidation);
         assert!(event.miss);
+    }
+
+    #[test]
+    fn include_path_graph_invalidates_changed_file_metadata_in_vm() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-include-path-graph-vm-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let include_path = root.join("mutable.php");
+        std::fs::write(&include_path, "<?php echo 'A';\n").expect("write include");
+        let include_path_php = include_path.to_string_lossy().replace('\\', "\\\\");
+        let replacement = "<?php echo 'B';\n"
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'");
+        let source = format!(
+            "<?php
+            function perf_load_mutable() {{
+                include '{include_path_php}';
+            }}
+            perf_load_mutable();
+            file_put_contents('{include_path_php}', '{replacement}');
+            perf_load_mutable();
+            "
+        );
+        let result = execute_source_with_options(
+            &source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(root.clone()).expect("loader")),
+                runtime_context: RuntimeContext::default()
+                    .with_cwd(root.clone())
+                    .with_filesystem_capabilities(
+                        php_runtime::FilesystemCapabilities::none()
+                            .with_allowed_roots(vec![root.clone()]),
+                    ),
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.to_string_lossy(), "AB");
+        let counters = result.counters.expect("counters");
+        assert!(counters.include_path_ic_invalidations > 0, "{counters:?}");
+        assert_eq!(
+            counters
+                .invalidations_by_reason
+                .get("file_fingerprint_changed"),
+            Some(&1),
+            "{counters:?}"
+        );
     }
 
     #[test]
@@ -44774,6 +45239,93 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     #[test]
+    fn specialized_call_frames_record_layouts_and_preserve_fallbacks() {
+        let source = r#"<?php
+function tiny_frame_add($a, $b) { return $a + $b; }
+function call_context_frame($a) { return func_num_args() . ':' . count(func_get_args()); }
+class FrameLayoutService { public function inc($x) { return $x + 1; } }
+function named_frame($a, $b = 2) { return $a + $b; }
+function variadic_frame(...$xs) { return count($xs); }
+function byref_frame(&$x) { $x++; }
+function gen_frame() { yield 1; }
+$sum = 0;
+for ($i = 0; $i < 20; $i++) { $sum = tiny_frame_add($sum, 1); }
+echo "tiny=$sum\n";
+echo "context=", call_context_frame(1, 2), "\n";
+$svc = new FrameLayoutService();
+for ($i = 0; $i < 3; $i++) { echo "method=", $svc->inc($i), "\n"; }
+$base = 3;
+$closure = function($x) use ($base) { return $x + $base; };
+echo "closure=", $closure(4), "\n";
+echo "named=", named_frame(b: 5, a: 4), "\n";
+echo "variadic=", variadic_frame(1, 2, 3), "\n";
+$value = 1;
+byref_frame($value);
+echo "byref=$value\n";
+$g = gen_frame();
+echo "gen=", $g->current(), "\n";
+$fiber = new Fiber(function() { Fiber::suspend("fiber"); });
+echo "fiber=", $fiber->start(), "\n";
+eval('echo "eval=5\n";');
+echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
+"#;
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"tiny=20\ncontext=2:2\nmethod=1\nmethod=2\nmethod=3\nclosure=7\nnamed=9\nvariadic=3\nbyref=2\ngen=1\nfiber=fiber\neval=5\ndynamic=5\n"
+        );
+        let counters = result.counters.expect("counters");
+        for layout in [
+            "tiny_leaf_frame",
+            "known_function_frame",
+            "known_method_frame",
+            "closure_frame",
+            "variadic_named_argument_frame",
+            "generator_frame",
+            "fiber_frame",
+            "include_eval_frame",
+        ] {
+            assert!(
+                counters
+                    .call_frame_layout_observed
+                    .get(layout)
+                    .is_some_and(|count| *count > 0),
+                "missing {layout}: {counters:?}"
+            );
+        }
+        assert!(counters.tiny_frame_candidates > 0, "{counters:?}");
+        assert!(counters.specialized_frame_hits > 0, "{counters:?}");
+        assert!(counters.arg_array_avoided > 0, "{counters:?}");
+        assert!(counters.heap_frame_avoided > 0, "{counters:?}");
+        for reason in [
+            "not_tiny_leaf",
+            "class_context",
+            "closure",
+            "named_or_variadic",
+            "by_ref_param",
+            "generator",
+            "fiber",
+            "include_eval",
+        ] {
+            assert!(
+                counters
+                    .generic_frame_fallback_by_reason
+                    .get(reason)
+                    .is_some_and(|count| *count > 0),
+                "missing {reason}: {counters:?}"
+            );
+        }
+    }
+
+    #[test]
     fn frame_reuse_preserves_recursive_calls() {
         let source = "<?php function fact_frame_reuse($n) { if ($n < 2) { return 1; } return $n * fact_frame_reuse($n - 1); } echo fact_frame_reuse(5);";
         let result = execute_source_with_options(
@@ -45988,6 +46540,60 @@ echo perf_jit_unstable_types_debug(4), "\n";
         assert!(
             on_counters.internal_count_array_direct_fast_path_hits >= 3,
             "{on_counters:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_intrinsics_preserve_string_semantics_and_record_counters() {
+        let source = "<?php
+            echo str_contains(\"ab\\0cd\", \"\\0c\") ? 'contains' : 'missing';
+            echo '|', str_contains(\"abc\", \"\") ? 'empty' : 'bad';
+            echo '|', str_starts_with(\"abcdef\", \"abc\") ? 'start' : 'bad';
+            echo '|', str_ends_with(\"abcdef\", \"def\") ? 'end' : 'bad';
+            echo '|', strtolower(\"A\\0Z!\");
+            echo '|', str_contains(\"abc\", 2) ? 'coerced' : 'not';
+        ";
+        let off = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                inline_caches: InlineCacheMode::Off,
+                ..VmOptions::default()
+            },
+        );
+        let on = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(off.status.is_success(), "{:?}", off.status);
+        assert!(on.status.is_success(), "{:?}", on.status);
+        assert_eq!(on.output, off.output);
+        assert_eq!(on.output.as_bytes(), b"contains|empty|start|end|a\0z!|not");
+        let off_counters = off.counters.expect("off counters");
+        let on_counters = on.counters.expect("on counters");
+        assert_eq!(off_counters.builtin_intrinsic_candidates, 0);
+        assert!(on_counters.builtin_intrinsic_candidates >= 6);
+        for name in [
+            "str_contains",
+            "str_starts_with",
+            "str_ends_with",
+            "strtolower",
+        ] {
+            assert!(
+                on_counters.intrinsic_hits.get(name).copied().unwrap_or(0) > 0,
+                "{name}: {on_counters:?}"
+            );
+        }
+        assert_eq!(
+            on_counters
+                .intrinsic_fallback_by_reason
+                .get("str_contains.type"),
+            Some(&1)
         );
     }
 

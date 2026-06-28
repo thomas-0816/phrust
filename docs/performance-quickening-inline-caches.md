@@ -201,12 +201,15 @@ eval attempts, and autoload registration changes conservatively bump the epoch;
 a stale slot records an invalidation and refreshes through generic resolution.
 Guard or metadata mismatches record a fallback and use the generic resolver.
 
-The initial builtin fast-stub set is deliberately small and runs only while
+The builtin intrinsic set is deliberately small and runs only while
 `--inline-caches=on`: `strlen` for direct strings, `count` for direct arrays,
-and `is_int`, `is_string`, and `is_array` for direct non-reference values. Wrong
-arity, named-argument errors, by-reference paths, coercion-sensitive values, and
-unsupported builtin shapes fall back to the existing builtin registry path with
-per-builtin fallback-reason counters.
+`is_int`, `is_string`, and `is_array` for direct non-reference values, plus
+exact string intrinsics for `strtolower`, `str_contains`, `str_starts_with`,
+and `str_ends_with`. Wrong arity, named-argument errors, by-reference paths,
+coercion-sensitive values, and unsupported builtin shapes fall back to the
+existing builtin registry path with per-builtin fallback-reason counters. The
+FPE-25 ladder and deferred bytecode/native policy are documented in
+`docs/performance-builtin-intrinsics.md`.
 
 ### `CALL_METHOD` Known Method
 
@@ -431,6 +434,11 @@ only when counter collection is enabled. Current fields:
 | `builtin_fast_stub_hits` | Per-builtin hits for the small exact fast-stub set. |
 | `builtin_fast_stub_misses` | Per-builtin misses that fell back to the generic builtin path. |
 | `builtin_fast_stub_fallback_by_reason` | Per-builtin fallback reasons for exact fast stubs, keyed as `name.reason`. |
+| `builtin_intrinsic_candidates` | Supported builtin intrinsic calls considered while inline caches are enabled. |
+| `intrinsic_hits` | Per-intrinsic exact fast-path hits. |
+| `intrinsic_misses` | Per-intrinsic guard misses that fell back to generic builtin execution. |
+| `intrinsic_fallback_by_reason` | Per-intrinsic fallback reasons keyed as `name.reason`. |
+| `specialized_builtin_opcode_hits` | Future specialized bytecode builtin opcode hits; empty until bytecode parity fixtures exist. |
 | `call_ic_megamorphic_fallbacks` | Function-call IC sites that reached megamorphic fallback state. |
 | `method_ic_hits` | Method-call IC guard hits. |
 | `method_ic_misses` | Method-call IC misses, including cold slots and guard failures. |

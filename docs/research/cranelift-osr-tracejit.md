@@ -6,7 +6,9 @@ Reference target: PHP 8.5.7 (`php-8.5.7`).
 
 This document covers Optional 07.CL.D. It evaluates on-stack replacement
 (OSR) and trace-JIT ideas for PHP loops. It does not implement OSR, does not
-add trace recording, and does not change runtime behavior.
+add an executable trace cache, and does not change runtime behavior. FPE-28
+adds opt-in metadata-only region profile JSON for future trace-shape research;
+that report remains advisory and never replaces VM execution.
 
 ## Recommendation
 
@@ -55,6 +57,13 @@ A trace JIT would add additional machinery beyond OSR:
 - reproducible minimizer output for divergent traces;
 - tooling to map trace instructions back to source spans and IR nodes.
 
+FPE-28 now provides a first metadata-only input for this research through
+`php-vm run --region-profile-json <path>`. It records bounded framework-like
+region summaries, stable hashed callsites, numeric function/method IDs, IC and
+shape metadata, include/autoload events, and conservative rejection reasons.
+It still does not record executable traces, link side traces, install native
+guards, or own deopt/live-state resume.
+
 The current Performance addendum already has a better-controlled path: compile
 narrow function-level candidates, report side exits, blacklist unstable
 regions, and keep default execution unchanged.
@@ -98,7 +107,7 @@ Recommended path:
 Performance remains entry-only:
 
 - no mid-loop native entry;
-- no trace recorder;
+- no executable trace recorder;
 - no trace cache;
 - no native frame reconstruction from arbitrary instruction points;
 - no implicit widening of loop, call, array, object, or `foreach` semantics.

@@ -72,6 +72,7 @@ reference/COW/key state, and foreach iterator state.
 | Quickening, inline caches, superinstructions | Safe near-term acceleration because execution remains inside the VM. | Continue expanding these while collecting fallback/deopt counters that future native tiers can reuse. |
 | Cranelift selective regions | Default-off native subset for proven hot regions with helper ABI, side exits, blacklist, and guard reports. | Keep selective and feature-gated. Do not use Cranelift as an excuse to skip baseline-native executable-memory and live-state prerequisites. |
 | Baseline-native stencil | No-exec evidence for dense bytecode suitability, compile cost, code-size estimates, helper pressure, and unsupported state. | Useful as planning data only. It cannot justify native execution until every prerequisite above is satisfied. |
+| Region profile report | Metadata-only framework trace-shape evidence from VM counters, IC states, source maps, and shape summaries. | Useful for ranking future inline-cache, superinstruction, baseline-native, and Cranelift candidates. It does not satisfy executable-memory, live-state, deopt, exception, generator/fiber, or PHPT prerequisites. |
 
 ## Validation
 

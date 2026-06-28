@@ -107,17 +107,37 @@ def load_counters(path: Path) -> dict[str, int]:
     return {key: value for key, value in data.items() if isinstance(key, str) and isinstance(value, int)}
 
 
+def load_region_profile(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{rel(path)}: region profile JSON root must be an object")
+    if data.get("metadata_only") is not True:
+        raise ValueError(f"{rel(path)}: region profile must be metadata-only")
+    traces = data.get("traces")
+    if not isinstance(traces, list) or not traces:
+        raise ValueError(f"{rel(path)}: region profile must contain traces")
+    for trace in traces:
+        if not isinstance(trace, dict):
+            raise ValueError(f"{rel(path)}: region trace must be an object")
+        if "stable_callsite_ids" not in trace or "candidate" not in trace:
+            raise ValueError(f"{rel(path)}: region trace is missing required metadata")
+    return data
+
+
 def run_fixture(engine: Path, fixture: Path, out_dir: Path, variant: str, flags: list[str]) -> dict[str, Any]:
     stem = fixture.stem
     stdout_path = out_dir / f"{stem}.{variant}.stdout"
     stderr_path = out_dir / f"{stem}.{variant}.stderr"
     counters_path = out_dir / f"{stem}.{variant}.counters.json"
+    region_profile_path = out_dir / f"{stem}.{variant}.region-profile.json"
     command = [
         str(engine),
         "run",
         *flags,
         "--counters-json",
         str(counters_path),
+        "--region-profile-json",
+        str(region_profile_path),
         str(fixture),
     ]
     completed = subprocess.run(
@@ -131,6 +151,7 @@ def run_fixture(engine: Path, fixture: Path, out_dir: Path, variant: str, flags:
     stdout_path.write_text(completed.stdout, encoding="utf-8")
     stderr_path.write_text(completed.stderr, encoding="utf-8")
     counters = load_counters(counters_path) if counters_path.is_file() else {}
+    region_profile = load_region_profile(region_profile_path) if region_profile_path.is_file() else {}
     return {
         "variant": variant,
         "command": command,
@@ -139,6 +160,8 @@ def run_fixture(engine: Path, fixture: Path, out_dir: Path, variant: str, flags:
         "stderr": rel(stderr_path),
         "counters": counters,
         "counters_path": rel(counters_path),
+        "region_profile_path": rel(region_profile_path),
+        "region_profile_summary": region_profile.get("summary", {}),
     }
 
 
@@ -159,9 +182,9 @@ def render_markdown(summary: dict[str, Any]) -> str:
         "`tests/fixtures/performance/framework_smoke/`.",
         "",
         "The smoke compares an opt-off VM run with an opt-on run. It checks stdout,",
-        "stderr, and exit status before recording counters. It does not collect",
-        "wall-clock timings, and any later timing derived from this corpus is local",
-        "and advisory.",
+        "stderr, and exit status before recording counters and metadata-only region",
+        "profiles. It does not collect wall-clock timings, and any later timing",
+        "derived from this corpus is local and advisory.",
         "",
         "## Summary",
         "",

@@ -17,7 +17,7 @@ use php_vm::{
     DenseBytecodeUnit, DenseOpcode, ExecutionFormat, IncludeLoader, InlineCacheMode,
     JitBlacklistMode, JitMode, PersistentFeedbackContext, PersistentFeedbackEpochs,
     PersistentFeedbackLoadReport, PersistentFeedbackStats, PersistentFeedbackStore, QuickeningMode,
-    SuperinstructionMode, TieringOptions, Vm, VmOptions,
+    RegionProfile, SuperinstructionMode, TieringOptions, Vm, VmOptions,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -363,7 +363,10 @@ where
     W: Write,
     E: Write,
 {
-    let run_options = parse_run_args(args)?;
+    let mut run_options = parse_run_args(args)?;
+    if run_options.region_profile_json.is_none() {
+        run_options.region_profile_json = region_profile_json_from_env();
+    }
     if run_options.jit.requires_cranelift() && !cfg!(feature = "jit-cranelift") {
         writeln!(
             stderr,
@@ -418,7 +421,9 @@ where
         runtime_context,
         trace: run_options.trace,
         trace_runtime: run_options.trace_runtime,
-        collect_counters: run_options.counters_json.is_some() || run_options.jit_stats.is_json(),
+        collect_counters: run_options.counters_json.is_some()
+            || run_options.jit_stats.is_json()
+            || run_options.region_profile_json.is_some(),
         execution_format: run_options.execution_format,
         superinstructions: run_options.superinstructions,
         quickening: run_options.quickening,
@@ -430,6 +435,10 @@ where
         tiering: run_options.tiering.clone(),
         ..VmOptions::default()
     });
+    let region_profile_unit = run_options
+        .region_profile_json
+        .as_ref()
+        .map(|_| unit.clone());
     let result = vm.execute(unit);
     stdout
         .write_all(result.output.as_bytes())
@@ -443,6 +452,18 @@ where
             return Err("counters were requested but not collected".to_string());
         };
         write_counters_json(path.clone(), counters)?;
+    }
+    if let Some(path) = &run_options.region_profile_json {
+        let Some(counters) = &result.counters else {
+            return Err("region profile was requested but counters were not collected".to_string());
+        };
+        let Some(unit) = region_profile_unit.as_ref() else {
+            return Err(
+                "region profile was requested but IR metadata was not retained".to_string(),
+            );
+        };
+        let profile = RegionProfile::from_unit_and_counters(unit, counters, run_options.path);
+        write_region_profile_json(path.clone(), &profile)?;
     }
     if run_options.jit_stats.is_json()
         && let Some(counters) = result.counters.as_ref()
@@ -1325,6 +1346,7 @@ struct RunOptions<'a> {
     trace: bool,
     trace_runtime: bool,
     counters_json: Option<String>,
+    region_profile_json: Option<String>,
     bytecode_cache: BytecodeCacheOptions,
     opt_level: OptimizationLevel,
     execution_format: ExecutionFormat,
@@ -1578,6 +1600,7 @@ fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> {
     let mut trace = false;
     let mut trace_runtime = false;
     let mut counters_json = None;
+    let mut region_profile_json = None;
     let mut bytecode_cache = BytecodeCacheOptions::default();
     let mut opt_level = OptimizationLevel::O0;
     let mut execution_format = ExecutionFormat::Ir;
@@ -1894,6 +1917,16 @@ fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> {
             arg if let Some(value) = arg.strip_prefix("--counters-json=") => {
                 counters_json = Some(value.to_owned());
             }
+            "--region-profile-json" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("run --region-profile-json requires <path>".to_string());
+                };
+                region_profile_json = Some(value.clone());
+            }
+            arg if let Some(value) = arg.strip_prefix("--region-profile-json=") => {
+                region_profile_json = Some(value.to_owned());
+            }
             "--env" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -1915,6 +1948,7 @@ fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> {
                     trace,
                     trace_runtime,
                     counters_json,
+                    region_profile_json,
                     bytecode_cache,
                     opt_level,
                     execution_format,
@@ -1950,6 +1984,7 @@ fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> {
         trace,
         trace_runtime,
         counters_json,
+        region_profile_json,
         bytecode_cache,
         opt_level,
         execution_format,
@@ -2385,6 +2420,16 @@ fn write_counters_json(path: String, counters: &php_vm::VmCounters) -> Result<()
     fs::write(path, counters.to_json()).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+fn write_region_profile_json(path: String, profile: &RegionProfile) -> Result<(), String> {
+    let path = Path::new(&path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    fs::write(path, profile.to_json()).map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn write_jit_stats_json<W: Write>(
     stderr: &mut W,
     counters: &php_vm::VmCounters,
@@ -2592,6 +2637,13 @@ fn parse_env_assignment(value: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), value.to_string()))
 }
 
+fn region_profile_json_from_env() -> Option<String> {
+    env::var("PHRUST_REGION_PROFILE_JSON")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 fn parse_report_args(args: &[String]) -> Result<ReportOptions<'_>, String> {
     let mut path = None;
     let mut format = ReportFormat::Markdown;
@@ -2632,7 +2684,7 @@ fn parse_report_format(value: &str) -> Result<ReportFormat, String> {
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--trace] [--trace-runtime] [--env KEY=VALUE] [--engine-preset baseline|fast|experimental-jit] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--opt-level 0|1|2] [--exec-format ir|auto|bytecode] [--superinstructions off|on] [--quickening off|on] [--inline-caches off|on] [--jit off|noop|cranelift] [--jit-threshold N] [--jit-max-compile-us N] [--jit-max-functions N] [--jit-eager] [--jit-blacklist off|on] [--jit-dump-clif PATH] [--jit-stats json] [--tiering off|on] [--tiering-function-threshold N] [--tiering-loop-threshold N] [--tiering-ic-stability-threshold N] [--tiering-guard-failure-threshold N] [--tiering-stats-json <path>] [--persistent-feedback-read <path>] [--persistent-feedback-stats-json <path>] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nStatus:\n  {}\n  {}\n  {}\n  {}",
+        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--trace] [--trace-runtime] [--env KEY=VALUE] [--engine-preset baseline|fast|experimental-jit] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--opt-level 0|1|2] [--exec-format ir|auto|bytecode] [--superinstructions off|on] [--quickening off|on] [--inline-caches off|on] [--jit off|noop|cranelift] [--jit-threshold N] [--jit-max-compile-us N] [--jit-max-functions N] [--jit-eager] [--jit-blacklist off|on] [--jit-dump-clif PATH] [--jit-stats json] [--tiering off|on] [--tiering-function-threshold N] [--tiering-loop-threshold N] [--tiering-ic-stability-threshold N] [--tiering-guard-failure-threshold N] [--tiering-stats-json <path>] [--persistent-feedback-read <path>] [--persistent-feedback-stats-json <path>] [--counters-json <path>] [--region-profile-json <path>] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nStatus:\n  {}\n  {}\n  {}\n  {}",
         php_ir::ir_skeleton_status(),
         php_runtime::runtime_skeleton_status(),
         php_vm::vm_skeleton_status(),
@@ -3732,6 +3784,53 @@ mod tests {
     }
 
     #[test]
+    fn run_args_accept_region_profile_json() {
+        let args = vec![
+            "--region-profile-json=target/performance/framework-smoke/profile.json".to_string(),
+            "fixtures/runtime/valid/hello.php".to_string(),
+        ];
+
+        let options = parse_run_args(&args).expect("run args should parse");
+
+        assert_eq!(
+            options.region_profile_json.as_deref(),
+            Some("target/performance/framework-smoke/profile.json")
+        );
+    }
+
+    #[test]
+    fn run_region_profile_json_writes_file_without_stdout_leak() {
+        let path = std::env::temp_dir().join(format!(
+            "phrust-vm-region-profile-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            [
+                "run".to_string(),
+                "--region-profile-json".to_string(),
+                path.display().to_string(),
+                fixture("fixtures/runtime/valid/hello.php"),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(stdout, b"hello runtime\n");
+        assert!(stderr.is_empty());
+        let json = std::fs::read_to_string(&path).expect("region profile JSON should be written");
+        let _ = std::fs::remove_file(&path);
+        assert!(json.contains("\"metadata_only\": true"));
+        assert!(json.contains("\"router_dispatch\""));
+        assert!(json.contains("\"stable_callsite_ids\""));
+        assert!(json.contains("\"bytecode_ranges\""));
+        assert!(!json.contains("hello.php"));
+    }
+
+    #[test]
     fn run_jit_noop_mode_is_visible_in_counter_json() {
         let path = std::env::temp_dir().join(format!(
             "phrust-vm-jit-noop-counters-{}.json",
@@ -3927,6 +4026,7 @@ mod tests {
         assert_eq!(options.path, "fixtures/runtime/valid/hello.php");
         assert_eq!(options.script_args, vec!["script-arg"]);
         assert_eq!(options.counters_json, None);
+        assert_eq!(options.region_profile_json, None);
         assert_eq!(options.bytecode_cache.mode, BytecodeCacheMode::Off);
         assert_eq!(options.opt_level, OptimizationLevel::O0);
         assert_eq!(options.execution_format, ExecutionFormat::Ir);

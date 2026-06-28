@@ -86,8 +86,10 @@ nix develop -c just composer-smoke-platform
 The fixture `vendor/composer/platform_check.php` in the offline
 `basic_project` verifies `PHP_VERSION_ID`, `PHP_VERSION`, `defined`,
 `constant`, `extension_loaded`, `get_loaded_extensions`, `ini_get`,
-`class_exists`, `function_exists`, and `version_compare`. It also confirms that
-an absent extension such as `mbstring` is reported as not loaded. The companion
+`class_exists`, `function_exists`, and `version_compare`. It does not assert the
+`mbstring` loaded state because the default PHP 8.5.7 oracle is built without
+mbstring while phrust intentionally exposes a bounded UTF-8 mbstring MVP; the
+focused mbstring PHPT/module gates own that policy. The companion
 `platform_version_compare.php` fixture pins Composer-relevant comparison
 operators and prerelease labels against the PHP 8.5.7 reference.
 

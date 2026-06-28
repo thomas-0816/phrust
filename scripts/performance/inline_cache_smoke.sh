@@ -124,6 +124,18 @@ required_fields = [
     "builtin_fast_stub_hits",
     "builtin_fast_stub_misses",
     "builtin_fast_stub_fallback_by_reason",
+    "builtin_intrinsic_candidates",
+    "intrinsic_hits",
+    "intrinsic_misses",
+    "intrinsic_fallback_by_reason",
+    "specialized_builtin_opcode_hits",
+    "slow_path_calls_by_reason",
+    "call_frame_layout_observed",
+    "tiny_frame_candidates",
+    "specialized_frame_hits",
+    "generic_frame_fallback_by_reason",
+    "arg_array_avoided",
+    "heap_frame_avoided",
     "call_ic_megamorphic_fallbacks",
 ]
 for sample in off + on:
@@ -193,6 +205,10 @@ on_function_call_misses = total(on, "function_call_ic_misses")
 on_builtin_call_hits = total(on, "builtin_call_ic_hits")
 on_builtin_call_misses = total(on, "builtin_call_ic_misses")
 on_call_ic_megamorphic_fallbacks = total(on, "call_ic_megamorphic_fallbacks")
+on_tiny_frame_candidates = total(on, "tiny_frame_candidates")
+on_specialized_frame_hits = total(on, "specialized_frame_hits")
+on_arg_array_avoided = total(on, "arg_array_avoided")
+on_heap_frame_avoided = total(on, "heap_frame_avoided")
 
 if off_slots != 0 or off_observations != 0:
     raise SystemExit(f"[fail] inline-caches=off recorded slots={off_slots} observations={off_observations}")
@@ -203,6 +219,10 @@ for builtin in ["strlen", "count", "is_int", "is_string", "is_array"]:
         raise SystemExit(f"[fail] inline-caches=off recorded builtin fast-stub counters for {builtin}")
 if any(sample.get("builtin_fast_stub_fallback_by_reason", {}) for sample in off):
     raise SystemExit("[fail] inline-caches=off recorded builtin fast-stub fallback reasons")
+if total(off, "builtin_intrinsic_candidates") or any(sample.get("intrinsic_hits", {}) or sample.get("intrinsic_misses", {}) for sample in off):
+    raise SystemExit("[fail] inline-caches=off recorded builtin intrinsic counters")
+if any(sample.get("intrinsic_fallback_by_reason", {}) for sample in off):
+    raise SystemExit("[fail] inline-caches=off recorded intrinsic fallback reasons")
 if any(sample.get("property_assign_ic_fallback_reasons", {}) for sample in off):
     raise SystemExit("[fail] inline-caches=off recorded property assignment fallback reasons")
 if on_slots <= 0:
@@ -234,6 +254,25 @@ if on_builtin_call_misses <= 0:
 for builtin in ["strlen", "count", "is_int", "is_string", "is_array"]:
     if total_map(on, "builtin_fast_stub_hits", builtin) <= 0:
         raise SystemExit(f"[fail] builtin fast stub recorded no hits for {builtin}")
+for intrinsic in ["strtolower", "str_contains", "str_starts_with", "str_ends_with"]:
+    if total_map(on, "intrinsic_hits", intrinsic) <= 0:
+        raise SystemExit(f"[fail] builtin intrinsic recorded no hits for {intrinsic}")
+if total(on, "builtin_intrinsic_candidates") <= 0:
+    raise SystemExit("[fail] builtin intrinsic candidate counter recorded no candidates")
+if on_tiny_frame_candidates <= 0:
+    raise SystemExit("[fail] call-frame layout counter recorded no tiny-frame candidates")
+if on_specialized_frame_hits <= 0:
+    raise SystemExit("[fail] specialized call-frame counter recorded no hits")
+if on_arg_array_avoided <= 0:
+    raise SystemExit("[fail] specialized call-frame counter recorded no avoided argument arrays")
+if on_heap_frame_avoided <= 0:
+    raise SystemExit("[fail] specialized call-frame counter recorded no avoided heap frames")
+for layout in ["tiny_leaf_frame", "known_method_frame", "closure_frame", "variadic_named_argument_frame", "generator_frame", "include_eval_frame"]:
+    if total_map(on, "call_frame_layout_observed", layout) <= 0:
+        raise SystemExit(f"[fail] call-frame layout counter recorded no {layout}")
+for reason in ["not_tiny_leaf", "class_context", "closure", "named_or_variadic", "by_ref_param", "generator", "include_eval"]:
+    if total_map(on, "generic_frame_fallback_by_reason", reason) <= 0:
+        raise SystemExit(f"[fail] specialized frame fallback counter recorded no {reason}")
 if total_map(on, "builtin_fast_stub_misses", "strlen") <= 0:
     raise SystemExit("[fail] builtin fast stub recorded no strlen misses")
 if total_map(on, "builtin_fast_stub_fallback_by_reason", "strlen.type") <= 0:

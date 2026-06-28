@@ -16,6 +16,7 @@ pub mod inline_cache;
 pub mod literal_pool;
 pub mod persistent_feedback;
 pub mod quickening;
+pub mod region_profile;
 pub mod std_builtins;
 pub mod tiering;
 pub mod todo_runtime;
@@ -54,6 +55,9 @@ pub use persistent_feedback::{
 pub use quickening::{
     QuickeningMode, QuickeningObservation, QuickeningSpecialization, QuickeningState,
     QuickeningTable,
+};
+pub use region_profile::{
+    BranchBias, BytecodeRange, PrivacyPolicy, RegionCandidate, RegionProfile, RegionTrace,
 };
 pub use tiering::{ExecutionTier, TieringOptions, TieringState, TieringStats};
 pub use todo_runtime::{VmTodo, vm_skeleton_status};

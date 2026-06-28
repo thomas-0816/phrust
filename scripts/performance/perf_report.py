@@ -63,6 +63,14 @@ INLINE_CACHE_COUNTERS = (
     "builtin_fast_stub_hits.is_string",
     "builtin_fast_stub_hits.is_array",
     "builtin_fast_stub_misses.strlen",
+    "builtin_intrinsic_candidates",
+    "intrinsic_hits.str_contains",
+    "intrinsic_hits.str_starts_with",
+    "intrinsic_hits.str_ends_with",
+    "intrinsic_hits.strtolower",
+    "intrinsic_misses.str_contains",
+    "intrinsic_fallback_by_reason.str_contains.type",
+    "specialized_builtin_opcode_hits.strlen",
     "call_ic_megamorphic_fallbacks",
     "method_ic_hits",
     "method_ic_misses",
@@ -75,8 +83,16 @@ INLINE_CACHE_COUNTERS = (
     "class_static_ic_misses",
     "include_path_ic_hits",
     "include_path_ic_misses",
+    "include_graph_hits",
+    "include_graph_misses",
     "autoload_class_lookup_ic_hits",
     "autoload_class_lookup_ic_misses",
+    "autoload_graph_hits",
+    "autoload_graph_misses",
+    "negative_lookup_hits",
+    "invalidations_by_reason.file_fingerprint_changed",
+    "fallback_by_path_semantics.missing_path",
+    "fallback_by_path_semantics.stream_wrapper",
 )
 
 OUTPUT_COUNTERS = (
@@ -97,6 +113,10 @@ FRAME_REUSE_COUNTERS = (
     "frames_reused",
     "register_files_allocated",
     "register_files_reused",
+    "tiny_frame_candidates",
+    "specialized_frame_hits",
+    "arg_array_avoided",
+    "heap_frame_avoided",
     "fast_path_disabled_by_reference",
     "dequickened_by_reference",
     "IC_invalidated_by_reference",
@@ -204,6 +224,8 @@ def measurement_counters(measurement: dict[str, Any]) -> dict[str, int]:
             parsed[key] = value
         elif key in {
             "frame_reuse_blocked_by_reason",
+            "call_frame_layout_observed",
+            "generic_frame_fallback_by_reason",
             "frame_alias_state",
             "alias_state_transitions",
             "builtin_fast_stub_hits",
@@ -211,6 +233,7 @@ def measurement_counters(measurement: dict[str, Any]) -> dict[str, int]:
             "property_ic_fallback_reasons",
             "property_assign_ic_fallback_reasons",
             "output_slow_appends_by_reason",
+            "slow_path_calls_by_reason",
             "array_shape_observed_by_kind",
         } and isinstance(value, dict):
             for reason, count in value.items():
@@ -301,6 +324,15 @@ def summarize_report(
                 )
             )
         ),
+        "slow_path_calls_by_reason": dict(
+            sorted(
+                (
+                    (key.removeprefix("slow_path_calls_by_reason."), value)
+                    for key, value in counter_totals.items()
+                    if key.startswith("slow_path_calls_by_reason.")
+                )
+            )
+        ),
         "frame_reuse_counters": {
             key: counter_totals.get(key, 0) for key in FRAME_REUSE_COUNTERS
         },
@@ -310,6 +342,24 @@ def summarize_report(
                     (key.removeprefix("frame_reuse_blocked_by_reason."), value)
                     for key, value in counter_totals.items()
                     if key.startswith("frame_reuse_blocked_by_reason.")
+                )
+            )
+        ),
+        "call_frame_layout_observed": dict(
+            sorted(
+                (
+                    (key.removeprefix("call_frame_layout_observed."), value)
+                    for key, value in counter_totals.items()
+                    if key.startswith("call_frame_layout_observed.")
+                )
+            )
+        ),
+        "generic_frame_fallback_by_reason": dict(
+            sorted(
+                (
+                    (key.removeprefix("generic_frame_fallback_by_reason."), value)
+                    for key, value in counter_totals.items()
+                    if key.startswith("generic_frame_fallback_by_reason.")
                 )
             )
         ),
@@ -471,11 +521,29 @@ def render_markdown(summary: dict[str, Any]) -> str:
             summary["output_slow_appends_by_reason"],
         )
     )
+    lines.extend(
+        render_counter_table(
+            "Slow Path Calls By Reason",
+            summary["slow_path_calls_by_reason"],
+        )
+    )
     lines.extend(render_counter_table("Frame and Register Reuse", summary["frame_reuse_counters"]))
     lines.extend(
         render_counter_table(
             "Frame Reuse Blocked Reasons",
             summary["frame_reuse_blocked_by_reason"],
+        )
+    )
+    lines.extend(
+        render_counter_table(
+            "Call Frame Layouts Observed",
+            summary["call_frame_layout_observed"],
+        )
+    )
+    lines.extend(
+        render_counter_table(
+            "Specialized Frame Fallback Reasons",
+            summary["generic_frame_fallback_by_reason"],
         )
     )
     lines.extend(render_counter_table("Array Shape Fast Paths", summary["array_shape_counters"]))

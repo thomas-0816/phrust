@@ -49,5 +49,10 @@ The Performance counter JSON includes:
 - `autoload_class_lookup_ic_misses`
 - `autoload_class_lookup_ic_invalidations`
 - `autoload_class_lookup_ic_guard_failures`
+- `autoload_graph_hits`
+- `autoload_graph_misses`
+- `negative_lookup_hits`
+- `invalidations_by_reason.autoload_lookup_epoch_or_guard`
+- `invalidations_by_reason.autoload_positive_target_missing`
 
 The `inline-cache-smoke` gate requires visible autoload lookup hits and misses.
