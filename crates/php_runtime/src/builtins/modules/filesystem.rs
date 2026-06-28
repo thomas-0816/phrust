@@ -6,6 +6,7 @@ use crate::builtins::{
 };
 use crate::{StreamWrapperRegistry, Value};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("basename", builtin_basename, BuiltinCompatibility::Php),
@@ -46,12 +47,22 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "is_uploaded_file",
+        builtin_is_uploaded_file,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "is_writable",
         builtin_is_writable,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("lstat", builtin_lstat, BuiltinCompatibility::Php),
     BuiltinEntry::new("mkdir", builtin_mkdir, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "move_uploaded_file",
+        builtin_move_uploaded_file,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("pathinfo", builtin_pathinfo, BuiltinCompatibility::Php),
     BuiltinEntry::new("readfile", builtin_readfile, BuiltinCompatibility::Php),
     BuiltinEntry::new("realpath", builtin_realpath, BuiltinCompatibility::Php),
@@ -245,6 +256,20 @@ pub(in crate::builtins::modules) fn builtin_is_writable(
     ))
 }
 
+pub(in crate::builtins::modules) fn builtin_is_uploaded_file(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("is_uploaded_file", &args, 1)?;
+    let path = string_arg("is_uploaded_file", &args[0])?.to_string_lossy();
+    Ok(Value::Bool(
+        context
+            .upload_registry()
+            .is_some_and(|registry| registry.is_active_upload(&path)),
+    ))
+}
+
 pub(in crate::builtins::modules) fn builtin_filesize(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -395,6 +420,76 @@ pub(in crate::builtins::modules) fn builtin_rename(
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(fs::rename(from, to).is_ok()))
+}
+
+pub(in crate::builtins::modules) fn builtin_move_uploaded_file(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("move_uploaded_file", &args, 2)?;
+    let from = string_arg("move_uploaded_file", &args[0])?.to_string_lossy();
+    let to_arg = string_arg("move_uploaded_file", &args[1])?.to_string_lossy();
+
+    if !context
+        .upload_registry()
+        .is_some_and(|registry| registry.is_active_upload(&from))
+    {
+        context.php_warning(
+            "E_PHP_UPLOAD_INVALID_SOURCE",
+            "move_uploaded_file(): source is not a valid uploaded file",
+            span.clone(),
+        );
+        return Ok(Value::Bool(false));
+    }
+
+    let to = resolve_runtime_path(context, &to_arg);
+    if !context.filesystem_capabilities().allows_path(&to) {
+        context.php_warning(
+            "E_PHP_UPLOAD_DESTINATION_DENIED",
+            "move_uploaded_file(): destination is outside allowed filesystem roots",
+            span.clone(),
+        );
+        return Ok(Value::Bool(false));
+    }
+    let from_path = PathBuf::from(&from);
+    if same_filesystem_path(&from_path, &to) {
+        context.php_warning(
+            "E_PHP_UPLOAD_SAME_PATH",
+            "move_uploaded_file(): source and destination must differ",
+            span.clone(),
+        );
+        return Ok(Value::Bool(false));
+    }
+
+    if move_upload_temp_file(&from_path, &to).is_err() {
+        context.php_warning(
+            "E_PHP_UPLOAD_MOVE_FAILED",
+            "move_uploaded_file(): failed to move uploaded file",
+            span,
+        );
+        return Ok(Value::Bool(false));
+    }
+    if let Some(registry) = context.upload_registry_mut() {
+        registry.mark_moved(&from);
+    }
+    Ok(Value::Bool(true))
+}
+
+fn move_upload_temp_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            if fs::copy(from, to).is_err() {
+                return Err(rename_error);
+            }
+            if let Err(unlink_error) = fs::remove_file(from) {
+                let _ = fs::remove_file(to);
+                return Err(unlink_error);
+            }
+            Ok(())
+        }
+    }
 }
 
 pub(in crate::builtins::modules) fn builtin_unlink(
@@ -557,4 +652,185 @@ pub(in crate::builtins::modules) fn builtin_chdir(
     }
     context.set_cwd(path);
     Ok(Value::Bool(true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FilesystemCapabilities, OutputBuffer, RuntimeUploadedFile, UploadRegistry};
+
+    #[test]
+    fn is_uploaded_file_checks_request_local_registry() {
+        let root = unique_temp_dir("is-uploaded");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let upload = root.join("upload.tmp");
+        std::fs::write(&upload, b"payload").expect("write upload");
+        let upload_string = upload.to_string_lossy().to_string();
+        let mut registry = UploadRegistry::from_uploaded_files(&[uploaded_file(&upload_string)]);
+
+        assert_eq!(
+            call_upload_builtin(
+                builtin_is_uploaded_file,
+                vec![Value::string(upload_string.clone())],
+                root.clone(),
+                FilesystemCapabilities::none(),
+                &mut registry,
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call_upload_builtin(
+                builtin_is_uploaded_file,
+                vec![Value::string(
+                    root.join("plain.tmp").to_string_lossy().to_string()
+                )],
+                root.clone(),
+                FilesystemCapabilities::none(),
+                &mut registry,
+            ),
+            Value::Bool(false)
+        );
+        assert!(registry.mark_moved(&upload_string));
+        assert_eq!(
+            call_upload_builtin(
+                builtin_is_uploaded_file,
+                vec![Value::string(upload_string)],
+                root.clone(),
+                FilesystemCapabilities::none(),
+                &mut registry,
+            ),
+            Value::Bool(false)
+        );
+
+        let _ = std::fs::remove_file(upload);
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn move_uploaded_file_moves_to_allowed_destination() {
+        let root = unique_temp_dir("move-uploaded-ok");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let upload = root.join("upload.tmp");
+        let destination = root.join("stored.txt");
+        std::fs::write(&upload, b"payload").expect("write upload");
+        let upload_string = upload.to_string_lossy().to_string();
+        let mut registry = UploadRegistry::from_uploaded_files(&[uploaded_file(&upload_string)]);
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+
+        assert_eq!(
+            call_upload_builtin(
+                builtin_move_uploaded_file,
+                vec![
+                    Value::string(upload_string.clone()),
+                    Value::string("stored.txt"),
+                ],
+                root.clone(),
+                capabilities,
+                &mut registry,
+            ),
+            Value::Bool(true)
+        );
+        assert!(!upload.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"payload");
+        assert!(!registry.is_active_upload(&upload_string));
+        registry.cleanup_unmoved();
+        assert!(destination.exists());
+
+        let _ = std::fs::remove_file(destination);
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn move_uploaded_file_rejects_destinations_outside_allowed_roots() {
+        let root = unique_temp_dir("move-uploaded-denied-root");
+        let outside = unique_temp_dir("move-uploaded-denied-outside");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        std::fs::create_dir_all(&outside).expect("create outside root");
+        let upload = root.join("upload.tmp");
+        let destination = outside.join("stored.txt");
+        std::fs::write(&upload, b"payload").expect("write upload");
+        let upload_string = upload.to_string_lossy().to_string();
+        let mut registry = UploadRegistry::from_uploaded_files(&[uploaded_file(&upload_string)]);
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+
+        assert_eq!(
+            call_upload_builtin(
+                builtin_move_uploaded_file,
+                vec![
+                    Value::string(upload_string.clone()),
+                    Value::string(destination.to_string_lossy().to_string()),
+                ],
+                root.clone(),
+                capabilities,
+                &mut registry,
+            ),
+            Value::Bool(false)
+        );
+        assert!(upload.exists());
+        assert!(!destination.exists());
+        assert!(registry.is_active_upload(&upload_string));
+
+        registry.cleanup_unmoved();
+        assert!(!upload.exists());
+        let _ = std::fs::remove_dir(root);
+        let _ = std::fs::remove_dir(outside);
+    }
+
+    #[test]
+    fn move_uploaded_file_rejects_non_upload_local_file() {
+        let root = unique_temp_dir("move-uploaded-non-upload");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let source = root.join("plain.txt");
+        let destination = root.join("stored.txt");
+        std::fs::write(&source, b"plain").expect("write plain file");
+        let mut registry = UploadRegistry::default();
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+
+        assert_eq!(
+            call_upload_builtin(
+                builtin_move_uploaded_file,
+                vec![
+                    Value::string(source.to_string_lossy().to_string()),
+                    Value::string("stored.txt"),
+                ],
+                root.clone(),
+                capabilities,
+                &mut registry,
+            ),
+            Value::Bool(false)
+        );
+        assert!(source.exists());
+        assert!(!destination.exists());
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_dir(root);
+    }
+
+    fn call_upload_builtin(
+        function: fn(&mut BuiltinContext<'_>, Vec<Value>, RuntimeSourceSpan) -> BuiltinResult,
+        args: Vec<Value>,
+        cwd: PathBuf,
+        filesystem: FilesystemCapabilities,
+        registry: &mut UploadRegistry,
+    ) -> Value {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::with_runtime(&mut output, cwd, filesystem, None);
+        context.set_upload_registry(registry);
+        function(&mut context, args, RuntimeSourceSpan::default()).expect("builtin should return")
+    }
+
+    fn uploaded_file(temp_path: &str) -> RuntimeUploadedFile {
+        RuntimeUploadedFile {
+            field_name: "avatar".to_string(),
+            client_filename: "avatar.txt".to_string(),
+            content_type: "text/plain".to_string(),
+            temp_path: temp_path.to_string(),
+            error: 0,
+            size: 7,
+        }
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("phrust-{name}-{}", std::process::id()))
+    }
 }

@@ -2,7 +2,7 @@ use crate::counters::VmCounters;
 use crate::tiering::TieringStats;
 use php_runtime::{
     ExecutionStatus, OutputBuffer, ReferenceCell, RuntimeDiagnostic, RuntimeHttpResponseState,
-    Value,
+    UploadRegistry, Value,
 };
 
 /// Execution result.
@@ -16,6 +16,8 @@ pub struct VmResult {
     pub diagnostics: Vec<RuntimeDiagnostic>,
     /// Request-local HTTP response state accumulated by web-response builtins.
     pub http_response: RuntimeHttpResponseState,
+    /// Request-local upload registry state after PHP code has executed.
+    pub upload_registry: UploadRegistry,
     /// Return value when execution returned successfully.
     pub return_value: Option<Value>,
     pub(super) yielded: Option<super::GeneratorYield>,

@@ -50,6 +50,7 @@ impl PhpExecutor {
                 status: PhpExecutionStatus::CompileError,
                 runtime_diagnostics: Vec::new(),
                 http_response: RuntimeHttpResponseState::default(),
+                upload_registry: Default::default(),
                 trace: Vec::new(),
                 counters: None,
                 tiering_stats: None,

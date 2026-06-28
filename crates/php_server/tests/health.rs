@@ -447,8 +447,11 @@ fn server_exposes_multipart_post_and_files_superglobals() {
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert_eq!(
         response_body(&response),
-        "title=Hello\nname=me.png\ntype=image/png\nsize=7\nerror=0\n"
+        "title=Hello\nname=me.png\ntype=image/png\nsize=7\nerror=0\nuploaded=yes\nmoved=yes\ncontent=PNGDATA\nuploaded_after=no\n"
     );
+    let moved_upload = docroot.join("moved-upload.txt");
+    assert_eq!(fs::read_to_string(&moved_upload).unwrap(), "PNGDATA");
+    fs::remove_file(moved_upload).expect("remove moved upload");
     assert_eq!(fs::read_dir(&upload_temp_dir).unwrap().count(), 0);
     fs::remove_dir_all(upload_temp_dir).expect("remove upload temp dir");
 }

@@ -1,8 +1,7 @@
 use crate::{
     config::{ConfigError, ServerConfig},
     multipart::{
-        MultipartConfig, MultipartError, cleanup_uploaded_files, multipart_boundary,
-        parse_multipart_into_context,
+        MultipartConfig, MultipartError, multipart_boundary, parse_multipart_into_context,
     },
     response::{self, ResponseBody},
     routing::{ResolvedRoute, RouteConfig, resolve_route},
@@ -403,22 +402,26 @@ async fn execute_php_request(
             Err(error) => return multipart_error_response(error, &state, peer),
         }
     }
-    let upload_cleanup = request_context.uploaded_files.clone();
     let mut runtime_context = RuntimeContext::controlled_http(request_context)
         .with_cwd(state.route_config.docroot.clone())
         .with_include_path(vec![state.route_config.docroot.clone()]);
     runtime_context = runtime_context.with_stdin(body.clone());
     let is_head = parts.method == Method::HEAD;
     let script_log_path = script_path.clone();
-    let result = execute_php_on_blocking_thread(Arc::clone(&state), script_path, runtime_context).await;
-    cleanup_uploaded_files(&upload_cleanup);
+    let result =
+        execute_php_on_blocking_thread(Arc::clone(&state), script_path, runtime_context).await;
     match result {
         Ok((lookup, output)) => {
+            output.upload_registry.cleanup_unmoved();
             debug!(script=%script_log_path.display(), hit=lookup.hit, "compiled script cache lookup");
             php_output_response(output, is_head)
         }
-        Err(PhpExecutionError::Compile(output)) => php_output_response(*output, is_head),
+        Err(PhpExecutionError::Compile(output)) => {
+            cleanup_uploaded_files(&upload_cleanup);
+            php_output_response(*output, is_head)
+        }
         Err(PhpExecutionError::Engine(error)) => {
+            cleanup_uploaded_files(&upload_cleanup);
             warn!(script=%script_log_path.display(), %error, "php execution engine error");
             response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n")
         }

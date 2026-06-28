@@ -1,6 +1,7 @@
 //! Deterministic runtime configuration for CLI fixture execution.
 
 use crate::{ArrayKey, FilesystemCapabilities, IniRegistry, PhpArray, PhpString, Value};
+use std::fs;
 use std::path::PathBuf;
 
 /// Minimal ini-like runtime options carried by the VM.
@@ -96,6 +97,68 @@ pub struct RuntimeUploadedFile {
     pub temp_path: String,
     pub error: i64,
     pub size: u64,
+}
+
+/// Request-local registry of temp files accepted by the upload parser.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct UploadRegistry {
+    entries: Vec<UploadRegistryEntry>,
+}
+
+/// One tracked upload temp file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UploadRegistryEntry {
+    temp_path: String,
+    moved: bool,
+}
+
+impl UploadRegistry {
+    #[must_use]
+    pub fn from_uploaded_files(files: &[RuntimeUploadedFile]) -> Self {
+        Self {
+            entries: files
+                .iter()
+                .map(|file| UploadRegistryEntry {
+                    temp_path: file.temp_path.clone(),
+                    moved: false,
+                })
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_active_upload(&self, path: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.temp_path == path && !entry.moved)
+    }
+
+    pub fn mark_moved(&mut self, path: &str) -> bool {
+        let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.temp_path == path && !entry.moved)
+        else {
+            return false;
+        };
+        entry.moved = true;
+        true
+    }
+
+    #[must_use]
+    pub fn unmoved_temp_paths(&self) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.moved)
+            .map(|entry| entry.temp_path.as_str())
+            .collect()
+    }
+
+    pub fn cleanup_unmoved(&self) {
+        for path in self.unmoved_temp_paths() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 /// One HTTP response header set by PHP code.
@@ -450,6 +513,16 @@ impl RuntimeContext {
     pub fn with_http_request(mut self, request: RuntimeHttpRequestContext) -> Self {
         self.request_mode = RuntimeRequestMode::Http(Box::new(request));
         self
+    }
+
+    #[must_use]
+    pub fn upload_registry(&self) -> UploadRegistry {
+        match &self.request_mode {
+            RuntimeRequestMode::Http(request) => {
+                UploadRegistry::from_uploaded_files(&request.uploaded_files)
+            }
+            RuntimeRequestMode::Cli => UploadRegistry::default(),
+        }
     }
 
     /// Returns the `$argc` value derived from configured argv.
@@ -939,8 +1012,8 @@ fn hex_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::{
         RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions,
-        RuntimeUploadedFile, StrictTypesInfo, input_pairs_array, parse_cookie_header,
-        parse_form_urlencoded_body, parse_query_string,
+        RuntimeUploadedFile, StrictTypesInfo, UploadRegistry, input_pairs_array,
+        parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
     };
     use crate::{ArrayKey, PhpString, Value};
 
@@ -1238,6 +1311,43 @@ mod tests {
         );
         assert_path_int(&files, &[str_key("files"), str_key("size"), int_key(0)], 3);
         assert_path_int(&files, &[str_key("files"), str_key("size"), int_key(1)], 4);
+    }
+
+    #[test]
+    fn upload_registry_tracks_moved_and_unmoved_temps() {
+        let root =
+            std::env::temp_dir().join(format!("phrust-upload-registry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let first = root.join("first.tmp");
+        let second = root.join("second.tmp");
+        std::fs::write(&first, b"first").expect("write first upload");
+        std::fs::write(&second, b"second").expect("write second upload");
+        let files = vec![
+            RuntimeUploadedFile {
+                temp_path: first.to_string_lossy().to_string(),
+                ..uploaded_file("first", "first.txt", 5)
+            },
+            RuntimeUploadedFile {
+                temp_path: second.to_string_lossy().to_string(),
+                ..uploaded_file("second", "second.txt", 6)
+            },
+        ];
+        let mut registry = UploadRegistry::from_uploaded_files(&files);
+
+        assert!(registry.is_active_upload(&first.to_string_lossy()));
+        assert!(registry.is_active_upload(&second.to_string_lossy()));
+        assert!(registry.mark_moved(&first.to_string_lossy()));
+        assert!(!registry.is_active_upload(&first.to_string_lossy()));
+        assert!(registry.is_active_upload(&second.to_string_lossy()));
+        assert!(!registry.mark_moved(&first.to_string_lossy()));
+
+        registry.cleanup_unmoved();
+        assert!(first.exists());
+        assert!(!second.exists());
+
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_dir(root);
     }
 
     #[test]

@@ -31,6 +31,7 @@ cleanup() {
     kill "$server_pid" >/dev/null 2>&1 || true
     wait "$server_pid" >/dev/null 2>&1 || true
   fi
+  rm -f fixtures/server/apps/compat/public/moved-upload.txt
   rm -f "$log_file"
 }
 trap cleanup EXIT
@@ -111,7 +112,7 @@ run_upload() {
       "http://$address/upload.php"
   )"
   rm -f "$upload_file"
-  local expected=$'title=Hello\nname=me.png\ntype=image/png\nsize=7\nerror=0'
+  local expected=$'title=Hello\nname=me.png\ntype=image/png\nsize=7\nerror=0\nuploaded=yes\nmoved=yes\ncontent=PNGDATA\nuploaded_after=no'
   if [[ "$actual" != "$expected" ]]; then
     printf '[fail] upload expected %q got %q\n' "$expected" "$actual"
     exit 1

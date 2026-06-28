@@ -188,8 +188,8 @@ pub use callable::{
 pub use context::{
     ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
     RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeRequestMode,
-    RuntimeUploadedFile, StrictTypesInfo, parse_cookie_header, parse_form_urlencoded_body,
-    parse_query_string,
+    RuntimeUploadedFile, StrictTypesInfo, UploadRegistry, UploadRegistryEntry, parse_cookie_header,
+    parse_form_urlencoded_body, parse_query_string,
 };
 pub use convert::{
     ArithmeticNumber, NumericValue, compare, equal, identical, reset_float_string_precision,

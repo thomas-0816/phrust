@@ -65,11 +65,11 @@ use php_runtime::{
     PhpArrayKind, PhpArrayShapeKind, PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpString,
     ProcessCapability, ReferenceCell, RuntimeContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
     RuntimeHttpResponseState, RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame, RuntimeType,
-    Slot, Value, VmCompileDiagnostic, compare, division_by_zero_mvp, emit_php_diagnostic, equal,
-    error_reporting_allows_level, identical, reset_float_string_precision, runtime_type_name,
-    set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
-    to_string, undefined_function, undefined_variable_warning, unsupported_feature,
-    value_matches_runtime_type, value_type_name,
+    Slot, UploadRegistry, Value, VmCompileDiagnostic, compare, division_by_zero_mvp,
+    emit_php_diagnostic, equal, error_reporting_allows_level, identical,
+    reset_float_string_precision, runtime_type_name, set_float_string_precision,
+    to_arithmetic_number, to_bool, to_float, to_int, to_number, to_string, undefined_function,
+    undefined_variable_warning, unsupported_feature, value_matches_runtime_type, value_type_name,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -832,6 +832,7 @@ struct ExecutionState {
     preg_last_error: php_runtime::pcre::PcreLastErrorState,
     json_last_error: i64,
     http_response: RuntimeHttpResponseState,
+    upload_registry: UploadRegistry,
     session: php_runtime::SessionState,
     sqlite: php_runtime::SqliteState,
     error_handlers: Vec<ErrorHandlerEntry>,
@@ -1666,6 +1667,7 @@ impl VmResult {
             output,
             diagnostics: Vec::new(),
             http_response: RuntimeHttpResponseState::default(),
+            upload_registry: UploadRegistry::default(),
             return_value,
             yielded: None,
             fiber_suspension: None,
@@ -1686,6 +1688,7 @@ impl VmResult {
             output,
             diagnostics,
             http_response: RuntimeHttpResponseState::default(),
+            upload_registry: UploadRegistry::default(),
             return_value,
             yielded: None,
             fiber_suspension: None,
@@ -1706,6 +1709,7 @@ impl VmResult {
             output,
             diagnostics: vec![diagnostic],
             http_response: RuntimeHttpResponseState::default(),
+            upload_registry: UploadRegistry::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1722,6 +1726,7 @@ impl VmResult {
             output,
             diagnostics: Vec::new(),
             http_response: RuntimeHttpResponseState::default(),
+            upload_registry: UploadRegistry::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1738,6 +1743,7 @@ impl VmResult {
             output,
             diagnostics: Vec::new(),
             http_response: RuntimeHttpResponseState::default(),
+            upload_registry: UploadRegistry::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1760,6 +1766,7 @@ impl VmResult {
             output,
             diagnostics: Vec::new(),
             http_response: RuntimeHttpResponseState::default(),
+            upload_registry: UploadRegistry::default(),
             return_value: None,
             yielded: None,
             fiber_suspension: None,
@@ -1872,6 +1879,7 @@ impl Vm {
             ini: self.options.runtime_context.ini_registry(),
             default_timezone: php_runtime::datetime::DEFAULT_TIMEZONE.to_owned(),
             env: self.options.runtime_context.env.clone(),
+            upload_registry: self.options.runtime_context.upload_registry(),
             ..ExecutionState::default()
         };
         state.stdin = Some(
@@ -1901,6 +1909,7 @@ impl Vm {
                             counters: None,
                             tiering_stats: None,
                             http_response: RuntimeHttpResponseState::default(),
+                            upload_registry: UploadRegistry::default(),
                         }
                     } else {
                         self.record_counter_bytecode_unsupported_fallback();
@@ -1957,6 +1966,7 @@ impl Vm {
         let output_stats = output.stats();
         result.output = output.clone();
         result.http_response = state.http_response;
+        result.upload_registry = state.upload_registry;
         if self.options.trace || self.options.trace_runtime {
             result.trace = self.trace.borrow().clone();
         }
@@ -13383,6 +13393,7 @@ impl Vm {
                                 counters: None,
                                 tiering_stats: None,
                                 http_response: RuntimeHttpResponseState::default(),
+                                upload_registry: UploadRegistry::default(),
                             };
                         };
                         foreach_iterators.insert(
@@ -15594,6 +15605,7 @@ impl Vm {
                             counters: None,
                             tiering_stats: None,
                             http_response: RuntimeHttpResponseState::default(),
+                            upload_registry: UploadRegistry::default(),
                         };
                     }
                     InstructionKind::RuntimeError {
@@ -19766,6 +19778,7 @@ impl Vm {
                     counters: None,
                     tiering_stats: None,
                     http_response: RuntimeHttpResponseState::default(),
+                    upload_registry: UploadRegistry::default(),
                 })
             }
         }
@@ -35281,6 +35294,7 @@ fn execute_builtin_entry(
     context.set_json_last_error(state.json_last_error);
     context.set_strtok_state(&mut state.strtok_state);
     context.set_http_response_state(&mut state.http_response);
+    context.set_upload_registry(&mut state.upload_registry);
     context.set_mb_internal_encoding(if state.mb_internal_encoding.is_empty() {
         "UTF-8".to_owned()
     } else {

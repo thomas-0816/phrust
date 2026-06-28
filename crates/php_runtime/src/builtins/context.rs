@@ -3,8 +3,8 @@
 use crate::{
     FilesystemCapabilities, IniRegistry, OutputBuffer, PHP_E_DEPRECATED, PHP_E_WARNING, PcreCache,
     PhpDiagnosticChannel, PhpDiagnosticDisplayOptions, ReferenceCell, ResourceTable,
-    RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity, SessionState, Value, datetime,
-    emit_php_diagnostic, pcre,
+    RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity, SessionState, UploadRegistry,
+    Value, datetime, emit_php_diagnostic, pcre,
 };
 use std::path::{Path, PathBuf};
 
@@ -120,6 +120,7 @@ pub struct BuiltinContext<'a> {
     resources: Option<&'a mut ResourceTable>,
     http_response: RuntimeHttpResponseState,
     http_response_state: Option<&'a mut RuntimeHttpResponseState>,
+    upload_registry: Option<&'a mut UploadRegistry>,
     pcre_cache: PcreCache,
     preg_last_error: pcre::PcreLastErrorState,
     preg_last_error_state: Option<&'a mut pcre::PcreLastErrorState>,
@@ -147,6 +148,7 @@ impl<'a> BuiltinContext<'a> {
             resources: None,
             http_response: RuntimeHttpResponseState::default(),
             http_response_state: None,
+            upload_registry: None,
             pcre_cache: PcreCache::default(),
             preg_last_error: pcre::PcreLastErrorState::default(),
             preg_last_error_state: None,
@@ -179,6 +181,7 @@ impl<'a> BuiltinContext<'a> {
             resources,
             http_response: RuntimeHttpResponseState::default(),
             http_response_state: None,
+            upload_registry: None,
             pcre_cache: PcreCache::default(),
             preg_last_error: pcre::PcreLastErrorState::default(),
             preg_last_error_state: None,
@@ -336,6 +339,21 @@ impl<'a> BuiltinContext<'a> {
             Some(state) => state,
             None => &mut self.http_response,
         }
+    }
+
+    /// Sets request-local upload registry state.
+    pub fn set_upload_registry(&mut self, registry: &'a mut UploadRegistry) {
+        self.upload_registry = Some(registry);
+    }
+
+    /// Current request-local upload registry state.
+    pub fn upload_registry(&self) -> Option<&UploadRegistry> {
+        self.upload_registry.as_deref()
+    }
+
+    /// Mutable request-local upload registry state.
+    pub fn upload_registry_mut(&mut self) -> Option<&mut UploadRegistry> {
+        self.upload_registry.as_deref_mut()
     }
 
     /// Sets request-local `strtok` state.
