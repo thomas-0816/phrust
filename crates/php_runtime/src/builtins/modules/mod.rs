@@ -4,6 +4,7 @@ pub(in crate::builtins) mod date;
 pub(in crate::builtins) mod filesystem;
 pub(in crate::builtins) mod json;
 pub(in crate::builtins) mod math;
+pub(in crate::builtins) mod mbstring;
 pub(in crate::builtins) mod pcre;
 pub(in crate::builtins) mod reflection;
 pub(in crate::builtins) mod spl;

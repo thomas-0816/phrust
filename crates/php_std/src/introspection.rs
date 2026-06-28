@@ -96,6 +96,7 @@ mod tests {
         registry.enable_extension("test").expect("enable test");
 
         assert!(function_exists(&registry, "STRLEN"));
+        assert!(!function_exists(&registry, "mb_strlen"));
         assert!(!function_exists(&registry, "__php_std_test_probe"));
         assert!(!function_exists(&registry, "composer_missing_function"));
     }

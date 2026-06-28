@@ -1227,6 +1227,13 @@ impl ExtensionRegistry {
                     "pcre",
                     ConstantValue::Int(512),
                 )),
+            ExtensionDescriptor::new("mbstring")
+                .enabled_by_default(false)
+                .with_function(FunctionDescriptor::php("mb_detect_encoding", "mbstring"))
+                .with_function(FunctionDescriptor::php("mb_strlen", "mbstring"))
+                .with_function(FunctionDescriptor::php("mb_strtolower", "mbstring"))
+                .with_function(FunctionDescriptor::php("mb_strtoupper", "mbstring"))
+                .with_function(FunctionDescriptor::php("mb_substr", "mbstring")),
             ExtensionDescriptor::new("hash")
                 .with_function(FunctionDescriptor::php("hash", "hash"))
                 .with_function(FunctionDescriptor::php("hash_hmac", "hash")),

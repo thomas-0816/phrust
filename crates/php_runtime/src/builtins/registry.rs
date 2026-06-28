@@ -91,6 +91,7 @@ const MODULE_SLICES: &[&[BuiltinEntry]] = &[
     modules::filesystem::ENTRIES,
     modules::streams::ENTRIES,
     modules::json::ENTRIES,
+    modules::mbstring::ENTRIES,
     modules::pcre::ENTRIES,
     modules::date::ENTRIES,
     modules::spl::ENTRIES,

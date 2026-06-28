@@ -18350,12 +18350,13 @@ impl Vm {
                     Ok(name) => normalize_function_name(&name.to_string_lossy()),
                     Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
+                let registry = php_std::ExtensionRegistry::standard_library();
                 VmResult::success(
                     output.clone(),
                     Some(Value::Bool(
                         compiled.lookup_function(&function_name).is_some()
                             || dynamic_function_in_state(state, &function_name).is_some()
-                            || BuiltinRegistry::new().contains(&function_name),
+                            || php_std::introspection::function_exists(&registry, &function_name),
                     )),
                 )
             }
@@ -32241,6 +32242,30 @@ mod tests {
         assert_eq!(
             result.output.to_string_lossy(),
             "D|41|F|C|I|E|M|P|Y|S|N|B|B|B|B|A|DC|DI"
+        );
+    }
+
+    #[test]
+    fn symbol_introspection_hides_disabled_mbstring_stubs() {
+        let result = execute_source(
+            "<?php
+            echo extension_loaded('mbstring') ? 'loaded' : 'missing';
+            foreach ([
+                'mb_strlen',
+                'mb_substr',
+                'mb_strtolower',
+                'mb_strtoupper',
+                'mb_detect_encoding',
+            ] as $name) {
+                echo '|', $name, ':', function_exists($name) ? 'yes' : 'no';
+            }
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "missing|mb_strlen:no|mb_substr:no|mb_strtolower:no|mb_strtoupper:no|mb_detect_encoding:no"
         );
     }
 

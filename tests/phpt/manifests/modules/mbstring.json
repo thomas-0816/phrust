@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"mbstring",
+  "priority":"extension-policy focused",
+  "selected_manifest":"tests/phpt/manifests/modules/mbstring.selected.jsonl",
+  "corpus_count":420,
+  "selected_count":3,
+  "pass_count":3,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":414,
+  "scope":["Composer/platform-check visibility","extension_loaded(\"mbstring\")","guarded common function probes"],
+  "non_scope":["full upstream ext/mbstring corpus","Unicode case mapping","legacy encoding conversion","Oniguruma regex integration"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=mbstring","nix develop -c just verify-stdlib"],
+  "next_step":"Keep mbstring as explicit stubs until a dependency-approved Unicode and encoding strategy is selected."
+}
