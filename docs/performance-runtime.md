@@ -87,6 +87,11 @@ Packed-array fast paths consume `PhpArray::packed_metadata()` rather than
 duplicating layout knowledge in the VM. The metadata records packed-vs-mixed
 kind, direct element summary, key-kind summary, numeric-string key ambiguity,
 direct reference elements, COW sharing, mutation epoch, and packed length.
+Internally `PhpArray` now separates packed and mixed storage variants behind
+that facade; the VM/JIT boundary is unchanged and must not inspect the private
+storage enum. Packed storage still keeps key/value entries to preserve borrowed
+key iteration, so a values-only packed buffer and additional mixed hash indexes
+are deferred implementation details rather than public contracts.
 Read-only packed int fetches may run on shared handles, because operand reads
 clone the array handle, but mutation-sensitive append/assign paths and
 reference-bearing arrays record `cow_or_reference_fallbacks` and use generic

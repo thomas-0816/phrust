@@ -43,7 +43,7 @@ inline caches, specialization, or JIT work.
   `crates/php_vm/src/vm.rs`.
 - `crates/php_vm_cli` provides the executable CLI used by runtime and
   differential scripts.
-- `crates/php_runtime` owns values, arrays, output, conversion, GC skeleton,
+- `crates/php_runtime` owns values, arrays, output, conversion, GC debug metadata,
   resources, date/time, PCRE, INI, serialization, tokenizer support, and builtin
   context types through files such as `src/value.rs`, `src/array.rs`,
   `src/context.rs`, `src/output.rs`, and `src/builtins.rs`.

@@ -1,6 +1,6 @@
 use super::{ClassEntry, debug::property_debug_label, next_object_id};
 use crate::Value;
-use std::cell::RefCell;
+use std::cell::{BorrowError, BorrowMutError, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
@@ -159,6 +159,13 @@ impl ObjectRef {
         self.storage.borrow().properties.get(name).cloned()
     }
 
+    /// Attempts to read a property value without panicking on nested borrows.
+    pub fn try_get_property(&self, name: &str) -> Result<Option<Value>, BorrowError> {
+        self.storage
+            .try_borrow()
+            .map(|storage| storage.properties.get(name).cloned())
+    }
+
     /// Writes a property value.
     pub fn set_property(&self, name: impl Into<String>, value: Value) {
         let name = name.into();
@@ -167,6 +174,21 @@ impl ObjectRef {
             storage.property_order.push(name.clone());
         }
         storage.properties.insert(name, value);
+    }
+
+    /// Attempts to write a property value without panicking on nested borrows.
+    pub fn try_set_property(
+        &self,
+        name: impl Into<String>,
+        value: Value,
+    ) -> Result<(), BorrowMutError> {
+        let name = name.into();
+        self.storage.try_borrow_mut().map(|mut storage| {
+            if !storage.properties.contains_key(&name) {
+                storage.property_order.push(name.clone());
+            }
+            storage.properties.insert(name, value);
+        })
     }
 
     /// Returns the `var_dump` property label for a stored property name.
@@ -215,6 +237,22 @@ impl ObjectRef {
                     .map(|value| (name.clone(), value.clone()))
             })
             .collect()
+    }
+
+    /// Attempts to snapshot runtime properties without panicking on nested borrows.
+    pub fn try_properties_snapshot(&self) -> Result<Vec<(String, Value)>, BorrowError> {
+        self.storage.try_borrow().map(|storage| {
+            storage
+                .property_order
+                .iter()
+                .filter_map(|name| {
+                    storage
+                        .properties
+                        .get(name)
+                        .map(|value| (name.clone(), value.clone()))
+                })
+                .collect()
+        })
     }
 }
 

@@ -10,4 +10,4 @@ name = "php-parse"
 path = "src/main.rs"
 
 [dependencies]
-php_syntax = { path = "../php_syntax" }
+php_syntax = { path = "../php_syntax", version = "0.1.0" }

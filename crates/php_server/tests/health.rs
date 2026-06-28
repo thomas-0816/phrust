@@ -85,6 +85,44 @@ fn server_exposes_internal_metrics() {
         response.contains("phrust_server_script_cache_hits_total"),
         "{response}"
     );
+    assert!(
+        response.contains("phrust_server_script_cache_stale_invalidations_total"),
+        "{response}"
+    );
+    assert!(
+        response.contains("phrust_server_script_cache_compile_errors_total"),
+        "{response}"
+    );
+}
+
+#[test]
+fn server_reuses_compiled_script_cache_for_repeated_php_requests() {
+    let docroot = fixture_docroot("fixtures/server/php");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let first_response = http_request(&address, "GET", "/hello.php");
+    let second_response = http_request(&address, "GET", "/hello.php");
+    let metrics = http_request(&address, "GET", "/__phrust/metrics");
+
+    stop_child(child);
+
+    assert!(
+        first_response.starts_with("HTTP/1.1 200 OK"),
+        "{first_response}"
+    );
+    assert!(
+        second_response.starts_with("HTTP/1.1 200 OK"),
+        "{second_response}"
+    );
+    assert!(
+        metrics.contains("phrust_server_script_cache_hits_total 1\n"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_script_cache_misses_total 1\n"),
+        "{metrics}"
+    );
 }
 
 #[test]

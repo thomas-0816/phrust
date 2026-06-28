@@ -6,5 +6,5 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-php_lexer = { path = "../php_lexer" }
-php_runtime = { path = "../php_runtime" }
+php_lexer = { path = "../php_lexer", version = "0.1.0" }
+php_runtime = { path = "../php_runtime", version = "0.0.0" }

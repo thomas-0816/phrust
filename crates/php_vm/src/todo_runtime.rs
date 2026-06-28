@@ -1,13 +1,16 @@
-//! Explicit runtime placeholder for future VM work.
+//! Historical VM wiring-test compatibility markers.
+//!
+//! The VM is no longer a skeleton layer. Keep these exports only for older local
+//! tests and status probes that assert early crate wiring.
 
-/// Describes a VM area that is intentionally not implemented yet.
+/// Describes a historical VM planning marker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmTodo {
     area: &'static str,
 }
 
 impl VmTodo {
-    /// Creates a new documented placeholder.
+    /// Creates a new compatibility marker.
     #[must_use]
     pub const fn new(area: &'static str) -> Self {
         Self { area }

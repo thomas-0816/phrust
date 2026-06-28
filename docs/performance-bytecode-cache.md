@@ -268,6 +268,8 @@ digest path-component rejection, and read/write hit behavior.
 - Unexpected miss: rerun with `--bytecode-cache-stats`, inspect the JSON written
   to stderr, and check source, opt-level, target, engine version, feature flags,
   and config dimensions.
+- Compile failure: `--bytecode-cache-stats` marks `compile_error: true` before
+  normal frontend diagnostics are written. Compile failures are never stored.
 - Corrupt artifact: normal CLI execution should fall back to compile-from-source
   and report `load_error` in cache stats. Reproduce with
   `cargo test -p php_bytecode_cache corrupt`.

@@ -18,9 +18,9 @@ frontend or IR contracts.
   values and are not referenceable storage locations.
 - `PhpString`: byte-string payload with shared storage. Cloning shares bytes;
   write APIs call `separate_for_write` before mutation.
-- `PhpArray`: ordered-map payload with shared storage. Cloning shares entries;
-  mutating APIs call `separate_for_write` before changing entries or append
-  metadata.
+- `PhpArray`: ordered-map payload with shared storage. Cloning shares the
+  private storage enum; mutating APIs call `separate_for_write` before changing
+  entries, append metadata, or internal-pointer state.
 
 ## Invariants
 
@@ -56,6 +56,20 @@ frontend or IR contracts.
 Arrays and strings now use shared payload storage with separation-on-write.
 Array writes are covered through `PhpArray::insert`, `append`, `get_mut`, and
 `remove`, which are the VM's current mutation boundaries.
+
+`PhpArray` owns the packed/mixed storage boundary. The packed variant is used
+for exact `0..len` integer-key arrays, including safe overwrites, append, and
+tail `array_pop` updates. The storage converts to mixed for string keys,
+non-sequential integer keys, holes from middle removals, or appends whose
+auto-index no longer matches the current packed length. Mixed storage preserves
+insertion order, overwrite position, next append-key behavior, and internal
+pointer semantics. VM and JIT code must continue to consume
+`PhpArray::packed_metadata()`, `shape_metadata()`, and guarded lookup helpers
+instead of matching on storage variants.
+
+The current packed variant still stores full key/value entries so
+`PhpArray::iter()` can yield borrowed keys without changing callers. A
+values-only packed buffer remains a deferred fast path behind the same facade.
 
 String storage exposes `separate_for_write` and `bytes_mut`, but source-level
 string-offset assignment is still a runtime known gap:
@@ -94,6 +108,10 @@ Standard library reference and COW work should reuse:
 - `php_runtime::PhpArray` and `PhpString` for shared payload storage and
   separation-on-write;
 - `php_vm::frame::LocalFile` and VM lvalue helpers for local/global binding.
+
+`ReferenceCell::try_get`, `ReferenceCell::try_set`, and
+`ReferenceCell::try_with_value` are the preferred non-panicking inspection
+helpers outside VM-internal paths that already control borrow ordering.
 
 The architectural decision is recorded in
 `docs/adr/0027-runtime-semantics-slot-reference-cow.md`.

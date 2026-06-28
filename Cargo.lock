@@ -883,6 +883,8 @@ dependencies = [
  "php_source",
  "php_testkit",
  "php_vm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -14,8 +14,8 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server", "tokio"] }
-php_executor = { path = "../php_executor" }
-php_runtime = { path = "../php_runtime" }
+php_executor = { path = "../php_executor", version = "0.0.0" }
+php_runtime = { path = "../php_runtime", version = "0.0.0" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

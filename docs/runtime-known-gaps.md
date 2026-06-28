@@ -5,6 +5,9 @@ Known gaps must be explicit and testable. Status values are `planned`,
 known-gap fixture yet still include a concrete future example so the gap is not
 just a wishlist label.
 
+Machine-readable mirror: `docs/known_gaps/runtime.jsonl`. Validate with
+`just known-gaps`.
+
 | ID | Feature | Status | Example / fixture | Reference behavior | Rust behavior | Resolution layer |
 | --- | --- | --- | --- | --- | --- | --- |
 | E_PHP_RUNTIME_UNSUPPORTED_REFERENCE_SEMANTICS | Full references and Copy-on-Write | known_gap | `fixtures/runtime/valid/references/local-alias.php`, `fixtures/runtime/valid/references/by-ref-param.php`, `fixtures/runtime/valid/references/by-ref-return.php`, `fixtures/runtime/valid/references/array-element-ref.php`, `fixtures/runtime/valid/functions/by-ref-capture.php`, and `fixtures/runtime_semantics/foreach/by-ref-*.php` cover executable local/function/array-element/closure/local-foreach aliases; `fixtures/runtime/known_gaps/foreach/by-ref.php` covers deferred temporary foreach aliases | PHP aliases variables, parameters, returns, array elements, foreach values, and object properties through engine reference/COW storage | Runtime semantics keeps local aliases, plain user-function by-reference parameters, local/static-local by-reference returns, array-element references, by-reference closure captures, and local-array by-reference foreach executable while classifying property aliases, globals, and temporary by-reference foreach sources with stable gaps | runtime-semantics |

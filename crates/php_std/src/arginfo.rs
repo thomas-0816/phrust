@@ -488,7 +488,7 @@ impl ArgumentValidator {
 /// Arginfo validation error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArginfoError {
-    diagnostic: RuntimeDiagnostic,
+    diagnostic: Box<RuntimeDiagnostic>,
     class: ArginfoErrorClass,
 }
 
@@ -501,14 +501,14 @@ impl ArginfoError {
         span: RuntimeSourceSpan,
     ) -> Self {
         Self {
-            diagnostic: RuntimeDiagnostic::new(
+            diagnostic: Box::new(RuntimeDiagnostic::new(
                 id,
                 RuntimeSeverity::FatalError,
                 message,
                 span,
                 Vec::new(),
                 None,
-            ),
+            )),
             class: ArginfoErrorClass::TypeError,
         }
     }
@@ -521,14 +521,14 @@ impl ArginfoError {
         span: RuntimeSourceSpan,
     ) -> Self {
         Self {
-            diagnostic: RuntimeDiagnostic::new(
+            diagnostic: Box::new(RuntimeDiagnostic::new(
                 id,
                 RuntimeSeverity::FatalError,
                 message,
                 span,
                 Vec::new(),
                 None,
-            ),
+            )),
             class: ArginfoErrorClass::ValueError,
         }
     }
@@ -541,7 +541,7 @@ impl ArginfoError {
 
     /// Diagnostic.
     #[must_use]
-    pub const fn diagnostic(&self) -> &RuntimeDiagnostic {
+    pub fn diagnostic(&self) -> &RuntimeDiagnostic {
         &self.diagnostic
     }
 }
@@ -929,6 +929,56 @@ mod tests {
         assert!(!crate::generated::arginfo::GENERATED_CLASSES.is_empty());
         assert!(!crate::generated::arginfo::GENERATED_METHODS.is_empty());
         assert!(!crate::generated::arginfo::GENERATED_CONSTANTS.is_empty());
+    }
+
+    #[test]
+    fn generated_arginfo_stable_symbols_resolve() {
+        let strlen = crate::generated::arginfo::function_metadata("strlen").expect("strlen");
+        assert_eq!(strlen.extension, "core");
+        assert_eq!(strlen.params[0].name, "string");
+
+        let range = crate::generated::arginfo::function_metadata("range").expect("range");
+        assert_eq!(range.extension, "standard");
+
+        let var_dump = crate::generated::arginfo::function_metadata("var_dump").expect("var_dump");
+        assert!(var_dump.params.iter().any(|param| param.variadic));
+
+        let closure = crate::generated::arginfo::class_metadata("Closure").expect("Closure");
+        assert_eq!(closure.kind, "class");
+
+        let date_time = crate::generated::arginfo::class_metadata("DateTime").expect("DateTime");
+        assert_eq!(date_time.extension, "date");
+
+        let constructor = crate::generated::arginfo::method_metadata("DateTime", "__construct")
+            .expect("DateTime::__construct");
+        assert_eq!(constructor.class_name, "DateTime");
+
+        let php_version =
+            crate::generated::arginfo::constant_metadata(None, "PHP_VERSION").expect("PHP_VERSION");
+        assert_eq!(php_version.owner, None);
+    }
+
+    #[test]
+    fn generated_arginfo_unknown_symbols_return_none() {
+        assert!(
+            crate::generated::arginfo::function_metadata("__phrust_missing_function__").is_none()
+        );
+        assert!(crate::generated::arginfo::class_metadata("__PhrustMissingClass").is_none());
+        assert!(
+            crate::generated::arginfo::method_metadata("__PhrustMissingClass", "missing").is_none()
+        );
+        assert!(crate::generated::arginfo::method_metadata("DateTime", "missing").is_none());
+        assert!(
+            crate::generated::arginfo::constant_metadata(None, "__PHRUST_MISSING_CONSTANT__")
+                .is_none()
+        );
+        assert!(
+            crate::generated::arginfo::constant_metadata(
+                Some("__PhrustMissingClass"),
+                "__PHRUST_MISSING_CONSTANT__"
+            )
+            .is_none()
+        );
     }
 
     #[test]

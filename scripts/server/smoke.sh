@@ -15,6 +15,15 @@ docroot="$(mktemp -d "${TMPDIR:-/tmp}/phrust-server-smoke.XXXXXX")"
 log_file="$(mktemp "${TMPDIR:-/tmp}/phrust-server-smoke-log.XXXXXX")"
 server_pid=""
 
+fail() {
+  printf '%s\n' "$1"
+  if [[ -s "$log_file" ]]; then
+    printf '%s\n' '--- phrust-server log ---'
+    cat "$log_file"
+  fi
+  exit 1
+}
+
 cleanup() {
   if [[ -n "$server_pid" ]] && kill -0 "$server_pid" >/dev/null 2>&1; then
     kill "$server_pid" >/dev/null 2>&1 || true
@@ -50,19 +59,18 @@ for _ in {1..100}; do
 done
 
 if [[ -z "$address" ]]; then
-  printf '%s\n' '[fail] server did not print listening address'
-  cat "$log_file"
-  exit 1
+  fail '[fail] server did not print listening address'
 fi
 
 assert_body() {
   local path="$1"
   local expected="$2"
   local actual
-  actual="$(curl -fsS "http://$address$path")"
+  if ! actual="$(curl --fail --show-error --silent --connect-timeout 2 --max-time 5 "http://$address$path")"; then
+    fail "[fail] request failed: $path"
+  fi
   if [[ "$actual" != "$expected" ]]; then
-    printf '[fail] %s expected %q got %q\n' "$path" "$expected" "$actual"
-    exit 1
+    fail "$(printf '[fail] %s expected %q got %q' "$path" "$expected" "$actual")"
   fi
 }
 

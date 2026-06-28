@@ -1,13 +1,16 @@
 # Rust Quality Tooling
 
-`just check` remains the fast local baseline: formatting, Clippy with
-`-D warnings`, and workspace tests. The `just quality` family adds deeper Rust
-quality checks without changing the default edit loop.
+`just check` remains the narrow Rust edit-loop baseline: formatting, Clippy
+with `-D warnings`, and workspace tests. `just quality-fast` is the required
+cheap integrity/dependency/docs gate used by local CI parity and GitHub
+Actions. The broader `just quality` aggregate adds opt-in and discovery checks
+without changing the default edit loop.
 
 ## Quality Gates
 
 | Area | Command | Behavior |
 | --- | --- | --- |
+| Required fast gate | `nix develop -c just quality-fast` | Runs source integrity, known-gap manifest validation, dependency policy, unused dependency detection, all-features compile coverage, rustdoc warnings as errors, and doctests. |
 | Supply chain | `nix develop -c just quality-deps` | Runs `cargo-deny` for advisories, license policy, banned crates, wildcard dependencies, and unknown sources. |
 | Unused dependencies | `nix develop -c just quality-unused-deps` | Runs `cargo machete` against the workspace. |
 | Coverage | `PHRUST_RUN_COVERAGE=1 nix develop -c just quality-coverage` | Runs `cargo-llvm-cov`, using `cargo nextest` when available. Skips clearly unless explicitly enabled. |
@@ -17,13 +20,21 @@ quality checks without changing the default edit loop.
 | Public API compatibility | `nix develop -c just quality-api` | Runs `cargo-semver-checks` against `PHRUST_SEMVER_BASELINE`, defaulting to `HEAD`. Use `PHRUST_SEMVER_BASELINE=origin/main` in PR workflows with that ref fetched. |
 | Stricter lint discovery | `nix develop -c just quality-lints` | Runs Clippy `pedantic` and `nursery` as warning-only discovery, with noisy documentation and size lints allowed for now. |
 
-`nix develop -c just quality` runs the aggregate. Expensive coverage and
-mutation gates still skip unless their environment variables are set.
+`nix develop -c just quality` runs `quality-fast` plus the slower or
+discovery-oriented quality targets. Expensive coverage and mutation gates still
+skip unless their environment variables are set.
 
 ## Policy Notes
 
 - `deny.toml` is the source of truth for dependency advisory, license, source,
   and ban policy.
+- Wildcard dependencies are denied. Local workspace path dependencies carry
+  explicit versions so the deny gate can enforce that policy. Multiple versions
+  remain warning-only while current `rusqlite`, `serde_json`, Cranelift, and
+  platform-support transitive graphs require duplicate support crates.
+- The all-features compile check currently records existing JIT helper unused
+  warnings as warning-only coverage; normal `just lint` remains the warning
+  denial gate for default features.
 - `cargo machete` findings should be fixed when they are real. Use
   `[package.metadata.cargo-machete] ignored = [...]` only for known false
   positives such as dependencies whose crate import name differs from the Cargo

@@ -34,6 +34,19 @@ mod identity_storage {
         assert_ne!(one, two);
         assert_eq!(one.get_property("value"), Some(Value::Int(1)));
         assert_eq!(two.get_property("value"), Some(Value::Int(2)));
+        assert_eq!(
+            one.try_get_property("value").expect("checked read"),
+            Some(Value::Int(1))
+        );
+        one.try_set_property("extra", Value::Bool(true))
+            .expect("checked write");
+        assert_eq!(
+            one.try_properties_snapshot().expect("checked snapshot"),
+            vec![
+                ("value".to_owned(), Value::Int(1)),
+                ("extra".to_owned(), Value::Bool(true))
+            ]
+        );
         assert_eq!(one.class_name(), "box");
     }
 

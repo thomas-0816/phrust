@@ -1,5 +1,5 @@
 [graph]
-all-features = false
+all-features = true
 
 [advisories]
 ignore = []
@@ -7,9 +7,11 @@ ignore = []
 [licenses]
 allow = [
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    "Zlib",
 ]
 confidence-threshold = 0.8
 exceptions = []
@@ -18,8 +20,12 @@ exceptions = []
 ignore = false
 
 [bans]
+# Transitive duplicates are currently introduced by rusqlite/hashlink,
+# serde_json/indexmap, Cranelift, and platform support crates; keep duplicates
+# warning-only until upstream graphs converge or dependency updates remove the
+# split.
 multiple-versions = "warn"
-wildcards = "allow"
+wildcards = "deny"
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"

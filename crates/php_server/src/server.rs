@@ -18,7 +18,7 @@ use php_executor::{
     PhpExecutionOutput, PhpExecutionStatus, PhpExecutor, PhpRequestExecutionInput,
     PhpScriptCacheInput,
 };
-use php_runtime::{
+use php_runtime::api::{
     RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, parse_cookie_header,
     parse_form_urlencoded_body,
 };
@@ -33,7 +33,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::TcpListener, sync::Semaphore, task::JoinSet, time::timeout};
+use tokio::{net::TcpListener, sync::Semaphore, task, task::JoinSet, time::timeout};
 use tracing::{debug, warn};
 
 #[derive(Clone, Debug)]
@@ -98,6 +98,8 @@ phrust_server_body_too_large_total {}\n\
 phrust_server_overload_total {}\n\
 phrust_server_script_cache_hits_total {}\n\
 phrust_server_script_cache_misses_total {}\n\
+phrust_server_script_cache_stale_invalidations_total {}\n\
+phrust_server_script_cache_compile_errors_total {}\n\
 phrust_server_script_cache_entries {}\n",
             self.requests_total.load(Ordering::Relaxed),
             self.static_responses.load(Ordering::Relaxed),
@@ -109,6 +111,8 @@ phrust_server_script_cache_entries {}\n",
             self.overload.load(Ordering::Relaxed),
             cache.hits,
             cache.misses,
+            cache.stale_invalidations,
+            cache.compile_errors,
             cache.entries,
         )
     }
@@ -223,7 +227,16 @@ async fn handle(
     };
     let (parts, body) = request.into_parts();
     let method = parts.method.clone();
-    let route = resolve_route(method.as_str(), parts.uri.path(), &state.route_config);
+    let route =
+        match resolve_route_on_blocking_thread(method.as_str(), parts.uri.path(), &state).await {
+            Ok(route) => route,
+            Err(error) => {
+                warn!(%peer, %error, "route resolution task failed");
+                let response = response::text(StatusCode::INTERNAL_SERVER_ERROR, "server error\n");
+                state.metrics.record_response(response.status());
+                return response;
+            }
+        };
     debug!(
         %peer,
         method=%method,
@@ -256,8 +269,8 @@ async fn handle(
             if method == Method::HEAD {
                 response::static_head(StatusCode::OK, metadata.len(), content_type)
             } else {
-                match std::fs::read(&path) {
-                    Ok(body) => response::bytes(StatusCode::OK, Bytes::from(body), content_type),
+                match read_static_file_on_blocking_thread(path).await {
+                    Ok(body) => response::bytes(StatusCode::OK, body, content_type),
                     Err(_) => response::text(StatusCode::NOT_FOUND, "not found\n"),
                 }
             }
@@ -290,6 +303,23 @@ struct PartsAndBody {
     body: Incoming,
 }
 
+async fn resolve_route_on_blocking_thread(
+    method: &str,
+    path: &str,
+    state: &AppState,
+) -> Result<ResolvedRoute, task::JoinError> {
+    let method = method.to_string();
+    let path = path.to_string();
+    let route_config = state.route_config.clone();
+    task::spawn_blocking(move || resolve_route(&method, &path, &route_config)).await
+}
+
+async fn read_static_file_on_blocking_thread(path: PathBuf) -> Result<Bytes, std::io::Error> {
+    task::spawn_blocking(move || std::fs::read(path).map(Bytes::from))
+        .await
+        .map_err(|error| std::io::Error::other(format!("static file read task failed: {error}")))?
+}
+
 async fn execute_php_request(
     request: PartsAndBody,
     state: Arc<AppState>,
@@ -318,19 +348,6 @@ async fn execute_php_request(
             return response::text(StatusCode::BAD_REQUEST, "bad request\n");
         }
     };
-    let lookup = match state.compile_script(&script_path) {
-        Ok(lookup) => {
-            debug!(script=%script_path.display(), hit=lookup.hit, "compiled script cache lookup");
-            lookup
-        }
-        Err(PhpExecutionError::Compile(output)) => {
-            return php_output_response(*output, parts.method == Method::HEAD);
-        }
-        Err(PhpExecutionError::Engine(_)) => {
-            warn!(script=%script_path.display(), "php execution engine error");
-            return response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n");
-        }
-    };
     let script_name = script_name_for(&state.route_config.docroot, &script_path);
     let request_context = http_runtime_context(
         &parts,
@@ -345,17 +362,42 @@ async fn execute_php_request(
         .with_cwd(state.route_config.docroot.clone())
         .with_include_path(vec![state.route_config.docroot.clone()]);
     runtime_context = runtime_context.with_stdin(body.clone());
-    let output = state.executor.execute_compiled(
-        &lookup.compiled,
-        PhpRequestExecutionInput {
-            real_path: Some(script_path),
-            cwd: state.route_config.docroot.clone(),
-            include_roots: vec![state.route_config.docroot.clone()],
-            runtime_context,
-            collect_counters: false,
-        },
-    );
-    php_output_response(output, parts.method == Method::HEAD)
+    let is_head = parts.method == Method::HEAD;
+    let script_log_path = script_path.clone();
+    match execute_php_on_blocking_thread(Arc::clone(&state), script_path, runtime_context).await {
+        Ok((lookup, output)) => {
+            debug!(script=%script_log_path.display(), hit=lookup.hit, "compiled script cache lookup");
+            php_output_response(output, is_head)
+        }
+        Err(PhpExecutionError::Compile(output)) => php_output_response(*output, is_head),
+        Err(PhpExecutionError::Engine(error)) => {
+            warn!(script=%script_log_path.display(), %error, "php execution engine error");
+            response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n")
+        }
+    }
+}
+
+async fn execute_php_on_blocking_thread(
+    state: Arc<AppState>,
+    script_path: PathBuf,
+    runtime_context: RuntimeContext,
+) -> Result<(CompiledScriptCacheLookup, PhpExecutionOutput), PhpExecutionError> {
+    task::spawn_blocking(move || {
+        let lookup = state.compile_script(&script_path)?;
+        let output = state.executor.execute_compiled(
+            &lookup.compiled,
+            PhpRequestExecutionInput {
+                real_path: Some(script_path),
+                cwd: state.route_config.docroot.clone(),
+                include_roots: vec![state.route_config.docroot.clone()],
+                runtime_context,
+                collect_counters: false,
+            },
+        );
+        Ok((lookup, output))
+    })
+    .await
+    .map_err(|error| PhpExecutionError::Engine(format!("php execution task failed: {error}")))?
 }
 
 fn php_output_response(output: PhpExecutionOutput, is_head: bool) -> Response<ResponseBody> {

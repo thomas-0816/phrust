@@ -24,10 +24,10 @@ spans for missing arguments, too many arguments, wrong types, weak coercion, and
 ValueError construction. Standard library differential fixtures wire these into
 reference-backed builtin tests as each function group is implemented.
 
-## Optional php-src Stub Generation
+## php-src Stub Generation
 
 ```bash
-nix develop -c just generate-arginfo
+nix develop -c just generate-arginfo php_src=/path/to/php-src
 ```
 
 The generator reads php-src `*.stub.php` declarations without executing C or
@@ -37,3 +37,45 @@ metadata file under `crates/php_std/src/generated/arginfo.rs` by default. The
 `stdlib-docs` gate runs the same generator against a local fixture so the
 parser, header, by-reference metadata, variadic metadata, and override path
 stay covered without requiring a vendored php-src checkout.
+
+`crates/php_std/src/generated/arginfo.rs` is committed and reviewable. Treat it
+as a generated build input, not as an optional local artifact. After changing
+the generator, overrides, or PHP reference target, regenerate the snapshot from
+the pinned php-src checkout and review the diff before committing it.
+
+## Drift Verification
+
+Strict drift verification regenerates arginfo into `target/` and diffs it
+against the committed snapshot:
+
+```bash
+PHP_SRC_DIR=/path/to/php-src nix develop -c just verify-generated-arginfo
+```
+
+The check fails clearly when no php-src checkout is available. Use the pinned
+PHP 8.5.7 (`php-8.5.7`) tree unless an ADR updates the reference target. The
+fast `source-integrity` gate below remains suitable for normal CI because it
+does not require php-src; `verify-generated-arginfo` is the reference-backed
+drift gate for generator or snapshot changes.
+
+When the PHP reference version changes:
+
+1. Update the reference target ADR/lockfile and this document together.
+2. Regenerate with `nix develop -c just generate-arginfo php_src=/path/to/php-src`.
+3. Run `PHP_SRC_DIR=/path/to/php-src nix develop -c just verify-generated-arginfo`.
+4. Run `nix develop -c cargo test -p php_std` and the relevant stdlib gate.
+
+## Source Integrity Policy
+
+The committed generated arginfo snapshot is part of the build input. It must
+remain non-empty, expose the generated metadata lookup functions consumed by
+`php_std`, and contain stable core symbols used by runtime validation and
+reflection smoke paths. The fast guard is:
+
+```bash
+nix develop -c just source-integrity
+```
+
+That check also verifies critical Rust module wiring such as `php_vm::vm`
+declarations and re-exports. It is included in `just check` and CI so empty
+module files or missing generated metadata fail before deeper workspace gates.

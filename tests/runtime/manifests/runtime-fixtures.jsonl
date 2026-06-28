@@ -1,0 +1,123 @@
+# One JSON object per php-vm runtime fixture. Expected text supports {repo}.
+{"id":"hello","path":"fixtures/runtime/valid/hello.php","tags":["runtime","smoke"],"expect":{"exit":0,"stdout":"hello runtime\n"}}
+{"id":"echo","path":"fixtures/runtime/valid/scalars/echo.php","tags":["runtime","scalars"],"expect":{"exit":0,"stdout":"scalar echo\n"}}
+{"id":"expressions","path":"fixtures/runtime/valid/scalars/expressions.php","tags":["runtime","scalars"],"expect":{"exit":0,"stdout":"7|8|ab|1|-1\n"}}
+{"id":"comparisons","path":"fixtures/runtime/valid/scalars/comparisons.php","tags":["runtime","scalars"],"expect":{"exit":0,"stdout":"1|1|1|1|-1\n"}}
+{"id":"casts","path":"fixtures/runtime/valid/scalars/casts.php","tags":["runtime","scalars"],"expect":{"exit":0,"stdout":"12|1|\n"}}
+{"id":"variables-assignment","path":"fixtures/runtime/valid/variables/assignment.php","tags":["runtime","variables"],"expect":{"exit":0,"stdout":"1\n"}}
+{"id":"variables-compound","path":"fixtures/runtime/valid/variables/compound.php","tags":["runtime","variables"],"expect":{"exit":0,"stdout":"3x\n"}}
+{"id":"variables-inc-dec","path":"fixtures/runtime/valid/variables/inc-dec.php","tags":["runtime","variables"],"expect":{"exit":0,"stdout":"1|3|3|1\n"}}
+{"id":"superglobals-argc","path":"fixtures/runtime/valid/superglobals/argc.php","tags":["runtime","superglobals"],"expect":{"exit":0,"stdout":"1\n"}}
+{"id":"superglobals-argv","path":"fixtures/runtime/valid/superglobals/argv.php","args":["--","alpha","beta"],"tags":["runtime","superglobals"],"expect":{"exit":0,"stdout":"3|alpha|beta\n"}}
+{"id":"superglobals-server-argv","path":"fixtures/runtime/valid/superglobals/server-argv.php","args":["--","red"],"tags":["runtime","superglobals"],"expect":{"exit":0,"stdout":"2|red\n"}}
+{"id":"superglobals-empty","path":"fixtures/runtime/valid/superglobals/empty-superglobals.php","tags":["runtime","superglobals"],"expect":{"exit":0,"stdout":"get-empty|post-empty|request-empty|env-empty\n"}}
+{"id":"references-by-value","path":"fixtures/runtime/valid/references/by-value.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"12\n"}}
+{"id":"references-local-alias","path":"fixtures/runtime/valid/references/local-alias.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"23\n"}}
+{"id":"constants-global","path":"fixtures/runtime/valid/constants/global.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"42|runtime\n"}}
+{"id":"constants-builtin","path":"fixtures/runtime/valid/constants/builtin.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"8.5.7\n"}}
+{"id":"constants-magic-top","path":"fixtures/runtime/valid/constants/magic-top-level.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"{repo}/fixtures/runtime/valid/constants/magic-top-level.php\n{repo}/fixtures/runtime/valid/constants\n4||||\n"}}
+{"id":"constants-magic-function","path":"fixtures/runtime/valid/constants/magic-function.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"magic_function_fixture|3||magic_function_fixture|\n"}}
+{"id":"constants-magic-method","path":"fixtures/runtime/valid/constants/magic-method.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"MagicMethodFixture|MagicMethodFixture::show\n"}}
+{"id":"constants-undefined","path":"fixtures/runtime/invalid/constants/undefined.php","tags":["runtime","constants","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_RUNTIME_UNDEFINED_CONSTANT"}}
+{"id":"variables-undefined","path":"fixtures/runtime/known_gaps/variables/undefined.php","tags":["runtime","variables","known-gap"],"expect":{"exit":0,"stdout":"\nWarning: Undefined variable $missing in {repo}/fixtures/runtime/known_gaps/variables/undefined.php on line <line>\nx\n","normalize_stdout":["line_numbers"],"stderr":""}}
+{"id":"errors-warning-continuation","path":"fixtures/runtime/valid/errors/warning-continuation.php","tags":["runtime","errors"],"expect":{"exit":0,"stdout":"\nWarning: Undefined variable $missing in {repo}/fixtures/runtime/valid/errors/warning-continuation.php on line <line>\nok\n","normalize_stdout":["line_numbers"],"stderr":""}}
+{"id":"control-if","path":"fixtures/runtime/valid/control_flow/if-true-false.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"tf\n"}}
+{"id":"control-nested-if","path":"fixtures/runtime/valid/control_flow/nested-if.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"nested\n"}}
+{"id":"control-while","path":"fixtures/runtime/valid/control_flow/while-counter.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"012\n"}}
+{"id":"control-do","path":"fixtures/runtime/valid/control_flow/do-while-once.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"once\n"}}
+{"id":"control-for","path":"fixtures/runtime/valid/control_flow/for-loop.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"012\n"}}
+{"id":"control-break","path":"fixtures/runtime/valid/control_flow/break.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"12\n"}}
+{"id":"control-continue","path":"fixtures/runtime/valid/control_flow/continue.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"134\n"}}
+{"id":"control-short-circuit","path":"fixtures/runtime/valid/control_flow/short-circuit.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"ok0|ok0\n"}}
+{"id":"control-ternary","path":"fixtures/runtime/valid/control_flow/ternary.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"yes|fallback|kept\n"}}
+{"id":"control-null-coalesce","path":"fixtures/runtime/valid/control_flow/null-coalesce.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"fallback|value\n"}}
+{"id":"control-switch","path":"fixtures/runtime/valid/control_flow/switch-fallthrough.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"zeroone\n"}}
+{"id":"control-match","path":"fixtures/runtime/valid/control_flow/match-success.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"one\n"}}
+{"id":"control-return","path":"fixtures/runtime/valid/control_flow/return.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"before\n"}}
+{"id":"functions-simple","path":"fixtures/runtime/valid/functions/simple.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"hi\n"}}
+{"id":"functions-two-args","path":"fixtures/runtime/valid/functions/two-args.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"5\n"}}
+{"id":"functions-local-scope","path":"fixtures/runtime/valid/functions/local-scope.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"2|10\n"}}
+{"id":"functions-factorial","path":"fixtures/runtime/valid/functions/factorial.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"120\n"}}
+{"id":"functions-return-no-value","path":"fixtures/runtime/valid/functions/return-no-value.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"x\n"}}
+{"id":"functions-defaults","path":"fixtures/runtime/valid/functions/defaults.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"hi world!|hi php?\n"}}
+{"id":"functions-variadic-sum","path":"fixtures/runtime/valid/functions/variadic-sum.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"5\n"}}
+{"id":"functions-return-types","path":"fixtures/runtime/valid/functions/return-types.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"ok|4|x\n"}}
+{"id":"functions-closure-simple","path":"fixtures/runtime/valid/functions/closure-simple.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"3\n"}}
+{"id":"functions-closure-use","path":"fixtures/runtime/valid/functions/closure-use.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"5\n"}}
+{"id":"functions-arrow-capture","path":"fixtures/runtime/valid/functions/arrow-capture.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"7\n"}}
+{"id":"functions-closure-return","path":"fixtures/runtime/valid/functions/closure-return.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"9\n"}}
+{"id":"php85-pipe-user-function","path":"fixtures/runtime/valid/php85/pipe-user-function.php","tags":["runtime","php85"],"expect":{"exit":0,"stdout":"3\n"}}
+{"id":"php85-pipe-closure","path":"fixtures/runtime/valid/php85/pipe-closure.php","tags":["runtime","php85"],"expect":{"exit":0,"stdout":"4\n"}}
+{"id":"php85-pipe-builtin","path":"fixtures/runtime/valid/php85/pipe-builtin.php","tags":["runtime","php85"],"expect":{"exit":0,"stdout":"a|2|HI\n"}}
+{"id":"php85-pipe-side-effects","path":"fixtures/runtime/valid/php85/pipe-side-effects.php","tags":["runtime","php85"],"expect":{"exit":0,"stdout":"7|7\n"}}
+{"id":"builtins-print","path":"fixtures/runtime/valid/builtins/print.php","tags":["runtime","builtins"],"expect":{"exit":0,"stdout":"x1\n"}}
+{"id":"builtins-gettype","path":"fixtures/runtime/valid/builtins/gettype.php","tags":["runtime","builtins"],"expect":{"exit":0,"stdout":"NULL|integer|boolean|string\n"}}
+{"id":"builtins-is-types","path":"fixtures/runtime/valid/builtins/is-types.php","tags":["runtime","builtins"],"expect":{"exit":0,"stdout":"1111\n"}}
+{"id":"builtins-var-dump-scalars","path":"fixtures/runtime/valid/builtins/var-dump-scalars.php","tags":["runtime","builtins"],"expect":{"exit":0,"stdout":"NULL\nbool(true)\nint(7)\nstring(2) \"hi\"\n"}}
+{"id":"builtins-var-dump-array","path":"fixtures/runtime/valid/builtins/var-dump-array.php","tags":["runtime","builtins"],"expect":{"exit":0,"stdout":"array(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  string(1) \"x\"\n}\n"}}
+{"id":"arrays-indexed","path":"fixtures/runtime/valid/arrays/indexed.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|2|3\n"}}
+{"id":"arrays-string-keys","path":"fixtures/runtime/valid/arrays/string-keys.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|2\n"}}
+{"id":"arrays-append-overwrite","path":"fixtures/runtime/valid/arrays/append-overwrite.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|5|7\n"}}
+{"id":"arrays-nested-fetch","path":"fixtures/runtime/valid/arrays/nested-fetch.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"4|8\n"}}
+{"id":"arrays-missing-key","path":"fixtures/runtime/valid/arrays/missing-key.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"x\n","stderr_contains":"E_PHP_RUNTIME_UNDEFINED_ARRAY_KEY_WARNING"}}
+{"id":"arrays-isset-empty-unset","path":"fixtures/runtime/valid/arrays/isset-empty-unset.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"1|111|\n"}}
+{"id":"arrays-var-dump-mixed","path":"fixtures/runtime/valid/arrays/var-dump-mixed.php","tags":["runtime","arrays"],"expect":{"exit":0,"stdout":"array(3) {\n  [0]=>\n  int(1)\n  [\"name\"]=>\n  string(3) \"php\"\n  [4]=>\n  bool(true)\n}\n"}}
+{"id":"foreach-values","path":"fixtures/runtime/valid/foreach/values.php","tags":["runtime","foreach"],"expect":{"exit":0,"stdout":"123\n"}}
+{"id":"foreach-key-value","path":"fixtures/runtime/valid/foreach/key-value.php","tags":["runtime","foreach"],"expect":{"exit":0,"stdout":"a:1;4:2;b:3;\n"}}
+{"id":"foreach-break-continue","path":"fixtures/runtime/valid/foreach/break-continue.php","tags":["runtime","foreach"],"expect":{"exit":0,"stdout":"13\n"}}
+{"id":"foreach-nested","path":"fixtures/runtime/valid/foreach/nested.php","tags":["runtime","foreach"],"expect":{"exit":0,"stdout":"a1;a2;b1;b2;\n"}}
+{"id":"foreach-snapshot-mutation","path":"fixtures/runtime/valid/foreach/snapshot-mutation.php","tags":["runtime","foreach"],"expect":{"exit":0,"stdout":"12|1299\n"}}
+{"id":"includes-return","path":"fixtures/runtime/valid/includes/include-return.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"before|child:value|after\n"}}
+{"id":"includes-share-variable","path":"fixtures/runtime/valid/includes/share-variable.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"parent|included\n"}}
+{"id":"includes-once","path":"fixtures/runtime/valid/includes/include-once.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"1\n"}}
+{"id":"includes-missing","path":"fixtures/runtime/valid/includes/include-missing.php","tags":["runtime","includes"],"expect":{"exit":0,"stdout":"before|\nWarning: include({repo}/fixtures/runtime/valid/includes/lib/missing.php): Failed to open stream: No such file or directory in {repo}/fixtures/runtime/valid/includes/include-missing.php on line 4\n\nWarning: include(): Failed opening '{repo}/fixtures/runtime/valid/includes/lib/missing.php' for inclusion (include_path='.') in {repo}/fixtures/runtime/valid/includes/include-missing.php on line 4\nafter\n","stderr_contains":"E_PHP_VM_INCLUDE_MISSING"}}
+{"id":"objects-instantiate","path":"fixtures/runtime/valid/objects/instantiate.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"object\n"}}
+{"id":"objects-constructor-property","path":"fixtures/runtime/valid/objects/constructor-property.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"7\n"}}
+{"id":"objects-property-read-write","path":"fixtures/runtime/valid/objects/property-read-write.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"3\n"}}
+{"id":"objects-two-objects","path":"fixtures/runtime/valid/objects/two-objects.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"1|2\n"}}
+{"id":"objects-method-call","path":"fixtures/runtime/valid/objects/method-call.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"5\n"}}
+{"id":"objects-method-return","path":"fixtures/runtime/valid/objects/method-return.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"42\n"}}
+{"id":"objects-this-property-method","path":"fixtures/runtime/valid/objects/this-property-method.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"7|12\n"}}
+{"id":"objects-static-method","path":"fixtures/runtime/valid/objects/static-method.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"static-ok\n"}}
+{"id":"objects-clone-object","path":"fixtures/runtime/valid/objects/clone-object.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"1|1\n"}}
+{"id":"objects-clone-independent","path":"fixtures/runtime/valid/objects/clone-independent.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"1|2\n"}}
+{"id":"objects-clone-with","path":"fixtures/runtime/valid/objects/clone-with.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"old:1|new:2\n"}}
+{"id":"exceptions-catch-exception","path":"fixtures/runtime/valid/exceptions/catch-exception.php","tags":["runtime","exceptions"],"expect":{"exit":0,"stdout":"caught\n"}}
+{"id":"exceptions-finally-return","path":"fixtures/runtime/valid/exceptions/finally-return.php","tags":["runtime","exceptions"],"expect":{"exit":0,"stdout":"finally|body\n"}}
+{"id":"exceptions-catch-finally","path":"fixtures/runtime/valid/exceptions/catch-finally.php","tags":["runtime","exceptions"],"expect":{"exit":0,"stdout":"catch|finally\n"}}
+{"id":"runtime-types-param-int","path":"fixtures/runtime/valid/runtime_types/param-int.php","tags":["runtime","types"],"expect":{"exit":0,"stdout":"5\n"}}
+{"id":"runtime-types-return-string","path":"fixtures/runtime/valid/runtime_types/return-string.php","tags":["runtime","types"],"expect":{"exit":0,"stdout":"ok\n"}}
+{"id":"runtime-types-void-return","path":"fixtures/runtime/valid/runtime_types/void-return.php","tags":["runtime","types"],"expect":{"exit":0,"stdout":"before||after\n"}}
+{"id":"runtime-types-nullable-simple","path":"fixtures/runtime/valid/runtime_types/nullable-simple.php","tags":["runtime","types"],"expect":{"exit":0,"stdout":"none|ok\n"}}
+{"id":"runtime-types-property-type","path":"fixtures/runtime/valid/runtime_types/property-type.php","tags":["runtime","types"],"expect":{"exit":0,"stdout":"7\n"}}
+{"id":"objects-unknown-class","path":"fixtures/runtime/invalid/objects/unknown-class.php","tags":["runtime","objects","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_VM_UNKNOWN_CLASS"}}
+{"id":"objects-private-property","path":"fixtures/runtime/valid/objects/private-property.php","tags":["runtime","objects"],"expect":{"exit":0}}
+{"id":"objects-private-method","path":"fixtures/runtime/valid/objects/private-method.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"1\n"}}
+{"id":"objects-this-outside-method","path":"fixtures/runtime/invalid/objects/this-outside-method.php","tags":["runtime","objects","invalid"],"expect":{"exit":3,"stdout_contains":"Uncaught Error: Using $this when not in object context","stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"objects-static-property","path":"fixtures/runtime/valid/objects/static-property.php","tags":["runtime","objects"],"expect":{"exit":0,"stdout":"1\n"}}
+{"id":"objects-clone-with-private","path":"fixtures/runtime/known_gaps/objects/clone-with-private.php","tags":["runtime","objects","known-gap"],"expect":{"exit":3,"stdout_contains":"Uncaught Error: property PrivateCloneWithFixture::$value uses modifiers outside the reflection-clone clone-with MVP","stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"objects-clone-with-readonly","path":"fixtures/runtime/known_gaps/objects/clone-with-readonly.php","tags":["runtime","objects","known-gap"],"expect":{"exit":3,"stdout_contains":"Uncaught Error: property ReadonlyCloneWithFixture::$value uses modifiers outside the reflection-clone clone-with MVP","stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"exceptions-throw-uncaught","path":"fixtures/runtime/invalid/exceptions/throw-uncaught.php","tags":["runtime","exceptions","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"exceptions-finally-throw","path":"fixtures/runtime/invalid/exceptions/finally-throw.php","tags":["runtime","exceptions","invalid"],"expect":{"exit":3,"stdout_lines_contains":"finally","stdout_contains":"Uncaught Exception: boom","stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"exceptions-rethrow","path":"fixtures/runtime/invalid/exceptions/rethrow.php","tags":["runtime","exceptions","invalid"],"expect":{"exit":3,"stdout_lines_contains":"catch","stdout_contains":"Uncaught Exception: boom","stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"runtime-types-param-int-fail","path":"fixtures/runtime/invalid/runtime_types/param-int-fail.php","tags":["runtime","types","invalid"],"expect":{"exit":3,"stdout_contains":"Uncaught TypeError: add_one(): Argument #1 ($value) must be of type int, array given"}}
+{"id":"runtime-types-return-string-fail","path":"fixtures/runtime/invalid/runtime_types/return-string-fail.php","tags":["runtime","types","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_VM_RETURN_TYPE_MISMATCH"}}
+{"id":"runtime-types-void-return-value","path":"fixtures/runtime/invalid/runtime_types/void-return-value.php","tags":["runtime","types","invalid"],"expect":{"exit":2,"stderr_contains":"E_PHP_RETURN_VALUE_FROM_VOID_FUNCTION"}}
+{"id":"runtime-types-property-type-fail","path":"fixtures/runtime/invalid/runtime_types/property-type-fail.php","tags":["runtime","types","invalid"],"expect":{"exit":3,"stdout_contains":"Uncaught TypeError: property Box::$value got array, expected int","stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"exceptions-catch-type","path":"fixtures/runtime/invalid/exceptions/nonmatching-catch-type.php","tags":["runtime","exceptions","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"includes-require-missing","path":"fixtures/runtime/invalid/includes/require-missing.php","tags":["runtime","includes","invalid"],"expect":{"exit":3,"stdout":"before|\nWarning: require({repo}/fixtures/runtime/invalid/includes/missing.php): Failed to open stream: No such file or directory in {repo}/fixtures/runtime/invalid/includes/require-missing.php on line 3\n\nFatal error: Uncaught Error: Failed opening required '{repo}/fixtures/runtime/invalid/includes/missing.php' (include_path='.') in {repo}/fixtures/runtime/invalid/includes/require-missing.php:3\nStack trace:\n#0 {main}\n  thrown in {repo}/fixtures/runtime/invalid/includes/require-missing.php on line 3\n","stderr_contains":"E_PHP_VM_INCLUDE_MISSING"}}
+{"id":"foreach-by-ref","path":"fixtures/runtime/known_gaps/foreach/by-ref.php","tags":["runtime","foreach","known-gap"],"expect":{"exit":2,"stderr_contains":"E_PHP_IR_UNSUPPORTED_BY_REF_FOREACH"}}
+{"id":"references-by-ref-param","path":"fixtures/runtime/valid/references/by-ref-param.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"2"}}
+{"id":"references-by-ref-return","path":"fixtures/runtime/valid/references/by-ref-return.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"1"}}
+{"id":"references-array-element-ref","path":"fixtures/runtime/valid/references/array-element-ref.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"2"}}
+{"id":"division","path":"fixtures/runtime/invalid/division-by-zero.php","tags":["runtime","invalid"],"expect":{"exit":3,"stderr_contains":["runtime_error: division by zero","E_PHP_RUNTIME_DIVISION_BY_ZERO"]}}
+{"id":"errors-undefined-function","path":"fixtures/runtime/invalid/errors/undefined-function.php","tags":["runtime","errors","invalid"],"expect":{"exit":3,"stderr_contains":["runtime_error: undefined function runtime_missing_function","E_PHP_RUNTIME_UNDEFINED_FUNCTION"]}}
+{"id":"type","path":"fixtures/runtime/invalid/type-error.php","tags":["runtime","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_RUNTIME_NON_NUMERIC_STRING"}}
+{"id":"match-no-arm","path":"fixtures/runtime/invalid/match-no-arm.php","tags":["runtime","control-flow","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_VM_UNHANDLED_MATCH: match expression did not match any arm"}}
+{"id":"functions-call-stack","path":"fixtures/runtime/invalid/functions/call-stack-error.php","tags":["runtime","functions","invalid"],"expect":{"exit":3,"stderr_contains":["runtime_error: division by zero","call_stack:","at boom","at wrap"]}}
+{"id":"functions-missing-arg","path":"fixtures/runtime/invalid/functions/missing-arg.php","tags":["runtime","functions","invalid"],"expect":{"exit":3,"stderr_contains":["ArgumentCountError: Too few arguments to function one(), 0 passed in "," and exactly 1 expected"]}}
+{"id":"functions-extra-arg","path":"fixtures/runtime/valid/functions/extra-arg.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"1|1,2"}}
+{"id":"functions-return-type-error","path":"fixtures/runtime/invalid/functions/return-type-error.php","tags":["runtime","functions","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_VM_RETURN_TYPE_MISMATCH"}}
+{"id":"functions-by-ref-capture","path":"fixtures/runtime/valid/functions/by-ref-capture.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"3"}}
+{"id":"php85-pipe-not-callable","path":"fixtures/runtime/invalid/php85/pipe-not-callable.php","tags":["runtime","php85","invalid"],"expect":{"exit":3,"stdout_contains":"Uncaught Error: int is not callable","stderr_contains":"E_PHP_VM_UNCAUGHT_EXCEPTION"}}
+{"id":"generator-gap","path":"fixtures/runtime/valid/generators/yield.php","tags":["runtime","generators"],"expect":{"exit":0,"stdout":"1"}}

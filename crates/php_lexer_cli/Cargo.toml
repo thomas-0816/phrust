@@ -10,4 +10,4 @@ name = "php-lex"
 path = "src/main.rs"
 
 [dependencies]
-php_lexer = { path = "../php_lexer" }
+php_lexer = { path = "../php_lexer", version = "0.1.0" }

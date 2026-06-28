@@ -46,6 +46,8 @@ use php_ir::operand::Operand;
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
 use php_runtime::IniRegistry;
+use php_runtime::ResourceTable;
+use php_runtime::debug::{GcEntityId, GcEntityKind, GcRoot, GcRootKind, GcSnapshot, scan_roots};
 use php_runtime::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 use php_runtime::{
     ArrayKey, AttributeEntry as RuntimeAttributeEntry, AutoloadRegistry, BuiltinContext,
@@ -58,18 +60,17 @@ use php_runtime::{
     ClassPropertyEntry as RuntimeClassPropertyEntry,
     ClassPropertyFlags as RuntimeClassPropertyFlags,
     ClassPropertyHooks as RuntimeClassPropertyHooks, ClosureCaptureValue, ClosureContext,
-    ClosureDebugInfo, ClosurePayload, ExecutionStatus, FiberRef, FiberState, GcEntityId,
-    GcEntityKind, GeneratorRef, GeneratorState, GlobalSymbolTable, NumericValue, ObjectRef,
-    OutputBuffer, PhpArray, PhpArrayKind, PhpArrayShapeKind, PhpArrayShapeLookup,
-    PhpArrayShapeLookupFallback, PhpString, ProcessCapability, ReferenceCell, RuntimeContext,
-    RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity, RuntimeSourceSpan,
-    RuntimeStackFrame, RuntimeType, Slot, Value, compare, division_by_zero_mvp,
-    emit_php_diagnostic, equal, error_reporting_allows_level, identical,
-    reset_float_string_precision, runtime_type_name, set_float_string_precision,
-    to_arithmetic_number, to_bool, to_float, to_int, to_number, to_string, undefined_function,
-    undefined_variable_warning, unsupported_feature, value_matches_runtime_type, value_type_name,
+    ClosureDebugInfo, ClosurePayload, ExecutionStatus, FiberRef, FiberState, GeneratorRef,
+    GeneratorState, GlobalSymbolTable, NumericValue, ObjectRef, OutputBuffer, PhpArray,
+    PhpArrayKind, PhpArrayShapeKind, PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpString,
+    ProcessCapability, ReferenceCell, RuntimeContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
+    RuntimeHttpResponseState, RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame, RuntimeType,
+    Slot, Value, VmCompileDiagnostic, compare, division_by_zero_mvp, emit_php_diagnostic, equal,
+    error_reporting_allows_level, identical, reset_float_string_precision, runtime_type_name,
+    set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
+    to_string, undefined_function, undefined_variable_warning, unsupported_feature,
+    value_matches_runtime_type, value_type_name,
 };
-use php_runtime::{GcRoot, GcRootKind, GcSnapshot, ResourceTable, scan_roots};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -1114,7 +1115,7 @@ fn collect_destructor_candidate_objects(
             if !seen.insert(id) {
                 return;
             }
-            let value = cell.borrow();
+            let value = cell.get();
             collect_destructor_candidate_objects(&value, seen, candidates);
         }
         Value::Callable(CallableValue::Closure(payload)) => {
@@ -1191,7 +1192,7 @@ fn value_reaches_object_id(value: &Value, object_id: u64, seen: &mut BTreeSet<Gc
             if !seen.insert(id) {
                 return false;
             }
-            let value = cell.borrow();
+            let value = cell.get();
             value_reaches_object_id(&value, object_id, seen)
         }
         Value::Callable(CallableValue::Closure(payload)) => {
@@ -1844,8 +1845,24 @@ impl Vm {
         if unit.unit().functions.get(entry.index()).is_none() {
             return VmResult::compile_error(output, "entry function is missing");
         }
-        if let Err(message) = validate_class_table(&unit) {
-            return VmResult::compile_error(output, message);
+        if let Err(error) = validate_class_table(&unit) {
+            let (message, diagnostic) = error.into_parts();
+            return match diagnostic {
+                Some(diagnostic) => VmResult {
+                    status: ExecutionStatus::compile_error(message),
+                    output,
+                    diagnostics: vec![diagnostic],
+                    http_response: RuntimeHttpResponseState::default(),
+                    return_value: None,
+                    yielded: None,
+                    fiber_suspension: None,
+                    return_ref: None,
+                    trace: Vec::new(),
+                    counters: None,
+                    tiering_stats: None,
+                },
+                None => VmResult::compile_error(output, message),
+            };
         }
         self.warm_literal_pool(unit.unit());
 
@@ -26667,16 +26684,65 @@ fn debug_info_gap_message(compiled: &CompiledUnit, values: &[Value]) -> Option<S
     None
 }
 
-fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
+#[derive(Clone, Debug)]
+struct VmCompileError {
+    message: String,
+    diagnostic: Option<RuntimeDiagnostic>,
+}
+
+impl VmCompileError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            diagnostic: None,
+        }
+    }
+
+    fn typed(compiled: &CompiledUnit, payload: VmCompileDiagnostic, span: IrSpan) -> Self {
+        let message = payload.status_message();
+        let diagnostic = RuntimeDiagnostic::with_payload(
+            payload.id(),
+            RuntimeSeverity::FatalError,
+            message.clone(),
+            runtime_source_span(compiled, span),
+            Vec::new(),
+            Some(php_runtime::PhpReferenceClassification::FatalError),
+            RuntimeDiagnosticPayload::VmCompile(payload),
+        );
+        Self {
+            message,
+            diagnostic: Some(diagnostic),
+        }
+    }
+
+    fn into_parts(self) -> (String, Option<RuntimeDiagnostic>) {
+        (self.message, self.diagnostic)
+    }
+}
+
+impl From<String> for VmCompileError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for VmCompileError {
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
+}
+
+fn validate_class_table(compiled: &CompiledUnit) -> Result<(), VmCompileError> {
     for class in compiled.class_table() {
         if class.flags.is_final && class.flags.is_abstract {
             return Err(format!(
                 "E_PHP_VM_INVALID_CLASS_MODIFIER: class {} cannot be both abstract and final",
                 class.name
-            ));
+            )
+            .into());
         }
         if class.flags.is_interface {
-            validate_interface_declaration(class)?;
+            validate_interface_declaration(compiled, class)?;
             for interface in &class.interfaces {
                 let Some(parent) = compiled.lookup_class(interface) else {
                     if is_internal_interface(interface) {
@@ -26686,7 +26752,8 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
                         return Err(format!(
                             "E_PHP_VM_INTERFACE_EXTENDS_CLASS: interface {} cannot extend non-interface {}",
                             class.name, interface
-                        ));
+                        )
+                        .into());
                     }
                     continue;
                 };
@@ -26694,7 +26761,8 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
                     return Err(format!(
                         "E_PHP_VM_INTERFACE_EXTENDS_CLASS: interface {} cannot extend non-interface {}",
                         class.name, interface
-                    ));
+                    )
+                    .into());
                 }
             }
             continue;
@@ -26712,15 +26780,23 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
                 continue;
             };
             if parent.flags.is_interface {
-                return Err(format!(
-                    "E_PHP_VM_CLASS_EXTENDS_INTERFACE: Class {} cannot extend interface {}",
-                    class.display_name, parent.display_name
+                return Err(VmCompileError::typed(
+                    compiled,
+                    VmCompileDiagnostic::ClassExtendsInterface {
+                        class_name: class.display_name.clone(),
+                        interface_name: parent.display_name.clone(),
+                    },
+                    class.span,
                 ));
             }
             if parent.flags.is_final {
-                return Err(format!(
-                    "E_PHP_VM_FINAL_CLASS_EXTEND: Class {} cannot extend final class {}",
-                    class.name, parent.name
+                return Err(VmCompileError::typed(
+                    compiled,
+                    VmCompileDiagnostic::FinalClassExtend {
+                        class_name: class.name.clone(),
+                        parent_class_name: parent.name.clone(),
+                    },
+                    class.span,
                 ));
             }
             validate_final_method_overrides(compiled, class, parent)?;
@@ -26738,17 +26814,33 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
                     continue;
                 }
                 if internal_class_kind(interface).is_some() {
-                    return Err(format!(
-                        "E_PHP_VM_IMPLEMENTS_NON_INTERFACE: class {} implements non-interface {}",
-                        class.name, interface
+                    return Err(VmCompileError::typed(
+                        compiled,
+                        VmCompileDiagnostic::ImplementsNonInterface {
+                            class_name: class.name.clone(),
+                            target_name: interface.clone(),
+                            message: format!(
+                                "class {} implements non-interface {}",
+                                class.name, interface
+                            ),
+                        },
+                        class.span,
                     ));
                 }
                 continue;
             };
             if !interface_class.flags.is_interface {
-                return Err(format!(
-                    "E_PHP_VM_IMPLEMENTS_NON_INTERFACE: {} cannot implement {} - it is not an interface",
-                    class.display_name, interface_class.display_name
+                return Err(VmCompileError::typed(
+                    compiled,
+                    VmCompileDiagnostic::ImplementsNonInterface {
+                        class_name: class.display_name.clone(),
+                        target_name: interface_class.display_name.clone(),
+                        message: format!(
+                            "{} cannot implement {} - it is not an interface",
+                            class.display_name, interface_class.display_name
+                        ),
+                    },
+                    class.span,
                 ));
             }
             validate_interface_implementation(compiled, class, interface_class)?;
@@ -26765,7 +26857,7 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
 fn validate_traversable_direct_implementation(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     if !class
         .interfaces
         .iter()
@@ -26780,41 +26872,63 @@ fn validate_traversable_direct_implementation(
         return Ok(());
     }
 
-    Err(format!(
-        "E_PHP_VM_TRAVERSABLE_DIRECT_IMPLEMENTATION: Class {} must implement interface Traversable as part of either Iterator or IteratorAggregate",
-        class.display_name
+    Err(VmCompileError::typed(
+        compiled,
+        VmCompileDiagnostic::TraversableDirectImplementation {
+            class_name: class.display_name.clone(),
+        },
+        class.span,
     ))
 }
 
-fn validate_interface_declaration(class: &php_ir::module::ClassEntry) -> Result<(), String> {
+fn validate_interface_declaration(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+) -> Result<(), VmCompileError> {
     for constant in &class.constants {
         if constant.flags.is_private || constant.flags.is_protected {
-            return Err(format!(
-                "E_PHP_VM_INTERFACE_CONSTANT_VISIBILITY: Access type for interface constant {}::{} must be public",
-                class.display_name, constant.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceConstantVisibility {
+                    class_name: class.display_name.clone(),
+                    constant_name: constant.name.clone(),
+                },
+                constant.span,
             ));
         }
     }
     for method in &class.methods {
         if method.flags.is_private || method.flags.is_protected {
-            return Err(format!(
-                "E_PHP_VM_INTERFACE_METHOD_VISIBILITY: Access type for interface method {}::{}() must be public",
-                class.display_name, method.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceMethodVisibility {
+                    class_name: class.display_name.clone(),
+                    method_name: method.name.clone(),
+                },
+                method_source_span(compiled, method),
             ));
         }
         if method.flags.has_body {
-            return Err(format!(
-                "E_PHP_VM_INTERFACE_METHOD_BODY: Interface function {}::{}() cannot contain body",
-                class.display_name, method.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceMethodBody {
+                    class_name: class.display_name.clone(),
+                    method_name: method.name.clone(),
+                },
+                method_source_span(compiled, method),
             ));
         }
     }
     for property in &class.properties {
         if property.hooks.get.is_none() && property.hooks.set.is_none() {
-            return Err(
-                "E_PHP_VM_INTERFACE_PROPERTY: Interfaces may only include hooked properties"
-                    .to_owned(),
-            );
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceProperty {
+                    class_name: class.display_name.clone(),
+                    property_name: property.name.clone(),
+                },
+                class.span,
+            ));
         }
     }
     Ok(())
@@ -26881,22 +26995,31 @@ fn validate_internal_interface_implementation(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
     interface_name: &str,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     for parent_name in internal_class_interfaces(interface_name) {
         validate_internal_interface_implementation(compiled, class, &parent_name)?;
     }
     for expected in php_std::generated::arginfo::class_methods(interface_name) {
         let resolved = lookup_method_in_hierarchy(compiled, class, expected.name, None)?
             .ok_or_else(|| {
-                format!(
-                    "E_PHP_VM_INTERFACE_METHOD_MISSING: class {} must implement {}::{}",
-                    class.name, interface_name, expected.name
+                VmCompileError::typed(
+                    compiled,
+                    VmCompileDiagnostic::InterfaceMethodMissing {
+                        class_name: class.name.clone(),
+                        interface_name: interface_name.to_owned(),
+                        method_name: expected.name.to_owned(),
+                    },
+                    class.span,
                 )
             })?;
         if resolved.method.flags.is_private || resolved.method.flags.is_protected {
-            return Err(format!(
-                "E_PHP_VM_INTERFACE_METHOD_VISIBILITY: class {} method {} must be public for interface {}",
-                class.name, expected.name, interface_name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceMethodVisibility {
+                    class_name: class.name.clone(),
+                    method_name: expected.name.to_owned(),
+                },
+                method_source_span(compiled, resolved.method),
             ));
         }
     }
@@ -26907,7 +27030,7 @@ fn validate_final_method_overrides(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
     parent: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     for method in &class.methods {
         if let Some(parent_method) =
             lookup_method_in_hierarchy(compiled, parent, &method.name, None)?
@@ -26915,9 +27038,14 @@ fn validate_final_method_overrides(
             && (!parent_method.method.flags.is_private
                 || normalize_method_name(&parent_method.method.name) == "__construct")
         {
-            return Err(format!(
-                "E_PHP_VM_FINAL_METHOD_OVERRIDE: Cannot override final method {}::{}()",
-                parent_method.class.display_name, parent_method.method.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::FinalMethodOverride {
+                    class_name: class.display_name.clone(),
+                    method_name: method.name.clone(),
+                    parent_class_name: parent_method.class.display_name.clone(),
+                },
+                method_source_span(compiled, method),
             ));
         }
     }
@@ -26928,7 +27056,7 @@ fn validate_parent_method_compatibility(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
     parent: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     for method in &class.methods {
         let Some(parent_method) = lookup_method_in_hierarchy(compiled, parent, &method.name, None)?
         else {
@@ -26938,27 +27066,42 @@ fn validate_parent_method_compatibility(
             continue;
         }
         if parent_method.method.flags.is_static && !method.flags.is_static {
-            return Err(format!(
-                "E_PHP_VM_STATIC_METHOD_OVERRIDE: Cannot make static method {}::{}() non static in class {}",
-                parent_method.class.name, parent_method.method.name, class.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::StaticMethodOverride {
+                    class_name: class.name.clone(),
+                    method_name: method.name.clone(),
+                    parent_class_name: parent_method.class.name.clone(),
+                    parent_is_static: true,
+                },
+                method_source_span(compiled, method),
             ));
         }
         if !parent_method.method.flags.is_static && method.flags.is_static {
-            return Err(format!(
-                "E_PHP_VM_STATIC_METHOD_OVERRIDE: Cannot make non static method {}::{}() static in class {}",
-                parent_method.class.name, parent_method.method.name, class.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::StaticMethodOverride {
+                    class_name: class.name.clone(),
+                    method_name: method.name.clone(),
+                    parent_class_name: parent_method.class.name.clone(),
+                    parent_is_static: false,
+                },
+                method_source_span(compiled, method),
             ));
         }
         if method_visibility_rank(method.flags) < method_visibility_rank(parent_method.method.flags)
         {
             let visibility = method_visibility_name(parent_method.method.flags);
-            return Err(format!(
-                "E_PHP_VM_METHOD_VISIBILITY_OVERRIDE: Access level to {}::{}() must be {} (as in class {}){}",
-                class.name,
-                method.name,
-                visibility,
-                parent_method.class.name,
-                visibility_weaker_suffix(visibility)
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::MethodVisibilityOverride {
+                    class_name: class.name.clone(),
+                    method_name: method.name.clone(),
+                    required_visibility: visibility.to_owned(),
+                    parent_class_name: parent_method.class.name.clone(),
+                    weaker_suffix: visibility_weaker_suffix(visibility).to_owned(),
+                },
+                method_source_span(compiled, method),
             ));
         }
         if !method_signature_compatible(compiled, parent_method.method, method) {
@@ -26973,8 +27116,15 @@ fn validate_parent_method_compatibility(
                         parent_method.class.display_name, parent_method.method.name
                     )
                 });
-            return Err(format!(
-                "E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: Declaration of {actual_signature} must be compatible with {expected_signature}"
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::MethodSignatureOverride {
+                    class_name: class.display_name.clone(),
+                    method_name: method.name.clone(),
+                    actual_signature,
+                    expected_signature,
+                },
+                method_source_span(compiled, method),
             ));
         }
     }
@@ -27051,7 +27201,7 @@ fn validate_parent_property_compatibility(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
     parent: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     for property in &class.properties {
         let Some(parent_property) =
             lookup_property_in_hierarchy(compiled, parent, &property.name, None)?
@@ -27062,33 +27212,43 @@ fn validate_parent_property_compatibility(
             continue;
         }
         if parent_property.property.flags.is_static && !property.flags.is_static {
-            return Err(format!(
-                "E_PHP_VM_PROPERTY_STATIC_OVERRIDE: Cannot redeclare static {}::${} as non static {}::${}",
-                parent_property.class.display_name,
-                parent_property.property.name,
-                class.display_name,
-                property.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::PropertyStaticOverride {
+                    class_name: class.display_name.clone(),
+                    property_name: property.name.clone(),
+                    parent_class_name: parent_property.class.display_name.clone(),
+                    parent_is_static: true,
+                },
+                class.span,
             ));
         }
         if !parent_property.property.flags.is_static && property.flags.is_static {
-            return Err(format!(
-                "E_PHP_VM_PROPERTY_STATIC_OVERRIDE: Cannot redeclare non static {}::${} as static {}::${}",
-                parent_property.class.display_name,
-                parent_property.property.name,
-                class.display_name,
-                property.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::PropertyStaticOverride {
+                    class_name: class.display_name.clone(),
+                    property_name: property.name.clone(),
+                    parent_class_name: parent_property.class.display_name.clone(),
+                    parent_is_static: false,
+                },
+                class.span,
             ));
         }
         if property_visibility_rank(property.flags)
             < property_visibility_rank(parent_property.property.flags)
         {
-            return Err(format!(
-                "E_PHP_VM_PROPERTY_VISIBILITY_OVERRIDE: Access level to {}::${} must be {} (as in class {}){}",
-                class.display_name,
-                property.name,
-                property_visibility_name(parent_property.property.flags),
-                parent_property.class.display_name,
-                visibility_weaker_suffix(property_visibility_name(parent_property.property.flags))
+            let visibility = property_visibility_name(parent_property.property.flags);
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::PropertyVisibilityOverride {
+                    class_name: class.display_name.clone(),
+                    property_name: property.name.clone(),
+                    required_visibility: visibility.to_owned(),
+                    parent_class_name: parent_property.class.display_name.clone(),
+                    weaker_suffix: visibility_weaker_suffix(visibility).to_owned(),
+                },
+                class.span,
             ));
         }
     }
@@ -27119,7 +27279,7 @@ fn validate_parent_constant_compatibility(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
     parent: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     for constant in &class.constants {
         let Some(parent_constant) =
             lookup_constant_in_hierarchy(compiled, parent, &constant.name, None)?
@@ -27133,13 +27293,16 @@ fn validate_parent_constant_compatibility(
             < constant_visibility_rank(parent_constant.constant.flags)
         {
             let visibility = constant_visibility_name(parent_constant.constant.flags);
-            return Err(format!(
-                "E_PHP_VM_CLASS_CONSTANT_VISIBILITY_OVERRIDE: Access level to {}::{} must be {} (as in class {}){}",
-                class.display_name,
-                constant.name,
-                visibility,
-                parent_constant.class.display_name,
-                visibility_weaker_suffix(visibility)
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::ClassConstantVisibilityOverride {
+                    class_name: class.display_name.clone(),
+                    constant_name: constant.name.clone(),
+                    required_visibility: visibility.to_owned(),
+                    parent_class_name: parent_constant.class.display_name.clone(),
+                    weaker_suffix: visibility_weaker_suffix(visibility).to_owned(),
+                },
+                class.span,
             ));
         }
     }
@@ -27186,6 +27349,17 @@ fn method_signature_display(
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!("{}({params})", function.name))
+}
+
+fn method_source_span(
+    compiled: &CompiledUnit,
+    method: &php_ir::module::ClassMethodEntry,
+) -> IrSpan {
+    compiled
+        .unit()
+        .functions
+        .get(method.function.index())
+        .map_or(IrSpan::default(), |function| function.span)
 }
 
 fn method_param_display(param: &php_ir::IrParam) -> String {
@@ -27280,7 +27454,7 @@ fn method_type_display(type_: &IrReturnType) -> String {
 fn validate_no_unimplemented_abstract_methods(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     let mut lineage = Vec::new();
     collect_class_lineage_compiled(compiled, class, &mut lineage)?;
     for declaring in lineage {
@@ -27290,16 +27464,17 @@ fn validate_no_unimplemented_abstract_methods(
             }
             let resolved = lookup_method_in_hierarchy(compiled, class, &method.name, None)?
                 .ok_or_else(|| {
-                    format!(
+                    VmCompileError::new(format!(
                         "E_PHP_VM_ABSTRACT_METHOD_NOT_IMPLEMENTED: class {} does not implement {}::{}",
                         class.name, declaring.name, method.name
-                    )
+                    ))
                 })?;
             if resolved.method.flags.is_abstract {
                 return Err(format!(
                     "E_PHP_VM_ABSTRACT_METHOD_NOT_IMPLEMENTED: class {} does not implement {}::{}",
                     class.name, declaring.name, method.name
-                ));
+                )
+                .into());
             }
         }
     }
@@ -27310,7 +27485,7 @@ fn validate_interface_implementation(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
     interface: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     for parent_name in &interface.interfaces {
         let Some(parent) = compiled.lookup_class(parent_name) else {
             if is_internal_interface(parent_name) {
@@ -27328,15 +27503,24 @@ fn validate_interface_implementation(
                 continue;
             }
             let method_name = method_display_name(compiled, expected);
-            return Err(format!(
-                "E_PHP_VM_INTERFACE_METHOD_MISSING: class {} must implement {}::{}",
-                class.display_name, interface.display_name, method_name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceMethodMissing {
+                    class_name: class.display_name.clone(),
+                    interface_name: interface.display_name.clone(),
+                    method_name,
+                },
+                class.span,
             ));
         };
         if resolved.method.flags.is_private || resolved.method.flags.is_protected {
-            return Err(format!(
-                "E_PHP_VM_INTERFACE_METHOD_VISIBILITY: class {} method {} must be public for interface {}",
-                class.name, expected.name, interface.name
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceMethodVisibility {
+                    class_name: class.name.clone(),
+                    method_name: expected.name.clone(),
+                },
+                method_source_span(compiled, resolved.method),
             ));
         }
         if !method_signature_compatible(compiled, expected, resolved.method) {
@@ -27344,8 +27528,15 @@ fn validate_interface_implementation(
                 .unwrap_or_else(|| format!("{}::{}()", class.display_name, resolved.method.name));
             let expected_signature = method_signature_display(compiled, expected)
                 .unwrap_or_else(|| format!("{}::{}()", interface.display_name, expected.name));
-            return Err(format!(
-                "E_PHP_VM_INTERFACE_METHOD_SIGNATURE: Declaration of {actual_signature} must be compatible with {expected_signature}"
+            return Err(VmCompileError::typed(
+                compiled,
+                VmCompileDiagnostic::InterfaceMethodSignature {
+                    class_name: class.display_name.clone(),
+                    method_name: resolved.method.name.clone(),
+                    actual_signature,
+                    expected_signature,
+                },
+                method_source_span(compiled, resolved.method),
             ));
         }
     }
@@ -27355,7 +27546,7 @@ fn validate_interface_implementation(
 fn validate_inherited_interface_implementations(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
-) -> Result<(), String> {
+) -> Result<(), VmCompileError> {
     let mut lineage = Vec::new();
     collect_class_lineage_compiled(compiled, class, &mut lineage)?;
     let mut seen = Vec::new();
@@ -36246,10 +36437,12 @@ fn local_array_has_cow_or_reference_fallback(stack: &CallStack, local: LocalId) 
     };
     match slot {
         Slot::Value(Value::Array(array)) => array.is_shared() || array.contains_references_fast(),
-        Slot::Reference(cell) => match &*cell.borrow() {
-            Value::Array(array) => array.is_shared() || array.contains_references_fast(),
-            _ => true,
-        },
+        Slot::Reference(cell) => cell
+            .try_with_value(|value| match value {
+                Value::Array(array) => array.is_shared() || array.contains_references_fast(),
+                _ => true,
+            })
+            .unwrap_or(true),
         _ => false,
     }
 }
@@ -38763,7 +38956,7 @@ mod tests {
         FunctionFlags, IrBuilder, IrConstant, IrSpan, Operand, RegId, UnitId,
         instruction::InstructionKind,
     };
-    use php_runtime::ExitStatus;
+    use php_runtime::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
 
     fn property_fetch_profile<'a>(
         counters: &'a VmCounters,
@@ -41396,6 +41589,14 @@ good"
             "{:?}",
             lowered_visibility.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&lowered_visibility),
+            VmCompileDiagnostic::MethodVisibilityOverride {
+                class_name,
+                method_name,
+                ..
+            } if class_name == "child" && method_name == "show"
+        ));
 
         let static_to_instance = execute_source(
             "<?php class Base { public static function show() {} } class Child extends Base { public function show() {} }",
@@ -41413,6 +41614,15 @@ good"
             "{:?}",
             static_to_instance.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&static_to_instance),
+            VmCompileDiagnostic::StaticMethodOverride {
+                class_name,
+                method_name,
+                parent_is_static: true,
+                ..
+            } if class_name == "child" && method_name == "show"
+        ));
 
         let instance_to_static = execute_source(
             "<?php class Base { public function show() {} } class Child extends Base { public static function show() {} }",
@@ -41449,6 +41659,14 @@ good"
             "{:?}",
             narrowed_parameter_type.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&narrowed_parameter_type),
+            VmCompileDiagnostic::MethodSignatureOverride {
+                class_name,
+                method_name,
+                ..
+            } if class_name == "Child" && method_name == "accept"
+        ));
 
         let removed_optional_parameter = execute_source(
             "<?php class Base { public function accept($value = 1) {} } class Child extends Base { public function accept() {} }",
@@ -41490,6 +41708,14 @@ good"
             "{:?}",
             lowered_visibility.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&lowered_visibility),
+            VmCompileDiagnostic::PropertyVisibilityOverride {
+                class_name,
+                property_name,
+                ..
+            } if class_name == "Child" && property_name == "p"
+        ));
 
         let static_to_instance = execute_source(
             "<?php class Base { public static $p; } class Child extends Base { public $p; }",
@@ -41507,6 +41733,15 @@ good"
             "{:?}",
             static_to_instance.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&static_to_instance),
+            VmCompileDiagnostic::PropertyStaticOverride {
+                class_name,
+                property_name,
+                parent_is_static: true,
+                ..
+            } if class_name == "Child" && property_name == "p"
+        ));
 
         let instance_to_static = execute_source(
             "<?php class Base { public $p; } class Child extends Base { public static $p; }",
@@ -41569,6 +41804,14 @@ good"
             "{:?}",
             public_to_protected.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&public_to_protected),
+            VmCompileDiagnostic::ClassConstantVisibilityOverride {
+                class_name,
+                constant_name,
+                ..
+            } if class_name == "Child" && constant_name == "TOKEN"
+        ));
 
         let protected_to_private = execute_source(
             "<?php class Base { protected const TOKEN = 1; } class Child extends Base { private const TOKEN = 2; }",
@@ -41676,6 +41919,13 @@ good"
             "{:?}",
             protected_constant.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&protected_constant),
+            VmCompileDiagnostic::InterfaceConstantVisibility {
+                class_name,
+                constant_name,
+            } if class_name == "I" && constant_name == "TOKEN"
+        ));
 
         let private_method = execute_source("<?php interface I { private function err(); }");
         assert_eq!(
@@ -41691,6 +41941,13 @@ good"
             "{:?}",
             private_method.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&private_method),
+            VmCompileDiagnostic::InterfaceMethodVisibility {
+                class_name,
+                method_name,
+            } if class_name == "I" && method_name == "err"
+        ));
 
         let method_body = execute_source("<?php interface I { function err() {} }");
         assert_eq!(method_body.status.exit_status(), ExitStatus::CompileError);
@@ -41703,6 +41960,13 @@ good"
             "{:?}",
             method_body.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&method_body),
+            VmCompileDiagnostic::InterfaceMethodBody {
+                class_name,
+                method_name,
+            } if class_name == "I" && method_name == "err"
+        ));
 
         let plain_property = execute_source("<?php interface I { public $member; }");
         assert_eq!(
@@ -41718,6 +41982,64 @@ good"
             "{:?}",
             plain_property.status
         );
+        assert!(matches!(
+            first_vm_compile_payload(&plain_property),
+            VmCompileDiagnostic::InterfaceProperty {
+                class_name,
+                property_name,
+            } if class_name == "I" && property_name == "member"
+        ));
+    }
+
+    #[test]
+    fn class_table_compile_errors_carry_typed_payloads() {
+        let final_class = execute_source("<?php final class Base {} class Child extends Base {}");
+        assert!(matches!(
+            first_vm_compile_payload(&final_class),
+            VmCompileDiagnostic::FinalClassExtend {
+                class_name,
+                parent_class_name,
+            } if class_name == "child" && parent_class_name == "base"
+        ));
+
+        let final_method = execute_source(
+            "<?php class Base { final public function seal() {} } class Child extends Base { public function seal() {} }",
+        );
+        assert!(matches!(
+            first_vm_compile_payload(&final_method),
+            VmCompileDiagnostic::FinalMethodOverride {
+                class_name,
+                method_name,
+                parent_class_name,
+            } if class_name == "Child" && method_name == "seal" && parent_class_name == "Base"
+        ));
+
+        let extends_interface = execute_source("<?php interface I {} class Child extends I {}");
+        assert!(matches!(
+            first_vm_compile_payload(&extends_interface),
+            VmCompileDiagnostic::ClassExtendsInterface {
+                class_name,
+                interface_name,
+            } if class_name == "Child" && interface_name == "I"
+        ));
+
+        let implements_non_interface =
+            execute_source("<?php class Base {} class Child implements Base {}");
+        assert!(matches!(
+            first_vm_compile_payload(&implements_non_interface),
+            VmCompileDiagnostic::ImplementsNonInterface {
+                class_name,
+                target_name,
+                ..
+            } if class_name == "Child" && target_name == "Base"
+        ));
+
+        let traversable = execute_source("<?php class DirectTraversable implements Traversable {}");
+        assert!(matches!(
+            first_vm_compile_payload(&traversable),
+            VmCompileDiagnostic::TraversableDirectImplementation { class_name }
+                if class_name == "DirectTraversable"
+        ));
     }
 
     #[test]
@@ -48418,6 +48740,16 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
 
     fn execute_source(source: &str) -> VmResult {
         execute_source_with_options(source, VmOptions::default())
+    }
+
+    fn first_vm_compile_payload(result: &VmResult) -> &VmCompileDiagnostic {
+        result
+            .diagnostics
+            .iter()
+            .find_map(|diagnostic| match diagnostic.payload()? {
+                RuntimeDiagnosticPayload::VmCompile(payload) => Some(payload),
+            })
+            .expect("compile error should carry VM compile payload")
     }
 
     fn execute_source_with_options(source: &str, options: VmOptions) -> VmResult {

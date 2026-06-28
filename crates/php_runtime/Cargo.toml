@@ -11,13 +11,13 @@ crc32fast = "1.4"
 getrandom = "0.3"
 md-5 = "0.10"
 pcre2 = "0.2"
-php_lexer = { path = "../php_lexer" }
+php_lexer = { path = "../php_lexer", version = "0.1.0" }
 rusqlite = "0.32"
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
 
 [dev-dependencies]
-php_testkit = { path = "../php_testkit" }
+php_testkit = { path = "../php_testkit", version = "0.0.0" }
 
 [package.metadata.cargo-machete]
 ignored = ["md-5"]

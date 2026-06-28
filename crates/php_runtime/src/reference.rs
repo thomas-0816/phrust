@@ -6,7 +6,7 @@
 //! so register values cannot accidentally become reference aliases.
 
 use crate::Value;
-use std::cell::{Ref, RefCell};
+use std::cell::{BorrowError, BorrowMutError, Ref, RefCell};
 use std::rc::{Rc, Weak};
 
 /// Shared cell used for the simple local-reference MVP.
@@ -58,15 +58,43 @@ impl ReferenceCell {
         self.inner.borrow().clone()
     }
 
+    /// Attempts to read the contained value by cloning it.
+    ///
+    /// This checked accessor is preferred outside low-level runtime internals.
+    /// It returns `Err` if another caller currently holds a mutable borrow.
+    pub fn try_get(&self) -> Result<Value, BorrowError> {
+        self.inner.try_borrow().map(|value| value.clone())
+    }
+
     /// Borrows the contained value for read-only inspection.
+    ///
+    /// This can panic if the same reference cell is already mutably borrowed.
+    /// Prefer [`Self::try_get`] or [`Self::try_with_value`] outside VM-internal
+    /// paths that already control borrow ordering.
+    #[doc(hidden)]
     #[must_use]
     pub fn borrow(&self) -> Ref<'_, Value> {
         self.inner.borrow()
     }
 
+    /// Runs `f` with a checked immutable borrow of the contained value.
+    pub fn try_with_value<T>(&self, f: impl FnOnce(&Value) -> T) -> Result<T, BorrowError> {
+        self.inner.try_borrow().map(|value| f(&value))
+    }
+
     /// Replaces the contained value.
     pub fn set(&self, value: Value) {
         *self.inner.borrow_mut() = value;
+    }
+
+    /// Attempts to replace the contained value.
+    ///
+    /// This checked accessor is preferred outside low-level runtime internals.
+    /// It returns `Err` if another caller currently holds a borrow.
+    pub fn try_set(&self, value: Value) -> Result<(), BorrowMutError> {
+        self.inner.try_borrow_mut().map(|mut slot| {
+            *slot = value;
+        })
     }
 
     /// Returns true when both cells point at the same shared storage.
@@ -261,6 +289,21 @@ mod tests {
 
         assert_eq!(cell.get(), Value::Int(2));
         assert!(cell.ptr_eq(&alias));
+    }
+
+    #[test]
+    fn reference_cell_checked_accessors_preserve_aliasing() {
+        let cell = ReferenceCell::new(Value::Int(1));
+        let alias = cell.clone();
+
+        alias.try_set(Value::Int(4)).expect("checked write");
+
+        assert_eq!(cell.try_get().expect("checked read"), Value::Int(4));
+        assert_eq!(
+            cell.try_with_value(|value| value.clone())
+                .expect("checked closure read"),
+            Value::Int(4)
+        );
     }
 
     #[test]

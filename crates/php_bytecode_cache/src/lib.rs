@@ -906,7 +906,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use php_ir::{LoweringOptions, lower_frontend_result, verify_unit};
-    use php_vm::Vm;
+    use php_vm::api::Vm;
 
     use super::{
         CACHE_MAGIC, CURRENT_CACHE_FORMAT_VERSION, CacheArtifact, CacheDependency,

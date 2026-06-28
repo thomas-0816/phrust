@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-php_source = { path = "../php_source" }
+php_source = { path = "../php_source", version = "0.0.0" }
 
 [[bench]]
 name = "lexer_throughput"

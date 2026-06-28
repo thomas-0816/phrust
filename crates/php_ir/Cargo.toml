@@ -6,10 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-php_semantics = { path = "../php_semantics" }
-php_source = { path = "../php_source" }
+php_semantics = { path = "../php_semantics", version = "0.1.0" }
+php_source = { path = "../php_source", version = "0.0.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-php_testkit = { path = "../php_testkit" }
+php_testkit = { path = "../php_testkit", version = "0.0.0" }

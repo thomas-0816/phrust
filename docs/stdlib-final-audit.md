@@ -46,9 +46,11 @@ must not be replaced by placeholder skip scripts.
   `scripts/stdlib/list_reference_functions.php`,
   `scripts/stdlib/list_reference_classes.php`,
   `scripts/stdlib/list_reference_constants.php`, and
-  `scripts/stdlib/function_coverage.py`. Optional arginfo generation is
-  available through `just generate-arginfo`; `performance-tests` runs the
-  generator against a local php-src-style fixture with manual overrides.
+  `scripts/stdlib/function_coverage.py`. Committed arginfo generation is
+  available through `just generate-arginfo`, and strict snapshot drift
+  verification is available through `just verify-generated-arginfo`;
+  `performance-tests` runs the generator against a local php-src-style fixture
+  with manual overrides.
 - Work item: PHAR remains governed by ADR-0066. Composer source mode is the
   required path; read-only PHAR support is not enabled in Standard library.
 - Work item: tokenizer extension metadata and runtime smoke coverage are

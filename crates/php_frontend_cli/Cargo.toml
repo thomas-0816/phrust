@@ -10,4 +10,4 @@ name = "php-frontend"
 path = "src/main.rs"
 
 [dependencies]
-php_semantics = { path = "../php_semantics" }
+php_semantics = { path = "../php_semantics", version = "0.1.0" }

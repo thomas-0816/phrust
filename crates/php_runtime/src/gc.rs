@@ -323,7 +323,7 @@ impl GcTrackedHeap {
                 {
                     self.references.push(cell.weak_handle());
                 }
-                let value = cell.borrow();
+                let value = cell.get();
                 self.track_value_inner(&value, seen);
             }
             Value::Callable(CallableValue::Closure(payload)) => {
@@ -426,9 +426,8 @@ impl GcScanner {
                 let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
                 self.ensure_node(id, Some(cell.gc_refcount_estimate()));
                 if self.scanning.insert(id) {
-                    let value = cell.borrow();
+                    let value = cell.get();
                     let edges = self.scan_value(&value);
-                    drop(value);
                     self.extend_edges(id, edges);
                     self.scanning.remove(&id);
                 }

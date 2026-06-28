@@ -31,11 +31,15 @@ Common local checks:
 
 ```bash
 nix develop -c just fmt
+nix develop -c just source-integrity
+PHP_SRC_DIR=/path/to/php-src nix develop -c just verify-generated-arginfo
+nix develop -c just quality-fast
 nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 nix develop -c cargo test --workspace
 nix develop -c just verify-frontend
 nix develop -c just verify-runtime
 nix develop -c just verify-stdlib
+nix develop -c just verify-server
 nix develop -c just verify-performance
 nix develop -c just verify-phpt
 ```
@@ -81,6 +85,21 @@ nix develop -c cargo run -p php_server --bin phrust-server -- --docroot fixtures
 the server process. It does not use FPM, FastCGI, CGI, Apache, `mod_php`, or an
 external PHP process fallback.
 
+Static file reads, route filesystem metadata checks, and PHP compile/execute
+work are isolated behind Tokio blocking tasks. `--request-timeout-ms` currently
+covers request body reads only; once PHP execution starts, the VM has no safe
+preemptive cancellation hook, so execution is bounded by the server in-flight
+request limit rather than a per-script timeout.
+
+The server uses the process-local compiled-script cache described in
+`docs/cache-architecture.md`; the CLI bytecode artifact cache remains a separate
+disk cache for local execution and performance experiments.
+
+Runtime and VM public imports should use the facades documented in
+`docs/api-facades.md`: `php_runtime::api` / `php_vm::api` for stable execution
+surfaces and `php_runtime::experimental` / `php_vm::experimental` for local
+instrumentation and experiments.
+
 ## Repository Layout
 
 ```text
@@ -93,7 +112,7 @@ crates/php_ir/           bytecode/IR boundary
 crates/php_runtime/      runtime values and builtins
 crates/php_vm/           interpreter VM
 crates/php_executor/     reusable in-process PHP execution API
-crates/php_server/       integrated HTTP server MVP
+crates/php_server/       integrated HTTP server
 crates/php_vm_cli/       developer CLI for VM execution
 crates/php_phpt_tools/   PHPT indexing, execution, and reporting tools
 docs/                    architecture, ADRs, contracts, audits
@@ -115,6 +134,7 @@ php_lexer -> php_syntax -> php_ast -> php_semantics/HIR -> php_ir -> php_runtime
 Core gates:
 
 ```bash
+nix develop -c just source-integrity
 nix develop -c just verify-frontend
 nix develop -c just verify-runtime
 nix develop -c just verify-stdlib
@@ -126,10 +146,12 @@ Useful focused gates:
 
 ```bash
 nix develop -c just lexer-fixtures
+PHP_SRC_DIR=/path/to/php-src nix develop -c just verify-generated-arginfo
 nix develop -c just parser-fixtures
 nix develop -c just semantic-fixtures
 nix develop -c just runtime-fixtures
 nix develop -c just runtime-semantics-fixtures
+nix develop -c just server-smoke
 nix develop -c just perf-report
 ```
 
@@ -170,10 +192,15 @@ GitHub Actions are defined in `.github/workflows/ci.yml`.
 The default CI path runs:
 
 - Rust formatting.
+- Fast source-integrity checks for required module wiring and generated
+  metadata.
+- The required fast quality gate: source integrity, known-gap manifests,
+  dependency policy, unused dependency detection, all-features compile coverage,
+  and rustdoc/doctests.
 - Clippy over the workspace and all targets.
 - `cargo test --workspace`.
-- Domain verification gates for frontend, runtime, standard library, and
-  performance behavior.
+- Domain verification gates for frontend, runtime, standard library, integrated
+  server behavior, and performance behavior.
 - A self-contained PHPT smoke no-regression run over committed generated
   fixtures. Current accepted target non-green outcomes are listed in
   `tests/phpt/manifests/runner-smoke-known-non-green.jsonl`; any new FAIL or
@@ -198,6 +225,13 @@ Start with:
 - [Reference oracle ADR](docs/adr/0003-reference-oracle.md)
 - [No vendored php-src ADR](docs/adr/0004-no-vendored-php-src.md)
 - [Layer boundary ADR](docs/adr/0005-layer-boundaries.md)
+- [Executor architecture](docs/executor-architecture.md)
+- [Server architecture](docs/server-architecture.md)
+- [Diagnostics architecture](docs/diagnostics-architecture.md)
+- [Cache architecture](docs/cache-architecture.md)
+- [Known-gap manifests](docs/known_gaps/README.md)
+- [Generated arginfo workflow](docs/stdlib-arginfo-coercion.md)
+- [API facade policy](docs/api-facades.md)
 - [Semantic frontend contract](docs/frontend/definition-of-done.md)
 - [Runtime contract](docs/runtime-contract.md)
 - [Runtime semantics contract](docs/runtime-semantics-contract.md)

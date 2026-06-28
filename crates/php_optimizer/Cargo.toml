@@ -6,4 +6,4 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-php_ir = { path = "../php_ir" }
+php_ir = { path = "../php_ir", version = "0.0.0" }

@@ -6,6 +6,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-php_ast = { path = "../php_ast" }
-php_source = { path = "../php_source" }
-php_syntax = { path = "../php_syntax" }
+php_ast = { path = "../php_ast", version = "0.1.0" }
+php_source = { path = "../php_source", version = "0.0.0" }
+php_syntax = { path = "../php_syntax", version = "0.1.0" }

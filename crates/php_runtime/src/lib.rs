@@ -1,9 +1,17 @@
 //! Runtime boundary.
 //!
-//! This crate will own runtime values, output buffering, runtime diagnostics,
-//! exit classification, tables, builtins, and controlled runtime context. At
-//! runtime scalar it exposes the minimal scalar value and output model used by the
-//! first VM slices.
+//! This crate owns runtime values, output buffering, diagnostics, request
+//! context, resources, selected standard-library state, and the VM-facing object
+//! model. Downstream crates should import stable runtime types from [`api`].
+//! Instrumentation and debug-only surfaces live under [`experimental`].
+//!
+//! The root re-exports remain as compatibility aliases while internal crates are
+//! migrated. New downstream imports should use the explicit facades instead of
+//! relying on the full crate root.
+//!
+//! The `todo_runtime` module and `runtime_skeleton_status()` export are
+//! historical wiring-test compatibility markers. They are not the current
+//! runtime architecture and should not be used to infer feature support.
 
 pub mod array;
 pub mod autoload;
@@ -38,6 +46,131 @@ pub mod tokenizer;
 pub mod types;
 pub mod value;
 
+/// Stable runtime surface for VM, executor, server, and standard-library code.
+///
+/// This facade is the preferred import path for runtime values, contexts,
+/// diagnostics, resources, object metadata, builtin registration, and
+/// PHP-visible status/output types. It intentionally excludes debug GC handles,
+/// JIT ABI helpers, and measurement-only counters.
+pub mod api {
+    pub use crate::array::{
+        ArrayEntry, ArrayKey, PhpArray, PhpArrayElementSummary, PhpArrayKeyKindSummary,
+        PhpArrayKind, PhpArrayPackedIntReductionError, PhpArrayPackedMetadata, PhpArrayShapeKind,
+        PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpArrayShapeMetadata,
+    };
+    pub use crate::autoload::AutoloadRegistry;
+    pub use crate::builtins::{
+        BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
+        BuiltinResult, InternalFunction, RuntimeSourceSpan, StrtokState,
+    };
+    pub use crate::callable::{
+        CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
+        ClosurePayload,
+    };
+    pub use crate::context::{
+        ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
+        RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeRequestMode,
+        StrictTypesInfo, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
+    };
+    pub use crate::convert::{
+        ArithmeticNumber, NumericValue, compare, equal, identical, reset_float_string_precision,
+        set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
+        to_string,
+    };
+    pub use crate::diagnostic::{
+        PhpReferenceClassification, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,
+        RuntimeSeverity, RuntimeStackFrame, VmCompileDiagnostic, division_by_zero_mvp,
+        type_error_mvp, undefined_function, undefined_variable_warning, unsupported_feature,
+    };
+    pub use crate::error_output::{
+        PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,
+        PHP_E_USER_NOTICE, PHP_E_USER_WARNING, PHP_E_WARNING, PhpDiagnosticChannel,
+        PhpDiagnosticDisplayOptions, PhpDiagnosticLocation, emit_php_diagnostic,
+        error_reporting_allows_level, format_php_diagnostic_line,
+    };
+    pub use crate::fiber::{FiberRef, FiberState};
+    pub use crate::generator::{GeneratorRef, GeneratorState};
+    pub use crate::globals::GlobalSymbolTable;
+    pub use crate::ini::{IniEntrySnapshot, IniRegistry};
+    pub use crate::object::{
+        AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
+        ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
+        ClassPropertyFlags, ClassPropertyHooks, ObjectRef, RuntimeType, display_class_name,
+        normalize_class_name,
+    };
+    pub use crate::output::{OutputBuffer, OutputStats};
+    pub use crate::pcre::{
+        PREG_BACKTRACK_LIMIT_ERROR, PREG_BAD_UTF8_ERROR, PREG_BAD_UTF8_OFFSET_ERROR,
+        PREG_GREP_INVERT, PREG_INTERNAL_ERROR, PREG_JIT_STACKLIMIT_ERROR, PREG_NO_ERROR,
+        PREG_OFFSET_CAPTURE, PREG_PATTERN_ORDER, PREG_RECURSION_LIMIT_ERROR, PREG_SET_ORDER,
+        PREG_SPLIT_DELIM_CAPTURE, PREG_SPLIT_NO_EMPTY, PREG_SPLIT_OFFSET_CAPTURE,
+        PREG_UNMATCHED_AS_NULL, PcreCache,
+    };
+    pub use crate::phar::{PharArchive, PharEntry, PharError, PharUri};
+    pub use crate::reference::{ReferenceCell, ReferencePlaceholder, Slot, TempValue, ValueSlot};
+    pub use crate::resource::{
+        FilesystemCapabilities, ResourceId, ResourceKind, ResourceRef, ResourceTable, Stream,
+        StreamFlags, StreamMetadata, StreamOpenError, StreamOpenMode, StreamWrapperRegistry,
+    };
+    pub use crate::serialization::{
+        SerializationError, UnserializeOptions, serialize, unserialize,
+    };
+    pub use crate::session::{
+        PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState,
+    };
+    pub use crate::sqlite::{
+        SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,
+        SQLITE3_INTEGER, SQLITE3_NULL, SQLITE3_NUM, SQLITE3_OPEN_CREATE, SQLITE3_OPEN_READONLY,
+        SQLITE3_OPEN_READWRITE, SQLITE3_TEXT, SqliteState,
+    };
+    pub use crate::status::{ExecutionStatus, ExitStatus};
+    pub use crate::string::PhpString;
+    pub use crate::todo_runtime::{RuntimeTodo, runtime_skeleton_status};
+    pub use crate::tokenizer;
+    pub use crate::types::{runtime_type_name, value_matches_runtime_type, value_type_name};
+    pub use crate::value::{FloatValue, Value};
+}
+
+/// Debug and test runtime surface.
+///
+/// These exports are public so local tests and VM diagnostics can inspect graph
+/// shape. They are not PHP-visible APIs and are not compatibility promises for
+/// downstream crates.
+pub mod debug {
+    #[doc(hidden)]
+    pub use crate::array::WeakArrayHandle;
+    #[doc(hidden)]
+    pub use crate::gc::{
+        GcCollectResult, GcCollectedEntity, GcCycleCandidate, GcEntityId, GcEntityKind, GcNode,
+        GcRoot, GcRootKind, GcSnapshot, GcTrackedHeap, scan_roots,
+    };
+    #[doc(hidden)]
+    pub use crate::object::WeakObjectHandle;
+    #[doc(hidden)]
+    pub use crate::reference::WeakReferenceHandle;
+}
+
+/// Unstable runtime instrumentation, debug, and ABI helper surface.
+///
+/// These exports are public because local performance tooling, tests, and JIT
+/// experiments consume them. They are not a compatibility promise for
+/// downstream crates.
+pub mod experimental {
+    #[doc(hidden)]
+    pub use crate::debug::*;
+    #[doc(hidden)]
+    pub use crate::jit_array::{
+        PHP_JIT_ARRAY_LAYOUT_VERSION, PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT,
+        PHP_JIT_ARRAY_STATUS_FALLBACK, PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK,
+        PhpJitArrayAbiError, php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints,
+        php_jit_array_layout_guard, php_jit_array_len,
+    };
+    #[doc(hidden)]
+    pub use crate::layout_stats;
+    #[doc(hidden)]
+    pub use crate::numeric_string;
+}
+
 pub use array::{
     ArrayEntry, ArrayKey, PhpArray, PhpArrayElementSummary, PhpArrayKeyKindSummary, PhpArrayKind,
     PhpArrayPackedIntReductionError, PhpArrayPackedMetadata, PhpArrayShapeKind,
@@ -63,9 +196,9 @@ pub use convert::{
     to_string,
 };
 pub use diagnostic::{
-    PhpReferenceClassification, RuntimeDiagnostic, RuntimeError, RuntimeSeverity,
-    RuntimeStackFrame, division_by_zero_mvp, type_error_mvp, undefined_function,
-    undefined_variable_warning, unsupported_feature,
+    PhpReferenceClassification, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,
+    RuntimeSeverity, RuntimeStackFrame, VmCompileDiagnostic, division_by_zero_mvp, type_error_mvp,
+    undefined_function, undefined_variable_warning, unsupported_feature,
 };
 pub use error_output::{
     PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,

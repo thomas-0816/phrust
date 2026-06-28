@@ -4,6 +4,9 @@ Generated from baseline `20260624T210848Z` with 20428 known non-green fingerprin
 
 Each row carries the hard-rule fields required for a known gap: ID, reference behavior, current Rust behavior, fixture or PHPT example, and planned solution layer.
 
+PHPT runner-smoke accepted non-green outcomes are tracked separately in
+`docs/known_gaps/phpt-runner-smoke.jsonl` and validated by `just known-gaps`.
+
 | ID | Baseline count | Reference behavior | Current Rust behavior | Fixture or PHPT example | Planned solution layer |
 | --- | ---: | --- | --- | --- | --- |
 | `runtime-error-or-diagnostic` | 11402 | PHP emits the exact warning, notice, fatal, stack, and exit behavior expected by the PHPT oracle. | The target exits or formats diagnostics differently from PHP for this baseline fingerprint. | `Zend/tests/67468.phpt` | php_runtime/php_vm diagnostics and error channel |

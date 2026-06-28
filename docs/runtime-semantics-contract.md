@@ -91,9 +91,10 @@ If implementation order changes because the current Runtime architecture
 requires a prerequisite first, the reason must be documented in the relevant
 commit or docs update.
 
-## GC Root Tracking Skeleton
+## GC Root Tracking And Debug Metadata
 
-Work item adds detection-only GC metadata in `php_runtime::gc`. Runtime values
+Work item adds detection-only GC metadata under the `php_runtime::debug` facade
+backed by the internal `php_runtime::gc` module. Runtime values
 can be scanned from explicit `GcRoot` entries into deterministic `GcSnapshot`
 nodes for arrays, objects, references, closures, and reserved generator/fiber
 categories. The VM-owned root helper covers frame registers, frame locals,
@@ -101,10 +102,11 @@ static locals, static properties, enum-case objects, and destructor queue
 entries. Generator/fiber suspended stack roots are reserved but empty until
 those runtime objects are implemented.
 
-The skeleton records Rust `Rc` strong-count estimates where available and marks
-entities that can reach themselves as cycle candidates. It does not collect,
-free, run destructors, or expose PHP-visible handles. Full cycle collection and
-exact refcount-triggered lifetime remain later Runtime semantics work and known gaps.
+The debug scanner records Rust `Rc` strong-count estimates where available and
+marks entities that can reach themselves as cycle candidates. It does not
+collect, free, run destructors, or expose PHP-visible handles. Full cycle
+collection and exact refcount-triggered lifetime remain later Runtime semantics
+work and known gaps.
 
 Work item extends this with internal weak handles plus `GcTrackedHeap`, a test
 hook that can clear unrooted object properties and reference cells to break
@@ -545,17 +547,18 @@ adding parallel representations:
 - Runtime values: `php_runtime::Value`, `FloatValue`, `PhpString`,
   `PhpArray`, `ArrayKey`, `ObjectRef`, `CallableValue`, `ClosureCaptureValue`,
   `GeneratorRef`, and `FiberRef`.
-- Storage and references: `php_runtime::Slot`, `ReferenceCell`, `TempValue`,
-  `ValueSlot`, and weak debug handles for arrays/references/objects.
+- Storage and references: `php_runtime::api::Slot`, `ReferenceCell`,
+  `TempValue`, and `ValueSlot`; weak debug handles for arrays/references/objects
+  are available only through `php_runtime::debug` or compatibility root aliases.
 - Class and reflection metadata: `ClassEntry`, method/property/constant/enum
   entries and flags, `RuntimeType`, `AttributeEntry`, `runtime_type_name()`,
   and `value_matches_runtime_type()`.
 - Request services: `RuntimeContext`, `GlobalSymbolTable`, `AutoloadRegistry`,
   `BuiltinRegistry`, `BuiltinContext`, `OutputBuffer`, and structured
   `RuntimeDiagnostic` / `RuntimeError` values.
-- GC/debugging: `GcRoot`, `GcRootKind`, `GcSnapshot`, `scan_roots()`, and
-  `GcTrackedHeap` remain debug/test APIs until public `gc_*` semantics are
-  implemented.
+- GC/debugging: `php_runtime::debug::{GcRoot, GcRootKind, GcSnapshot,
+  scan_roots, GcTrackedHeap}` remain debug/test APIs until public `gc_*`
+  semantics are implemented.
 
 These APIs are public Rust surfaces, but not all are compatibility promises.
 Frame/register internals, VM continuation structs, GC debug IDs, and trace

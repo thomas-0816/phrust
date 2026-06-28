@@ -1,10 +1,13 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use php_ir::{LoweringOptions, lower_frontend_result};
 use php_lexer::{LexerConfig, lex_all};
-use php_runtime::{ArrayKey, PhpArray, PhpString, Value};
+use php_runtime::api::{ArrayKey, PhpArray, PhpString, Value};
 use php_semantics::analyze_source;
 use php_syntax::parse_source_file;
-use php_vm::{CompiledUnit, InlineCacheMode, QuickeningMode, Vm, VmOptions};
+use php_vm::{
+    api::{CompiledUnit, Vm, VmOptions},
+    experimental::{InlineCacheMode, QuickeningMode},
+};
 use std::time::Duration;
 
 const FRONTEND_SOURCE: &str = r#"<?php

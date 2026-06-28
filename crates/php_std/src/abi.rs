@@ -257,16 +257,14 @@ impl<'a> CallContext<'a> {
     /// Creates a fatal diagnostic using the call source span.
     #[must_use]
     pub fn fatal(&self, id: &'static str, message: impl Into<String>) -> BuiltinRuntimeError {
-        BuiltinRuntimeError {
-            diagnostic: RuntimeDiagnostic::new(
-                id,
-                RuntimeSeverity::FatalError,
-                message.into(),
-                self.source_span.clone(),
-                Vec::new(),
-                None,
-            ),
-        }
+        BuiltinRuntimeError::new(RuntimeDiagnostic::new(
+            id,
+            RuntimeSeverity::FatalError,
+            message.into(),
+            self.source_span.clone(),
+            Vec::new(),
+            None,
+        ))
     }
 }
 
@@ -282,19 +280,21 @@ pub enum ReturnValue {
 /// Runtime error produced by a builtin.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltinRuntimeError {
-    diagnostic: RuntimeDiagnostic,
+    diagnostic: Box<RuntimeDiagnostic>,
 }
 
 impl BuiltinRuntimeError {
     /// Creates an error from a runtime diagnostic.
     #[must_use]
-    pub const fn new(diagnostic: RuntimeDiagnostic) -> Self {
-        Self { diagnostic }
+    pub fn new(diagnostic: RuntimeDiagnostic) -> Self {
+        Self {
+            diagnostic: Box::new(diagnostic),
+        }
     }
 
     /// Diagnostic to surface through the VM.
     #[must_use]
-    pub const fn diagnostic(&self) -> &RuntimeDiagnostic {
+    pub fn diagnostic(&self) -> &RuntimeDiagnostic {
         &self.diagnostic
     }
 }

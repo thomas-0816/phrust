@@ -47,11 +47,30 @@ jobs:
       - name: Format
         run: nix develop -c just fmt
 
+      - name: Source integrity
+        run: nix develop -c just source-integrity
+
       - name: Clippy
         run: nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
         run: nix develop -c cargo test --workspace
+
+  quality-fast:
+    name: fast quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v10
+
+      - name: Run fast quality gate
+        run: nix develop -c just quality-fast
 
   domain-gates:
     name: ${{ matrix.gate }}
@@ -63,6 +82,7 @@ jobs:
           - verify-frontend
           - verify-runtime
           - verify-stdlib
+          - verify-server
           - verify-performance
     steps:
       - name: Checkout

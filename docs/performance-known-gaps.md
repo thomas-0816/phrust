@@ -5,6 +5,9 @@ reviewed this catalog against the developer workflow docs and current gates.
 Generated artifacts under `target/performance` are evidence for local runs, not
 portable hard truth, and are intentionally not committed.
 
+Machine-readable mirror: `docs/known_gaps/performance.jsonl`. Validate with
+`just known-gaps`.
+
 | Gap ID | Layer | Evidence/Test | Risk | Planned handoff |
 | --- | --- | --- | --- | --- |
 | PERF-GAP-STDLIB-PER-BUILTIN-COUNTERS | Runtime counters | `docs/hotpath-inventory.md` reports aggregate internal dispatch counters, and Phase 09.09 adds `builtin_fast_stub_hits`/`builtin_fast_stub_misses` attribution for `strlen`, `count`, `is_int`, `is_string`, and `is_array`. Generic internal dispatch counters are still not broken down per builtin name. | Standard-library priorities can still be under- or over-attributed when several non-stub builtins share one fixture. | Add optional per-builtin attribution for the generic internal registry before making broad per-function performance claims |
