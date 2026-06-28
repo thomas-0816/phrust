@@ -1,0 +1,5 @@
+{"path":"tests/phpt/generated/tokenizer/token-get-all-basic.phpt"}
+{"path":"tests/phpt/generated/tokenizer/token-name-php85.phpt"}
+{"path":"tests/phpt/generated/tokenizer/token-get-all-invalid-octal-dnumber.phpt"}
+{"path":"tests/phpt/generated/tokenizer/token-get-all-token-parse-supported.phpt"}
+{"path":"tests/phpt/generated/tokenizer/token-get-all-php85-syntax.phpt"}

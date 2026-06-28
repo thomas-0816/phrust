@@ -877,6 +877,9 @@ impl<'src> Lexer<'src> {
         }
 
         self.consume_digit_sequence(is_decimal_digit);
+        if integer_literal_overflows(&self.source.as_bytes()[start..self.cursor.position()]) {
+            kind = TokenName::DNumber;
+        }
 
         if self.cursor.peek() == Some(b'.') {
             kind = TokenName::DNumber;
@@ -1340,6 +1343,36 @@ fn is_octal_digit(byte: u8) -> bool {
     matches!(byte, b'0'..=b'7')
 }
 
+fn integer_literal_overflows(bytes: &[u8]) -> bool {
+    if bytes.starts_with(b"0") && bytes.len() > 1 {
+        let digits = bytes
+            .iter()
+            .copied()
+            .skip(1)
+            .filter(|byte| *byte != b'_')
+            .collect::<Vec<_>>();
+        if digits.iter().all(|byte| is_octal_digit(*byte)) {
+            return digit_sequence_exceeds(&digits, b"777777777777777777777");
+        }
+        return digits.len() > 22;
+    }
+
+    let digits = bytes
+        .iter()
+        .copied()
+        .filter(|byte| *byte != b'_')
+        .collect::<Vec<_>>();
+    digit_sequence_exceeds(&digits, b"9223372036854775807")
+}
+
+fn digit_sequence_exceeds(digits: &[u8], max: &[u8]) -> bool {
+    let significant = digits
+        .iter()
+        .position(|byte| *byte != b'0')
+        .map_or(&[][..], |index| &digits[index..]);
+    significant.len() > max.len() || significant.len() == max.len() && significant > max
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Lexer, LexerConfig, lex_all};
@@ -1639,6 +1672,26 @@ mod tests {
         assert_eq!(
             texts,
             vec!["123", "1_000", "0x1f", "0b1010", "0o755", "0123"]
+        );
+    }
+
+    #[test]
+    fn overflowing_integer_literals_are_float_tokens() {
+        let source = "<?php 9223372036854775808 01000000000000000000000 0177777777777777777777787";
+        let result = lex_all(source, LexerConfig::default());
+        let texts: Vec<&str> = result
+            .tokens
+            .iter()
+            .filter(|token| token.kind == TokenKind::Named(TokenName::DNumber))
+            .filter_map(|token| token.text(source))
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                "9223372036854775808",
+                "01000000000000000000000",
+                "0177777777777777777777787"
+            ]
         );
     }
 
@@ -1964,7 +2017,7 @@ mod tests {
     fn very_long_number_does_not_panic() {
         let source = format!("<?php {}", "1".repeat(10_000));
         let result = lex_all(&source, LexerConfig::default());
-        assert_eq!(result.tokens[1].kind, TokenKind::Named(TokenName::LNumber));
+        assert_eq!(result.tokens[1].kind, TokenKind::Named(TokenName::DNumber));
         assert_eq!(result.tokens[1].range.len(), 10_000);
     }
 

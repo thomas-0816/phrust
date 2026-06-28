@@ -77,6 +77,7 @@ try {
 
 $tokens = [];
 $line = 1;
+$offset = 0;
 
 foreach ($rawTokens as $index => $token) {
     if (is_array($token)) {
@@ -93,9 +94,12 @@ foreach ($rawTokens as $index => $token) {
         'kind' => $kind,
         'text' => $text,
         'line' => $line,
+        'start' => $offset,
+        'end' => $offset + strlen($text),
     ];
 
     $line += substr_count($text, "\n");
+    $offset += strlen($text);
 }
 
 $output = [

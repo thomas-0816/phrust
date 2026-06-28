@@ -107,7 +107,7 @@ def compare_tokens(fixture: str, reference: dict[str, Any], rust: dict[str, Any]
         )
 
     for index, (ref_token, rust_token) in enumerate(zip(reference_tokens, rust_tokens)):
-        for field in ("kind", "text", "line"):
+        for field in ("kind", "text", "line", "start", "end"):
             if ref_token.get(field) != rust_token.get(field):
                 diffs.append(
                     TokenDiff(
