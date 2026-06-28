@@ -1,9 +1,12 @@
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
-use hyper::{Response, StatusCode, header};
+use futures_util::TryStreamExt;
+use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
+use hyper::{Response, StatusCode, body::Frame, header};
 use std::convert::Infallible;
+use tokio::io::AsyncRead;
+use tokio_util::io::ReaderStream;
 
-pub type ResponseBody = BoxBody<Bytes, Infallible>;
+pub type ResponseBody = BoxBody<Bytes, std::io::Error>;
 
 pub fn text(status: StatusCode, body: &'static str) -> Response<ResponseBody> {
     response(status, Bytes::from_static(body.as_bytes()))
@@ -30,7 +33,7 @@ pub fn bytes(
         .status(status)
         .header(header::CONTENT_LENGTH, body.len().to_string())
         .header(header::CONTENT_TYPE, content_type)
-        .body(Full::new(body).boxed())
+        .body(full_body(body))
         .expect("static response builder is valid")
 }
 
@@ -43,13 +46,27 @@ pub fn static_head(
         .status(status)
         .header(header::CONTENT_LENGTH, content_length.to_string())
         .header(header::CONTENT_TYPE, content_type)
-        .body(Full::new(Bytes::new()).boxed())
+        .body(full_body(Bytes::new()))
         .expect("static response builder is valid")
 }
 
 pub fn response(status: StatusCode, body: Bytes) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
-        .body(Full::new(body).boxed())
+        .body(full_body(body))
         .expect("static response builder is valid")
+}
+
+pub fn full_body(body: Bytes) -> ResponseBody {
+    Full::new(body)
+        .map_err(|never: Infallible| match never {})
+        .boxed()
+}
+
+pub fn reader_body<R>(reader: R) -> ResponseBody
+where
+    R: AsyncRead + Send + Sync + 'static,
+{
+    let stream = ReaderStream::new(reader).map_ok(Frame::data);
+    StreamBody::new(stream).boxed()
 }

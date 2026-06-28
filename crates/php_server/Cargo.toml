@@ -11,11 +11,14 @@ path = "src/main.rs"
 
 [dependencies]
 bytes = "1"
+futures-util = "0.3"
 http-body-util = "0.1"
+httpdate = "1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server", "tokio"] }
 php_executor = { path = "../php_executor", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0" }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -55,6 +55,204 @@ fn server_serves_static_file_and_head() {
         !head_response.ends_with("static bytes\n"),
         "{head_response}"
     );
+    assert_response_contains_header(&get_response, "accept-ranges", "bytes");
+    assert_eq!(response_header_values(&get_response, "etag").len(), 1);
+    assert_eq!(
+        response_header_values(&get_response, "last-modified").len(),
+        1
+    );
+}
+
+#[test]
+fn server_static_conditional_requests_return_304() {
+    let docroot = temp_docroot();
+    fs::write(docroot.join("static.txt"), "static bytes\n").expect("write static fixture");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let first = http_request(&address, "GET", "/static.txt");
+    let etag = response_header_values(&first, "etag")[0].to_string();
+    let last_modified = response_header_values(&first, "last-modified")[0].to_string();
+    let etag_response = http_request_with_headers(
+        &address,
+        "GET",
+        "/static.txt",
+        &[("If-None-Match", &etag)],
+        "",
+    );
+    let modified_response = http_request_with_headers(
+        &address,
+        "GET",
+        "/static.txt",
+        &[("If-Modified-Since", &last_modified)],
+        "",
+    );
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(
+        etag_response.starts_with("HTTP/1.1 304 Not Modified"),
+        "{etag_response}"
+    );
+    assert_eq!(response_body(&etag_response), "");
+    assert!(
+        modified_response.starts_with("HTTP/1.1 304 Not Modified"),
+        "{modified_response}"
+    );
+    assert_eq!(response_body(&modified_response), "");
+}
+
+#[test]
+fn server_static_range_requests_return_partial_content() {
+    let docroot = temp_docroot();
+    fs::write(docroot.join("static.txt"), "abcdef").expect("write static fixture");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let partial = http_request_with_headers(
+        &address,
+        "GET",
+        "/static.txt",
+        &[("Range", "bytes=1-3")],
+        "",
+    );
+    let suffix =
+        http_request_with_headers(&address, "GET", "/static.txt", &[("Range", "bytes=-2")], "");
+    let invalid = http_request_with_headers(
+        &address,
+        "GET",
+        "/static.txt",
+        &[("Range", "bytes=20-30")],
+        "",
+    );
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(
+        partial.starts_with("HTTP/1.1 206 Partial Content"),
+        "{partial}"
+    );
+    assert_response_contains_header(&partial, "content-range", "bytes 1-3/6");
+    assert_response_contains_header(&partial, "content-length", "3");
+    assert_eq!(response_body(&partial), "bcd");
+    assert!(
+        suffix.starts_with("HTTP/1.1 206 Partial Content"),
+        "{suffix}"
+    );
+    assert_eq!(response_body(&suffix), "ef");
+    assert!(
+        invalid.starts_with("HTTP/1.1 416 Range Not Satisfiable"),
+        "{invalid}"
+    );
+    assert_response_contains_header(&invalid, "content-range", "bytes */6");
+    assert_response_contains_header(&invalid, "content-length", "0");
+}
+
+#[test]
+fn server_selects_precompressed_static_assets_when_accepted() {
+    let docroot = temp_docroot();
+    fs::write(docroot.join("app.js"), "plain asset\n").expect("write static fixture");
+    fs::write(docroot.join("app.js.gz"), "precompressed asset\n").expect("write gzip fixture");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request_with_headers(
+        &address,
+        "GET",
+        "/app.js",
+        &[("Accept-Encoding", "gzip")],
+        "",
+    );
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_response_contains_header(&response, "content-encoding", "gzip");
+    assert_response_contains_header(&response, "vary", "Accept-Encoding");
+    assert_response_contains_header(
+        &response,
+        "content-type",
+        "application/javascript; charset=UTF-8",
+    );
+    assert_eq!(response_body(&response), "precompressed asset\n");
+}
+
+#[test]
+fn server_reports_static_file_metrics() {
+    let docroot = temp_docroot();
+    fs::write(docroot.join("static.txt"), "abcdef").expect("write static fixture");
+    fs::write(docroot.join("static.txt.gz"), "gzipped").expect("write gzip fixture");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let first = http_request(&address, "GET", "/static.txt");
+    let etag = response_header_values(&first, "etag")[0].to_string();
+    let _ = http_request_with_headers(
+        &address,
+        "GET",
+        "/static.txt",
+        &[("If-None-Match", &etag)],
+        "",
+    );
+    let _ = http_request_with_headers(
+        &address,
+        "GET",
+        "/static.txt",
+        &[("Range", "bytes=0-1")],
+        "",
+    );
+    let _ = http_request_with_headers(
+        &address,
+        "GET",
+        "/static.txt",
+        &[("Accept-Encoding", "gzip")],
+        "",
+    );
+    let metrics = http_request(&address, "GET", "/__phrust/metrics");
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(
+        metrics.contains("phrust_server_static_streamed_bytes_total 15"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_static_not_modified_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_static_partial_responses_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_static_precompressed_hits_total 1"),
+        "{metrics}"
+    );
+}
+
+#[test]
+fn server_never_serves_php_scripts_as_static_source() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("source.php"),
+        "<?php echo \"executed\\n\"; // static-source-marker\n",
+    )
+    .expect("write php fixture");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/source.php");
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_eq!(response_body(&response), "executed\n");
+    assert!(!response.contains("static-source-marker"), "{response}");
 }
 
 #[test]

@@ -34,6 +34,7 @@ cleanup() {
 trap cleanup EXIT
 
 printf '%s\n' 'static smoke' > "$docroot/static.txt"
+printf '%s\n' 'static smoke gzip' > "$docroot/static.txt.gz"
 cat > "$docroot/hello.php" <<'PHP'
 <?php
 echo "hello\n";
@@ -84,6 +85,18 @@ assert_body '/healthz' 'ok'
 assert_body '/static.txt' 'static smoke'
 assert_body '/hello.php' 'hello'
 assert_body '/query.php?name=phrust' 'phrust'
+
+range_body="$(curl -fsS -H 'Range: bytes=0-5' "http://$address/static.txt")"
+if [[ "$range_body" != 'static' ]]; then
+  printf '[fail] static range expected %q got %q\n' 'static' "$range_body"
+  exit 1
+fi
+
+precompressed_body="$(curl -fsS -H 'Accept-Encoding: gzip' "http://$address/static.txt")"
+if [[ "$precompressed_body" != 'static smoke gzip' ]]; then
+  printf '[fail] precompressed static expected %q got %q\n' 'static smoke gzip' "$precompressed_body"
+  exit 1
+fi
 
 metrics="$(curl -fsS "http://$address/__phrust/metrics")"
 if ! grep -q '^phrust_server_script_cache_preload_successes_total 1$' <<<"$metrics"; then

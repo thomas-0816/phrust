@@ -157,6 +157,34 @@ Metrics expose script cache hits, misses, entries, entries by shard, stale
 invalidations, compile errors, evictions, in-progress compiles, and preload
 success/failure totals under `/__phrust/metrics`.
 
+## Static File Responses
+
+Static files are served with Tokio file I/O and Hyper streaming bodies instead
+of whole-file `std::fs::read` response construction. `HEAD` responses preserve
+the same metadata headers and accurate `Content-Length` without streaming a
+body.
+
+Each static response includes `Accept-Ranges: bytes`, a weak `ETag`, and
+`Last-Modified` when the filesystem exposes modification time. The weak ETag is
+deterministically derived from file size and mtime; on Unix platforms it also
+includes the inode. The inode component is intentionally best-effort and
+platform-specific, so ETags are stable within one platform/filesystem but are
+not a cross-platform artifact format.
+
+The server honors `If-None-Match` before `If-Modified-Since` and returns
+`304 Not Modified` for matching validators. Single byte ranges such as
+`Range: bytes=0-99`, open-ended ranges, and suffix ranges are supported.
+Invalid, unsatisfiable, or multiple ranges are rejected with
+`416 Range Not Satisfiable` and a `Content-Range: bytes */<length>` header.
+
+When `Accept-Encoding` allows a precompressed sidecar and a safe in-docroot
+`<path>.br`, `<path>.zst`, or `<path>.gz` file exists, the server streams that
+file with `Content-Encoding` and `Vary: Accept-Encoding` while retaining the
+original path's content type. No dynamic compression is performed.
+
+Metrics expose streamed static bytes, `304` responses, `206` responses, and
+precompressed static hits under `/__phrust/metrics`.
+
 ## Expected Acceptance Commands
 
 Prompt 00 baseline:

@@ -14,9 +14,10 @@ Known gaps:
   `cookie` strict, Prompt 05 made `session` strict, Prompt 06 made
   `output-buffer` strict, and Prompt 07 added cooperative PHP execution
   deadlines, Prompt 08 added shared include caching, and Prompt 09 added
-  bounded script-cache controls plus local cache clearing. Future sections
-  remain explicit skips until their owning implementation prompts make them
-  strict.
+  bounded script-cache controls plus local cache clearing. Prompt 10 replaced
+  the MVP static path with streaming, validators, byte ranges, and
+  precompressed sidecars. Future sections remain explicit skips until their
+  owning implementation prompts make them strict.
 - Multipart form uploads populate `$_POST` fields and `$_FILES` metadata,
   including scalar fields and `files[]`-style arrays. `is_uploaded_file()` and
   `move_uploaded_file()` are implemented for request-local uploads.
@@ -31,8 +32,8 @@ Known gaps:
   complete.
 - TLS termination is not part of the MVP server.
 - HTTP/2 and HTTP/3 are not part of the MVP server.
-- Static file serving is simple in-memory response construction; sendfile and
-  static streaming are not optimized yet.
+- Static file serving streams from Tokio file I/O and supports validators,
+  byte ranges, and precompressed sidecars. Sendfile is not implemented.
 - The compiled script cache is process-local only.
 - Cache invalidation is local to one process through an explicitly enabled
   loopback-only admin endpoint; there is no cross-process cache sharing or

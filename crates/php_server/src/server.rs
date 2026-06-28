@@ -9,7 +9,7 @@ use crate::{
     session_store::{SessionStore, generate_session_id, valid_session_id},
 };
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
@@ -30,6 +30,8 @@ use php_runtime::api::{
 use std::{
     convert::Infallible,
     fmt,
+    fs::Metadata,
+    io::SeekFrom,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -38,7 +40,14 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::TcpListener, sync::Semaphore, task, task::JoinSet, time::timeout};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt},
+    net::TcpListener,
+    sync::Semaphore,
+    task::{self, JoinSet},
+    time::timeout,
+};
 use tracing::{debug, warn};
 
 #[derive(Clone, Debug)]
@@ -98,6 +107,10 @@ struct ServerMetrics {
     upload_files_rejected: AtomicU64,
     execution_timeouts: AtomicU64,
     execution_deadline_disabled: AtomicU64,
+    static_streamed_bytes: AtomicU64,
+    static_not_modified: AtomicU64,
+    static_partial_responses: AtomicU64,
+    static_precompressed_hits: AtomicU64,
     script_cache_preload_successes: AtomicU64,
     script_cache_preload_failures: AtomicU64,
 }
@@ -141,6 +154,10 @@ phrust_server_upload_bytes_accepted_total {}\n\
 phrust_server_upload_files_rejected_total {}\n\
 phrust_server_execution_timeouts_total {}\n\
 phrust_server_execution_deadline_disabled_total {}\n\
+phrust_server_static_streamed_bytes_total {}\n\
+phrust_server_static_not_modified_total {}\n\
+phrust_server_static_partial_responses_total {}\n\
+phrust_server_static_precompressed_hits_total {}\n\
 phrust_server_script_cache_hits_total {}\n\
 phrust_server_script_cache_misses_total {}\n\
 phrust_server_script_cache_stale_invalidations_total {}\n\
@@ -171,6 +188,10 @@ phrust_server_include_compile_errors_total {}\n",
             self.upload_files_rejected.load(Ordering::Relaxed),
             self.execution_timeouts.load(Ordering::Relaxed),
             self.execution_deadline_disabled.load(Ordering::Relaxed),
+            self.static_streamed_bytes.load(Ordering::Relaxed),
+            self.static_not_modified.load(Ordering::Relaxed),
+            self.static_partial_responses.load(Ordering::Relaxed),
+            self.static_precompressed_hits.load(Ordering::Relaxed),
             cache.hits,
             cache.misses,
             cache.stale_invalidations,
@@ -436,15 +457,7 @@ async fn handle(
                 .metrics
                 .static_responses
                 .fetch_add(1, Ordering::Relaxed);
-            let content_type = content_type_for(&path);
-            if method == Method::HEAD {
-                response::static_head(StatusCode::OK, metadata.len(), content_type)
-            } else {
-                match read_static_file_on_blocking_thread(path).await {
-                    Ok(body) => response::bytes(StatusCode::OK, body, content_type),
-                    Err(_) => response::text(StatusCode::NOT_FOUND, "not found\n"),
-                }
-            }
+            static_file_response(&parts, &state, path, metadata).await
         }
         ResolvedRoute::PhpScript {
             script_path,
@@ -467,6 +480,388 @@ async fn handle(
     };
     state.metrics.record_response(response.status());
     response
+}
+
+async fn static_file_response(
+    parts: &Parts,
+    state: &AppState,
+    original_path: PathBuf,
+    original_metadata: Metadata,
+) -> Response<ResponseBody> {
+    let selection = select_static_file(
+        &state.route_config.docroot,
+        original_path,
+        original_metadata,
+        &parts.headers,
+    );
+    let etag = weak_etag(&selection.metadata);
+    let last_modified = selection
+        .metadata
+        .modified()
+        .ok()
+        .map(httpdate::fmt_http_date);
+    if static_not_modified(&parts.headers, &etag, selection.metadata.modified().ok()) {
+        state
+            .metrics
+            .static_not_modified
+            .fetch_add(1, Ordering::Relaxed);
+        return static_empty_response(
+            StatusCode::NOT_MODIFIED,
+            &selection,
+            &etag,
+            last_modified.as_deref(),
+            None,
+            None,
+        );
+    }
+
+    let full_len = selection.metadata.len();
+    let mut status = StatusCode::OK;
+    let mut start = 0;
+    let mut content_len = full_len;
+    let mut content_range = None;
+    if let Some(range_value) = parts.headers.get(header::RANGE) {
+        match range_value
+            .to_str()
+            .ok()
+            .and_then(|value| parse_single_byte_range(value, full_len).ok())
+        {
+            Some(range) => {
+                status = StatusCode::PARTIAL_CONTENT;
+                start = range.start;
+                content_len = range.len();
+                content_range = Some(format!("bytes {}-{}/{}", range.start, range.end, full_len));
+                state
+                    .metrics
+                    .static_partial_responses
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            None => {
+                let content_range = format!("bytes */{full_len}");
+                return static_empty_response(
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    &selection,
+                    &etag,
+                    last_modified.as_deref(),
+                    Some(0),
+                    Some(&content_range),
+                );
+            }
+        }
+    }
+
+    if selection.content_encoding.is_some() {
+        state
+            .metrics
+            .static_precompressed_hits
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    let content_range = content_range.as_deref();
+    if parts.method == Method::HEAD {
+        return static_empty_response(
+            status,
+            &selection,
+            &etag,
+            last_modified.as_deref(),
+            Some(content_len),
+            content_range,
+        );
+    }
+
+    let mut file = match File::open(&selection.path).await {
+        Ok(file) => file,
+        Err(_) => return response::text(StatusCode::NOT_FOUND, "not found\n"),
+    };
+    if start > 0 && file.seek(SeekFrom::Start(start)).await.is_err() {
+        return response::text(StatusCode::INTERNAL_SERVER_ERROR, "static file failed\n");
+    }
+    state
+        .metrics
+        .static_streamed_bytes
+        .fetch_add(content_len, Ordering::Relaxed);
+    static_stream_response(
+        status,
+        &selection,
+        &etag,
+        last_modified.as_deref(),
+        content_len,
+        content_range,
+        file.take(content_len),
+    )
+}
+
+#[derive(Clone, Debug)]
+struct StaticFileSelection {
+    path: PathBuf,
+    metadata: Metadata,
+    content_type: &'static str,
+    content_encoding: Option<&'static str>,
+}
+
+fn select_static_file(
+    docroot: &Path,
+    original_path: PathBuf,
+    original_metadata: Metadata,
+    headers: &HeaderMap,
+) -> StaticFileSelection {
+    let content_type = content_type_for(&original_path);
+    for candidate in [
+        ("br", ".br", "br"),
+        ("zstd", ".zst", "zstd"),
+        ("gzip", ".gz", "gzip"),
+    ] {
+        let (accepted_encoding, suffix, content_encoding) = candidate;
+        if !accepts_encoding(headers, accepted_encoding) {
+            continue;
+        }
+        let compressed_path = append_suffix(&original_path, suffix);
+        let Ok(canonical) = compressed_path.canonicalize() else {
+            continue;
+        };
+        if !canonical.starts_with(docroot) {
+            continue;
+        }
+        let Ok(metadata) = canonical.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        return StaticFileSelection {
+            path: canonical,
+            metadata,
+            content_type,
+            content_encoding: Some(content_encoding),
+        };
+    }
+    StaticFileSelection {
+        path: original_path,
+        metadata: original_metadata,
+        content_type,
+        content_encoding: None,
+    }
+}
+
+fn static_stream_response<R>(
+    status: StatusCode,
+    selection: &StaticFileSelection,
+    etag: &str,
+    last_modified: Option<&str>,
+    content_len: u64,
+    content_range: Option<&str>,
+    reader: R,
+) -> Response<ResponseBody>
+where
+    R: tokio::io::AsyncRead + Send + Sync + 'static,
+{
+    let builder = static_response_builder(
+        status,
+        selection,
+        etag,
+        last_modified,
+        Some(content_len),
+        content_range,
+    );
+    builder
+        .body(response::reader_body(reader))
+        .expect("static stream response builder is valid")
+}
+
+fn static_empty_response(
+    status: StatusCode,
+    selection: &StaticFileSelection,
+    etag: &str,
+    last_modified: Option<&str>,
+    content_len: Option<u64>,
+    content_range: Option<&str>,
+) -> Response<ResponseBody> {
+    static_response_builder(
+        status,
+        selection,
+        etag,
+        last_modified,
+        content_len,
+        content_range,
+    )
+    .body(response::full_body(Bytes::new()))
+    .expect("static empty response builder is valid")
+}
+
+fn static_response_builder(
+    status: StatusCode,
+    selection: &StaticFileSelection,
+    etag: &str,
+    last_modified: Option<&str>,
+    content_len: Option<u64>,
+    content_range: Option<&str>,
+) -> hyper::http::response::Builder {
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, selection.content_type)
+        .header(header::ETAG, etag)
+        .header(header::ACCEPT_RANGES, "bytes");
+    if let Some(content_len) = content_len {
+        builder = builder.header(header::CONTENT_LENGTH, content_len.to_string());
+    }
+    if let Some(last_modified) = last_modified {
+        builder = builder.header(header::LAST_MODIFIED, last_modified);
+    }
+    if let Some(content_encoding) = selection.content_encoding {
+        builder = builder
+            .header(header::CONTENT_ENCODING, content_encoding)
+            .header(header::VARY, "Accept-Encoding");
+    }
+    if let Some(content_range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, content_range);
+    }
+    builder
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ByteRange {
+    start: u64,
+    end: u64,
+}
+
+impl ByteRange {
+    fn len(self) -> u64 {
+        self.end - self.start + 1
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RangeParseError {
+    Invalid,
+    Unsatisfiable,
+}
+
+fn parse_single_byte_range(value: &str, full_len: u64) -> Result<ByteRange, RangeParseError> {
+    let Some(range) = value.trim().strip_prefix("bytes=") else {
+        return Err(RangeParseError::Invalid);
+    };
+    if range.contains(',') || full_len == 0 {
+        return Err(RangeParseError::Unsatisfiable);
+    }
+    let Some((start, end)) = range.split_once('-') else {
+        return Err(RangeParseError::Invalid);
+    };
+    if start.is_empty() {
+        let suffix_len = end.parse::<u64>().map_err(|_| RangeParseError::Invalid)?;
+        if suffix_len == 0 {
+            return Err(RangeParseError::Invalid);
+        }
+        let start = full_len.saturating_sub(suffix_len);
+        return Ok(ByteRange {
+            start,
+            end: full_len - 1,
+        });
+    }
+    let start = start.parse::<u64>().map_err(|_| RangeParseError::Invalid)?;
+    if start >= full_len {
+        return Err(RangeParseError::Unsatisfiable);
+    }
+    let end = if end.is_empty() {
+        full_len - 1
+    } else {
+        end.parse::<u64>().map_err(|_| RangeParseError::Invalid)?
+    };
+    if end < start {
+        return Err(RangeParseError::Invalid);
+    }
+    Ok(ByteRange {
+        start,
+        end: end.min(full_len - 1),
+    })
+}
+
+fn static_not_modified(headers: &HeaderMap, etag: &str, modified: Option<SystemTime>) -> bool {
+    if let Some(if_none_match) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+    {
+        return if_none_match_matches(if_none_match, etag);
+    }
+    let Some(modified) = modified else {
+        return false;
+    };
+    let Some(if_modified_since) = headers
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| httpdate::parse_http_date(value).ok())
+    else {
+        return false;
+    };
+    unix_seconds(modified) <= unix_seconds(if_modified_since)
+}
+
+fn if_none_match_matches(value: &str, etag: &str) -> bool {
+    value.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == "*" || candidate == etag || weak_etag_value(candidate) == weak_etag_value(etag)
+    })
+}
+
+fn weak_etag_value(value: &str) -> &str {
+    value.strip_prefix("W/").unwrap_or(value)
+}
+
+fn weak_etag(metadata: &Metadata) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos());
+    match metadata_inode(metadata) {
+        Some(inode) => format!("W/\"{:x}-{:x}-{:x}\"", metadata.len(), modified, inode),
+        None => format!("W/\"{:x}-{:x}\"", metadata.len(), modified),
+    }
+}
+
+#[cfg(unix)]
+fn metadata_inode(metadata: &Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.ino())
+}
+
+#[cfg(not(unix))]
+fn metadata_inode(_metadata: &Metadata) -> Option<u64> {
+    None
+}
+
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn accepts_encoding(headers: &HeaderMap, encoding: &str) -> bool {
+    headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|part| {
+                let mut parameters = part.split(';');
+                let token = parameters
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                let accepted = token == encoding || (encoding == "zstd" && token == "zst");
+                accepted
+                    && !parameters.any(|parameter| {
+                        let Some((name, value)) = parameter.trim().split_once('=') else {
+                            return false;
+                        };
+                        name.trim().eq_ignore_ascii_case("q") && value.trim() == "0"
+                    })
+            })
+        })
 }
 
 fn clear_cache_response(state: &AppState, peer: SocketAddr) -> Response<ResponseBody> {
@@ -492,12 +887,6 @@ async fn resolve_route_on_blocking_thread(
     let path = path.to_string();
     let route_config = state.route_config.clone();
     task::spawn_blocking(move || resolve_route(&method, &path, &route_config)).await
-}
-
-async fn read_static_file_on_blocking_thread(path: PathBuf) -> Result<Bytes, std::io::Error> {
-    task::spawn_blocking(move || std::fs::read(path).map(Bytes::from))
-        .await
-        .map_err(|error| std::io::Error::other(format!("static file read task failed: {error}")))?
 }
 
 async fn execute_php_request(
@@ -810,7 +1199,7 @@ fn php_transport_response(
 ) -> Response<ResponseBody> {
     let mut response = Response::builder()
         .status(status)
-        .body(Full::new(body).boxed())
+        .body(response::full_body(body))
         .expect("php response builder is valid");
     let headers = response.headers_mut();
     for header in &http_response.headers {
@@ -1001,6 +1390,73 @@ fn content_type_for(path: &std::path::Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_single_byte_ranges() {
+        assert_eq!(
+            parse_single_byte_range("bytes=0-4", 10),
+            Ok(ByteRange { start: 0, end: 4 })
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=4-", 10),
+            Ok(ByteRange { start: 4, end: 9 })
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=-3", 10),
+            Ok(ByteRange { start: 7, end: 9 })
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=8-99", 10),
+            Ok(ByteRange { start: 8, end: 9 })
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=10-12", 10),
+            Err(RangeParseError::Unsatisfiable)
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=3-1", 10),
+            Err(RangeParseError::Invalid)
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=0-1,3-4", 10),
+            Err(RangeParseError::Unsatisfiable)
+        );
+    }
+
+    #[test]
+    fn weak_etag_is_deterministic_for_file_metadata() {
+        let fixture = ServerCacheFixture::new();
+        fixture.write("static bytes\n");
+        let metadata = std::fs::metadata(&fixture.path).expect("fixture metadata");
+
+        let first = weak_etag(&metadata);
+        let second = weak_etag(&metadata);
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("W/\""));
+        assert!(first.ends_with('"'));
+        assert!(first.contains('d'));
+    }
+
+    #[test]
+    fn accepts_encoding_parses_comma_separated_tokens() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip;q=1, br, zstd;q=0.8"),
+        );
+
+        assert!(accepts_encoding(&headers, "br"));
+        assert!(accepts_encoding(&headers, "gzip"));
+        assert!(accepts_encoding(&headers, "zstd"));
+        assert!(!accepts_encoding(&headers, "deflate"));
+
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip;q=0"),
+        );
+        assert!(!accepts_encoding(&headers, "gzip"));
+    }
 
     #[test]
     fn app_state_cache_records_hit_after_repeated_compile() {
