@@ -87,18 +87,16 @@ Out of scope for the stub strategy:
 If this moves from stubs to implementation, the first implementation must
 document and test these gaps before enabling `extension_loaded("mbstring")`:
 
-- PHP counts characters by the selected mbstring encoding, not Rust bytes or
-  necessarily Unicode scalar values.
-- PHP's case mapping follows mbstring tables for the selected encoding; Rust
-  `char::to_lowercase` and `char::to_uppercase` are not a complete parity
-  model.
-- `mb_detect_encoding` depends on PHP's supported encoding list, detection
-  order, strict mode, aliases, and invalid-sequence handling.
-- Legacy encodings such as Shift-JIS, EUC-JP, ISO-2022-JP, Big5, GB18030,
-  ISO-8859 variants, CP932, and UTF-7 require an approved encoding library or a
-  deliberately bounded table strategy.
+| Stable ID | Reference behavior summary | Current phrust behavior | Fixture path | Next owner layer |
+| --- | --- | --- | --- | --- |
+| `PHPT-MBSTRING-UNSUPPORTED-ENCODING-LENGTH` | PHP counts characters by the selected mbstring encoding, not Rust bytes or necessarily Unicode scalar values. | `mb_strlen` is unavailable through platform checks and direct stubs fail with `E_PHP_RUNTIME_UNSUPPORTED_MBSTRING`. | `tests/phpt/generated/mbstring/platform-checks.phpt` | `php_runtime` mbstring implementation |
+| `PHPT-MBSTRING-UNSUPPORTED-CASE-MAPPING` | PHP case mapping follows mbstring tables for the selected encoding. | `mb_strtolower` and `mb_strtoupper` are unavailable through platform checks and direct stubs fail. | `tests/phpt/generated/mbstring/guarded-common-functions.phpt` | `php_runtime` mbstring implementation |
+| `PHPT-MBSTRING-UNSUPPORTED-DETECT-ENCODING` | `mb_detect_encoding` depends on PHP's supported encoding list, detection order, strict mode, aliases, and invalid-sequence handling. | `mb_detect_encoding` is unavailable through platform checks and direct stubs fail. | `tests/phpt/generated/mbstring/guarded-common-functions.phpt` | `php_runtime` mbstring implementation |
+| `PHPT-MBSTRING-UNSUPPORTED-LEGACY-ENCODINGS` | Shift-JIS, EUC-JP, ISO-2022-JP, Big5, GB18030, ISO-8859 variants, CP932, UTF-7, and related encodings require mbstring conversion tables. | No encoding conversion surface is enabled. | `tests/phpt/generated/mbstring/composer-fallback.phpt` | future encoding library or table strategy |
 
 ## Target Gates
 
+- `nix develop -c cargo test -p php_runtime`
 - `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=mbstring`
 - `nix develop -c just verify-stdlib`
+- `nix develop -c just verify-phpt`

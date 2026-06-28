@@ -1242,6 +1242,19 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("mb_strtolower", "mbstring"))
                 .with_function(FunctionDescriptor::php("mb_strtoupper", "mbstring"))
                 .with_function(FunctionDescriptor::php("mb_substr", "mbstring")),
+            ExtensionDescriptor::new("intl")
+                .enabled_by_default(false)
+                .with_function(FunctionDescriptor::php("grapheme_strlen", "intl"))
+                .with_function(FunctionDescriptor::php("intl_get_error_code", "intl"))
+                .with_function(FunctionDescriptor::php("normalizer_normalize", "intl"))
+                .with_class(ClassDescriptor::new("Collator", "intl", ClassKind::Class))
+                .with_class(ClassDescriptor::new("IntlChar", "intl", ClassKind::Class))
+                .with_class(ClassDescriptor::new("Locale", "intl", ClassKind::Class))
+                .with_class(ClassDescriptor::new(
+                    "NumberFormatter",
+                    "intl",
+                    ClassKind::Class,
+                )),
             ExtensionDescriptor::new("hash")
                 .with_function(FunctionDescriptor::php("hash", "hash"))
                 .with_function(FunctionDescriptor::php("hash_hmac", "hash")),
@@ -1653,6 +1666,37 @@ mod tests {
 
         registry.disable_extension("core").expect("disable core");
         assert!(!registry.is_extension_enabled("core"));
+    }
+
+    #[test]
+    fn disabled_text_i18n_extensions_hide_platform_symbols() {
+        let registry = ExtensionRegistry::standard_library();
+
+        assert!(!registry.is_extension_enabled("mbstring"));
+        assert!(!registry.is_extension_enabled("intl"));
+
+        for name in [
+            "mb_detect_encoding",
+            "mb_strlen",
+            "mb_strtolower",
+            "mb_strtoupper",
+            "mb_substr",
+            "grapheme_strlen",
+            "intl_get_error_code",
+            "normalizer_normalize",
+        ] {
+            assert!(
+                registry.enabled_php_function(name).is_none(),
+                "{name} should stay hidden while its extension is disabled"
+            );
+        }
+
+        for name in ["Collator", "IntlChar", "Locale", "NumberFormatter"] {
+            assert!(
+                registry.enabled_class(name).is_none(),
+                "{name} should stay hidden while intl is disabled"
+            );
+        }
     }
 
     #[test]

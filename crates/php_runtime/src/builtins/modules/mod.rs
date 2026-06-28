@@ -2,6 +2,7 @@ pub(in crate::builtins) mod arrays;
 pub(in crate::builtins) mod core;
 pub(in crate::builtins) mod date;
 pub(in crate::builtins) mod filesystem;
+pub(in crate::builtins) mod intl;
 pub(in crate::builtins) mod json;
 pub(in crate::builtins) mod math;
 pub(in crate::builtins) mod mbstring;
