@@ -1,7 +1,8 @@
 use crate::{
     config::{ConfigError, ServerConfig},
     multipart::{
-        MultipartConfig, MultipartError, multipart_boundary, parse_multipart_into_context,
+        MultipartConfig, MultipartError, cleanup_uploaded_files, multipart_boundary,
+        parse_multipart_into_context,
     },
     response::{self, ResponseBody},
     routing::{ResolvedRoute, RouteConfig, resolve_route},
@@ -18,9 +19,9 @@ use hyper::{
 };
 use hyper_util::{rt::TokioExecutor, rt::TokioIo, server::conn::auto::Builder};
 use php_executor::{
-    CompiledScriptCache, CompiledScriptCacheLookup, OptimizationLevel, PhpExecutionError,
-    PhpExecutionOutput, PhpExecutionStatus, PhpExecutor, PhpRequestExecutionInput,
-    PhpScriptCacheInput,
+    CompiledScriptCache, CompiledScriptCacheLookup, IncludeCache, IncludeCacheStats,
+    OptimizationLevel, PhpExecutionError, PhpExecutionOutput, PhpExecutionStatus, PhpExecutor,
+    PhpExecutorOptions, PhpRequestExecutionInput, PhpScriptCacheInput, VmOptions,
 };
 use php_runtime::api::{
     PHP_SESSION_ACTIVE, RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState,
@@ -51,6 +52,7 @@ struct AppState {
     max_in_flight: usize,
     metrics: Arc<ServerMetrics>,
     script_cache: Arc<CompiledScriptCache>,
+    include_cache: Arc<IncludeCache>,
     session_config: SessionConfig,
     session_store: Arc<SessionStore>,
     session_lock: Arc<Mutex<()>>,
@@ -107,7 +109,12 @@ impl ServerMetrics {
         }
     }
 
-    fn render(&self, in_flight: u64, cache: php_executor::CompiledScriptCacheStats) -> String {
+    fn render(
+        &self,
+        in_flight: u64,
+        cache: php_executor::CompiledScriptCacheStats,
+        include_cache: IncludeCacheStats,
+    ) -> String {
         format!(
             "# phrust-server MVP internal metrics\n\
 phrust_server_requests_total {}\n\
@@ -128,7 +135,13 @@ phrust_server_script_cache_hits_total {}\n\
 phrust_server_script_cache_misses_total {}\n\
 phrust_server_script_cache_stale_invalidations_total {}\n\
 phrust_server_script_cache_compile_errors_total {}\n\
-phrust_server_script_cache_entries {}\n",
+phrust_server_script_cache_entries {}\n\
+phrust_server_include_resolution_hits_total {}\n\
+phrust_server_include_resolution_misses_total {}\n\
+phrust_server_include_compile_hits_total {}\n\
+phrust_server_include_compile_misses_total {}\n\
+phrust_server_include_stale_invalidations_total {}\n\
+phrust_server_include_compile_errors_total {}\n",
             self.requests_total.load(Ordering::Relaxed),
             self.static_responses.load(Ordering::Relaxed),
             self.php_responses.load(Ordering::Relaxed),
@@ -148,6 +161,12 @@ phrust_server_script_cache_entries {}\n",
             cache.stale_invalidations,
             cache.compile_errors,
             cache.entries,
+            include_cache.resolution_hits,
+            include_cache.resolution_misses,
+            include_cache.compile_hits,
+            include_cache.compile_misses,
+            include_cache.stale_invalidations,
+            include_cache.compile_errors,
         )
     }
 }
@@ -218,6 +237,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         } else {
             CompiledScriptCache::disabled()
         }),
+        include_cache: Arc::new(IncludeCache::new(config.script_cache_shards)),
         session_config: SessionConfig {
             enabled: config.sessions_enabled,
             cookie_name: config.session_cookie_name,
@@ -311,6 +331,7 @@ async fn handle(
                     .max_in_flight
                     .saturating_sub(state.in_flight.available_permits()) as u64,
                 state.script_cache.cache_stats(),
+                state.include_cache.cache_stats(),
             ),
             "text/plain; charset=UTF-8",
         ),
@@ -435,6 +456,7 @@ async fn execute_php_request(
             Err(error) => return multipart_error_response(error, &state, peer),
         }
     }
+    let upload_cleanup = request_context.uploaded_files.clone();
     let _session_guard = if state.session_config.enabled {
         Some(state.session_lock.lock().expect("session lock poisoned"))
     } else {
@@ -464,8 +486,7 @@ async fn execute_php_request(
     runtime_context = runtime_context.with_stdin(body.clone());
     let is_head = parts.method == Method::HEAD;
     let script_log_path = script_path.clone();
-    let result =
-        execute_php_on_blocking_thread(Arc::clone(&state), script_path, runtime_context).await;
+    let result = execute_php_in_blocking_region(Arc::clone(&state), script_path, runtime_context);
     match result {
         Ok((lookup, mut output)) => {
             output.upload_registry.cleanup_unmoved();
@@ -498,27 +519,32 @@ async fn execute_php_request(
     }
 }
 
-async fn execute_php_on_blocking_thread(
+fn execute_php_in_blocking_region(
     state: Arc<AppState>,
     script_path: PathBuf,
     runtime_context: RuntimeContext,
 ) -> Result<(CompiledScriptCacheLookup, PhpExecutionOutput), PhpExecutionError> {
-    task::spawn_blocking(move || {
+    task::block_in_place(move || {
         let lookup = state.compile_script(&script_path)?;
-        let output = state.executor.execute_compiled(
+        let executor = PhpExecutor::with_options(PhpExecutorOptions {
+            vm_options: VmOptions {
+                include_cache: Some(Arc::clone(&state.include_cache)),
+                ..VmOptions::default()
+            },
+            ..PhpExecutorOptions::default()
+        });
+        let output = executor.execute_compiled(
             &lookup.compiled,
             PhpRequestExecutionInput {
                 real_path: Some(script_path),
                 cwd: state.route_config.docroot.clone(),
-                include_roots: vec![state.route_config.docroot.clone()],
+                include_roots: include_roots_for_docroot(&state.route_config.docroot),
                 runtime_context,
                 collect_counters: false,
             },
         );
         Ok((lookup, output))
     })
-    .await
-    .map_err(|error| PhpExecutionError::Engine(format!("php execution task failed: {error}")))?
 }
 
 fn seed_session_state(
@@ -816,6 +842,16 @@ fn script_name_for(docroot: &Path, script_path: &Path) -> String {
     value
 }
 
+fn include_roots_for_docroot(docroot: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![docroot.to_path_buf()];
+    if let Some(parent) = docroot.parent()
+        && parent != docroot
+    {
+        roots.push(parent.to_path_buf());
+    }
+    roots
+}
+
 fn php_self_for(script_name: &str, path_info: Option<&str>) -> String {
     path_info.map_or_else(
         || script_name.to_string(),
@@ -885,6 +921,7 @@ mod tests {
             max_in_flight: 1,
             metrics: Arc::new(ServerMetrics::default()),
             script_cache: Arc::clone(&cache),
+            include_cache: Arc::new(IncludeCache::new(1)),
             session_config: SessionConfig {
                 enabled: false,
                 cookie_name: "PHPSESSID".to_string(),

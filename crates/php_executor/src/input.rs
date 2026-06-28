@@ -1,7 +1,7 @@
 use php_optimizer::OptimizationLevel;
+use php_runtime::UploadRegistry;
 use php_runtime::api::{
     ExitStatus, RuntimeContext, RuntimeDiagnostic, RuntimeHttpResponseState, SessionState,
-    UploadRegistry,
 };
 use php_vm::{
     api::VmOptions,
@@ -10,7 +10,7 @@ use php_vm::{
 use std::path::PathBuf;
 
 /// Executor-wide defaults.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct PhpExecutorOptions {
     pub optimization_level: OptimizationLevel,
     pub vm_options: VmOptions,

@@ -1,13 +1,23 @@
 use php_server::{config::ServerConfig, server};
 use tracing_subscriber::{EnvFilter, fmt};
 
-#[tokio::main]
-async fn main() {
+const TOKIO_WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn main() {
     fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
         )
         .init();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(TOKIO_WORKER_STACK_BYTES)
+        .build()
+        .expect("tokio runtime should initialize");
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     match ServerConfig::parse_env() {
         Ok(config) => {
             if config.help {

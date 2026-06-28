@@ -93,6 +93,14 @@ fn server_exposes_internal_metrics() {
         response.contains("phrust_server_script_cache_compile_errors_total"),
         "{response}"
     );
+    assert!(
+        response.contains("phrust_server_include_resolution_hits_total"),
+        "{response}"
+    );
+    assert!(
+        response.contains("phrust_server_include_compile_hits_total"),
+        "{response}"
+    );
 }
 
 #[test]
@@ -566,6 +574,40 @@ fn server_basic_app_fixture_outputs_match_exactly() {
     assert!(header.starts_with("HTTP/1.1 202 Accepted"), "{header}");
     assert_response_contains_header(&header, "x-app-fixture", "basic");
     assert_eq!(response_body(&header), "accepted\n");
+}
+
+#[test]
+fn server_reuses_include_cache_across_requests() {
+    let docroot = fixture_docroot("fixtures/server/apps/compat/public");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let first = http_request(&address, "GET", "/include-entry.php");
+    let second = http_request(&address, "GET", "/include-entry.php");
+    let metrics = http_request(&address, "GET", "/__phrust/metrics");
+
+    stop_child(child);
+
+    assert!(first.starts_with("HTTP/1.1 200 OK"), "{first}");
+    assert_eq!(response_body(&first), "compat include helper\n");
+    assert!(second.starts_with("HTTP/1.1 200 OK"), "{second}");
+    assert_eq!(response_body(&second), "compat include helper\n");
+    assert!(
+        metrics.contains("phrust_server_include_resolution_misses_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_include_resolution_hits_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_include_compile_misses_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_include_compile_hits_total 1"),
+        "{metrics}"
+    );
 }
 
 #[test]

@@ -106,6 +106,25 @@ Deadline enforcement is cooperative in the VM dispatch loops. It does not use
 Tokio task cancellation as the primary safety mechanism, so native blocking
 builtins are checked when control returns to VM dispatch.
 
+## Include Cache
+
+The server owns one process-local include cache and passes it into each request
+VM through `php_executor`. The cache has two independent shard sets: one for
+include path resolution and one for compiled include units. Resolution entries
+are keyed by the including directory, requested path, include path entries, cwd,
+and allowed-root fingerprint. Compiled include entries are keyed by canonical
+path plus file metadata and compiler fingerprint. File metadata changes remove
+stale entries before reuse.
+
+`include_once` and `require_once` tracking stays request-local in VM state; the
+shared cache only reuses resolved paths and compiled units. The server exposes
+include resolution hits/misses, include compile hits/misses, stale
+invalidations, and include compile errors under `/__phrust/metrics`.
+
+Web requests allow includes under the public docroot and its parent app root so
+compatibility fixtures can keep non-public helpers outside `public/`. Compiled
+include artifacts remain in memory only and are never serialized to disk.
+
 ## Expected Acceptance Commands
 
 Prompt 00 baseline:

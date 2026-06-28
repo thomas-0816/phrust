@@ -1,12 +1,13 @@
-use crate::include::IncludeLoader;
+use crate::include::{IncludeCache, IncludeLoader};
 use crate::inline_cache::InlineCacheMode;
 use crate::quickening::QuickeningMode;
 use crate::tiering::TieringOptions;
 use php_runtime::RuntimeContext;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// VM execution options.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct VmOptions {
     /// Verify IR before dispatching it.
     pub verify_ir: bool,
@@ -15,6 +16,8 @@ pub struct VmOptions {
     /// Optional local include loader. When absent, include/require are disabled
     /// with deterministic runtime diagnostics.
     pub include_loader: Option<IncludeLoader>,
+    /// Optional shared include cache for path resolution and compiled includes.
+    pub include_cache: Option<Arc<IncludeCache>>,
     /// Deterministic runtime context used to seed CLI globals and superglobals.
     pub runtime_context: RuntimeContext,
     /// Capture deterministic instruction trace events.
@@ -54,6 +57,7 @@ impl Default for VmOptions {
             verify_ir: true,
             max_steps: 100_000,
             include_loader: None,
+            include_cache: None,
             runtime_context: RuntimeContext::default(),
             trace: false,
             trace_runtime: false,

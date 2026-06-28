@@ -122,7 +122,10 @@ pub use fallback::{
     FallbackProtocolStats,
 };
 pub use frame::{CallStack, Frame, RegisterFile};
-pub use include::{IncludeLoader, IncludePathFileFingerprint, LoadedInclude, ResolvedIncludePath};
+pub use include::{
+    IncludeCache, IncludeCacheStats, IncludeLoader, IncludePathFileFingerprint, LoadedInclude,
+    ResolvedIncludePath,
+};
 pub use inline_cache::{
     ClassConstantStaticPropertyCacheKind, ClassConstantStaticPropertyCacheTarget, InlineCacheId,
     InlineCacheKind, InlineCacheMode, InlineCacheObservation, InlineCacheSlot, InlineCacheState,

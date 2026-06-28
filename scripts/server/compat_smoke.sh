@@ -4,11 +4,11 @@ set -euo pipefail
 section="${1:-all}"
 
 case "$section" in
-  input|upload|cookie|session|output-buffer|static|all)
+  input|upload|cookie|session|output-buffer|include|static|all)
     ;;
   *)
     printf '[fail] unknown server compat smoke section: %s\n' "$section"
-    printf '%s\n' 'usage: scripts/server/compat_smoke.sh [input|upload|cookie|session|output-buffer|static|all]'
+    printf '%s\n' 'usage: scripts/server/compat_smoke.sh [input|upload|cookie|session|output-buffer|include|static|all]'
     exit 2
     ;;
 esac
@@ -253,6 +253,11 @@ run_output_buffer() {
   printf '%s\n' '[ok] server compat output-buffer passed'
 }
 
+run_include() {
+  assert_body '/include-entry.php' 'compat include helper'
+  printf '%s\n' '[ok] server compat include passed'
+}
+
 skip_section() {
   local name="$1"
   printf '[skip] server compat %s awaits its Wave 2 implementation prompt.\n' "$name"
@@ -277,6 +282,9 @@ case "$section" in
   output-buffer)
     run_output_buffer
     ;;
+  include)
+    run_include
+    ;;
   all)
     run_static
     run_input
@@ -284,5 +292,6 @@ case "$section" in
     run_cookie
     run_session
     run_output_buffer
+    run_include
     ;;
 esac
