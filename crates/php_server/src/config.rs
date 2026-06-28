@@ -7,6 +7,7 @@ use std::{
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 const DEFAULT_INDEX: &str = "index.php";
 const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
+const DEFAULT_MAX_UPLOAD_FILES: usize = 32;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_SCRIPT_CACHE_SHARDS: usize = 16;
 
@@ -17,6 +18,9 @@ pub struct ServerConfig {
     pub index: String,
     pub front_controller: Option<PathBuf>,
     pub max_body_bytes: usize,
+    pub upload_temp_dir: PathBuf,
+    pub max_upload_files: usize,
+    pub max_upload_file_bytes: usize,
     pub max_in_flight: usize,
     pub request_timeout_ms: u64,
     pub metrics_endpoint_enabled: bool,
@@ -61,6 +65,9 @@ impl ServerConfig {
         let mut index = DEFAULT_INDEX.to_string();
         let mut front_controller = None;
         let mut max_body_bytes = DEFAULT_MAX_BODY_BYTES;
+        let mut upload_temp_dir = std::env::temp_dir().join("phrust-uploads");
+        let mut max_upload_files = DEFAULT_MAX_UPLOAD_FILES;
+        let mut max_upload_file_bytes = None;
         let mut max_in_flight = default_max_in_flight();
         let mut request_timeout_ms = DEFAULT_REQUEST_TIMEOUT_MS;
         let mut metrics_endpoint_enabled = true;
@@ -86,6 +93,19 @@ impl ServerConfig {
                 }
                 "--max-body-bytes" => {
                     max_body_bytes = parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                "--upload-temp-dir" => {
+                    upload_temp_dir = PathBuf::from(required_value(&arg, &mut args)?);
+                }
+                "--max-upload-files" => {
+                    max_upload_files =
+                        parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                "--max-upload-file-bytes" => {
+                    max_upload_file_bytes = Some(parse_positive_usize(
+                        &arg,
+                        &required_value(&arg, &mut args)?,
+                    )?);
                 }
                 "--max-in-flight" => {
                     max_in_flight = parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
@@ -114,6 +134,9 @@ impl ServerConfig {
                 index,
                 front_controller,
                 max_body_bytes,
+                upload_temp_dir,
+                max_upload_files,
+                max_upload_file_bytes: max_upload_file_bytes.unwrap_or(max_body_bytes),
                 max_in_flight,
                 request_timeout_ms,
                 metrics_endpoint_enabled,
@@ -130,6 +153,9 @@ impl ServerConfig {
             index,
             front_controller,
             max_body_bytes,
+            upload_temp_dir,
+            max_upload_files,
+            max_upload_file_bytes: max_upload_file_bytes.unwrap_or(max_body_bytes),
             max_in_flight,
             request_timeout_ms,
             metrics_endpoint_enabled,
@@ -148,6 +174,9 @@ Options:\n\
   --index <name>               directory index file name (default: index.php)\n\
   --front-controller <path>    optional front controller, relative to docroot\n\
   --max-body-bytes <n>         maximum request body bytes (default: 1048576)\n\
+  --upload-temp-dir <path>     upload temp directory (default: OS temp/phrust-uploads)\n\
+  --max-upload-files <n>       maximum uploaded files per request (default: 32)\n\
+  --max-upload-file-bytes <n>  maximum bytes per uploaded file (default: max body bytes)\n\
   --max-in-flight <n>          maximum concurrent in-flight requests\n\
   --request-timeout-ms <n>     body read timeout in milliseconds (default: 30000)\n\
   --disable-metrics-endpoint   disable GET /__phrust/metrics\n\
@@ -253,6 +282,12 @@ mod tests {
         assert_eq!(config.docroot, PathBuf::from("public"));
         assert_eq!(config.index, "index.php");
         assert_eq!(config.max_body_bytes, 1_048_576);
+        assert_eq!(
+            config.upload_temp_dir,
+            std::env::temp_dir().join("phrust-uploads")
+        );
+        assert_eq!(config.max_upload_files, 32);
+        assert_eq!(config.max_upload_file_bytes, 1_048_576);
         assert_eq!(config.request_timeout_ms, 30_000);
         assert!(config.metrics_endpoint_enabled);
         assert!(config.script_cache_enabled);
@@ -275,6 +310,12 @@ mod tests {
             "index.php",
             "--max-body-bytes",
             "64",
+            "--upload-temp-dir",
+            "uploads",
+            "--max-upload-files",
+            "4",
+            "--max-upload-file-bytes",
+            "32",
             "--max-in-flight",
             "2",
             "--request-timeout-ms",
@@ -290,6 +331,9 @@ mod tests {
         assert_eq!(config.index, "home.php");
         assert_eq!(config.front_controller, Some(PathBuf::from("index.php")));
         assert_eq!(config.max_body_bytes, 64);
+        assert_eq!(config.upload_temp_dir, PathBuf::from("uploads"));
+        assert_eq!(config.max_upload_files, 4);
+        assert_eq!(config.max_upload_file_bytes, 32);
         assert_eq!(config.max_in_flight, 2);
         assert_eq!(config.request_timeout_ms, 250);
         assert!(!config.metrics_endpoint_enabled);
@@ -334,6 +378,23 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "--max-body-bytes must be greater than zero"
+        );
+
+        let error = ServerConfig::parse_from(["--docroot", "public", "--max-upload-files", "0"])
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "--max-upload-files must be greater than zero"
+        );
+
+        let error =
+            ServerConfig::parse_from(["--docroot", "public", "--max-upload-file-bytes", "0"])
+                .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "--max-upload-file-bytes must be greater than zero"
         );
 
         let error = ServerConfig::parse_from(["--docroot", "public", "--request-timeout-ms", "0"])

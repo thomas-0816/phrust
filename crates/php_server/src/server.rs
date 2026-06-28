@@ -1,5 +1,9 @@
 use crate::{
     config::{ConfigError, ServerConfig},
+    multipart::{
+        MultipartConfig, MultipartError, cleanup_uploaded_files, multipart_boundary,
+        parse_multipart_into_context,
+    },
     response::{self, ResponseBody},
     routing::{ResolvedRoute, RouteConfig, resolve_route},
 };
@@ -40,6 +44,7 @@ use tracing::{debug, warn};
 struct AppState {
     route_config: RouteConfig,
     max_body_bytes: usize,
+    multipart_config: MultipartConfig,
     request_timeout: Duration,
     in_flight: Arc<Semaphore>,
     max_in_flight: usize,
@@ -74,6 +79,10 @@ struct ServerMetrics {
     five_xx: AtomicU64,
     body_too_large: AtomicU64,
     overload: AtomicU64,
+    uploads_total: AtomicU64,
+    upload_parse_errors: AtomicU64,
+    upload_bytes_accepted: AtomicU64,
+    upload_files_rejected: AtomicU64,
 }
 
 impl ServerMetrics {
@@ -96,6 +105,10 @@ phrust_server_5xx_total {}\n\
 phrust_server_in_flight {}\n\
 phrust_server_body_too_large_total {}\n\
 phrust_server_overload_total {}\n\
+phrust_server_uploads_total {}\n\
+phrust_server_upload_parse_errors_total {}\n\
+phrust_server_upload_bytes_accepted_total {}\n\
+phrust_server_upload_files_rejected_total {}\n\
 phrust_server_script_cache_hits_total {}\n\
 phrust_server_script_cache_misses_total {}\n\
 phrust_server_script_cache_stale_invalidations_total {}\n\
@@ -109,6 +122,10 @@ phrust_server_script_cache_entries {}\n",
             in_flight,
             self.body_too_large.load(Ordering::Relaxed),
             self.overload.load(Ordering::Relaxed),
+            self.uploads_total.load(Ordering::Relaxed),
+            self.upload_parse_errors.load(Ordering::Relaxed),
+            self.upload_bytes_accepted.load(Ordering::Relaxed),
+            self.upload_files_rejected.load(Ordering::Relaxed),
             cache.hits,
             cache.misses,
             cache.stale_invalidations,
@@ -161,6 +178,11 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             metrics_endpoint_enabled: config.metrics_endpoint_enabled,
         },
         max_body_bytes: config.max_body_bytes,
+        multipart_config: MultipartConfig {
+            upload_temp_dir: config.upload_temp_dir,
+            max_upload_files: config.max_upload_files,
+            max_upload_file_bytes: config.max_upload_file_bytes,
+        },
         request_timeout: Duration::from_millis(config.request_timeout_ms),
         in_flight: Arc::new(Semaphore::new(config.max_in_flight)),
         max_in_flight: config.max_in_flight,
@@ -349,7 +371,7 @@ async fn execute_php_request(
         }
     };
     let script_name = script_name_for(&state.route_config.docroot, &script_path);
-    let request_context = http_runtime_context(
+    let mut request_context = http_runtime_context(
         &parts,
         &state,
         &script_path,
@@ -358,13 +380,39 @@ async fn execute_php_request(
         &body,
         peer,
     );
+    if let Some(boundary) = match multipart_boundary(request_context.content_type.as_deref()) {
+        Ok(boundary) => boundary,
+        Err(error) => return multipart_error_response(error, &state, peer),
+    } {
+        match parse_multipart_into_context(
+            &mut request_context,
+            &body,
+            &boundary,
+            &state.multipart_config,
+        ) {
+            Ok(stats) => {
+                state
+                    .metrics
+                    .uploads_total
+                    .fetch_add(stats.uploads_total, Ordering::Relaxed);
+                state
+                    .metrics
+                    .upload_bytes_accepted
+                    .fetch_add(stats.upload_bytes_accepted, Ordering::Relaxed);
+            }
+            Err(error) => return multipart_error_response(error, &state, peer),
+        }
+    }
+    let upload_cleanup = request_context.uploaded_files.clone();
     let mut runtime_context = RuntimeContext::controlled_http(request_context)
         .with_cwd(state.route_config.docroot.clone())
         .with_include_path(vec![state.route_config.docroot.clone()]);
     runtime_context = runtime_context.with_stdin(body.clone());
     let is_head = parts.method == Method::HEAD;
     let script_log_path = script_path.clone();
-    match execute_php_on_blocking_thread(Arc::clone(&state), script_path, runtime_context).await {
+    let result = execute_php_on_blocking_thread(Arc::clone(&state), script_path, runtime_context).await;
+    cleanup_uploaded_files(&upload_cleanup);
+    match result {
         Ok((lookup, output)) => {
             debug!(script=%script_log_path.display(), hit=lookup.hit, "compiled script cache lookup");
             php_output_response(output, is_head)
@@ -398,6 +446,35 @@ async fn execute_php_on_blocking_thread(
     })
     .await
     .map_err(|error| PhpExecutionError::Engine(format!("php execution task failed: {error}")))?
+}
+
+fn multipart_error_response(
+    error: MultipartError,
+    state: &AppState,
+    peer: SocketAddr,
+) -> Response<ResponseBody> {
+    match error {
+        MultipartError::Malformed => {
+            state
+                .metrics
+                .upload_parse_errors
+                .fetch_add(1, Ordering::Relaxed);
+            debug!(%peer, "multipart request rejected as malformed");
+            response::text(StatusCode::BAD_REQUEST, "bad multipart request\n")
+        }
+        MultipartError::TooManyFiles | MultipartError::FileTooLarge => {
+            state
+                .metrics
+                .upload_files_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            debug!(%peer, ?error, "multipart upload rejected by configured limits");
+            response::text(StatusCode::PAYLOAD_TOO_LARGE, "upload rejected\n")
+        }
+        MultipartError::Storage => {
+            warn!(%peer, "multipart upload temp storage failed");
+            response::text(StatusCode::INTERNAL_SERVER_ERROR, "upload storage failed\n")
+        }
+    }
 }
 
 fn php_output_response(output: PhpExecutionOutput, is_head: bool) -> Response<ResponseBody> {
@@ -625,6 +702,11 @@ mod tests {
                 metrics_endpoint_enabled: true,
             },
             max_body_bytes: 1024,
+            multipart_config: MultipartConfig {
+                upload_temp_dir: fixture.root.join("uploads"),
+                max_upload_files: 32,
+                max_upload_file_bytes: 1024,
+            },
             request_timeout: Duration::from_secs(30),
             in_flight: Arc::new(Semaphore::new(1)),
             max_in_flight: 1,

@@ -426,6 +426,81 @@ fn server_rejects_request_body_over_limit() {
 }
 
 #[test]
+fn server_exposes_multipart_post_and_files_superglobals() {
+    let docroot = fixture_docroot("fixtures/server/apps/compat/public");
+    let upload_temp_dir = temp_docroot();
+    let upload_temp_arg = upload_temp_dir.to_string_lossy().to_string();
+    let mut child = start_server(&docroot, &["--upload-temp-dir", &upload_temp_arg]);
+
+    let address = read_listening_address(&mut child);
+    let body = "--BOUNDARY\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nHello\r\n--BOUNDARY\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"../me.png\"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n--BOUNDARY--";
+    let response = http_request_with_body(
+        &address,
+        "POST",
+        "/upload.php",
+        "multipart/form-data; boundary=BOUNDARY",
+        body,
+    );
+
+    stop_child(child);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_eq!(
+        response_body(&response),
+        "title=Hello\nname=me.png\ntype=image/png\nsize=7\nerror=0\n"
+    );
+    assert_eq!(fs::read_dir(&upload_temp_dir).unwrap().count(), 0);
+    fs::remove_dir_all(upload_temp_dir).expect("remove upload temp dir");
+}
+
+#[test]
+fn server_rejects_malformed_multipart() {
+    let docroot = fixture_docroot("fixtures/server/apps/compat/public");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request_with_body(
+        &address,
+        "POST",
+        "/upload.php",
+        "multipart/form-data",
+        "not multipart",
+    );
+
+    stop_child(child);
+
+    assert!(
+        response.starts_with("HTTP/1.1 400 Bad Request"),
+        "{response}"
+    );
+    assert_eq!(response_body(&response), "bad multipart request\n");
+}
+
+#[test]
+fn server_rejects_upload_file_over_limit() {
+    let docroot = fixture_docroot("fixtures/server/apps/compat/public");
+    let mut child = start_server(&docroot, &["--max-upload-file-bytes", "4"]);
+
+    let address = read_listening_address(&mut child);
+    let body = "--BOUNDARY\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"me.png\"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n--BOUNDARY--";
+    let response = http_request_with_body(
+        &address,
+        "POST",
+        "/upload.php",
+        "multipart/form-data; boundary=BOUNDARY",
+        body,
+    );
+
+    stop_child(child);
+
+    assert!(
+        response.starts_with("HTTP/1.1 413 Payload Too Large"),
+        "{response}"
+    );
+    assert_eq!(response_body(&response), "upload rejected\n");
+}
+
+#[test]
 fn server_returns_503_when_max_in_flight_is_exhausted() {
     let docroot = fixture_docroot("fixtures/server/php");
     let mut child = start_server(

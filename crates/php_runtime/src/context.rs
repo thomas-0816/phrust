@@ -83,7 +83,19 @@ pub struct RuntimeHttpRequestContext {
     pub parsed_get: Vec<(String, String)>,
     pub parsed_post: Vec<(String, String)>,
     pub parsed_cookie: Vec<(String, String)>,
+    pub uploaded_files: Vec<RuntimeUploadedFile>,
     pub raw_body: Vec<u8>,
+}
+
+/// One uploaded file accepted by the integrated HTTP server.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeUploadedFile {
+    pub field_name: String,
+    pub client_filename: String,
+    pub content_type: String,
+    pub temp_path: String,
+    pub error: i64,
+    pub size: u64,
 }
 
 /// One HTTP response header set by PHP code.
@@ -205,6 +217,7 @@ impl RuntimeHttpRequestContext {
             parsed_get: parse_query_string(&query_string),
             parsed_post: Vec::new(),
             parsed_cookie: Vec::new(),
+            uploaded_files: Vec::new(),
             raw_body: Vec::new(),
         }
     }
@@ -457,7 +470,8 @@ impl RuntimeContext {
             "_POST" => Some(Value::Array(self.post_array())),
             "_COOKIE" => Some(Value::Array(self.cookie_array())),
             "_REQUEST" => Some(Value::Array(self.request_array())),
-            "_FILES" | "_SESSION" | "GLOBALS" => Some(Value::Array(PhpArray::new())),
+            "_FILES" => Some(Value::Array(self.files_array())),
+            "_SESSION" | "GLOBALS" => Some(Value::Array(PhpArray::new())),
             _ => None,
         }
     }
@@ -527,6 +541,15 @@ impl RuntimeContext {
                 builder.insert_pairs(&mut array, &request.parsed_post);
                 builder.insert_flat_pairs(&mut array, &request.parsed_cookie);
                 array
+            }
+            RuntimeRequestMode::Cli => PhpArray::new(),
+        }
+    }
+
+    fn files_array(&self) -> PhpArray {
+        match &self.request_mode {
+            RuntimeRequestMode::Http(request) => {
+                uploaded_files_array(&request.uploaded_files, &self.ini)
             }
             RuntimeRequestMode::Cli => PhpArray::new(),
         }
@@ -732,6 +755,112 @@ fn insert_input_at(array: &mut PhpArray, segments: &[InputKeySegment], value: Va
     }
 }
 
+fn uploaded_files_array(files: &[RuntimeUploadedFile], ini: &RuntimeIniOptions) -> PhpArray {
+    let mut array = PhpArray::new();
+    let mut builder = InputArrayBuilder::new(ini);
+    for file in files {
+        if !builder.consume_var() {
+            break;
+        }
+        let Some(segments) =
+            parse_input_key_segments(&file.field_name, ini.max_input_nesting_level)
+        else {
+            continue;
+        };
+        insert_uploaded_file(&mut array, &segments, file);
+    }
+    array
+}
+
+fn insert_uploaded_file(
+    array: &mut PhpArray,
+    segments: &[InputKeySegment],
+    file: &RuntimeUploadedFile,
+) {
+    let Some((root, tail)) = segments.split_first() else {
+        return;
+    };
+    let InputKeySegment::Key(root_key) = root else {
+        return;
+    };
+    if tail.is_empty() {
+        array.insert(root_key.clone(), Value::Array(uploaded_file_entry(file)));
+        return;
+    }
+
+    if !matches!(array.get(root_key), Some(Value::Array(_))) {
+        array.insert(root_key.clone(), Value::Array(uploaded_file_group()));
+    }
+    let Some(Value::Array(group)) = array.get_mut(root_key) else {
+        unreachable!("uploaded file root was just initialized as an array")
+    };
+    insert_uploaded_file_attribute(
+        group,
+        "name",
+        tail,
+        Value::string(file.client_filename.as_bytes().to_vec()),
+    );
+    insert_uploaded_file_attribute(
+        group,
+        "type",
+        tail,
+        Value::string(file.content_type.as_bytes().to_vec()),
+    );
+    insert_uploaded_file_attribute(
+        group,
+        "tmp_name",
+        tail,
+        Value::string(file.temp_path.as_bytes().to_vec()),
+    );
+    insert_uploaded_file_attribute(group, "error", tail, Value::Int(file.error));
+    insert_uploaded_file_attribute(group, "size", tail, Value::Int(file.size as i64));
+}
+
+fn uploaded_file_group() -> PhpArray {
+    let mut array = PhpArray::new();
+    array.insert(string_key("name"), Value::Array(PhpArray::new()));
+    array.insert(string_key("type"), Value::Array(PhpArray::new()));
+    array.insert(string_key("tmp_name"), Value::Array(PhpArray::new()));
+    array.insert(string_key("error"), Value::Array(PhpArray::new()));
+    array.insert(string_key("size"), Value::Array(PhpArray::new()));
+    array
+}
+
+fn uploaded_file_entry(file: &RuntimeUploadedFile) -> PhpArray {
+    let mut array = PhpArray::new();
+    array.insert(
+        string_key("name"),
+        Value::string(file.client_filename.as_bytes().to_vec()),
+    );
+    array.insert(
+        string_key("type"),
+        Value::string(file.content_type.as_bytes().to_vec()),
+    );
+    array.insert(
+        string_key("tmp_name"),
+        Value::string(file.temp_path.as_bytes().to_vec()),
+    );
+    array.insert(string_key("error"), Value::Int(file.error));
+    array.insert(string_key("size"), Value::Int(file.size as i64));
+    array
+}
+
+fn insert_uploaded_file_attribute(
+    group: &mut PhpArray,
+    attribute: &str,
+    tail: &[InputKeySegment],
+    value: Value,
+) {
+    let key = string_key(attribute);
+    if !matches!(group.get(&key), Some(Value::Array(_))) {
+        group.insert(key.clone(), Value::Array(PhpArray::new()));
+    }
+    let Some(Value::Array(values)) = group.get_mut(&key) else {
+        unreachable!("uploaded file attribute was just initialized as an array")
+    };
+    insert_input_at(values, tail, value);
+}
+
 #[must_use]
 pub fn parse_query_string(query: &str) -> Vec<(String, String)> {
     parse_form_urlencoded(query.as_bytes())
@@ -810,8 +939,8 @@ fn hex_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::{
         RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions,
-        StrictTypesInfo, input_pairs_array, parse_cookie_header, parse_form_urlencoded_body,
-        parse_query_string,
+        RuntimeUploadedFile, StrictTypesInfo, input_pairs_array, parse_cookie_header,
+        parse_form_urlencoded_body, parse_query_string,
     };
     use crate::{ArrayKey, PhpString, Value};
 
@@ -1062,6 +1191,53 @@ mod tests {
         assert!(global_array(&context, "_POST").is_empty());
         assert!(global_array(&context, "_COOKIE").is_empty());
         assert!(global_array(&context, "_REQUEST").is_empty());
+        assert!(global_array(&context, "_FILES").is_empty());
+    }
+
+    #[test]
+    fn http_uploaded_file_populates_files_superglobal() {
+        let mut request = http_request();
+        request
+            .uploaded_files
+            .push(uploaded_file("avatar", "me.png", 7));
+        let context = RuntimeContext::controlled_http(request);
+
+        let files = global_array(&context, "_FILES");
+        assert_path_string(&files, &[str_key("avatar"), str_key("name")], "me.png");
+        assert_path_string(&files, &[str_key("avatar"), str_key("type")], "image/png");
+        assert_path_string(
+            &files,
+            &[str_key("avatar"), str_key("tmp_name")],
+            "/tmp/phrust-upload",
+        );
+        assert_path_int(&files, &[str_key("avatar"), str_key("error")], 0);
+        assert_path_int(&files, &[str_key("avatar"), str_key("size")], 7);
+    }
+
+    #[test]
+    fn http_uploaded_file_array_fields_are_transposed_like_php() {
+        let mut request = http_request();
+        request
+            .uploaded_files
+            .push(uploaded_file("files[]", "one.txt", 3));
+        request
+            .uploaded_files
+            .push(uploaded_file("files[]", "two.txt", 4));
+        let context = RuntimeContext::controlled_http(request);
+
+        let files = global_array(&context, "_FILES");
+        assert_path_string(
+            &files,
+            &[str_key("files"), str_key("name"), int_key(0)],
+            "one.txt",
+        );
+        assert_path_string(
+            &files,
+            &[str_key("files"), str_key("name"), int_key(1)],
+            "two.txt",
+        );
+        assert_path_int(&files, &[str_key("files"), str_key("size"), int_key(0)], 3);
+        assert_path_int(&files, &[str_key("files"), str_key("size"), int_key(1)], 4);
     }
 
     #[test]
@@ -1155,6 +1331,17 @@ mod tests {
         request
     }
 
+    fn uploaded_file(field_name: &str, client_filename: &str, size: u64) -> RuntimeUploadedFile {
+        RuntimeUploadedFile {
+            field_name: field_name.to_string(),
+            client_filename: client_filename.to_string(),
+            content_type: "image/png".to_string(),
+            temp_path: "/tmp/phrust-upload".to_string(),
+            error: 0,
+            size,
+        }
+    }
+
     fn global_array(context: &RuntimeContext, name: &str) -> crate::PhpArray {
         let Some(Value::Array(array)) = context.global_value(name) else {
             panic!("expected {name} array");
@@ -1174,6 +1361,10 @@ mod tests {
             value_at_path(array, path),
             Some(&Value::string(expected.as_bytes().to_vec()))
         );
+    }
+
+    fn assert_path_int(array: &crate::PhpArray, path: &[ArrayKey], expected: i64) {
+        assert_eq!(value_at_path(array, path), Some(&Value::Int(expected)));
     }
 
     fn value_at_path<'a>(array: &'a crate::PhpArray, path: &[ArrayKey]) -> Option<&'a Value> {

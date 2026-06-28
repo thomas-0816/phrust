@@ -7,6 +7,7 @@
 //! `php`, or `php-vm` subprocesses.
 
 pub mod config;
+mod multipart;
 pub mod response;
 pub mod routing;
 pub mod server;

@@ -61,8 +61,9 @@ can run named sections:
 - `all`
 
 Prompt 00 makes `static` strict. Prompt 01 makes `input` strict for nested
-URL-encoded query and form data. Later prompts make their corresponding
-sections strict as support lands.
+URL-encoded query and form data. Prompt 02 makes `upload` strict for bounded
+multipart fields and scalar `$_FILES` metadata. Later prompts make their
+corresponding sections strict as support lands.
 
 ## Expected Acceptance Commands
 

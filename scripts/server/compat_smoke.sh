@@ -99,6 +99,26 @@ run_input() {
   printf '%s\n' '[ok] server compat input passed'
 }
 
+run_upload() {
+  local upload_file
+  local actual
+  upload_file="$(mktemp "${TMPDIR:-/tmp}/phrust-server-upload.XXXXXX")"
+  printf '%s' 'PNGDATA' >"$upload_file"
+  actual="$(
+    curl -g -fsS \
+      -F 'title=Hello' \
+      -F "avatar=@$upload_file;filename=../me.png;type=image/png" \
+      "http://$address/upload.php"
+  )"
+  rm -f "$upload_file"
+  local expected=$'title=Hello\nname=me.png\ntype=image/png\nsize=7\nerror=0'
+  if [[ "$actual" != "$expected" ]]; then
+    printf '[fail] upload expected %q got %q\n' "$expected" "$actual"
+    exit 1
+  fi
+  printf '%s\n' '[ok] server compat upload passed'
+}
+
 skip_section() {
   local name="$1"
   printf '[skip] server compat %s awaits its Wave 2 implementation prompt.\n' "$name"
@@ -112,7 +132,7 @@ case "$section" in
     run_input
     ;;
   upload)
-    skip_section upload
+    run_upload
     ;;
   cookie)
     skip_section cookie
@@ -126,7 +146,7 @@ case "$section" in
   all)
     run_static
     run_input
-    skip_section upload
+    run_upload
     skip_section cookie
     skip_section session
     skip_section output-buffer
