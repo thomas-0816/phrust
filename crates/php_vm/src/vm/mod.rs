@@ -4,6 +4,11 @@
 #![allow(clippy::too_many_arguments)]
 
 mod arguments;
+mod options;
+mod result;
+
+pub use options::{ExecutionFormat, JitBlacklistMode, JitMode, SuperinstructionMode, VmOptions};
+pub use result::{VmControlFlow, VmResult};
 
 use crate::bytecode::{
     DenseBytecodeUnit, DenseCallArg, DenseFunction, DenseInstruction, DenseOpcode, DenseOperand,
@@ -14,29 +19,27 @@ use crate::compiled_unit::CompiledUnit;
 use crate::counters::JitCompileDescriptor;
 use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
 use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument};
-use crate::include::{IncludeLoader, include_path_file_fingerprint};
+use crate::include::include_path_file_fingerprint;
 use crate::inline_cache::{
     AutoloadClassLookupCacheKey, AutoloadClassLookupCacheTarget, AutoloadClassLookupEpochs,
     AutoloadClassLookupKind, ClassConstantStaticPropertyCacheKind,
     ClassConstantStaticPropertyCacheTarget, FunctionCallBuiltinKind, FunctionCallBuiltinMetadata,
     FunctionCallCacheTarget, FunctionCallShape, IncludePathCacheKey, IncludePathCacheTarget,
-    InlineCacheKind, InlineCacheMode, InlineCacheObservation, InlineCacheTable, InvalidationEpoch,
+    InlineCacheKind, InlineCacheObservation, InlineCacheTable, InvalidationEpoch,
     MethodCallCacheTarget, PropertyFetchCacheTarget, PropertyFetchLayoutMetadata,
     PropertyFetchResolvedTarget,
 };
 use crate::literal_pool::LiteralPool;
-use crate::quickening::{
-    QuickeningMode, QuickeningObservation, QuickeningSpecialization, QuickeningTable,
-};
-use crate::tiering::{ExecutionTier, TieringOptions, TieringState, TieringStats};
+use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
+use crate::tiering::{ExecutionTier, TieringState};
 use php_ir::constants::IrConstant;
 use php_ir::function::{IrFunction, IrParam, IrReturnType};
-use php_ir::ids::{BlockId, ConstId, FunctionId, InstrId, LocalId, RegId, UnitId};
+use php_ir::ids::{BlockId, ClassId, ConstId, FunctionId, InstrId, LocalId, RegId, UnitId};
 use php_ir::instruction::{
     BinaryOp, CallableKind, CastKind, ClosureCaptureArg, CompareOp, IncludeKind, Instruction,
     InstructionKind, IrCallArg, IrCallArgValueKind, IrDiagnosticSeverity, TerminatorKind, UnaryOp,
 };
-use php_ir::module::{ClassEntry, ClassPropertyEntry, IrUnit};
+use php_ir::module::{ClassEntry, ClassPropertyEntry, IrUnit, normalize_class_name};
 use php_ir::operand::Operand;
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
@@ -422,192 +425,6 @@ enum YieldFromStep {
     Complete(Value),
 }
 
-/// VM execution options.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VmOptions {
-    /// Verify IR before dispatching it.
-    pub verify_ir: bool,
-    /// Maximum instruction dispatches before reporting a runtime error.
-    pub max_steps: usize,
-    /// Optional local include loader. When absent, include/require are disabled
-    /// with deterministic runtime diagnostics.
-    pub include_loader: Option<IncludeLoader>,
-    /// Deterministic runtime context used to seed CLI globals and superglobals.
-    pub runtime_context: RuntimeContext,
-    /// Capture deterministic instruction trace events.
-    pub trace: bool,
-    /// Capture deterministic runtime object, reference, COW, and suspension events.
-    pub trace_runtime: bool,
-    /// Collect performance VM/runtime counters in the execution result.
-    pub collect_counters: bool,
-    /// Optional dense-bytecode execution mode. The default keeps the rich-IR
-    /// interpreter as the only execution path.
-    pub execution_format: ExecutionFormat,
-    /// Optional dense-bytecode superinstruction selection pass.
-    pub superinstructions: SuperinstructionMode,
-    /// Maintain request-local quickening metadata without changing semantics.
-    pub quickening: QuickeningMode,
-    /// Allocate request-local inline-cache slots without changing semantics.
-    pub inline_caches: InlineCacheMode,
-    /// Enable the experimental performance JIT tier for eligible hot leaf functions.
-    pub jit: JitMode,
-    /// Hot-call threshold requested by the CLI for JIT compilation.
-    pub jit_threshold: u64,
-    /// Process-local JIT blacklist policy.
-    pub jit_blacklist: JitBlacklistMode,
-    /// Optional diagnostic path for dumping Cranelift IR for compiled JIT functions.
-    pub jit_dump_clif: Option<PathBuf>,
-    /// Request-local adaptive tiering policy and stats configuration.
-    pub tiering: TieringOptions,
-    /// Use conservative fast paths for simple runtime type checks.
-    pub typecheck_fast_paths: bool,
-    /// Cache request-local internal builtin dispatch metadata.
-    pub internal_function_dispatch_cache: bool,
-}
-
-impl Default for VmOptions {
-    fn default() -> Self {
-        Self {
-            verify_ir: true,
-            max_steps: 100_000,
-            include_loader: None,
-            runtime_context: RuntimeContext::default(),
-            trace: false,
-            trace_runtime: false,
-            collect_counters: false,
-            execution_format: ExecutionFormat::Ir,
-            superinstructions: SuperinstructionMode::Off,
-            quickening: QuickeningMode::Off,
-            inline_caches: InlineCacheMode::Off,
-            jit: JitMode::Off,
-            jit_threshold: TieringOptions::default().function_entry_threshold,
-            jit_blacklist: JitBlacklistMode::On,
-            jit_dump_clif: None,
-            tiering: TieringOptions::default(),
-            typecheck_fast_paths: true,
-            internal_function_dispatch_cache: true,
-        }
-    }
-}
-
-/// Optional VM execution-format switch.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ExecutionFormat {
-    /// Execute the current rich-IR interpreter only.
-    #[default]
-    Ir,
-    /// Try dense bytecode first and safely fall back to rich IR if unsupported.
-    Auto,
-    /// Require dense bytecode; unsupported lowering or verification is an
-    /// unsupported runtime result.
-    Bytecode,
-}
-
-impl ExecutionFormat {
-    /// Stable CLI/report spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ir => "ir",
-            Self::Auto => "auto",
-            Self::Bytecode => "bytecode",
-        }
-    }
-
-    #[must_use]
-    const fn attempts_bytecode(self) -> bool {
-        matches!(self, Self::Auto | Self::Bytecode)
-    }
-
-    #[must_use]
-    const fn is_strict_bytecode(self) -> bool {
-        matches!(self, Self::Bytecode)
-    }
-}
-
-/// Optional dense-bytecode superinstruction selector.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum SuperinstructionMode {
-    /// Keep lowered dense bytecode unchanged.
-    #[default]
-    Off,
-    /// Fuse supported adjacent dense bytecode patterns.
-    On,
-}
-
-impl SuperinstructionMode {
-    /// Stable CLI/report spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-        }
-    }
-
-    #[must_use]
-    const fn is_enabled(self) -> bool {
-        matches!(self, Self::On)
-    }
-}
-
-/// Experimental JIT switch.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum JitMode {
-    /// Keep all execution on the interpreter.
-    #[default]
-    Off,
-    /// Accept JIT plumbing flags but keep execution on the interpreter.
-    Noop,
-    /// Select the Cranelift backend for reports without enabling PHP-code JIT execution yet.
-    Cranelift,
-}
-
-impl JitMode {
-    /// Stable report spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Noop => "noop",
-            Self::Cranelift => "cranelift",
-        }
-    }
-
-    /// Returns true when this mode needs the Cranelift feature to have effect.
-    #[must_use]
-    pub const fn requires_cranelift(self) -> bool {
-        matches!(self, Self::Cranelift)
-    }
-}
-
-/// Process-local JIT blacklist switch.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum JitBlacklistMode {
-    /// Keep attempting eligible regions even after repeated failures.
-    Off,
-    /// Disable unstable regions after deterministic failure thresholds.
-    #[default]
-    On,
-}
-
-impl JitBlacklistMode {
-    /// Stable CLI/report spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-        }
-    }
-
-    /// Returns true when unstable regions should be suppressed.
-    #[must_use]
-    pub const fn enabled(self) -> bool {
-        matches!(self, Self::On)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct JitFunctionKey {
     unit: u64,
@@ -903,41 +720,6 @@ fn value_as_jit_int(value: &Value) -> Result<i64, ()> {
     }
 }
 
-/// Execution result.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VmResult {
-    /// Final execution status.
-    pub status: ExecutionStatus,
-    /// Captured stdout bytes.
-    pub output: OutputBuffer,
-    /// Structured runtime diagnostics emitted during execution.
-    pub diagnostics: Vec<RuntimeDiagnostic>,
-    /// Return value when execution returned successfully.
-    pub return_value: Option<Value>,
-    yielded: Option<GeneratorYield>,
-    fiber_suspension: Option<FiberSuspension>,
-    return_ref: Option<ReferenceCell>,
-    /// Deterministic trace events captured when `VmOptions::trace` is enabled.
-    pub trace: Vec<String>,
-    /// Optional performance VM/runtime counters.
-    pub counters: Option<VmCounters>,
-    /// Optional performance tiering stats.
-    pub tiering_stats: Option<TieringStats>,
-}
-
-/// VM control-flow signal, kept separate from runtime diagnostics.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum VmControlFlow {
-    /// Function return.
-    Return(Option<Value>),
-    /// Future exception throw signal.
-    Throw(Value),
-    /// Loop break signal.
-    Break,
-    /// Loop continue signal.
-    Continue,
-}
-
 enum PropertyFetchCacheRead {
     Value(Value),
     Fallback,
@@ -1023,6 +805,7 @@ struct ExecutionState {
     resources: ResourceTable,
     stdin: Option<php_runtime::ResourceRef>,
     strtok_state: php_runtime::StrtokState,
+    json_last_error: i64,
     error_handlers: Vec<ErrorHandlerEntry>,
     exception_handlers: Vec<CallableValue>,
     diagnostics: Vec<RuntimeDiagnostic>,
@@ -3056,7 +2839,7 @@ impl Vm {
             Ok(values) => values,
             Err(result) => return result,
         };
-        let values = match validate_internal_builtin_args(name, values, compiled, output) {
+        let values = match validate_internal_builtin_args(name, values, compiled, output, state) {
             Ok(values) => values,
             Err(result) => return result,
         };
@@ -7017,7 +6800,8 @@ impl Vm {
                                     ),
                                 );
                             }
-                            let object = ObjectRef::new(&std_class_entry());
+                            let object =
+                                ObjectRef::new_with_display_name(&std_class_entry(), "stdClass");
                             if let Err(message) = stack
                                 .current_mut()
                                 .expect("frame was pushed")
@@ -7273,7 +7057,8 @@ impl Vm {
                                     ),
                                 );
                             }
-                            let object = ObjectRef::new(&std_class_entry());
+                            let object =
+                                ObjectRef::new_with_display_name(&std_class_entry(), "stdClass");
                             if let Err(message) = stack
                                 .current_mut()
                                 .expect("frame was pushed")
@@ -7417,7 +7202,10 @@ impl Vm {
                                             ),
                                         );
                                     }
-                                    let object = ObjectRef::new(&std_class_entry());
+                                    let object = ObjectRef::new_with_display_name(
+                                        &std_class_entry(),
+                                        "stdClass",
+                                    );
                                     if let Err(message) = stack
                                         .current_mut()
                                         .expect("frame was pushed")
@@ -7740,15 +7528,25 @@ impl Vm {
                                 || ir_property.flags.set_is_protected
                                 || ir_property.flags.is_readonly
                             {
-                                return self.runtime_error(
-                                    output,
+                                match self.raise_runtime_error(
                                     compiled,
+                                    output,
                                     stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
                                     format!(
                                         "E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER: property {}::${property} uses modifiers outside the reflection-clone clone-with MVP",
-                                        object.class_name()
+                                        class.display_name
                                     ),
-                                );
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
                             }
                             let storage_name = property_storage_name(&class, ir_property);
                             let Some(entry) = runtime_class
@@ -7768,13 +7566,28 @@ impl Vm {
                             };
                             if let Err(message) = check_property_type(
                                 compiled,
-                                object.class_name().as_str(),
+                                class.display_name.as_str(),
                                 &property,
                                 &entry.type_,
                                 value,
                                 self.typecheck_fast_path_context(),
                             ) {
-                                return self.runtime_error(output, compiled, stack, message);
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
                             }
                             if let Some(function_id) = entry.hooks.set_function_id {
                                 match self.call_property_hook(
@@ -8210,15 +8023,26 @@ impl Vm {
                                     Vec::new(),
                                 ),
                             );
-                            return self.runtime_error(
-                                output,
-                                compiled,
-                                stack,
-                                format!(
-                                    "E_PHP_VM_UNINITIALIZED_PROPERTY: typed property {}::${property} must not be accessed before initialization",
-                                    object.class_name()
-                                ),
+                            let message = format!(
+                                "E_PHP_VM_UNINITIALIZED_PROPERTY: typed property {}::${property} must not be accessed before initialization",
+                                resolved.class.display_name
                             );
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         self.record_counter_property_fetch_profile(
                             property_fetch_profile_observation(
@@ -8268,12 +8092,28 @@ impl Vm {
                         class_name,
                         property,
                     } => {
-                        let class = match resolve_static_class_name(compiled, stack, class_name) {
-                            Ok(class) => class,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
+                        let class =
+                            match resolve_static_class_name(compiled, state, stack, class_name) {
+                                Ok(class) => class,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
                         let scope = current_scope_class(compiled, stack);
                         let normalized_scope = scope.as_deref().map(normalize_class_name);
                         let resolved_class = normalize_class_name(&class.name);
@@ -8314,7 +8154,7 @@ impl Vm {
                         }
                         let resolved = match lookup_property_in_hierarchy(
                             compiled,
-                            class,
+                            &class,
                             property,
                             scope.as_deref(),
                         ) {
@@ -8384,15 +8224,26 @@ impl Vm {
                             .cloned()
                             .unwrap_or(Value::Uninitialized);
                         if matches!(value, Value::Uninitialized) {
-                            return self.runtime_error(
-                                output,
-                                compiled,
-                                stack,
-                                format!(
-                                    "E_PHP_VM_UNINITIALIZED_STATIC_PROPERTY: typed static property {}::${} must not be accessed before initialization",
-                                    resolved.class.name, resolved.property.name
-                                ),
+                            let message = format!(
+                                "E_PHP_VM_UNINITIALIZED_STATIC_PROPERTY: typed static property {}::${} must not be accessed before initialization",
+                                resolved.class.display_name, resolved.property.name
                             );
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         let cache_scope = if resolved.property.flags.is_private
                             || resolved.property.flags.is_protected
@@ -8445,12 +8296,28 @@ impl Vm {
                         class_name,
                         constant,
                     } => {
-                        let class = match resolve_static_class_name(compiled, stack, class_name) {
-                            Ok(class) => class,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
+                        let class =
+                            match resolve_static_class_name(compiled, state, stack, class_name) {
+                                Ok(class) => class,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
                         let value = if constant.eq_ignore_ascii_case("class") {
                             Value::String(PhpString::from_test_str(&class.display_name))
                         } else {
@@ -8509,16 +8376,19 @@ impl Vm {
                                     .iter()
                                     .find(|case| case.name.eq_ignore_ascii_case(constant))
                             {
-                                let object =
-                                    match enum_case_object(compiled, state, class, case, &|value| {
-                                        self.constant_value(compiled.unit(), value)
-                                    }) {
-                                        Ok(object) => object,
-                                        Err(message) => {
-                                            return self
-                                                .runtime_error(output, compiled, stack, message);
-                                        }
-                                    };
+                                let object = match enum_case_object(
+                                    compiled,
+                                    state,
+                                    &class,
+                                    case,
+                                    &|value| self.constant_value(compiled.unit(), value),
+                                ) {
+                                    Ok(object) => object,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
                                 let target =
                                     match dynamic_class_owner_index_in_state(state, &class.name) {
                                         Some(unit_index) => {
@@ -8565,7 +8435,7 @@ impl Vm {
                             }
                             let resolved = match lookup_constant_in_hierarchy(
                                 compiled,
-                                class,
+                                &class,
                                 constant,
                                 scope.as_deref(),
                             ) {
@@ -9184,7 +9054,22 @@ impl Vm {
                                     continue;
                                 }
                                 Ok(None) => {
-                                    return self.runtime_error(output, compiled, stack, message);
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                                 Err(result) => return result,
                             }
@@ -9198,13 +9083,28 @@ impl Vm {
                         let property_type = ir_runtime_type(entry.type_.as_ref());
                         if let Err(message) = check_property_type(
                             compiled,
-                            object.class_name().as_str(),
+                            resolved.class.display_name.as_str(),
                             property,
                             &property_type,
                             &value,
                             self.typecheck_fast_path_context(),
                         ) {
-                            return self.runtime_error(output, compiled, stack, message);
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         if let Err(message) =
                             validate_property_write(resolved.class, entry, &object, stack, compiled)
@@ -9270,16 +9170,32 @@ impl Vm {
                         property,
                         value,
                     } => {
-                        let class = match resolve_static_class_name(compiled, stack, class_name) {
-                            Ok(class) => class,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
+                        let class =
+                            match resolve_static_class_name(compiled, state, stack, class_name) {
+                                Ok(class) => class,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
                         let scope = current_scope_class(compiled, stack);
                         let resolved = match lookup_property_in_hierarchy(
                             compiled,
-                            class,
+                            &class,
                             property,
                             scope.as_deref(),
                         ) {
@@ -9338,13 +9254,28 @@ impl Vm {
                         let property_type = ir_runtime_type(resolved.property.type_.as_ref());
                         if let Err(message) = check_property_type(
                             compiled,
-                            resolved.class.name.as_str(),
+                            resolved.class.display_name.as_str(),
                             resolved.property.name.as_str(),
                             &property_type,
                             &value,
                             self.typecheck_fast_path_context(),
                         ) {
-                            return self.runtime_error(output, compiled, stack, message);
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         let key = static_property_key(resolved.class, resolved.property);
                         let current = if let Some(value) = state.static_properties.get(&key) {
@@ -10858,6 +10789,7 @@ impl Vm {
                                     target,
                                     object.clone(),
                                     values,
+                                    Some(instruction.span),
                                     output,
                                     stack,
                                     state,
@@ -10954,6 +10886,7 @@ impl Vm {
                                     "__call",
                                     method,
                                     values,
+                                    Some(instruction.span),
                                     output,
                                     stack,
                                     state,
@@ -11043,6 +10976,7 @@ impl Vm {
                                     "__call",
                                     method,
                                     values,
+                                    Some(instruction.span),
                                     output,
                                     stack,
                                     state,
@@ -11152,6 +11086,7 @@ impl Vm {
                             &class_owner,
                             method_entry.function,
                             FunctionCall::new(values, Vec::new())
+                                .with_call_span(instruction.span)
                                 .with_this(object.clone())
                                 .with_class_context(
                                     declaring_class.name.clone(),
@@ -11312,12 +11247,13 @@ impl Vm {
                             }
                             continue;
                         }
-                        let class = match resolve_static_class_name(compiled, stack, class_name) {
-                            Ok(class) => class,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
+                        let class =
+                            match resolve_static_class_name(compiled, state, stack, class_name) {
+                                Ok(class) => class,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                         let scope =
                             method_lookup_scope_for_static_call(compiled, stack, class_name);
                         let values = match read_call_args(unit, stack, args) {
@@ -11335,7 +11271,7 @@ impl Vm {
                             let value = match enum_static_method(
                                 compiled,
                                 state,
-                                class,
+                                &class,
                                 method,
                                 values,
                                 &|value| self.constant_value(compiled.unit(), value),
@@ -11357,7 +11293,7 @@ impl Vm {
                         }
                         let resolved = match lookup_method_in_hierarchy(
                             compiled,
-                            class,
+                            &class,
                             method,
                             scope.as_deref(),
                         ) {
@@ -11370,6 +11306,7 @@ impl Vm {
                                         "__call",
                                         method,
                                         values.clone(),
+                                        Some(instruction.span),
                                         output,
                                         stack,
                                         state,
@@ -11377,15 +11314,16 @@ impl Vm {
                                         Ok(Some(result)) => result,
                                         Ok(None) => {
                                             let called_class = called_class_for_static_call(
-                                                compiled, stack, class_name, class,
+                                                compiled, stack, class_name, &class,
                                             );
                                             match self.call_magic_static_method(
                                                 compiled,
-                                                class,
+                                                &class,
                                                 "__callStatic",
                                                 method,
                                                 values,
                                                 called_class,
+                                                Some(instruction.span),
                                                 output,
                                                 stack,
                                                 state,
@@ -11424,15 +11362,16 @@ impl Vm {
                                     continue;
                                 }
                                 let called_class = called_class_for_static_call(
-                                    compiled, stack, class_name, class,
+                                    compiled, stack, class_name, &class,
                                 );
                                 let result = match self.call_magic_static_method(
                                     compiled,
-                                    class,
+                                    &class,
                                     "__callStatic",
                                     method,
                                     values,
                                     called_class,
+                                    Some(instruction.span),
                                     output,
                                     stack,
                                     state,
@@ -11507,14 +11446,15 @@ impl Vm {
                             )
                         {
                             let called_class =
-                                called_class_for_static_call(compiled, stack, class_name, class);
+                                called_class_for_static_call(compiled, stack, class_name, &class);
                             let result = match self.call_magic_static_method(
                                 compiled,
-                                class,
+                                &class,
                                 "__callStatic",
                                 method,
                                 values,
                                 called_class,
+                                Some(instruction.span),
                                 output,
                                 stack,
                                 state,
@@ -11576,11 +11516,12 @@ impl Vm {
                             }
                         }
                         let called_class =
-                            called_class_for_static_call(compiled, stack, class_name, class);
+                            called_class_for_static_call(compiled, stack, class_name, &class);
                         let result = self.execute_function(
                             compiled,
                             method_entry.function,
                             FunctionCall::new(values, Vec::new())
+                                .with_call_span(instruction.span)
                                 .with_class_context(
                                     declaring_class.name.clone(),
                                     called_class,
@@ -11909,6 +11850,24 @@ impl Vm {
                             stack,
                             state,
                         );
+                        if !result.status.is_success()
+                            && let Some(throwable) = state
+                                .pending_throw
+                                .take()
+                                .or_else(|| runtime_error_throwable(&result))
+                        {
+                            if let Some(target) = handle_throw(
+                                compiled,
+                                throwable.clone(),
+                                &mut exception_handlers,
+                                stack,
+                                &mut pending_control,
+                            ) {
+                                block_id = target;
+                                continue 'dispatch;
+                            }
+                            return self.propagate_exception(output, stack, state, throwable);
+                        }
                         if !result.status.is_success() {
                             return result;
                         }
@@ -11936,6 +11895,7 @@ impl Vm {
                             function_id,
                             block_id,
                             instruction.id,
+                            instruction.span,
                             *kind,
                             &path,
                             output,
@@ -12591,7 +12551,7 @@ impl Vm {
                 method,
                 scope,
             }) => self.call_bound_method_callable(
-                compiled, target, &method, scope, args, output, stack, state,
+                compiled, target, &method, scope, args, call_span, output, stack, state,
             ),
             Value::Callable(CallableValue::MethodPlaceholder { target }) => self.runtime_error(
                 output,
@@ -12611,6 +12571,7 @@ impl Vm {
                 compiled,
                 &name.to_string_lossy(),
                 args,
+                call_span,
                 output,
                 stack,
                 state,
@@ -12620,6 +12581,7 @@ impl Vm {
                     compiled,
                     &array,
                     args,
+                    call_span,
                     output,
                     stack,
                     state,
@@ -12627,7 +12589,7 @@ impl Vm {
                 )
             }
             Value::Object(object) => {
-                self.call_object_callable(compiled, object, args, output, stack, state)
+                self.call_object_callable(compiled, object, args, call_span, output, stack, state)
             }
             other => self.runtime_error(
                 output,
@@ -14575,13 +14537,14 @@ impl Vm {
         compiled: &CompiledUnit,
         name: &str,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
         if let Some((class_name, method)) = name.split_once("::") {
             return self.call_static_method_callable(
-                compiled, class_name, method, args, output, stack, state,
+                compiled, class_name, method, args, call_span, output, stack, state,
             );
         }
         let normalized = name.to_ascii_lowercase();
@@ -14589,7 +14552,7 @@ impl Vm {
             return self.execute_function(
                 compiled,
                 function,
-                FunctionCall::new(args, Vec::new()),
+                FunctionCall::new(args, Vec::new()).with_optional_call_span(call_span),
                 output,
                 stack,
                 state,
@@ -14599,7 +14562,7 @@ impl Vm {
             return self.execute_function(
                 &owner,
                 function,
-                FunctionCall::new(args, Vec::new()),
+                FunctionCall::new(args, Vec::new()).with_optional_call_span(call_span),
                 output,
                 stack,
                 state,
@@ -15079,6 +15042,7 @@ impl Vm {
         target: MethodCallCacheTarget,
         object: ObjectRef,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -15149,6 +15113,7 @@ impl Vm {
             &owner,
             method_entry.function,
             FunctionCall::new(args, Vec::new())
+                .with_optional_call_span(call_span)
                 .with_this(object.clone())
                 .with_class_context(
                     declaring_class.name.clone(),
@@ -15167,6 +15132,7 @@ impl Vm {
         compiled: &CompiledUnit,
         array: &PhpArray,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -15197,14 +15163,16 @@ impl Vm {
         };
         match callable_resolve_reference(target) {
             Value::Object(object) => {
-                self.call_object_method_callable(compiled, object, &method, args, output, stack, state)
+                self.call_object_method_callable(
+                    compiled, object, &method, args, call_span, output, stack, state,
+                )
             }
             Value::Callable(callable) if method.eq_ignore_ascii_case("__invoke") => {
                 self.call_callable_inner(
                     compiled,
                     Value::Callable(callable),
                     args,
-                    None,
+                    call_span,
                     output,
                     stack,
                     state,
@@ -15217,6 +15185,7 @@ impl Vm {
                 &class_name.to_string_lossy(),
                 &method,
                 args,
+                call_span,
                 output,
                 stack,
                 state,
@@ -15240,13 +15209,14 @@ impl Vm {
         method: &str,
         scope: Option<String>,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
         match target {
             CallableMethodTarget::Object(object) => self.call_bound_object_method_callable(
-                compiled, object, method, scope, args, output, stack, state,
+                compiled, object, method, scope, args, call_span, output, stack, state,
             ),
             CallableMethodTarget::Class(class_name) => self.call_bound_static_method_callable(
                 compiled,
@@ -15254,6 +15224,7 @@ impl Vm {
                 method,
                 scope,
                 args,
+                call_span,
                 output,
                 stack,
                 state,
@@ -15320,7 +15291,15 @@ impl Vm {
                     return VmResult::success(output.clone(), Some(Value::Null));
                 }
                 self.call_bound_object_method_callable(
-                    compiled, new_this, &method, scope, args, output, stack, state,
+                    compiled,
+                    new_this,
+                    &method,
+                    scope,
+                    args,
+                    Some(span),
+                    output,
+                    stack,
+                    state,
                 )
             }
             callable @ CallableValue::Closure(_) => {
@@ -15572,6 +15551,7 @@ impl Vm {
         method: &str,
         scope: Option<String>,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -15602,6 +15582,7 @@ impl Vm {
                     "__call",
                     method,
                     args,
+                    call_span,
                     output,
                     stack,
                     state,
@@ -15636,6 +15617,7 @@ impl Vm {
             &class_owner,
             resolved.method.function,
             FunctionCall::new(args, Vec::new())
+                .with_optional_call_span(call_span)
                 .with_this(object.clone())
                 .with_class_context(
                     resolved.class.name.clone(),
@@ -15655,6 +15637,7 @@ impl Vm {
         method: &str,
         scope: Option<String>,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -15684,6 +15667,7 @@ impl Vm {
                     method,
                     args,
                     called_class,
+                    call_span,
                     output,
                     stack,
                     state,
@@ -15727,11 +15711,13 @@ impl Vm {
         self.execute_function(
             &class_owner,
             resolved.method.function,
-            FunctionCall::new(args, Vec::new()).with_class_context(
-                resolved.class.name.clone(),
-                normalize_class_name(class_name),
-                resolved.class.name.clone(),
-            ),
+            FunctionCall::new(args, Vec::new())
+                .with_class_context(
+                    resolved.class.name.clone(),
+                    normalize_class_name(class_name),
+                    resolved.class.name.clone(),
+                )
+                .with_optional_call_span(call_span),
             output,
             stack,
             state,
@@ -15743,11 +15729,14 @@ impl Vm {
         compiled: &CompiledUnit,
         object: ObjectRef,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
-        self.call_object_method_callable(compiled, object, "__invoke", args, output, stack, state)
+        self.call_object_method_callable(
+            compiled, object, "__invoke", args, call_span, output, stack, state,
+        )
     }
 
     fn call_object_method_callable(
@@ -15756,6 +15745,7 @@ impl Vm {
         object: ObjectRef,
         method: &str,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -15806,6 +15796,7 @@ impl Vm {
                     "__call",
                     method,
                     args,
+                    call_span,
                     output,
                     stack,
                     state,
@@ -15844,6 +15835,7 @@ impl Vm {
                 "__call",
                 method,
                 args,
+                call_span,
                 output,
                 stack,
                 state,
@@ -15873,6 +15865,7 @@ impl Vm {
             &class_owner,
             method_entry.function,
             FunctionCall::new(args, Vec::new())
+                .with_optional_call_span(call_span)
                 .with_this(object.clone())
                 .with_class_context(
                     declaring_class.name.clone(),
@@ -15899,6 +15892,7 @@ impl Vm {
             object,
             method,
             Vec::new(),
+            None,
             output,
             stack,
             state,
@@ -16055,6 +16049,7 @@ impl Vm {
         magic_method: &str,
         called_method: &str,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -16109,6 +16104,7 @@ impl Vm {
             &class_owner,
             resolved.method.function,
             FunctionCall::new(magic_args, Vec::new())
+                .with_optional_call_span(call_span)
                 .with_this(object.clone())
                 .with_class_context(
                     resolved.class.name.clone(),
@@ -16132,6 +16128,7 @@ impl Vm {
         called_method: &str,
         args: Vec<CallArgument>,
         called_class: String,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -16178,11 +16175,13 @@ impl Vm {
         let result = self.execute_function(
             &class_owner,
             resolved.method.function,
-            FunctionCall::new(magic_args, Vec::new()).with_class_context(
-                resolved.class.name.clone(),
-                called_class,
-                resolved.class.name.clone(),
-            ),
+            FunctionCall::new(magic_args, Vec::new())
+                .with_optional_call_span(call_span)
+                .with_class_context(
+                    resolved.class.name.clone(),
+                    called_class,
+                    resolved.class.name.clone(),
+                ),
             output,
             stack,
             state,
@@ -17476,6 +17475,15 @@ impl Vm {
                     .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
                 let rhs = to_number(rhs)
                     .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+                emit_power_zero_negative_exponent_deprecation(
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    lhs,
+                    rhs,
+                    source_span,
+                );
                 execute_power(lhs, rhs)
                     .map_err(|message| self.runtime_error(output, compiled, stack, message))
             }
@@ -17529,9 +17537,7 @@ impl Vm {
                 .value_to_string(compiled, src, output, stack, state)
                 .map(Value::String),
             CastKind::Void => Ok(Value::Null),
-            CastKind::Array => {
-                Err(self.runtime_error(output, compiled, stack, "array cast is not implemented"))
-            }
+            CastKind::Array => Ok(cast_value_to_array(src)),
             CastKind::Object => Ok(cast_value_to_object(src)),
         }
     }
@@ -17661,6 +17667,7 @@ impl Vm {
         class_name: &str,
         method: &str,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -17687,22 +17694,25 @@ impl Vm {
             };
             return VmResult::success(output.clone(), Some(value));
         }
-        let class = match resolve_static_class_name(compiled, stack, class_name) {
+        let class = match resolve_static_class_name(compiled, state, stack, class_name) {
             Ok(class) => class,
             Err(message) => return self.runtime_error(output, compiled, stack, message),
         };
         let scope = method_lookup_scope_for_static_call(compiled, stack, class_name);
-        let resolved = match lookup_method_in_hierarchy(compiled, class, method, scope.as_deref()) {
+        let resolved = match lookup_method_in_hierarchy(compiled, &class, method, scope.as_deref())
+        {
             Ok(Some(method)) => method,
             Ok(None) => {
-                let called_class = called_class_for_static_call(compiled, stack, class_name, class);
+                let called_class =
+                    called_class_for_static_call(compiled, stack, class_name, &class);
                 return match self.call_magic_static_method(
                     compiled,
-                    class,
+                    &class,
                     "__callStatic",
                     method,
                     args,
                     called_class,
+                    call_span,
                     output,
                     stack,
                     state,
@@ -17736,14 +17746,15 @@ impl Vm {
             );
         }
         if method_entry.flags.is_private || method_entry.flags.is_protected {
-            let called_class = called_class_for_static_call(compiled, stack, class_name, class);
+            let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
             return match self.call_magic_static_method(
                 compiled,
-                class,
+                &class,
                 "__callStatic",
                 method,
                 args,
                 called_class,
+                call_span,
                 output,
                 stack,
                 state,
@@ -17771,15 +17782,17 @@ impl Vm {
         {
             return self.runtime_error(output, compiled, stack, message);
         }
-        let called_class = called_class_for_static_call(compiled, stack, class_name, class);
+        let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
         self.execute_function(
             compiled,
             method_entry.function,
-            FunctionCall::new(args, Vec::new()).with_class_context(
-                declaring_class.name.clone(),
-                called_class,
-                declaring_class.name.clone(),
-            ),
+            FunctionCall::new(args, Vec::new())
+                .with_class_context(
+                    declaring_class.name.clone(),
+                    called_class,
+                    declaring_class.name.clone(),
+                )
+                .with_optional_call_span(call_span),
             output,
             stack,
             state,
@@ -17793,6 +17806,7 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: php_ir::ids::InstrId,
+        instruction_span: php_ir::IrSpan,
         kind: IncludeKind,
         path: &Value,
         output: &mut OutputBuffer,
@@ -17806,8 +17820,11 @@ impl Vm {
         let Some(loader) = &self.options.include_loader else {
             return include_failure(
                 output,
+                compiled,
+                instruction_span,
                 kind,
                 "E_PHP_VM_INCLUDE_DISABLED: include/require loader is not configured",
+                state,
                 stack_trace(compiled, stack),
             );
         };
@@ -17845,8 +17862,11 @@ impl Vm {
                         Err(message) => {
                             return include_failure(
                                 output,
+                                compiled,
+                                instruction_span,
                                 kind,
                                 message,
+                                state,
                                 stack_trace(compiled, stack),
                             );
                         }
@@ -17884,8 +17904,11 @@ impl Vm {
                                 Err(message) => {
                                     return include_failure(
                                         output,
+                                        compiled,
+                                        instruction_span,
                                         kind,
                                         message,
+                                        state,
                                         stack_trace(compiled, stack),
                                     );
                                 }
@@ -17894,8 +17917,11 @@ impl Vm {
                         Err(message) => {
                             return include_failure(
                                 output,
+                                compiled,
+                                instruction_span,
                                 kind,
                                 message,
+                                state,
                                 stack_trace(compiled, stack),
                             );
                         }
@@ -17928,15 +17954,26 @@ impl Vm {
                         Err(message) => {
                             return include_failure(
                                 output,
+                                compiled,
+                                instruction_span,
                                 kind,
                                 message,
+                                state,
                                 stack_trace(compiled, stack),
                             );
                         }
                     }
                 }
                 Err(message) => {
-                    return include_failure(output, kind, message, stack_trace(compiled, stack));
+                    return include_failure(
+                        output,
+                        compiled,
+                        instruction_span,
+                        kind,
+                        message,
+                        state,
+                        stack_trace(compiled, stack),
+                    );
                 }
             }
         };
@@ -17951,11 +17988,14 @@ impl Vm {
         if frontend.has_errors() {
             return include_failure(
                 output,
+                compiled,
+                instruction_span,
                 kind,
                 format!(
                     "E_PHP_VM_INCLUDE_COMPILE_ERROR: {} failed frontend analysis",
                     loaded.canonical_path.display()
                 ),
+                state,
                 stack_trace(compiled, stack),
             );
         }
@@ -17970,11 +18010,14 @@ impl Vm {
         if !lowering.diagnostics.is_empty() || lowering.verification.is_err() {
             return include_failure(
                 output,
+                compiled,
+                instruction_span,
                 kind,
                 format!(
                     "E_PHP_VM_INCLUDE_COMPILE_ERROR: {} failed IR lowering",
                     loaded.canonical_path.display()
                 ),
+                state,
                 stack_trace(compiled, stack),
             );
         }
@@ -17984,7 +18027,7 @@ impl Vm {
         let call = FunctionCall {
             args: Vec::new(),
             captures: Vec::new(),
-            call_span: None,
+            call_span: Some(instruction_span),
             error_context_compiled: None,
             allow_by_ref_value_warnings: false,
             by_ref_warning_callable_name: None,
@@ -19002,7 +19045,7 @@ impl Vm {
         let class_name = object.class_name();
         let display_name = lookup_class_in_state(compiled, state, &class_name)
             .map(|class| class.display_name)
-            .unwrap_or(class_name);
+            .unwrap_or_else(|| object.display_name());
         VmResult::success(output.clone(), Some(Value::string(display_name)))
     }
 
@@ -19576,6 +19619,7 @@ fn internal_throwable_display_name(class_name: &str) -> String {
         "valueerror" => "ValueError".to_owned(),
         "argumentcounterror" => "ArgumentCountError".to_owned(),
         "fibererror" => "FiberError".to_owned(),
+        "jsonexception" => "JsonException".to_owned(),
         "logicexception" => "LogicException".to_owned(),
         "badfunctioncallexception" => "BadFunctionCallException".to_owned(),
         "badmethodcallexception" => "BadMethodCallException".to_owned(),
@@ -19597,7 +19641,7 @@ fn internal_throwable_parent(class_name: &str) -> Option<&'static str> {
     match normalize_class_name(class_name).as_str() {
         "typeerror" | "valueerror" | "fibererror" => Some("Error"),
         "argumentcounterror" => Some("TypeError"),
-        "logicexception" | "runtimeexception" => Some("Exception"),
+        "jsonexception" | "logicexception" | "runtimeexception" => Some("Exception"),
         "badfunctioncallexception"
         | "domainexception"
         | "invalidargumentexception"
@@ -19624,6 +19668,7 @@ fn internal_throwable_instanceof(object_class: &str, target_class: &str) -> Opti
             | "valueerror"
             | "argumentcounterror"
             | "fibererror"
+            | "jsonexception"
             | "logicexception"
             | "badfunctioncallexception"
             | "badmethodcallexception"
@@ -19680,7 +19725,7 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
             attributes: Vec::new(),
         };
     let class = RuntimeClassEntry {
-        name: class_name.clone(),
+        name: normalize_class_name(&class_name),
         parent,
         interfaces: vec!["throwable".to_owned()],
         methods: Vec::new(),
@@ -19709,7 +19754,7 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
         constructor_id: None,
         flags: RuntimeClassFlags::default(),
     };
-    Ok(ObjectRef::new(&class))
+    Ok(ObjectRef::new_with_display_name(&class, class_name))
 }
 
 fn new_internal_throwable_object(
@@ -19757,7 +19802,7 @@ fn new_internal_throwable_object(
 
 fn std_class_entry() -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: "stdClass".to_owned(),
+        name: normalize_class_name("stdClass"),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -20307,7 +20352,7 @@ fn stable_hash_bytes(bytes: &[u8]) -> u64 {
 
 fn reflection_runtime_class(name: &str) -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: name.to_owned(),
+        name: normalize_class_name(name),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -20323,7 +20368,7 @@ fn reflection_runtime_class(name: &str) -> RuntimeClassEntry {
 
 fn reflection_object(name: &str, properties: Vec<(&str, Value)>) -> ObjectRef {
     let class = reflection_runtime_class(name);
-    let object = ObjectRef::new(&class);
+    let object = ObjectRef::new_with_display_name(&class, php_ir::display_class_name(name));
     for (property, value) in properties {
         object.set_property(property, value);
     }
@@ -20647,7 +20692,7 @@ fn reflection_new_object(
             let class = reflection_string_arg(&args, 0, "ReflectionEnumBackedCase::__construct")?;
             let case = reflection_string_arg(&args, 1, "ReflectionEnumBackedCase::__construct")?;
             let object = reflection_enum_case_object(compiled, &class, &case)?;
-            if !matches!(object.class_name().as_str(), "ReflectionEnumBackedCase") {
+            if normalize_class_name(&object.class_name()) != "reflectionenumbackedcase" {
                 return Err(format!(
                     "E_PHP_VM_REFLECTION_NOT_BACKED_ENUM_CASE: case {class}::{case} is not backed"
                 ));
@@ -21676,7 +21721,7 @@ fn reflection_method_object(
         vec![
             (
                 "class",
-                Value::String(PhpString::from_test_str(&class.name)),
+                Value::String(PhpString::from_test_str(&class.display_name)),
             ),
             ("name", Value::String(PhpString::from_test_str(method_name))),
             (
@@ -23023,11 +23068,12 @@ fn static_property_default(
     }
 }
 
-fn resolve_static_class_name<'a>(
-    compiled: &'a CompiledUnit,
+fn resolve_static_class_name(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
     stack: &CallStack,
     class_name: &str,
-) -> Result<&'a php_ir::module::ClassEntry, String> {
+) -> Result<php_ir::module::ClassEntry, String> {
     match normalize_class_name(class_name).as_str() {
         "self" => {
             let Some(scope) = current_scope_class(compiled, stack) else {
@@ -23035,8 +23081,7 @@ fn resolve_static_class_name<'a>(
                     "E_PHP_VM_INVALID_STATIC_SCOPE: {class_name}:: is not available outside class scope"
                 ));
             };
-            compiled
-                .lookup_class(&scope)
+            lookup_class_in_state(compiled, state, &scope)
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {scope} is not defined"))
         }
         "static" => {
@@ -23048,8 +23093,7 @@ fn resolve_static_class_name<'a>(
                         .to_owned(),
                 );
             };
-            compiled
-                .lookup_class(&called)
+            lookup_class_in_state(compiled, state, &called)
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {called} is not defined"))
         }
         "parent" => {
@@ -23059,21 +23103,20 @@ fn resolve_static_class_name<'a>(
                         .to_owned(),
                 );
             };
-            let Some(class) = compiled.lookup_class(&scope) else {
+            let Some(class) = lookup_class_in_state(compiled, state, &scope) else {
                 return Err(format!(
                     "E_PHP_VM_UNKNOWN_CLASS: class {scope} is not defined"
                 ));
             };
-            let Some(parent) = parent_class(compiled, class)? else {
+            let Some(parent) = parent_class(compiled, &class)? else {
                 return Err(format!(
                     "E_PHP_VM_NO_PARENT_CLASS: class {} has no parent",
                     class.name
                 ));
             };
-            Ok(parent)
+            Ok(parent.clone())
         }
-        _ => compiled
-            .lookup_class(class_name)
+        _ => lookup_class_in_state(compiled, state, class_name)
             .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined")),
     }
 }
@@ -23279,10 +23322,6 @@ fn object_instanceof(
         }
         _ => Ok(false),
     }
-}
-
-fn normalize_class_name(name: &str) -> String {
-    name.trim_start_matches('\\').to_ascii_lowercase()
 }
 
 fn property_storage_name(
@@ -24221,7 +24260,7 @@ fn php_token_matches_kind(object: &ObjectRef, kind: &Value) -> Result<bool, Stri
 }
 
 fn php_token_object(token: php_runtime::tokenizer::TokenizerToken) -> ObjectRef {
-    let object = ObjectRef::new(&php_token_class());
+    let object = ObjectRef::new_with_display_name(&php_token_class(), "PhpToken");
     object.set_property("id", Value::Int(token.id));
     object.set_property("text", Value::string(token.text.into_bytes()));
     object.set_property("line", Value::Int(i64::from(token.line)));
@@ -24236,7 +24275,7 @@ fn php_token_object(token: php_runtime::tokenizer::TokenizerToken) -> ObjectRef 
 
 fn php_token_class() -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: "PhpToken".to_owned(),
+        name: normalize_class_name("PhpToken"),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -24335,7 +24374,10 @@ fn new_spl_iterator_object(class_name: &str, args: Vec<CallArgument>) -> Result<
         }
         _ => unreachable!("is_spl_iterator_runtime_class validates class names"),
     };
-    let object = ObjectRef::new(&spl_iterator_class(class_name));
+    let object = ObjectRef::new_with_display_name(
+        &spl_iterator_class(class_name),
+        spl_iterator_display_name(class_name),
+    );
     spl_set_entries(&object, entries);
     spl_set_position(&object, 0);
     Ok(object)
@@ -24440,7 +24482,7 @@ fn spl_iterator_class(class_name: &str) -> RuntimeClassEntry {
         interfaces.push("ArrayAccess".to_owned());
     }
     RuntimeClassEntry {
-        name: spl_iterator_display_name(class_name).to_owned(),
+        name: normalize_class_name(class_name),
         parent: None,
         interfaces,
         methods: Vec::new(),
@@ -24591,7 +24633,10 @@ fn new_spl_container_object(
         ));
     }
     let normalized = normalize_class_name(class_name);
-    let object = ObjectRef::new(&spl_container_class(class_name));
+    let object = ObjectRef::new_with_display_name(
+        &spl_container_class(class_name),
+        spl_container_display_name(class_name),
+    );
     match normalized.as_str() {
         "arrayobject" => {
             validate_spl_iterator_arg_count(class_name, &args, 0, 1)?;
@@ -24831,9 +24876,9 @@ fn spl_container_class(class_name: &str) -> RuntimeClassEntry {
         interfaces.push("ArrayAccess".to_owned());
     }
     RuntimeClassEntry {
-        name: spl_container_display_name(class_name).to_owned(),
+        name: normalize_class_name(class_name),
         parent: match normalized.as_str() {
-            "splstack" | "splqueue" => Some("SplDoublyLinkedList".to_owned()),
+            "splstack" | "splqueue" => Some(normalize_class_name("SplDoublyLinkedList")),
             _ => None,
         },
         interfaces,
@@ -25128,7 +25173,10 @@ fn new_spl_file_object(
         ));
     }
     let normalized = normalize_class_name(class_name);
-    let object = ObjectRef::new(&spl_file_class(class_name));
+    let object = ObjectRef::new_with_display_name(
+        &spl_file_class(class_name),
+        spl_file_display_name(class_name),
+    );
     match normalized.as_str() {
         "splfileinfo" => {
             validate_spl_iterator_arg_count(class_name, &args, 1, 1)?;
@@ -25318,9 +25366,9 @@ fn call_spl_file_method(
 fn spl_file_class(class_name: &str) -> RuntimeClassEntry {
     let normalized = normalize_class_name(class_name);
     RuntimeClassEntry {
-        name: spl_file_display_name(class_name).to_owned(),
+        name: normalize_class_name(class_name),
         parent: match normalized.as_str() {
-            "splfileobject" | "spltempfileobject" => Some("SplFileInfo".to_owned()),
+            "splfileobject" | "spltempfileobject" => Some(normalize_class_name("SplFileInfo")),
             _ => None,
         },
         interfaces: if matches!(normalized.as_str(), "splfileobject" | "spltempfileobject") {
@@ -25532,9 +25580,12 @@ fn validate_generator_arg_count(
 }
 
 fn include_failure(
-    output: &OutputBuffer,
+    output: &mut OutputBuffer,
+    compiled: &CompiledUnit,
+    span: IrSpan,
     kind: IncludeKind,
     message: impl Into<String>,
+    state: &ExecutionState,
     stack_trace: Vec<RuntimeStackFrame>,
 ) -> VmResult {
     let message = message.into();
@@ -25543,18 +25594,17 @@ fn include_failure(
     } else {
         RuntimeSeverity::FatalError
     };
-    VmResult::runtime_error_with_diagnostic(
-        output.clone(),
+    let source_span = runtime_source_span(compiled, span);
+    let diagnostic = RuntimeDiagnostic::new(
+        include_failure_id(&message).to_owned(),
+        severity,
         message.clone(),
-        RuntimeDiagnostic::new(
-            include_failure_id(&message).to_owned(),
-            severity,
-            message,
-            RuntimeSourceSpan::default(),
-            stack_trace,
-            None,
-        ),
-    )
+        source_span,
+        stack_trace,
+        None,
+    );
+    emit_include_failure_output(output, compiled, span, kind, state, &diagnostic);
+    VmResult::runtime_error_with_diagnostic(output.clone(), message.clone(), diagnostic)
 }
 
 fn include_failure_id(message: &str) -> &str {
@@ -25562,6 +25612,79 @@ fn include_failure_id(message: &str) -> &str {
         .split_once(':')
         .and_then(|(id, _)| id.starts_with("E_").then_some(id))
         .unwrap_or("E_PHP_VM_INCLUDE_ERROR")
+}
+
+fn emit_include_failure_output(
+    output: &mut OutputBuffer,
+    compiled: &CompiledUnit,
+    span: IrSpan,
+    kind: IncludeKind,
+    state: &ExecutionState,
+    diagnostic: &RuntimeDiagnostic,
+) {
+    let Some((target, reason)) = include_failure_target_and_reason(diagnostic.message()) else {
+        let channel =
+            php_runtime::PhpDiagnosticChannel::from_runtime_severity(diagnostic.severity());
+        let level = match diagnostic.severity() {
+            RuntimeSeverity::FatalError => php_runtime::PHP_E_ERROR,
+            _ => php_runtime::PHP_E_WARNING,
+        };
+        emit_vm_diagnostic(output, state, diagnostic, channel, level);
+        return;
+    };
+    let (file, line) = source_span_file_line(compiled, span)
+        .unwrap_or_else(|| ("<unknown>".to_owned(), i64::from(span.start)));
+    if display_errors_enabled(state) && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+        output.write_bytes(
+            format!(
+                "\nWarning: {}({target}): Failed to open stream: {reason} in {file} on line {line}\n",
+                include_kind_function_name(kind),
+            )
+            .as_bytes(),
+        );
+    }
+    if matches!(kind, IncludeKind::Require | IncludeKind::RequireOnce)
+        && display_errors_enabled(state)
+        && error_reporting_allows(state, php_runtime::PHP_E_ERROR)
+    {
+        let include_path = state.ini.get("include_path").unwrap_or(".");
+        output.write_bytes(
+            format!(
+                "\nFatal error: Uncaught Error: Failed opening required '{target}' (include_path='{include_path}') in {file}:{line}\nStack trace:\n#0 {{main}}\n  thrown in {file} on line {line}\n"
+            )
+            .as_bytes(),
+        );
+    }
+}
+
+fn include_failure_target_and_reason(message: &str) -> Option<(&str, String)> {
+    let id = include_failure_id(message);
+    if !matches!(id, "E_PHP_VM_INCLUDE_MISSING" | "E_PHP_VM_INCLUDE_READ") {
+        return None;
+    }
+    let payload = message.split_once(": ")?.1;
+    let (target, reason) = payload.rsplit_once(": ")?;
+    let reason = if reason.contains("No such file or directory") || reason == "not found" {
+        "No such file or directory".to_owned()
+    } else if reason.contains("Is a directory") {
+        "Is a directory".to_owned()
+    } else {
+        reason
+            .split_once(" (os error")
+            .map(|(reason, _)| reason)
+            .unwrap_or(reason)
+            .to_owned()
+    };
+    Some((target, reason))
+}
+
+fn include_kind_function_name(kind: IncludeKind) -> &'static str {
+    match kind {
+        IncludeKind::Include => "include",
+        IncludeKind::IncludeOnce => "include_once",
+        IncludeKind::Require => "require",
+        IncludeKind::RequireOnce => "require_once",
+    }
 }
 
 fn is_autoload_builtin_name(name: &str) -> bool {
@@ -25909,7 +26032,53 @@ fn lookup_class_in_state(
             .iter()
             .find(|entry| normalize_class_name(&entry.class.name) == normalized)
             .map(|entry| entry.class.clone())
+            .or_else(|| internal_enum_class_entry(&normalized))
     })
+}
+
+fn internal_enum_class_entry(normalized: &str) -> Option<php_ir::module::ClassEntry> {
+    match normalized {
+        "roundingmode" => Some(rounding_mode_class_entry()),
+        _ => None,
+    }
+}
+
+fn rounding_mode_class_entry() -> php_ir::module::ClassEntry {
+    php_ir::module::ClassEntry {
+        id: ClassId::new(u32::MAX),
+        name: "roundingmode".to_owned(),
+        display_name: "RoundingMode".to_owned(),
+        parent: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: [
+            "HalfAwayFromZero",
+            "HalfTowardsZero",
+            "HalfEven",
+            "HalfOdd",
+            "TowardsZero",
+            "AwayFromZero",
+            "NegativeInfinity",
+            "PositiveInfinity",
+        ]
+        .into_iter()
+        .map(|name| php_ir::module::ClassEnumCaseEntry {
+            name: name.to_owned(),
+            value: None,
+            attributes: Vec::new(),
+        })
+        .collect(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor: None,
+        flags: php_ir::module::ClassFlags {
+            is_enum: true,
+            ..php_ir::module::ClassFlags::default()
+        },
+        span: IrSpan::default(),
+    }
 }
 
 fn class_like_exists_direct(
@@ -25959,16 +26128,53 @@ fn dynamic_class_owner_index_in_state(state: &ExecutionState, class_name: &str) 
 
 fn global_constant_value(
     compiled: &CompiledUnit,
-    state: &ExecutionState,
+    state: &mut ExecutionState,
     name: &str,
 ) -> Option<Value> {
     if let Some(constant) = compiled.lookup_constant(name) {
         Some(inline_constant_value(constant))
     } else if let Some(value) = state.user_constants.get(name) {
         Some(value.clone())
+    } else if let Some(value) = class_constant_value_by_name(compiled, state, name) {
+        Some(value)
     } else {
         predefined_constant_value(name)
     }
+}
+
+fn class_constant_value_by_name(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    name: &str,
+) -> Option<Value> {
+    let (class_name, constant_name) = name.split_once("::")?;
+    let class = lookup_class_in_state(compiled, state, class_name)?;
+    if constant_name.eq_ignore_ascii_case("class") {
+        return Some(Value::String(PhpString::from_test_str(&class.display_name)));
+    }
+    if class.flags.is_enum
+        && let Some(case) = class
+            .enum_cases
+            .iter()
+            .find(|case| case.name.eq_ignore_ascii_case(constant_name))
+    {
+        let object = enum_case_object(compiled, state, &class, case, &|constant| {
+            constant_value(compiled.unit(), constant)
+        })
+        .ok()?;
+        return Some(Value::Object(object));
+    }
+    let resolved = lookup_constant_in_hierarchy(compiled, &class, constant_name, None)
+        .ok()
+        .flatten()?;
+    if resolved.constant.flags.is_private || resolved.constant.flags.is_protected {
+        return None;
+    }
+    let Some(value) = resolved.constant.value else {
+        return Some(Value::Null);
+    };
+    let owner = class_owner_in_state(compiled, state, &resolved.class.name);
+    constant_value(owner.unit(), value).ok()
 }
 
 fn predefined_constant_value(name: &str) -> Option<Value> {
@@ -27414,6 +27620,11 @@ fn callable_class_display_name(
 ) -> String {
     lookup_class_in_state(compiled, state, class_name)
         .map(|class| class.display_name)
+        .or_else(|| {
+            php_std::ExtensionRegistry::standard_library()
+                .enabled_class(class_name)
+                .map(|class| class.name().to_owned())
+        })
         .unwrap_or_else(|| class_name.to_owned())
 }
 
@@ -27547,6 +27758,7 @@ fn validate_object_method_callable_acquisition(
     allow_magic_call: bool,
 ) -> Result<(), String> {
     let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
+        let class_name = callable_class_display_name(compiled, state, class_name);
         return Err(format!(
             "E_PHP_VM_FIRST_CLASS_CALLABLE_UNDEFINED_METHOD: Call to undefined method {class_name}::{method}()"
         ));
@@ -27582,6 +27794,7 @@ fn validate_static_method_callable_acquisition(
     allow_magic_call_static: bool,
 ) -> Result<(), String> {
     let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
+        let class_name = callable_class_display_name(compiled, state, class_name);
         return Err(format!(
             "E_PHP_VM_FIRST_CLASS_CALLABLE_UNDEFINED_METHOD: Call to undefined method {class_name}::{method}()"
         ));
@@ -27881,10 +28094,12 @@ fn execute_builtin_entry(
     context.set_include_path(include_path);
     context.set_ini_registry(state.ini.clone());
     context.set_diagnostic_display(diagnostic_display);
+    context.set_json_last_error(state.json_last_error);
     context.set_strtok_state(&mut state.strtok_state);
     let result = (entry.function())(&mut context, args, source_span.clone());
     let output = context.output().clone();
     state.cwd = context.cwd().to_path_buf();
+    state.json_last_error = context.json_last_error().0;
     let mut diagnostics = context.take_diagnostics();
     match result {
         Ok(value) => VmResult::success_with_diagnostics(output, Some(value), diagnostics),
@@ -27937,7 +28152,8 @@ fn validate_internal_builtin_args(
     name: &str,
     values: Vec<Value>,
     compiled: &CompiledUnit,
-    output: &OutputBuffer,
+    output: &mut OutputBuffer,
+    state: &ExecutionState,
 ) -> Result<Vec<Value>, VmResult> {
     if builtin_uses_custom_argument_validation(name) {
         return Ok(values);
@@ -27958,7 +28174,18 @@ fn validate_internal_builtin_args(
     };
     let span = builtin_source_span(compiled);
     match php_std::arginfo::ArgumentValidator::new(mode).validate(&info, &values, span) {
-        Ok(validated) => Ok(validated.values().to_vec()),
+        Ok(validated) => {
+            for diagnostic in validated.diagnostics() {
+                emit_vm_diagnostic(
+                    output,
+                    state,
+                    diagnostic,
+                    php_runtime::PhpDiagnosticChannel::Deprecated,
+                    php_runtime::PHP_E_DEPRECATED,
+                );
+            }
+            Ok(validated.values().to_vec())
+        }
         Err(error) => Err(arginfo_error_result(error, output)),
     }
 }
@@ -27966,7 +28193,12 @@ fn validate_internal_builtin_args(
 fn builtin_uses_custom_argument_validation(name: &str) -> bool {
     matches!(
         name,
-        "range"
+        "decbin"
+            | "dechex"
+            | "decoct"
+            | "number_format"
+            | "range"
+            | "round"
             | "strip_tags"
             | "stristr"
             | "strpos"
@@ -27994,6 +28226,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         "E_PHP_RUNTIME_BUILTIN_ARITY" => "ArgumentCountError",
         "E_PHP_RUNTIME_BUILTIN_TYPE" => "TypeError",
         "E_PHP_RUNTIME_BUILTIN_VALUE" => "ValueError",
+        "E_PHP_RUNTIME_JSON_EXCEPTION" => "JsonException",
         "E_PHP_STD_MISSING_ARGUMENT" | "E_PHP_STD_TOO_MANY_ARGUMENTS" => "ArgumentCountError",
         "E_PHP_STD_TYPE_ERROR" => "TypeError",
         "E_PHP_STD_VALUE_ERROR" => "ValueError",
@@ -28010,13 +28243,19 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_CLOSURE_INSTANTIATION"
         | "E_PHP_VM_PRIVATE_PROPERTY_ACCESS"
         | "E_PHP_VM_PROTECTED_PROPERTY_ACCESS"
+        | "E_PHP_VM_UNINITIALIZED_PROPERTY"
+        | "E_PHP_VM_UNINITIALIZED_STATIC_PROPERTY"
         | "E_PHP_VM_UNKNOWN_STATIC_PROPERTY"
         | "E_PHP_VM_NON_STATIC_METHOD_CALL"
+        | "E_PHP_VM_INVALID_STATIC_SCOPE"
         | "E_PHP_VM_CURRENT_CLOSURE"
         | "E_PHP_VM_DYNAMIC_PROPERTY_ERROR"
+        | "E_PHP_VM_PIPE_RHS_NOT_CALLABLE"
         | "E_PHP_VM_PRIVATE_CLASS_CONSTANT_ACCESS"
         | "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS"
+        | "E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER"
         | "E_PHP_VM_METHOD_CALL_NON_OBJECT" => "Error",
+        "E_PHP_VM_PROPERTY_TYPE_MISMATCH" => "TypeError",
         "E_PHP_VM_FIRST_CLASS_CALLABLE_NOT_CALLABLE"
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNDEFINED_FUNCTION"
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNDEFINED_METHOD"
@@ -28215,19 +28454,22 @@ fn trace_value_for_param(value: &Value, sensitive: bool) -> Value {
 }
 
 fn sensitive_parameter_value() -> Value {
-    Value::Object(ObjectRef::new(&RuntimeClassEntry {
-        name: "SensitiveParameterValue".to_owned(),
-        parent: None,
-        interfaces: Vec::new(),
-        methods: Vec::new(),
-        properties: Vec::new(),
-        constants: Vec::new(),
-        enum_cases: Vec::new(),
-        attributes: Vec::new(),
-        enum_backing_type: None,
-        constructor_id: None,
-        flags: RuntimeClassFlags::default(),
-    }))
+    Value::Object(ObjectRef::new_with_display_name(
+        &RuntimeClassEntry {
+            name: normalize_class_name("SensitiveParameterValue"),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: RuntimeClassFlags::default(),
+        },
+        "SensitiveParameterValue",
+    ))
 }
 
 /// PHP's `zend_zval_type_name`-style name used in `TypeError` messages: the
@@ -28847,19 +29089,40 @@ fn effective_value(value: &Value) -> Value {
 fn cast_value_to_object(value: &Value) -> Value {
     match effective_value(value) {
         Value::Object(object) => Value::Object(object),
-        Value::Null | Value::Uninitialized => Value::Object(ObjectRef::new(&std_class_entry())),
+        Value::Null | Value::Uninitialized => Value::Object(ObjectRef::new_with_display_name(
+            &std_class_entry(),
+            "stdClass",
+        )),
         Value::Array(array) => {
-            let object = ObjectRef::new(&std_class_entry());
+            let object = ObjectRef::new_with_display_name(&std_class_entry(), "stdClass");
             for (key, element) in array.iter() {
                 object.set_property(object_cast_property_name(key), effective_value(element));
             }
             Value::Object(object)
         }
         scalar => {
-            let object = ObjectRef::new(&std_class_entry());
+            let object = ObjectRef::new_with_display_name(&std_class_entry(), "stdClass");
             object.set_property("scalar", scalar);
             Value::Object(object)
         }
+    }
+}
+
+fn cast_value_to_array(value: &Value) -> Value {
+    match effective_value(value) {
+        Value::Array(array) => Value::Array(array),
+        Value::Null | Value::Uninitialized => Value::Array(PhpArray::new()),
+        Value::Object(object) => {
+            let mut array = PhpArray::new();
+            for (name, property) in object.properties_snapshot() {
+                array.insert(
+                    ArrayKey::String(PhpString::from(name.as_str())),
+                    effective_value(&property),
+                );
+            }
+            Value::Array(array)
+        }
+        scalar => Value::packed_array(vec![scalar]),
     }
 }
 
@@ -29996,6 +30259,11 @@ fn call_builtin_args_to_positional(
     stack: &mut CallStack,
     state: &mut ExecutionState,
 ) -> Result<Vec<Value>, InternalBuiltinArgError> {
+    let args = if function == "round" && args.iter().any(|arg| arg.name.is_some()) {
+        call_internal_builtin_named_args_to_positional(function, args)?
+    } else {
+        args
+    };
     let mut values = Vec::with_capacity(args.len());
     for (index, arg) in args.into_iter().enumerate() {
         if let Some(name) = arg.name {
@@ -30046,6 +30314,100 @@ fn call_builtin_args_to_positional(
         values.push(arg.value);
     }
     Ok(values)
+}
+
+fn call_internal_builtin_named_args_to_positional(
+    function: &str,
+    args: Vec<CallArgument>,
+) -> Result<Vec<CallArgument>, InternalBuiltinArgError> {
+    let first_named = || {
+        args.iter()
+            .find_map(|arg| arg.name.as_deref())
+            .unwrap_or("arg")
+    };
+    let Some(metadata) = php_std::generated::arginfo::function_metadata(function) else {
+        return Err(InternalBuiltinArgError::Message(format!(
+            "E_PHP_VM_UNKNOWN_NAMED_ARG: function {function} has no builtin parameter ${}",
+            first_named()
+        )));
+    };
+    if metadata.params.iter().any(|param| param.by_ref) {
+        return Err(InternalBuiltinArgError::Message(format!(
+            "E_PHP_VM_UNKNOWN_NAMED_ARG: function {function} has no builtin parameter ${}",
+            first_named()
+        )));
+    }
+
+    let mut reordered = vec![None; metadata.params.len()];
+    let mut next_positional = 0_usize;
+    let mut saw_named = false;
+    for mut arg in args {
+        if let Some(name) = arg.name.take() {
+            saw_named = true;
+            let Some(index) = metadata.params.iter().position(|param| param.name == name) else {
+                return Err(InternalBuiltinArgError::Message(format!(
+                    "E_PHP_VM_UNKNOWN_NAMED_ARG: function {function} has no builtin parameter ${name}"
+                )));
+            };
+            if reordered[index].is_some() {
+                return Err(InternalBuiltinArgError::Message(format!(
+                    "E_PHP_VM_DUPLICATE_NAMED_ARG: function {function} got duplicate argument ${name}"
+                )));
+            }
+            reordered[index] = Some(arg);
+            continue;
+        }
+
+        if saw_named {
+            return Err(InternalBuiltinArgError::Message(format!(
+                "E_PHP_VM_POSITIONAL_AFTER_NAMED_ARG: function {function} cannot use positional argument after named argument"
+            )));
+        }
+        if next_positional >= reordered.len() {
+            reordered.push(Some(arg));
+        } else {
+            reordered[next_positional] = Some(arg);
+        }
+        next_positional += 1;
+    }
+
+    let Some(highest_supplied) = reordered.iter().rposition(Option::is_some) else {
+        return Ok(Vec::new());
+    };
+    let mut positional = Vec::with_capacity(highest_supplied + 1);
+    for (index, arg) in reordered.into_iter().enumerate().take(highest_supplied + 1) {
+        if let Some(arg) = arg {
+            positional.push(arg);
+            continue;
+        }
+        let Some(param) = metadata.params.get(index) else {
+            break;
+        };
+        if let Some(default) = generated_default_value_for_call(param.default_value) {
+            positional.push(CallArgument::positional(default));
+        }
+    }
+    Ok(positional)
+}
+
+fn generated_default_value_for_call(default: Option<&str>) -> Option<Value> {
+    let default = default?.trim();
+    if default.eq_ignore_ascii_case("null") {
+        return Some(Value::Null);
+    }
+    if default.eq_ignore_ascii_case("false") {
+        return Some(Value::Bool(false));
+    }
+    if default.eq_ignore_ascii_case("true") {
+        return Some(Value::Bool(true));
+    }
+    if matches!(
+        default,
+        "RoundingMode::HalfAwayFromZero" | "\\RoundingMode::HalfAwayFromZero"
+    ) {
+        return Some(Value::Int(1));
+    }
+    default.parse::<i64>().ok().map(Value::Int)
 }
 
 fn internal_builtin_by_ref_param_name(function: &str, index: usize) -> &'static str {
@@ -30821,6 +31183,39 @@ fn execute_power(lhs: NumericValue, rhs: NumericValue) -> Result<Value, String> 
     Ok(Value::float(lhs.as_f64().powf(rhs.as_f64())))
 }
 
+fn emit_power_zero_negative_exponent_deprecation(
+    compiled: &CompiledUnit,
+    output: &mut OutputBuffer,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    lhs: NumericValue,
+    rhs: NumericValue,
+    source_span: RuntimeSourceSpan,
+) {
+    if lhs.as_f64() != 0.0
+        || rhs.as_f64() >= 0.0
+        || !error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED)
+    {
+        return;
+    }
+    let diagnostic = RuntimeDiagnostic::new(
+        "E_PHP_RUNTIME_POW_ZERO_NEGATIVE_EXPONENT",
+        RuntimeSeverity::Deprecation,
+        "Power of base 0 and negative exponent is deprecated",
+        source_span,
+        stack_trace(compiled, stack),
+        None,
+    );
+    emit_vm_diagnostic(
+        output,
+        state,
+        &diagnostic,
+        php_runtime::PhpDiagnosticChannel::Deprecated,
+        php_runtime::PHP_E_DEPRECATED,
+    );
+    state.diagnostics.push(diagnostic);
+}
+
 fn execute_bitwise(op: BinaryOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
     match op {
         BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor
@@ -30970,10 +31365,10 @@ fn execute_unary(op: UnaryOp, src: &Value) -> Result<Value, String> {
             NumericValue::Float(value) => Ok(Value::float(value)),
         },
         UnaryOp::Minus => match to_number(src)? {
-            NumericValue::Int(value) => value
+            NumericValue::Int(value) => Ok(value
                 .checked_neg()
                 .map(Value::Int)
-                .ok_or_else(|| "integer negation overflow".to_owned()),
+                .unwrap_or_else(|| Value::float(-(value as f64)))),
             NumericValue::Float(value) => Ok(Value::float(-value)),
         },
         UnaryOp::Not => Ok(Value::Bool(!to_bool(src)?)),
@@ -31013,6 +31408,7 @@ fn execute_compare(op: CompareOp, lhs: &Value, rhs: &Value) -> Result<Value, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{IncludeLoader, InlineCacheMode, QuickeningMode, TieringOptions};
     use php_ir::{
         FunctionFlags, IrBuilder, IrConstant, IrSpan, Operand, RegId, UnitId,
         instruction::InstructionKind,
@@ -31116,6 +31512,16 @@ mod tests {
     }
 
     #[test]
+    fn expressions_power_zero_negative_exponent_emits_deprecation() {
+        let result = execute_source("<?php var_dump(0 ** -1);");
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(output.contains("Deprecated: Power of base 0 and negative exponent is deprecated"));
+        assert!(output.contains("float(INF)"));
+    }
+
+    #[test]
     fn expressions_execute_bitwise_and_assignment_operators() {
         let result = execute_source(
             "<?php $x = 6; $x &= 3; echo $x, '|', (6 | 3), '|', (6 ^ 3), '|', (8 << 1), '|', (8 >> 1), '|'; echo bin2hex('12' & '3'), '|', bin2hex('12' | '3'), '|', bin2hex('12' ^ '3');",
@@ -31154,6 +31560,25 @@ mod tests {
     }
 
     #[test]
+    fn expressions_array_casts_match_php_shapes() {
+        let result = execute_source(
+            "<?php
+            var_dump((array) null, (array) \"type1\", (array) 10, (array) 12.34);
+            $object = new stdClass();
+            $object->a = 1;
+            $object->b = \"two\";
+            var_dump((array) $object);
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "array(0) {\n}\narray(1) {\n  [0]=>\n  string(5) \"type1\"\n}\narray(1) {\n  [0]=>\n  int(10)\n}\narray(1) {\n  [0]=>\n  float(12.34)\n}\narray(2) {\n  [\"a\"]=>\n  int(1)\n  [\"b\"]=>\n  string(3) \"two\"\n}\n"
+        );
+    }
+
+    #[test]
     fn expressions_object_numeric_cast_warns_and_returns_one() {
         let result = execute_source(
             "<?php class Box {} $box = new Box; var_dump((int) $box, (float) $box);",
@@ -31183,6 +31608,14 @@ mod tests {
         assert!(result.status.is_success(), "{:?}", result.status);
         let output = String::from_utf8(result.output.as_bytes().to_vec()).expect("utf8 output");
         assert_eq!(output.matches("float(").count(), 3);
+    }
+
+    #[test]
+    fn expressions_unary_integer_min_promotes_to_float() {
+        let result = execute_source("<?php var_dump(-PHP_INT_MIN);");
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert!(result.output.to_string_lossy().starts_with("float("));
     }
 
     #[test]
@@ -31222,6 +31655,16 @@ mod tests {
             result.output.as_bytes(),
             php_source::reference_php_version().as_bytes()
         );
+    }
+
+    #[test]
+    fn constants_execute_internal_enum_cases_by_dynamic_name() {
+        let result = execute_source(
+            "<?php echo defined('RoundingMode::AwayFromZero') ? 'D|' : 'd|'; echo round(1.2, 0, constant('RoundingMode::AwayFromZero'));",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"D|2");
     }
 
     #[test]
@@ -31566,13 +32009,15 @@ mod tests {
             try { strlen([]); } catch (TypeError $e) { echo 'type'; }
             echo '|';
             try { explode('', 'abc'); } catch (ValueError $e) { echo 'value'; }
+            echo '|';
+            try { json_decode('{', false, 512, JSON_THROW_ON_ERROR); } catch (JsonException $e) { echo 'json:', $e->getMessage(); }
             ",
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.to_string_lossy(),
-            "arity|arity-type|type|value"
+            "arity|arity-type|type|value|json:Syntax error"
         );
     }
 
@@ -31591,6 +32036,28 @@ mod tests {
         );
         assert!(strict.status.is_success(), "{:?}", strict.status);
         assert_eq!(strict.output.as_bytes(), b"strlen|ord");
+    }
+
+    #[test]
+    fn generated_arginfo_deprecations_respect_error_reporting() {
+        let result = execute_source(
+            "<?php
+            error_reporting(2047);
+            $parts = explode(',', NULL);
+            echo count($parts), ':', $parts[0], '|';
+            try {
+                explode('', NULL);
+            } catch (ValueError $e) {
+                echo $e->getMessage();
+            }
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "1:|explode(): Argument #1 ($separator) must not be empty"
+        );
     }
 
     #[test]
@@ -31757,7 +32224,7 @@ mod tests {
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.to_string_lossy(),
-            "3|ABC|1|XYZ|strtr(): Argument #2 ($from) must be of type array, s given"
+            "3|ABC|1|XYZ|strtr(): Argument #2 ($from) must be of type array, S given"
         );
     }
 
@@ -31950,17 +32417,164 @@ mod tests {
     fn include_missing_warns_and_continues_but_require_missing_fails() {
         let include = execute_fixture_file("fixtures/runtime/valid/includes/include-missing.php");
         assert!(include.status.is_success(), "{:?}", include.status);
-        assert_eq!(include.output.as_bytes(), b"before|after\n");
+        let include_output = String::from_utf8_lossy(include.output.as_bytes());
+        assert!(
+            include_output.starts_with("before|\nWarning: include("),
+            "{include_output}"
+        );
+        assert!(
+            include_output.contains("Failed to open stream: No such file or directory"),
+            "{include_output}"
+        );
+        assert!(include_output.ends_with("after\n"), "{include_output}");
         assert_eq!(include.diagnostics[0].id(), "E_PHP_VM_INCLUDE_MISSING");
         assert_eq!(include.diagnostics[0].severity(), RuntimeSeverity::Warning);
 
         let require = execute_fixture_file("fixtures/runtime/invalid/includes/require-missing.php");
         assert_eq!(require.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(require.output.as_bytes(), b"before|");
+        let require_output = String::from_utf8_lossy(require.output.as_bytes());
+        assert!(
+            require_output.starts_with("before|\nWarning: require("),
+            "{require_output}"
+        );
+        assert!(
+            require_output.contains("Failed to open stream: No such file or directory"),
+            "{require_output}"
+        );
+        assert!(
+            require_output.contains("\nFatal error: Uncaught Error: Failed opening required '"),
+            "{require_output}"
+        );
         assert_eq!(require.diagnostics[0].id(), "E_PHP_VM_INCLUDE_MISSING");
         assert_eq!(
             require.diagnostics[0].severity(),
             RuntimeSeverity::FatalError
+        );
+    }
+
+    #[test]
+    fn builtin_context_persists_chdir_across_vm_builtin_calls() {
+        let root =
+            std::env::temp_dir().join(format!("phrust-vm-cwd-{}-{}", std::process::id(), "state"));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).expect("temp cwd should be created");
+        let result = execute_source_with_options(
+            "<?php
+            echo basename(getcwd()), '|';
+            var_dump(chdir('nested'));
+            echo basename(getcwd()), '|';
+            var_dump(chdir('..'));
+            echo basename(getcwd());
+            ",
+            VmOptions {
+                runtime_context: RuntimeContext::default()
+                    .with_cwd(root.clone())
+                    .with_filesystem_capabilities(
+                        php_runtime::FilesystemCapabilities::none()
+                            .with_allowed_roots(vec![root.clone()]),
+                    ),
+                ..VmOptions::default()
+            },
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "phrust-vm-cwd-".to_owned()
+                + &std::process::id().to_string()
+                + "-state|bool(true)\nnested|bool(true)\nphrust-vm-cwd-"
+                + &std::process::id().to_string()
+                + "-state"
+        );
+    }
+
+    #[test]
+    fn builtin_context_persists_stream_resources_across_vm_builtin_calls() {
+        let root = std::env::temp_dir().join(format!("phrust-vm-stream-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp stream root should be created");
+        let result = execute_source_with_options(
+            "<?php
+            $handle = fopen('data.txt', 'w+');
+            echo is_resource($handle) ? 'resource|' : 'missing|';
+            echo fwrite($handle, 'abc'), '|';
+            rewind($handle);
+            echo fread($handle, 3), '|';
+            echo fclose($handle) ? 'closed' : 'open';
+            ",
+            VmOptions {
+                runtime_context: RuntimeContext::default()
+                    .with_cwd(root.clone())
+                    .with_filesystem_capabilities(
+                        php_runtime::FilesystemCapabilities::none()
+                            .with_allowed_roots(vec![root.clone()]),
+                    ),
+                ..VmOptions::default()
+            },
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"resource|3|abc|closed");
+    }
+
+    #[test]
+    fn builtin_context_persists_json_last_error_across_vm_builtin_calls() {
+        let result = execute_source(
+            "<?php
+            var_dump(json_last_error());
+            var_dump(json_last_error_msg());
+            var_dump(json_decode('{'));
+            var_dump(json_last_error());
+            var_dump(json_last_error_msg());
+            var_dump(json_decode('[]'));
+            var_dump(json_last_error());
+            var_dump(json_last_error_msg());
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "int(0)\nstring(8) \"No error\"\nNULL\nint(4)\nstring(12) \"Syntax error\"\narray(0) {\n}\nint(0)\nstring(8) \"No error\"\n"
+        );
+    }
+
+    #[test]
+    fn builtin_context_persists_include_path_updates_for_stream_resolution() {
+        let root =
+            std::env::temp_dir().join(format!("phrust-vm-include-path-{}", std::process::id()));
+        let includes = root.join("includes");
+        std::fs::create_dir_all(&includes).expect("include dir should be created");
+        std::fs::write(includes.join("target.php"), "<?php echo 'unused';\n")
+            .expect("include target should be written");
+        let include_path = includes.to_string_lossy().replace('\\', "\\\\");
+        let source = format!(
+            "<?php
+            echo stream_resolve_include_path('target.php') === false ? 'missing|' : 'bad|';
+            ini_set('include_path', '{include_path}');
+            echo basename(stream_resolve_include_path('target.php')), '|';
+            echo ini_get('include_path');
+            "
+        );
+        let result = execute_source_with_options(
+            &source,
+            VmOptions {
+                runtime_context: RuntimeContext::default()
+                    .with_cwd(root.clone())
+                    .with_filesystem_capabilities(
+                        php_runtime::FilesystemCapabilities::none()
+                            .with_allowed_roots(vec![root.clone()]),
+                    ),
+                ..VmOptions::default()
+            },
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            format!("missing|target.php|{include_path}")
         );
     }
 
@@ -32552,9 +33166,13 @@ mod tests {
             "<?php class Locked { public readonly $value; } $original = new Locked(); $copy = clone($original, ['value' => 1]);",
         );
         assert_eq!(readonly.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(
-            readonly.diagnostics[0].id(),
-            "E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER"
+        assert_eq!(readonly.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
+        assert!(
+            readonly.output.to_string_lossy().contains(
+                "Uncaught Error: property Locked::$value uses modifiers outside the reflection-clone clone-with MVP"
+            ),
+            "{}",
+            readonly.output.to_string_lossy()
         );
     }
 
@@ -32668,8 +33286,32 @@ mod tests {
         assert_eq!(uninitialized.status.exit_status(), ExitStatus::RuntimeError);
         assert_eq!(
             uninitialized.diagnostics[0].id(),
-            "E_PHP_VM_UNINITIALIZED_PROPERTY"
+            "E_PHP_VM_UNCAUGHT_EXCEPTION"
         );
+        assert!(
+            uninitialized
+                .output
+                .to_string_lossy()
+                .contains("Uncaught Error: typed property C::$count must not be accessed before initialization"),
+            "{}",
+            uninitialized.output.to_string_lossy()
+        );
+
+        let caught_uninitialized = execute_source(
+            "<?php class C { public int $count; } try { echo (new C())->count; } catch (Error $e) { echo 'uninitialized'; }",
+        );
+        assert!(
+            caught_uninitialized.status.is_success(),
+            "{:?}",
+            caught_uninitialized.status
+        );
+        assert_eq!(caught_uninitialized.output.as_bytes(), b"uninitialized");
+
+        let nullable = execute_source(
+            "<?php class C { public ?int $count = null; } $c = new C(); var_dump($c->count); $c->count = 5; echo $c->count, '|'; $c->count = null; var_dump($c->count);",
+        );
+        assert!(nullable.status.is_success(), "{:?}", nullable.status);
+        assert_eq!(nullable.output.as_bytes(), b"NULL\n5|NULL\n");
 
         let readonly = execute_source(
             "<?php class C { public readonly int $x; public function set($x) { $this->x = $x; } } $c = new C(); $c->set(1); echo $c->x; $c->set(2);",
@@ -32690,6 +33332,16 @@ mod tests {
             static_property.status
         );
         assert_eq!(static_property.output.as_bytes(), b"2|x");
+
+        let invalid_static_scope = execute_source(
+            "<?php class C { public function name() { return 'C'; } } try { C::$missing; } catch (Error $e) { echo 'read|'; } try { C::$missing = 2; } catch (Error $e) { echo 'write|'; } try { C::name(); } catch (Error $e) { echo 'method'; }",
+        );
+        assert!(
+            invalid_static_scope.status.is_success(),
+            "{:?}",
+            invalid_static_scope.status
+        );
+        assert_eq!(invalid_static_scope.output.as_bytes(), b"read|write|method");
 
         let dynamic = execute_source("<?php class C {} $c = new C(); $c->x = 5; echo $c->x;");
         assert!(dynamic.status.is_success(), "{:?}", dynamic.status);
@@ -32762,6 +33414,19 @@ mod tests {
                 .contains("Uncaught Error: Cannot access protected property Secret::$hidden"),
             "{}",
             protected_property.output.to_string_lossy()
+        );
+
+        let caught_property_write = execute_source(
+            "<?php class Secret { private $hidden = 1; } $secret = new Secret(); try { $secret->hidden = 2; } catch (Error $e) { echo 'caught:', $e->getMessage(); }",
+        );
+        assert!(
+            caught_property_write.status.is_success(),
+            "{:?}",
+            caught_property_write.status
+        );
+        assert_eq!(
+            caught_property_write.output.as_bytes(),
+            b"caught:Cannot access private property Secret::$hidden"
         );
     }
 
@@ -34581,6 +35246,37 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     #[test]
+    fn magic_dispatch_recursion_guards_return_deterministic_errors() {
+        let property = execute_source(
+            "<?php class RecursiveMagicProperty { public function __get($name) { return $this->$name; } } echo (new RecursiveMagicProperty())->missing;",
+        );
+
+        assert!(!property.status.is_success(), "{:?}", property.status);
+        assert!(
+            property
+                .status
+                .message()
+                .is_some_and(|message| message.contains("E_PHP_VM_MAGIC_PROPERTY_RECURSION")),
+            "{:?}",
+            property.status
+        );
+
+        let method = execute_source(
+            "<?php class RecursiveMagicMethod { public function __call($name, $args) { return $this->$name(); } } echo (new RecursiveMagicMethod())->missing();",
+        );
+
+        assert!(!method.status.is_success(), "{:?}", method.status);
+        assert!(
+            method
+                .status
+                .message()
+                .is_some_and(|message| message.contains("E_PHP_VM_MAGIC_METHOD_RECURSION")),
+            "{:?}",
+            method.status
+        );
+    }
+
+    #[test]
     fn property_fetch_inline_cache_preserves_property_hook_fallback() {
         let source = "<?php class PerfHookProperty { public string $name { get { return 'hook'; } } } $object = new PerfHookProperty(); for ($i = 0; $i < 4; $i++) { echo $object->name; }";
         let on = execute_source_with_options(
@@ -34636,9 +35332,14 @@ echo perf_jit_unstable_types_debug(4), "\n";
         );
 
         assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(
-            result.diagnostics[0].id(),
-            "E_PHP_VM_UNINITIALIZED_PROPERTY"
+        assert_eq!(result.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
+        assert!(
+            result
+                .output
+                .to_string_lossy()
+                .contains("Uncaught Error: typed property PerfTypedProperty::$value must not be accessed before initialization"),
+            "{}",
+            result.output.to_string_lossy()
         );
         let counters = result.counters.expect("counters");
         assert_eq!(counters.property_ic_hits, 0, "{counters:?}");
@@ -36355,6 +37056,34 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     #[test]
+    fn frame_call_site_lines_feed_debug_backtrace() {
+        let function_call = execute_temp_source_file(
+            "frame-function-call",
+            "<?php\nfunction leaf() {\n    $trace = debug_backtrace();\n    echo $trace[0]['line'];\n}\nleaf();\n",
+        );
+        assert!(
+            function_call.status.is_success(),
+            "{:?}",
+            function_call.status
+        );
+        assert_eq!(function_call.output.as_bytes(), b"6");
+
+        let method_call = execute_temp_source_file(
+            "frame-method-call",
+            "<?php\nclass Box {\n    public function leaf() {\n        $trace = debug_backtrace();\n        echo $trace[0]['line'];\n    }\n}\n$box = new Box();\n$box->leaf();\n",
+        );
+        assert!(method_call.status.is_success(), "{:?}", method_call.status);
+        assert_eq!(method_call.output.as_bytes(), b"9");
+
+        let static_call = execute_temp_source_file(
+            "frame-static-call",
+            "<?php\nclass Box {\n    public static function leaf() {\n        $trace = debug_backtrace();\n        echo $trace[0]['line'];\n    }\n}\nBox::leaf();\n",
+        );
+        assert!(static_call.status.is_success(), "{:?}", static_call.status);
+        assert_eq!(static_call.output.as_bytes(), b"8");
+    }
+
+    #[test]
     fn function_params_return_type_success_and_failure() {
         let success = execute_source(
             "<?php function text(): string { return \"ok\"; } function number(): int { return 4; } function nothing(): void { return; } echo text(), \"|\", number(), \"|\"; echo nothing(), \"x\";",
@@ -36439,8 +37168,26 @@ echo perf_jit_unstable_types_debug(4), "\n";
         assert_eq!(bad_property.status.exit_status(), ExitStatus::RuntimeError);
         assert_eq!(
             bad_property.diagnostics[0].id(),
-            "E_PHP_VM_PROPERTY_TYPE_MISMATCH"
+            "E_PHP_VM_UNCAUGHT_EXCEPTION"
         );
+        assert!(
+            bad_property
+                .output
+                .to_string_lossy()
+                .contains("Uncaught TypeError: property Box::$value got array, expected int"),
+            "{}",
+            bad_property.output.to_string_lossy()
+        );
+
+        let caught_property = execute_source(
+            "<?php class Box { public int $value; } $box = new Box(); try { $box->value = []; } catch (TypeError $e) { echo 'type'; }",
+        );
+        assert!(
+            caught_property.status.is_success(),
+            "{:?}",
+            caught_property.status
+        );
+        assert_eq!(caught_property.output.as_bytes(), b"type");
 
         let bad_void =
             php_semantics::analyze_source("<?php function bad(): void { return null; } bad();");
@@ -36939,16 +37686,25 @@ echo perf_jit_unstable_types_debug(4), "\n";
         );
         assert_eq!(side_effects.output.as_bytes(), b"7|7");
 
-        let not_callable = execute_source("<?php echo 2 |> 4;");
-        assert_eq!(not_callable.status.exit_status(), ExitStatus::RuntimeError);
-        let message = not_callable
+        let not_callable =
+            execute_source("<?php try { echo 2 |> 4; } catch (Error $e) { echo 'invalid'; }");
+        assert!(
+            not_callable.status.is_success(),
+            "{:?}",
+            not_callable.status
+        );
+        assert_eq!(not_callable.output.as_bytes(), b"invalid");
+
+        let uncaught_not_callable = execute_source("<?php echo 2 |> 4;");
+        assert_eq!(
+            uncaught_not_callable.status.exit_status(),
+            ExitStatus::RuntimeError
+        );
+        let message = uncaught_not_callable
             .status
             .message()
             .expect("runtime error message");
-        assert!(
-            message.contains("E_PHP_VM_PIPE_RHS_NOT_CALLABLE"),
-            "{message}"
-        );
+        assert!(message.contains("Uncaught Error"), "{message}");
     }
 
     #[test]
@@ -37089,13 +37845,16 @@ echo perf_jit_unstable_types_debug(4), "\n";
             echo ($runtime instanceof RuntimeException) ? 'runtime|' : 'no|';
             echo ($runtime instanceof Exception) ? 'exception|' : 'no|';
             echo ($runtime instanceof LogicException) ? 'logic' : 'not-logic';
+            echo '|';
+            $json = new JsonException('json');
+            echo ($json instanceof Exception) ? 'json-exception' : 'json-no';
             ",
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.as_bytes(),
-            b"logic:bad|runtime|exception|not-logic"
+            b"logic:bad|runtime|exception|not-logic|json-exception"
         );
     }
 
@@ -38391,6 +39150,14 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     fn execute_source_with_options(source: &str, options: VmOptions) -> VmResult {
+        execute_source_with_options_and_path(source, options, "/tmp/phrust-test.php".to_owned())
+    }
+
+    fn execute_source_with_options_and_path(
+        source: &str,
+        options: VmOptions,
+        source_path: String,
+    ) -> VmResult {
         let frontend = php_semantics::analyze_source(source);
         assert!(
             !frontend.has_errors(),
@@ -38400,7 +39167,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
         let lowering = php_ir::lower_frontend_result(
             &frontend,
             php_ir::LoweringOptions {
-                source_path: "/tmp/phrust-test.php".to_owned(),
+                source_path,
                 source_text: Some(source.to_owned()),
                 ..php_ir::LoweringOptions::default()
             },
@@ -38416,6 +39183,19 @@ echo perf_jit_unstable_types_debug(4), "\n";
             lowering.verification
         );
         Vm::with_options(options).execute(lowering.unit)
+    }
+
+    fn execute_temp_source_file(name: &str, source: &str) -> VmResult {
+        let path =
+            std::env::temp_dir().join(format!("phrust-vm-{}-{name}.php", std::process::id()));
+        std::fs::write(&path, source).expect("temporary PHP source should be writable");
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions::default(),
+            path.to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_file(path);
+        result
     }
 
     fn execute_fixture_file(path: &str) -> VmResult {

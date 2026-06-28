@@ -8,6 +8,7 @@
 pub mod array;
 pub mod autoload;
 pub mod builtins;
+pub mod callable;
 pub mod context;
 pub mod convert;
 pub mod datetime;
@@ -40,6 +41,10 @@ pub use autoload::AutoloadRegistry;
 pub use builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
     BuiltinResult, InternalFunction, RuntimeSourceSpan, StrtokState,
+};
+pub use callable::{
+    CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
+    ClosurePayload,
 };
 pub use context::{
     ErrorReporting, ProcessCapability, RuntimeContext, RuntimeIniOptions, StrictTypesInfo,
@@ -78,6 +83,7 @@ pub use object::{
     AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
     ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
     ClassPropertyFlags, ClassPropertyHooks, ObjectRef, RuntimeType, WeakObjectHandle,
+    display_class_name, normalize_class_name,
 };
 pub use output::{OutputBuffer, OutputStats};
 pub use pcre::{
@@ -98,10 +104,7 @@ pub use status::{ExecutionStatus, ExitStatus};
 pub use string::PhpString;
 pub use todo_runtime::{RuntimeTodo, runtime_skeleton_status};
 pub use types::{runtime_type_name, value_matches_runtime_type, value_type_name};
-pub use value::{
-    CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
-    ClosurePayload, FloatValue, Value,
-};
+pub use value::{FloatValue, Value};
 
 #[cfg(test)]
 mod tests {

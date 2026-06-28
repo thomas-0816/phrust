@@ -9,6 +9,18 @@ use serde::{Deserialize, Serialize};
 /// Version marker for the runtime IR snapshot shape.
 pub const IR_VERSION: u32 = 1;
 
+/// Normalizes a class-like name for runtime lookup.
+#[must_use]
+pub fn normalize_class_name(name: &str) -> String {
+    name.trim_start_matches('\\').to_ascii_lowercase()
+}
+
+/// Preserves PHP-visible class spelling while removing a leading root slash.
+#[must_use]
+pub fn display_class_name(name: &str) -> String {
+    name.trim_start_matches('\\').to_owned()
+}
+
 /// Source file table entry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FileEntry {
@@ -266,5 +278,25 @@ impl IrUnit {
             strict_types: false,
             source_map: IrSourceMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_class_name, normalize_class_name};
+
+    #[test]
+    fn class_name_lookup_is_case_insensitive_without_root_slash() {
+        assert_eq!(normalize_class_name("\\App\\Thing"), "app\\thing");
+        assert_eq!(
+            normalize_class_name("DateTimeImmutable"),
+            "datetimeimmutable"
+        );
+    }
+
+    #[test]
+    fn class_name_display_preserves_source_spelling_without_root_slash() {
+        assert_eq!(display_class_name("\\App\\Thing"), "App\\Thing");
+        assert_eq!(display_class_name("DateTimeImmutable"), "DateTimeImmutable");
     }
 }

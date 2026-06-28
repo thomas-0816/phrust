@@ -1,4 +1,4 @@
 <?php
-// runtime-fixture: kind=known_gap id=E_PHP_VM_REFLECTION_UNKNOWN_CLASS
+// runtime-fixture: kind=valid
 $reflection = new ReflectionClass('stdClass');
 echo $reflection->getName();

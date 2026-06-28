@@ -1,157 +1,176 @@
 //! Reflection builtin registry slice.
 
-use super::core;
-use crate::builtins::{BuiltinCompatibility, BuiltinEntry};
+use crate::Value;
+use crate::builtins::{
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
+    RuntimeSourceSpan,
+};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "call_user_func",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "call_user_func_array",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "class_exists",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "constant",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "defined",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "enum_exists",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "extension_loaded",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "forward_static_call",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "func_get_arg",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "debug_backtrace",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "debug_print_backtrace",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "func_get_args",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "func_num_args",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "function_exists",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_called_class",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_class",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_class_methods",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_class_vars",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_declared_classes",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_declared_interfaces",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_declared_traits",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_loaded_extensions",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_mangled_object_vars",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_object_vars",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "get_parent_class",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "interface_exists",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "is_a",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "is_subclass_of",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "method_exists",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "property_exists",
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
         "trait_exists",
-        core::builtin_symbol_introspection_requires_vm,
+        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
 ];
+
+pub(in crate::builtins::modules) fn builtin_symbol_introspection_requires_vm(
+    _context: &mut BuiltinContext<'_>,
+    _args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    Err(BuiltinError::new(
+        "E_PHP_RUNTIME_SYMBOL_CONTEXT_REQUIRED",
+        "symbol introspection builtins require VM symbol tables and autoload state",
+    ))
+}

@@ -169,3 +169,4 @@
 {"path":"ext/standard/tests/math/number_format_with_3_args.phpt"}
 {"path":"ext/standard/tests/math/sqrt_basic.phpt"}
 {"path":"ext/standard/tests/math/sqrt_variation.phpt"}
+{"path":"tests/phpt/generated/standard.math/core-math-edge-cases.phpt","module":"standard.math","kind":"generated","reason":"core math constants base conversion fmod NaN and round mode baseline"}

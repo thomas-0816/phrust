@@ -1,1 +1,1 @@
-{"count":3,"items":[{"id":1,"slug":"item-1"},{"id":2,"slug":"item-2"},{"id":3,"slug":"item-3"}],"ok":true}
+{"ok":true,"count":3,"items":[{"id":1,"slug":"item-1"},{"id":2,"slug":"item-2"},{"id":3,"slug":"item-3"}]}

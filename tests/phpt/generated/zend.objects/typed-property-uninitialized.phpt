@@ -1,0 +1,21 @@
+--TEST--
+Generated zend.objects: typed property uninitialized read is Error
+--DESCRIPTION--
+module: zend.objects
+generated timestamp: 20260627T000000Z
+generator version: phpt-objects-typed-properties-v1
+reason: Prompt 14.6 typed property uninitialized baseline
+--FILE--
+<?php
+class Box {
+    public int $value;
+}
+
+try {
+    echo (new Box())->value;
+} catch (Error $e) {
+    echo "caught:", get_class($e), "\n";
+}
+?>
+--EXPECT--
+caught:Error

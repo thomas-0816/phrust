@@ -33,7 +33,8 @@ pub use lower::{
 pub use module::{
     AttributeEntry, ClassEntry, ClassEnumBackingType, ClassEnumCaseEntry, ClassFlags,
     ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks,
-    FileEntry, FunctionEntry, GlobalConstantEntry, IR_VERSION, IrUnit,
+    FileEntry, FunctionEntry, GlobalConstantEntry, IR_VERSION, IrUnit, display_class_name,
+    normalize_class_name,
 };
 pub use operand::Operand;
 pub use source_map::{IrSourceMap, IrSourceMapEntry, IrSourceMapTarget, IrSpan};

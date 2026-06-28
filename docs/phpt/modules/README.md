@@ -12,7 +12,7 @@ This directory contains the functional module plan for PHPT-driven runtime compl
 | 6 | [diagnostics.output](diagnostics.output.md) | 0 | 0 | 0 | 0 | 0 | Centralize runtime diagnostic rendering and continuation semantics. |
 | 7 | [strings.literals](strings.literals.md) | 9 | 0 | 0 | 9 | 0 | Separate frontend literal gaps from runtime string builtin gaps. |
 | 8 | [arrays.references](arrays.references.md) | 273 | 26 | 1 | 246 | 0 | Close array data-model and reference/COW gaps before array builtins. |
-| 9 | [zend.functions](zend.functions.md) | 887 | 85 | 53 | 727 | 0 | Use generated arginfo for builtin arity and parameter metadata. |
+| 9 | [zend.functions](zend.functions.md) | 887 | 85 | 53 | 727 | 0 | Prompt 13 selected generated function/callable contracts are closed and green. |
 | 10 | [objects.classes](objects.classes.md) | 2136 | 178 | 33 | 1924 | 0 | Stabilize constructor/property/method basics before magic behavior. |
 | 11 | [filesystem.streams](filesystem.streams.md) | 1194 | 66 | 217 | 849 | 0 | Keep filesystem policy root-constrained and deterministic. |
 | 12 | [standard.arrays](standard.arrays.md) | 821 | 218 | 7 | 595 | 0 | Implement array builtins after array data model gaps are closed. |
@@ -20,7 +20,7 @@ This directory contains the functional module plan for PHPT-driven runtime compl
 | 14 | [standard.math](standard.math.md) | 171 | 14 | 11 | 146 | 0 | Use php-src arginfo and Reference PHP for edge-case numeric behavior. |
 | 15 | [standard.variables](standard.variables.md) | 446 | 23 | 74 | 348 | 0 | Stabilize var_dump/print_r/serialization-adjacent value rendering. |
 | 16 | [standard.serialization](standard.serialization.md) | 126 | 16 | 2 | 107 | 0 | Implement serialization after arrays/objects are stable. |
-| 17 | [json](json.md) | 88 | 10 | 1 | 77 | 0 | Close request-local JSON error state and common flags. |
+| 17 | [json](json.md) | 88 | 10 | 1 | 77 | 0 | Prompt 17 selected JSON contracts are closed and green. |
 | 18 | [pcre](pcre.md) | 165 | 41 | 5 | 117 | 0 | Use PCRE2 while documenting unsupported modifier/callout gaps. |
 | 19 | [date](date.md) | 687 | 14 | 12 | 661 | 0 | Stabilize timezone persistence and common formatting/parsing. |
 | 20 | [spl](spl.md) | 520 | 39 | 3 | 478 | 0 | Build on stable object, array, iterator, and filesystem layers. |

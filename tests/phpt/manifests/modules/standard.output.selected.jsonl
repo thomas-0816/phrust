@@ -1,0 +1,11 @@
+{"path":"tests/output/ob_start_basic_001.phpt"}
+{"path":"tests/output/ob_002.phpt"}
+{"path":"tests/output/ob_005.phpt"}
+{"path":"tests/output/ob_006.phpt"}
+{"path":"tests/output/ob_007.phpt"}
+{"path":"tests/output/ob_008.phpt"}
+{"path":"tests/output/ob_get_clean_basic_001.phpt"}
+{"path":"tests/output/ob_get_clean_basic_002.phpt"}
+{"path":"tests/phpt/generated/standard.output/output-buffer-basic-state.phpt"}
+{"path":"tests/phpt/generated/standard.output/output-buffer-nested-clean.phpt"}
+{"path":"tests/phpt/generated/standard.output/output-buffer-clean-flush.phpt"}

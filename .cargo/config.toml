@@ -1,0 +1,2 @@
+[target.'cfg(unix)']
+runner = "env RUST_MIN_STACK=8388608"

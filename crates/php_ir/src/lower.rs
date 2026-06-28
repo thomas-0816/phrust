@@ -14,7 +14,7 @@ use crate::instruction::{
 use crate::module::{
     AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
     ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
-    ClassPropertyFlags, ClassPropertyHooks, IrUnit,
+    ClassPropertyFlags, ClassPropertyHooks, IrUnit, normalize_class_name,
 };
 use crate::operand::Operand;
 use crate::source_map::{IrSourceMapTarget, IrSpan};
@@ -2436,19 +2436,30 @@ impl LoweringContext<'_> {
         body: Vec<StmtId>,
     ) -> BlockId {
         let span = span_from_range(self.file, self.span_for(SourceMappedId::from(stmt_id)));
-        if expressions.len() > 3 {
+        if expressions.len() > 4 {
             self.unsupported(
                 UnsupportedFeature::ForHeaderMultiExpression,
                 self.span_for(SourceMappedId::from(stmt_id)),
                 "for headers with multiple expressions per section are not lowered yet",
             );
         }
-        let init = expressions.first().copied();
-        let condition = expressions.get(1).copied();
-        let update = expressions.get(2).copied();
+        let (init, condition, update): (&[ExprId], Option<ExprId>, Option<ExprId>) =
+            if expressions.len() == 4 {
+                (
+                    &expressions[..2],
+                    expressions.get(2).copied(),
+                    expressions.get(3).copied(),
+                )
+            } else {
+                (
+                    expressions.get(..1).unwrap_or_default(),
+                    expressions.get(1).copied(),
+                    expressions.get(2).copied(),
+                )
+            };
         let mut current = block;
-        if let Some(init) = init {
-            current = self.lower_expr_stmt(builder, function, current, init);
+        for init in init {
+            current = self.lower_expr_stmt(builder, function, current, *init);
         }
         let condition_block = builder.append_block(function);
         let after_block = builder.append_block(function);
@@ -2511,14 +2522,20 @@ impl LoweringContext<'_> {
             );
             return block;
         };
-        let Some(value_local) = self.variable_local(builder, function, value_target) else {
+        let value_local = self.variable_local(builder, function, value_target);
+        let value_destructure = if value_local.is_none() {
+            self.foreach_destructuring_targets(builder, function, value_target)
+        } else {
+            None
+        };
+        if value_local.is_none() && value_destructure.is_none() {
             self.unsupported(
                 UnsupportedFeature::HirStatement,
                 self.span_for(SourceMappedId::from(value_target)),
                 "foreach value target must be a simple local variable in runtime",
             );
             return block;
-        };
+        }
         let key_local = if let Some(key_target) = key_target {
             let Some(key_local) = self.variable_local(builder, function, key_target) else {
                 self.unsupported(
@@ -2534,6 +2551,14 @@ impl LoweringContext<'_> {
         };
 
         if by_ref {
+            let Some(value_local) = value_local else {
+                self.unsupported(
+                    UnsupportedFeature::ByReferenceForeach,
+                    self.span_for(SourceMappedId::from(value_target)),
+                    "by-reference foreach value destructuring is outside the reference MVP",
+                );
+                return block;
+            };
             let Some(source_local) = self.variable_local(builder, function, source) else {
                 self.unsupported(
                     UnsupportedFeature::ByReferenceForeach,
@@ -2655,23 +2680,112 @@ impl LoweringContext<'_> {
                 span,
             );
         }
-        builder.emit(
-            function,
-            body_block,
-            InstructionKind::StoreLocal {
-                local: value_local,
-                src: Operand::Register(value_reg),
-            },
-            span,
-        );
+        let body_entry = if let Some(value_local) = value_local {
+            builder.emit(
+                function,
+                body_block,
+                InstructionKind::StoreLocal {
+                    local: value_local,
+                    src: Operand::Register(value_reg),
+                },
+                span,
+            );
+            body_block
+        } else {
+            self.lower_foreach_value_destructure(
+                builder,
+                function,
+                body_block,
+                value_reg,
+                value_destructure.unwrap_or_default(),
+                span,
+            )
+        };
         self.loop_stack.push(LoopTargets {
             break_block: after_block,
             continue_block: condition_block,
         });
-        let body_end = self.lower_stmt_list(builder, function, body_block, body);
+        let body_end = self.lower_stmt_list(builder, function, body_entry, body);
         self.loop_stack.pop();
         self.jump_if_open(builder, function, body_end, condition_block, span);
         after_block
+    }
+
+    fn foreach_destructuring_targets(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        value_target: ExprId,
+    ) -> Option<Vec<(i64, LocalId)>> {
+        let target_exprs = {
+            let module = self
+                .frontend
+                .database()
+                .module(self.frontend.module().module_id())?;
+            let expression = module.expressions().get(value_target)?;
+            let elements = match expression.kind().clone() {
+                HirExprKind::Array { elements } | HirExprKind::List { elements } => elements,
+                _ => return None,
+            };
+            let mut target_exprs = Vec::new();
+            for (index, element) in elements.into_iter().enumerate() {
+                let element_expression = module.expressions().get(element)?;
+                let target = match element_expression.kind().clone() {
+                    HirExprKind::ArrayPair {
+                        key: None,
+                        value: Some(value),
+                        unpack: false,
+                        by_ref: false,
+                    } => value,
+                    HirExprKind::ArrayPair { .. } => return None,
+                    _ => element,
+                };
+                target_exprs.push((index.try_into().ok()?, target));
+            }
+            target_exprs
+        };
+        let mut targets = Vec::new();
+        for (index, target) in target_exprs {
+            let local = self.variable_local(builder, function, target)?;
+            targets.push((index, local));
+        }
+        Some(targets)
+    }
+
+    fn lower_foreach_value_destructure(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+        value: RegId,
+        targets: Vec<(i64, LocalId)>,
+        span: IrSpan,
+    ) -> BlockId {
+        for (index, local) in targets {
+            let key = builder.intern_constant(IrConstant::Int(index));
+            let fetched = builder.alloc_register(function);
+            builder.emit(
+                function,
+                block,
+                InstructionKind::FetchDim {
+                    dst: fetched,
+                    array: Operand::Register(value),
+                    key: Operand::Constant(key),
+                    quiet: false,
+                },
+                span,
+            );
+            builder.emit(
+                function,
+                block,
+                InstructionKind::StoreLocal {
+                    local,
+                    src: Operand::Register(fetched),
+                },
+                span,
+            );
+        }
+        block
     }
 
     fn lower_break_or_continue(
@@ -7980,10 +8094,6 @@ fn qualified_function_name(
     short_name.to_owned()
 }
 
-fn normalize_class_name(name: &str) -> String {
-    name.trim_start_matches('\\').to_ascii_lowercase()
-}
-
 fn catch_types_supported(catch: &HirCatchClause) -> bool {
     catch.types.is_empty()
         || catch.types.iter().all(|ty| {
@@ -8002,6 +8112,7 @@ fn is_internal_throwable_class(normalized: &str) -> bool {
             | "valueerror"
             | "argumentcounterror"
             | "fibererror"
+            | "jsonexception"
             | "logicexception"
             | "badfunctioncallexception"
             | "badmethodcallexception"
@@ -8212,7 +8323,22 @@ fn literal_constant(text: &str) -> Option<IrConstant> {
     if is_php_float_literal_candidate(&numeric) {
         return numeric.parse::<f64>().ok().map(IrConstant::Float);
     }
-    parse_php_int_literal(&numeric).map(IrConstant::Int)
+    parse_php_int_literal(&numeric)
+        .map(IrConstant::Int)
+        .or_else(|| {
+            decimal_integer_literal(&numeric)?
+                .parse::<f64>()
+                .ok()
+                .map(IrConstant::Float)
+        })
+}
+
+fn decimal_integer_literal(text: &str) -> Option<&str> {
+    let body = text
+        .strip_prefix('-')
+        .or_else(|| text.strip_prefix('+'))
+        .unwrap_or(text);
+    (!body.is_empty() && body.chars().all(|ch| ch.is_ascii_digit())).then_some(text)
 }
 
 fn is_php_float_literal_candidate(text: &str) -> bool {
@@ -8877,6 +9003,22 @@ mod tests {
     }
 
     #[test]
+    fn oversized_decimal_integer_literals_lower_to_float_constants() {
+        let frontend = analyze_source("<?php echo 18446744073709551616;");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        assert!(
+            result
+                .unit
+                .constants
+                .iter()
+                .any(|constant| matches!(constant, IrConstant::Float(value) if *value == 18446744073709551616_f64))
+        );
+    }
+
+    #[test]
     fn literals_unescape_php_string_bytes_without_unicode_normalization() {
         let frontend = analyze_source("<?php echo \"a\\n\", 'b\\\\c';");
         let result = lower_frontend_result(&frontend, LoweringOptions::default());
@@ -9163,6 +9305,42 @@ mod tests {
         assert!(snapshot.contains("jump_if_true"));
         assert!(snapshot.matches("jump block:").count() >= 3);
         assert!(snapshot.contains("compare r"));
+    }
+
+    #[test]
+    fn for_loop_lowers_two_initializer_expressions() {
+        let frontend = analyze_source("<?php for ($x = 0, $count = 0; $x < 3; $x++) { $count++; }");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("local:0 $x"), "{snapshot}");
+        assert!(snapshot.contains("local:1 $count"), "{snapshot}");
+        assert!(snapshot.matches("store_local").count() >= 2, "{snapshot}");
+        assert!(
+            !snapshot.contains("E_PHP_IR_UNSUPPORTED_FOR_HEADER_MULTI_EXPR"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn foreach_lowers_keyless_list_destructuring_value_target() {
+        let frontend =
+            analyze_source("<?php foreach ([[1, 2]] as [$val, $precision]) { echo $val; }");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("$val"), "{snapshot}");
+        assert!(snapshot.contains("$precision"), "{snapshot}");
+        assert!(snapshot.contains("fetch_dim"), "{snapshot}");
+        assert!(snapshot.matches("store_local").count() >= 2, "{snapshot}");
+        assert!(
+            !snapshot.contains("foreach value target must be a simple local variable"),
+            "{snapshot}"
+        );
     }
 
     #[test]

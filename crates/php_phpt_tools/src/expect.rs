@@ -283,6 +283,14 @@ mod tests {
     }
 
     #[test]
+    fn expectf_float_placeholder_matches_embedded_fraction() {
+        let expected = "float(1%f)\nstring(%d) \"d:1%s;\"\nfloat(1%f)\n";
+        let actual = "float(12.3)\nstring(7) \"d:12.3;\"\nfloat(12.3)\n";
+
+        assert!(match_expectation(ExpectationKind::ExpectF, expected, actual).matched);
+    }
+
+    #[test]
     fn expectf_supports_any_placeholders() {
         assert!(match_expectation(ExpectationKind::ExpectF, "a%Aend", "a\nmiddle\nend").matched);
         assert!(match_expectation(ExpectationKind::ExpectF, "a%aend", "a\nx\nend").matched);

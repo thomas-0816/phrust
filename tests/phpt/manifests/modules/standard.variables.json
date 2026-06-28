@@ -4,13 +4,14 @@
   "priority":15,
   "selected_manifest":"tests/phpt/manifests/modules/standard.variables.selected.jsonl",
   "corpus_count":446,
-  "pass_count":23,
-  "skip_count":74,
-  "fail_count":348,
+  "selected_count":27,
+  "pass_count":26,
+  "skip_count":1,
+  "fail_count":0,
   "bork_count":0,
   "known_failure_count":435,
   "scope":["variable inspection and conversion builtins"],
   "non_scope":["general VM symbol-table redesign"],
-  "target_gates":["nix develop -c just phpt-module MODULE=standard.variables"],
-  "next_step":"Stabilize var_dump/print_r/serialization-adjacent value rendering."
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.variables","nix develop -c just verify-stdlib"],
+  "next_step":"Prompt 16.3 selected variable/debug-output contracts are closed and green; keep them green while expanding value rendering coverage."
 }

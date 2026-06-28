@@ -4,13 +4,14 @@
   "priority":9,
   "selected_manifest":"tests/phpt/manifests/modules/zend.functions.selected.jsonl",
   "corpus_count":887,
-  "pass_count":85,
-  "skip_count":53,
-  "fail_count":727,
+  "selected_count":29,
+  "pass_count":29,
+  "skip_count":0,
+  "fail_count":0,
   "bork_count":0,
   "known_failure_count":818,
   "scope":["user functions","closures","callables","arity","type coercion"],
   "non_scope":["Reflection API surface"],
-  "target_gates":["nix develop -c just phpt-module MODULE=zend.functions"],
-  "next_step":"Use generated arginfo for builtin arity and parameter metadata."
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=zend.functions"],
+  "next_step":"Prompt 13 selected generated function/callable contracts are closed and green; keep them green while reducing the broader php-src blocker slice."
 }

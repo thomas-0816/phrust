@@ -243,7 +243,7 @@ pub(crate) fn verify_baseline<W: Write, E: Write>(
     stderr: &mut E,
 ) -> Result<i32, String> {
     let options = VerifyBaselineOptions::parse(args)?;
-    let corpus = super::runner::read_manifest_paths(&options.corpus)?;
+    let corpus = super::run::read_manifest_paths(&options.corpus)?;
     let failures = read_known_failures(&options.known_failures)?;
     let metadata = read_baseline_metadata(&options.metadata)?;
     let module_counts = read_baseline_module_counts(&options.module_counts)?;

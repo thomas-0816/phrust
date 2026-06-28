@@ -2,75 +2,44 @@
 
 - Priority: 15
 - Selected manifest: `tests/phpt/manifests/modules/standard.variables.selected.jsonl`
-- Current counts: 23 PASS, 74 SKIP, 348 FAIL, 0 BORK from 446 corpus candidates
+- Prompt 16.1 baseline: 23 PASS, 74 SKIP, 348 FAIL, 0 BORK from 446 corpus candidates
+- Prompt 16.9 focused gate: 26 PASS, 1 SKIP, 0 FAIL, 0 BORK
 
 ## Scope
 
-- variable inspection and conversion builtins
+- Variable inspection and conversion builtins covered by the selected focused
+  gate
 
 ## Non-Scope
 
-- general VM symbol-table redesign
+- General VM symbol-table redesign
+- Complete object/reference rendering matrix
 
 ## Relevant PHPT Paths
 
-- `ext/standard/tests/versioning/version_compare_op_abbrev.phpt`
-- `ext/standard/tests/versioning/version_compare_invalid_operator.phpt`
-- `ext/standard/tests/versioning/version_compare.phpt`
-- `ext/standard/tests/versioning/phpversion.phpt`
-- `ext/standard/tests/versioning/php_sapi_name_variation001.phpt`
-- `ext/standard/tests/versioning/php_sapi_name.phpt`
-- `ext/standard/tests/url/parse_url_unterminated.phpt`
-- `ext/standard/tests/url/parse_url_relative_scheme.phpt`
-- `ext/standard/tests/url/parse_url_error_002.phpt`
-- `ext/standard/tests/url/parse_url_basic_011.phpt`
-- `ext/standard/tests/url/parse_url_basic_010.phpt`
-- `ext/standard/tests/url/parse_url_basic_009.phpt`
-- `ext/standard/tests/url/parse_url_basic_008.phpt`
-- `ext/standard/tests/url/parse_url_basic_007.phpt`
-- `ext/standard/tests/url/parse_url_basic_006.phpt`
-- `ext/standard/tests/url/parse_url_basic_005.phpt`
-- `ext/standard/tests/url/parse_url_basic_004.phpt`
-- `ext/standard/tests/url/parse_url_basic_003.phpt`
-- `ext/standard/tests/url/parse_url_basic_002.phpt`
-- `ext/standard/tests/url/parse_url_basic_001.phpt`
-- `ext/standard/tests/url/get_headers_error_003.phpt`
-- `ext/standard/tests/url/bug74780.phpt`
-- `ext/standard/tests/url/bug73192.phpt`
-- `ext/standard/tests/url/bug69976.phpt`
-- `ext/standard/tests/url/bug68917.phpt`
-- `ext/standard/tests/url/bug63162.phpt`
-- `ext/standard/tests/url/bug55399.phpt`
-- `ext/standard/tests/url/bug55273.phpt`
-- `ext/standard/tests/url/bug54180.phpt`
-- `ext/standard/tests/url/bug52327.phpt`
-- `ext/standard/tests/url/bug47174.phpt`
-- `ext/standard/tests/url/base64_loop_001.phpt`
-- `ext/standard/tests/url/base64_encode_basic_002.phpt`
-- `ext/standard/tests/url/base64_encode_basic_001.phpt`
-- `ext/standard/tests/url/base64_decode_basic_003.phpt`
-- `ext/standard/tests/url/base64_decode_basic_002.phpt`
-- `ext/standard/tests/url/base64_decode_basic_001.phpt`
-- `ext/standard/tests/time/strptime_parts.phpt`
-- `ext/standard/tests/time/strptime_basic.phpt`
-- `ext/standard/tests/time/idate_iso.phpt`
+- `tests/phpt/generated/standard.variables/`
+- Selected upstream `ext/standard/tests/array/` and
+  `ext/standard/tests/general_functions/` cases in the manifest
 
-## Relevant php-src Source Areas
+## Relevant Source Areas
 
-- `ext/standard/tests/general_functions/`
-- `ext/standard/tests/array/`
+- `crates/php_runtime/src/builtins/modules/core.rs`
+- `crates/php_runtime/src/value.rs`
+- `crates/php_runtime/src/object/`
+- `crates/php_vm/src/vm/mod.rs`
 
 ## Target Gates
 
-- `nix develop -c just phpt-module MODULE=standard.variables`
+- `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.variables`
+- `nix develop -c just verify-stdlib`
+
+## Prompt 16 Evidence
+
+- Kept the selected variable-inspection slice green after the standard-core
+  follow-up changes.
+- Latest focused target run: PASS, 27 selected PHPTs with 26 PASS and 1 SKIP.
 
 ## Known Gaps
 
-- `runtime-error-or-diagnostic`: 226
-- `runtime-unsupported-feature`: 152
-- `runtime-output-mismatch`: 42
-- `frontend-parse-or-compile`: 14
-
-## Next Step
-
-Stabilize var_dump/print_r/serialization-adjacent value rendering.
+- Full `var_dump`/`print_r` object visibility, magic behavior, and reference
+  formatting remain outside this selected gate.

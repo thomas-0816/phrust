@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"standard.output",
+  "priority":16,
+  "selected_manifest":"tests/phpt/manifests/modules/standard.output.selected.jsonl",
+  "corpus_count":94,
+  "selected_count":11,
+  "pass_count":11,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":83,
+  "scope":["output buffering","nested output buffers"],
+  "non_scope":["output-buffer callbacks","handler-list APIs","chunk-size parity"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.output"],
+  "next_step":"Prompt 16.6 selected output-buffer contracts are closed and green; keep callbacks and handler APIs as documented gaps."
+}

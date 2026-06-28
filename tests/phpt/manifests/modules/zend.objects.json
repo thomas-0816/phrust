@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"zend.objects",
+  "priority":10,
+  "selected_manifest":"tests/phpt/manifests/modules/zend.objects.selected.jsonl",
+  "corpus_count":2136,
+  "selected_count":43,
+  "pass_count":43,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":2000,
+  "scope":["construction","properties","methods","visibility","static access","magic method MVP","clone/clone-with MVP","trait method MVP","enum case/static method MVP"],
+  "non_scope":["complete magic methods","complete trait semantics","complete enum semantics","Reflection API completion"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=zend.objects"],
+  "next_step":"Prompt 14 selected generated object contracts are closed and green; keep them green while closing the remaining corpus property/reference, assignment-lowering, and foreach visibility blockers."
+}

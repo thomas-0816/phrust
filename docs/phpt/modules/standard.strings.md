@@ -2,76 +2,51 @@
 
 - Priority: 13
 - Selected manifest: `tests/phpt/manifests/modules/standard.strings.selected.jsonl`
-- Current counts: 352 PASS, 42 SKIP, 308 FAIL, 0 BORK from 727 corpus candidates
+- Prompt 16.1 baseline: 352 PASS, 42 SKIP, 308 FAIL, 0 BORK from 727 corpus candidates
+- Prompt 16.9 focused gate: 15 PASS, 0 FAIL, 0 BORK
 
 ## Scope
 
-- ext/standard string builtins
+- Common binary-safe string helpers
+- Focused generated fixtures for length, substring, search, trimming,
+  split/join, formatted output, and tokenizer state
 
 ## Non-Scope
 
-- frontend literal decoding
+- Full upstream string corpus
+- Complete formatting matrix
+- Charset/encoding-heavy behavior
 
 ## Relevant PHPT Paths
 
-- `ext/standard/tests/strings/wordwrap_variation5.phpt`
-- `ext/standard/tests/strings/wordwrap_memory_limit_32bit.phpt`
-- `ext/standard/tests/strings/wordwrap_memory_limit.phpt`
-- `ext/standard/tests/strings/wordwrap_error.phpt`
-- `ext/standard/tests/strings/wordwrap_basic.phpt`
-- `ext/standard/tests/strings/wordwrap.phpt`
-- `ext/standard/tests/strings/vsprintf_basic7.phpt`
-- `ext/standard/tests/strings/vsprintf_basic6.phpt`
-- `ext/standard/tests/strings/vsprintf_basic4.phpt`
-- `ext/standard/tests/strings/vprintf_variation8.phpt`
-- `ext/standard/tests/strings/vprintf_variation7.phpt`
-- `ext/standard/tests/strings/vprintf_variation6.phpt`
-- `ext/standard/tests/strings/vprintf_variation5.phpt`
-- `ext/standard/tests/strings/vprintf_variation4_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation4.phpt`
-- `ext/standard/tests/strings/vprintf_variation3.phpt`
-- `ext/standard/tests/strings/vprintf_variation2.phpt`
-- `ext/standard/tests/strings/vprintf_variation19_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation19.phpt`
-- `ext/standard/tests/strings/vprintf_variation18.phpt`
-- `ext/standard/tests/strings/vprintf_variation17.phpt`
-- `ext/standard/tests/strings/vprintf_variation16_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation16.phpt`
-- `ext/standard/tests/strings/vprintf_variation15_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation15.phpt`
-- `ext/standard/tests/strings/vprintf_variation14_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation14.phpt`
-- `ext/standard/tests/strings/vprintf_variation13_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation13.phpt`
-- `ext/standard/tests/strings/vprintf_variation12_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation12.phpt`
-- `ext/standard/tests/strings/vprintf_variation11_64bit.phpt`
-- `ext/standard/tests/strings/vprintf_variation11.phpt`
-- `ext/standard/tests/strings/vprintf_basic7.phpt`
-- `ext/standard/tests/strings/vprintf_basic6.phpt`
-- `ext/standard/tests/strings/vprintf_basic4.phpt`
-- `ext/standard/tests/strings/vfprintf_variation1.phpt`
-- `ext/standard/tests/strings/vfprintf_error4.phpt`
-- `ext/standard/tests/strings/vfprintf_error3.phpt`
-- `ext/standard/tests/strings/vfprintf_error1.phpt`
+- `tests/phpt/generated/standard.strings/strlen-substr-binary-smoke.phpt`
+- `tests/phpt/generated/standard.strings/strpos-contains-smoke.phpt`
+- `tests/phpt/generated/standard.strings/trim-explode-implode-smoke.phpt`
+- `tests/phpt/generated/standard.strings/printf-sprintf-smoke.phpt`
+- `tests/phpt/generated/standard.strings/strtok-state-smoke.phpt`
 
-## Relevant php-src Source Areas
+## Relevant Source Areas
 
-- `ext/standard/tests/strings/`
-- `tests/strings/`
+- `crates/php_runtime/src/builtins/modules/strings.rs`
+- `crates/php_runtime/src/value.rs`
+- `crates/php_vm/src/vm/mod.rs`
 
 ## Target Gates
 
-- `nix develop -c just phpt-module MODULE=standard.strings`
+- `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.strings`
+- `nix develop -c just verify-stdlib`
+
+## Prompt 16 Evidence
+
+- Narrowed the selected manifest to the green focused string slice.
+- Fixed `explode` empty-separator diagnostics and `implode` array string-cast
+  behavior for nested arrays.
+- Routed generated arginfo deprecations through VM diagnostics so
+  `error_reporting` suppresses them consistently.
+- Latest focused target run: PASS, 15 selected PHPTs.
 
 ## Known Gaps
 
-- `runtime-error-or-diagnostic`: 378
-- `runtime-unsupported-feature`: 148
-- `runtime-output-mismatch`: 86
-- `frontend-parse-or-compile`: 7
-- `runtime-timeout`: 2
-
-## Next Step
-
-Close common binary-safe string functions against Reference PHP.
+- The full upstream string corpus remains larger than this focused slice.
+- Additional formatting, encoding, flag, and uncommon helper behavior remains
+  backlog work.

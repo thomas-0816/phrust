@@ -1,0 +1,27 @@
+--TEST--
+Generated zend.objects: public static property read and write
+--DESCRIPTION--
+module: zend.objects
+generated timestamp: 20260627T000000Z
+generator version: phpt-objects-static-v1
+reason: Prompt 14.5 static property read/write baseline
+--FILE--
+<?php
+class Counter {
+    public static $value = 1;
+
+    public static function inc() {
+        self::$value = self::$value + 1;
+        return self::$value;
+    }
+}
+
+echo Counter::$value, "\n";
+Counter::$value = 4;
+echo Counter::$value, "\n";
+echo Counter::inc(), "\n";
+?>
+--EXPECT--
+1
+4
+5

@@ -1,7 +1,7 @@
 --TEST--
 Generated zend.objects: uncaught exception renders as a PHP fatal error
 --DESCRIPTION--
-module: objects.classes
+module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-classes-v1
 reason: a top-level uncaught Throwable prints "Fatal error: Uncaught <Class>: <message>" with a #0 {main} stack trace, matching PHP

@@ -6,22 +6,22 @@ Reference status: `available`
 
 | Status | Count |
 | --- | ---: |
-| implemented | 480 |
-| partial | 37 |
-| stub | 52 |
-| missing | 162 |
-| known_gap | 835 |
+| implemented | 535 |
+| partial | 39 |
+| stub | 53 |
+| missing | 161 |
+| known_gap | 779 |
 
 ## Extension Summary
 
 | Extension | Kind | Implemented | Partial | Stub | Missing | Known gap |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | core | functions | 0 | 0 | 0 | 62 | 0 |
-| core | classes | 0 | 1 | 0 | 39 | 0 |
+| core | classes | 0 | 2 | 0 | 38 | 0 |
 | core | constants | 27 | 0 | 4 | 61 | 0 |
-| standard | functions | 218 | 0 | 42 | 0 | 328 |
-| standard | classes | 0 | 0 | 0 | 0 | 6 |
-| standard | constants | 29 | 0 | 0 | 0 | 344 |
+| standard | functions | 249 | 0 | 43 | 0 | 297 |
+| standard | classes | 0 | 1 | 0 | 0 | 5 |
+| standard | constants | 53 | 0 | 0 | 0 | 320 |
 | json | functions | 5 | 0 | 0 | 0 | 0 |
 | json | classes | 0 | 2 | 0 | 0 | 0 |
 | json | constants | 11 | 0 | 0 | 0 | 18 |

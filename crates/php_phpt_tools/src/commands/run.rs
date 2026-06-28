@@ -196,7 +196,7 @@ pub(crate) fn read_manifest_paths(path: &Path) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
-pub(crate) fn run_one_phpt(
+pub(super) fn run_one_phpt(
     context: &RunContext,
     manifest_path: &str,
     index: usize,

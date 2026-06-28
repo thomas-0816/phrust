@@ -6,5 +6,5 @@ $obj = new class {
     public string $prop = "property";
 };
 
-$text = "Hello $name $arr[key] $obj->prop {$arr['key']} ${name}";
+$text = "Hello $name $arr[key] $obj->prop {$arr['key']} ${name} $arr[$name]->";
 $shell = `printf $name`;

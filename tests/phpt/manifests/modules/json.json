@@ -4,13 +4,14 @@
   "priority":17,
   "selected_manifest":"tests/phpt/manifests/modules/json.selected.jsonl",
   "corpus_count":88,
+  "selected_count":10,
   "pass_count":10,
-  "skip_count":1,
-  "fail_count":77,
+  "skip_count":0,
+  "fail_count":0,
   "bork_count":0,
   "known_failure_count":79,
-  "scope":["json_encode","json_decode","json last-error state"],
-  "non_scope":["full JsonSerializable without object model readiness"],
-  "target_gates":["nix develop -c just phpt-module MODULE=json"],
-  "next_step":"Close request-local JSON error state and common flags."
+  "scope":["json_encode basics","json_decode basics","json last-error state","common JSON flags"],
+  "non_scope":["full JsonSerializable without object model readiness","full ext/json corpus","json_validate"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=json"],
+  "next_step":"Prompt 17 is closed for the selected JSON module; keep JsonSerializable dispatch as the next documented semantic expansion point."
 }

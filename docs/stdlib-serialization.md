@@ -10,6 +10,10 @@ Work item implements bounded `serialize` and `unserialize` support for:
 - runtime `ReferenceCell` values by serializing the effective value
 - malformed-input handling without panics
 
+Reference identity records are intentionally out of scope for this slice:
+`serialize` does not emit PHP `R`/`r` records, and `unserialize` rejects them
+as `STDLIB-GAP-SERIALIZE-REFERENCES` rather than fabricating aliases.
+
 `unserialize` uses deterministic security limits:
 
 - maximum recursive depth: 64

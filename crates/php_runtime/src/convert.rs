@@ -39,7 +39,7 @@ pub fn reset_float_string_precision() {
 
 /// Sets request-local float-to-string precision for INI-driven VM execution.
 pub fn set_float_string_precision(precision: i32) {
-    FLOAT_STRING_PRECISION.with(|cell| cell.set(precision.clamp(0, 17)));
+    FLOAT_STRING_PRECISION.with(|cell| cell.set(precision.clamp(-1, 17)));
 }
 
 impl NumericValue {
@@ -117,12 +117,16 @@ pub(crate) fn float_to_php_string(value: f64) -> String {
         }
     } else if FLOAT_STRING_PRECISION.with(Cell::get) == 0 {
         format!("{value:.0}")
+    } else if FLOAT_STRING_PRECISION.with(Cell::get) == -1 {
+        value.to_string()
     } else if value != 0.0 {
         let abs = value.abs();
         if !(1e-4..1e14).contains(&abs) {
             return php_scientific_float_string(value);
         }
         php_decimal_float_string(value)
+    } else if value.is_sign_negative() {
+        "-0".to_owned()
     } else {
         "0".to_owned()
     }
@@ -136,7 +140,14 @@ fn php_decimal_float_string(value: f64) -> String {
     } else {
         0
     };
-    let decimals = precision.saturating_sub(integer_digits);
+    let leading_fractional_zeros = if abs > 0.0 && abs < 1.0 {
+        (-abs.log10().floor() as usize).saturating_sub(1)
+    } else {
+        0
+    };
+    let decimals = precision
+        .saturating_sub(integer_digits)
+        .saturating_add(leading_fractional_zeros);
     let mut output = format!("{value:.decimals$}");
     if output == "-0" {
         return "0".to_owned();
@@ -167,7 +178,7 @@ fn php_scientific_float_string(value: f64) -> String {
             mantissa.pop();
         }
         if mantissa.ends_with('.') {
-            mantissa.pop();
+            mantissa.push('0');
         }
         let sign = exponent
             .strip_prefix('+')
@@ -265,7 +276,7 @@ pub fn identical(left: &Value, right: &Value) -> bool {
         (Value::Null, Value::Null) => true,
         (Value::Bool(left), Value::Bool(right)) => left == right,
         (Value::Int(left), Value::Int(right)) => left == right,
-        (Value::Float(left), Value::Float(right)) => left == right,
+        (Value::Float(left), Value::Float(right)) => left.to_f64() == right.to_f64(),
         (Value::String(left), Value::String(right)) => left == right,
         (Value::Array(left), Value::Array(right)) => arrays_identical(left, right),
         (Value::Object(left), Value::Object(right)) => left.id() == right.id(),
@@ -344,6 +355,9 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering, String> {
 }
 
 fn compare_numbers(left: NumericValue, right: NumericValue) -> Result<Ordering, String> {
+    if left.as_f64().is_nan() || right.as_f64().is_nan() {
+        return Ok(Ordering::Greater);
+    }
     let Some(ordering) = left.as_f64().partial_cmp(&right.as_f64()) else {
         return Err("cannot compare NaN numeric values".to_owned());
     };
@@ -684,8 +698,31 @@ mod tests {
                 .as_bytes(),
             b"1.7"
         );
+        assert_eq!(
+            to_string(&Value::float(1.0 / 23.0)).unwrap().as_bytes(),
+            b"0.043478260869565"
+        );
+        assert_eq!(
+            to_string(&Value::float(2.1_f64.powf(-10.0)))
+                .unwrap()
+                .as_bytes(),
+            b"0.0005995246616609"
+        );
+        assert_eq!(
+            to_string(&Value::float(0.1_f64.powf(10.0)))
+                .unwrap()
+                .as_bytes(),
+            b"1.0E-10"
+        );
         set_float_string_precision(0);
         assert_eq!(to_string(&Value::float(1.75)).unwrap().as_bytes(), b"2");
+        set_float_string_precision(-1);
+        assert_eq!(
+            to_string(&Value::float(std::f64::consts::E))
+                .unwrap()
+                .as_bytes(),
+            b"2.718281828459045"
+        );
         reset_float_string_precision();
     }
 
@@ -694,6 +731,7 @@ mod tests {
         assert!(equal(&Value::Int(1), &Value::float(1.0)).unwrap());
         assert!(identical(&Value::Int(1), &Value::Int(1)));
         assert!(!identical(&Value::Int(1), &Value::float(1.0)));
+        assert!(!identical(&Value::float(f64::NAN), &Value::float(f64::NAN)));
         assert_eq!(
             compare(&Value::string(b"2".to_vec()), &Value::Int(10)).unwrap(),
             Ordering::Less
@@ -753,6 +791,12 @@ mod tests {
             .unwrap()
         );
         assert!(!equal(&Value::float(f64::NAN), &Value::string(b"NAN".to_vec())).unwrap());
+    }
+
+    #[test]
+    fn loose_nan_equality_is_false_without_runtime_error() {
+        assert!(!equal(&Value::float(f64::NAN), &Value::float(f64::NAN)).unwrap());
+        assert!(!equal(&Value::float(f64::NAN), &Value::Int(0)).unwrap());
     }
 
     #[test]

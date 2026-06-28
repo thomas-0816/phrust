@@ -2,8 +2,9 @@
 
 use crate::generated::arginfo as generated_arginfo;
 use php_runtime::{
-    PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value, to_bool, to_float,
-    to_int, to_string,
+    PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
+    numeric_string::{NumericStringKind, NumericStringValue, classify_php_string},
+    to_bool, to_float, to_int, to_string,
 };
 
 /// PHP builtin coercion mode.
@@ -108,9 +109,12 @@ impl TypeSpec {
         if self.atoms.contains(&ArgType::Mixed) {
             return "mixed".to_owned();
         }
-        let mut names: Vec<_> = self.atoms.iter().map(|atom| atom.as_str()).collect();
-        names.sort_unstable();
-        names.dedup();
+        let mut names = Vec::new();
+        for name in self.atoms.iter().map(|atom| atom.as_str()) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
         let joined = names.join("|");
         if self.nullable && !names.contains(&"null") {
             format!("?{joined}")
@@ -299,6 +303,7 @@ impl FunctionArgInfo {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedArguments {
     values: Vec<Value>,
+    diagnostics: Vec<RuntimeDiagnostic>,
 }
 
 impl ValidatedArguments {
@@ -306,6 +311,12 @@ impl ValidatedArguments {
     #[must_use]
     pub fn values(&self) -> &[Value] {
         &self.values
+    }
+
+    /// Non-fatal diagnostics emitted while coercing arguments.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[RuntimeDiagnostic] {
+        &self.diagnostics
     }
 }
 
@@ -374,12 +385,29 @@ impl ArgumentValidator {
         }
 
         let mut values = Vec::new();
+        let mut diagnostics = Vec::new();
         for (index, arg) in args.iter().enumerate() {
             let param = if let Some(param) = info.params().get(index) {
                 param
             } else {
                 info.params().last().expect("variadic param exists")
             };
+            if self.should_deprecate_null_scalar_coercion(param, arg) {
+                diagnostics.push(RuntimeDiagnostic::new(
+                    "E_PHP_STD_NULL_SCALAR_ARG",
+                    RuntimeSeverity::Deprecation,
+                    format!(
+                        "{}(): Passing null to parameter #{} (${}) of type {} is deprecated",
+                        info.name(),
+                        index + 1,
+                        param.name(),
+                        param.type_spec().display()
+                    ),
+                    span.clone(),
+                    Vec::new(),
+                    None,
+                ));
+            }
             values.push(self.coerce(info.name(), index, param, arg, span.clone())?);
         }
 
@@ -393,7 +421,24 @@ impl ArgumentValidator {
             }
         }
 
-        Ok(ValidatedArguments { values })
+        Ok(ValidatedArguments {
+            values,
+            diagnostics,
+        })
+    }
+
+    fn should_deprecate_null_scalar_coercion(&self, param: &ParameterInfo, value: &Value) -> bool {
+        if self.mode != CoercionMode::Weak || !matches!(value, Value::Null) {
+            return false;
+        }
+        let type_spec = param.type_spec();
+        !type_spec.is_nullable()
+            && type_spec.atoms().iter().any(|atom| {
+                matches!(
+                    atom,
+                    ArgType::Bool | ArgType::Int | ArgType::Float | ArgType::String
+                )
+            })
     }
 
     fn coerce(
@@ -413,12 +458,15 @@ impl ArgumentValidator {
             }
         }
         if self.mode == CoercionMode::Weak {
-            if let Some(value) = weak_coerce_int_float_union(param.type_spec(), value) {
-                return Ok(value);
-            }
-            for atom in param.type_spec().atoms() {
-                if let Some(value) = weak_coerce(*atom, value) {
+            if is_int_float_union(param.type_spec()) {
+                if let Some(value) = weak_coerce_int_float_union(value) {
                     return Ok(value);
+                }
+            } else {
+                for atom in param.type_spec().atoms() {
+                    if let Some(value) = weak_coerce(*atom, value) {
+                        return Ok(value);
+                    }
                 }
             }
         }
@@ -571,23 +619,39 @@ fn weak_coerce(atom: ArgType, value: &Value) -> Option<Value> {
         ArgType::Bool => to_bool(value).ok().map(Value::Bool),
         ArgType::Int => to_int(value).ok().map(Value::Int),
         ArgType::Float => to_float(value).ok().map(Value::float),
-        ArgType::String => to_string(value).ok().map(Value::String),
+        ArgType::String if !matches!(value, Value::Resource(_)) => {
+            to_string(value).ok().map(Value::String)
+        }
         _ => None,
     }
 }
 
-fn weak_coerce_int_float_union(type_spec: &TypeSpec, value: &Value) -> Option<Value> {
-    if !type_spec.atoms().contains(&ArgType::Int) || !type_spec.atoms().contains(&ArgType::Float) {
-        return None;
+fn is_int_float_union(type_spec: &TypeSpec) -> bool {
+    type_spec.atoms().contains(&ArgType::Int) && type_spec.atoms().contains(&ArgType::Float)
+}
+
+fn weak_coerce_int_float_union(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null | Value::Bool(_) => to_int(value).ok().map(Value::Int),
+        Value::String(string) => {
+            let classified = classify_php_string(string);
+            match (classified.kind, classified.value?) {
+                (NumericStringKind::IntString, NumericStringValue::Int(value)) => {
+                    Some(Value::Int(value))
+                }
+                (NumericStringKind::IntString, NumericStringValue::Float(value))
+                | (NumericStringKind::FloatString, NumericStringValue::Float(value)) => {
+                    Some(Value::float(value))
+                }
+                (NumericStringKind::FloatString, NumericStringValue::Int(value)) => {
+                    Some(Value::float(value as f64))
+                }
+                (NumericStringKind::LeadingNumeric | NumericStringKind::NonNumeric, _) => None,
+            }
+        }
+        Value::Reference(cell) => weak_coerce_int_float_union(&cell.get()),
+        _ => None,
     }
-    let Value::String(string) = value else {
-        return None;
-    };
-    let bytes = string.as_bytes();
-    if bytes.iter().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
-        return to_float(value).ok().map(Value::float);
-    }
-    None
 }
 
 fn value_type(value: &Value) -> String {
@@ -600,7 +664,7 @@ fn value_type(value: &Value) -> String {
         Value::String(_) => "string".to_owned(),
         Value::Uninitialized => "uninitialized".to_owned(),
         Value::Array(_) => "array".to_owned(),
-        Value::Object(object) => object.class_name(),
+        Value::Object(object) => object.display_name(),
         Value::Resource(_) => "resource".to_owned(),
         Value::Fiber(_) => "Fiber".to_owned(),
         Value::Generator(_) => "Generator".to_owned(),
@@ -750,7 +814,7 @@ mod tests {
 
     #[test]
     fn validates_object_type_names_with_class_name() {
-        let object = ObjectRef::new(&empty_class("stdClass"));
+        let object = ObjectRef::new_with_display_name(&empty_class("stdclass"), "stdClass");
         let error = ArgumentValidator::new(CoercionMode::Strict)
             .validate(&sample_info(), &[Value::Object(object)], span())
             .expect_err("wrong type");
@@ -774,6 +838,24 @@ mod tests {
     }
 
     #[test]
+    fn weak_string_coercion_rejects_resources() {
+        let mut resources = php_runtime::ResourceTable::new();
+        let resource = resources.register_stream(
+            php_runtime::StreamFlags::new(true, false, true),
+            php_runtime::StreamMetadata::new("plainfile", "stream", "r", "/tmp/example.php"),
+        );
+
+        let error = ArgumentValidator::new(CoercionMode::Weak)
+            .validate(&sample_info(), &[Value::Resource(resource)], span())
+            .expect_err("resources must not weakly coerce to string parameters");
+
+        assert_eq!(
+            error.diagnostic().message(),
+            "stdlib_sample(): Argument #1 ($value) must be of type string, resource given"
+        );
+    }
+
+    #[test]
     fn weak_int_float_union_keeps_decimal_numeric_strings_as_float() {
         let metadata = crate::generated::arginfo::function_metadata("range").expect("range");
         let info = FunctionArgInfo::from_generated(metadata).expect("runtime arginfo");
@@ -793,6 +875,27 @@ mod tests {
     }
 
     #[test]
+    fn weak_int_float_union_rejects_non_numeric_strings() {
+        let info = FunctionArgInfo::new(
+            "floor",
+            vec![ParameterInfo::required(
+                "num",
+                TypeSpec::union([ArgType::Int, ArgType::Float]),
+            )],
+            TypeSpec::one(ArgType::Float),
+        );
+
+        let error = ArgumentValidator::new(CoercionMode::Weak)
+            .validate(&info, &[Value::String(PhpString::from("abc"))], span())
+            .expect_err("non-numeric strings must not weakly coerce to zero");
+
+        assert_eq!(
+            error.diagnostic().message(),
+            "floor(): Argument #1 ($num) must be of type int|float, string given"
+        );
+    }
+
+    #[test]
     fn generated_function_metadata_builds_runtime_validator_info() {
         let metadata = crate::generated::arginfo::function_metadata("strlen").expect("strlen");
         let info = FunctionArgInfo::from_generated(metadata).expect("runtime arginfo");
@@ -802,6 +905,30 @@ mod tests {
         assert_eq!(info.params()[0].name(), "string");
         assert_eq!(info.params()[0].type_spec().display(), "string");
         assert_eq!(info.return_type().display(), "int");
+    }
+
+    #[test]
+    fn generated_arginfo_metadata_is_not_empty() {
+        assert_eq!(
+            crate::generated::arginfo::GENERATED_FUNCTIONS.len(),
+            crate::generated::arginfo::GENERATED_ARGINFO_FUNCTION_COUNT
+        );
+        assert_eq!(
+            crate::generated::arginfo::GENERATED_CLASSES.len(),
+            crate::generated::arginfo::GENERATED_ARGINFO_CLASS_COUNT
+        );
+        assert_eq!(
+            crate::generated::arginfo::GENERATED_METHODS.len(),
+            crate::generated::arginfo::GENERATED_ARGINFO_METHOD_COUNT
+        );
+        assert_eq!(
+            crate::generated::arginfo::GENERATED_CONSTANTS.len(),
+            crate::generated::arginfo::GENERATED_ARGINFO_CONSTANT_COUNT
+        );
+        assert!(!crate::generated::arginfo::GENERATED_FUNCTIONS.is_empty());
+        assert!(!crate::generated::arginfo::GENERATED_CLASSES.is_empty());
+        assert!(!crate::generated::arginfo::GENERATED_METHODS.is_empty());
+        assert!(!crate::generated::arginfo::GENERATED_CONSTANTS.is_empty());
     }
 
     #[test]

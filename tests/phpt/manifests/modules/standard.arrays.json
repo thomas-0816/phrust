@@ -4,13 +4,14 @@
   "priority":12,
   "selected_manifest":"tests/phpt/manifests/modules/standard.arrays.selected.jsonl",
   "corpus_count":821,
-  "pass_count":218,
-  "skip_count":7,
-  "fail_count":595,
+  "selected_count":10,
+  "pass_count":10,
+  "skip_count":0,
+  "fail_count":0,
   "bork_count":0,
   "known_failure_count":735,
   "scope":["ext/standard array builtins"],
   "non_scope":["array COW engine work"],
-  "target_gates":["nix develop -c just phpt-module MODULE=standard.arrays"],
-  "next_step":"Implement array builtins after array data model gaps are closed."
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.arrays","nix develop -c just verify-stdlib"],
+  "next_step":"Prompt 16.4 selected array contracts are closed and green; keep them green while expanding beyond the focused array builtin slice."
 }

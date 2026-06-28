@@ -36,5 +36,6 @@ objects, and runtime objects to JSON objects using public runtime properties.
 
 The MVP uses `serde_json` for strict JSON parsing and serialization. Full
 byte-perfect PHP flag behavior, bigint string preservation, UTF-8 substitution
-flags, VM-persistent `json_last_error` across separate builtin dispatches, and
-userland `JsonSerializable::jsonSerialize()` calls are tracked as known gaps.
+flags, and userland `JsonSerializable::jsonSerialize()` calls are tracked as
+known gaps. `json_last_error` state is request-local and persists across VM
+builtin dispatches.

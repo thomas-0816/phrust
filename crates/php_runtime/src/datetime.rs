@@ -1,6 +1,6 @@
 //! standard-library Date/Time helpers.
 
-use crate::{ClassEntry, ClassFlags, ObjectRef, Value};
+use crate::{ClassEntry, ClassFlags, ObjectRef, Value, display_class_name, normalize_class_name};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Deterministic standard-library timezone identifiers.
@@ -40,7 +40,8 @@ pub fn datetime_immutable_object(timestamp: i64, timezone: &str) -> Value {
 /// Creates a `DateInterval` runtime object backed by signed seconds.
 #[must_use]
 pub fn dateinterval_object(seconds: i64) -> Value {
-    let object = ObjectRef::new(&date_class("DateInterval", false));
+    let object =
+        ObjectRef::new_with_display_name(&date_class("DateInterval", false), "DateInterval");
     object.set_property("__seconds", Value::Int(seconds));
     object.set_property("invert", Value::Int(i64::from(seconds < 0)));
     object.set_property("days", Value::Int(seconds.abs() / 86_400));
@@ -185,7 +186,7 @@ pub fn object_timezone(object: &ObjectRef) -> Option<String> {
 pub fn with_timestamp(object: &ObjectRef, timestamp: i64, immutable: bool) -> Value {
     if immutable {
         date_object(
-            &object.class_name(),
+            &object.display_name(),
             timestamp,
             &object_timezone_or_utc(object),
         )
@@ -203,7 +204,7 @@ pub fn with_timezone(object: &ObjectRef, timezone: &str, immutable: bool) -> Opt
     }
     if immutable {
         Some(date_object(
-            &object.class_name(),
+            &object.display_name(),
             object_timestamp(object).unwrap_or(0),
             timezone,
         ))
@@ -245,7 +246,10 @@ fn date_object(class_name: &str, timestamp: i64, timezone: &str) -> Value {
     } else {
         DEFAULT_TIMEZONE
     };
-    let object = ObjectRef::new(&date_class(class_name, false));
+    let object = ObjectRef::new_with_display_name(
+        &date_class(class_name, false),
+        display_class_name(class_name),
+    );
     object.set_property("__timestamp", Value::Int(timestamp));
     object.set_property("timezone", Value::string(timezone));
     Value::Object(object)
@@ -253,7 +257,7 @@ fn date_object(class_name: &str, timestamp: i64, timezone: &str) -> Value {
 
 fn date_class(name: &str, is_interface: bool) -> ClassEntry {
     ClassEntry {
-        name: name.to_string(),
+        name: normalize_class_name(name),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),

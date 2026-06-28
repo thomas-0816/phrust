@@ -1,6 +1,9 @@
 //! Bounded PHP serialization MVP for standard-library.
 
-use crate::{ArrayKey, ClassEntry, ClassFlags, ObjectRef, PhpArray, PhpString, Value};
+use crate::{
+    ArrayKey, ClassEntry, ClassFlags, ObjectRef, PhpArray, PhpString, Value, display_class_name,
+    normalize_class_name,
+};
 
 const DEFAULT_MAX_DEPTH: usize = 64;
 const DEFAULT_MAX_ITEMS: usize = 16_384;
@@ -101,7 +104,7 @@ impl Serializer {
                 .extend_from_slice(format!("i:{value};").as_bytes()),
             Value::Float(value) => self
                 .output
-                .extend_from_slice(format!("d:{value};").as_bytes()),
+                .extend_from_slice(format!("d:{};", serialize_float(*value)).as_bytes()),
             Value::String(value) => {
                 self.output
                     .extend_from_slice(format!("s:{}:\"", value.len()).as_bytes());
@@ -118,7 +121,7 @@ impl Serializer {
                 self.output.extend_from_slice(b"}");
             }
             Value::Object(object) => {
-                let class = object.class_name();
+                let class = object.display_name();
                 let properties = object.properties_snapshot();
                 self.output
                     .extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
@@ -167,6 +170,21 @@ impl Serializer {
                 self.output.extend_from_slice(b"\";");
             }
         }
+    }
+}
+
+fn serialize_float(value: crate::FloatValue) -> String {
+    let value = value.to_f64();
+    if value.is_nan() {
+        "NAN".to_owned()
+    } else if value.is_infinite() {
+        if value.is_sign_negative() {
+            "-INF".to_owned()
+        } else {
+            "INF".to_owned()
+        }
+    } else {
+        value.to_string()
     }
 }
 
@@ -241,7 +259,10 @@ impl Parser<'_> {
         self.count_items(length)?;
         self.expect(b'{')?;
         let class_name = String::from_utf8_lossy(&class).into_owned();
-        let object = ObjectRef::new(&empty_class(&class_name));
+        let object = ObjectRef::new_with_display_name(
+            &empty_class(&class_name),
+            display_class_name(&class_name),
+        );
         for _ in 0..length {
             let Value::String(name) = self.parse_value(depth + 1)? else {
                 return Err(SerializationError::new(
@@ -355,7 +376,7 @@ impl Parser<'_> {
 
 fn empty_class(name: &str) -> ClassEntry {
     ClassEntry {
-        name: name.to_owned(),
+        name: normalize_class_name(name),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -383,6 +404,24 @@ mod tests {
         );
         assert_eq!(serialize(&Value::Int(7)).unwrap().to_string_lossy(), "i:7;");
         assert_eq!(
+            serialize(&Value::float(f64::INFINITY))
+                .unwrap()
+                .to_string_lossy(),
+            "d:INF;"
+        );
+        assert_eq!(
+            serialize(&Value::float(f64::NEG_INFINITY))
+                .unwrap()
+                .to_string_lossy(),
+            "d:-INF;"
+        );
+        assert_eq!(
+            serialize(&Value::float(f64::NAN))
+                .unwrap()
+                .to_string_lossy(),
+            "d:NAN;"
+        );
+        assert_eq!(
             serialize(&Value::string("hi")).unwrap().to_string_lossy(),
             "s:2:\"hi\";"
         );
@@ -396,7 +435,7 @@ mod tests {
             "a:2:{i:0;i:1;i:1;s:1:\"x\";}"
         );
 
-        let object = ObjectRef::new(&super::empty_class("Box"));
+        let object = ObjectRef::new_with_display_name(&super::empty_class("Box"), "Box");
         object.set_property("value", Value::Int(1));
         assert_eq!(
             serialize(&Value::Object(object)).unwrap().to_string_lossy(),
@@ -426,7 +465,8 @@ mod tests {
         let Value::Object(object) = value else {
             panic!("expected object");
         };
-        assert_eq!(object.class_name(), "Box");
+        assert_eq!(object.class_name(), "box");
+        assert_eq!(object.display_name(), "Box");
         assert_eq!(object.get_property("value"), Some(Value::Int(1)));
     }
 

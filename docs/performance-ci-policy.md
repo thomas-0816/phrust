@@ -15,8 +15,9 @@ differential checks, quickening smoke, inline-cache smoke, skip-safe Callgrind
 smoke, default-off JIT smoke, safety audit smoke, benchmark smoke, framework
 smoke, release benchmark smoke, hot-path inventory, and perf-report generation.
 The workspace test step runs with `RUST_MIN_STACK` defaulting to `8388608`
-bytes, overridable with `PHRUST_RUST_MIN_STACK`, so recursive VM tests use the
-same deterministic stack budget in local and CI `just` gates.
+bytes, overridable with `PHRUST_RUST_MIN_STACK`, so recursive VM tests use a
+deterministic stack budget in local and CI `just` gates. The repo-local Cargo
+config also applies the same default stack to direct Unix `cargo test` runs.
 
 The focused commands remain available for local bisection and CI log triage:
 

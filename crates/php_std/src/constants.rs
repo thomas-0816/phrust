@@ -24,6 +24,48 @@ pub const PHP_INT_MIN: i64 = isize::MIN as i64;
 pub const INF: FloatValue = FloatValue::from_f64(f64::INFINITY);
 /// PHP quiet NaN constant.
 pub const NAN: FloatValue = FloatValue::from_f64(f64::NAN);
+/// Euler's number.
+pub const M_E: FloatValue = FloatValue::from_f64(std::f64::consts::E);
+/// Base-2 logarithm of Euler's number.
+pub const M_LOG2E: FloatValue = FloatValue::from_f64(std::f64::consts::LOG2_E);
+/// Base-10 logarithm of Euler's number.
+pub const M_LOG10E: FloatValue = FloatValue::from_f64(std::f64::consts::LOG10_E);
+/// Natural logarithm of 2.
+pub const M_LN2: FloatValue = FloatValue::from_f64(std::f64::consts::LN_2);
+/// Natural logarithm of 10.
+pub const M_LN10: FloatValue = FloatValue::from_f64(std::f64::consts::LN_10);
+/// Pi.
+pub const M_PI: FloatValue = FloatValue::from_f64(std::f64::consts::PI);
+/// Pi divided by 2.
+pub const M_PI_2: FloatValue = FloatValue::from_f64(std::f64::consts::FRAC_PI_2);
+/// Pi divided by 4.
+pub const M_PI_4: FloatValue = FloatValue::from_f64(std::f64::consts::FRAC_PI_4);
+/// Reciprocal of pi.
+pub const M_1_PI: FloatValue = FloatValue::from_f64(std::f64::consts::FRAC_1_PI);
+/// 2 divided by pi.
+pub const M_2_PI: FloatValue = FloatValue::from_f64(std::f64::consts::FRAC_2_PI);
+/// Square root of pi.
+pub const M_SQRTPI: FloatValue = FloatValue::from_f64(1.772_453_850_905_516);
+/// 2 divided by the square root of pi.
+pub const M_2_SQRTPI: FloatValue = FloatValue::from_f64(std::f64::consts::FRAC_2_SQRT_PI);
+/// Natural logarithm of pi.
+pub const M_LNPI: FloatValue = FloatValue::from_f64(1.144_729_885_849_400_2);
+/// Euler-Mascheroni constant.
+pub const M_EULER: FloatValue = FloatValue::from_f64(0.577_215_664_901_532_9);
+/// Square root of 2.
+pub const M_SQRT2: FloatValue = FloatValue::from_f64(std::f64::consts::SQRT_2);
+/// Reciprocal of the square root of 2.
+pub const M_SQRT1_2: FloatValue = FloatValue::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+/// Square root of 3.
+pub const M_SQRT3: FloatValue = FloatValue::from_f64(1.732_050_807_568_877_2);
+/// Round halves away from zero.
+pub const PHP_ROUND_HALF_UP: i64 = 1;
+/// Round halves toward zero.
+pub const PHP_ROUND_HALF_DOWN: i64 = 2;
+/// Round halves to the nearest even integer.
+pub const PHP_ROUND_HALF_EVEN: i64 = 3;
+/// Round halves to the nearest odd integer.
+pub const PHP_ROUND_HALF_ODD: i64 = 4;
 
 /// Directory separator for the current build target.
 #[cfg(windows)]
@@ -163,6 +205,13 @@ pub const ARRAY_FILTER_USE_BOTH: i64 = 1;
 /// `array_filter()` callback receives key.
 pub const ARRAY_FILTER_USE_KEY: i64 = 2;
 
+/// `str_pad()` left padding selector.
+pub const STR_PAD_LEFT: i64 = 0;
+/// `str_pad()` right padding selector.
+pub const STR_PAD_RIGHT: i64 = 1;
+/// `str_pad()` both-sides padding selector.
+pub const STR_PAD_BOTH: i64 = 2;
+
 /// Converts registry constant metadata into a runtime value.
 #[must_use]
 pub fn constant_to_value(value: ConstantValue) -> Value {
@@ -253,6 +302,17 @@ mod tests {
         assert_eq!(COUNT_RECURSIVE, 1);
         assert_eq!(ARRAY_FILTER_USE_BOTH, 1);
         assert_eq!(ARRAY_FILTER_USE_KEY, 2);
+        assert_eq!(STR_PAD_LEFT, 0);
+        assert_eq!(STR_PAD_RIGHT, 1);
+        assert_eq!(STR_PAD_BOTH, 2);
+        assert_eq!(PHP_ROUND_HALF_UP, 1);
+        assert_eq!(PHP_ROUND_HALF_DOWN, 2);
+        assert_eq!(PHP_ROUND_HALF_EVEN, 3);
+        assert_eq!(PHP_ROUND_HALF_ODD, 4);
+        assert_eq!(M_PI.to_f64(), std::f64::consts::PI);
+        assert_eq!(M_SQRTPI.to_f64(), 1.772453850905516);
+        assert_eq!(M_EULER.to_f64(), 0.5772156649015329);
+        assert_eq!(M_SQRT3.to_f64(), 1.7320508075688772);
     }
 
     #[test]

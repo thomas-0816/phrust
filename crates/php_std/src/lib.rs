@@ -328,6 +328,7 @@ impl ExtensionRegistry {
         Self::from_extensions([
             ExtensionDescriptor::new("core")
                 .with_class(ClassDescriptor::new("Closure", "core", ClassKind::Class))
+                .with_class(ClassDescriptor::new("stdClass", "core", ClassKind::Class))
                 .with_constant(ConstantDescriptor::with_value(
                     "PHP_VERSION",
                     "core",
@@ -589,7 +590,134 @@ impl ExtensionRegistry {
                     "standard",
                     ConstantValue::Int(constants::ARRAY_FILTER_USE_KEY),
                 ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "STR_PAD_LEFT",
+                    "standard",
+                    ConstantValue::Int(constants::STR_PAD_LEFT),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "STR_PAD_RIGHT",
+                    "standard",
+                    ConstantValue::Int(constants::STR_PAD_RIGHT),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "STR_PAD_BOTH",
+                    "standard",
+                    ConstantValue::Int(constants::STR_PAD_BOTH),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_E",
+                    "standard",
+                    ConstantValue::Float(constants::M_E),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_LOG2E",
+                    "standard",
+                    ConstantValue::Float(constants::M_LOG2E),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_LOG10E",
+                    "standard",
+                    ConstantValue::Float(constants::M_LOG10E),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_LN2",
+                    "standard",
+                    ConstantValue::Float(constants::M_LN2),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_LN10",
+                    "standard",
+                    ConstantValue::Float(constants::M_LN10),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_PI",
+                    "standard",
+                    ConstantValue::Float(constants::M_PI),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_PI_2",
+                    "standard",
+                    ConstantValue::Float(constants::M_PI_2),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_PI_4",
+                    "standard",
+                    ConstantValue::Float(constants::M_PI_4),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_1_PI",
+                    "standard",
+                    ConstantValue::Float(constants::M_1_PI),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_2_PI",
+                    "standard",
+                    ConstantValue::Float(constants::M_2_PI),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_SQRTPI",
+                    "standard",
+                    ConstantValue::Float(constants::M_SQRTPI),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_2_SQRTPI",
+                    "standard",
+                    ConstantValue::Float(constants::M_2_SQRTPI),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_LNPI",
+                    "standard",
+                    ConstantValue::Float(constants::M_LNPI),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_EULER",
+                    "standard",
+                    ConstantValue::Float(constants::M_EULER),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_SQRT2",
+                    "standard",
+                    ConstantValue::Float(constants::M_SQRT2),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_SQRT1_2",
+                    "standard",
+                    ConstantValue::Float(constants::M_SQRT1_2),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "M_SQRT3",
+                    "standard",
+                    ConstantValue::Float(constants::M_SQRT3),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "PHP_ROUND_HALF_UP",
+                    "standard",
+                    ConstantValue::Int(constants::PHP_ROUND_HALF_UP),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "PHP_ROUND_HALF_DOWN",
+                    "standard",
+                    ConstantValue::Int(constants::PHP_ROUND_HALF_DOWN),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "PHP_ROUND_HALF_EVEN",
+                    "standard",
+                    ConstantValue::Int(constants::PHP_ROUND_HALF_EVEN),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "PHP_ROUND_HALF_ODD",
+                    "standard",
+                    ConstantValue::Int(constants::PHP_ROUND_HALF_ODD),
+                ))
+                .with_class(ClassDescriptor::new(
+                    "RoundingMode",
+                    "standard",
+                    ClassKind::Enum,
+                ))
                 .with_function(FunctionDescriptor::php("abs", "standard"))
+                .with_function(FunctionDescriptor::php("acos", "standard"))
+                .with_function(FunctionDescriptor::php("acosh", "standard"))
                 .with_function(FunctionDescriptor::php("array_all", "standard"))
                 .with_function(FunctionDescriptor::php("array_any", "standard"))
                 .with_function(FunctionDescriptor::php("array_chunk", "standard"))
@@ -627,11 +755,18 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("array_walk", "standard"))
                 .with_function(FunctionDescriptor::php("array_walk_recursive", "standard"))
                 .with_function(FunctionDescriptor::php("arsort", "standard"))
+                .with_function(FunctionDescriptor::php("asin", "standard"))
+                .with_function(FunctionDescriptor::php("asinh", "standard"))
                 .with_function(FunctionDescriptor::php("asort", "standard"))
+                .with_function(FunctionDescriptor::php("atan", "standard"))
+                .with_function(FunctionDescriptor::php("atan2", "standard"))
+                .with_function(FunctionDescriptor::php("atanh", "standard"))
                 .with_function(FunctionDescriptor::php("base64_decode", "standard"))
                 .with_function(FunctionDescriptor::php("base64_encode", "standard"))
+                .with_function(FunctionDescriptor::php("base_convert", "standard"))
                 .with_function(FunctionDescriptor::php("basename", "standard"))
                 .with_function(FunctionDescriptor::php("bin2hex", "standard"))
+                .with_function(FunctionDescriptor::php("bindec", "standard"))
                 .with_function(FunctionDescriptor::php("boolval", "standard"))
                 .with_function(FunctionDescriptor::php("ceil", "standard"))
                 .with_function(FunctionDescriptor::php("chdir", "standard"))
@@ -643,15 +778,23 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("closedir", "standard"))
                 .with_function(FunctionDescriptor::php("constant", "standard"))
                 .with_function(FunctionDescriptor::php("copy", "standard"))
+                .with_function(FunctionDescriptor::php("cos", "standard"))
+                .with_function(FunctionDescriptor::php("cosh", "standard"))
                 .with_function(FunctionDescriptor::php("count", "standard"))
                 .with_function(FunctionDescriptor::php("crc32", "standard"))
                 .with_function(FunctionDescriptor::php("debug_backtrace", "standard"))
                 .with_function(FunctionDescriptor::php("debug_print_backtrace", "standard"))
+                .with_function(FunctionDescriptor::php("decbin", "standard"))
+                .with_function(FunctionDescriptor::php("dechex", "standard"))
+                .with_function(FunctionDescriptor::php("decoct", "standard"))
+                .with_function(FunctionDescriptor::php("deg2rad", "standard"))
                 .with_function(FunctionDescriptor::php("defined", "standard"))
                 .with_function(FunctionDescriptor::php("dirname", "standard"))
                 .with_function(FunctionDescriptor::php("enum_exists", "standard"))
                 .with_function(FunctionDescriptor::php("error_reporting", "standard"))
                 .with_function(FunctionDescriptor::php("exec", "standard"))
+                .with_function(FunctionDescriptor::php("exp", "standard"))
+                .with_function(FunctionDescriptor::php("expm1", "standard"))
                 .with_function(FunctionDescriptor::php("explode", "standard"))
                 .with_function(FunctionDescriptor::php("extension_loaded", "standard"))
                 .with_function(FunctionDescriptor::php("fclose", "standard"))
@@ -671,6 +814,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("fdiv", "standard"))
                 .with_function(FunctionDescriptor::php("fmod", "standard"))
                 .with_function(FunctionDescriptor::php("fopen", "standard"))
+                .with_function(FunctionDescriptor::php("fpow", "standard"))
                 .with_function(FunctionDescriptor::php("fprintf", "standard"))
                 .with_function(FunctionDescriptor::php("fread", "standard"))
                 .with_function(FunctionDescriptor::php("fseek", "standard"))
@@ -701,6 +845,7 @@ impl ExtensionRegistry {
                 ))
                 .with_function(FunctionDescriptor::php("get_object_vars", "standard"))
                 .with_function(FunctionDescriptor::php("get_parent_class", "standard"))
+                .with_function(FunctionDescriptor::php("getrandmax", "standard"))
                 .with_function(FunctionDescriptor::php("get_resource_id", "standard"))
                 .with_function(FunctionDescriptor::php("get_resource_type", "standard"))
                 .with_function(FunctionDescriptor::php("getcwd", "standard"))
@@ -708,12 +853,14 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("gettype", "standard"))
                 .with_function(FunctionDescriptor::php("glob", "standard"))
                 .with_function(FunctionDescriptor::php("hex2bin", "standard"))
+                .with_function(FunctionDescriptor::php("hexdec", "standard"))
                 .with_function(FunctionDescriptor::php("htmlentities", "standard"))
                 .with_function(FunctionDescriptor::php("htmlspecialchars", "standard"))
                 .with_function(FunctionDescriptor::php(
                     "htmlspecialchars_decode",
                     "standard",
                 ))
+                .with_function(FunctionDescriptor::php("hypot", "standard"))
                 .with_function(FunctionDescriptor::php("hrtime", "standard"))
                 .with_function(FunctionDescriptor::php("http_build_query", "standard"))
                 .with_function(FunctionDescriptor::php("implode", "standard"))
@@ -749,6 +896,9 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("ksort", "standard"))
                 .with_function(FunctionDescriptor::php("lcfirst", "standard"))
                 .with_function(FunctionDescriptor::php("lstat", "standard"))
+                .with_function(FunctionDescriptor::php("log", "standard"))
+                .with_function(FunctionDescriptor::php("log10", "standard"))
+                .with_function(FunctionDescriptor::php("log1p", "standard"))
                 .with_function(FunctionDescriptor::php("ltrim", "standard"))
                 .with_function(FunctionDescriptor::php("max", "standard"))
                 .with_function(FunctionDescriptor::php("md5", "standard"))
@@ -765,6 +915,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("ob_get_length", "standard"))
                 .with_function(FunctionDescriptor::php("ob_get_level", "standard"))
                 .with_function(FunctionDescriptor::php("ob_start", "standard"))
+                .with_function(FunctionDescriptor::php("octdec", "standard"))
                 .with_function(FunctionDescriptor::php("opendir", "standard"))
                 .with_function(FunctionDescriptor::php("ord", "standard"))
                 .with_function(FunctionDescriptor::php("pathinfo", "standard"))
@@ -773,6 +924,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("pclose", "standard"))
                 .with_function(FunctionDescriptor::php("php_sapi_name", "standard"))
                 .with_function(FunctionDescriptor::php("php_uname", "standard"))
+                .with_function(FunctionDescriptor::php("pi", "standard"))
                 .with_function(FunctionDescriptor::php("popen", "standard"))
                 .with_function(FunctionDescriptor::php("print", "standard"))
                 .with_function(FunctionDescriptor::php("print_r", "standard"))
@@ -783,6 +935,7 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("proc_get_status", "standard"))
                 .with_function(FunctionDescriptor::php("proc_open", "standard"))
                 .with_function(FunctionDescriptor::php("putenv", "standard"))
+                .with_function(FunctionDescriptor::php("rad2deg", "standard"))
                 .with_function(FunctionDescriptor::php("rawurldecode", "standard"))
                 .with_function(FunctionDescriptor::php("rawurlencode", "standard"))
                 .with_function(FunctionDescriptor::php("range", "standard"))
@@ -805,8 +958,11 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("serialize", "standard"))
                 .with_function(FunctionDescriptor::php("set_error_handler", "standard"))
                 .with_function(FunctionDescriptor::php("set_exception_handler", "standard"))
+                .with_function(FunctionDescriptor::php("set_time_limit", "standard"))
                 .with_function(FunctionDescriptor::php("sha1", "standard"))
                 .with_function(FunctionDescriptor::php("shell_exec", "standard"))
+                .with_function(FunctionDescriptor::php("sin", "standard"))
+                .with_function(FunctionDescriptor::php("sinh", "standard"))
                 .with_function(FunctionDescriptor::php("sizeof", "standard"))
                 .with_function(FunctionDescriptor::php("sort", "standard"))
                 .with_function(FunctionDescriptor::php("sprintf", "standard"))
@@ -852,6 +1008,8 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("strtr", "standard"))
                 .with_function(FunctionDescriptor::php("substr", "standard"))
                 .with_function(FunctionDescriptor::php("system", "standard"))
+                .with_function(FunctionDescriptor::php("tan", "standard"))
+                .with_function(FunctionDescriptor::php("tanh", "standard"))
                 .with_function(FunctionDescriptor::php("tempnam", "standard"))
                 .with_function(FunctionDescriptor::php("tmpfile", "standard"))
                 .with_function(FunctionDescriptor::php("touch", "standard"))
@@ -1684,6 +1842,7 @@ mod tests {
             "number_format",
             "pow",
             "round",
+            "set_time_limit",
             "sqrt",
         ] {
             assert!(
@@ -1691,6 +1850,13 @@ mod tests {
                 "{name} should be registered as a standard function"
             );
         }
+
+        assert_eq!(
+            registry
+                .enabled_class("RoundingMode")
+                .map(ClassDescriptor::kind),
+            Some(ClassKind::Enum)
+        );
     }
 
     #[test]

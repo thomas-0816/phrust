@@ -1,6 +1,7 @@
 <?php
 $prefix = +$a - -$b;
 $pow = $a ** $b ** $c;
+$pow_assign **= 2;
 $math = $a * $b / $c % $d + $e - $f;
 $concat = $a . $b;
 $shift = $a << $b >> $c;

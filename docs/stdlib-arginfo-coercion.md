@@ -33,7 +33,7 @@ nix develop -c just generate-arginfo
 The generator reads php-src `*.stub.php` declarations without executing C or
 PHP code, applies deterministic manual overrides from
 `fixtures/stdlib/arginfo_overrides.txt`, and writes a manually reviewable Rust
-metadata file under `target/stdlib/generated/arginfo.rs` by default. The
+metadata file under `crates/php_std/src/generated/arginfo.rs` by default. The
 `stdlib-docs` gate runs the same generator against a local fixture so the
 parser, header, by-reference metadata, variadic metadata, and override path
 stay covered without requiring a vendored php-src checkout.

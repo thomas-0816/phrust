@@ -75,10 +75,12 @@ fn parse_encapsed_part(parser: &mut Parser<'_>) {
 fn parse_simple_interpolation(parser: &mut Parser<'_>) {
     let variable = parser.start();
     parser.bump();
+    let mut parsed_offset = false;
     loop {
         if parser.at(symbol(b'[')) {
             consume_string_offset(parser);
-        } else if parser.at(named(TokenName::ObjectOperator)) {
+            parsed_offset = true;
+        } else if !parsed_offset && parser.at(named(TokenName::ObjectOperator)) {
             parser.bump();
             if parser.at(named(TokenName::String)) {
                 parser.bump();

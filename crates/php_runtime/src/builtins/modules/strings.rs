@@ -239,7 +239,11 @@ pub(in crate::builtins::modules) fn builtin_explode(
     }
     let separator = string_arg("explode", &args[0])?;
     if separator.is_empty() {
-        return Err(value_error("explode", "separator cannot be empty"));
+        return Err(argument_value_error(
+            "explode",
+            "#1 ($separator)",
+            "must not be empty",
+        ));
     }
     let string = string_arg("explode", &args[1])?;
     let limit = args
@@ -268,9 +272,9 @@ pub(in crate::builtins::modules) fn builtin_explode(
 }
 
 pub(in crate::builtins::modules) fn builtin_implode(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
         return Err(BuiltinError::new(
@@ -282,20 +286,26 @@ pub(in crate::builtins::modules) fn builtin_implode(
     {
         (
             crate::PhpString::from_bytes(Vec::new()),
-            array_arg("implode", &args[0])?,
+            array_value_arg("implode", &args[0])?,
         )
     } else {
         (
             string_arg("implode", &args[0])?,
-            array_arg("implode", &args[1])?,
+            array_value_arg("implode", &args[1])?,
         )
     };
     let mut output = Vec::new();
-    for (index, value) in array.iter().enumerate() {
+    for (index, (_, value)) in array.iter().enumerate() {
         if index > 0 {
             output.extend_from_slice(separator.as_bytes());
         }
-        output.extend_from_slice(value.as_bytes());
+        let string = string_cast_value(context, value, span.clone()).map_err(|message| {
+            BuiltinError::new(
+                "E_PHP_RUNTIME_BUILTIN_TYPE",
+                format!("builtin implode expects string-compatible value: {message}"),
+            )
+        })?;
+        output.extend_from_slice(string.as_bytes());
     }
     Ok(Value::string(output))
 }

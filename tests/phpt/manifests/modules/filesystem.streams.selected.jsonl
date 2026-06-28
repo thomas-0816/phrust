@@ -5,3 +5,7 @@
 {"path":"tests/phpt/generated/filesystem.streams/local-file-resource.phpt","module":"filesystem.streams","kind":"generated","reason":"local file resource and metadata baseline"}
 {"path":"tests/phpt/generated/filesystem.streams/missing-file-warnings.phpt","module":"filesystem.streams","kind":"generated","reason":"missing file warning baseline"}
 {"path":"tests/phpt/generated/filesystem.streams/php-temp-stream.phpt","module":"filesystem.streams","kind":"generated","reason":"php temp stream and metadata baseline"}
+{"path":"tests/phpt/generated/filesystem.streams/local-filesystem-mutations.phpt","module":"filesystem.streams","kind":"generated","reason":"local filesystem mutation and readfile baseline"}
+{"path":"tests/phpt/generated/filesystem.streams/stream-seek-contents.phpt","module":"filesystem.streams","kind":"generated","reason":"stream seek contents and eof baseline"}
+{"path":"tests/phpt/generated/filesystem.streams/include-local-semantics.phpt","module":"filesystem.streams","kind":"generated","reason":"include local return scope once and include_path baseline"}
+{"path":"tests/phpt/generated/filesystem.streams/require-missing-fatal.phpt","module":"filesystem.streams","kind":"generated","reason":"missing local require fatal baseline"}

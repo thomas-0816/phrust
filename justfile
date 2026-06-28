@@ -812,7 +812,7 @@ runtime-fixtures:
     printf '1\n' > "$tmp_dir/includes-once.expected"; \
     cmp "$tmp_dir/includes-once.expected" "$tmp_dir/includes-once.out"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/includes/include-missing.php > "$tmp_dir/includes-missing.out" 2> "$tmp_dir/includes-missing.err"; \
-    printf 'before|after\n' > "$tmp_dir/includes-missing.expected"; \
+    printf 'before|\nWarning: include(%s/fixtures/runtime/valid/includes/lib/missing.php): Failed to open stream: No such file or directory in %s/fixtures/runtime/valid/includes/include-missing.php on line 4\nafter\n' "$PWD" "$PWD" > "$tmp_dir/includes-missing.expected"; \
     cmp "$tmp_dir/includes-missing.expected" "$tmp_dir/includes-missing.out"; \
     grep -q 'E_PHP_VM_INCLUDE_MISSING' "$tmp_dir/includes-missing.err"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/objects/instantiate.php > "$tmp_dir/objects-instantiate.out"; \
@@ -908,13 +908,15 @@ runtime-fixtures:
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    grep -q 'E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER' "$tmp_dir/objects-clone-with-private.err"; \
+    grep -q 'Uncaught Error: property PrivateCloneWithFixture::$value uses modifiers outside the reflection-clone clone-with MVP' "$tmp_dir/objects-clone-with-private.out"; \
+    grep -q 'E_PHP_VM_UNCAUGHT_EXCEPTION' "$tmp_dir/objects-clone-with-private.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/known_gaps/objects/clone-with-readonly.php > "$tmp_dir/objects-clone-with-readonly.out" 2> "$tmp_dir/objects-clone-with-readonly.err"; \
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    grep -q 'E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER' "$tmp_dir/objects-clone-with-readonly.err"; \
+    grep -q 'Uncaught Error: property ReadonlyCloneWithFixture::$value uses modifiers outside the reflection-clone clone-with MVP' "$tmp_dir/objects-clone-with-readonly.out"; \
+    grep -q 'E_PHP_VM_UNCAUGHT_EXCEPTION' "$tmp_dir/objects-clone-with-readonly.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/exceptions/throw-uncaught.php > "$tmp_dir/exceptions-throw-uncaught.out" 2> "$tmp_dir/exceptions-throw-uncaught.err"; \
     code=$?; \
@@ -960,7 +962,8 @@ runtime-fixtures:
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    grep -q 'E_PHP_VM_PROPERTY_TYPE_MISMATCH' "$tmp_dir/runtime-types-property-type-fail.err"; \
+    grep -q 'Uncaught TypeError: property Box::$value got array, expected int' "$tmp_dir/runtime-types-property-type-fail.out"; \
+    grep -q 'E_PHP_VM_UNCAUGHT_EXCEPTION' "$tmp_dir/runtime-types-property-type-fail.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/invalid/exceptions/nonmatching-catch-type.php > "$tmp_dir/exceptions-catch-type.out" 2> "$tmp_dir/exceptions-catch-type.err"; \
     code=$?; \
@@ -972,7 +975,7 @@ runtime-fixtures:
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    printf 'before|' > "$tmp_dir/includes-require-missing.expected"; \
+    printf 'before|\nWarning: require(%s/fixtures/runtime/invalid/includes/missing.php): Failed to open stream: No such file or directory in %s/fixtures/runtime/invalid/includes/require-missing.php on line 3\n\nFatal error: Uncaught Error: Failed opening required '\''%s/fixtures/runtime/invalid/includes/missing.php'\'' (include_path='\''.'\'') in %s/fixtures/runtime/invalid/includes/require-missing.php:3\nStack trace:\n#0 {main}\n  thrown in %s/fixtures/runtime/invalid/includes/require-missing.php on line 3\n' "$PWD" "$PWD" "$PWD" "$PWD" "$PWD" > "$tmp_dir/includes-require-missing.expected"; \
     cmp "$tmp_dir/includes-require-missing.expected" "$tmp_dir/includes-require-missing.out"; \
     grep -q 'E_PHP_VM_INCLUDE_MISSING' "$tmp_dir/includes-require-missing.err"; \
     set +e; \
@@ -1065,7 +1068,8 @@ runtime-fixtures:
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    grep -q 'E_PHP_VM_PIPE_RHS_NOT_CALLABLE' "$tmp_dir/php85-pipe-not-callable.err"; \
+    grep -q 'E_PHP_VM_UNCAUGHT_EXCEPTION' "$tmp_dir/php85-pipe-not-callable.err"; \
+    grep -q 'Uncaught Error: int is not callable' "$tmp_dir/php85-pipe-not-callable.out"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/generators/yield.php > "$tmp_dir/generator-gap.out" 2> "$tmp_dir/generator-gap.err"; \
     printf '1' > "$tmp_dir/generator-gap.expected"; \
     cmp "$tmp_dir/generator-gap.expected" "$tmp_dir/generator-gap.out"; \
@@ -1106,7 +1110,7 @@ runtime-known-gaps:
     test -f fixtures/runtime/valid/fibers/fiber.php
     test -f fixtures/runtime/valid/eval/eval.php
     test -f fixtures/runtime/known_gaps/autoload/spl-autoload-register.php
-    test -f fixtures/runtime/known_gaps/reflection/reflection-class.php
+    test -f fixtures/runtime/valid/reflection/reflection-class.php
     test -f fixtures/runtime/valid/traits/trait-use.php
     test -f fixtures/runtime/valid/enums/unit-enum.php
     test -f fixtures/runtime/valid/property_hooks/get-hook.php
@@ -1132,9 +1136,8 @@ runtime-known-gaps:
     done; \
     for fixture_id in \
       "fixtures/runtime/known_gaps/autoload/spl-autoload-register.php:E_PHP_VM_UNKNOWN_CLASS:autoload" \
-      "fixtures/runtime/known_gaps/reflection/reflection-class.php:E_PHP_VM_REFLECTION_UNKNOWN_CLASS:reflection" \
-      "fixtures/runtime/known_gaps/objects/clone-with-private.php:E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER:clone-with-private" \
-      "fixtures/runtime/known_gaps/objects/clone-with-readonly.php:E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER:clone-with-readonly"; do \
+      "fixtures/runtime/known_gaps/objects/clone-with-private.php:E_PHP_VM_UNCAUGHT_EXCEPTION:clone-with-private" \
+      "fixtures/runtime/known_gaps/objects/clone-with-readonly.php:E_PHP_VM_UNCAUGHT_EXCEPTION:clone-with-readonly"; do \
       IFS=':' read -r fixture diagnostic name <<< "$fixture_id"; \
       set +e; \
       ${CARGO_TARGET_DIR:-target}/debug/php-vm run "$fixture" > "$tmp_dir/$name.out" 2> "$tmp_dir/$name.err"; \

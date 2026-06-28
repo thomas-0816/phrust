@@ -101,6 +101,7 @@ pub fn is_assignment_operator(kind: SyntaxKind) -> bool {
         || kind == named(TokenName::XorEqual)
         || kind == named(TokenName::SlEqual)
         || kind == named(TokenName::SrEqual)
+        || kind == named(TokenName::PowEqual)
         || kind == named(TokenName::CoalesceEqual)
 }
 

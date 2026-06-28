@@ -536,8 +536,8 @@ impl GcScanner {
 mod tests {
     use super::{GcEntityId, GcEntityKind, GcRoot, GcRootKind, GcTrackedHeap, scan_roots};
     use crate::{
-        ClassEntry, ClassFlags, ObjectRef, PhpArray, ReferenceCell, Slot, Value,
-        value::ClosureCaptureValue,
+        ClassEntry, ClassFlags, ClosureCaptureValue, ObjectRef, PhpArray, ReferenceCell, Slot,
+        Value,
     };
 
     fn empty_class(name: &str) -> ClassEntry {

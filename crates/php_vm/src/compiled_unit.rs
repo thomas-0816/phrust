@@ -2,7 +2,7 @@
 
 use php_ir::constants::IrConstant;
 use php_ir::ids::FunctionId;
-use php_ir::module::ClassEntry;
+use php_ir::module::{ClassEntry, normalize_class_name};
 use php_ir::{ConstId, IrUnit};
 
 /// VM-facing function lookup entry.
@@ -119,10 +119,6 @@ impl CompiledUnit {
     pub fn into_unit(self) -> IrUnit {
         self.unit
     }
-}
-
-fn normalize_class_name(name: &str) -> String {
-    name.trim_start_matches('\\').to_ascii_lowercase()
 }
 
 impl From<IrUnit> for CompiledUnit {

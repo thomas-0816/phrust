@@ -185,7 +185,7 @@ impl HirLowerer<'_> {
                 variables: self.stmt_expr_children(node),
             },
             Some(Stmt::Unset(_)) => {
-                let mut expressions = vec![self.construct_operand_expr(node)];
+                let mut expressions = self.construct_operand_exprs(node);
                 if expressions.is_empty() {
                     expressions.push(self.placeholder_expr(node));
                 }
@@ -934,6 +934,30 @@ impl HirLowerer<'_> {
         current.unwrap_or_else(|| self.placeholder_expr(node))
     }
 
+    fn construct_operand_exprs(&mut self, node: &SyntaxNode) -> Vec<ExprId> {
+        let source = source_text_no_trivia(node);
+        let Some(open) = source.find('(') else {
+            return vec![self.construct_operand_expr(node)];
+        };
+        let Some(close) = source.rfind(')') else {
+            return vec![self.construct_operand_expr(node)];
+        };
+        let inner = &source[open + 1..close];
+        let parts = split_construct_args(inner);
+        if parts.len() <= 1 {
+            return vec![self.construct_operand_expr(node)];
+        }
+        let mut expressions = Vec::with_capacity(parts.len());
+        for part in parts {
+            let Some(expr) = self.simple_construct_operand_source(part.trim(), node.text_range())
+            else {
+                return vec![self.construct_operand_expr(node)];
+            };
+            expressions.push(expr);
+        }
+        expressions
+    }
+
     fn optional_construct_operand_expr(&mut self, node: &SyntaxNode) -> Option<ExprId> {
         let source = source_text_no_trivia(node);
         let rest = source
@@ -952,7 +976,7 @@ impl HirLowerer<'_> {
         let source = source_text_no_trivia(node);
         let open = source.find('(')?;
         let close = source.rfind(')')?;
-        let mut rest = source[open + 1..close].trim();
+        let rest = source[open + 1..close].trim();
         if is_quoted_construct_operand(rest) {
             return Some(self.alloc_expr(
                 HirExprKind::Literal {
@@ -961,6 +985,14 @@ impl HirLowerer<'_> {
                 node.text_range(),
             ));
         }
+        self.simple_construct_operand_source(rest, node.text_range())
+    }
+
+    fn simple_construct_operand_source(
+        &mut self,
+        mut rest: &str,
+        range: TextRange,
+    ) -> Option<ExprId> {
         if !rest.starts_with('$') {
             return None;
         }
@@ -975,7 +1007,7 @@ impl HirLowerer<'_> {
             HirExprKind::Variable {
                 name: variable.to_owned(),
             },
-            node.text_range(),
+            range,
         );
         rest = rest[variable_len..].trim();
         loop {
@@ -987,7 +1019,7 @@ impl HirLowerer<'_> {
                         HirExprKind::Literal {
                             text: dim_text.to_owned(),
                         },
-                        node.text_range(),
+                        range,
                     )
                 });
                 current = self.alloc_expr(
@@ -995,7 +1027,7 @@ impl HirLowerer<'_> {
                         receiver: Some(current),
                         dim,
                     },
-                    node.text_range(),
+                    range,
                 );
                 rest = after_open[close + 1..].trim();
                 continue;
@@ -1015,7 +1047,7 @@ impl HirLowerer<'_> {
                     HirExprKind::Literal {
                         text: property.to_owned(),
                     },
-                    node.text_range(),
+                    range,
                 );
                 current = self.alloc_expr(
                     HirExprKind::PropertyFetch {
@@ -1023,7 +1055,7 @@ impl HirLowerer<'_> {
                         property: Some(property),
                         nullsafe: false,
                     },
-                    node.text_range(),
+                    range,
                 );
                 rest = after_arrow[property_len..].trim();
                 if let Some(after_open) = rest.strip_prefix('(')
@@ -1036,7 +1068,7 @@ impl HirLowerer<'_> {
                             args: Vec::new(),
                             nullsafe: false,
                         },
-                        node.text_range(),
+                        range,
                     );
                     rest = after_close.trim();
                 }
@@ -1535,6 +1567,45 @@ fn source_text_no_trivia(node: &SyntaxNode) -> String {
         .map(|token| token.text())
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn split_construct_args(source: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut start = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote = None::<u8>;
+    let mut escaped = false;
+    for (index, byte) in source.bytes().enumerate() {
+        if let Some(quoted) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                continue;
+            }
+            if byte == quoted {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b',' if bracket_depth == 0 && paren_depth == 0 => {
+                args.push(source[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(source[start..].trim());
+    args
 }
 
 fn only_trivia_between(node: &SyntaxNode, left_end: usize, right_start: usize) -> bool {

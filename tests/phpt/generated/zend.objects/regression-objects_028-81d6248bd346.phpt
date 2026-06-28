@@ -3,7 +3,7 @@ PHPT generated regression: Testing 'static::' and 'parent::' in calls
 --DESCRIPTION--
 original php-src path: Zend/tests/objects/objects_028.phpt
 original source hash: 81d6248bd3469c9015be9f71a48c4a5a2d7dbbf02755815b4b2f5efc9b76caae
-generated timestamp: 20260625T154035Z
+generated timestamp: 20260627T201250Z
 generator version: phpt-generate-v1
 reason: known target failure minimized against reference output
 --FILE--

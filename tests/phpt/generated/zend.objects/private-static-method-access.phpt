@@ -1,7 +1,7 @@
 --TEST--
 Generated zend.objects: accessible private/protected static method calls
 --DESCRIPTION--
-module: objects.classes
+module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-classes-v1
 reason: a class calling its own private static method dispatches normally instead of routing to __callStatic; only inaccessible private/protected static methods take the magic/error path (tests/Zend/tests/private_007.phpt)

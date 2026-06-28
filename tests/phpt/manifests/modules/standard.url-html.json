@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"standard.url-html",
+  "priority":16,
+  "selected_manifest":"tests/phpt/manifests/modules/standard.url-html.selected.jsonl",
+  "corpus_count":69,
+  "selected_count":4,
+  "pass_count":4,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":68,
+  "scope":["URL encoding helpers","HTML escaping helpers"],
+  "non_scope":["complete entity tables","non-default charsets","full http_build_query parity"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.url-html","nix develop -c just verify-stdlib"],
+  "next_step":"Prompt 16.8 selected URL/HTML contracts are closed and green; keep full charset/entity tables and uncommon flags as documented gaps."
+}

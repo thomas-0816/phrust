@@ -71,20 +71,6 @@
 - `needs-triage`: 320
 - `runtime-unsupported-feature`: 135
 
-`CAPTURE_STDIO` is supported by the local runner smoke gate. The counts above
-come from the accepted full baseline and only change after the next full
-regression refresh.
-
-`CGI` and `PHPDBG` are recognized as SAPI policy sections and become explicit
-`SKIP` outcomes when no matching local SAPI target is configured.
-`GZIP_POST` and `DEFLATE_POST` follow the same policy because upstream
-`run-tests.php` routes them through CGI.
-
-`EXTENSIONS` is a target-capability section. The runner checks
-`extension_loaded()` before executing `SKIPIF` or `FILE`; unavailable
-extensions produce explicit `SKIP` outcomes instead of reference or target
-runtime failures.
-
 ## Next Step
 
 Reduce runner-owned BORKs before attributing failures to the engine.

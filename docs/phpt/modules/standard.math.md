@@ -2,73 +2,49 @@
 
 - Priority: 14
 - Selected manifest: `tests/phpt/manifests/modules/standard.math.selected.jsonl`
-- Current counts: 14 PASS, 11 SKIP, 146 FAIL, 0 BORK from 171 corpus candidates
+- Prompt 16.1 baseline: 99 PASS, 11 SKIP, 62 FAIL, 0 BORK from 172 corpus candidates
+- Prompt 16.9 focused gate: 161 PASS, 11 SKIP, 0 FAIL, 0 BORK
 
 ## Scope
 
-- math and numeric standard builtins
+- Math and numeric standard builtins covered by the selected module gate
 
 ## Non-Scope
 
-- operator conversion semantics
+- General operator conversion semantics
+- Parser/IR gaps surfaced by math PHPTs but owned by other layers
 
 ## Relevant PHPT Paths
 
-- `ext/standard/tests/math/tanh_variation.phpt`
-- `ext/standard/tests/math/tanh_basiclong_64bit.phpt`
-- `ext/standard/tests/math/tanh_basic.phpt`
-- `ext/standard/tests/math/tan_variation.phpt`
-- `ext/standard/tests/math/tan_basiclong_64bit.phpt`
-- `ext/standard/tests/math/tan_basic.phpt`
-- `ext/standard/tests/math/sqrt_basiclong_64bit.phpt`
-- `ext/standard/tests/math/sinh_variation.phpt`
-- `ext/standard/tests/math/sinh_basiclong_64bit.phpt`
-- `ext/standard/tests/math/sinh_basic.phpt`
-- `ext/standard/tests/math/sin_variation.phpt`
-- `ext/standard/tests/math/sin_basiclong_64bit.phpt`
-- `ext/standard/tests/math/sin_basic.phpt`
-- `ext/standard/tests/math/round_variation1.phpt`
-- `ext/standard/tests/math/round_valid_rounding_mode.phpt`
-- `ext/standard/tests/math/round_prerounding.phpt`
-- `ext/standard/tests/math/round_modes_zeros.phpt`
-- `ext/standard/tests/math/round_modes_ceiling_and_floor.phpt`
-- `ext/standard/tests/math/round_modes.phpt`
-- `ext/standard/tests/math/round_large_exp.phpt`
-- `ext/standard/tests/math/round_gh12143_optimize_round.phpt`
-- `ext/standard/tests/math/round_gh12143_expand_rounding_target.phpt`
-- `ext/standard/tests/math/round_gh12143_4.phpt`
-- `ext/standard/tests/math/round_gh12143_3.phpt`
-- `ext/standard/tests/math/round_gh12143_2.phpt`
-- `ext/standard/tests/math/round_gh12143_1.phpt`
-- `ext/standard/tests/math/round_bug71201.phpt`
-- `ext/standard/tests/math/round_basiclong_64bit.phpt`
-- `ext/standard/tests/math/round_basic.phpt`
-- `ext/standard/tests/math/round_RoundingMode.phpt`
-- `ext/standard/tests/math/round.phpt`
-- `ext/standard/tests/math/rad2deg_variation.phpt`
-- `ext/standard/tests/math/rad2deg_basiclong_64bit.phpt`
-- `ext/standard/tests/math/rad2deg_basic.phpt`
-- `ext/standard/tests/math/pow_variation2.phpt`
-- `ext/standard/tests/math/pow_variation1_64bit.phpt`
-- `ext/standard/tests/math/pow_variation1.phpt`
-- `ext/standard/tests/math/pow_divisionbyzero.phpt`
-- `ext/standard/tests/math/pow_basiclong_64bit.phpt`
-- `ext/standard/tests/math/pow_basic_64bit.phpt`
-
-## Relevant php-src Source Areas
-
 - `ext/standard/tests/math/`
+- `tests/phpt/generated/standard.math/core-math-edge-cases.phpt`
+
+## Relevant Source Areas
+
+- `crates/php_runtime/src/builtins/modules/math.rs`
+- `crates/php_runtime/src/convert.rs`
+- `crates/php_std/src/constants.rs`
+- `crates/php_std/src/lib.rs`
 
 ## Target Gates
 
-- `nix develop -c just phpt-module MODULE=standard.math`
+- `nix develop -c cargo test -p php_runtime`
+- `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.math`
+- `nix develop -c just verify-stdlib`
+
+## Prompt 16 Evidence
+
+- Added math-module implementations and registrations for trigonometric,
+  hyperbolic, logarithmic, exponential, base-conversion, `pi`, `fpow`,
+  `getrandmax`, and expanded `round` mode support.
+- Added standard math constants, `PHP_ROUND_HALF_*`, and `STR_PAD_*`
+  constants.
+- Added `tests/phpt/generated/standard.math/core-math-edge-cases.phpt`.
+- Latest focused target run: PASS, 172 selected PHPTs with 161 PASS and
+  11 SKIP.
 
 ## Known Gaps
 
-- `runtime-error-or-diagnostic`: 128
-- `runtime-unsupported-feature`: 18
-- `runtime-output-mismatch`: 17
-
-## Next Step
-
-Use php-src arginfo and Reference PHP for edge-case numeric behavior.
+- The 11 SKIPs are preserved as selected-gate skips, not failures.
+- Broader numeric edge cases and cross-layer blockers remain backlog work when
+  expanding beyond the focused selected module.

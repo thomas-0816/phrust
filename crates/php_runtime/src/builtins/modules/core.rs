@@ -1,20 +1,19 @@
 //! Core builtin implementations and cross-module helpers.
 
 use super::super::context::{
-    JSON_ERROR_DEPTH, JSON_ERROR_NONE, JSON_ERROR_SYNTAX, JSON_ERROR_UTF8, JSON_OBJECT_AS_ARRAY,
-    JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR, JSON_UNESCAPED_SLASHES,
-    JSON_UNESCAPED_UNICODE, json_error_message,
+    JSON_ERROR_SYNTAX, JSON_ERROR_UTF8, JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT,
+    JSON_THROW_ON_ERROR, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, json_error_message,
 };
 use super::super::{
-    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
-    BuiltinResult, RuntimeSourceSpan,
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
+    RuntimeSourceSpan,
 };
 use crate::convert::float_to_php_string;
 use crate::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 use crate::{
     ArrayKey, CallableValue, ClassEntry, ClassFlags, NumericValue, ObjectRef, OutputBuffer,
-    PhpArray, PhpString, StreamWrapperRegistry, UnserializeOptions, Value, compare, datetime,
-    equal, identical, pcre, serialize as serialize_value, to_bool, to_float, to_int, to_number,
+    PhpArray, PhpString, ResourceKind, UnserializeOptions, Value, compare, equal, identical,
+    normalize_class_name, pcre, serialize as serialize_value, to_bool, to_float, to_int, to_number,
     to_string, unserialize as unserialize_value, value::FloatValue,
 };
 use md5::{Digest, Md5};
@@ -37,6 +36,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("boolval", builtin_boolval, BuiltinCompatibility::Php),
     BuiltinEntry::new("uniqid", builtin_uniqid, BuiltinCompatibility::Php),
     BuiltinEntry::new("usleep", builtin_usleep, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "set_time_limit",
+        builtin_set_time_limit,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "error_reporting",
         builtin_error_handling_requires_vm,
@@ -112,14 +116,18 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_is_countable,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("is_double", builtin_is_float, BuiltinCompatibility::Php),
     BuiltinEntry::new("is_float", builtin_is_float, BuiltinCompatibility::Php),
     BuiltinEntry::new("is_int", builtin_is_int, BuiltinCompatibility::Php),
+    BuiltinEntry::new("is_integer", builtin_is_int, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "is_iterable",
         builtin_is_iterable,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("is_long", builtin_is_int, BuiltinCompatibility::Php),
     BuiltinEntry::new("is_null", builtin_is_null, BuiltinCompatibility::Php),
+    BuiltinEntry::new("is_numeric", builtin_is_numeric, BuiltinCompatibility::Php),
     BuiltinEntry::new("is_object", builtin_is_object, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "is_resource",
@@ -203,11 +211,6 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "proc_open",
         builtin_process_requires_vm,
-        BuiltinCompatibility::Php,
-    ),
-    BuiltinEntry::new(
-        "property_exists",
-        builtin_symbol_introspection_requires_vm,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -299,17 +302,6 @@ pub(in crate::builtins::modules) fn arity_error(name: &str, expected: &str) -> B
     )
 }
 
-pub(in crate::builtins::modules) fn builtin_symbol_introspection_requires_vm(
-    _context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    Err(BuiltinError::new(
-        "E_PHP_RUNTIME_SYMBOL_CONTEXT_REQUIRED",
-        "symbol introspection builtins require VM symbol tables and autoload state",
-    ))
-}
-
 pub(in crate::builtins::modules) fn builtin_config_requires_vm(
     _context: &mut BuiltinContext<'_>,
     _args: Vec<Value>,
@@ -340,17 +332,6 @@ pub(in crate::builtins::modules) fn builtin_output_buffering_requires_vm(
     Err(BuiltinError::new(
         "E_PHP_RUNTIME_OUTPUT_BUFFER_CONTEXT_REQUIRED",
         "output buffering builtins require VM output buffer stack state",
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_spl_autoload_requires_vm(
-    _context: &mut BuiltinContext<'_>,
-    _args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    Err(BuiltinError::new(
-        "E_PHP_RUNTIME_SPL_AUTOLOAD_CONTEXT_REQUIRED",
-        "SPL autoload builtins require VM autoload stack state",
     ))
 }
 
@@ -437,225 +418,6 @@ pub(in crate::builtins::modules) fn builtin_gc_collect_cycles(
     Ok(Value::Int(0))
 }
 
-pub(in crate::builtins::modules) fn builtin_abs(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("abs", &args, 1)?;
-    Ok(
-        match to_number(&args[0]).map_err(|message| conversion_error("abs", message))? {
-            NumericValue::Int(value) => value
-                .checked_abs()
-                .map(Value::Int)
-                .unwrap_or_else(|| Value::float((value as f64).abs())),
-            NumericValue::Float(value) => Value::float(value.abs()),
-        },
-    )
-}
-
-pub(in crate::builtins::modules) fn builtin_decbin(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("decbin", &args, 1)?;
-    Ok(Value::string(format!(
-        "{:b}",
-        int_arg("decbin", &args[0])? as u64
-    )))
-}
-
-pub(in crate::builtins::modules) fn builtin_min(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    min_max_builtin("min", args, false)
-}
-
-pub(in crate::builtins::modules) fn builtin_max(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    min_max_builtin("max", args, true)
-}
-
-pub(in crate::builtins::modules) fn builtin_round(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if !(1..=3).contains(&args.len()) {
-        return Err(arity_error("round", "one to three argument(s)"));
-    }
-    let value = numeric_f64_arg("round", &args[0])?;
-    let precision = args
-        .get(1)
-        .map(|value| int_arg("round", value))
-        .transpose()?
-        .unwrap_or(0);
-    let factor = 10_f64.powi(precision as i32);
-    Ok(Value::float((value * factor).round() / factor))
-}
-
-pub(in crate::builtins::modules) fn builtin_floor(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("floor", &args, 1)?;
-    Ok(Value::float(numeric_f64_arg("floor", &args[0])?.floor()))
-}
-
-pub(in crate::builtins::modules) fn builtin_ceil(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("ceil", &args, 1)?;
-    Ok(Value::float(numeric_f64_arg("ceil", &args[0])?.ceil()))
-}
-
-pub(in crate::builtins::modules) fn builtin_sqrt(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("sqrt", &args, 1)?;
-    Ok(Value::float(numeric_f64_arg("sqrt", &args[0])?.sqrt()))
-}
-
-pub(in crate::builtins::modules) fn builtin_pow(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("pow", &args, 2)?;
-    if let (Ok(NumericValue::Int(base)), Ok(NumericValue::Int(exponent))) =
-        (to_number(&args[0]), to_number(&args[1]))
-        && let Ok(exponent) = u32::try_from(exponent)
-        && let Some(value) = base.checked_pow(exponent)
-    {
-        return Ok(Value::Int(value));
-    }
-    Ok(Value::float(
-        numeric_f64_arg("pow", &args[0])?.powf(numeric_f64_arg("pow", &args[1])?),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_intdiv(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("intdiv", &args, 2)?;
-    let dividend = int_arg("intdiv", &args[0])?;
-    let divisor = int_arg("intdiv", &args[1])?;
-    if divisor == 0 {
-        return Err(value_error("intdiv", "division by zero"));
-    }
-    if dividend == i64::MIN && divisor == -1 {
-        return Err(value_error("intdiv", "division overflows"));
-    }
-    Ok(Value::Int(dividend / divisor))
-}
-
-pub(in crate::builtins::modules) fn builtin_fmod(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("fmod", &args, 2)?;
-    let dividend = numeric_f64_arg("fmod", &args[0])?;
-    let divisor = numeric_f64_arg("fmod", &args[1])?;
-    if divisor == 0.0 {
-        return Err(value_error("fmod", "division by zero"));
-    }
-    Ok(Value::float(dividend % divisor))
-}
-
-pub(in crate::builtins::modules) fn builtin_fdiv(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("fdiv", &args, 2)?;
-    let dividend = numeric_f64_arg("fdiv", &args[0])?;
-    let divisor = numeric_f64_arg("fdiv", &args[1])?;
-    Ok(Value::float(dividend / divisor))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_finite(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_finite", &args, 1)?;
-    Ok(Value::Bool(
-        numeric_f64_arg("is_finite", &args[0])?.is_finite(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_infinite(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_infinite", &args, 1)?;
-    Ok(Value::Bool(
-        numeric_f64_arg("is_infinite", &args[0])?.is_infinite(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_nan(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_nan", &args, 1)?;
-    Ok(Value::Bool(numeric_f64_arg("is_nan", &args[0])?.is_nan()))
-}
-
-pub(in crate::builtins::modules) fn builtin_number_format(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if !(1..=4).contains(&args.len()) {
-        return Err(arity_error("number_format", "one to four argument(s)"));
-    }
-    let value = numeric_f64_arg("number_format", &args[0])?;
-    let decimals = args
-        .get(1)
-        .map(|value| int_arg("number_format", value))
-        .transpose()?
-        .unwrap_or(0)
-        .max(0) as usize;
-    let decimal_separator = args
-        .get(2)
-        .map(|value| string_arg("number_format", value))
-        .transpose()?
-        .unwrap_or_else(|| crate::PhpString::from_test_str("."));
-    let thousands_separator = args
-        .get(3)
-        .map(|value| string_arg("number_format", value))
-        .transpose()?
-        .unwrap_or_else(|| crate::PhpString::from_test_str(","));
-    let rounded = format!("{:.*}", decimals, value.abs());
-    let (integer, fraction) = rounded.split_once('.').unwrap_or((&rounded, ""));
-    let mut grouped = group_decimal_integer(integer, &thousands_separator.to_string_lossy());
-    if decimals > 0 {
-        grouped.push_str(&decimal_separator.to_string_lossy());
-        grouped.push_str(fraction);
-    }
-    if value.is_sign_negative() && grouped != "0" {
-        grouped.insert(0, '-');
-    }
-    Ok(Value::string(grouped))
-}
-
 pub(in crate::builtins::modules) fn builtin_usleep(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -671,6 +433,22 @@ pub(in crate::builtins::modules) fn builtin_usleep(
     }
     std::thread::sleep(std::time::Duration::from_micros(micros as u64));
     Ok(Value::Null)
+}
+
+pub(in crate::builtins::modules) fn builtin_set_time_limit(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("set_time_limit", &args, 1)?;
+    let seconds = int_arg("set_time_limit", &args[0])?;
+    if seconds < 0 {
+        return Err(value_error(
+            "set_time_limit",
+            "Argument #1 ($seconds) must be greater than or equal to 0",
+        ));
+    }
+    Ok(Value::Bool(true))
 }
 
 /// Monotonic per-process counter mixed into `uniqid(..., true)` so that two
@@ -731,1539 +509,6 @@ pub(in crate::builtins::modules) fn builtin_print(
     Ok(Value::Int(1))
 }
 
-pub(in crate::builtins::modules) fn builtin_fprintf(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 {
-        return Err(arity_error("fprintf", "two or more argument(s)"));
-    }
-    let Some(stream) = resource_arg(&args[0]) else {
-        return Err(type_error("fprintf", "resource", &args[0]));
-    };
-    let format = string_arg("fprintf", &args[1])?;
-    let rendered = php_format("fprintf", format.as_bytes(), &args[2..], context, span)?;
-    let written = stream
-        .write_bytes(&rendered)
-        .map_err(|error| value_error("fprintf", &error.to_string()))?;
-    Ok(Value::Int(written as i64))
-}
-
-pub(in crate::builtins::modules) fn builtin_vfprintf(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() != 3 {
-        return Err(BuiltinError::new(
-            "E_PHP_RUNTIME_BUILTIN_ARITY",
-            format!(
-                "vfprintf() expects exactly 3 arguments, {} given",
-                args.len()
-            ),
-        ));
-    }
-    let Some(stream) = resource_arg(&args[0]) else {
-        return Err(argument_type_error(
-            "vfprintf",
-            "#1 ($stream)",
-            "resource",
-            &args[0],
-        ));
-    };
-    let format = string_needle_arg("vfprintf", "#2 ($format)", &args[1])?;
-    let values = format_array_values("vfprintf", "#3 ($values)", &args[2])?;
-    let rendered = php_format("vfprintf", format.as_bytes(), &values, context, span)?;
-    let written = stream
-        .write_bytes(&rendered)
-        .map_err(|error| value_error("vfprintf", &error.to_string()))?;
-    Ok(Value::Int(written as i64))
-}
-
-pub(in crate::builtins::modules) fn builtin_basename(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("basename", "one or two argument(s)"));
-    }
-    let path = string_arg("basename", &args[0])?.to_string_lossy();
-    let suffix = args
-        .get(1)
-        .map(|value| string_arg("basename", value).map(|value| value.to_string_lossy()))
-        .transpose()?;
-    let mut base = php_basename(&path);
-    if let Some(suffix) = suffix
-        && !suffix.is_empty()
-        && base.ends_with(&suffix)
-    {
-        base.truncate(base.len() - suffix.len());
-    }
-    Ok(Value::string(base.into_bytes()))
-}
-
-pub(in crate::builtins::modules) fn builtin_dirname(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("dirname", "one or two argument(s)"));
-    }
-    let mut path = string_arg("dirname", &args[0])?.to_string_lossy();
-    let levels = args
-        .get(1)
-        .map(|value| int_arg("dirname", value))
-        .transpose()?
-        .unwrap_or(1)
-        .max(1);
-    for _ in 0..levels {
-        path = php_dirname_once(&path);
-    }
-    Ok(Value::string(path.into_bytes()))
-}
-
-pub(in crate::builtins::modules) fn builtin_pathinfo(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("pathinfo", "one or two argument(s)"));
-    }
-    let path = string_arg("pathinfo", &args[0])?.to_string_lossy();
-    let flags = args
-        .get(1)
-        .map(|value| int_arg("pathinfo", value))
-        .transpose()?;
-    let dirname = php_dirname_once(&path);
-    let basename = php_basename(&path);
-    let (filename, extension) = split_extension(&basename);
-    match flags {
-        None => {
-            let mut array = crate::PhpArray::new();
-            array.insert(
-                string_array_key("dirname"),
-                Value::string(dirname.into_bytes()),
-            );
-            array.insert(
-                string_array_key("basename"),
-                Value::string(basename.into_bytes()),
-            );
-            if let Some(extension) = extension.clone() {
-                array.insert(
-                    string_array_key("extension"),
-                    Value::string(extension.into_bytes()),
-                );
-            }
-            array.insert(
-                string_array_key("filename"),
-                Value::string(filename.into_bytes()),
-            );
-            Ok(Value::Array(array))
-        }
-        Some(1) => Ok(Value::string(dirname.into_bytes())),
-        Some(2) => Ok(Value::string(basename.into_bytes())),
-        Some(4) => {
-            Ok(extension.map_or(Value::string(""), |value| Value::string(value.into_bytes())))
-        }
-        Some(8) => Ok(Value::string(filename.into_bytes())),
-        Some(_) => Ok(Value::Array(crate::PhpArray::new())),
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_realpath(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("realpath", &args, 1)?;
-    let path = string_arg("realpath", &args[0])?.to_string_lossy();
-    let resolved = resolve_runtime_path(context, &path);
-    if !context.filesystem_capabilities().allows_path(&resolved) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(
-        fs::canonicalize(&resolved).map_or(Value::Bool(false), |path| {
-            Value::string(path.to_string_lossy().as_bytes().to_vec())
-        }),
-    )
-}
-
-pub(in crate::builtins::modules) fn builtin_file_exists(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("file_exists", &args, 1)?;
-    Ok(Value::Bool(
-        metadata_for_arg(context, "file_exists", &args[0], true)?.is_some(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_file(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_file", &args, 1)?;
-    Ok(Value::Bool(
-        metadata_for_arg(context, "is_file", &args[0], true)?
-            .is_some_and(|metadata| metadata.is_file()),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_dir(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_dir", &args, 1)?;
-    Ok(Value::Bool(
-        metadata_for_arg(context, "is_dir", &args[0], true)?
-            .is_some_and(|metadata| metadata.is_dir()),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_link(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_link", &args, 1)?;
-    Ok(Value::Bool(
-        metadata_for_arg(context, "is_link", &args[0], false)?
-            .is_some_and(|metadata| metadata.file_type().is_symlink()),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_readable(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_readable", &args, 1)?;
-    Ok(Value::Bool(
-        metadata_for_arg(context, "is_readable", &args[0], true)?.is_some(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_is_writable(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("is_writable", &args, 1)?;
-    Ok(Value::Bool(
-        metadata_for_arg(context, "is_writable", &args[0], true)?
-            .is_some_and(|metadata| !metadata.permissions().readonly()),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_filesize(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("filesize", &args, 1)?;
-    Ok(metadata_for_arg(context, "filesize", &args[0], true)?
-        .map_or(Value::Bool(false), |metadata| {
-            Value::Int(metadata.len() as i64)
-        }))
-}
-
-pub(in crate::builtins::modules) fn builtin_filemtime(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("filemtime", &args, 1)?;
-    Ok(metadata_for_arg(context, "filemtime", &args[0], true)?
-        .map_or(Value::Bool(false), |metadata| {
-            Value::Int(metadata_mtime(&metadata))
-        }))
-}
-
-pub(in crate::builtins::modules) fn builtin_filetype(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("filetype", &args, 1)?;
-    Ok(metadata_for_arg(context, "filetype", &args[0], false)?
-        .map_or(Value::Bool(false), |metadata| {
-            Value::string(file_type_name(&metadata))
-        }))
-}
-
-pub(in crate::builtins::modules) fn builtin_stat(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("stat", &args, 1)?;
-    Ok(metadata_for_arg(context, "stat", &args[0], true)?.map_or(Value::Bool(false), stat_array))
-}
-
-pub(in crate::builtins::modules) fn builtin_lstat(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("lstat", &args, 1)?;
-    Ok(metadata_for_arg(context, "lstat", &args[0], false)?.map_or(Value::Bool(false), stat_array))
-}
-
-pub(in crate::builtins::modules) fn builtin_clearstatcache(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() > 2 {
-        return Err(arity_error(
-            "clearstatcache",
-            "zero, one, or two argument(s)",
-        ));
-    }
-    Ok(Value::Null)
-}
-
-pub(in crate::builtins::modules) fn builtin_fopen(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("fopen", &args, 2)?;
-    let uri = string_arg("fopen", &args[0])?.to_string_lossy();
-    let mode = string_arg("fopen", &args[1])?.to_string_lossy();
-    let cwd = context.cwd().to_path_buf();
-    let filesystem = context.filesystem_capabilities().clone();
-    let open_result = {
-        let Some(resources) = context.resources() else {
-            return Ok(Value::Bool(false));
-        };
-        StreamWrapperRegistry::new().open(resources, &uri, &mode, &cwd, &filesystem)
-    };
-    match open_result {
-        Ok(resource) => Ok(Value::Resource(resource)),
-        Err(error) => {
-            context.php_warning(
-                error.diagnostic_id(),
-                format!("fopen({uri}): {}", error.message()),
-                span,
-            );
-            Ok(Value::Bool(false))
-        }
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_fclose(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("fclose", &args, 1)?;
-    Ok(resource_arg(&args[0]).map_or(Value::Bool(false), |resource| Value::Bool(resource.close())))
-}
-
-pub(in crate::builtins::modules) fn builtin_fread(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("fread", &args, 2)?;
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let length = int_arg("fread", &args[1])?.max(0) as usize;
-    Ok(resource
-        .read_bytes(length)
-        .map_or(Value::Bool(false), Value::string))
-}
-
-pub(in crate::builtins::modules) fn builtin_fwrite(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(arity_error("fwrite", "two or three argument(s)"));
-    }
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let mut bytes = string_arg("fwrite", &args[1])?.as_bytes().to_vec();
-    if let Some(length) = args.get(2) {
-        bytes.truncate(int_arg("fwrite", length)?.max(0) as usize);
-    }
-    Ok(resource
-        .write_bytes(&bytes)
-        .map_or(Value::Bool(false), |written| Value::Int(written as i64)))
-}
-
-pub(in crate::builtins::modules) fn builtin_fgets(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("fgets", "one or two argument(s)"));
-    }
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let mut line = resource.read_line().unwrap_or_default();
-    if let Some(length) = args.get(1) {
-        line.truncate(int_arg("fgets", length)?.max(0) as usize);
-    }
-    if line.is_empty() {
-        Ok(Value::Bool(false))
-    } else {
-        Ok(Value::string(line))
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_fgetc(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("fgetc", &args, 1)?;
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let byte = resource.read_bytes(1).unwrap_or_default();
-    if byte.is_empty() {
-        Ok(Value::Bool(false))
-    } else {
-        Ok(Value::string(byte))
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_feof(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("feof", &args, 1)?;
-    Ok(
-        resource_arg(&args[0]).map_or(Value::Bool(true), |resource| {
-            Value::Bool(resource.eof().unwrap_or(true))
-        }),
-    )
-}
-
-pub(in crate::builtins::modules) fn builtin_fflush(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("fflush", &args, 1)?;
-    Ok(
-        resource_arg(&args[0]).map_or(Value::Bool(false), |resource| {
-            Value::Bool(resource.flush().is_ok())
-        }),
-    )
-}
-
-pub(in crate::builtins::modules) fn builtin_fseek(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(arity_error("fseek", "two or three argument(s)"));
-    }
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Int(-1));
-    };
-    let offset = int_arg("fseek", &args[1])?.max(0) as usize;
-    Ok(if resource.seek(offset).is_ok() {
-        Value::Int(0)
-    } else {
-        Value::Int(-1)
-    })
-}
-
-pub(in crate::builtins::modules) fn builtin_ftell(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("ftell", &args, 1)?;
-    Ok(
-        resource_arg(&args[0]).map_or(Value::Bool(false), |resource| {
-            resource
-                .tell()
-                .map_or(Value::Bool(false), |offset| Value::Int(offset as i64))
-        }),
-    )
-}
-
-pub(in crate::builtins::modules) fn builtin_ftruncate(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("ftruncate", &args, 2)?;
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let size = int_arg("ftruncate", &args[1])?;
-    if size < 0 {
-        return Err(value_error(
-            "ftruncate",
-            "size must be greater than or equal to 0",
-        ));
-    }
-    Ok(Value::Bool(resource.truncate(size as usize).is_ok()))
-}
-
-pub(in crate::builtins::modules) fn builtin_rewind(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("rewind", &args, 1)?;
-    Ok(
-        resource_arg(&args[0]).map_or(Value::Bool(false), |resource| {
-            Value::Bool(resource.rewind().is_ok())
-        }),
-    )
-}
-
-pub(in crate::builtins::modules) fn builtin_file_get_contents(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("file_get_contents", "one or two argument(s)"));
-    }
-    let path = string_arg("file_get_contents", &args[0])?.to_string_lossy();
-    read_file_value(context, "file_get_contents", &path, span)
-}
-
-pub(in crate::builtins::modules) fn builtin_file_put_contents(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 4 {
-        return Err(arity_error(
-            "file_put_contents",
-            "two, three, or four argument(s)",
-        ));
-    }
-    let path = string_arg("file_put_contents", &args[0])?.to_string_lossy();
-    let bytes = string_arg("file_put_contents", &args[1])?
-        .as_bytes()
-        .to_vec();
-    let resolved = resolve_runtime_path(context, &path);
-    if !context.filesystem_capabilities().allows_path(&resolved) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(fs::write(&resolved, &bytes).map_or(Value::Bool(false), |_| Value::Int(bytes.len() as i64)))
-}
-
-pub(in crate::builtins::modules) fn builtin_readfile(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("readfile", &args, 1)?;
-    let path = string_arg("readfile", &args[0])?.to_string_lossy();
-    let Value::String(bytes) = read_file_value(context, "readfile", &path, span)? else {
-        return Ok(Value::Bool(false));
-    };
-    let len = bytes.len();
-    context.output().write_php_string(&bytes);
-    Ok(Value::Int(len as i64))
-}
-
-pub(in crate::builtins::modules) fn builtin_copy(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("copy", &args, 2)?;
-    let from = resolve_runtime_path(context, &string_arg("copy", &args[0])?.to_string_lossy());
-    let to = resolve_runtime_path(context, &string_arg("copy", &args[1])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&from)
-        || !context.filesystem_capabilities().allows_path(&to)
-    {
-        return Ok(Value::Bool(false));
-    }
-    if same_filesystem_path(&from, &to) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::Bool(fs::copy(from, to).is_ok()))
-}
-
-pub(in crate::builtins::modules) fn builtin_rename(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("rename", &args, 2)?;
-    let from = resolve_runtime_path(context, &string_arg("rename", &args[0])?.to_string_lossy());
-    let to = resolve_runtime_path(context, &string_arg("rename", &args[1])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&from)
-        || !context.filesystem_capabilities().allows_path(&to)
-    {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::Bool(fs::rename(from, to).is_ok()))
-}
-
-pub(in crate::builtins::modules) fn builtin_unlink(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("unlink", &args, 1)?;
-    let path = resolve_runtime_path(context, &string_arg("unlink", &args[0])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&path) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::Bool(fs::remove_file(path).is_ok()))
-}
-
-pub(in crate::builtins::modules) fn builtin_mkdir(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 4 {
-        return Err(arity_error("mkdir", "one to four argument(s)"));
-    }
-    let path = resolve_runtime_path(context, &string_arg("mkdir", &args[0])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&path) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::Bool(fs::create_dir(&path).is_ok()))
-}
-
-pub(in crate::builtins::modules) fn builtin_rmdir(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("rmdir", &args, 1)?;
-    let path = resolve_runtime_path(context, &string_arg("rmdir", &args[0])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&path) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::Bool(fs::remove_dir(path).is_ok()))
-}
-
-pub(in crate::builtins::modules) fn builtin_touch(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 3 {
-        return Err(arity_error("touch", "one to three argument(s)"));
-    }
-    let path = resolve_runtime_path(context, &string_arg("touch", &args[0])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&path) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::Bool(
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .is_ok(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_tempnam(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("tempnam", &args, 2)?;
-    let dir = resolve_runtime_path(context, &string_arg("tempnam", &args[0])?.to_string_lossy());
-    let prefix = string_arg("tempnam", &args[1])?.to_string_lossy();
-    if !context.filesystem_capabilities().allows_path(&dir) {
-        return Ok(Value::Bool(false));
-    }
-    for index in 0..1000 {
-        let path = dir.join(format!("{prefix}{}-{index}", std::process::id()));
-        if fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .is_ok()
-        {
-            return Ok(Value::string(path.to_string_lossy().as_bytes().to_vec()));
-        }
-    }
-    Ok(Value::Bool(false))
-}
-
-pub(in crate::builtins::modules) fn builtin_tmpfile(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("tmpfile", &args, 0)?;
-    let Some(root) = context.filesystem_capabilities().first_allowed_root() else {
-        return Ok(Value::Bool(false));
-    };
-    let path = root.join(format!("phrust-tmpfile-{}", std::process::id()));
-    let _ = fs::write(&path, []);
-    let cwd = context.cwd().to_path_buf();
-    let filesystem = context.filesystem_capabilities().clone();
-    let Some(resources) = context.resources() else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(StreamWrapperRegistry::new()
-        .open(resources, &path.to_string_lossy(), "c+", &cwd, &filesystem)
-        .map_or(Value::Bool(false), Value::Resource))
-}
-
-pub(in crate::builtins::modules) fn builtin_opendir(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("opendir", &args, 1)?;
-    let path = string_arg("opendir", &args[0])?.to_string_lossy();
-    let resolved = resolve_runtime_path(context, &path);
-    if !context.filesystem_capabilities().allows_path(&resolved) || !resolved.is_dir() {
-        return Ok(Value::Bool(false));
-    }
-    let Some(entries) = directory_entries_with_dots(&resolved) else {
-        return Ok(Value::Bool(false));
-    };
-    let uri = resolved.to_string_lossy().to_string();
-    let Some(resources) = context.resources() else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(Value::Resource(
-        resources.register_directory(resolved, entries, uri),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_readdir(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() > 1 {
-        return Err(arity_error("readdir", "zero or one argument(s)"));
-    }
-    let Some(resource) = args.first().and_then(resource_arg) else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(resource
-        .read_dir_entry()
-        .ok()
-        .flatten()
-        .map_or(Value::Bool(false), Value::string))
-}
-
-pub(in crate::builtins::modules) fn builtin_rewinddir(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() > 1 {
-        return Err(arity_error("rewinddir", "zero or one argument(s)"));
-    }
-    let Some(resource) = args.first().and_then(resource_arg) else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(Value::Bool(resource.rewind_dir().is_ok()))
-}
-
-pub(in crate::builtins::modules) fn builtin_closedir(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("closedir", &args, 1)?;
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let Some(resources) = context.resources() else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(Value::Bool(resources.close(resource.id())))
-}
-
-pub(in crate::builtins::modules) fn builtin_scandir(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("scandir", "one or two argument(s)"));
-    }
-    let path = resolve_runtime_path(context, &string_arg("scandir", &args[0])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&path) || !path.is_dir() {
-        return Ok(Value::Bool(false));
-    }
-    let Some(mut entries) = directory_entries_with_dots(&path) else {
-        return Ok(Value::Bool(false));
-    };
-    if args
-        .get(1)
-        .map(|value| int_arg("scandir", value))
-        .transpose()?
-        == Some(1)
-    {
-        entries.reverse();
-    }
-    Ok(Value::packed_array(
-        entries.into_iter().map(Value::string).collect(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_glob(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("glob", "one or two argument(s)"));
-    }
-    let pattern = string_arg("glob", &args[0])?.to_string_lossy();
-    let (directory, file_pattern) = glob_directory_and_pattern(context, &pattern);
-    if !context.filesystem_capabilities().allows_path(&directory) || !directory.is_dir() {
-        return Ok(Value::Bool(false));
-    }
-    let mut matches = Vec::new();
-    let Ok(read_dir) = fs::read_dir(&directory) else {
-        return Ok(Value::Bool(false));
-    };
-    for entry in read_dir.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if glob_pattern_matches(&file_pattern, &name) {
-            matches.push(entry.path().to_string_lossy().to_string());
-        }
-    }
-    matches.sort();
-    Ok(Value::packed_array(
-        matches.into_iter().map(Value::string).collect(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_getcwd(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("getcwd", &args, 0)?;
-    Ok(Value::string(
-        context.cwd().to_string_lossy().as_bytes().to_vec(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_chdir(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("chdir", &args, 1)?;
-    let path = resolve_runtime_path(context, &string_arg("chdir", &args[0])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&path) || !path.is_dir() {
-        return Ok(Value::Bool(false));
-    }
-    context.set_cwd(path);
-    Ok(Value::Bool(true))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_get_wrappers(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("stream_get_wrappers", &args, 0)?;
-    Ok(Value::packed_array(vec![
-        Value::string("file"),
-        Value::string("php"),
-    ]))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_get_meta_data(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("stream_get_meta_data", &args, 1)?;
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let metadata = resource.metadata();
-    let flags = resource.flags();
-    let mut array = crate::PhpArray::new();
-    array.insert(
-        string_array_key("wrapper_type"),
-        Value::string(metadata.wrapper_type),
-    );
-    array.insert(
-        string_array_key("stream_type"),
-        Value::string(metadata.stream_type),
-    );
-    array.insert(string_array_key("mode"), Value::string(metadata.mode));
-    array.insert(string_array_key("uri"), Value::string(metadata.uri));
-    array.insert(string_array_key("seekable"), Value::Bool(flags.seekable));
-    array.insert(
-        string_array_key("eof"),
-        Value::Bool(resource.eof().unwrap_or(true)),
-    );
-    array.insert(string_array_key("timed_out"), Value::Bool(false));
-    array.insert(string_array_key("blocked"), Value::Bool(true));
-    Ok(Value::Array(array))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_get_contents(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 3 {
-        return Err(arity_error(
-            "stream_get_contents",
-            "one to three argument(s)",
-        ));
-    }
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    if let Some(offset) = args
-        .get(2)
-        .map(|value| int_arg("stream_get_contents", value))
-        .transpose()?
-        && offset >= 0
-        && resource.seek(offset as usize).is_err()
-    {
-        return Ok(Value::Bool(false));
-    }
-    let bytes = if let Some(length) = args
-        .get(1)
-        .map(|value| int_arg("stream_get_contents", value))
-        .transpose()?
-    {
-        if length < 0 {
-            resource.read_to_end()
-        } else {
-            resource.read_bytes(length as usize)
-        }
-    } else {
-        resource.read_to_end()
-    };
-    Ok(bytes.map_or(Value::Bool(false), Value::string))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_copy_to_stream(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 4 {
-        return Err(arity_error(
-            "stream_copy_to_stream",
-            "two to four argument(s)",
-        ));
-    }
-    let Some(source) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    let Some(destination) = resource_arg(&args[1]) else {
-        return Ok(Value::Bool(false));
-    };
-    if let Some(offset) = args
-        .get(3)
-        .map(|value| int_arg("stream_copy_to_stream", value))
-        .transpose()?
-        && offset >= 0
-        && source.seek(offset as usize).is_err()
-    {
-        return Ok(Value::Bool(false));
-    }
-    let bytes = if let Some(length) = args
-        .get(2)
-        .map(|value| int_arg("stream_copy_to_stream", value))
-        .transpose()?
-    {
-        if length < 0 {
-            source.read_to_end()
-        } else {
-            source.read_bytes(length as usize)
-        }
-    } else {
-        source.read_to_end()
-    };
-    let Ok(bytes) = bytes else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(destination
-        .write_bytes(&bytes)
-        .map(|written| Value::Int(written as i64))
-        .unwrap_or(Value::Bool(false)))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_context_create(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() > 1 {
-        return Err(arity_error(
-            "stream_context_create",
-            "zero or one argument(s)",
-        ));
-    }
-    let options = match args.first().map(deref_value) {
-        None => crate::PhpArray::new(),
-        Some(Value::Array(array)) => array,
-        Some(_) => return Ok(Value::Bool(false)),
-    };
-    let Some(resources) = context.resources() else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(Value::Resource(resources.register_stream_context(options)))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_context_get_options(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("stream_context_get_options", &args, 1)?;
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(resource
-        .context_options()
-        .map_or(Value::Bool(false), Value::Array))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_context_set_option(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() != 2 && args.len() != 4 {
-        return Err(arity_error(
-            "stream_context_set_option",
-            "two or four argument(s)",
-        ));
-    }
-    let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    if args.len() == 2 {
-        let Value::Array(options) = deref_value(&args[1]) else {
-            return Ok(Value::Bool(false));
-        };
-        for (wrapper_key, wrapper_value) in options.iter() {
-            let wrapper = match wrapper_key {
-                ArrayKey::String(wrapper) => wrapper.to_string_lossy(),
-                ArrayKey::Int(_) => continue,
-            };
-            let Value::Array(wrapper_options) = deref_value(wrapper_value) else {
-                continue;
-            };
-            for (option_key, option_value) in wrapper_options.iter() {
-                let option = match option_key {
-                    ArrayKey::String(option) => option.to_string_lossy(),
-                    ArrayKey::Int(_) => continue,
-                };
-                if resource
-                    .set_context_option(wrapper.clone(), option, option_value.clone())
-                    .is_err()
-                {
-                    return Ok(Value::Bool(false));
-                }
-            }
-        }
-        return Ok(Value::Bool(true));
-    }
-    let wrapper = string_arg("stream_context_set_option", &args[1])?.to_string_lossy();
-    let option = string_arg("stream_context_set_option", &args[2])?.to_string_lossy();
-    Ok(Value::Bool(
-        resource
-            .set_context_option(wrapper, option, args[3].clone())
-            .is_ok(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_resolve_include_path(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("stream_resolve_include_path", &args, 1)?;
-    let file = string_arg("stream_resolve_include_path", &args[0])?.to_string_lossy();
-    let raw = Path::new(&file);
-    let mut candidates = Vec::new();
-    if raw.is_absolute() {
-        candidates.push(normalize_runtime_path(raw));
-    } else {
-        for entry in context.include_path() {
-            let base = if entry.is_absolute() {
-                entry.clone()
-            } else {
-                context.cwd().join(entry)
-            };
-            candidates.push(normalize_runtime_path(&base.join(raw)));
-        }
-    }
-    for candidate in candidates {
-        if context.filesystem_capabilities().allows_path(&candidate) && candidate.exists() {
-            return Ok(Value::string(
-                candidate.to_string_lossy().as_bytes().to_vec(),
-            ));
-        }
-    }
-    Ok(Value::Bool(false))
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_is_local(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("stream_is_local", &args, 1)?;
-    match deref_value(&args[0]) {
-        Value::Resource(resource) => {
-            let metadata = resource.metadata();
-            Ok(Value::Bool(matches!(
-                metadata.wrapper_type.as_str(),
-                "plainfile" | "PHP"
-            )))
-        }
-        Value::String(path) => {
-            let path = path.to_string_lossy();
-            if is_remote_stream_uri(&path) {
-                return Ok(Value::Bool(false));
-            }
-            if path.starts_with("php://") {
-                return Ok(Value::Bool(true));
-            }
-            let resolved = resolve_runtime_path(context, &path);
-            Ok(Value::Bool(
-                context.filesystem_capabilities().allows_path(&resolved),
-            ))
-        }
-        _ => Ok(Value::Bool(false)),
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_stream_isatty(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("stream_isatty", &args, 1)?;
-    Ok(Value::Bool(false))
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_match(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 5 {
-        return Err(arity_error("preg_match", "two to five argument(s)"));
-    }
-    let pattern = string_arg("preg_match", &args[0])?;
-    let subject = string_arg("preg_match", &args[1])?;
-    let flags = args
-        .get(3)
-        .map(|value| int_arg("preg_match", value))
-        .transpose()?
-        .unwrap_or(0);
-    let offset = args
-        .get(4)
-        .map(|value| int_arg("preg_match", value))
-        .transpose()?
-        .unwrap_or(0);
-    let subject_bytes = subject.as_bytes();
-    if offset < 0 || offset as usize > subject_bytes.len() {
-        context.set_preg_last_error(
-            pcre::PREG_BAD_UTF8_OFFSET_ERROR,
-            pcre::preg_error_message(pcre::PREG_BAD_UTF8_OFFSET_ERROR),
-        );
-        return Ok(Value::Bool(false));
-    }
-    let Some(compiled) = compile_preg_pattern(context, pattern) else {
-        return Ok(Value::Bool(false));
-    };
-    match compiled.captures(&subject_bytes[offset as usize..]) {
-        Ok(Some(captures)) => {
-            let matches = pcre::captures_to_array(&captures, flags);
-            assign_reference_arg(args.get(2), matches);
-            context.clear_preg_last_error();
-            Ok(Value::Int(1))
-        }
-        Ok(None) => {
-            assign_reference_arg(args.get(2), Value::packed_array(Vec::new()));
-            context.clear_preg_last_error();
-            Ok(Value::Int(0))
-        }
-        Err(error) => preg_failure(context, error),
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_match_all(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 5 {
-        return Err(arity_error("preg_match_all", "two to five argument(s)"));
-    }
-    let pattern = string_arg("preg_match_all", &args[0])?;
-    let subject = string_arg("preg_match_all", &args[1])?;
-    let flags = args
-        .get(3)
-        .map(|value| int_arg("preg_match_all", value))
-        .transpose()?
-        .unwrap_or(pcre::PREG_PATTERN_ORDER);
-    let offset = args
-        .get(4)
-        .map(|value| int_arg("preg_match_all", value))
-        .transpose()?
-        .unwrap_or(0);
-    let subject_bytes = subject.as_bytes();
-    if offset < 0 || offset as usize > subject_bytes.len() {
-        context.set_preg_last_error(
-            pcre::PREG_BAD_UTF8_OFFSET_ERROR,
-            pcre::preg_error_message(pcre::PREG_BAD_UTF8_OFFSET_ERROR),
-        );
-        return Ok(Value::Bool(false));
-    }
-    let Some(compiled) = compile_preg_pattern(context, pattern) else {
-        return Ok(Value::Bool(false));
-    };
-
-    let mut all = Vec::new();
-    for captures in compiled.captures_iter(&subject_bytes[offset as usize..]) {
-        match captures {
-            Ok(captures) => all.push(pcre::captures_to_array(&captures, flags)),
-            Err(error) => return preg_failure(context, error.into()),
-        }
-    }
-    let count = all.len() as i64;
-    let output = if flags & pcre::PREG_SET_ORDER != 0 {
-        Value::packed_array(all)
-    } else {
-        pattern_order_matches(all)
-    };
-    assign_reference_arg(args.get(2), output);
-    context.clear_preg_last_error();
-    Ok(Value::Int(count))
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_replace(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 3 || args.len() > 5 {
-        return Err(arity_error("preg_replace", "three to five argument(s)"));
-    }
-    let pattern = string_arg("preg_replace", &args[0])?;
-    let replacement = string_arg("preg_replace", &args[1])?;
-    let limit = args
-        .get(3)
-        .map(|value| int_arg("preg_replace", value))
-        .transpose()?
-        .unwrap_or(-1);
-    let Some(compiled) = compile_preg_pattern(context, pattern) else {
-        return Ok(Value::Bool(false));
-    };
-    let mut count = 0;
-    let result = match preg_replace_subject(
-        &compiled,
-        replacement.as_bytes(),
-        &args[2],
-        limit,
-        &mut count,
-    ) {
-        Ok(result) => result,
-        Err(error) => return preg_failure(context, error),
-    };
-    assign_reference_arg(args.get(4), Value::Int(count));
-    context.clear_preg_last_error();
-    Ok(result)
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 3 || args.len() > 5 {
-        return Err(arity_error(
-            "preg_replace_callback",
-            "three to five argument(s)",
-        ));
-    }
-    let pattern = string_arg("preg_replace_callback", &args[0])?;
-    let limit = args
-        .get(3)
-        .map(|value| int_arg("preg_replace_callback", value))
-        .transpose()?
-        .unwrap_or(-1);
-    let callback_name = match deref_value(&args[1]) {
-        Value::Callable(CallableValue::InternalBuiltin { name }) => name.clone(),
-        _ => {
-            return Err(BuiltinError::new(
-                "E_PHP_RUNTIME_CALLABLE_CONTEXT_REQUIRED",
-                "preg_replace_callback requires VM callable dispatch for user callbacks",
-            ));
-        }
-    };
-    let Some(callback) = BuiltinRegistry::new().get(&callback_name) else {
-        return Err(BuiltinError::new(
-            "E_PHP_RUNTIME_UNDEFINED_CALLBACK",
-            format!("Undefined callback `{callback_name}`"),
-        ));
-    };
-    let Some(compiled) = compile_preg_pattern(context, pattern) else {
-        return Ok(Value::Bool(false));
-    };
-    let mut count = 0;
-    let result = preg_replace_callback_subject(
-        context, &compiled, callback, &args[2], limit, &mut count, span,
-    )?;
-    assign_reference_arg(args.get(4), Value::Int(count));
-    context.clear_preg_last_error();
-    Ok(result)
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_split(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 4 {
-        return Err(arity_error("preg_split", "two to four argument(s)"));
-    }
-    let pattern = string_arg("preg_split", &args[0])?;
-    let subject = string_arg("preg_split", &args[1])?;
-    let limit = args
-        .get(2)
-        .map(|value| int_arg("preg_split", value))
-        .transpose()?
-        .unwrap_or(-1);
-    let flags = args
-        .get(3)
-        .map(|value| int_arg("preg_split", value))
-        .transpose()?
-        .unwrap_or(0);
-    let Some(compiled) = compile_preg_pattern(context, pattern) else {
-        return Ok(Value::Bool(false));
-    };
-    let mut pieces = PhpArray::new();
-    let mut last_end = 0usize;
-    let mut emitted = 0i64;
-    for captures in compiled.captures_iter(subject.as_bytes()) {
-        let captures = match captures {
-            Ok(captures) => captures,
-            Err(error) => return preg_failure(context, error.into()),
-        };
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        if limit > 0 && emitted >= limit - 1 {
-            break;
-        }
-        append_split_piece(
-            &mut pieces,
-            &subject.as_bytes()[last_end..full.start()],
-            last_end,
-            flags,
-        );
-        emitted += 1;
-        if flags & pcre::PREG_SPLIT_DELIM_CAPTURE != 0 {
-            for index in 1..captures.len() {
-                if let Some(capture) = captures.get(index) {
-                    append_split_piece(&mut pieces, capture.as_bytes(), capture.start(), flags);
-                }
-            }
-        }
-        last_end = full.end();
-    }
-    append_split_piece(
-        &mut pieces,
-        &subject.as_bytes()[last_end..],
-        last_end,
-        flags,
-    );
-    context.clear_preg_last_error();
-    Ok(Value::Array(pieces))
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_grep(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(arity_error("preg_grep", "two to three argument(s)"));
-    }
-    let pattern = string_arg("preg_grep", &args[0])?;
-    let flags = args
-        .get(2)
-        .map(|value| int_arg("preg_grep", value))
-        .transpose()?
-        .unwrap_or(0);
-    let Some(compiled) = compile_preg_pattern(context, pattern) else {
-        return Ok(Value::Bool(false));
-    };
-    let Value::Array(input) = deref_value(&args[1]) else {
-        return Err(type_error("preg_grep", "array", &args[1]));
-    };
-    let mut output = PhpArray::new();
-    for (key, value) in input.iter() {
-        let text = to_string(value)
-            .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
-        let is_match = match compiled.is_match(text.as_bytes()) {
-            Ok(is_match) => is_match,
-            Err(error) => return preg_failure(context, error),
-        };
-        if is_match != (flags & pcre::PREG_GREP_INVERT != 0) {
-            output.insert(key.clone(), value.clone());
-        }
-    }
-    context.clear_preg_last_error();
-    Ok(Value::Array(output))
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_quote(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("preg_quote", "one or two argument(s)"));
-    }
-    let text = string_arg("preg_quote", &args[0])?;
-    let delimiter = args
-        .get(1)
-        .map(|value| string_arg("preg_quote", value))
-        .transpose()?
-        .and_then(|delimiter| delimiter.as_bytes().first().copied());
-    Ok(Value::string(pcre::preg_quote(text.as_bytes(), delimiter)))
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_last_error(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("preg_last_error", &args, 0)?;
-    Ok(Value::Int(context.preg_last_error().0))
-}
-
-pub(in crate::builtins::modules) fn builtin_preg_last_error_msg(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("preg_last_error_msg", &args, 0)?;
-    Ok(Value::string(context.preg_last_error().1))
-}
-
-pub(in crate::builtins::modules) fn builtin_date_default_timezone_get(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("date_default_timezone_get", &args, 0)?;
-    Ok(Value::string(context.default_timezone()))
-}
-
-pub(in crate::builtins::modules) fn builtin_date(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("date", "one or two argument(s)"));
-    }
-    let format = string_arg("date", &args[0])?.to_string_lossy();
-    let timestamp = args
-        .get(1)
-        .map(|value| int_arg("date", value))
-        .transpose()?
-        .unwrap_or_else(datetime::current_timestamp);
-    Ok(Value::string(datetime::format_timestamp(
-        timestamp,
-        context.default_timezone(),
-        &format,
-    )))
-}
-
-pub(in crate::builtins::modules) fn builtin_time(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("time", &args, 0)?;
-    Ok(Value::Int(datetime::current_timestamp()))
-}
-
-pub(in crate::builtins::modules) fn builtin_hrtime(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() > 1 {
-        return Err(arity_error("hrtime", "zero or one argument(s)"));
-    }
-    let as_number = args
-        .first()
-        .map(to_bool)
-        .transpose()
-        .map_err(|message| conversion_error("hrtime", message))?
-        .unwrap_or(false);
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| value_error("hrtime", "system time is before UNIX epoch"))?;
-    let seconds = i64::try_from(elapsed.as_secs())
-        .map_err(|_| value_error("hrtime", "timestamp exceeds PHP integer range"))?;
-    let nanos = i64::from(elapsed.subsec_nanos());
-    if as_number {
-        let total = seconds
-            .checked_mul(1_000_000_000)
-            .and_then(|value| value.checked_add(nanos))
-            .ok_or_else(|| value_error("hrtime", "timestamp exceeds PHP integer range"))?;
-        return Ok(Value::Int(total));
-    }
-    Ok(Value::packed_array(vec![
-        Value::Int(seconds),
-        Value::Int(nanos),
-    ]))
-}
-
-pub(in crate::builtins::modules) fn builtin_strtotime(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("strtotime", "one or two argument(s)"));
-    }
-    let text = string_arg("strtotime", &args[0])?.to_string_lossy();
-    let base = args
-        .get(1)
-        .map(|value| int_arg("strtotime", value))
-        .transpose()?
-        .unwrap_or_else(datetime::current_timestamp);
-    Ok(datetime::parse_datetime_text(&text, base).map_or(Value::Bool(false), Value::Int))
-}
-
 pub(in crate::builtins::modules) fn builtin_token_get_all(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -2296,205 +541,6 @@ pub(in crate::builtins::modules) fn builtin_token_name(
             .as_bytes()
             .to_vec(),
     ))
-}
-
-pub(in crate::builtins::modules) fn builtin_spl_object_id(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("spl_object_id", &args, 1)?;
-    let Value::Object(object) = deref_value(&args[0]) else {
-        return Err(type_error("spl_object_id", "object", &args[0]));
-    };
-    Ok(Value::Int(object.id() as i64))
-}
-
-pub(in crate::builtins::modules) fn builtin_spl_object_hash(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("spl_object_hash", &args, 1)?;
-    let Value::Object(object) = deref_value(&args[0]) else {
-        return Err(type_error("spl_object_hash", "object", &args[0]));
-    };
-    Ok(Value::string(format!("{:032x}", object.id())))
-}
-
-pub(in crate::builtins::modules) fn builtin_date_default_timezone_set(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("date_default_timezone_set", &args, 1)?;
-    let identifier = string_arg("date_default_timezone_set", &args[0])?.to_string_lossy();
-    if !datetime::is_valid_timezone(&identifier) {
-        return Ok(Value::Bool(false));
-    }
-    context.set_default_timezone(identifier);
-    Ok(Value::Bool(true))
-}
-
-pub(in crate::builtins::modules) fn builtin_timezone_identifiers_list(
-    _context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.len() > 2 {
-        return Err(arity_error(
-            "timezone_identifiers_list",
-            "zero to two argument(s)",
-        ));
-    }
-    Ok(Value::packed_array(
-        datetime::TIMEZONE_IDENTIFIERS
-            .iter()
-            .map(|identifier| Value::string(*identifier))
-            .collect(),
-    ))
-}
-
-pub(in crate::builtins::modules) fn builtin_json_encode(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 3 {
-        return Err(arity_error("json_encode", "one to three argument(s)"));
-    }
-    let flags = args
-        .get(1)
-        .map(|value| int_arg("json_encode", value))
-        .transpose()?
-        .unwrap_or(0);
-    match php_value_to_json(&args[0], flags) {
-        Ok(json) => {
-            let encoded = if flags & JSON_PRETTY_PRINT != 0 {
-                serde_json::to_string_pretty(&json)
-            } else {
-                serde_json::to_string(&json)
-            };
-            match encoded {
-                Ok(encoded) => {
-                    context.set_json_last_error(JSON_ERROR_NONE);
-                    Ok(Value::string(normalize_json_encoded(encoded, flags)))
-                }
-                Err(_) => json_failure(context, flags, JSON_ERROR_SYNTAX),
-            }
-        }
-        Err(code) => json_failure(context, flags, code),
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_json_decode(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 4 {
-        return Err(arity_error("json_decode", "one to four argument(s)"));
-    }
-    let input = string_arg("json_decode", &args[0])?;
-    let associative = args
-        .get(1)
-        .map(|value| {
-            if matches!(deref_value(value), Value::Null) {
-                Ok(false)
-            } else {
-                to_bool(value)
-                    .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))
-            }
-        })
-        .transpose()?
-        .unwrap_or(false);
-    let depth = args
-        .get(2)
-        .map(|value| int_arg("json_decode", value))
-        .transpose()?
-        .unwrap_or(512);
-    let flags = args
-        .get(3)
-        .map(|value| int_arg("json_decode", value))
-        .transpose()?
-        .unwrap_or(0);
-    if depth <= 0 {
-        return json_failure(context, flags, JSON_ERROR_DEPTH);
-    }
-    let Ok(input) = std::str::from_utf8(input.as_bytes()) else {
-        return json_failure(context, flags, JSON_ERROR_UTF8);
-    };
-    match serde_json::from_str::<JsonValue>(input) {
-        Ok(json) => {
-            context.set_json_last_error(JSON_ERROR_NONE);
-            Ok(json_to_php_value(
-                json,
-                associative || flags & JSON_OBJECT_AS_ARRAY != 0,
-            ))
-        }
-        Err(_) => json_failure(context, flags, JSON_ERROR_SYNTAX),
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_json_validate(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    if args.is_empty() || args.len() > 3 {
-        return Err(arity_error("json_validate", "one to three argument(s)"));
-    }
-    let input = string_arg("json_validate", &args[0])?;
-    let depth = args
-        .get(1)
-        .map(|value| int_arg("json_validate", value))
-        .transpose()?
-        .unwrap_or(512);
-    let flags = args
-        .get(2)
-        .map(|value| int_arg("json_validate", value))
-        .transpose()?
-        .unwrap_or(0);
-    if depth <= 0 {
-        context.set_json_last_error(JSON_ERROR_DEPTH);
-        return Ok(Value::Bool(false));
-    }
-    let Ok(input) = std::str::from_utf8(input.as_bytes()) else {
-        context.set_json_last_error(JSON_ERROR_UTF8);
-        return Ok(Value::Bool(false));
-    };
-    match serde_json::from_str::<JsonValue>(input) {
-        Ok(_) => {
-            context.set_json_last_error(JSON_ERROR_NONE);
-            Ok(Value::Bool(true))
-        }
-        Err(_) if flags & JSON_THROW_ON_ERROR != 0 => Err(BuiltinError::new(
-            "E_PHP_RUNTIME_JSON_EXCEPTION",
-            json_error_message(JSON_ERROR_SYNTAX),
-        )),
-        Err(_) => {
-            context.set_json_last_error(JSON_ERROR_SYNTAX);
-            Ok(Value::Bool(false))
-        }
-    }
-}
-
-pub(in crate::builtins::modules) fn builtin_json_last_error(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("json_last_error", &args, 0)?;
-    Ok(Value::Int(context.json_last_error().0))
-}
-
-pub(in crate::builtins::modules) fn builtin_json_last_error_msg(
-    context: &mut BuiltinContext<'_>,
-    args: Vec<Value>,
-    _span: RuntimeSourceSpan,
-) -> BuiltinResult {
-    expect_arity("json_last_error_msg", &args, 0)?;
-    Ok(Value::string(context.json_last_error().1))
 }
 
 pub(in crate::builtins::modules) fn builtin_gettype(
@@ -2675,6 +721,23 @@ pub(in crate::builtins::modules) fn builtin_is_iterable(
     )))
 }
 
+pub(in crate::builtins::modules) fn builtin_is_numeric(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("is_numeric", &args, 1)?;
+    let is_numeric = match deref_value(args.first().expect("checked arity")) {
+        Value::Int(_) | Value::Float(_) => true,
+        Value::String(value) => matches!(
+            classify_php_string(&value).kind,
+            NumericStringKind::IntString | NumericStringKind::FloatString
+        ),
+        _ => false,
+    };
+    Ok(Value::Bool(is_numeric))
+}
+
 pub(in crate::builtins::modules) fn builtin_boolval(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -2840,7 +903,15 @@ pub(in crate::builtins::modules) fn builtin_var_export(
         .map_err(|message| conversion_error("var_export", message))?
         .unwrap_or(false);
     let mut output = OutputBuffer::new();
-    DebugFormatter::default().write_var_export_value(&mut output, &args[0], 0);
+    let serialize_precision = context
+        .ini_get("serialize_precision")
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .unwrap_or(-1);
+    let mut formatter = DebugFormatter {
+        serialize_precision,
+        ..DebugFormatter::default()
+    };
+    formatter.write_var_export_value(&mut output, &args[0], 0);
     if return_output {
         Ok(Value::string(output.into_bytes()))
     } else {
@@ -3118,7 +1189,7 @@ pub(in crate::builtins::modules) fn php_argument_type_name(value: &Value) -> Str
         Value::Float(_) => "float".to_owned(),
         Value::String(_) => "string".to_owned(),
         Value::Array(_) => "array".to_owned(),
-        Value::Object(object) => object.class_name(),
+        Value::Object(object) => object.display_name(),
         Value::Resource(_) => "resource".to_owned(),
         Value::Fiber(_) | Value::Generator(_) => "object".to_owned(),
         Value::Callable(_) => "callable".to_owned(),
@@ -3798,7 +1869,7 @@ pub(in crate::builtins::modules) fn json_to_php_value(
             Value::Array(array)
         }
         JsonValue::Object(values) => {
-            let object = ObjectRef::new(&json_std_class());
+            let object = ObjectRef::new_with_display_name(&json_std_class(), "stdClass");
             for (key, value) in values {
                 object.set_property(key, json_to_php_value(value, associative));
             }
@@ -3811,14 +1882,33 @@ pub(in crate::builtins::modules) fn normalize_json_encoded(
     mut encoded: String,
     flags: i64,
 ) -> String {
-    if flags & JSON_UNESCAPED_SLASHES != 0 {
-        encoded = encoded.replace("\\/", "/");
+    if flags & JSON_PRETTY_PRINT != 0 {
+        encoded = json_pretty_indent_for_php(&encoded);
+    }
+
+    if flags & JSON_UNESCAPED_SLASHES == 0 {
+        encoded = encoded.replace('/', "\\/");
     }
 
     // serde_json already keeps non-ASCII text unescaped and preserves the
     // decimal marker for finite PHP floats, so these flags are explicit no-ops.
     let _ = flags & (JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
     encoded
+}
+
+fn json_pretty_indent_for_php(encoded: &str) -> String {
+    let mut normalized = String::with_capacity(encoded.len());
+    for (index, line) in encoded.split('\n').enumerate() {
+        if index > 0 {
+            normalized.push('\n');
+        }
+        let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+        for _ in 0..indent * 2 {
+            normalized.push(' ');
+        }
+        normalized.push_str(&line[indent..]);
+    }
+    normalized
 }
 
 pub(in crate::builtins::modules) fn compile_preg_pattern(
@@ -4069,7 +2159,7 @@ pub(in crate::builtins::modules) fn json_failure(
 
 pub(in crate::builtins::modules) fn json_std_class() -> ClassEntry {
     ClassEntry {
-        name: "stdClass".to_string(),
+        name: normalize_class_name("stdClass"),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -5553,19 +3643,6 @@ pub(in crate::builtins::modules) fn split_bytes_limited(
     }
     parts.push(bytes[start..].to_vec());
     parts
-}
-
-pub(in crate::builtins::modules) fn array_arg(
-    name: &str,
-    value: &Value,
-) -> Result<Vec<crate::PhpString>, BuiltinError> {
-    let Value::Array(array) = deref_value(value) else {
-        return Err(type_error(name, "array", value));
-    };
-    array
-        .iter()
-        .map(|(_, value)| string_arg(name, value))
-        .collect::<Result<Vec<_>, _>>()
 }
 
 pub(in crate::builtins::modules) fn array_key_arg(
@@ -7348,6 +5425,7 @@ pub(in crate::builtins::modules) fn php_gettype(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) | Value::Fiber(_) | Value::Generator(_) => "object",
+        Value::Resource(resource) if resource.kind() == ResourceKind::Closed => "resource (closed)",
         Value::Resource(_) => "resource",
         Value::Callable(_) => "object",
         Value::Uninitialized => "NULL",
@@ -7363,7 +5441,7 @@ pub(in crate::builtins::modules) fn php_debug_type(value: &Value) -> String {
         Value::Float(_) => "float".to_owned(),
         Value::String(_) => "string".to_owned(),
         Value::Array(_) => "array".to_owned(),
-        Value::Object(object) => object.class_name(),
+        Value::Object(object) => object.display_name(),
         Value::Resource(resource) => format!("resource ({})", resource.resource_type()),
         Value::Fiber(_) => "Fiber".to_owned(),
         Value::Generator(_) => "Generator".to_owned(),
@@ -7655,7 +5733,9 @@ impl DebugFormatter {
             Value::Null | Value::Uninitialized | Value::Bool(false) => {}
             Value::Bool(true) => output.write_test_str("1"),
             Value::Int(value) => output.write_test_str(&value.to_string()),
-            Value::Float(value) => output.write_test_str(&value.to_string()),
+            Value::Float(value) => {
+                output.write_test_str(&php_float_debug_string(*value, self.serialize_precision));
+            }
             Value::String(value) => output.write_php_string(value),
             Value::Array(array) => {
                 let id = array.gc_debug_id();
@@ -7722,7 +5802,9 @@ impl DebugFormatter {
             Value::Bool(true) => output.write_test_str("true"),
             Value::Bool(false) => output.write_test_str("false"),
             Value::Int(value) => output.write_test_str(&value.to_string()),
-            Value::Float(value) => output.write_test_str(&php_float_export_string(*value)),
+            Value::Float(value) => {
+                output.write_test_str(&php_float_export_string(*value, self.serialize_precision));
+            }
             Value::String(value) => write_export_string(output, &value.to_string_lossy()),
             Value::Array(array) => {
                 output.write_test_str("array (\n");
@@ -7918,7 +6000,7 @@ pub(in crate::builtins::modules) fn php_gcvt(value: f64, ndigit: usize) -> Strin
     if negative {
         out.push('-');
     }
-    if decimal_point < -4 || decimal_point > ndigit as i32 {
+    if exponent < -4 || exponent >= ndigit as i32 {
         let (mantissa, _) = scientific
             .split_once('E')
             .unwrap_or((scientific.as_str(), ""));
@@ -7973,7 +6055,10 @@ pub(in crate::builtins::modules) fn php_float_debug_scientific_string(value: f64
     )
 }
 
-pub(in crate::builtins::modules) fn php_float_export_string(value: FloatValue) -> String {
+pub(in crate::builtins::modules) fn php_float_export_string(
+    value: FloatValue,
+    serialize_precision: i32,
+) -> String {
     let value = value.to_f64();
     if value.is_nan() {
         return "NAN".to_owned();
@@ -7986,7 +6071,13 @@ pub(in crate::builtins::modules) fn php_float_export_string(value: FloatValue) -
         };
     }
 
-    let mut formatted = value.to_string();
+    let mut formatted = if serialize_precision >= 1 {
+        php_gcvt(value, serialize_precision as usize)
+    } else if value != 0.0 && !(1e-4..1e17).contains(&value.abs()) {
+        php_float_debug_scientific_string(value)
+    } else {
+        value.to_string()
+    };
     if !formatted.contains(['.', 'E', 'e']) {
         formatted.push_str(".0");
     }
@@ -8000,15 +6091,17 @@ pub(in crate::builtins::modules) fn write_indent(output: &mut OutputBuffer, spac
 #[cfg(test)]
 mod tests {
     use super::{
-        BuiltinCompatibility, BuiltinContext, BuiltinRegistry, JSON_ERROR_NONE, JSON_ERROR_SYNTAX,
-        JSON_OBJECT_AS_ARRAY, JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
+        BuiltinCompatibility, BuiltinContext, JSON_ERROR_SYNTAX, JSON_PRESERVE_ZERO_FRACTION,
         JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, RuntimeSourceSpan, SORT_FLAG_CASE,
-        SORT_NUMERIC, SORT_REGULAR, SORT_STRING,
+        SORT_NUMERIC, SORT_REGULAR, SORT_STRING, php_float_debug_string, php_float_export_string,
+    };
+    use crate::builtins::context::{
+        JSON_ERROR_NONE, JSON_OBJECT_AS_ARRAY, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
     };
     use crate::{
-        ArrayKey, ClassEntry, ClassFlags, FilesystemCapabilities, ObjectRef, OutputBuffer,
-        PhpArray, PhpString, ReferenceCell, ResourceTable, StreamFlags, StreamMetadata,
-        StrtokState, Value, datetime, pcre,
+        ArrayKey, BuiltinRegistry, ClassEntry, ClassFlags, FilesystemCapabilities, ObjectRef,
+        OutputBuffer, PhpArray, PhpString, ReferenceCell, ResourceTable, StreamFlags,
+        StreamMetadata, StrtokState, Value, datetime, normalize_class_name, pcre,
     };
     use std::path::PathBuf;
 
@@ -8025,6 +6118,50 @@ mod tests {
             .expect_err("builtin should fail")
             .message()
             .to_owned()
+    }
+
+    #[test]
+    fn variable_type_aliases_and_numeric_strings_match_php() {
+        let mut output = OutputBuffer::new();
+        assert_eq!(
+            call("is_integer", vec![Value::Int(1)], &mut output),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call("is_long", vec![Value::Int(1)], &mut output),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call("is_double", vec![Value::float(1.5)], &mut output),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call("is_numeric", vec![Value::string("  1.5e2 ")], &mut output),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call("is_numeric", vec![Value::string("1.5x")], &mut output),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call("is_numeric", vec![Value::Bool(true)], &mut output),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn variable_debug_float_helpers_match_php_shapes() {
+        assert_eq!(php_float_debug_string(1e-5_f64.into(), -1), "1.0E-5");
+        assert_eq!(php_float_debug_string((-1e-5_f64).into(), -1), "-1.0E-5");
+        assert_eq!(
+            php_float_export_string((-0.1_f64).into(), 17),
+            "-0.10000000000000001"
+        );
+        assert_eq!(
+            php_float_export_string(1e-5_f64.into(), 17),
+            "1.0000000000000001E-5"
+        );
+        assert_eq!(php_float_export_string(100000.0_f64.into(), 17), "100000.0");
     }
 
     #[test]
@@ -8296,7 +6433,10 @@ mod tests {
     #[test]
     fn variable_type_builtins_cover_objects_references_and_casts() {
         let mut output = OutputBuffer::new();
-        let object = Value::Object(ObjectRef::new(&empty_class("DebugBox")));
+        let object = Value::Object(ObjectRef::new_with_display_name(
+            &empty_class("DebugBox"),
+            "DebugBox",
+        ));
         let reference = Value::Reference(ReferenceCell::new(Value::Int(42)));
 
         assert_eq!(
@@ -9832,7 +7972,8 @@ mod tests {
         let Value::Object(datetime) = datetime::datetime_object(0, "UTC") else {
             panic!("expected DateTime object");
         };
-        assert_eq!(datetime.class_name(), "DateTime");
+        assert_eq!(datetime.class_name(), "datetime");
+        assert_eq!(datetime.display_name(), "DateTime");
         assert_eq!(
             datetime::format_timestamp(
                 datetime::object_timestamp(&datetime).expect("timestamp"),
@@ -9855,7 +7996,8 @@ mod tests {
         };
         assert_eq!(datetime::object_timestamp(&immutable), Some(0));
         assert_eq!(datetime::object_timestamp(&changed), Some(60));
-        assert_eq!(changed.class_name(), "DateTimeImmutable");
+        assert_eq!(changed.class_name(), "datetimeimmutable");
+        assert_eq!(changed.display_name(), "DateTimeImmutable");
 
         let interval_seconds = datetime::parse_interval_spec("P1DT2H").expect("interval");
         assert_eq!(interval_seconds, 93_600);
@@ -9868,7 +8010,8 @@ mod tests {
         let Value::Object(diff) = diff else {
             panic!("expected DateInterval object");
         };
-        assert_eq!(diff.class_name(), "DateInterval");
+        assert_eq!(diff.class_name(), "dateinterval");
+        assert_eq!(diff.display_name(), "DateInterval");
         assert_eq!(diff.get_property("__seconds"), Some(Value::Int(93_600)));
 
         let modified = datetime::modify_object(&immutable, "+1 day", true).expect("modify");
@@ -9912,7 +8055,8 @@ mod tests {
         let Value::Object(object) = object else {
             panic!("expected stdClass object");
         };
-        assert_eq!(object.class_name(), "stdClass");
+        assert_eq!(object.class_name(), "stdclass");
+        assert_eq!(object.display_name(), "stdClass");
         assert_eq!(object.get_property("answer"), Some(Value::Int(42)));
 
         let decoded_with_flag = call_in_context(
@@ -9940,6 +8084,35 @@ mod tests {
             call_in_context(&mut context, "json_encode", vec![Value::Array(mixed)]),
             Value::string(r#"{"name":"pkg","versions":["1.0.0","1.1.0"]}"#)
         );
+        let mut ordered = crate::PhpArray::new();
+        ordered.insert(
+            ArrayKey::String(PhpString::from_test_str("url")),
+            Value::string("https://example.test/a"),
+        );
+        ordered.insert(
+            ArrayKey::String(PhpString::from_test_str("snow")),
+            Value::string("☃"),
+        );
+        ordered.insert(
+            ArrayKey::String(PhpString::from_test_str("n")),
+            Value::float(1.0),
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_encode",
+                vec![Value::Array(ordered.clone())]
+            ),
+            Value::string(r#"{"url":"https:\/\/example.test\/a","snow":"☃","n":1}"#)
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_encode",
+                vec![Value::Array(ordered), Value::Int(JSON_UNESCAPED_SLASHES)]
+            ),
+            Value::string(r#"{"url":"https://example.test/a","snow":"☃","n":1}"#)
+        );
         assert_eq!(
             call_in_context(&mut context, "json_encode", vec![Value::float(42.0)]),
             Value::string("42")
@@ -9964,6 +8137,7 @@ mod tests {
         };
         let encoded_with_flags = encoded_with_flags.to_string_lossy();
         assert!(encoded_with_flags.contains('\n'));
+        assert!(encoded_with_flags.contains("\n    \"https://example.test/ü\""));
         assert!(encoded_with_flags.contains("https://example.test/ü"));
         assert!(encoded_with_flags.contains("1.0"));
         assert_eq!(
@@ -9987,7 +8161,7 @@ mod tests {
 
         assert_eq!(
             call_in_context(&mut context, "json_decode", vec![Value::string("{")]),
-            Value::Bool(false)
+            Value::Null
         );
         assert_eq!(
             call_in_context(&mut context, "json_last_error", Vec::new()),
@@ -10070,7 +8244,7 @@ mod tests {
 
     fn empty_class(name: &str) -> ClassEntry {
         ClassEntry {
-            name: name.to_owned(),
+            name: normalize_class_name(name),
             parent: None,
             interfaces: Vec::new(),
             methods: Vec::new(),
@@ -10320,7 +8494,7 @@ mod tests {
                 "(object) array(\n   '0' => 1,\n   'foo' => \n  array (\n    0 => 2,\n  ),\n)"
             )
         );
-        let debug_box = ObjectRef::new(&empty_class("DebugBox"));
+        let debug_box = ObjectRef::new_with_display_name(&empty_class("DebugBox"), "DebugBox");
         debug_box.set_property("x", Value::Int(1));
         assert_eq!(
             call(
@@ -11982,6 +10156,18 @@ mod tests {
             Value::float(4.0)
         );
         assert_eq!(
+            call("deg2rad", vec![Value::Int(23)], &mut output),
+            Value::float((23.0 / 180.0) * std::f64::consts::PI)
+        );
+        assert_eq!(
+            call(
+                "rad2deg",
+                vec![Value::float(9_223_372_034_707_292_160.0)],
+                &mut output
+            ),
+            Value::float((9_223_372_034_707_292_160.0 / std::f64::consts::PI) * 180.0)
+        );
+        assert_eq!(
             call("sqrt", vec![Value::Int(9)], &mut output),
             Value::float(3.0)
         );
@@ -11989,6 +10175,14 @@ mod tests {
             call("pow", vec![Value::Int(2), Value::Int(3)], &mut output),
             Value::Int(8)
         );
+        assert!(matches!(
+            call(
+                "pow",
+                vec![Value::Int(i64::MIN), Value::Int(i64::MAX)],
+                &mut output
+            ),
+            Value::Float(value) if value.to_f64().is_infinite() && value.to_f64().is_sign_negative()
+        ));
         assert_eq!(
             call("intdiv", vec![Value::Int(7), Value::Int(2)], &mut output),
             Value::Int(3)
@@ -12046,21 +10240,66 @@ mod tests {
             ),
             Value::string("1.234,5")
         );
+        assert_eq!(
+            call(
+                "number_format",
+                vec![Value::Int(i64::MAX), Value::Int(5)],
+                &mut output
+            ),
+            Value::string("9,223,372,036,854,775,807.00000")
+        );
+        assert_eq!(
+            call(
+                "number_format",
+                vec![Value::Int(i64::MAX), Value::Int(0)],
+                &mut output
+            ),
+            Value::string("9,223,372,036,854,775,807")
+        );
+        assert_eq!(
+            call(
+                "number_format",
+                vec![Value::Int(i64::MAX), Value::Int(-5)],
+                &mut output
+            ),
+            Value::string("9,223,372,036,854,800,000")
+        );
+        assert_eq!(
+            call(
+                "number_format",
+                vec![Value::float(9_223_372_036_854_775_808.0), Value::Int(-1)],
+                &mut output
+            ),
+            Value::string("9,223,372,036,854,775,808")
+        );
     }
 
     #[test]
     fn math_numeric_builtins_report_value_errors() {
-        for (name, args) in [
-            ("intdiv", vec![Value::Int(1), Value::Int(0)]),
-            ("fmod", vec![Value::Int(1), Value::Int(0)]),
-        ] {
-            let entry = BuiltinRegistry::new().get(name).expect("builtin exists");
-            let mut output = OutputBuffer::new();
-            let mut context = BuiltinContext::new(&mut output);
-            let error = (entry.function())(&mut context, args, RuntimeSourceSpan::default())
-                .expect_err("expected value error");
-            assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_VALUE");
-        }
+        let entry = BuiltinRegistry::new()
+            .get("intdiv")
+            .expect("builtin exists");
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let error = (entry.function())(
+            &mut context,
+            vec![Value::Int(1), Value::Int(0)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("expected value error");
+        assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_VALUE");
+
+        let entry = BuiltinRegistry::new().get("fmod").expect("builtin exists");
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        assert!(matches!(
+            (entry.function())(
+                &mut context,
+                vec![Value::Int(1), Value::Int(0)],
+                RuntimeSourceSpan::default()
+            ),
+            Ok(Value::Float(value)) if value.to_f64().is_nan()
+        ));
     }
 
     #[test]

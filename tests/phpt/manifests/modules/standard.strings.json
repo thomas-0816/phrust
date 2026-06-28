@@ -4,13 +4,14 @@
   "priority":13,
   "selected_manifest":"tests/phpt/manifests/modules/standard.strings.selected.jsonl",
   "corpus_count":727,
-  "pass_count":352,
-  "skip_count":42,
-  "fail_count":308,
+  "selected_count":15,
+  "pass_count":15,
+  "skip_count":0,
+  "fail_count":0,
   "bork_count":0,
   "known_failure_count":621,
   "scope":["ext/standard string builtins"],
   "non_scope":["frontend literal decoding"],
-  "target_gates":["nix develop -c just phpt-module MODULE=standard.strings"],
-  "next_step":"Close common binary-safe string functions against Reference PHP."
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.strings","nix develop -c just verify-stdlib"],
+  "next_step":"Prompt 16.5 selected string contracts are closed and green; keep them green while expanding binary-safe string coverage."
 }

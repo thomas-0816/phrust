@@ -4,13 +4,14 @@
   "priority":16,
   "selected_manifest":"tests/phpt/manifests/modules/standard.serialization.selected.jsonl",
   "corpus_count":126,
-  "pass_count":16,
-  "skip_count":2,
-  "fail_count":107,
+  "selected_count":5,
+  "pass_count":5,
+  "skip_count":0,
+  "fail_count":0,
   "bork_count":0,
   "known_failure_count":115,
   "scope":["serialize","unserialize","value persistence"],
   "non_scope":["session module persistence"],
-  "target_gates":["nix develop -c just phpt-module MODULE=standard.serialization"],
-  "next_step":"Implement serialization after arrays/objects are stable."
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.serialization"],
+  "next_step":"Prompt 16.7 selected serialization contracts are closed and green; keep reference identity records and magic hooks as documented gaps."
 }

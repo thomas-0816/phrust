@@ -1,5 +1,7 @@
 # Runtime VM
 
+See `docs/runtime-vm-structure.md` for the current `php_vm::vm` file ownership map.
+
 `php_vm` executes Runtime `php_ir::IrUnit` values produced from the existing
 Semantic frontend frontend. It does not parse PHP source directly, does not run eval or
 autoload callbacks, and does not emulate Zend ABI, extensions, opcache, or JIT.
