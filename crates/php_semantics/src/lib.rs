@@ -2278,6 +2278,25 @@ mod tests {
     }
 
     #[test]
+    fn interpolated_string_constant_expression_is_rejected() {
+        let result = analyze_source("<?php class C { const BAD = \"$name\"; }");
+        let module = result
+            .database()
+            .module(result.module().module_id())
+            .expect("module");
+
+        assert!(result.semantic_diagnostics().iter().any(|diagnostic| {
+            diagnostic.id() == DiagnosticId::InvalidConstExpr
+                && diagnostic.phase().as_str() == "const_expression"
+        }));
+        assert!(module.const_exprs().iter().any(|(_, candidate)| {
+            candidate.context() == hir::ConstExprContext::ClassConstInitializer
+                && candidate.kind() == hir::ConstExprKind::Disallowed
+                && !candidate.is_allowed()
+        }));
+    }
+
+    #[test]
     fn pure_constant_expression_folding_is_conservative() {
         let result = analyze_source(
             "<?php const A = 42; const B = -42; const C = 'ph' . \"rust\"; const D = __DIR__; class K { public const V = 1; } const E = K::V;",

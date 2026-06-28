@@ -129,7 +129,10 @@ impl Serializer {
                 self.output
                     .extend_from_slice(format!("\":{}:{{", properties.len()).as_bytes());
                 for (name, property) in properties {
-                    self.write_value(&Value::string(name.into_bytes()), depth + 1)?;
+                    self.write_value(
+                        &Value::string(serialized_object_property_name(&object, &name)),
+                        depth + 1,
+                    )?;
                     self.write_value(&property, depth + 1)?;
                 }
                 self.output.extend_from_slice(b"}");
@@ -186,6 +189,35 @@ fn serialize_float(value: crate::FloatValue) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn serialized_object_property_name(object: &ObjectRef, storage_name: &str) -> Vec<u8> {
+    if let Some((owner, name)) = storage_name
+        .strip_prefix("private:")
+        .and_then(|rest| rest.split_once(':'))
+    {
+        let mut serialized = Vec::with_capacity(owner.len() + name.len() + 2);
+        serialized.push(0);
+        serialized.extend_from_slice(owner.as_bytes());
+        serialized.push(0);
+        serialized.extend_from_slice(name.as_bytes());
+        return serialized;
+    }
+
+    let label = object.property_debug_label(storage_name);
+    if let Some(name) = label
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix("\":protected"))
+    {
+        let mut serialized = Vec::with_capacity(name.len() + 3);
+        serialized.push(0);
+        serialized.push(b'*');
+        serialized.push(0);
+        serialized.extend_from_slice(name.as_bytes());
+        return serialized;
+    }
+
+    storage_name.as_bytes().to_vec()
 }
 
 struct Parser<'a> {
@@ -393,7 +425,10 @@ fn empty_class(name: &str) -> ClassEntry {
 #[cfg(test)]
 mod tests {
     use super::{UnserializeOptions, serialize, unserialize};
-    use crate::{ObjectRef, PhpArray, ReferenceCell, Value};
+    use crate::{
+        ClassEntry, ClassFlags, ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks,
+        ObjectRef, PhpArray, ReferenceCell, Value,
+    };
 
     #[test]
     fn serializes_scalars_arrays_objects_and_references() {
@@ -444,6 +479,61 @@ mod tests {
 
         let reference = Value::Reference(ReferenceCell::new(Value::Int(9)));
         assert_eq!(serialize(&reference).unwrap().to_string_lossy(), "i:9;");
+    }
+
+    #[test]
+    fn serializes_object_visibility_property_names() {
+        let class = ClassEntry {
+            name: "bar".to_owned(),
+            parent: Some("foo".to_owned()),
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: vec![
+                ClassPropertyEntry {
+                    name: "private:foo:private".to_owned(),
+                    default: Value::string("private"),
+                    type_: None,
+                    flags: ClassPropertyFlags {
+                        is_private: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "protected".to_owned(),
+                    default: Value::string("protected"),
+                    type_: None,
+                    flags: ClassPropertyFlags {
+                        is_protected: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "public".to_owned(),
+                    default: Value::string("public"),
+                    type_: None,
+                    flags: ClassPropertyFlags::default(),
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+            ],
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        };
+        let object = ObjectRef::new_with_display_name(&class, "bar");
+        let serialized = serialize(&Value::Object(object)).unwrap();
+
+        assert_eq!(
+            serialized.to_string_lossy().replace('\0', "\\0"),
+            "O:3:\"bar\":3:{s:12:\"\\0foo\\0private\";s:7:\"private\";s:12:\"\\0*\\0protected\";s:9:\"protected\";s:6:\"public\";s:6:\"public\";}"
+        );
     }
 
     #[test]

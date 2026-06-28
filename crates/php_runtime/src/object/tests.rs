@@ -136,6 +136,73 @@ mod identity_storage {
     }
 
     #[test]
+    fn object_storage_keeps_first_order_slot_for_overridden_properties() {
+        let class = ClassEntry {
+            name: "child".to_owned(),
+            parent: Some("base".to_owned()),
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: vec![
+                ClassPropertyEntry {
+                    name: "value".to_owned(),
+                    default: Value::String(crate::PhpString::from_test_str("base")),
+                    type_: None,
+                    flags: ClassPropertyFlags::default(),
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "other".to_owned(),
+                    default: Value::Int(1),
+                    type_: None,
+                    flags: ClassPropertyFlags::default(),
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "private:base:hidden".to_owned(),
+                    default: Value::Int(2),
+                    type_: None,
+                    flags: ClassPropertyFlags {
+                        is_private: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "value".to_owned(),
+                    default: Value::String(crate::PhpString::from_test_str("child")),
+                    type_: None,
+                    flags: ClassPropertyFlags::default(),
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+            ],
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        };
+        let object = ObjectRef::new(&class);
+        let properties = object.properties_snapshot();
+
+        assert_eq!(properties.len(), 3);
+        assert_eq!(properties[0].0, "value");
+        assert_eq!(
+            properties[0].1,
+            Value::String(crate::PhpString::from_test_str("child"))
+        );
+        assert_eq!(properties[1], ("other".to_owned(), Value::Int(1)));
+        assert_eq!(
+            properties[2],
+            ("private:base:hidden".to_owned(), Value::Int(2))
+        );
+    }
+
+    #[test]
     fn property_storage_skips_static_slots_and_unsets_dynamic_slots() {
         let class = ClassEntry {
             name: "slots".to_owned(),
@@ -179,6 +246,39 @@ mod identity_storage {
         assert!(object.unset_property("dynamic"));
         assert_eq!(object.get_property("dynamic"), None);
         assert!(!object.unset_property("dynamic"));
+    }
+
+    #[test]
+    fn private_property_debug_label_uses_encoded_declaring_class() {
+        let class = ClassEntry {
+            name: "child".to_owned(),
+            parent: Some("base".to_owned()),
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: vec![ClassPropertyEntry {
+                name: "private:base:member".to_owned(),
+                default: Value::String(crate::PhpString::from_test_str("value")),
+                type_: None,
+                flags: ClassPropertyFlags {
+                    is_private: true,
+                    ..ClassPropertyFlags::default()
+                },
+                hooks: ClassPropertyHooks::default(),
+                attributes: Vec::new(),
+            }],
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        };
+        let object = ObjectRef::new_with_display_name(&class, "child");
+
+        assert_eq!(
+            object.property_debug_label("private:base:member"),
+            "\"member\":\"base\":private"
+        );
     }
 
     #[test]

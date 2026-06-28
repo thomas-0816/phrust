@@ -896,6 +896,7 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::Binary { dst, .. }
         | InstructionKind::Compare { dst, .. }
         | InstructionKind::InstanceOf { dst, .. }
+        | InstructionKind::DynamicInstanceOf { dst, .. }
         | InstructionKind::Unary { dst, .. }
         | InstructionKind::Cast { dst, .. }
         | InstructionKind::Yield { dst, .. }
@@ -917,13 +918,20 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::NewObject { dst, .. }
         | InstructionKind::DynamicNewObject { dst, .. }
         | InstructionKind::FetchProperty { dst, .. }
+        | InstructionKind::FetchDynamicProperty { dst, .. }
         | InstructionKind::IssetProperty { dst, .. }
+        | InstructionKind::IssetDynamicProperty { dst, .. }
         | InstructionKind::EmptyProperty { dst, .. }
+        | InstructionKind::EmptyDynamicProperty { dst, .. }
         | InstructionKind::IssetPropertyDim { dst, .. }
         | InstructionKind::EmptyPropertyDim { dst, .. }
         | InstructionKind::FetchStaticProperty { dst, .. }
+        | InstructionKind::IssetStaticProperty { dst, .. }
+        | InstructionKind::EmptyStaticProperty { dst, .. }
         | InstructionKind::FetchClassConstant { dst, .. }
+        | InstructionKind::FetchObjectClassName { dst, .. }
         | InstructionKind::AssignProperty { dst, .. }
+        | InstructionKind::AssignDynamicProperty { dst, .. }
         | InstructionKind::AssignStaticProperty { dst, .. }
         | InstructionKind::NewArray { dst }
         | InstructionKind::FetchDim { dst, .. }
@@ -977,6 +985,7 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::EndFinally { .. }
         | InstructionKind::Throw { .. }
         | InstructionKind::UnsetProperty { .. }
+        | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
         | InstructionKind::Unsupported { .. }
@@ -1102,7 +1111,17 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::UnsetProperty { object: src, .. }
         | InstructionKind::AcquireCallable { value: src, .. }
         | InstructionKind::ForeachInit { source: src, .. } => remap_operand_constants(src, remap),
-        InstructionKind::Binary { lhs, rhs, .. } | InstructionKind::Compare { lhs, rhs, .. } => {
+        InstructionKind::UnsetDynamicProperty { object, property } => {
+            remap_operand_constants(object, remap);
+            remap_operand_constants(property, remap);
+        }
+        InstructionKind::Binary { lhs, rhs, .. }
+        | InstructionKind::Compare { lhs, rhs, .. }
+        | InstructionKind::DynamicInstanceOf {
+            object: lhs,
+            target: rhs,
+            ..
+        } => {
             remap_operand_constants(lhs, remap);
             remap_operand_constants(rhs, remap);
         }
@@ -1114,6 +1133,18 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::IssetProperty { object, .. }
         | InstructionKind::EmptyProperty { object, .. } => {
             remap_operand_constants(object, remap);
+        }
+        InstructionKind::FetchDynamicProperty {
+            object, property, ..
+        }
+        | InstructionKind::IssetDynamicProperty {
+            object, property, ..
+        }
+        | InstructionKind::EmptyDynamicProperty {
+            object, property, ..
+        } => {
+            remap_operand_constants(object, remap);
+            remap_operand_constants(property, remap);
         }
         InstructionKind::Yield { key, value, .. } => {
             remap_optional_operand_constants(key, remap);
@@ -1161,6 +1192,16 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
             remap_operand_constants(object, remap);
             remap_operand_constants(replacements, remap);
         }
+        InstructionKind::AssignDynamicProperty {
+            object,
+            property,
+            value,
+            ..
+        } => {
+            remap_operand_constants(object, remap);
+            remap_operand_constants(property, remap);
+            remap_operand_constants(value, remap);
+        }
         InstructionKind::IssetPropertyDim { object, dims, .. }
         | InstructionKind::EmptyPropertyDim { object, dims, .. } => {
             remap_operand_constants(object, remap);
@@ -1189,6 +1230,9 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         InstructionKind::AssignStaticProperty { value, .. } => {
             remap_operand_constants(value, remap);
         }
+        InstructionKind::FetchObjectClassName { object, .. } => {
+            remap_operand_constants(object, remap);
+        }
         InstructionKind::ArrayGet { array, index, .. } => {
             remap_operand_constants(array, remap);
             remap_operand_constants(index, remap);
@@ -1205,6 +1249,8 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::EndFinally { .. }
         | InstructionKind::ResolveCallable { .. }
         | InstructionKind::FetchStaticProperty { .. }
+        | InstructionKind::IssetStaticProperty { .. }
+        | InstructionKind::EmptyStaticProperty { .. }
         | InstructionKind::FetchClassConstant { .. }
         | InstructionKind::NewArray { .. }
         | InstructionKind::IssetLocal { .. }
@@ -1308,7 +1354,17 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::ForeachInit { source: src, .. } => {
             rewrite_operand_registers(src, aliases)
         }
-        InstructionKind::Binary { lhs, rhs, .. } | InstructionKind::Compare { lhs, rhs, .. } => {
+        InstructionKind::UnsetDynamicProperty { object, property } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operand_registers(property, aliases);
+        }
+        InstructionKind::Binary { lhs, rhs, .. }
+        | InstructionKind::Compare { lhs, rhs, .. }
+        | InstructionKind::DynamicInstanceOf {
+            object: lhs,
+            target: rhs,
+            ..
+        } => {
             rewrite_operand_registers(lhs, aliases);
             rewrite_operand_registers(rhs, aliases);
         }
@@ -1320,6 +1376,18 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::IssetProperty { object, .. }
         | InstructionKind::EmptyProperty { object, .. } => {
             rewrite_operand_registers(object, aliases);
+        }
+        InstructionKind::FetchDynamicProperty {
+            object, property, ..
+        }
+        | InstructionKind::IssetDynamicProperty {
+            object, property, ..
+        }
+        | InstructionKind::EmptyDynamicProperty {
+            object, property, ..
+        } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operand_registers(property, aliases);
         }
         InstructionKind::Yield { key, value, .. } => {
             rewrite_optional_operand_registers(key, aliases);
@@ -1367,6 +1435,16 @@ fn rewrite_instruction_register_operands(
             rewrite_operand_registers(object, aliases);
             rewrite_operand_registers(replacements, aliases);
         }
+        InstructionKind::AssignDynamicProperty {
+            object,
+            property,
+            value,
+            ..
+        } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operand_registers(property, aliases);
+            rewrite_operand_registers(value, aliases);
+        }
         InstructionKind::IssetPropertyDim { object, dims, .. }
         | InstructionKind::EmptyPropertyDim { object, dims, .. } => {
             rewrite_operand_registers(object, aliases);
@@ -1395,6 +1473,9 @@ fn rewrite_instruction_register_operands(
         InstructionKind::AssignStaticProperty { value, .. } => {
             rewrite_operand_registers(value, aliases);
         }
+        InstructionKind::FetchObjectClassName { object, .. } => {
+            rewrite_operand_registers(object, aliases);
+        }
         InstructionKind::ArrayGet { array, index, .. } => {
             rewrite_operand_registers(array, aliases);
             rewrite_operand_registers(index, aliases);
@@ -1412,6 +1493,8 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::EndFinally { .. }
         | InstructionKind::ResolveCallable { .. }
         | InstructionKind::FetchStaticProperty { .. }
+        | InstructionKind::IssetStaticProperty { .. }
+        | InstructionKind::EmptyStaticProperty { .. }
         | InstructionKind::FetchClassConstant { .. }
         | InstructionKind::NewArray { .. }
         | InstructionKind::IssetLocal { .. }

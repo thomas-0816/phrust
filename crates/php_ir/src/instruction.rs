@@ -267,6 +267,12 @@ pub enum InstructionKind {
         object: Operand,
         class_name: String,
     },
+    /// `object instanceof target`, where target is a runtime string/object value.
+    DynamicInstanceOf {
+        dst: RegId,
+        object: Operand,
+        target: Operand,
+    },
     /// `dst = op(src)`.
     Unary {
         dst: RegId,
@@ -402,17 +408,35 @@ pub enum InstructionKind {
         object: Operand,
         property: String,
     },
+    /// Fetches an instance property by runtime property name.
+    FetchDynamicProperty {
+        dst: RegId,
+        object: Operand,
+        property: Operand,
+    },
     /// Tests whether an instance property exists and is not null.
     IssetProperty {
         dst: RegId,
         object: Operand,
         property: String,
     },
+    /// Tests whether a runtime-named instance property exists and is not null.
+    IssetDynamicProperty {
+        dst: RegId,
+        object: Operand,
+        property: Operand,
+    },
     /// Tests PHP empty() for an instance property.
     EmptyProperty {
         dst: RegId,
         object: Operand,
         property: String,
+    },
+    /// Tests PHP empty() for a runtime-named instance property.
+    EmptyDynamicProperty {
+        dst: RegId,
+        object: Operand,
+        property: Operand,
     },
     /// Tests whether an instance property array dimension exists and is not null.
     IssetPropertyDim {
@@ -430,8 +454,22 @@ pub enum InstructionKind {
     },
     /// Unsets an instance property slot.
     UnsetProperty { object: Operand, property: String },
+    /// Unsets an instance property slot by runtime property name.
+    UnsetDynamicProperty { object: Operand, property: Operand },
     /// Fetches a static property by class and static property name.
     FetchStaticProperty {
+        dst: RegId,
+        class_name: String,
+        property: String,
+    },
+    /// Tests whether a static property exists and is not null.
+    IssetStaticProperty {
+        dst: RegId,
+        class_name: String,
+        property: String,
+    },
+    /// Tests PHP empty() for a static property.
+    EmptyStaticProperty {
         dst: RegId,
         class_name: String,
         property: String,
@@ -442,11 +480,20 @@ pub enum InstructionKind {
         class_name: String,
         constant: String,
     },
+    /// Fetches the runtime class name for an object `::class` expression.
+    FetchObjectClassName { dst: RegId, object: Operand },
     /// Assigns an instance property by static property name.
     AssignProperty {
         dst: RegId,
         object: Operand,
         property: String,
+        value: Operand,
+    },
+    /// Assigns an instance property by runtime property name.
+    AssignDynamicProperty {
+        dst: RegId,
+        object: Operand,
+        property: Operand,
         value: Operand,
     },
     /// Assigns a static property by class and static property name.

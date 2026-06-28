@@ -439,11 +439,32 @@ impl HirLowerer<'_> {
                 }
             }
             Some(ExprNode::Binary(_)) => self.binary_expr_kind(node),
-            Some(ExprNode::Assign(_)) => HirExprKind::Assign {
-                operator: first_assignment_operator_text(node).unwrap_or_else(|| "=".to_owned()),
-                left: self.nth_expr_child(node, 0, true),
-                right: self.nth_expr_child(node, 1, true),
-            },
+            Some(ExprNode::Assign(_)) => {
+                if let Some(span) = assignment_class_constant_write_span(node) {
+                    self.reporter.report(SemanticDiagnostic::with_span(
+                        DiagnosticId::InvalidClassConstantWrite,
+                        DiagnosticSeverity::Error,
+                        DiagnosticPhase::HirLowering,
+                        "syntax error, unexpected token",
+                        span,
+                    ));
+                }
+                if let Some(span) = assignment_this_target_span(node) {
+                    self.reporter.report(SemanticDiagnostic::with_span(
+                        DiagnosticId::ThisReassignment,
+                        DiagnosticSeverity::Error,
+                        DiagnosticPhase::HirLowering,
+                        "Cannot re-assign $this",
+                        span,
+                    ));
+                }
+                HirExprKind::Assign {
+                    operator: first_assignment_operator_text(node)
+                        .unwrap_or_else(|| "=".to_owned()),
+                    left: self.nth_expr_child(node, 0, true),
+                    right: self.nth_expr_child(node, 1, true),
+                }
+            }
             Some(ExprNode::Ternary(_)) => self.ternary_expr_kind(node),
             Some(ExprNode::Call(_)) => {
                 if is_first_class_call_expr(node) {
@@ -993,6 +1014,9 @@ impl HirLowerer<'_> {
         mut rest: &str,
         range: TextRange,
     ) -> Option<ExprId> {
+        if let Some(expr) = self.simple_static_property_construct_operand_source(rest, range) {
+            return Some(expr);
+        }
         if !rest.starts_with('$') {
             return None;
         }
@@ -1079,6 +1103,56 @@ impl HirLowerer<'_> {
         rest.is_empty().then_some(current)
     }
 
+    fn simple_static_property_construct_operand_source(
+        &mut self,
+        rest: &str,
+        range: TextRange,
+    ) -> Option<ExprId> {
+        let (class_name, property_name) = rest.split_once("::$")?;
+        if class_name.is_empty() || property_name.is_empty() {
+            return None;
+        }
+        if !is_simple_static_construct_class_name(class_name)
+            || !is_simple_construct_identifier(property_name)
+        {
+            return None;
+        }
+
+        let resolved = if class_name.eq_ignore_ascii_case("self")
+            || class_name.eq_ignore_ascii_case("parent")
+            || class_name.eq_ignore_ascii_case("static")
+        {
+            class_name.to_ascii_lowercase()
+        } else {
+            class_name.to_owned()
+        };
+        let target = self.alloc_expr(
+            HirExprKind::Name {
+                resolution: HirNameResolution::new(
+                    class_name,
+                    ResolveContext::ConstantFetch.as_str(),
+                    "fully_qualified",
+                    Some(resolved),
+                    None,
+                ),
+            },
+            range,
+        );
+        let member = self.alloc_expr(
+            HirExprKind::Literal {
+                text: format!("${property_name}"),
+            },
+            range,
+        );
+        Some(self.alloc_expr(
+            HirExprKind::StaticAccess {
+                target: Some(target),
+                member: Some(member),
+            },
+            range,
+        ))
+    }
+
     fn collect_construct_operand_chain(&mut self, node: &SyntaxNode, current: &mut Option<ExprId>) {
         match node.kind().name().as_str() {
             "VARIABLE" => {
@@ -1110,6 +1184,10 @@ impl HirLowerer<'_> {
                     },
                     node.text_range(),
                 ));
+                return;
+            }
+            "STATIC_ACCESS_EXPR" => {
+                *current = Some(self.lower_expr(node, ResolveContext::ConstantFetch));
                 return;
             }
             "CALL_EXPR" => {
@@ -1569,6 +1647,41 @@ fn source_text_no_trivia(node: &SyntaxNode) -> String {
         .join("")
 }
 
+fn assignment_this_target_span(node: &SyntaxNode) -> Option<TextRange> {
+    let mut left = String::new();
+    let mut this_span = None;
+    for token in descendant_tokens::<TokenView<'_>>(node).filter(|token| !token.kind().is_trivia())
+    {
+        if token.text().ends_with('=') {
+            break;
+        }
+        if token.kind().name() == "T_VARIABLE" && token.text() == "$this" {
+            this_span.get_or_insert(token.text_range());
+        }
+        left.push_str(token.text());
+    }
+    (left == "$this").then_some(this_span).flatten()
+}
+
+fn assignment_class_constant_write_span(node: &SyntaxNode) -> Option<TextRange> {
+    let source = source_text_no_trivia(node);
+    let operator = first_assignment_operator_text(node)?;
+    if operator == "=&" {
+        let rhs = source.split_once("=&")?.1;
+        return is_class_constant_access_text(rhs).then_some(node.text_range());
+    }
+    let lhs = source.split_once(operator.as_str())?.0;
+    is_class_constant_access_text(lhs).then_some(node.text_range())
+}
+
+fn is_class_constant_access_text(text: &str) -> bool {
+    let text = text.strip_prefix('&').unwrap_or(text);
+    let Some((_class, member)) = text.split_once("::") else {
+        return false;
+    };
+    !member.is_empty() && !member.starts_with('$') && !member.starts_with('{')
+}
+
 fn split_construct_args(source: &str) -> Vec<&str> {
     let mut args = Vec::new();
     let mut start = 0usize;
@@ -1645,6 +1758,33 @@ fn is_quoted_construct_operand(text: &str) -> bool {
         return false;
     }
     text.len() >= 2 && text.ends_with(first)
+}
+
+fn is_simple_construct_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first != '_' && !first.is_ascii_alphabetic() {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn is_simple_static_construct_class_name(text: &str) -> bool {
+    let text = text.strip_prefix('\\').unwrap_or(text);
+    if text.is_empty() {
+        return false;
+    }
+    for segment in text.split('\\') {
+        if segment.is_empty() {
+            return false;
+        }
+        if !is_simple_construct_identifier(segment) {
+            return false;
+        }
+    }
+    true
 }
 
 fn foreach_header_is_by_ref(node: &SyntaxNode) -> bool {
@@ -1791,7 +1931,7 @@ fn has_descendant_token_kind(node: &SyntaxNode, kind: &str) -> bool {
 mod tests {
     use super::collect_hir_in_node;
     use crate::FrontendDatabase;
-    use crate::diagnostics::DiagnosticReporter;
+    use crate::diagnostics::{DiagnosticId, DiagnosticReporter};
     use crate::hir::{HirExprKind, HirModule};
     use crate::lower::types::TypeLoweringScope;
     use php_ast::{AstNode, source_file};
@@ -1993,6 +2133,108 @@ mod tests {
             "`and` should bind looser than assignment"
         );
         assert!(reporter.into_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn diagnoses_this_reassignment() {
+        let source = "<?php class C { function m($other) { $result = $this = $other; } }\n";
+        let parse = parse_source_file(source);
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", source.len()));
+        let mut reporter = DiagnosticReporter::new();
+
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        assert!(
+            reporter
+                .into_diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.id() == DiagnosticId::ThisReassignment)
+        );
+    }
+
+    #[test]
+    fn allows_this_property_assignment() {
+        let source = "<?php class C { function m($other) { $this->prop = $other; } }\n";
+        let parse = parse_source_file(source);
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", source.len()));
+        let mut reporter = DiagnosticReporter::new();
+
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        assert!(
+            !reporter
+                .into_diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.id() == DiagnosticId::ThisReassignment)
+        );
+    }
+
+    #[test]
+    fn diagnoses_class_constant_write_positions() {
+        let source = "<?php C::NAME = 1; $ref = &C::NAME;\n";
+        let parse = parse_source_file(source);
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", source.len()));
+        let mut reporter = DiagnosticReporter::new();
+
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        assert_eq!(
+            reporter
+                .into_diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.id() == DiagnosticId::InvalidClassConstantWrite)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn allows_static_property_write_positions() {
+        let source = "<?php C::$name = 1; $ref = &C::$name;\n";
+        let parse = parse_source_file(source);
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", source.len()));
+        let mut reporter = DiagnosticReporter::new();
+
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        assert!(
+            !reporter
+                .into_diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.id() == DiagnosticId::InvalidClassConstantWrite)
+        );
     }
 
     #[test]

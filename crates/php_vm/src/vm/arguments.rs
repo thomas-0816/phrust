@@ -123,9 +123,12 @@ pub(super) fn prepare_arguments(
             .and_then(|span| source_span_file_line(compiled, span))
             .map(|(file, line)| format!(" in {file} on line {line}"))
             .unwrap_or_default();
+        let declaration_site = source_span_file_line(compiled, function.span)
+            .map(|(file, line)| format!(" in {file}:{line}"))
+            .unwrap_or_default();
         return Err(format!(
-            "E_PHP_VM_TOO_FEW_ARGS: Too few arguments to function {}(), {} passed{} and {}",
-            function.name, supplied_count, call_site, requirement
+            "E_PHP_VM_TOO_FEW_ARGS: Too few arguments to function {}(), {} passed{} and {}{}",
+            function.name, supplied_count, call_site, requirement, declaration_site
         ));
     }
 
@@ -160,10 +163,7 @@ pub(super) fn prepare_arguments(
                     ));
                     None
                 } else {
-                    return Err(format!(
-                        "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE: function {} argument ${} must be a variable",
-                        function.name, param.name
-                    ));
+                    return Err(by_ref_not_referenceable_error(function, param, index));
                 }
             } else {
                 None
@@ -178,10 +178,7 @@ pub(super) fn prepare_arguments(
             });
         } else if let Some(default) = &param.default {
             if param.by_ref {
-                return Err(format!(
-                    "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE: function {} argument ${} must be a variable",
-                    function.name, param.name
-                ));
+                return Err(by_ref_not_referenceable_error(function, param, index));
             }
             let value = inline_constant_value(default);
             trace_args.push(FrameTraceArgument {
@@ -219,6 +216,19 @@ pub(super) fn prepare_arguments(
 struct VariadicTailArg {
     key: Option<String>,
     value: Value,
+}
+
+fn by_ref_not_referenceable_error(
+    function: &IrFunction,
+    param: &php_ir::function::IrParam,
+    index: usize,
+) -> String {
+    format!(
+        "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE: {}(): Argument #{} (${}) could not be passed by reference",
+        function.name,
+        index + 1,
+        param.name
+    )
 }
 
 fn variadic_array(args: Vec<VariadicTailArg>) -> Value {

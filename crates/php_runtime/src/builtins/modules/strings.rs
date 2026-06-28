@@ -1966,7 +1966,7 @@ pub(in crate::builtins::modules) fn builtin_printf(
     if args.is_empty() {
         return Err(arity_error("printf", "one or more argument(s)"));
     }
-    let format = string_arg("printf", &args[0])?;
+    let format = string_needle_arg("printf", "#1 ($format)", &args[0])?;
     let rendered = php_format("printf", format.as_bytes(), &args[1..], context, span)?;
     let length = rendered.len() as i64;
     context.output().write_bytes(rendered);
@@ -1981,7 +1981,7 @@ pub(in crate::builtins::modules) fn builtin_sprintf(
     if args.is_empty() {
         return Err(arity_error("sprintf", "one or more argument(s)"));
     }
-    let format = string_arg("sprintf", &args[0])?;
+    let format = string_needle_arg("sprintf", "#1 ($format)", &args[0])?;
     Ok(Value::string(php_format(
         "sprintf",
         format.as_bytes(),

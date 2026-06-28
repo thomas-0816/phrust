@@ -84,10 +84,12 @@ impl ObjectRef {
                 )
             })
             .collect();
-        let property_order = property_entries
-            .iter()
-            .map(|(name, _)| name.clone())
-            .collect();
+        let mut property_order = Vec::new();
+        for (name, _) in &property_entries {
+            if !property_order.iter().any(|entry| entry == name) {
+                property_order.push(name.clone());
+            }
+        }
         let properties = property_entries.into_iter().collect();
         Self {
             id: next_object_id(),

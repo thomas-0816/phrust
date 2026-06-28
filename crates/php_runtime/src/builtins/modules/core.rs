@@ -8003,6 +8003,14 @@ mod tests {
             call_in_context(
                 &mut context,
                 "strtotime",
+                vec![Value::string("2009-02-12 12:47:41 GMT")],
+            ),
+            Value::Int(1_234_442_861)
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "strtotime",
                 vec![Value::string("+2 days"), Value::Int(0)],
             ),
             Value::Int(172_800)

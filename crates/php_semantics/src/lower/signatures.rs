@@ -325,6 +325,13 @@ impl SignatureLowerer<'_> {
     fn validate_parameters(&mut self, parameters: &[Parameter]) {
         let mut seen = HashSet::<&str>::new();
         for (index, parameter) in parameters.iter().enumerate() {
+            if parameter.name() == "$this" {
+                self.error(
+                    DiagnosticId::ThisParameter,
+                    "Cannot use $this as parameter",
+                    parameter.span(),
+                );
+            }
             if !seen.insert(parameter.name()) {
                 self.error(
                     DiagnosticId::DuplicateParameter,
@@ -918,6 +925,29 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.id() == DiagnosticId::VariadicParameterNotLast)
+        );
+    }
+
+    #[test]
+    fn diagnoses_this_as_parameter_name() {
+        let parse = parse_source_file("<?php class C { public static function m($this): void {} }");
+        let root = source_file(parse.root()).expect("source");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", 0));
+        let mut reporter = DiagnosticReporter::new();
+        collect_signatures_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        let diagnostics = reporter.into_diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.id() == DiagnosticId::ThisParameter)
         );
     }
 

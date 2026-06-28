@@ -11,6 +11,10 @@ pub enum DiagnosticId {
     VariadicParameterNotLast,
     /// Parameter default value is not allowed in this position.
     InvalidParameterDefault,
+    /// `$this` is used as a parameter name.
+    ThisParameter,
+    /// `$this` is used as an assignment target.
+    ThisReassignment,
     /// Constructor property promotion appears in an invalid context.
     InvalidPropertyPromotion,
     /// Closure use captures duplicate a parameter name.
@@ -65,6 +69,8 @@ pub enum DiagnosticId {
     GotoLabelNotFound,
     /// Invalid constant expression.
     InvalidConstExpr,
+    /// Class constant appears in a write/reference target position.
+    InvalidClassConstantWrite,
     /// Attribute argument is not a constant expression.
     AttributeArgumentNotConstExpr,
     /// Duplicate class member.
@@ -100,6 +106,8 @@ impl DiagnosticId {
             Self::DuplicateParameter => "E_PHP_DUPLICATE_PARAMETER",
             Self::VariadicParameterNotLast => "E_PHP_VARIADIC_PARAMETER_NOT_LAST",
             Self::InvalidParameterDefault => "E_PHP_INVALID_PARAMETER_DEFAULT",
+            Self::ThisParameter => "E_PHP_THIS_PARAMETER",
+            Self::ThisReassignment => "E_PHP_THIS_REASSIGNMENT",
             Self::InvalidPropertyPromotion => "E_PHP_INVALID_PROPERTY_PROMOTION",
             Self::ClosureUseDuplicatesParameter => "E_PHP_CLOSURE_USE_DUPLICATES_PARAMETER",
             Self::ClosureUseAutoGlobal => "E_PHP_CLOSURE_USE_AUTO_GLOBAL",
@@ -127,6 +135,7 @@ impl DiagnosticId {
             Self::YieldOutsideFunction => "E_PHP_YIELD_OUTSIDE_FUNCTION",
             Self::GotoLabelNotFound => "E_PHP_GOTO_LABEL_NOT_FOUND",
             Self::InvalidConstExpr => "E_PHP_INVALID_CONST_EXPR",
+            Self::InvalidClassConstantWrite => "E_PHP_INVALID_CLASS_CONSTANT_WRITE",
             Self::AttributeArgumentNotConstExpr => "E_PHP_ATTRIBUTE_ARGUMENT_NOT_CONST_EXPR",
             Self::DuplicateClassMember => "E_PHP_DUPLICATE_CLASS_MEMBER",
             Self::EnumCaseValueOnUnitEnum => "E_PHP_ENUM_CASE_VALUE_ON_UNIT_ENUM",

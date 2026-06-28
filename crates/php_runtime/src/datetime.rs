@@ -365,7 +365,9 @@ fn parse_absolute_datetime(text: &str) -> Option<i64> {
         return Some(timestamp);
     }
 
-    let normalized = text.trim_end_matches('Z').replace('T', " ");
+    let normalized = strip_supported_timezone_suffix(text)
+        .trim_end_matches('Z')
+        .replace('T', " ");
     let (date, time) = normalized
         .split_once(' ')
         .map_or((normalized.as_str(), "00:00:00"), |(date, time)| {
@@ -397,10 +399,33 @@ fn absolute_text_has_explicit_timezone(text: &str) -> bool {
     if trimmed.ends_with('Z') {
         return true;
     }
+    if has_supported_timezone_suffix(trimmed) {
+        return true;
+    }
     let Some((_, time)) = trimmed.split_once([' ', 'T']) else {
         return false;
     };
     time.contains('+') || time.contains('-')
+}
+
+fn strip_supported_timezone_suffix(text: &str) -> &str {
+    let trimmed = text.trim();
+    for suffix in [" GMT", " UTC"] {
+        if trimmed.len() > suffix.len()
+            && trimmed[trimmed.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+        {
+            return trimmed[..trimmed.len() - suffix.len()].trim_end();
+        }
+    }
+    trimmed
+}
+
+fn has_supported_timezone_suffix(text: &str) -> bool {
+    let trimmed = text.trim();
+    [" GMT", " UTC"].iter().any(|suffix| {
+        trimmed.len() > suffix.len()
+            && trimmed[trimmed.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    })
 }
 
 fn parse_relative_modifier(text: &str) -> Option<i64> {

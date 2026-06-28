@@ -339,16 +339,24 @@ impl VmCounters {
             | InstructionKind::IssetDim { .. }
             | InstructionKind::EmptyDim { .. }
             | InstructionKind::UnsetDim { .. } => self.array_dim_fetches += 1,
-            InstructionKind::FetchProperty { .. } | InstructionKind::FetchStaticProperty { .. } => {
+            InstructionKind::FetchProperty { .. }
+            | InstructionKind::FetchDynamicProperty { .. }
+            | InstructionKind::FetchStaticProperty { .. } => {
                 self.property_fetches += 1;
                 self.property_accesses += 1;
             }
             InstructionKind::IssetProperty { .. }
+            | InstructionKind::IssetDynamicProperty { .. }
             | InstructionKind::EmptyProperty { .. }
+            | InstructionKind::EmptyDynamicProperty { .. }
             | InstructionKind::UnsetProperty { .. }
+            | InstructionKind::UnsetDynamicProperty { .. }
             | InstructionKind::AssignProperty { .. }
+            | InstructionKind::AssignDynamicProperty { .. }
             | InstructionKind::AssignStaticProperty { .. } => self.property_accesses += 1,
-            InstructionKind::InstanceOf { .. } => self.type_checks += 1,
+            InstructionKind::InstanceOf { .. } | InstructionKind::DynamicInstanceOf { .. } => {
+                self.type_checks += 1
+            }
             InstructionKind::Include { .. } => self.includes += 1,
             InstructionKind::Binary {
                 op: BinaryOp::Concat,
@@ -2707,6 +2715,7 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::Binary { .. } => "binary",
         InstructionKind::Compare { .. } => "compare",
         InstructionKind::InstanceOf { .. } => "instanceof",
+        InstructionKind::DynamicInstanceOf { .. } => "dynamic_instanceof",
         InstructionKind::Unary { .. } => "unary",
         InstructionKind::Cast { .. } => "cast",
         InstructionKind::Discard { .. } => "discard",
@@ -2735,14 +2744,22 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::NewObject { .. } => "new_object",
         InstructionKind::DynamicNewObject { .. } => "dynamic_new_object",
         InstructionKind::FetchProperty { .. } => "fetch_property",
+        InstructionKind::FetchDynamicProperty { .. } => "fetch_dynamic_property",
         InstructionKind::IssetProperty { .. } => "isset_property",
+        InstructionKind::IssetDynamicProperty { .. } => "isset_dynamic_property",
         InstructionKind::EmptyProperty { .. } => "empty_property",
+        InstructionKind::EmptyDynamicProperty { .. } => "empty_dynamic_property",
         InstructionKind::IssetPropertyDim { .. } => "isset_property_dim",
         InstructionKind::EmptyPropertyDim { .. } => "empty_property_dim",
         InstructionKind::UnsetProperty { .. } => "unset_property",
+        InstructionKind::UnsetDynamicProperty { .. } => "unset_dynamic_property",
         InstructionKind::FetchStaticProperty { .. } => "fetch_static_property",
+        InstructionKind::IssetStaticProperty { .. } => "isset_static_property",
+        InstructionKind::EmptyStaticProperty { .. } => "empty_static_property",
         InstructionKind::FetchClassConstant { .. } => "fetch_class_constant",
+        InstructionKind::FetchObjectClassName { .. } => "fetch_object_class_name",
         InstructionKind::AssignProperty { .. } => "assign_property",
+        InstructionKind::AssignDynamicProperty { .. } => "assign_dynamic_property",
         InstructionKind::AssignStaticProperty { .. } => "assign_static_property",
         InstructionKind::NewArray { .. } => "new_array",
         InstructionKind::ArrayInsert { .. } => "array_insert",

@@ -2167,9 +2167,9 @@ pub fn inline_cache_kind_for_instruction(kind: &InstructionKind) -> Option<Inlin
             Some(InlineCacheKind::ClassConstantStaticProperty)
         }
         InstructionKind::Include { .. } => Some(InlineCacheKind::IncludePath),
-        InstructionKind::InstanceOf { .. } | InstructionKind::NewObject { .. } => {
-            Some(InlineCacheKind::AutoloadClassLookup)
-        }
+        InstructionKind::InstanceOf { .. }
+        | InstructionKind::DynamicInstanceOf { .. }
+        | InstructionKind::NewObject { .. } => Some(InlineCacheKind::AutoloadClassLookup),
         InstructionKind::FetchDim { .. } | InstructionKind::ArrayGet { .. } => {
             Some(InlineCacheKind::DimFetch)
         }

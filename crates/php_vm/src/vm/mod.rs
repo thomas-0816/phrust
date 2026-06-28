@@ -56,17 +56,16 @@ use php_runtime::{
     ClassPropertyEntry as RuntimeClassPropertyEntry,
     ClassPropertyFlags as RuntimeClassPropertyFlags,
     ClassPropertyHooks as RuntimeClassPropertyHooks, ClosureCaptureValue, ClosureContext,
-    ClosureDebugInfo, ClosurePayload, ExecutionStatus, FiberRef, FiberState, GeneratorRef,
-    GeneratorState, GlobalSymbolTable, NumericValue, ObjectRef, OutputBuffer, PhpArray,
-    PhpArrayKind, PhpString, ProcessCapability, ReferenceCell, RuntimeContext, RuntimeDiagnostic,
-    RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame, RuntimeType, Slot, Value, compare,
-    division_by_zero_mvp, emit_php_diagnostic, equal, error_reporting_allows_level, identical,
-    reset_float_string_precision, runtime_type_name, set_float_string_precision,
-    to_arithmetic_number, to_bool, to_float, to_int, to_number, to_string, undefined_function,
-    undefined_variable_warning, unsupported_feature, value_matches_runtime_type, value_type_name,
+    ClosureDebugInfo, ClosurePayload, ExecutionStatus, FiberRef, FiberState, GcEntityId,
+    GcEntityKind, GeneratorRef, GeneratorState, GlobalSymbolTable, NumericValue, ObjectRef,
+    OutputBuffer, PhpArray, PhpArrayKind, PhpString, ProcessCapability, ReferenceCell,
+    RuntimeContext, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame,
+    RuntimeType, Slot, Value, compare, division_by_zero_mvp, emit_php_diagnostic, equal,
+    error_reporting_allows_level, identical, reset_float_string_precision, runtime_type_name,
+    set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
+    to_string, undefined_function, undefined_variable_warning, unsupported_feature,
+    value_matches_runtime_type, value_type_name,
 };
-#[cfg(test)]
-use php_runtime::{GcEntityId, GcEntityKind};
 use php_runtime::{GcRoot, GcRootKind, GcSnapshot, ResourceTable, scan_roots};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -303,7 +302,7 @@ enum ForeachIterator {
         position: usize,
     },
     ObjectProperties {
-        object: ObjectRef,
+        entries: Vec<(String, Value)>,
         position: usize,
     },
     IteratorObject {
@@ -318,6 +317,12 @@ enum ForeachIterator {
         generator: GeneratorRef,
         consumed: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ForeachInvalidSourceBehavior {
+    Unsupported,
+    WarnAndEmpty { span: Option<php_ir::IrSpan> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -888,7 +893,13 @@ struct DestructorQueue {
 }
 
 impl DestructorQueue {
-    fn register(&mut self, object: ObjectRef, class_name: String, function: FunctionId) {
+    fn register(
+        &mut self,
+        object: ObjectRef,
+        class_name: String,
+        function: FunctionId,
+        visibility: DestructorVisibility,
+    ) {
         if self
             .entries
             .iter()
@@ -900,7 +911,16 @@ impl DestructorQueue {
             object,
             class_name,
             function,
+            visibility,
         });
+    }
+
+    fn take_for_object(&mut self, object_id: u64) -> Option<DestructorEntry> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.object.id() == object_id)?;
+        Some(self.entries.remove(index))
     }
 
     fn drain_reverse(&mut self) -> Vec<DestructorEntry> {
@@ -915,6 +935,14 @@ struct DestructorEntry {
     object: ObjectRef,
     class_name: String,
     function: FunctionId,
+    visibility: DestructorVisibility,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DestructorVisibility {
+    Public,
+    Protected,
+    Private,
 }
 
 fn gc_snapshot_from_vm_roots(stack: &CallStack, state: &ExecutionState) -> GcSnapshot {
@@ -990,6 +1018,209 @@ fn gc_roots_from_vm(stack: &CallStack, state: &ExecutionState) -> Vec<GcRoot> {
         }
     }
     roots
+}
+
+fn object_has_php_visible_root(stack: &CallStack, state: &ExecutionState, object_id: u64) -> bool {
+    for frame in stack.frames() {
+        for (_, slot) in frame.locals.iter() {
+            if value_reaches_object_id(&slot.read(), object_id, &mut BTreeSet::new()) {
+                return true;
+            }
+        }
+    }
+    for cell in state.static_locals.values() {
+        if value_reaches_object_id(
+            &Value::Reference(cell.clone()),
+            object_id,
+            &mut BTreeSet::new(),
+        ) {
+            return true;
+        }
+    }
+    for value in state.static_properties.values() {
+        if value_reaches_object_id(value, object_id, &mut BTreeSet::new()) {
+            return true;
+        }
+    }
+    for object in state.enum_cases.values() {
+        if object.id() == object_id {
+            return true;
+        }
+    }
+    if value_reaches_object_id(
+        &Value::Array(state.globals.globals_array()),
+        object_id,
+        &mut BTreeSet::new(),
+    ) {
+        return true;
+    }
+    for continuation in state.generator_continuations.values() {
+        for (_, slot) in continuation.frame.locals.iter() {
+            if value_reaches_object_id(&slot.read(), object_id, &mut BTreeSet::new()) {
+                return true;
+            }
+        }
+    }
+    for continuations in state.fiber_continuations.values() {
+        for continuation in continuations {
+            for (_, slot) in continuation.frame.locals.iter() {
+                if value_reaches_object_id(&slot.read(), object_id, &mut BTreeSet::new()) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn collect_destructor_candidate_objects(
+    value: &Value,
+    seen: &mut BTreeSet<GcEntityId>,
+    candidates: &mut Vec<ObjectRef>,
+) {
+    match value {
+        Value::Array(array) => {
+            let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id() as u64);
+            if !seen.insert(id) {
+                return;
+            }
+            for (_, value) in array.iter() {
+                collect_destructor_candidate_objects(value, seen, candidates);
+            }
+        }
+        Value::Object(object) => {
+            let id = GcEntityId::new(GcEntityKind::Object, object.id());
+            if !seen.insert(id) {
+                return;
+            }
+            candidates.push(object.clone());
+            for (_, value) in object.properties_snapshot() {
+                collect_destructor_candidate_objects(&value, seen, candidates);
+            }
+        }
+        Value::Reference(cell) => {
+            let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+            if !seen.insert(id) {
+                return;
+            }
+            let value = cell.borrow();
+            collect_destructor_candidate_objects(&value, seen, candidates);
+        }
+        Value::Callable(CallableValue::Closure(payload)) => {
+            for capture in &payload.captures {
+                if let Some(value) = capture.value() {
+                    collect_destructor_candidate_objects(value, seen, candidates);
+                }
+                if let Some(cell) = capture.reference() {
+                    collect_destructor_candidate_objects(&Value::Reference(cell), seen, candidates);
+                }
+            }
+            if let Some(bound_this) = &payload.bound_this {
+                collect_destructor_candidate_objects(
+                    &Value::Object(bound_this.clone()),
+                    seen,
+                    candidates,
+                );
+            }
+        }
+        Value::Callable(CallableValue::BoundMethod {
+            target: CallableMethodTarget::Object(object),
+            ..
+        }) => {
+            collect_destructor_candidate_objects(&Value::Object(object.clone()), seen, candidates);
+        }
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Resource(_)
+        | Value::Generator(_)
+        | Value::Fiber(_)
+        | Value::Uninitialized
+        | Value::Callable(
+            CallableValue::UserFunction { .. }
+            | CallableValue::InternalBuiltin { .. }
+            | CallableValue::BoundMethod {
+                target: CallableMethodTarget::Class(_),
+                ..
+            }
+            | CallableValue::MethodPlaceholder { .. }
+            | CallableValue::UnresolvedDynamic { .. },
+        ) => {}
+    }
+}
+
+fn value_reaches_object_id(value: &Value, object_id: u64, seen: &mut BTreeSet<GcEntityId>) -> bool {
+    match value {
+        Value::Array(array) => {
+            let id = GcEntityId::new(GcEntityKind::Array, array.gc_debug_id() as u64);
+            if !seen.insert(id) {
+                return false;
+            }
+            array
+                .iter()
+                .any(|(_, value)| value_reaches_object_id(value, object_id, seen))
+        }
+        Value::Object(object) => {
+            if object.id() == object_id {
+                return true;
+            }
+            let id = GcEntityId::new(GcEntityKind::Object, object.id());
+            if !seen.insert(id) {
+                return false;
+            }
+            object
+                .properties_snapshot()
+                .iter()
+                .any(|(_, value)| value_reaches_object_id(value, object_id, seen))
+        }
+        Value::Reference(cell) => {
+            let id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+            if !seen.insert(id) {
+                return false;
+            }
+            let value = cell.borrow();
+            value_reaches_object_id(&value, object_id, seen)
+        }
+        Value::Callable(CallableValue::Closure(payload)) => {
+            payload
+                .bound_this
+                .as_ref()
+                .is_some_and(|object| object.id() == object_id)
+                || payload.captures.iter().any(|capture| {
+                    capture
+                        .value()
+                        .is_some_and(|value| value_reaches_object_id(value, object_id, seen))
+                        || capture.reference().is_some_and(|cell| {
+                            value_reaches_object_id(&Value::Reference(cell), object_id, seen)
+                        })
+                })
+        }
+        Value::Callable(CallableValue::BoundMethod {
+            target: CallableMethodTarget::Object(object),
+            ..
+        }) => object.id() == object_id,
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::Resource(_)
+        | Value::Generator(_)
+        | Value::Fiber(_)
+        | Value::Uninitialized
+        | Value::Callable(
+            CallableValue::UserFunction { .. }
+            | CallableValue::InternalBuiltin { .. }
+            | CallableValue::BoundMethod {
+                target: CallableMethodTarget::Class(_),
+                ..
+            }
+            | CallableValue::MethodPlaceholder { .. }
+            | CallableValue::UnresolvedDynamic { .. },
+        ) => false,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1524,6 +1755,7 @@ impl Vm {
         );
         apply_float_string_precision(&state.ini);
         seed_runtime_globals(&mut state.globals, &self.options.runtime_context);
+        emit_private_final_method_warnings(&unit, &mut output, &mut state);
         let mut result = if self.options.execution_format.attempts_bytecode() {
             match self.try_execute_bytecode_entry(&unit, &mut output, &mut stack, &mut state) {
                 BytecodeEntryAttempt::Executed(result) => *result,
@@ -3301,6 +3533,7 @@ impl Vm {
             output,
             stack,
             state,
+            ForeachInvalidSourceBehavior::Unsupported,
         ) {
             Ok(iterator) => {
                 let mut iterators = HashMap::new();
@@ -3359,6 +3592,7 @@ impl Vm {
             output,
             stack,
             state,
+            ForeachInvalidSourceBehavior::Unsupported,
         ) {
             Ok(iterator) => {
                 let mut iterators = HashMap::new();
@@ -3414,11 +3648,23 @@ impl Vm {
             let Some(value) = values.get(index).cloned() else {
                 continue;
             };
-            if !value_needs_vm_string_coercion(&value) {
+            if !value_needs_vm_string_coercion(compiled, &value) {
                 continue;
             }
             let coerced = self.value_to_string(compiled, &value, output, stack, state)?;
             values[index] = Value::String(coerced);
+        }
+        if matches!(name, "printf" | "sprintf") {
+            for index in 1..values.len() {
+                let Some(value) = values.get(index).cloned() else {
+                    continue;
+                };
+                if !value_needs_vm_string_coercion(compiled, &value) {
+                    continue;
+                }
+                let coerced = self.value_to_string(compiled, &value, output, stack, state)?;
+                values[index] = Value::String(coerced);
+            }
         }
         Ok(values)
     }
@@ -5513,9 +5759,17 @@ impl Vm {
                                 return result;
                             }
                         };
-                        let foreach_iterator = match self
-                            .foreach_iterator_from_value(compiled, source, output, stack, state)
-                        {
+                        let span = dense.spans.get(instruction.span.index());
+                        let foreach_iterator = match self.foreach_iterator_from_value(
+                            compiled,
+                            source,
+                            output,
+                            stack,
+                            state,
+                            ForeachInvalidSourceBehavior::WarnAndEmpty {
+                                span: span.copied(),
+                            },
+                        ) {
                             Ok(iterator) => iterator,
                             Err(result) => {
                                 stack.pop_recycle();
@@ -5633,10 +5887,41 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        if let Err(message) = self.read_dense_operand(compiled, stack, src) {
-                            let result = self.runtime_error(output, compiled, stack, message);
-                            stack.pop_recycle();
-                            return result;
+                        let value = match self.read_dense_operand(compiled, stack, src) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let mut exception_handlers = Vec::new();
+                        let mut pending_control = None;
+                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            &mut exception_handlers,
+                            &mut pending_control,
+                            &value,
+                        ) {
+                            match outcome {
+                                RaiseOutcome::Done(result) => {
+                                    stack.pop_recycle();
+                                    return *result;
+                                }
+                                RaiseOutcome::Caught(_) => {
+                                    let result = self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        "E_PHP_VM_BYTECODE_DESTRUCTOR_CATCH_UNSUPPORTED: bytecode discard cannot route a caught destructor exception",
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
                         }
                     }
                     DenseOpcode::Jump => {
@@ -6070,17 +6355,11 @@ impl Vm {
                 }
                 next
             }
-            Some(ForeachIterator::ObjectProperties { object, position }) => {
-                let keys = object_property_iteration_keys(compiled, &object)
-                    .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
-                let next = keys.get(position).and_then(|name| {
-                    object.get_property(name).map(|value| {
-                        (
-                            Some(Value::string(name.as_bytes().to_vec())),
-                            effective_value(&value),
-                        )
-                    })
-                });
+            Some(ForeachIterator::ObjectProperties { entries, position }) => {
+                let next = entries
+                    .get(position)
+                    .cloned()
+                    .map(|(name, value)| (Some(Value::string(name.into_bytes())), value));
                 if next.is_some()
                     && let Some(ForeachIterator::ObjectProperties { position, .. }) =
                         foreach_iterators.get_mut(&iterator)
@@ -6357,10 +6636,21 @@ impl Vm {
                 Err(message) => {
                     let error_compiled = call.error_context_compiled.as_ref().unwrap_or(compiled);
                     let error_span = call.call_span.unwrap_or(function.span);
+                    let by_ref_not_referenceable =
+                        message.starts_with("E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE:");
                     let result = self.runtime_error(output, error_compiled, stack, message);
                     if let Some(throwable) = runtime_error_throwable(&result) {
                         tag_throwable_location(&throwable, error_compiled, error_span);
-                        state.pending_trace = Some(capture_backtrace_string(error_compiled, stack));
+                        state.pending_trace = Some(if by_ref_not_referenceable {
+                            capture_backtrace_string(error_compiled, stack)
+                        } else {
+                            capture_backtrace_string_with_failed_call(
+                                error_compiled,
+                                stack,
+                                function,
+                                error_span,
+                            )
+                        });
                         state.pending_throw = Some(throwable);
                         return VmResult::propagating_exception(output.clone());
                     }
@@ -6593,17 +6883,23 @@ impl Vm {
                                 .get_or_insert_with(|| state.resources.register_stdin(Vec::new()))
                                 .clone();
                             Value::Resource(resource)
-                        } else if let Some(value) = global_constant_value(compiled, state, name) {
-                            value
                         } else {
-                            return self.runtime_error(
-                                output,
-                                compiled,
-                                stack,
-                                format!(
-                                    "E_PHP_RUNTIME_UNDEFINED_CONSTANT: undefined constant {name}"
-                                ),
-                            );
+                            match global_constant_value(compiled, state, stack, name) {
+                                Ok(Some(value)) => value,
+                                Ok(None) => {
+                                    return self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        format!(
+                                            "E_PHP_RUNTIME_UNDEFINED_CONSTANT: undefined constant {name}"
+                                        ),
+                                    );
+                                }
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            }
                         };
                         if let Err(message) = stack
                             .current_mut()
@@ -6761,6 +7057,52 @@ impl Vm {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
+                    InstructionKind::DynamicInstanceOf {
+                        dst,
+                        object,
+                        target,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let class_name = match read_operand(unit, stack, *target) {
+                            Ok(Value::String(value)) => {
+                                normalize_class_name(&value.to_string_lossy())
+                            }
+                            Ok(Value::Object(object)) => normalize_class_name(&object.class_name()),
+                            Ok(other) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_INVALID_DYNAMIC_CLASS_NAME: class name must be string or object, {} given",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let value = match object_instanceof(compiled, &object, &class_name) {
+                            Ok(value) => Value::Bool(value),
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, value)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
                     InstructionKind::Unary { dst, op, src } => {
                         let src = match read_operand(unit, stack, *src) {
                             Ok(value) => value,
@@ -6794,7 +7136,21 @@ impl Vm {
                             match self.execute_cast(compiled, *kind, &src, output, stack, state) {
                                 Ok(value) => value,
                                 Err(result) => {
-                                    return result;
+                                    match self.route_throwable_result(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        result,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                             };
                         if let Err(message) = stack
@@ -6807,8 +7163,28 @@ impl Vm {
                         }
                     }
                     InstructionKind::Discard { src } => {
-                        if let Err(message) = read_operand(unit, stack, *src) {
-                            return self.runtime_error(output, compiled, stack, message);
+                        let value = match read_operand(unit, stack, *src) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            &mut exception_handlers,
+                            &mut pending_control,
+                            &value,
+                        ) {
+                            match outcome {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                     }
                     InstructionKind::LoadLocal { dst, local } => {
@@ -6944,6 +7320,12 @@ impl Vm {
                         self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
                             stack, *local,
                         ));
+                        let previous = stack
+                            .current()
+                            .expect("frame was pushed")
+                            .locals
+                            .get(*local)
+                            .unwrap_or(Value::Uninitialized);
                         if let Err(message) = stack
                             .current_mut()
                             .expect("frame was pushed")
@@ -6951,6 +7333,23 @@ impl Vm {
                             .set(*local, value)
                         {
                             return self.runtime_error(output, compiled, stack, message);
+                        }
+                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            &mut exception_handlers,
+                            &mut pending_control,
+                            &previous,
+                        ) {
+                            match outcome {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                     }
                     InstructionKind::BindReference { target, source } => {
@@ -7441,24 +7840,77 @@ impl Vm {
                                 }
                             };
                         if let Err(message) = validate_object_mvp(&runtime_class) {
-                            return self.runtime_error(output, compiled, stack, message);
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         let object = ObjectRef::new_with_display_name(
                             &runtime_class,
                             class.display_name.clone(),
                         );
-                        if let Some(constructor) = class.constructor {
-                            let class_owner = dynamic_class_owner_in_state(state, &class.name)
-                                .unwrap_or_else(|| compiled.clone());
+                        let caller_scope = current_scope_class(compiled, stack);
+                        let constructor = match lookup_method_in_hierarchy(
+                            compiled,
+                            &class,
+                            "__construct",
+                            caller_scope.as_deref(),
+                        ) {
+                            Ok(constructor) => constructor,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if let Some(constructor) = constructor {
+                            if let Err(message) = validate_constructor_callable_in_state_scope(
+                                compiled,
+                                state,
+                                caller_scope.as_deref(),
+                                constructor.class,
+                                constructor.method,
+                            ) {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            let class_owner =
+                                dynamic_class_owner_in_state(state, &constructor.class.name)
+                                    .unwrap_or_else(|| compiled.clone());
                             let result = self.execute_function(
                                 &class_owner,
-                                constructor,
+                                constructor.method.function,
                                 FunctionCall::new(values, Vec::new())
+                                    .with_call_span(instruction.span)
                                     .with_this(object.clone())
                                     .with_class_context(
+                                        constructor.class.name.clone(),
                                         class.name.clone(),
-                                        class.name.clone(),
-                                        class.name.clone(),
+                                        constructor.class.name.clone(),
                                     )
                                     .inherit_fiber_context(&running_fiber),
                                 output,
@@ -7466,7 +7918,21 @@ impl Vm {
                                 state,
                             );
                             if !result.status.is_success() {
-                                return result;
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
                             }
                             if result.fiber_suspension.is_some() {
                                 return self.propagate_fiber_suspension(
@@ -8044,7 +8510,22 @@ impl Vm {
                                 }
                             };
                         if let Err(message) = validate_object_mvp(&runtime_class) {
-                            return self.runtime_error(output, compiled, stack, message);
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         let values = match read_call_args(unit, stack, args) {
                             Ok(values) => values,
@@ -8056,18 +8537,56 @@ impl Vm {
                             &runtime_class,
                             class.display_name.clone(),
                         );
-                        if let Some(constructor) = class.constructor {
-                            let class_owner = dynamic_class_owner_in_state(state, &class.name)
-                                .unwrap_or_else(|| compiled.clone());
+                        let caller_scope = current_scope_class(compiled, stack);
+                        let constructor = match lookup_method_in_hierarchy(
+                            compiled,
+                            &class,
+                            "__construct",
+                            caller_scope.as_deref(),
+                        ) {
+                            Ok(constructor) => constructor,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if let Some(constructor) = constructor {
+                            if let Err(message) = validate_constructor_callable_in_state_scope(
+                                compiled,
+                                state,
+                                caller_scope.as_deref(),
+                                constructor.class,
+                                constructor.method,
+                            ) {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            let class_owner =
+                                dynamic_class_owner_in_state(state, &constructor.class.name)
+                                    .unwrap_or_else(|| compiled.clone());
                             let result = self.execute_function(
                                 &class_owner,
-                                constructor,
+                                constructor.method.function,
                                 FunctionCall::new(values, Vec::new())
+                                    .with_call_span(instruction.span)
                                     .with_this(object.clone())
                                     .with_class_context(
+                                        constructor.class.name.clone(),
                                         class.name.clone(),
-                                        class.name.clone(),
-                                        class.name.clone(),
+                                        constructor.class.name.clone(),
                                     )
                                     .inherit_fiber_context(&running_fiber),
                                 output,
@@ -8075,7 +8594,21 @@ impl Vm {
                                 state,
                             );
                             if !result.status.is_success() {
-                                return result;
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
                             }
                             if result.fiber_suspension.is_some() {
                                 return self.propagate_fiber_suspension(
@@ -8160,7 +8693,23 @@ impl Vm {
                             .clone_object_with_magic(compiled, object, &class, output, stack, state)
                         {
                             Ok(copy) => copy,
-                            Err(result) => return result,
+                            Err(result) => {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
                         };
                         self.register_destructor_if_needed(compiled, &class, copy.clone(), state);
                         if let Err(message) = stack
@@ -8246,7 +8795,23 @@ impl Vm {
                             state,
                         ) {
                             Ok(copy) => copy,
-                            Err(result) => return result,
+                            Err(result) => {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
                         };
                         self.register_destructor_if_needed(compiled, &class, copy.clone(), state);
                         for (key, value) in replacements.iter() {
@@ -8600,17 +9165,18 @@ impl Vm {
                                     Ok(None) => {}
                                     Err(result) => return result,
                                 }
-                                diagnostics.push(RuntimeDiagnostic::new(
-                                    "E_PHP_VM_UNDEFINED_PROPERTY",
-                                    RuntimeSeverity::Warning,
-                                    format!(
-                                        "E_PHP_VM_UNDEFINED_PROPERTY: property {}::${property} is not declared",
-                                        object.class_name()
-                                    ),
-                                    RuntimeSourceSpan::default(),
-                                    stack_trace(compiled, stack),
-                                    None,
-                                ));
+                                if let Err(result) = self.emit_undefined_property_warning(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut diagnostics,
+                                    &object.class_name(),
+                                    property,
+                                    instruction.span,
+                                ) {
+                                    return result;
+                                }
                                 if let Err(message) = stack
                                     .current_mut()
                                     .expect("frame was pushed")
@@ -8625,6 +9191,67 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
+                        if resolved.property.flags.is_static {
+                            if let Err(access_error) = validate_property_access(
+                                compiled,
+                                stack,
+                                resolved.class,
+                                resolved.property,
+                            ) {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    access_error,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            emit_static_property_as_non_static_notice(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                resolved.class,
+                                resolved.property,
+                                instruction.span,
+                            );
+                            let value = match object.get_property(property) {
+                                Some(value) => value,
+                                None => {
+                                    if let Err(result) = self.emit_undefined_property_warning(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut diagnostics,
+                                        &object.class_name(),
+                                        property,
+                                        instruction.span,
+                                    ) {
+                                        return result;
+                                    }
+                                    Value::Null
+                                }
+                            };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if let Err(access_error) = validate_property_access(
                             compiled,
                             stack,
@@ -8678,6 +9305,22 @@ impl Vm {
                                     continue;
                                 }
                                 Ok(None) => {
+                                    if resolved.property.flags.is_private
+                                        && normalize_class_name(&class.name)
+                                            != normalize_class_name(&resolved.class.name)
+                                        && let Some(value) = object.get_property(property)
+                                    {
+                                        if let Err(message) = stack
+                                            .current_mut()
+                                            .expect("frame was pushed")
+                                            .registers
+                                            .set(*dst, value)
+                                        {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                        continue;
+                                    }
                                     let result =
                                         self.runtime_error(output, compiled, stack, access_error);
                                     if let Some(throwable) = runtime_error_throwable(&result) {
@@ -8766,15 +9409,71 @@ impl Vm {
                         let value = match object.get_property(&storage_name) {
                             Some(value) => value,
                             None => {
-                                return self.runtime_error(
-                                    output,
-                                    compiled,
-                                    stack,
-                                    format!(
-                                        "E_PHP_VM_UNKNOWN_PROPERTY: property {}::${property} is not declared",
-                                        object.class_name()
+                                self.record_counter_property_fetch_profile(
+                                    property_fetch_profile_observation(
+                                        &property_callsite,
+                                        property,
+                                        &receiver_class,
+                                        &class,
+                                        Some((resolved.class, resolved.property)),
+                                        normalized_scope.as_deref(),
+                                        lookup_epoch,
+                                        receiver_has_magic_get,
+                                        resolved_has_property_hook,
+                                        false,
+                                        true,
+                                        false,
+                                        vec!["missing_declared_storage"],
                                     ),
                                 );
+                                match self.call_magic_property_method(
+                                    compiled,
+                                    object.clone(),
+                                    "__get",
+                                    property,
+                                    vec![CallArgument::positional(Value::String(
+                                        PhpString::from_test_str(property),
+                                    ))],
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(Some(value)) => {
+                                        if let Err(message) = stack
+                                            .current_mut()
+                                            .expect("frame was pushed")
+                                            .registers
+                                            .set(*dst, value)
+                                        {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                        continue;
+                                    }
+                                    Ok(None) => {}
+                                    Err(result) => return result,
+                                }
+                                if let Err(result) = self.emit_undefined_property_warning(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut diagnostics,
+                                    &object.class_name(),
+                                    property,
+                                    instruction.span,
+                                ) {
+                                    return result;
+                                }
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("frame was pushed")
+                                    .registers
+                                    .set(*dst, Value::Null)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                continue;
                             }
                         };
                         if matches!(value, Value::Uninitialized) {
@@ -9063,6 +9762,80 @@ impl Vm {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
+                    InstructionKind::IssetStaticProperty {
+                        dst,
+                        class_name,
+                        property,
+                    } => {
+                        let result = match static_property_isset_empty_result(
+                            unit, compiled, state, stack, class_name, property, false,
+                        ) {
+                            Ok(result) => result,
+                            Err(message) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, Value::Bool(result))
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::EmptyStaticProperty {
+                        dst,
+                        class_name,
+                        property,
+                    } => {
+                        let result = match static_property_isset_empty_result(
+                            unit, compiled, state, stack, class_name, property, true,
+                        ) {
+                            Ok(result) => result,
+                            Err(message) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, Value::Bool(result))
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
                     InstructionKind::FetchClassConstant {
                         dst,
                         class_name,
@@ -9216,15 +9989,26 @@ impl Vm {
                             ) {
                                 Ok(Some(resolved)) => resolved,
                                 Ok(None) => {
-                                    return self.runtime_error(
-                                        output,
-                                        compiled,
-                                        stack,
-                                        format!(
-                                            "E_PHP_VM_UNKNOWN_CLASS_CONSTANT: constant {}::{constant} is not declared",
-                                            class.name
-                                        ),
+                                    let message = format!(
+                                        "E_PHP_VM_UNKNOWN_CLASS_CONSTANT: Undefined constant {}::{constant}",
+                                        class.display_name
                                     );
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                                 Err(message) => {
                                     return self.runtime_error(output, compiled, stack, message);
@@ -9313,6 +10097,69 @@ impl Vm {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
+                    InstructionKind::FetchDynamicProperty {
+                        dst,
+                        object,
+                        property,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                let property = match self.dynamic_property_name(
+                                    unit, compiled, stack, *property, output, state,
+                                ) {
+                                    Ok(property) => property,
+                                    Err(result) => return result,
+                                };
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT: cannot fetch property {property} from {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property = match self
+                            .dynamic_property_name(unit, compiled, stack, *property, output, state)
+                        {
+                            Ok(property) => property,
+                            Err(result) => return result,
+                        };
+                        let value = match property_state_value(compiled, stack, &object, &property)
+                        {
+                            Some(value) => value,
+                            None => match self.call_magic_property_method(
+                                compiled,
+                                object.clone(),
+                                "__get",
+                                &property,
+                                vec![CallArgument::positional(Value::String(
+                                    PhpString::from_test_str(&property),
+                                ))],
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(Some(value)) => value,
+                                Ok(None) => object.get_property(&property).unwrap_or(Value::Null),
+                                Err(result) => return result,
+                            },
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, value)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
                     InstructionKind::IssetProperty {
                         dst,
                         object,
@@ -9346,6 +10193,76 @@ impl Vm {
                                 property,
                                 vec![CallArgument::positional(Value::String(
                                     PhpString::from_test_str(property),
+                                ))],
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(Some(value)) => match to_bool(&value) {
+                                    Ok(value) => value,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                },
+                                Ok(None) => false,
+                                Err(result) => return result,
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, Value::Bool(result))
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::IssetDynamicProperty {
+                        dst,
+                        object,
+                        property,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                let property = match self.dynamic_property_name(
+                                    unit, compiled, stack, *property, output, state,
+                                ) {
+                                    Ok(property) => property,
+                                    Err(result) => return result,
+                                };
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT: cannot test property {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property = match self
+                            .dynamic_property_name(unit, compiled, stack, *property, output, state)
+                        {
+                            Ok(property) => property,
+                            Err(result) => return result,
+                        };
+                        let value = property_state_value(compiled, stack, &object, &property);
+                        let result = if let Some(value) = value {
+                            !matches!(value, Value::Uninitialized | Value::Null)
+                        } else {
+                            match self.call_magic_property_method(
+                                compiled,
+                                object.clone(),
+                                "__isset",
+                                &property,
+                                vec![CallArgument::positional(Value::String(
+                                    PhpString::from_test_str(&property),
                                 ))],
                                 output,
                                 stack,
@@ -9434,6 +10351,109 @@ impl Vm {
                                         property,
                                         vec![CallArgument::positional(Value::String(
                                             PhpString::from_test_str(property),
+                                        ))],
+                                        output,
+                                        stack,
+                                        state,
+                                    ) {
+                                        Ok(Some(value)) => match php_empty(&value) {
+                                            Ok(value) => value,
+                                            Err(message) => {
+                                                return self.runtime_error(
+                                                    output, compiled, stack, message,
+                                                );
+                                            }
+                                        },
+                                        Ok(None) => true,
+                                        Err(result) => return result,
+                                    }
+                                }
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, Value::Bool(result))
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::EmptyDynamicProperty {
+                        dst,
+                        object,
+                        property,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                let property = match self.dynamic_property_name(
+                                    unit, compiled, stack, *property, output, state,
+                                ) {
+                                    Ok(property) => property,
+                                    Err(result) => return result,
+                                };
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT: cannot test property {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property = match self
+                            .dynamic_property_name(unit, compiled, stack, *property, output, state)
+                        {
+                            Ok(property) => property,
+                            Err(result) => return result,
+                        };
+                        let result = match property_state_value(compiled, stack, &object, &property)
+                        {
+                            Some(value) => match php_empty(&value) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            },
+                            None => {
+                                let isset = match self.call_magic_property_method(
+                                    compiled,
+                                    object.clone(),
+                                    "__isset",
+                                    &property,
+                                    vec![CallArgument::positional(Value::String(
+                                        PhpString::from_test_str(&property),
+                                    ))],
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(Some(value)) => match to_bool(&value) {
+                                        Ok(value) => value,
+                                        Err(message) => {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                    },
+                                    Ok(None) => false,
+                                    Err(result) => return result,
+                                };
+                                if !isset {
+                                    true
+                                } else {
+                                    match self.call_magic_property_method(
+                                        compiled,
+                                        object.clone(),
+                                        "__get",
+                                        &property,
+                                        vec![CallArgument::positional(Value::String(
+                                            PhpString::from_test_str(&property),
                                         ))],
                                         output,
                                         stack,
@@ -9587,14 +10607,12 @@ impl Vm {
                             None => None,
                         };
                         if let Some(resolved) = declared {
-                            if validate_property_access(
+                            if let Err(message) = validate_property_access(
                                 compiled,
                                 stack,
                                 resolved.class,
                                 resolved.property,
-                            )
-                            .is_err()
-                            {
+                            ) {
                                 match self.call_magic_property_method(
                                     compiled,
                                     object.clone(),
@@ -9607,14 +10625,36 @@ impl Vm {
                                     stack,
                                     state,
                                 ) {
-                                    Ok(Some(_)) | Ok(None) => {}
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => {
+                                        match self.raise_runtime_error(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            instruction.span,
+                                            message,
+                                        ) {
+                                            RaiseOutcome::Caught(target) => {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            RaiseOutcome::Done(result) => return *result,
+                                        }
+                                    }
                                     Err(result) => return result,
                                 }
                                 continue;
                             }
                             let storage_name =
                                 property_storage_name(resolved.class, resolved.property);
-                            object.set_property(storage_name, Value::Uninitialized);
+                            if resolved.property.flags.is_typed {
+                                object.set_property(storage_name, Value::Uninitialized);
+                            } else {
+                                object.unset_property(&storage_name);
+                            }
                         } else {
                             match self.call_magic_property_method(
                                 compiled,
@@ -9633,6 +10673,161 @@ impl Vm {
                                 }
                                 Err(result) => return result,
                             }
+                        }
+                    }
+                    InstructionKind::UnsetDynamicProperty { object, property } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                let property = match self.dynamic_property_name(
+                                    unit, compiled, stack, *property, output, state,
+                                ) {
+                                    Ok(property) => property,
+                                    Err(result) => return result,
+                                };
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT: cannot unset property {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property = match self
+                            .dynamic_property_name(unit, compiled, stack, *property, output, state)
+                        {
+                            Ok(property) => property,
+                            Err(result) => return result,
+                        };
+                        let class = compiled.lookup_class(&object.class_name());
+                        let scope = current_scope_class(compiled, stack);
+                        let declared = match class {
+                            Some(class) => match lookup_property_in_hierarchy(
+                                compiled,
+                                class,
+                                &property,
+                                scope.as_deref(),
+                            ) {
+                                Ok(property) => property,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            },
+                            None => None,
+                        };
+                        if let Some(resolved) = declared {
+                            if let Err(message) = validate_property_access(
+                                compiled,
+                                stack,
+                                resolved.class,
+                                resolved.property,
+                            ) {
+                                match self.call_magic_property_method(
+                                    compiled,
+                                    object.clone(),
+                                    "__unset",
+                                    &property,
+                                    vec![CallArgument::positional(Value::String(
+                                        PhpString::from_test_str(&property),
+                                    ))],
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => {
+                                        match self.raise_runtime_error(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            instruction.span,
+                                            message,
+                                        ) {
+                                            RaiseOutcome::Caught(target) => {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            RaiseOutcome::Done(result) => return *result,
+                                        }
+                                    }
+                                    Err(result) => return result,
+                                }
+                                continue;
+                            }
+                            let storage_name =
+                                property_storage_name(resolved.class, resolved.property);
+                            if resolved.property.flags.is_typed {
+                                object.set_property(storage_name, Value::Uninitialized);
+                            } else {
+                                object.unset_property(&storage_name);
+                            }
+                        } else {
+                            match self.call_magic_property_method(
+                                compiled,
+                                object.clone(),
+                                "__unset",
+                                &property,
+                                vec![CallArgument::positional(Value::String(
+                                    PhpString::from_test_str(&property),
+                                ))],
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(Some(_)) | Ok(None) => {
+                                    object.unset_property(&property);
+                                }
+                                Err(result) => return result,
+                            }
+                        }
+                    }
+                    InstructionKind::FetchObjectClassName { dst, object } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    format!(
+                                        "E_PHP_VM_DYNAMIC_CLASS_NAME_TYPE: Cannot use \"::class\" on {}",
+                                        value_type_name(&other)
+                                    ),
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(
+                                *dst,
+                                Value::String(PhpString::from_test_str(&object.display_name())),
+                            )
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
                         }
                     }
                     InstructionKind::AssignProperty {
@@ -9834,6 +11029,61 @@ impl Vm {
                             }
                         };
                         let entry = resolved.property;
+                        if entry.flags.is_static {
+                            if let Err(message) =
+                                validate_property_access(compiled, stack, resolved.class, entry)
+                                    .and_then(|()| {
+                                        validate_property_set_access(
+                                            compiled,
+                                            stack,
+                                            resolved.class,
+                                            entry,
+                                        )
+                                    })
+                            {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            let value = match read_operand(unit, stack, *value) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            emit_static_property_as_non_static_notice(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                resolved.class,
+                                entry,
+                                instruction.span,
+                            );
+                            object.set_property(property, value.clone());
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if let Err(message) =
                             validate_property_access(compiled, stack, resolved.class, entry)
                                 .and_then(|()| {
@@ -9883,6 +11133,33 @@ impl Vm {
                                     continue;
                                 }
                                 Ok(None) => {
+                                    if entry.flags.is_private
+                                        && normalize_class_name(&class.name)
+                                            != normalize_class_name(&resolved.class.name)
+                                    {
+                                        diagnostics.push(RuntimeDiagnostic::new(
+                                            "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
+                                            RuntimeSeverity::Deprecation,
+                                            format!(
+                                                "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
+                                                object.class_name()
+                                            ),
+                                            RuntimeSourceSpan::default(),
+                                            stack_trace(compiled, stack),
+                                            None,
+                                        ));
+                                        object.set_property(property, value.clone());
+                                        if let Err(message) = stack
+                                            .current_mut()
+                                            .expect("frame was pushed")
+                                            .registers
+                                            .set(*dst, value)
+                                        {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                        continue;
+                                    }
                                     match self.raise_runtime_error(
                                         compiled,
                                         output,
@@ -9991,6 +11268,41 @@ impl Vm {
                             );
                         }
                         let storage_name = property_storage_name(resolved.class, entry);
+                        if !entry.flags.is_typed
+                            && object.get_property(&storage_name).is_none()
+                            && !magic_property_call_is_active(state, &object, "__set", property)
+                        {
+                            match self.call_magic_property_method(
+                                compiled,
+                                object.clone(),
+                                "__set",
+                                property,
+                                vec![
+                                    CallArgument::positional(Value::String(
+                                        PhpString::from_test_str(property),
+                                    )),
+                                    CallArgument::positional(value.clone()),
+                                ],
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(Some(_)) => {
+                                    if let Err(message) = stack
+                                        .current_mut()
+                                        .expect("frame was pushed")
+                                        .registers
+                                        .set(*dst, value)
+                                    {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                    continue;
+                                }
+                                Ok(None) => {}
+                                Err(result) => return result,
+                            }
+                        }
                         if matches!(
                             object.get_property(&storage_name),
                             Some(Value::Reference(_))
@@ -10015,6 +11327,445 @@ impl Vm {
                             state,
                             &object,
                         );
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, value)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::AssignDynamicProperty {
+                        dst,
+                        object,
+                        property,
+                        value,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(Value::Callable(_)) => {
+                                let property = match self.dynamic_property_name(
+                                    unit, compiled, stack, *property, output, state,
+                                ) {
+                                    Ok(property) => property,
+                                    Err(result) => return result,
+                                };
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    format!(
+                                        "E_PHP_VM_DYNAMIC_PROPERTY_ERROR: Cannot create dynamic property Closure::${property}"
+                                    ),
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            Ok(other) => {
+                                let property = match self.dynamic_property_name(
+                                    unit, compiled, stack, *property, output, state,
+                                ) {
+                                    Ok(property) => property,
+                                    Err(result) => return result,
+                                };
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_ASSIGN_NON_OBJECT: cannot assign property {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property = match self
+                            .dynamic_property_name(unit, compiled, stack, *property, output, state)
+                        {
+                            Ok(property) => property,
+                            Err(result) => return result,
+                        };
+                        if is_std_class_runtime_class(&object.class_name()) {
+                            let value = match read_operand(unit, stack, *value) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            object.set_property(&property, value.clone());
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        let class =
+                            match lookup_class_in_state(compiled, state, &object.class_name()) {
+                                Some(class) => class,
+                                None => {
+                                    return self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        format!(
+                                            "E_PHP_VM_UNKNOWN_CLASS: class {} is not defined",
+                                            object.class_name()
+                                        ),
+                                    );
+                                }
+                            };
+                        let scope = current_scope_class(compiled, stack);
+                        let resolved = match lookup_property_in_hierarchy(
+                            compiled,
+                            &class,
+                            &property,
+                            scope.as_deref(),
+                        ) {
+                            Ok(Some(resolved)) => resolved,
+                            Ok(None) => {
+                                let value = match read_operand(unit, stack, *value) {
+                                    Ok(value) => value,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
+                                match self.call_magic_property_method(
+                                    compiled,
+                                    object.clone(),
+                                    "__set",
+                                    &property,
+                                    vec![
+                                        CallArgument::positional(Value::String(
+                                            PhpString::from_test_str(&property),
+                                        )),
+                                        CallArgument::positional(value.clone()),
+                                    ],
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(Some(_)) => {
+                                        if let Err(message) = stack
+                                            .current_mut()
+                                            .expect("frame was pushed")
+                                            .registers
+                                            .set(*dst, value)
+                                        {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                        continue;
+                                    }
+                                    Ok(None) => {}
+                                    Err(result) => return result,
+                                }
+                                diagnostics.push(RuntimeDiagnostic::new(
+                                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
+                                    RuntimeSeverity::Deprecation,
+                                    format!(
+                                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
+                                        object.class_name()
+                                    ),
+                                    RuntimeSourceSpan::default(),
+                                    stack_trace(compiled, stack),
+                                    None,
+                                ));
+                                object.set_property(&property, value.clone());
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("frame was pushed")
+                                    .registers
+                                    .set(*dst, value)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                continue;
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let entry = resolved.property;
+                        if entry.flags.is_static {
+                            if let Err(message) =
+                                validate_property_access(compiled, stack, resolved.class, entry)
+                                    .and_then(|()| {
+                                        validate_property_set_access(
+                                            compiled,
+                                            stack,
+                                            resolved.class,
+                                            entry,
+                                        )
+                                    })
+                            {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            let value = match read_operand(unit, stack, *value) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            emit_static_property_as_non_static_notice(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                resolved.class,
+                                entry,
+                                instruction.span,
+                            );
+                            object.set_property(&property, value.clone());
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if let Err(message) =
+                            validate_property_access(compiled, stack, resolved.class, entry)
+                                .and_then(|()| {
+                                    validate_property_set_access(
+                                        compiled,
+                                        stack,
+                                        resolved.class,
+                                        entry,
+                                    )
+                                })
+                        {
+                            let value = match read_operand(unit, stack, *value) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            match self.call_magic_property_method(
+                                compiled,
+                                object.clone(),
+                                "__set",
+                                &property,
+                                vec![
+                                    CallArgument::positional(Value::String(
+                                        PhpString::from_test_str(&property),
+                                    )),
+                                    CallArgument::positional(value.clone()),
+                                ],
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(Some(_)) => {
+                                    if let Err(message) = stack
+                                        .current_mut()
+                                        .expect("frame was pushed")
+                                        .registers
+                                        .set(*dst, value)
+                                    {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                    continue;
+                                }
+                                Ok(None) => {
+                                    if entry.flags.is_private
+                                        && normalize_class_name(&class.name)
+                                            != normalize_class_name(&resolved.class.name)
+                                    {
+                                        diagnostics.push(RuntimeDiagnostic::new(
+                                            "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
+                                            RuntimeSeverity::Deprecation,
+                                            format!(
+                                                "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
+                                                object.class_name()
+                                            ),
+                                            RuntimeSourceSpan::default(),
+                                            stack_trace(compiled, stack),
+                                            None,
+                                        ));
+                                        object.set_property(&property, value.clone());
+                                        if let Err(message) = stack
+                                            .current_mut()
+                                            .expect("frame was pushed")
+                                            .registers
+                                            .set(*dst, value)
+                                        {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                        continue;
+                                    }
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                                Err(result) => return result,
+                            }
+                        }
+                        let value = match read_operand(unit, stack, *value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property_type = ir_runtime_type(entry.type_.as_ref());
+                        if let Err(message) = check_property_type(
+                            compiled,
+                            resolved.class.display_name.as_str(),
+                            &property,
+                            &property_type,
+                            &value,
+                            self.typecheck_fast_path_context(),
+                        ) {
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
+                        if let Err(message) =
+                            validate_property_write(resolved.class, entry, &object, stack, compiled)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        if !property_hook_is_active(state, &object, resolved.class, entry)
+                            && let Some(function) = entry.hooks.set
+                        {
+                            match self.call_property_hook(
+                                compiled,
+                                object.clone(),
+                                resolved.class,
+                                entry,
+                                function,
+                                vec![CallArgument::positional(value.clone())],
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(_) => {
+                                    if let Err(message) = stack
+                                        .current_mut()
+                                        .expect("frame was pushed")
+                                        .registers
+                                        .set(*dst, value)
+                                    {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                    continue;
+                                }
+                                Err(result) => return result,
+                            }
+                        }
+                        if !entry.hooks.backed
+                            && (entry.hooks.get.is_some() || entry.hooks.set.is_some())
+                        {
+                            return self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!(
+                                    "E_PHP_VM_VIRTUAL_PROPERTY_WRITE: property {}::${} has no backing storage",
+                                    resolved.class.name, entry.name
+                                ),
+                            );
+                        }
+                        let storage_name = property_storage_name(resolved.class, entry);
+                        if !entry.flags.is_typed
+                            && object.get_property(&storage_name).is_none()
+                            && !magic_property_call_is_active(state, &object, "__set", &property)
+                        {
+                            match self.call_magic_property_method(
+                                compiled,
+                                object.clone(),
+                                "__set",
+                                &property,
+                                vec![
+                                    CallArgument::positional(Value::String(
+                                        PhpString::from_test_str(&property),
+                                    )),
+                                    CallArgument::positional(value.clone()),
+                                ],
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(Some(_)) => {
+                                    if let Err(message) = stack
+                                        .current_mut()
+                                        .expect("frame was pushed")
+                                        .registers
+                                        .set(*dst, value)
+                                    {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                    continue;
+                                }
+                                Ok(None) => {}
+                                Err(result) => return result,
+                            }
+                        }
+                        object.set_property(storage_name, value.clone());
                         if let Err(message) = stack
                             .current_mut()
                             .expect("frame was pushed")
@@ -10158,6 +11909,23 @@ impl Vm {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                         state.static_properties.insert(key, value.clone());
+                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            &mut exception_handlers,
+                            &mut pending_control,
+                            &current,
+                        ) {
+                            match outcome {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
                         if let Err(message) = stack
                             .current_mut()
                             .expect("frame was pushed")
@@ -10261,8 +12029,22 @@ impl Vm {
                                 let key = match array_key_from_value(&key_value) {
                                     Ok(key) => key,
                                     Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
+                                        match self.raise_runtime_error(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            instruction.span,
+                                            message,
+                                        ) {
+                                            RaiseOutcome::Caught(target) => {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            RaiseOutcome::Done(result) => return *result,
+                                        }
                                     }
                                 };
                                 let base = effective_value(&array);
@@ -10556,6 +12338,28 @@ impl Vm {
                         self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
                             stack, *local,
                         ));
+                        let previous = stack
+                            .current()
+                            .expect("frame was pushed")
+                            .locals
+                            .get(*local)
+                            .unwrap_or(Value::Uninitialized);
+                        if function.flags.is_top_level
+                            && !is_globals_local(function, *local)
+                            && let Some(Slot::Reference(cell)) = stack
+                                .current()
+                                .expect("frame was pushed")
+                                .locals
+                                .get_slot(*local)
+                                .cloned()
+                            && let Some(name) = function.locals.get(local.index())
+                            && state
+                                .globals
+                                .get_slot(name)
+                                .is_some_and(|global| global.ptr_eq(&cell))
+                        {
+                            cell.set(Value::Uninitialized);
+                        }
                         if let Err(message) = stack
                             .current_mut()
                             .expect("frame was pushed")
@@ -10563,6 +12367,23 @@ impl Vm {
                             .unset(*local)
                         {
                             return self.runtime_error(output, compiled, stack, message);
+                        }
+                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            &mut exception_handlers,
+                            &mut pending_control,
+                            &previous,
+                        ) {
+                            match outcome {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                     }
                     InstructionKind::IssetDim { dst, local, dims } => {
@@ -10643,9 +12464,16 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        let foreach_iterator = match self
-                            .foreach_iterator_from_value(compiled, source, output, stack, state)
-                        {
+                        let foreach_iterator = match self.foreach_iterator_from_value(
+                            compiled,
+                            source,
+                            output,
+                            stack,
+                            state,
+                            ForeachInvalidSourceBehavior::WarnAndEmpty {
+                                span: Some(instruction.span),
+                            },
+                        ) {
                             Ok(iterator) => iterator,
                             Err(result) => return result,
                         };
@@ -10676,21 +12504,9 @@ impl Vm {
                                 }
                                 next
                             }
-                            Some(ForeachIterator::ObjectProperties { object, position }) => {
-                                let keys = match object_property_iteration_keys(compiled, &object) {
-                                    Ok(keys) => keys,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                };
-                                let next = keys.get(position).and_then(|name| {
-                                    object.get_property(name).map(|value| {
-                                        (
-                                            Some(Value::string(name.as_bytes().to_vec())),
-                                            effective_value(&value),
-                                        )
-                                    })
+                            Some(ForeachIterator::ObjectProperties { entries, position }) => {
+                                let next = entries.get(position).cloned().map(|(name, value)| {
+                                    (Some(Value::string(name.into_bytes())), value)
                                 });
                                 if next.is_some()
                                     && let Some(ForeachIterator::ObjectProperties {
@@ -11001,7 +12817,21 @@ impl Vm {
                         }
                         if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
                         {
-                            return result;
+                            match self.route_throwable_result(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                result,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                     }
                     InstructionKind::EmitDiagnostic {
@@ -12378,33 +14208,49 @@ impl Vm {
                         };
                         let method_entry = resolved.method;
                         let declaring_class = resolved.class;
-                        if !method_entry.flags.is_static {
-                            let message = format!(
-                                "E_PHP_VM_NON_STATIC_METHOD_CALL: Non-static method {}::{}() cannot be called statically",
-                                declaring_class.display_name, method_entry.name
-                            );
-                            match self.raise_runtime_error(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                instruction.span,
-                                message,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
+                        let is_constructor_call = normalize_method_name(method) == "__construct";
+                        let bound_this_for_scoped_call = if method_entry.flags.is_static {
+                            None
+                        } else {
+                            let bound_this =
+                                current_this_object(compiled, stack).filter(|object| {
+                                    class_is_or_extends(
+                                        compiled,
+                                        &object.class_name(),
+                                        &declaring_class.name,
+                                    )
+                                    .unwrap_or(false)
+                                });
+                            if bound_this.is_none() {
+                                let message = format!(
+                                    "E_PHP_VM_NON_STATIC_METHOD_CALL: Non-static method {}::{}() cannot be called statically",
+                                    declaring_class.display_name, method_entry.name
+                                );
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                                RaiseOutcome::Done(result) => return *result,
                             }
-                        }
+                            bound_this
+                        };
                         // A private/protected static method that is inaccessible
                         // from the current scope routes to __callStatic (or fails);
                         // one that IS accessible (e.g. a class calling its own
                         // private static method) falls through to a normal call.
-                        if (method_entry.flags.is_private || method_entry.flags.is_protected)
+                        if !is_constructor_call
+                            && (method_entry.flags.is_private || method_entry.flags.is_protected)
                             && let Err(inaccessible) = validate_method_callable(
                                 compiled,
                                 stack,
@@ -12462,9 +14308,18 @@ impl Vm {
                             }
                             continue;
                         }
-                        if let Err(message) =
+                        let visibility = if is_constructor_call {
+                            validate_scoped_constructor_callable_in_state_scope(
+                                compiled,
+                                state,
+                                scope.as_deref(),
+                                declaring_class,
+                                method_entry,
+                            )
+                        } else {
                             validate_method_callable(compiled, stack, declaring_class, method_entry)
-                        {
+                        };
+                        if let Err(message) = visibility {
                             match self.raise_runtime_error(
                                 compiled,
                                 output,
@@ -12484,17 +14339,21 @@ impl Vm {
                         }
                         let called_class =
                             called_class_for_static_call(compiled, stack, class_name, &class);
+                        let mut call = FunctionCall::new(values, Vec::new())
+                            .with_call_span(instruction.span)
+                            .with_class_context(
+                                declaring_class.name.clone(),
+                                called_class,
+                                declaring_class.name.clone(),
+                            )
+                            .inherit_fiber_context(&running_fiber);
+                        if let Some(bound_this) = bound_this_for_scoped_call {
+                            call = call.with_this(bound_this);
+                        }
                         let result = self.execute_function(
                             compiled,
                             method_entry.function,
-                            FunctionCall::new(values, Vec::new())
-                                .with_call_span(instruction.span)
-                                .with_class_context(
-                                    declaring_class.name.clone(),
-                                    called_class,
-                                    declaring_class.name.clone(),
-                                )
-                                .inherit_fiber_context(&running_fiber),
+                            call,
                             output,
                             stack,
                             state,
@@ -13094,7 +14953,15 @@ impl Vm {
                     ) {
                         Ok(value) => value,
                         Err(message) => {
-                            return self.runtime_error(output, compiled, stack, message);
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            if function.name.ends_with("::__toString")
+                                && let Some(throwable) = runtime_error_throwable(&result)
+                            {
+                                state.pending_throw = Some(throwable);
+                                stack.pop_recycle();
+                                return VmResult::propagating_exception(output.clone());
+                            }
+                            return result;
                         }
                     };
                     let return_ref = if function.returns_by_ref {
@@ -14038,6 +15905,46 @@ impl Vm {
             result.return_value.as_ref(),
             Some(Value::Bool(false))
         ))
+    }
+
+    fn emit_undefined_property_warning(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+        class_name: &str,
+        property: &str,
+        span: php_ir::IrSpan,
+    ) -> Result<(), VmResult> {
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_VM_UNDEFINED_PROPERTY",
+            RuntimeSeverity::Warning,
+            format!("Undefined property: {class_name}::${property}"),
+            runtime_source_span(compiled, span),
+            stack_trace(compiled, stack),
+            None,
+        );
+        let handled = self.dispatch_error_handler(
+            compiled,
+            output,
+            stack,
+            state,
+            php_runtime::PHP_E_WARNING,
+            &diagnostic,
+        )?;
+        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            emit_vm_diagnostic(
+                output,
+                state,
+                &diagnostic,
+                php_runtime::PhpDiagnosticChannel::Warning,
+                php_runtime::PHP_E_WARNING,
+            );
+            diagnostics.push(diagnostic);
+        }
+        Ok(())
     }
 
     fn call_output_buffering_builtin(
@@ -16952,6 +18859,16 @@ impl Vm {
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
         }
+        if internal_throwable_instanceof(&object.class_name(), "throwable").is_some() {
+            return match internal_throwable_method_value(
+                &object,
+                method,
+                args.into_iter().map(|arg| arg.value).collect(),
+            ) {
+                Ok(value) => VmResult::success(output.clone(), Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
         let Some(_class) = lookup_class_in_state(compiled, state, &object.class_name()) else {
             return self.runtime_error(
                 output,
@@ -17096,6 +19013,7 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
+        invalid_source_behavior: ForeachInvalidSourceBehavior,
     ) -> Result<ForeachIterator, VmResult> {
         match source {
             Value::Array(array) => {
@@ -17120,6 +19038,16 @@ impl Vm {
                 self.foreach_iterator_from_object(compiled, object, output, stack, state)
             }
             source => {
+                if let ForeachInvalidSourceBehavior::WarnAndEmpty { span } = invalid_source_behavior
+                {
+                    self.emit_foreach_invalid_source_warning(
+                        compiled, output, stack, state, &source, span,
+                    )?;
+                    return Ok(ForeachIterator::Snapshot {
+                        entries: Vec::new(),
+                        position: 0,
+                    });
+                }
                 let diagnostic = unsupported_feature(
                     "E_PHP_VM_UNSUPPORTED_FOREACH_SOURCE",
                     format!(
@@ -17143,6 +19071,49 @@ impl Vm {
                 })
             }
         }
+    }
+
+    fn emit_foreach_invalid_source_warning(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        source: &Value,
+        span: Option<php_ir::IrSpan>,
+    ) -> Result<(), VmResult> {
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_VM_FOREACH_INVALID_SOURCE",
+            RuntimeSeverity::Warning,
+            format!(
+                "foreach() argument must be of type array|object, {} given",
+                value_type_name(source)
+            ),
+            span.map_or_else(RuntimeSourceSpan::default, |span| {
+                runtime_source_span(compiled, span)
+            }),
+            stack_trace(compiled, stack),
+            Some(php_runtime::PhpReferenceClassification::Warning),
+        );
+        let handled = self.dispatch_error_handler(
+            compiled,
+            output,
+            stack,
+            state,
+            php_runtime::PHP_E_WARNING,
+            &diagnostic,
+        )?;
+        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            emit_vm_diagnostic(
+                output,
+                state,
+                &diagnostic,
+                php_runtime::PhpDiagnosticChannel::Warning,
+                php_runtime::PHP_E_WARNING,
+            );
+            state.diagnostics.push(diagnostic);
+        }
+        Ok(())
     }
 
     fn foreach_iterator_from_object(
@@ -17211,16 +19182,23 @@ impl Vm {
                     stack,
                     state,
                 )?;
-                return self.foreach_iterator_from_value(compiled, inner, output, stack, state);
+                return self.foreach_iterator_from_value(
+                    compiled,
+                    inner,
+                    output,
+                    stack,
+                    state,
+                    ForeachInvalidSourceBehavior::Unsupported,
+                );
             }
             Ok(false) => {}
             Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
         }
-        if let Err(message) = object_property_iteration_keys(compiled, &object) {
-            return Err(self.runtime_error(output, compiled, stack, message));
-        }
+        let scope = current_scope_class(compiled, stack);
+        let entries = object_property_iteration_entries(compiled, &object, scope.as_deref())
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
         Ok(ForeachIterator::ObjectProperties {
-            object,
+            entries,
             position: 0,
         })
     }
@@ -18310,6 +20288,21 @@ impl Vm {
         }
     }
 
+    fn dynamic_property_name(
+        &self,
+        unit: &IrUnit,
+        compiled: &CompiledUnit,
+        stack: &mut CallStack,
+        property: Operand,
+        output: &mut OutputBuffer,
+        state: &mut ExecutionState,
+    ) -> Result<String, VmResult> {
+        let value = read_operand(unit, stack, property)
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+        let property = self.value_to_string(compiled, &value, output, stack, state)?;
+        Ok(property.to_string_lossy())
+    }
+
     fn emit_array_to_string_warning(
         &self,
         compiled: &CompiledUnit,
@@ -18359,7 +20352,7 @@ impl Vm {
                 .map(|value| PhpString::from(value.into_bytes()))
                 .map_err(|message| self.runtime_error(output, compiled, stack, message));
         }
-        let Some(class) = compiled.lookup_class(&object.class_name()) else {
+        let Some(class) = lookup_class_in_state(compiled, state, &object.class_name()) else {
             return Err(self.runtime_error(
                 output,
                 compiled,
@@ -18370,7 +20363,7 @@ impl Vm {
                 ),
             ));
         };
-        let resolved = match lookup_method_in_hierarchy(compiled, class, "__toString", None) {
+        let resolved = match lookup_method_in_hierarchy(compiled, &class, "__toString", None) {
             Ok(Some(method)) => method,
             Ok(None) => {
                 return Err(self.runtime_error(
@@ -18423,7 +20416,8 @@ impl Vm {
                 compiled,
                 stack,
                 format!(
-                    "E_PHP_VM_TOSTRING_RETURN_TYPE: __toString returned {}, expected string",
+                    "E_PHP_VM_TOSTRING_RETURN_TYPE: {}::__toString(): Return value must be of type string, {} returned",
+                    class.display_name,
                     value_type_name(&other)
                 ),
             )),
@@ -18445,10 +20439,7 @@ impl Vm {
             Ok(None) => return Ok(copy),
             Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
         };
-        if resolved.method.flags.is_static
-            || resolved.method.flags.is_private
-            || resolved.method.flags.is_protected
-        {
+        if resolved.method.flags.is_static {
             return Err(self.runtime_error(
                 output,
                 compiled,
@@ -18458,6 +20449,15 @@ impl Vm {
                     resolved.class.name
                 ),
             ));
+        }
+        if let Err(message) = validate_method_callable_in_state_scope(
+            compiled,
+            state,
+            current_scope_class(compiled, stack).as_deref(),
+            &resolved.class,
+            &resolved.method,
+        ) {
+            return Err(self.runtime_error(output, compiled, stack, message));
         }
         let result = self.execute_function(
             compiled,
@@ -18488,15 +20488,92 @@ impl Vm {
     ) {
         if let Ok(Some(resolved)) = lookup_method_in_hierarchy(compiled, class, "__destruct", None)
             && !resolved.method.flags.is_static
-            && !resolved.method.flags.is_private
-            && !resolved.method.flags.is_protected
         {
+            let visibility = if resolved.method.flags.is_private {
+                DestructorVisibility::Private
+            } else if resolved.method.flags.is_protected {
+                DestructorVisibility::Protected
+            } else {
+                DestructorVisibility::Public
+            };
             state.destructor_queue.register(
                 object,
                 resolved.class.name.clone(),
                 resolved.method.function,
+                visibility,
             );
         }
+    }
+
+    fn inaccessible_destructor_message(
+        &self,
+        compiled: &CompiledUnit,
+        state: &ExecutionState,
+        entry: &DestructorEntry,
+        scope: Option<&str>,
+    ) -> Option<String> {
+        match entry.visibility {
+            DestructorVisibility::Public => None,
+            DestructorVisibility::Protected => {
+                let allowed = scope
+                    .map(|scope| {
+                        protected_scope_is_related_in_state(
+                            compiled,
+                            state,
+                            scope,
+                            &entry.class_name,
+                        )
+                        .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                (!allowed).then(|| {
+                    format!(
+                        "E_PHP_VM_PROTECTED_METHOD_ACCESS: Call to protected {}::__destruct() from {}",
+                        entry.object.display_name(),
+                        scope_description(scope)
+                    )
+                })
+            }
+            DestructorVisibility::Private => {
+                let declaring_class = normalize_class_name(&entry.class_name);
+                let allowed = scope == Some(declaring_class.as_str());
+                (!allowed).then(|| {
+                    format!(
+                        "E_PHP_VM_PRIVATE_METHOD_ACCESS: Call to private {}::__destruct() from {}",
+                        entry.object.display_name(),
+                        scope_description(scope)
+                    )
+                })
+            }
+        }
+    }
+
+    fn inaccessible_destructor_warning(
+        &self,
+        compiled: &CompiledUnit,
+        stack: &CallStack,
+        entry: &DestructorEntry,
+    ) -> Option<RuntimeDiagnostic> {
+        let visibility = match entry.visibility {
+            DestructorVisibility::Public => return None,
+            DestructorVisibility::Protected => "protected",
+            DestructorVisibility::Private => "private",
+        };
+        Some(RuntimeDiagnostic::new(
+            "E_PHP_VM_DESTRUCTOR_VISIBILITY_WARNING",
+            RuntimeSeverity::Warning,
+            format!(
+                "Call to {visibility} {}::__destruct() from global scope during shutdown ignored",
+                entry.object.display_name()
+            ),
+            RuntimeSourceSpan {
+                file: Some("Unknown".to_owned()),
+                start: 0,
+                end: 0,
+            },
+            stack_trace(compiled, stack),
+            Some(php_runtime::PhpReferenceClassification::Warning),
+        ))
     }
 
     fn run_shutdown_destructors(
@@ -18521,6 +20598,21 @@ impl Vm {
                     ));
                 }
                 let mut stack = CallStack::new();
+                if let Some(diagnostic) =
+                    self.inaccessible_destructor_warning(compiled, &stack, &entry)
+                {
+                    if error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                        emit_vm_diagnostic(
+                            output,
+                            state,
+                            &diagnostic,
+                            php_runtime::PhpDiagnosticChannel::Warning,
+                            php_runtime::PHP_E_WARNING,
+                        );
+                        diagnostics.push(diagnostic);
+                    }
+                    continue;
+                }
                 let result = self.execute_function(
                     compiled,
                     entry.function,
@@ -18547,6 +20639,71 @@ impl Vm {
             }
         }
         Ok(diagnostics)
+    }
+
+    fn run_destructors_for_unreferenced_value(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        handlers: &mut Vec<ExceptionHandler>,
+        pending_control: &mut Option<PendingControl>,
+        value: &Value,
+    ) -> Option<RaiseOutcome> {
+        let mut candidates = Vec::new();
+        collect_destructor_candidate_objects(value, &mut BTreeSet::new(), &mut candidates);
+
+        for object in candidates {
+            if object_has_php_visible_root(stack, state, object.id()) {
+                continue;
+            }
+            let Some(entry) = state.destructor_queue.take_for_object(object.id()) else {
+                continue;
+            };
+            let scope = current_scope_class(compiled, stack);
+            if let Some(message) =
+                self.inaccessible_destructor_message(compiled, state, &entry, scope.as_deref())
+            {
+                return Some(self.raise_runtime_error(
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    handlers,
+                    pending_control,
+                    php_ir::IrSpan::default(),
+                    message,
+                ));
+            }
+            let result = self.execute_function(
+                compiled,
+                entry.function,
+                FunctionCall::new(Vec::new(), Vec::new())
+                    .with_this(entry.object.clone())
+                    .with_class_context(
+                        entry.class_name.clone(),
+                        entry.object.class_name(),
+                        entry.class_name.clone(),
+                    ),
+                output,
+                stack,
+                state,
+            );
+            if !result.status.is_success() || state.pending_throw.is_some() {
+                return Some(self.route_throwable_result(
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    handlers,
+                    pending_control,
+                    result,
+                ));
+            }
+        }
+
+        None
     }
 
     fn write_echo(
@@ -18765,11 +20922,10 @@ impl Vm {
             method: normalize_method_name(method),
             property: property.to_owned(),
         };
-        if state
-            .magic_property_stack
-            .iter()
-            .any(|active| active == &guard)
-        {
+        if magic_property_call_is_active(state, &object, method, property) {
+            if method.eq_ignore_ascii_case("__isset") {
+                return Ok(None);
+            }
             return Err(self.runtime_error(
                 output,
                 compiled,
@@ -19357,9 +21513,10 @@ impl Vm {
                 };
                 VmResult::success(
                     output.clone(),
-                    Some(Value::Bool(
-                        global_constant_value(compiled, state, &constant_name).is_some(),
-                    )),
+                    Some(Value::Bool(matches!(
+                        global_constant_value(compiled, state, stack, &constant_name),
+                        Ok(Some(_))
+                    ))),
                 )
             }
             "define" => {
@@ -19376,7 +21533,10 @@ impl Vm {
                     Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
                 if constant_name.is_empty()
-                    || global_constant_value(compiled, state, &constant_name).is_some()
+                    || matches!(
+                        global_constant_value(compiled, state, stack, &constant_name),
+                        Ok(Some(_)) | Err(_)
+                    )
                 {
                     return VmResult::success(output.clone(), Some(Value::Bool(false)));
                 }
@@ -19398,15 +21558,19 @@ impl Vm {
                     Ok(name) => name.to_string_lossy(),
                     Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
-                let Some(value) = global_constant_value(compiled, state, &constant_name) else {
-                    return self.runtime_error(
-                        output,
-                        compiled,
-                        stack,
-                        format!(
-                            "E_PHP_RUNTIME_UNDEFINED_CONSTANT: undefined constant {constant_name}"
-                        ),
-                    );
+                let value = match global_constant_value(compiled, state, stack, &constant_name) {
+                    Ok(Some(value)) => value,
+                    Ok(None) => {
+                        return self.runtime_error(
+                            output,
+                            compiled,
+                            stack,
+                            format!(
+                                "E_PHP_RUNTIME_UNDEFINED_CONSTANT: undefined constant {constant_name}"
+                            ),
+                        );
+                    }
+                    Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
                 VmResult::success(output.clone(), Some(value))
             }
@@ -20648,6 +22812,37 @@ impl Vm {
         RaiseOutcome::Done(Box::new(result))
     }
 
+    fn route_throwable_result(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        handlers: &mut Vec<ExceptionHandler>,
+        pending_control: &mut Option<PendingControl>,
+        result: VmResult,
+    ) -> RaiseOutcome {
+        if let Some(throwable) = state
+            .pending_throw
+            .take()
+            .or_else(|| runtime_error_throwable(&result))
+        {
+            if let Some(target) = handle_throw(
+                compiled,
+                throwable.clone(),
+                handlers,
+                stack,
+                pending_control,
+            ) {
+                return RaiseOutcome::Caught(target);
+            }
+            return RaiseOutcome::Done(Box::new(
+                self.propagate_exception(output, stack, state, throwable),
+            ));
+        }
+        RaiseOutcome::Done(Box::new(result))
+    }
+
     fn handle_uncaught_exception(
         &self,
         compiled: &CompiledUnit,
@@ -21199,6 +23394,11 @@ fn uncaught_exception(
     };
     let has_definition_location =
         class_name == "TypeError" && message.contains("called in ") && !file.is_empty() && line > 0;
+    let has_embedded_location = has_definition_location
+        || (class_name == "ArgumentCountError"
+            && message.contains(" expected in ")
+            && !file.is_empty()
+            && line > 0);
     let heading = if message.is_empty() {
         format!("Uncaught {class_name}")
     } else if has_definition_location {
@@ -21208,7 +23408,7 @@ fn uncaught_exception(
     };
     // PHP renders an uncaught throwable as a fatal error on the output stream.
     let trace = trace.unwrap_or_else(|| "#0 {main}".to_owned());
-    if has_definition_location {
+    if has_embedded_location {
         output.write_test_str(&format!(
             "\nFatal error: {heading}\nStack trace:\n{trace}\n  thrown in {file} on line {line}\n"
         ));
@@ -21350,6 +23550,11 @@ fn collect_class_lineage_compiled_inner<'a>(
     seen.push(normalized);
     if let Some(parent_name) = class.parent.as_deref() {
         let Some(parent) = compiled.lookup_class(parent_name) else {
+            if internal_runtime_parent_is_known(class, parent_name) {
+                lineage.push(class);
+                seen.pop();
+                return Ok(());
+            }
             return Err(format!(
                 "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
                 class.name, parent_name
@@ -22146,6 +24351,7 @@ fn reflection_method_value(
         | "reflectionenumbackedcase" => {
             match method.as_str() {
                 "getname" => Ok(object.get_property("name").unwrap_or(Value::Null)),
+                "getdoccomment" => Ok(object.get_property("doc_comment").unwrap_or(Value::Bool(false))),
                 "getattributes" => Ok(object
                     .get_property("attributes")
                     .unwrap_or_else(empty_array_value)),
@@ -22775,7 +24981,8 @@ fn reflection_class_constants_value(
         return Ok(empty_array_value());
     };
     let mut array = PhpArray::new();
-    for constant in &class.constants {
+    for resolved in reflection_class_constants_in_hierarchy(compiled, class)? {
+        let constant = resolved.constant;
         let value = constant
             .value
             .map(|constant| constant_value(compiled.unit(), constant))
@@ -22798,12 +25005,61 @@ fn reflection_class_reflection_constants_value(
             })?;
         return Ok(empty_array_value());
     };
-    let constants = class
-        .constants
-        .iter()
-        .map(|constant| reflection_class_constant_object(compiled, &class.name, &constant.name))
+    let constants = reflection_class_constants_in_hierarchy(compiled, class)?
+        .into_iter()
+        .map(|constant| {
+            reflection_class_constant_object(
+                compiled,
+                &constant.class.name,
+                &constant.constant.name,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(reflection_objects_array(constants))
+}
+
+fn reflection_class_constants_in_hierarchy<'a>(
+    compiled: &'a CompiledUnit,
+    class: &'a php_ir::module::ClassEntry,
+) -> Result<Vec<ResolvedConstant<'a>>, String> {
+    let mut constants = Vec::new();
+    let mut seen_classes = Vec::new();
+    let mut seen_names = BTreeSet::new();
+    collect_reflection_class_constants(
+        compiled,
+        class,
+        &mut seen_classes,
+        &mut seen_names,
+        &mut constants,
+    )?;
+    Ok(constants)
+}
+
+fn collect_reflection_class_constants<'a>(
+    compiled: &'a CompiledUnit,
+    class: &'a php_ir::module::ClassEntry,
+    seen_classes: &mut Vec<String>,
+    seen_names: &mut BTreeSet<String>,
+    constants: &mut Vec<ResolvedConstant<'a>>,
+) -> Result<(), String> {
+    let class_name = normalize_class_name(&class.name);
+    if seen_classes.iter().any(|name| name == &class_name) {
+        return Err(format!(
+            "E_PHP_VM_CLASS_INHERITANCE_CYCLE: class {} participates in an inheritance cycle",
+            class.name
+        ));
+    }
+    seen_classes.push(class_name);
+    for constant in &class.constants {
+        if seen_names.insert(constant.name.clone()) {
+            constants.push(ResolvedConstant { class, constant });
+        }
+    }
+    if let Some(parent) = parent_class(compiled, class)? {
+        collect_reflection_class_constants(compiled, parent, seen_classes, seen_names, constants)?;
+    }
+    seen_classes.pop();
+    Ok(())
 }
 
 fn reflection_enum_cases_value(compiled: &CompiledUnit, class_name: &str) -> Result<Value, String> {
@@ -23149,6 +25405,13 @@ fn reflection_class_constant_object(
             (
                 "attributes",
                 reflection_attributes_value(compiled, &constant.attributes)?,
+            ),
+            (
+                "doc_comment",
+                constant
+                    .doc_comment
+                    .as_ref()
+                    .map_or(Value::Bool(false), |comment| reflection_string(comment)),
             ),
             ("has_default", Value::Bool(value.is_some())),
             ("default", value.unwrap_or(Value::Null)),
@@ -23595,6 +25858,7 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
             ));
         }
         if class.flags.is_interface {
+            validate_interface_declaration(class)?;
             for interface in &class.interfaces {
                 let Some(parent) = compiled.lookup_class(interface) else {
                     if is_internal_interface(interface) {
@@ -23606,10 +25870,7 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
                             class.name, interface
                         ));
                     }
-                    return Err(format!(
-                        "E_PHP_VM_UNKNOWN_INTERFACE: interface {} extends missing interface {}",
-                        class.name, interface
-                    ));
+                    continue;
                 };
                 if !parent.flags.is_interface {
                     return Err(format!(
@@ -23622,26 +25883,35 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
         }
 
         if let Some(parent_name) = class.parent.as_deref() {
-            let Some(parent) = compiled.lookup_class(parent_name) else {
-                return Err(format!(
-                    "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
-                    class.name, parent_name
-                ));
+            let parent_owned;
+            let parent = if let Some(parent) = compiled.lookup_class(parent_name) {
+                parent
+            } else if let Some(internal_parent) = internal_class_table_validation_entry(parent_name)
+            {
+                parent_owned = internal_parent;
+                &parent_owned
+            } else {
+                continue;
             };
             if parent.flags.is_interface {
                 return Err(format!(
-                    "E_PHP_VM_CLASS_EXTENDS_INTERFACE: class {} cannot extend interface {}",
-                    class.name, parent_name
+                    "E_PHP_VM_CLASS_EXTENDS_INTERFACE: Class {} cannot extend interface {}",
+                    class.display_name, parent.display_name
                 ));
             }
             if parent.flags.is_final {
                 return Err(format!(
-                    "E_PHP_VM_FINAL_CLASS_EXTEND: class {} cannot extend final class {}",
+                    "E_PHP_VM_FINAL_CLASS_EXTEND: Class {} cannot extend final class {}",
                     class.name, parent.name
                 ));
             }
             validate_final_method_overrides(compiled, class, parent)?;
+            validate_parent_method_compatibility(compiled, class, parent)?;
+            validate_parent_property_compatibility(compiled, class, parent)?;
+            validate_parent_constant_compatibility(compiled, class, parent)?;
         }
+
+        validate_traversable_direct_implementation(compiled, class)?;
 
         for interface in &class.interfaces {
             let Some(interface_class) = compiled.lookup_class(interface) else {
@@ -23655,25 +25925,122 @@ fn validate_class_table(compiled: &CompiledUnit) -> Result<(), String> {
                         class.name, interface
                     ));
                 }
-                return Err(format!(
-                    "E_PHP_VM_UNKNOWN_INTERFACE: class {} implements missing interface {}",
-                    class.name, interface
-                ));
+                continue;
             };
             if !interface_class.flags.is_interface {
                 return Err(format!(
-                    "E_PHP_VM_IMPLEMENTS_NON_INTERFACE: class {} implements non-interface {}",
-                    class.name, interface
+                    "E_PHP_VM_IMPLEMENTS_NON_INTERFACE: {} cannot implement {} - it is not an interface",
+                    class.display_name, interface_class.display_name
                 ));
             }
             validate_interface_implementation(compiled, class, interface_class)?;
         }
 
         if !class.flags.is_abstract {
+            validate_inherited_interface_implementations(compiled, class)?;
             validate_no_unimplemented_abstract_methods(compiled, class)?;
         }
     }
     Ok(())
+}
+
+fn validate_traversable_direct_implementation(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+) -> Result<(), String> {
+    if !class
+        .interfaces
+        .iter()
+        .any(|interface| normalize_class_name(interface) == "traversable")
+    {
+        return Ok(());
+    }
+
+    if class_implements_interface(compiled, &class.name, "Iterator", &mut Vec::new())?
+        || class_implements_interface(compiled, &class.name, "IteratorAggregate", &mut Vec::new())?
+    {
+        return Ok(());
+    }
+
+    Err(format!(
+        "E_PHP_VM_TRAVERSABLE_DIRECT_IMPLEMENTATION: Class {} must implement interface Traversable as part of either Iterator or IteratorAggregate",
+        class.display_name
+    ))
+}
+
+fn validate_interface_declaration(class: &php_ir::module::ClassEntry) -> Result<(), String> {
+    for constant in &class.constants {
+        if constant.flags.is_private || constant.flags.is_protected {
+            return Err(format!(
+                "E_PHP_VM_INTERFACE_CONSTANT_VISIBILITY: Access type for interface constant {}::{} must be public",
+                class.display_name, constant.name
+            ));
+        }
+    }
+    for method in &class.methods {
+        if method.flags.is_private || method.flags.is_protected {
+            return Err(format!(
+                "E_PHP_VM_INTERFACE_METHOD_VISIBILITY: Access type for interface method {}::{}() must be public",
+                class.display_name, method.name
+            ));
+        }
+        if method.flags.has_body {
+            return Err(format!(
+                "E_PHP_VM_INTERFACE_METHOD_BODY: Interface function {}::{}() cannot contain body",
+                class.display_name, method.name
+            ));
+        }
+    }
+    for property in &class.properties {
+        if property.hooks.get.is_none() && property.hooks.set.is_none() {
+            return Err(
+                "E_PHP_VM_INTERFACE_PROPERTY: Interfaces may only include hooked properties"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn emit_private_final_method_warnings(
+    compiled: &CompiledUnit,
+    output: &mut OutputBuffer,
+    state: &mut ExecutionState,
+) {
+    for class in compiled.class_table() {
+        for method in &class.methods {
+            if !method.flags.is_private
+                || !method.flags.is_final
+                || normalize_method_name(&method.name) == "__construct"
+            {
+                continue;
+            }
+            let source_span = compiled
+                .unit()
+                .functions
+                .get(method.function.index())
+                .map(|function| runtime_source_span(compiled, function.span))
+                .unwrap_or_default();
+            let diagnostic = RuntimeDiagnostic::new(
+                "E_PHP_VM_PRIVATE_FINAL_METHOD_WARNING",
+                RuntimeSeverity::Warning,
+                "Private methods cannot be final as they are never overridden by other classes",
+                source_span,
+                Vec::new(),
+                Some(php_runtime::PhpReferenceClassification::Warning),
+            );
+            if error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                emit_vm_diagnostic(
+                    output,
+                    state,
+                    &diagnostic,
+                    php_runtime::PhpDiagnosticChannel::Warning,
+                    php_runtime::PHP_E_WARNING,
+                );
+                state.diagnostics.push(diagnostic);
+            }
+        }
+    }
 }
 
 fn internal_class_kind(class_name: &str) -> Option<php_std::ClassKind> {
@@ -23684,6 +26051,12 @@ fn internal_class_kind(class_name: &str) -> Option<php_std::ClassKind> {
 
 fn is_internal_interface(class_name: &str) -> bool {
     internal_class_kind(class_name) == Some(php_std::ClassKind::Interface)
+}
+
+fn internal_class_table_validation_entry(class_name: &str) -> Option<php_ir::module::ClassEntry> {
+    let mut entry = internal_runtime_class_entry(&normalize_class_name(class_name))?;
+    entry.parent = None;
+    Some(entry)
 }
 
 fn validate_internal_interface_implementation(
@@ -23721,14 +26094,369 @@ fn validate_final_method_overrides(
         if let Some(parent_method) =
             lookup_method_in_hierarchy(compiled, parent, &method.name, None)?
             && parent_method.method.flags.is_final
+            && (!parent_method.method.flags.is_private
+                || normalize_method_name(&parent_method.method.name) == "__construct")
         {
             return Err(format!(
-                "E_PHP_VM_FINAL_METHOD_OVERRIDE: class {} cannot override final method {}::{}",
-                class.name, parent_method.class.name, parent_method.method.name
+                "E_PHP_VM_FINAL_METHOD_OVERRIDE: Cannot override final method {}::{}()",
+                parent_method.class.display_name, parent_method.method.name
             ));
         }
     }
     Ok(())
+}
+
+fn validate_parent_method_compatibility(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+    parent: &php_ir::module::ClassEntry,
+) -> Result<(), String> {
+    for method in &class.methods {
+        let Some(parent_method) = lookup_method_in_hierarchy(compiled, parent, &method.name, None)?
+        else {
+            continue;
+        };
+        if parent_method.method.flags.is_private {
+            continue;
+        }
+        if parent_method.method.flags.is_static && !method.flags.is_static {
+            return Err(format!(
+                "E_PHP_VM_STATIC_METHOD_OVERRIDE: Cannot make static method {}::{}() non static in class {}",
+                parent_method.class.name, parent_method.method.name, class.name
+            ));
+        }
+        if !parent_method.method.flags.is_static && method.flags.is_static {
+            return Err(format!(
+                "E_PHP_VM_STATIC_METHOD_OVERRIDE: Cannot make non static method {}::{}() static in class {}",
+                parent_method.class.name, parent_method.method.name, class.name
+            ));
+        }
+        if method_visibility_rank(method.flags) < method_visibility_rank(parent_method.method.flags)
+        {
+            let visibility = method_visibility_name(parent_method.method.flags);
+            return Err(format!(
+                "E_PHP_VM_METHOD_VISIBILITY_OVERRIDE: Access level to {}::{}() must be {} (as in class {}){}",
+                class.name,
+                method.name,
+                visibility,
+                parent_method.class.name,
+                visibility_weaker_suffix(visibility)
+            ));
+        }
+        if !method_signature_compatible(compiled, parent_method.method, method) {
+            let actual_signature = method_signature_display(compiled, method)
+                .unwrap_or_else(|| format!("{}::{}()", class.display_name, method.name));
+            let interface_contract = inherited_interface_method_contract(compiled, parent, method)?;
+            let expected = interface_contract.unwrap_or(parent_method.method);
+            let expected_signature =
+                method_signature_display(compiled, expected).unwrap_or_else(|| {
+                    format!(
+                        "{}::{}()",
+                        parent_method.class.display_name, parent_method.method.name
+                    )
+                });
+            return Err(format!(
+                "E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: Declaration of {actual_signature} must be compatible with {expected_signature}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn inherited_interface_method_contract<'a>(
+    compiled: &'a CompiledUnit,
+    parent: &'a php_ir::module::ClassEntry,
+    method: &php_ir::module::ClassMethodEntry,
+) -> Result<Option<&'a php_ir::module::ClassMethodEntry>, String> {
+    let mut lineage = Vec::new();
+    collect_class_lineage_compiled(compiled, parent, &mut lineage)?;
+    let mut seen = Vec::new();
+    for declaring in lineage {
+        for interface in &declaring.interfaces {
+            if let Some(expected) =
+                interface_method_contract(compiled, interface, &method.name, &mut seen)?
+                && !method_signature_compatible(compiled, expected, method)
+            {
+                return Ok(Some(expected));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn interface_method_contract<'a>(
+    compiled: &'a CompiledUnit,
+    interface_name: &str,
+    method_name: &str,
+    seen: &mut Vec<String>,
+) -> Result<Option<&'a php_ir::module::ClassMethodEntry>, String> {
+    let normalized = normalize_class_name(interface_name);
+    if seen.iter().any(|name| name == &normalized) {
+        return Ok(None);
+    }
+    seen.push(normalized);
+    let Some(interface) = compiled.lookup_class(interface_name) else {
+        return Ok(None);
+    };
+    for parent in &interface.interfaces {
+        if let Some(method) = interface_method_contract(compiled, parent, method_name, seen)? {
+            return Ok(Some(method));
+        }
+    }
+    Ok(interface
+        .methods
+        .iter()
+        .find(|method| method.name.eq_ignore_ascii_case(method_name)))
+}
+
+fn method_visibility_rank(flags: php_ir::module::ClassMethodFlags) -> u8 {
+    if flags.is_private {
+        0
+    } else if flags.is_protected {
+        1
+    } else {
+        2
+    }
+}
+
+fn method_visibility_name(flags: php_ir::module::ClassMethodFlags) -> &'static str {
+    if flags.is_private {
+        "private"
+    } else if flags.is_protected {
+        "protected"
+    } else {
+        "public"
+    }
+}
+
+fn validate_parent_property_compatibility(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+    parent: &php_ir::module::ClassEntry,
+) -> Result<(), String> {
+    for property in &class.properties {
+        let Some(parent_property) =
+            lookup_property_in_hierarchy(compiled, parent, &property.name, None)?
+        else {
+            continue;
+        };
+        if parent_property.property.flags.is_private {
+            continue;
+        }
+        if parent_property.property.flags.is_static && !property.flags.is_static {
+            return Err(format!(
+                "E_PHP_VM_PROPERTY_STATIC_OVERRIDE: Cannot redeclare static {}::${} as non static {}::${}",
+                parent_property.class.display_name,
+                parent_property.property.name,
+                class.display_name,
+                property.name
+            ));
+        }
+        if !parent_property.property.flags.is_static && property.flags.is_static {
+            return Err(format!(
+                "E_PHP_VM_PROPERTY_STATIC_OVERRIDE: Cannot redeclare non static {}::${} as static {}::${}",
+                parent_property.class.display_name,
+                parent_property.property.name,
+                class.display_name,
+                property.name
+            ));
+        }
+        if property_visibility_rank(property.flags)
+            < property_visibility_rank(parent_property.property.flags)
+        {
+            return Err(format!(
+                "E_PHP_VM_PROPERTY_VISIBILITY_OVERRIDE: Access level to {}::${} must be {} (as in class {}){}",
+                class.display_name,
+                property.name,
+                property_visibility_name(parent_property.property.flags),
+                parent_property.class.display_name,
+                visibility_weaker_suffix(property_visibility_name(parent_property.property.flags))
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn property_visibility_rank(flags: php_ir::module::ClassPropertyFlags) -> u8 {
+    if flags.is_private {
+        0
+    } else if flags.is_protected {
+        1
+    } else {
+        2
+    }
+}
+
+fn property_visibility_name(flags: php_ir::module::ClassPropertyFlags) -> &'static str {
+    if flags.is_private {
+        "private"
+    } else if flags.is_protected {
+        "protected"
+    } else {
+        "public"
+    }
+}
+
+fn validate_parent_constant_compatibility(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+    parent: &php_ir::module::ClassEntry,
+) -> Result<(), String> {
+    for constant in &class.constants {
+        let Some(parent_constant) =
+            lookup_constant_in_hierarchy(compiled, parent, &constant.name, None)?
+        else {
+            continue;
+        };
+        if parent_constant.constant.flags.is_private {
+            continue;
+        }
+        if constant_visibility_rank(constant.flags)
+            < constant_visibility_rank(parent_constant.constant.flags)
+        {
+            let visibility = constant_visibility_name(parent_constant.constant.flags);
+            return Err(format!(
+                "E_PHP_VM_CLASS_CONSTANT_VISIBILITY_OVERRIDE: Access level to {}::{} must be {} (as in class {}){}",
+                class.display_name,
+                constant.name,
+                visibility,
+                parent_constant.class.display_name,
+                visibility_weaker_suffix(visibility)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn constant_visibility_rank(flags: php_ir::module::ClassConstantFlags) -> u8 {
+    if flags.is_private {
+        0
+    } else if flags.is_protected {
+        1
+    } else {
+        2
+    }
+}
+
+fn constant_visibility_name(flags: php_ir::module::ClassConstantFlags) -> &'static str {
+    if flags.is_private {
+        "private"
+    } else if flags.is_protected {
+        "protected"
+    } else {
+        "public"
+    }
+}
+
+fn visibility_weaker_suffix(visibility: &str) -> &'static str {
+    if visibility == "protected" {
+        " or weaker"
+    } else {
+        ""
+    }
+}
+
+fn method_signature_display(
+    compiled: &CompiledUnit,
+    method: &php_ir::module::ClassMethodEntry,
+) -> Option<String> {
+    let function = compiled.unit().functions.get(method.function.index())?;
+    let params = function
+        .params
+        .iter()
+        .map(method_param_display)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("{}({params})", function.name))
+}
+
+fn method_param_display(param: &php_ir::IrParam) -> String {
+    let mut out = String::new();
+    if let Some(type_) = &param.type_ {
+        out.push_str(&method_type_display(type_));
+        out.push(' ');
+    }
+    if param.by_ref {
+        out.push('&');
+    }
+    if param.variadic {
+        out.push_str("...");
+    }
+    out.push('$');
+    out.push_str(&param.name);
+    if let Some(default) = &param.default {
+        out.push_str(" = ");
+        out.push_str(&method_default_display(default));
+    }
+    out
+}
+
+fn method_default_display(default: &IrConstant) -> String {
+    match default {
+        IrConstant::Null => "NULL".to_owned(),
+        IrConstant::Bool(true) => "true".to_owned(),
+        IrConstant::Bool(false) => "false".to_owned(),
+        IrConstant::Int(value) => value.to_string(),
+        IrConstant::Float(value) => {
+            let mut display = value.to_string();
+            if !display.contains('.') && !display.contains('e') && !display.contains('E') {
+                display.push_str(".0");
+            }
+            display
+        }
+        IrConstant::String(value) => {
+            format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+        }
+        IrConstant::StringBytes(value) => {
+            let escaped = value
+                .iter()
+                .map(|byte| match byte {
+                    b'\\' => "\\\\".to_owned(),
+                    b'\'' => "\\'".to_owned(),
+                    0x20..=0x7e => char::from(*byte).to_string(),
+                    _ => format!("\\x{byte:02x}"),
+                })
+                .collect::<String>();
+            format!("'{escaped}'")
+        }
+        IrConstant::Array(_) => "array".to_owned(),
+    }
+}
+
+fn method_type_display(type_: &IrReturnType) -> String {
+    match type_ {
+        IrReturnType::Int => "int".to_owned(),
+        IrReturnType::Float => "float".to_owned(),
+        IrReturnType::String => "string".to_owned(),
+        IrReturnType::Array => "array".to_owned(),
+        IrReturnType::Callable => "callable".to_owned(),
+        IrReturnType::Iterable => "iterable".to_owned(),
+        IrReturnType::Object => "object".to_owned(),
+        IrReturnType::Bool => "bool".to_owned(),
+        IrReturnType::Null => "null".to_owned(),
+        IrReturnType::Void => "void".to_owned(),
+        IrReturnType::Mixed => "mixed".to_owned(),
+        IrReturnType::Never => "never".to_owned(),
+        IrReturnType::False => "false".to_owned(),
+        IrReturnType::True => "true".to_owned(),
+        IrReturnType::Class { name } => name.clone(),
+        IrReturnType::Nullable { inner } => format!("?{}", method_type_display(inner)),
+        IrReturnType::Union { members } => members
+            .iter()
+            .map(method_type_display)
+            .collect::<Vec<_>>()
+            .join("|"),
+        IrReturnType::Intersection { members } => members
+            .iter()
+            .map(method_type_display)
+            .collect::<Vec<_>>()
+            .join("&"),
+        IrReturnType::Dnf { members } => members
+            .iter()
+            .map(method_type_display)
+            .collect::<Vec<_>>()
+            .join("|"),
+    }
 }
 
 fn validate_no_unimplemented_abstract_methods(
@@ -23771,21 +26499,22 @@ fn validate_interface_implementation(
                 validate_internal_interface_implementation(compiled, class, parent_name)?;
                 continue;
             }
-            return Err(format!(
-                "E_PHP_VM_UNKNOWN_INTERFACE: interface {} extends missing interface {}",
-                interface.name, parent_name
-            ));
+            continue;
         };
         validate_interface_implementation(compiled, class, parent)?;
     }
     for expected in &interface.methods {
-        let resolved = lookup_method_in_hierarchy(compiled, class, &expected.name, None)?
-            .ok_or_else(|| {
-                format!(
-                    "E_PHP_VM_INTERFACE_METHOD_MISSING: class {} must implement {}::{}",
-                    class.name, interface.name, expected.name
-                )
-            })?;
+        let Some(resolved) = lookup_method_in_hierarchy(compiled, class, &expected.name, None)?
+        else {
+            if class.flags.is_abstract {
+                continue;
+            }
+            let method_name = method_display_name(compiled, expected);
+            return Err(format!(
+                "E_PHP_VM_INTERFACE_METHOD_MISSING: class {} must implement {}::{}",
+                class.display_name, interface.display_name, method_name
+            ));
+        };
         if resolved.method.flags.is_private || resolved.method.flags.is_protected {
             return Err(format!(
                 "E_PHP_VM_INTERFACE_METHOD_VISIBILITY: class {} method {} must be public for interface {}",
@@ -23793,10 +26522,42 @@ fn validate_interface_implementation(
             ));
         }
         if !method_signature_compatible(compiled, expected, resolved.method) {
+            let actual_signature = method_signature_display(compiled, resolved.method)
+                .unwrap_or_else(|| format!("{}::{}()", class.display_name, resolved.method.name));
+            let expected_signature = method_signature_display(compiled, expected)
+                .unwrap_or_else(|| format!("{}::{}()", interface.display_name, expected.name));
             return Err(format!(
-                "E_PHP_VM_INTERFACE_METHOD_SIGNATURE: class {} method {} does not match interface {}",
-                class.name, expected.name, interface.name
+                "E_PHP_VM_INTERFACE_METHOD_SIGNATURE: Declaration of {actual_signature} must be compatible with {expected_signature}"
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_inherited_interface_implementations(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+) -> Result<(), String> {
+    let mut lineage = Vec::new();
+    collect_class_lineage_compiled(compiled, class, &mut lineage)?;
+    let mut seen = Vec::new();
+    for declaring in lineage {
+        for interface in &declaring.interfaces {
+            let normalized = normalize_class_name(interface);
+            if seen.iter().any(|name| name == &normalized) {
+                continue;
+            }
+            seen.push(normalized);
+            let Some(interface_class) = compiled.lookup_class(interface) else {
+                if is_internal_interface(interface) {
+                    validate_internal_interface_implementation(compiled, class, interface)?;
+                    continue;
+                }
+                continue;
+            };
+            if interface_class.flags.is_interface {
+                validate_interface_implementation(compiled, class, interface_class)?;
+            }
         }
     }
     Ok(())
@@ -23848,13 +26609,13 @@ fn validate_object_mvp(class: &RuntimeClassEntry) -> Result<(), String> {
     }
     if class.flags.is_interface {
         return Err(format!(
-            "E_PHP_VM_INTERFACE_INSTANTIATION: interface {} cannot be instantiated",
+            "E_PHP_VM_INTERFACE_INSTANTIATION: Cannot instantiate interface {}",
             class.name
         ));
     }
     if class.flags.is_abstract {
         return Err(format!(
-            "E_PHP_VM_ABSTRACT_CLASS_INSTANTIATION: class {} is abstract",
+            "E_PHP_VM_ABSTRACT_CLASS_INSTANTIATION: Cannot instantiate abstract class {}",
             class.name
         ));
     }
@@ -23928,9 +26689,10 @@ fn validate_method_callable_in_scope(
         ));
     }
     if method.flags.is_protected {
-        let allowed = scope.is_some_and(|scope| {
-            class_is_or_extends(compiled, scope, &class.name).unwrap_or(false)
-        });
+        let allowed = match scope {
+            Some(scope) => protected_scope_is_related(compiled, scope, &class.name)?,
+            None => false,
+        };
         if !allowed {
             return Err(format!(
                 "E_PHP_VM_PROTECTED_METHOD_ACCESS: Call to protected method {}::{}() from {}",
@@ -23965,9 +26727,12 @@ fn validate_method_callable_in_state_scope(
         ));
     }
     if method.flags.is_protected {
-        let allowed = scope.is_some_and(|scope| {
-            class_is_a_in_state(compiled, state, scope, &class.name).unwrap_or(false)
-        });
+        let allowed = match scope {
+            Some(scope) => {
+                protected_scope_is_related_in_state(compiled, state, scope, &class.name)?
+            }
+            None => false,
+        };
         if !allowed {
             return Err(format!(
                 "E_PHP_VM_PROTECTED_METHOD_ACCESS: Call to protected method {}::{}() from {}",
@@ -23978,6 +26743,102 @@ fn validate_method_callable_in_state_scope(
         }
     }
     Ok(())
+}
+
+fn validate_constructor_callable_in_state_scope(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    scope: Option<&str>,
+    class: &php_ir::module::ClassEntry,
+    method: &php_ir::module::ClassMethodEntry,
+) -> Result<(), String> {
+    if method.flags.is_abstract {
+        return Err(format!(
+            "E_PHP_VM_ABSTRACT_METHOD_CALL: Cannot call abstract method {}::{}()",
+            class.display_name, method.name
+        ));
+    }
+    if method.flags.is_private && scope != Some(normalize_class_name(&class.name).as_str()) {
+        return Err(format!(
+            "E_PHP_VM_PRIVATE_METHOD_ACCESS: Call to private {}::__construct() from {}",
+            class.display_name,
+            scope_description(scope)
+        ));
+    }
+    if method.flags.is_protected {
+        let allowed = match scope {
+            Some(scope) => {
+                protected_scope_is_related_in_state(compiled, state, scope, &class.name)?
+            }
+            None => false,
+        };
+        if !allowed {
+            return Err(format!(
+                "E_PHP_VM_PROTECTED_METHOD_ACCESS: Call to protected {}::__construct() from {}",
+                class.display_name,
+                scope_description(scope)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_scoped_constructor_callable_in_state_scope(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    scope: Option<&str>,
+    class: &php_ir::module::ClassEntry,
+    method: &php_ir::module::ClassMethodEntry,
+) -> Result<(), String> {
+    if method.flags.is_abstract {
+        return Err(format!(
+            "E_PHP_VM_ABSTRACT_METHOD_CALL: Cannot call abstract method {}::{}()",
+            class.display_name, method.name
+        ));
+    }
+    if method.flags.is_private && scope != Some(normalize_class_name(&class.name).as_str()) {
+        return Err(format!(
+            "E_PHP_VM_PRIVATE_METHOD_ACCESS: Cannot call private {}::__construct()",
+            class.display_name
+        ));
+    }
+    if method.flags.is_protected {
+        let allowed = match scope {
+            Some(scope) => {
+                protected_scope_is_related_in_state(compiled, state, scope, &class.name)?
+            }
+            None => false,
+        };
+        if !allowed {
+            return Err(format!(
+                "E_PHP_VM_PROTECTED_METHOD_ACCESS: Call to protected {}::__construct() from {}",
+                class.display_name,
+                scope_description(scope)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn protected_scope_is_related(
+    compiled: &CompiledUnit,
+    scope: &str,
+    declaring_class: &str,
+) -> Result<bool, String> {
+    Ok(class_is_or_extends(compiled, scope, declaring_class)?
+        || class_is_or_extends(compiled, declaring_class, scope)?)
+}
+
+fn protected_scope_is_related_in_state(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    scope: &str,
+    declaring_class: &str,
+) -> Result<bool, String> {
+    Ok(
+        class_is_a_in_state(compiled, state, scope, declaring_class)?
+            || class_is_a_in_state(compiled, state, declaring_class, scope)?,
+    )
 }
 
 /// Renders the calling scope for access-violation messages: PHP says "global
@@ -23995,7 +26856,41 @@ fn lookup_method_in_hierarchy<'a>(
     method: &str,
     caller_scope: Option<&str>,
 ) -> Result<Option<ResolvedMethod<'a>>, String> {
+    if let Some(resolved) =
+        lookup_private_method_in_caller_scope(compiled, class, method, caller_scope)?
+    {
+        return Ok(Some(resolved));
+    }
     lookup_method_in_hierarchy_inner(compiled, class, method, caller_scope, &mut Vec::new())
+}
+
+fn lookup_private_method_in_caller_scope<'a>(
+    compiled: &'a CompiledUnit,
+    class: &'a php_ir::module::ClassEntry,
+    method: &str,
+    caller_scope: Option<&str>,
+) -> Result<Option<ResolvedMethod<'a>>, String> {
+    let Some(scope) = caller_scope else {
+        return Ok(None);
+    };
+    if !class_is_or_extends(compiled, &class.name, scope)? {
+        return Ok(None);
+    }
+    let Some(scope_class) = compiled.lookup_class(scope) else {
+        return Ok(None);
+    };
+    let normalized = normalize_method_name(method);
+    let Some(scope_method) = scope_class
+        .methods
+        .iter()
+        .find(|entry| entry.flags.is_private && normalize_method_name(&entry.name) == normalized)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedMethod {
+        class: scope_class,
+        method: scope_method,
+    }))
 }
 
 fn lookup_method_in_hierarchy_inner<'a>(
@@ -24054,6 +26949,9 @@ fn parent_class<'a>(
     let Some(parent) = class.parent.as_deref() else {
         return Ok(None);
     };
+    if internal_runtime_parent_is_known(class, parent) {
+        return Ok(None);
+    }
     compiled.lookup_class(parent).map(Some).ok_or_else(|| {
         format!(
             "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
@@ -24068,7 +26966,40 @@ fn lookup_property_in_hierarchy<'a>(
     property: &str,
     caller_scope: Option<&str>,
 ) -> Result<Option<ResolvedProperty<'a>>, String> {
+    if let Some(resolved) =
+        lookup_private_property_in_caller_scope(compiled, class, property, caller_scope)?
+    {
+        return Ok(Some(resolved));
+    }
     lookup_property_in_hierarchy_inner(compiled, class, property, caller_scope, &mut Vec::new())
+}
+
+fn lookup_private_property_in_caller_scope<'a>(
+    compiled: &'a CompiledUnit,
+    class: &'a php_ir::module::ClassEntry,
+    property: &str,
+    caller_scope: Option<&str>,
+) -> Result<Option<ResolvedProperty<'a>>, String> {
+    let Some(scope) = caller_scope else {
+        return Ok(None);
+    };
+    if !class_is_or_extends(compiled, &class.name, scope)? {
+        return Ok(None);
+    }
+    let Some(scope_class) = compiled.lookup_class(scope) else {
+        return Ok(None);
+    };
+    let Some(scope_property) = scope_class
+        .properties
+        .iter()
+        .find(|entry| entry.flags.is_private && entry.name == property)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedProperty {
+        class: scope_class,
+        property: scope_property,
+    }))
 }
 
 fn lookup_property_in_hierarchy_inner<'a>(
@@ -24168,6 +27099,12 @@ fn lookup_constant_in_hierarchy_inner<'a>(
         let resolved =
             lookup_constant_in_hierarchy_inner(compiled, parent, constant, caller_scope, seen)?;
         seen.pop();
+        if resolved
+            .as_ref()
+            .is_some_and(|resolved| resolved.constant.flags.is_private)
+        {
+            return Ok(None);
+        }
         return Ok(resolved);
     }
     seen.pop();
@@ -24196,7 +27133,7 @@ fn validate_property_access(
                 class.display_name, property.name
             ));
         };
-        if !class_is_or_extends(compiled, &scope, &class.name)? {
+        if !protected_scope_is_related(compiled, &scope, &class.name)? {
             return Err(format!(
                 "E_PHP_VM_PROTECTED_PROPERTY_ACCESS: Cannot access protected property {}::${}",
                 class.display_name, property.name
@@ -24228,7 +27165,7 @@ fn validate_property_set_access(
                 class.name, property.name
             ));
         };
-        if !class_is_or_extends(compiled, &scope, &class.name)? {
+        if !protected_scope_is_related(compiled, &scope, &class.name)? {
             return Err(format!(
                 "E_PHP_VM_PROTECTED_PROPERTY_SET_ACCESS: property {}::${} setter is protected",
                 class.name, property.name
@@ -24260,7 +27197,7 @@ fn validate_constant_access(
                 class.display_name, constant.name
             ));
         };
-        if !class_is_or_extends(compiled, &scope, &class.name)? {
+        if !protected_scope_is_related(compiled, &scope, &class.name)? {
             return Err(format!(
                 "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS: Cannot access protected constant {}::{}",
                 class.display_name, constant.name
@@ -24322,6 +27259,23 @@ fn property_state_value(
     object
         .get_property(&storage_name)
         .or_else(|| object.get_property(property))
+}
+
+fn magic_property_call_is_active(
+    state: &ExecutionState,
+    object: &ObjectRef,
+    method: &str,
+    property: &str,
+) -> bool {
+    let guard = MagicPropertyCall {
+        object_id: object.id(),
+        method: normalize_method_name(method),
+        property: property.to_owned(),
+    };
+    state
+        .magic_property_stack
+        .iter()
+        .any(|active| active == &guard)
 }
 
 fn ensure_property_reference_cell(
@@ -24400,6 +27354,48 @@ fn static_property_default(
         Ok(Value::Uninitialized)
     } else {
         Ok(Value::Null)
+    }
+}
+
+fn static_property_isset_empty_result(
+    unit: &IrUnit,
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    class_name: &str,
+    property: &str,
+    is_empty: bool,
+) -> Result<bool, String> {
+    let class = resolve_static_class_name(compiled, state, stack, class_name)?;
+    let scope = current_scope_class(compiled, stack);
+    let Some(resolved) =
+        lookup_property_in_hierarchy(compiled, &class, property, scope.as_deref())?
+    else {
+        return Ok(is_empty);
+    };
+    if !resolved.property.flags.is_static {
+        return Err(format!(
+            "E_PHP_VM_NON_STATIC_PROPERTY_ACCESS: property {}::${} is not static",
+            resolved.class.name, resolved.property.name
+        ));
+    }
+    if validate_property_access(compiled, stack, resolved.class, resolved.property).is_err() {
+        return Ok(is_empty);
+    }
+    let key = static_property_key(resolved.class, resolved.property);
+    if !state.static_properties.contains_key(&key) {
+        let default = static_property_default(unit, resolved.class, resolved.property)?;
+        state.static_properties.insert(key.clone(), default);
+    }
+    let value = state
+        .static_properties
+        .get(&key)
+        .cloned()
+        .unwrap_or(Value::Uninitialized);
+    if is_empty {
+        php_empty(&value)
+    } else {
+        Ok(!matches!(value, Value::Uninitialized | Value::Null))
     }
 }
 
@@ -24681,11 +27677,7 @@ fn property_storage_name(
     property: &php_ir::module::ClassPropertyEntry,
 ) -> String {
     if property.flags.is_private {
-        format!(
-            "private:{}:{}",
-            normalize_class_name(&class.name),
-            property.name
-        )
+        format!("private:{}:{}", class.display_name, property.name)
     } else {
         property.name.clone()
     }
@@ -28954,10 +31946,64 @@ fn lookup_class_in_state(
             .find(|entry| normalize_class_name(&entry.class.name) == normalized)
             .map(|entry| entry.class.clone())
             .or_else(|| internal_runtime_class_entry(&normalized))
+            .or_else(|| internal_enum_class_entry(&normalized))
     })
 }
 
 fn internal_runtime_class_entry(normalized: &str) -> Option<php_ir::module::ClassEntry> {
+    if is_std_class_runtime_class(normalized) {
+        return Some(empty_internal_class_entry("stdClass", None, false));
+    }
+    if normalize_class_name(normalized) == "throwable"
+        || internal_throwable_instanceof(normalized, "throwable").is_some()
+    {
+        return Some(internal_throwable_class_entry(normalized));
+    }
+    None
+}
+
+fn internal_runtime_parent_is_known(class: &php_ir::module::ClassEntry, parent_name: &str) -> bool {
+    internal_runtime_class_entry(&normalize_class_name(&class.name)).is_some()
+        && internal_runtime_class_entry(&normalize_class_name(parent_name)).is_some()
+}
+
+fn internal_throwable_class_entry(normalized: &str) -> php_ir::module::ClassEntry {
+    let display_name = internal_throwable_display_name(normalized);
+    let parent = internal_throwable_parent(normalized).map(normalize_class_name);
+    empty_internal_class_entry(
+        &display_name,
+        parent,
+        normalize_class_name(normalized) == "throwable",
+    )
+}
+
+fn empty_internal_class_entry(
+    display_name: &str,
+    parent: Option<String>,
+    is_interface: bool,
+) -> php_ir::module::ClassEntry {
+    php_ir::module::ClassEntry {
+        id: ClassId::new(u32::MAX),
+        name: normalize_class_name(display_name),
+        display_name: display_name.to_owned(),
+        parent,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor: None,
+        flags: php_ir::module::ClassFlags {
+            is_interface,
+            ..php_ir::module::ClassFlags::default()
+        },
+        span: IrSpan::default(),
+    }
+}
+
+fn internal_enum_class_entry(normalized: &str) -> Option<php_ir::module::ClassEntry> {
     match normalized {
         "roundingmode" => Some(rounding_mode_class_entry()),
         "pdo" => Some(internal_empty_class_entry("pdo", "PDO")),
@@ -29075,31 +32121,39 @@ fn dynamic_class_owner_index_in_state(state: &ExecutionState, class_name: &str) 
 fn global_constant_value(
     compiled: &CompiledUnit,
     state: &mut ExecutionState,
+    stack: &CallStack,
     name: &str,
-) -> Option<Value> {
+) -> Result<Option<Value>, String> {
     if let Some(constant) = compiled.lookup_constant(name) {
-        Some(inline_constant_value(constant))
+        Ok(Some(inline_constant_value(constant)))
     } else if let Some(value) = state.user_constants.get(name) {
-        Some(value.clone())
-    } else if let Some(value) = class_constant_value_by_name(compiled, state, name) {
-        Some(value)
+        Ok(Some(value.clone()))
+    } else if let Some(value) = class_constant_value_by_name(compiled, state, stack, name)? {
+        Ok(Some(value))
     } else {
-        predefined_constant_value(name)
+        Ok(predefined_constant_value(name))
     }
 }
 
 fn class_constant_value_by_name(
     compiled: &CompiledUnit,
     state: &mut ExecutionState,
+    stack: &CallStack,
     name: &str,
-) -> Option<Value> {
-    let (class_name, constant_name) = name.split_once("::")?;
-    let class = lookup_class_in_state(compiled, state, class_name)?;
+) -> Result<Option<Value>, String> {
+    let Some((class_name, constant_name)) = name.split_once("::") else {
+        return Ok(None);
+    };
+    let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
+        return Ok(None);
+    };
     if constant_name.eq_ignore_ascii_case("class") {
-        return Some(Value::String(PhpString::from_test_str(&class.display_name)));
+        return Ok(Some(Value::String(PhpString::from_test_str(
+            &class.display_name,
+        ))));
     }
     if let Some(value) = pdo_class_constant_value(class_name, constant_name) {
-        return Some(value);
+        return Ok(Some(value));
     }
     if class.flags.is_enum
         && let Some(case) = class
@@ -29110,20 +32164,26 @@ fn class_constant_value_by_name(
         let object = enum_case_object(compiled, state, &class, case, &|constant| {
             constant_value(compiled.unit(), constant)
         })
-        .ok()?;
-        return Some(Value::Object(object));
+        .map_err(|message| {
+            format!(
+                "E_PHP_VM_ENUM_CASE_CONSTANT_VALUE: failed to build enum case {}::{}: {message}",
+                class.display_name, case.name
+            )
+        })?;
+        return Ok(Some(Value::Object(object)));
     }
-    let resolved = lookup_constant_in_hierarchy(compiled, &class, constant_name, None)
-        .ok()
-        .flatten()?;
-    if resolved.constant.flags.is_private || resolved.constant.flags.is_protected {
-        return None;
-    }
+    let caller_scope = current_scope_class(compiled, stack);
+    let Some(resolved) =
+        lookup_constant_in_hierarchy(compiled, &class, constant_name, caller_scope.as_deref())?
+    else {
+        return Ok(None);
+    };
+    validate_constant_access(compiled, stack, resolved.class, resolved.constant)?;
     let Some(value) = resolved.constant.value else {
-        return Some(Value::Null);
+        return Ok(Some(Value::Null));
     };
     let owner = class_owner_in_state(compiled, state, &resolved.class.name);
-    constant_value(owner.unit(), value).ok()
+    constant_value(owner.unit(), value).map(Some)
 }
 
 fn predefined_constant_value(name: &str) -> Option<Value> {
@@ -29268,7 +32328,7 @@ fn emit_vm_diagnostic_with_options(
     leading_newline: bool,
 ) -> bool {
     let mut options = diagnostic_display_options(state);
-    options.leading_newline = leading_newline;
+    options.leading_newline = leading_newline && !output.is_empty();
     emit_php_diagnostic(output, diagnostic, channel, level, options)
 }
 
@@ -29377,10 +32437,9 @@ fn object_vars_array(
                     ))),
                     value,
                 );
-            } else if scope
-                .as_deref()
-                .is_some_and(|scope| normalize_class_name(scope) == declaring_class)
-            {
+            } else if scope.as_deref().is_some_and(|scope| {
+                normalize_class_name(scope) == normalize_class_name(&declaring_class)
+            }) {
                 array.insert(php_string_key(&property), value);
             }
             continue;
@@ -29603,6 +32662,15 @@ fn lookup_resolved_method_in_state(
     let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
         return Ok(None);
     };
+    if let Some(resolved) = lookup_private_method_in_caller_scope_in_state(
+        compiled,
+        state,
+        &class,
+        method,
+        caller_scope,
+    )? {
+        return Ok(Some(resolved));
+    }
     lookup_resolved_method_in_state_inner(
         compiled,
         state,
@@ -29611,6 +32679,37 @@ fn lookup_resolved_method_in_state(
         caller_scope,
         &mut Vec::new(),
     )
+}
+
+fn lookup_private_method_in_caller_scope_in_state(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class: &php_ir::module::ClassEntry,
+    method: &str,
+    caller_scope: Option<&str>,
+) -> Result<Option<ResolvedMethodOwned>, String> {
+    let Some(scope) = caller_scope else {
+        return Ok(None);
+    };
+    if !class_is_a_in_state(compiled, state, &class.name, scope)? {
+        return Ok(None);
+    }
+    let Some(scope_class) = lookup_class_in_state(compiled, state, scope) else {
+        return Ok(None);
+    };
+    let normalized = normalize_method_name(method);
+    let Some(scope_method) = scope_class
+        .methods
+        .iter()
+        .find(|entry| entry.flags.is_private && normalize_method_name(&entry.name) == normalized)
+    else {
+        return Ok(None);
+    };
+    let scope_method = scope_method.clone();
+    Ok(Some(ResolvedMethodOwned {
+        class: scope_class,
+        method: scope_method,
+    }))
 }
 
 fn lookup_resolved_method_in_state_inner(
@@ -30414,8 +33513,43 @@ fn format_trace_call(compiled: &CompiledUnit, frame: &Frame) -> String {
 /// Captures the current call stack as PHP's `Stack trace:` body, newest frame
 /// first, ending with `#N {main}`.
 fn capture_backtrace_string(compiled: &CompiledUnit, stack: &CallStack) -> String {
+    capture_backtrace_string_from_index(compiled, stack, 0)
+}
+
+fn capture_backtrace_string_with_failed_call(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    function: &IrFunction,
+    call_span: php_ir::IrSpan,
+) -> String {
+    let file = compiled
+        .unit()
+        .files
+        .get(call_span.file.index())
+        .map(|file| file.path.clone())
+        .unwrap_or_default();
+    let line = source_span_display_line(compiled, call_span, false)
+        .unwrap_or_else(|| i64::from(call_span.start));
+    let name = if function.flags.is_method && function.name.contains("::") {
+        function.name.replacen("::", "->", 1)
+    } else {
+        function.name.clone()
+    };
+    let mut lines = vec![format!("#0 {file}({line}): {name}()")];
+    let rest = capture_backtrace_string_from_index(compiled, stack, 1);
+    if !rest.is_empty() {
+        lines.push(rest);
+    }
+    lines.join("\n")
+}
+
+fn capture_backtrace_string_from_index(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    start_index: usize,
+) -> String {
     let mut lines = Vec::new();
-    let mut index = 0usize;
+    let mut index = start_index;
     for frame in stack.frames().iter().rev() {
         let function = compiled.unit().functions.get(frame.function.index());
         if function.is_some_and(|function| function.flags.is_top_level) {
@@ -30927,10 +34061,10 @@ fn value_is_numeric_string_key_ambiguity(value: &Value) -> bool {
         )
 }
 
-fn value_needs_vm_string_coercion(value: &Value) -> bool {
+fn value_needs_vm_string_coercion(compiled: &CompiledUnit, value: &Value) -> bool {
     match value {
-        Value::Object(_) => true,
-        Value::Reference(cell) => value_needs_vm_string_coercion(&cell.get()),
+        Value::Object(object) => object_has_public_to_string(compiled, object),
+        Value::Reference(cell) => value_needs_vm_string_coercion(compiled, &cell.get()),
         _ => false,
     }
 }
@@ -30972,7 +34106,7 @@ fn internal_builtin_string_arg_positions(name: &str, arity: usize) -> &'static [
         | "strspn" | "strcspn" => &[0, 1],
         "strtr" if arity == 2 => &[0],
         "str_replace" | "strtr" | "substr_replace" => &[0, 1, 2],
-        "printf" | "sprintf" | "vprintf" | "vsprintf" => &[0],
+        "print" | "printf" | "sprintf" | "vprintf" | "vsprintf" => &[0],
         "fprintf" | "vfprintf" => &[1],
         "ucwords" => &[0, 1],
         "unpack" => &[0, 1],
@@ -31235,12 +34369,16 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         "E_PHP_VM_UNKNOWN_NAMED_ARG" => "Error",
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",
+        "E_PHP_VM_TOSTRING_RETURN_TYPE" => "TypeError",
         "E_PHP_VM_STRING_OFFSET_TYPE" => "TypeError",
         "E_PHP_VM_PARAM_TYPE_MISMATCH" => "TypeError",
+        "E_PHP_VM_DYNAMIC_CLASS_NAME_TYPE" => "TypeError",
+        "E_PHP_VM_ARRAY_KEY_CONVERSION" => "Error",
         "E_PHP_VM_PRIVATE_METHOD_ACCESS"
         | "E_PHP_VM_PROTECTED_METHOD_ACCESS"
         | "E_PHP_VM_ABSTRACT_METHOD_CALL"
         | "E_PHP_VM_CLOSURE_INSTANTIATION"
+        | "E_PHP_VM_INTERFACE_INSTANTIATION"
         | "E_PHP_VM_PRIVATE_PROPERTY_ACCESS"
         | "E_PHP_VM_PROTECTED_PROPERTY_ACCESS"
         | "E_PHP_VM_UNINITIALIZED_PROPERTY"
@@ -31251,9 +34389,11 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_CURRENT_CLOSURE"
         | "E_PHP_VM_DYNAMIC_PROPERTY_ERROR"
         | "E_PHP_VM_PIPE_RHS_NOT_CALLABLE"
+        | "E_PHP_VM_UNKNOWN_CLASS_CONSTANT"
         | "E_PHP_VM_PRIVATE_CLASS_CONSTANT_ACCESS"
         | "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS"
         | "E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER"
+        | "E_PHP_VM_ABSTRACT_CLASS_INSTANTIATION"
         | "E_PHP_VM_METHOD_CALL_NON_OBJECT" => "Error",
         "E_PHP_VM_PROPERTY_TYPE_MISMATCH" => "TypeError",
         "E_PHP_VM_FIRST_CLASS_CALLABLE_NOT_CALLABLE"
@@ -31728,6 +34868,13 @@ fn coerce_return_value(
     if vm_value_matches_runtime_type(compiled, Some(state), &value, &return_type, typecheck)? {
         Ok(Some(value))
     } else {
+        if function.name.ends_with("::__toString") && matches!(return_type, RuntimeType::String) {
+            return Err(format!(
+                "E_PHP_VM_TOSTRING_RETURN_TYPE: {}(): Return value must be of type string, {} returned",
+                function.name,
+                value_type_name(&value)
+            ));
+        }
         Err(format!(
             "E_PHP_VM_RETURN_TYPE_MISMATCH: function {} returned {}, expected {}",
             function.name,
@@ -31959,6 +35106,12 @@ fn coerce_value_to_runtime_type(value: &Value, runtime_type: &RuntimeType) -> Op
 
 fn array_key_from_value(value: &Value) -> Result<ArrayKey, String> {
     ArrayKey::from_value_mvp(value).ok_or_else(|| {
+        if let Value::Object(object) = effective_value(value) {
+            return format!(
+                "E_PHP_VM_ARRAY_KEY_CONVERSION: Cannot access offset of type {} on array",
+                object.display_name()
+            );
+        }
         format!(
             "E_PHP_VM_ARRAY_KEY_CONVERSION: cannot use {} as array key",
             value_type_name(value)
@@ -32216,10 +35369,11 @@ fn foreach_array_keys_from_local(
     Ok(array.iter().map(|(key, _)| key.clone()).collect())
 }
 
-fn object_property_iteration_keys(
+fn object_property_iteration_entries(
     compiled: &CompiledUnit,
     object: &ObjectRef,
-) -> Result<Vec<String>, String> {
+    caller_scope: Option<&str>,
+) -> Result<Vec<(String, Value)>, String> {
     let class_name = object.class_name();
     let Some(class) = compiled.lookup_class(&class_name) else {
         return Err(format!(
@@ -32227,28 +35381,87 @@ fn object_property_iteration_keys(
             class_name
         ));
     };
-    let mut keys = Vec::new();
-    for property in &class.properties {
-        if property.flags.is_static
-            || property.flags.is_private
-            || property.flags.is_protected
-            || object.get_property(&property.name).is_none()
+    let mut entries = Vec::new();
+    let mut declared_names = Vec::new();
+    collect_object_property_iteration_entries(
+        compiled,
+        class,
+        object,
+        caller_scope,
+        &mut declared_names,
+        &mut entries,
+    )?;
+    for (name, value) in object.properties_snapshot() {
+        if name.contains(':') || declared_names.iter().any(|declared| declared == &name) {
+            continue;
+        }
+        if !entries
+            .iter()
+            .any(|(existing, _): &(String, Value)| existing == &name)
         {
-            continue;
-        }
-        if !keys.iter().any(|name| name == &property.name) {
-            keys.push(property.name.clone());
+            entries.push((name, effective_value(&value)));
         }
     }
-    for (name, _) in object.properties_snapshot() {
-        if name.contains(':') {
+    Ok(entries)
+}
+
+fn collect_object_property_iteration_entries(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+    object: &ObjectRef,
+    caller_scope: Option<&str>,
+    declared_names: &mut Vec<String>,
+    entries: &mut Vec<(String, Value)>,
+) -> Result<(), String> {
+    if let Some(parent) = parent_class(compiled, class)? {
+        collect_object_property_iteration_entries(
+            compiled,
+            parent,
+            object,
+            caller_scope,
+            declared_names,
+            entries,
+        )?;
+    }
+    for property in &class.properties {
+        if property.flags.is_static {
             continue;
         }
-        if !keys.iter().any(|existing| existing == &name) {
-            keys.push(name);
+        if !declared_names.iter().any(|name| name == &property.name) {
+            declared_names.push(property.name.clone());
+        }
+        if !object_property_visible_for_iteration(compiled, class, property, caller_scope)? {
+            continue;
+        }
+        let storage_name = property_storage_name(class, property);
+        let Some(value) = object.get_property(&storage_name) else {
+            continue;
+        };
+        if !entries.iter().any(|(name, _)| name == &property.name) {
+            entries.push((property.name.clone(), effective_value(&value)));
         }
     }
-    Ok(keys)
+    Ok(())
+}
+
+fn object_property_visible_for_iteration(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+    property: &php_ir::module::ClassPropertyEntry,
+    caller_scope: Option<&str>,
+) -> Result<bool, String> {
+    if property.flags.is_private {
+        return Ok(caller_scope.is_some_and(|scope| {
+            normalize_class_name(scope) == normalize_class_name(&class.name)
+        }));
+    }
+    if property.flags.is_protected {
+        let Some(scope) = caller_scope else {
+            return Ok(false);
+        };
+        return class_is_or_extends(compiled, scope, &class.name);
+    }
+    Ok(true)
 }
 
 fn is_this_local(function: &IrFunction, local: LocalId) -> bool {
@@ -33530,6 +36743,38 @@ fn emit_internal_by_ref_indirect_temporary_notice(
         RuntimeSeverity::Notice,
         "Only variables should be passed by reference",
         RuntimeSourceSpan::default(),
+        stack_trace(compiled, stack),
+        Some(php_runtime::PhpReferenceClassification::Warning),
+    );
+    if error_reporting_allows(state, php_runtime::PHP_E_NOTICE) {
+        emit_vm_diagnostic(
+            output,
+            state,
+            &diagnostic,
+            php_runtime::PhpDiagnosticChannel::Notice,
+            php_runtime::PHP_E_NOTICE,
+        );
+        state.diagnostics.push(diagnostic);
+    }
+}
+
+fn emit_static_property_as_non_static_notice(
+    compiled: &CompiledUnit,
+    output: &mut OutputBuffer,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    class: &php_ir::module::ClassEntry,
+    property: &php_ir::module::ClassPropertyEntry,
+    span: php_ir::IrSpan,
+) {
+    let diagnostic = RuntimeDiagnostic::new(
+        "E_PHP_VM_STATIC_PROPERTY_AS_NON_STATIC_NOTICE",
+        RuntimeSeverity::Notice,
+        format!(
+            "Accessing static property {}::${} as non static",
+            class.display_name, property.name
+        ),
+        runtime_source_span(compiled, span),
         stack_trace(compiled, stack),
         Some(php_runtime::PhpReferenceClassification::Warning),
     );
@@ -35530,6 +38775,65 @@ mod tests {
     }
 
     #[test]
+    fn object_to_string_errors_are_catchable_in_cast_echo_and_printf() {
+        let result = execute_source(
+            "<?php
+            class Plain {}
+            class BadString {
+                public function __toString(): string {
+                    return [];
+                }
+            }
+            class GoodString {
+                public function __toString(): string {
+                    echo 'good-call:', \"\\n\";
+                    return 'good';
+                }
+            }
+            try {
+                var_dump((string) new Plain());
+            } catch (Error $e) {
+                echo 'cast:', $e->getMessage(), \"\\n\";
+            }
+            try {
+                echo new BadString();
+            } catch (Error $e) {
+                echo 'echo:', $e->getMessage(), \"\\n\";
+            }
+            try {
+                printf(new Plain());
+            } catch (TypeError $e) {
+                echo 'printf:', $e->getMessage(), \"\\n\";
+            }
+            try {
+                printf(new BadString());
+            } catch (TypeError $e) {
+                echo 'printf-to-string:', $e->getMessage(), \"\\n\";
+            }
+            $array = [];
+            try {
+                echo $array[new Plain()];
+            } catch (Error $e) {
+                echo 'array-key:', $e->getMessage();
+            }
+            echo \"\\n\", sprintf('%s', new GoodString());
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "cast:Object of class Plain could not be converted to string\n\
+echo:BadString::__toString(): Return value must be of type string, array returned\n\
+printf:printf(): Argument #1 ($format) must be of type string, Plain given\n\
+printf-to-string:BadString::__toString(): Return value must be of type string, array returned\n\
+array-key:Cannot access offset of type Plain on array\n\
+good-call:\n\
+good"
+        );
+    }
+
+    #[test]
     fn internal_string_builtins_use_userland_to_string() {
         let result = execute_source(
             "<?php
@@ -35783,6 +39087,42 @@ mod tests {
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"parent|included\n");
+    }
+
+    #[test]
+    fn include_declares_interface_before_main_class_implements_it() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-include-interface-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::write(
+            root.join("contract.php"),
+            "<?php interface I { function f($a = null); }\n",
+        )
+        .expect("contract include should be written");
+        let source = "<?php
+            include 'contract.php';
+            class C implements I {
+                function f($a = 2) {
+                    var_dump($a);
+                }
+            }
+            $c = new C;
+            $c->f();
+        ";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                ..VmOptions::default()
+            },
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"int(2)\n");
     }
 
     #[test]
@@ -36426,6 +39766,72 @@ mod tests {
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"7");
+
+        let magic_after_unset = execute_source(
+            "<?php class Box { public $value = 1; public function __get($name) { return $name . ':magic'; } } $box = new Box(); unset($box->value); echo $box->value;",
+        );
+        assert!(
+            magic_after_unset.status.is_success(),
+            "{:?}",
+            magic_after_unset.status
+        );
+        assert_eq!(magic_after_unset.output.as_bytes(), b"value:magic");
+
+        let magic_set_after_unset = execute_source(
+            "<?php class Box { public $value = 1; public function __set($name, $value) { echo $name, ':set|'; $this->$name = $value; } } $box = new Box(); unset($box->value); $box->value = 3; echo $box->value;",
+        );
+        assert!(
+            magic_set_after_unset.status.is_success(),
+            "{:?}",
+            magic_set_after_unset.status
+        );
+        assert_eq!(magic_set_after_unset.output.as_bytes(), b"value:set|3");
+
+        let null_after_unset = execute_source(
+            "<?php class Box { public $value = 1; } $box = new Box(); unset($box->value); echo $box->value === null ? 'null' : 'value';",
+        );
+        assert!(
+            null_after_unset.status.is_success(),
+            "{:?}",
+            null_after_unset.status
+        );
+        let output = null_after_unset.output.to_string_lossy();
+        assert!(output.contains("Warning: Undefined property: box::$value in "));
+        assert!(output.trim_end().ends_with("null"), "{output}");
+        assert_eq!(
+            null_after_unset.diagnostics[0].id(),
+            "E_PHP_VM_UNDEFINED_PROPERTY"
+        );
+    }
+
+    #[test]
+    fn foreach_over_null_warns_and_iterates_zero_times() {
+        let result = execute_source(
+            "<?php class Foo { function __destruct() { foreach ($this->x as $x); } } new Foo(); echo 'OK';",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.contains("Warning: Undefined property: foo::$x in "),
+            "{output}"
+        );
+        assert!(
+            output.contains(
+                "Warning: foreach() argument must be of type array|object, null given in "
+            ),
+            "{output}"
+        );
+        assert!(output.trim_end().ends_with("OK"), "{output}");
+        let diagnostic_ids: Vec<_> = result
+            .diagnostics
+            .iter()
+            .map(RuntimeDiagnostic::id)
+            .collect();
+        assert!(
+            diagnostic_ids.contains(&"E_PHP_VM_FOREACH_INVALID_SOURCE"),
+            "{diagnostic_ids:?}"
+        );
     }
 
     #[test]
@@ -36453,6 +39859,16 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_instanceof_uses_runtime_class_and_interface_names() {
+        let result = execute_source(
+            "<?php interface A {} interface B extends A {} class C implements B {} $object = new C(); $a = 'A'; $b = 'B'; $c = 'C'; $missing = 'Missing'; if ($object instanceof $a) { echo 'a|'; } if ($object instanceof $b) { echo 'b|'; } if ($object instanceof $c) { echo 'c|'; } if ($object instanceof $missing) { echo 'missing'; } else { echo 'no'; }",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"a|b|c|no");
+    }
+
+    #[test]
     fn clone_executes_shallow_object_copy_with_independent_identity() {
         let result = execute_source(
             "<?php class Cell { public $value; } $original = new Cell(); $original->value = 1; $copy = clone $original; $copy->value = 2; echo $original->value, '|', $copy->value;",
@@ -36460,6 +39876,88 @@ mod tests {
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"1|2");
+    }
+
+    #[test]
+    fn static_properties_accessed_as_instance_slots_emit_notices() {
+        let result = execute_source(
+            "<?php error_reporting(2047); class MyCloneable { static $id = 0; function __construct() { $this->id = self::$id++; } function __clone() { $this->id = self::$id++; } } $original = new MyCloneable(); echo $original->id, '|'; $clone = clone $original; echo $clone->id;",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(output.contains("0|"), "{output}");
+        assert!(output.trim_end().ends_with('1'), "{output}");
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.id() == "E_PHP_VM_STATIC_PROPERTY_AS_NON_STATIC_NOTICE"
+                })
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn dynamic_object_class_name_and_clone_visibility_errors_are_catchable() {
+        let class_name = execute_source(
+            "<?php try { throw new Error('boom'); } catch (Throwable $e) { echo $e::class, ':', $e->getMessage(); }",
+        );
+        assert!(class_name.status.is_success(), "{:?}", class_name.status);
+        assert_eq!(class_name.output.as_bytes(), b"Error:boom");
+
+        let protected_clone = execute_source(
+            "<?php class test { protected function __clone() {} } try { $obj = new test; $clone = clone $obj; } catch (Throwable $e) { echo $e::class, ': ', $e->getMessage(); }",
+        );
+        assert!(
+            protected_clone.status.is_success(),
+            "{:?}",
+            protected_clone.status
+        );
+        assert_eq!(
+            protected_clone.output.as_bytes(),
+            b"Error: Call to protected method test::__clone() from global scope"
+        );
+
+        let private_clone = execute_source(
+            "<?php class test { private function __clone() {} } try { $obj = new test; $clone = clone $obj; } catch (Throwable $e) { echo $e::class, ': ', $e->getMessage(); }",
+        );
+        assert!(
+            private_clone.status.is_success(),
+            "{:?}",
+            private_clone.status
+        );
+        assert_eq!(
+            private_clone.output.as_bytes(),
+            b"Error: Call to private method test::__clone() from global scope"
+        );
+    }
+
+    #[test]
+    fn constructor_visibility_distinguishes_new_and_scoped_parent_call() {
+        let private_new = execute_source(
+            "<?php class test { private function __construct() {} } try { new test(1); } catch (Throwable $e) { echo $e::class, ': ', $e->getMessage(); }",
+        );
+        assert!(private_new.status.is_success(), "{:?}", private_new.status);
+        assert_eq!(
+            private_new.output.as_bytes(),
+            b"Error: Call to private test::__construct() from global scope"
+        );
+
+        let parent_private = execute_source(
+            "<?php class BaseCtor { private function __construct() {} } class ChildCtor extends BaseCtor { public function __construct() { parent::__construct(); } } try { new ChildCtor(); } catch (Throwable $e) { echo $e::class, ': ', $e->getMessage(); }",
+        );
+        assert!(
+            parent_private.status.is_success(),
+            "{:?}",
+            parent_private.status
+        );
+        assert_eq!(
+            parent_private.output.as_bytes(),
+            b"Error: Cannot call private BaseCtor::__construct()"
+        );
     }
 
     #[test]
@@ -36509,13 +40007,95 @@ mod tests {
     }
 
     #[test]
+    fn destructors_run_when_local_last_reference_is_replaced_or_unset() {
+        let replaced = execute_source(
+            "<?php class D { public $name; function __construct($name) { $this->name = $name; } function __destruct() { echo 'd:', $this->name, '|'; } } $a = new D('a'); $a = null; echo 'body|';",
+        );
+
+        assert!(replaced.status.is_success(), "{:?}", replaced.status);
+        assert_eq!(replaced.output.as_bytes(), b"d:a|body|");
+
+        let retained_alias = execute_source(
+            "<?php class D { public $name; function __construct($name) { $this->name = $name; } function __destruct() { echo 'd:', $this->name, '|'; } } $a = new D('a'); $b = $a; $a = null; echo 'body|';",
+        );
+
+        assert!(
+            retained_alias.status.is_success(),
+            "{:?}",
+            retained_alias.status
+        );
+        assert_eq!(retained_alias.output.as_bytes(), b"body|d:a|");
+
+        let unset = execute_source(
+            "<?php class D { function __destruct() { echo 'unset|'; } } $a = new D(); unset($a); echo 'body|';",
+        );
+
+        assert!(unset.status.is_success(), "{:?}", unset.status);
+        assert_eq!(unset.output.as_bytes(), b"unset|body|");
+    }
+
+    #[test]
+    fn destructor_exceptions_from_local_release_are_catchable() {
+        let result = execute_source(
+            "<?php class D { function __destruct() { throw new Exception('boom'); } } try { $a = new D(); $a = null; echo 'after|'; } catch (Exception $e) { echo 'caught:', $e->getMessage(), '|'; } echo 'done|';",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"caught:boom|done|");
+    }
+
+    #[test]
+    fn inaccessible_destructor_from_local_release_is_catchable_error() {
+        let result = execute_source(
+            "<?php class D { private function __destruct() {} } try { $a = new D(); unset($a); echo 'after|'; } catch (Error $e) { echo 'caught:', $e->getMessage(), '|'; } echo 'done|';",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"caught:Call to private D::__destruct() from global scope|done|"
+        );
+    }
+
+    #[test]
+    fn inaccessible_destructor_at_shutdown_emits_warning_and_is_ignored() {
+        let result = execute_source(
+            "<?php class Base { private function __destruct() { echo 'bad|'; } } class Derived extends Base {} $a = new Derived(); echo 'body|';",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(output.starts_with("body|"), "{output}");
+        assert!(
+            output.contains(
+                "Warning: Call to private Derived::__destruct() from global scope during shutdown ignored in Unknown on line 0"
+            ),
+            "{output}"
+        );
+        assert_eq!(
+            result.diagnostics[0].id(),
+            "E_PHP_VM_DESTRUCTOR_VISIBILITY_WARNING"
+        );
+    }
+
+    #[test]
+    fn static_property_release_runs_destructor_in_current_class_scope() {
+        let result = execute_source(
+            "<?php class D { public static $slot; public static $count = 0; function __construct() { self::$count++; } static function destroy() { self::$slot = null; } protected function __destruct() { self::$count--; echo 'd|'; } } D::$slot = new D(); D::destroy(); echo D::$count;",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"d|0");
+    }
+
+    #[test]
     fn destructors_register_clones_and_reentrant_objects() {
         let result = execute_source(
             "<?php class D { public $name; function __construct($name) { $this->name = $name; } function __clone() { $this->name = 'clone'; } function __destruct() { echo 'd:', $this->name, '|'; if ($this->name === 'clone') { new D('late'); } } } $a = new D('a'); $b = clone $a; echo 'body|';",
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(result.output.as_bytes(), b"body|d:clone|d:a|d:late|");
+        assert_eq!(result.output.as_bytes(), b"body|d:clone|d:late|d:a|");
     }
 
     #[test]
@@ -36527,7 +40107,7 @@ mod tests {
         assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
         assert_uncaught_exception_output_prefix(
             &result.output.to_string_lossy(),
-            "body|destruct|",
+            "destruct|",
             "Exception",
             "boom",
         );
@@ -36576,9 +40156,12 @@ mod tests {
         state
             .enum_cases
             .insert(("GcEnum".to_owned(), "A".to_owned()), object.clone());
-        state
-            .destructor_queue
-            .register(object.clone(), "GcBox".to_owned(), FunctionId::new(0));
+        state.destructor_queue.register(
+            object.clone(),
+            "GcBox".to_owned(),
+            FunctionId::new(0),
+            DestructorVisibility::Public,
+        );
 
         let snapshot = gc_snapshot_from_vm_roots(&stack, &state);
         let object_id = GcEntityId::new(GcEntityKind::Object, object.id());
@@ -36675,6 +40258,26 @@ mod tests {
         );
         assert_eq!(protected_scope.output.as_bytes(), b"A");
 
+        let protected_child_override = execute_source(
+            "<?php class ProtectedMethodParent { protected function value() { return 'parent'; } public function call() { return $this->value(); } } class ProtectedMethodChild extends ProtectedMethodParent { protected function value() { return 'child'; } } echo (new ProtectedMethodChild())->call();",
+        );
+        assert!(
+            protected_child_override.status.is_success(),
+            "{:?}",
+            protected_child_override.status
+        );
+        assert_eq!(protected_child_override.output.as_bytes(), b"child");
+
+        let scoped_non_static_call = execute_source(
+            "<?php class ScopedCallBase { public function value() { return $this->label; } } class ScopedCallChild extends ScopedCallBase { public $label = 'child'; public function callParent() { return parent::value(); } } echo (new ScopedCallChild())->callParent();",
+        );
+        assert!(
+            scoped_non_static_call.status.is_success(),
+            "{:?}",
+            scoped_non_static_call.status
+        );
+        assert_eq!(scoped_non_static_call.output.as_bytes(), b"child");
+
         let static_scope = execute_source(
             "<?php class A { static function name() { return 'A'; } } class B extends A { static function own() { return self::name() . parent::name(); } } echo B::own();",
         );
@@ -36684,6 +40287,357 @@ mod tests {
             static_scope.status
         );
         assert_eq!(static_scope.output.as_bytes(), b"AA");
+    }
+
+    #[test]
+    fn methods_reject_incompatible_parent_overrides() {
+        let lowered_visibility = execute_source(
+            "<?php class Base { public function show() {} } class Child extends Base { protected function show() {} }",
+        );
+        assert_eq!(
+            lowered_visibility.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            lowered_visibility
+                .status
+                .message()
+                .expect("compile message")
+                .contains("E_PHP_VM_METHOD_VISIBILITY_OVERRIDE"),
+            "{:?}",
+            lowered_visibility.status
+        );
+
+        let static_to_instance = execute_source(
+            "<?php class Base { public static function show() {} } class Child extends Base { public function show() {} }",
+        );
+        assert_eq!(
+            static_to_instance.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            static_to_instance
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Cannot make static method base::show() non static in class child"),
+            "{:?}",
+            static_to_instance.status
+        );
+
+        let instance_to_static = execute_source(
+            "<?php class Base { public function show() {} } class Child extends Base { public static function show() {} }",
+        );
+        assert_eq!(
+            instance_to_static.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            instance_to_static
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Cannot make non static method base::show() static in class child"),
+            "{:?}",
+            instance_to_static.status
+        );
+
+        let narrowed_parameter_type = execute_source(
+            "<?php class Base { public function accept($value) {} } class Child extends Base { public function accept(array $value) {} }",
+        );
+        assert_eq!(
+            narrowed_parameter_type.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            narrowed_parameter_type
+                .status
+                .message()
+                .expect("compile message")
+                .contains(
+                    "E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: Declaration of Child::accept(array $value) must be compatible with Base::accept($value)"
+                ),
+            "{:?}",
+            narrowed_parameter_type.status
+        );
+
+        let removed_optional_parameter = execute_source(
+            "<?php class Base { public function accept($value = 1) {} } class Child extends Base { public function accept() {} }",
+        );
+        assert_eq!(
+            removed_optional_parameter.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            removed_optional_parameter
+                .status
+                .message()
+                .expect("compile message")
+                .contains(
+                    "E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: Declaration of Child::accept() must be compatible with Base::accept($value = 1)"
+                ),
+            "{:?}",
+            removed_optional_parameter.status
+        );
+    }
+
+    #[test]
+    fn properties_reject_incompatible_parent_redeclarations() {
+        let lowered_visibility = execute_source(
+            "<?php class Base { public $p; } class Child extends Base { private $p; }",
+        );
+        assert_eq!(
+            lowered_visibility.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            lowered_visibility
+                .status
+                .message()
+                .expect("compile message")
+                .contains(
+                    "E_PHP_VM_PROPERTY_VISIBILITY_OVERRIDE: Access level to Child::$p must be public (as in class Base)"
+                ),
+            "{:?}",
+            lowered_visibility.status
+        );
+
+        let static_to_instance = execute_source(
+            "<?php class Base { public static $p; } class Child extends Base { public $p; }",
+        );
+        assert_eq!(
+            static_to_instance.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            static_to_instance
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Cannot redeclare static Base::$p as non static Child::$p"),
+            "{:?}",
+            static_to_instance.status
+        );
+
+        let instance_to_static = execute_source(
+            "<?php class Base { public $p; } class Child extends Base { public static $p; }",
+        );
+        assert_eq!(
+            instance_to_static.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            instance_to_static
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Cannot redeclare non static Base::$p as static Child::$p"),
+            "{:?}",
+            instance_to_static.status
+        );
+
+        let private_parent = execute_source(
+            "<?php class Base { private $p = 'base'; } class Child extends Base { public static $p = 'child'; } echo Child::$p;",
+        );
+        assert!(
+            private_parent.status.is_success(),
+            "{:?}",
+            private_parent.status
+        );
+        assert_eq!(private_parent.output.as_bytes(), b"child");
+    }
+
+    #[test]
+    fn static_property_isset_empty_execute_without_fetching_missing_property() {
+        let result = execute_source(
+            "<?php class C { public static $q = 0; public static $r = null; public static $s = 1; } echo isset(C::$p) ? 'yes' : 'no', '|', empty(C::$p) ? 'empty' : 'filled', '|', isset(C::$q) ? 'yes' : 'no', '|', empty(C::$q) ? 'empty' : 'filled', '|', isset(C::$r) ? 'yes' : 'no', '|', empty(C::$r) ? 'empty' : 'filled', '|', isset(C::$s) ? 'yes' : 'no', '|', empty(C::$s) ? 'empty' : 'filled';",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"no|empty|yes|empty|no|empty|yes|filled"
+        );
+    }
+
+    #[test]
+    fn constants_reject_incompatible_parent_redeclarations() {
+        let public_to_protected = execute_source(
+            "<?php class Base { public const TOKEN = 1; } class Child extends Base { protected const TOKEN = 2; }",
+        );
+        assert_eq!(
+            public_to_protected.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            public_to_protected
+                .status
+                .message()
+                .expect("compile message")
+                .contains(
+                    "E_PHP_VM_CLASS_CONSTANT_VISIBILITY_OVERRIDE: Access level to Child::TOKEN must be public (as in class Base)"
+                ),
+            "{:?}",
+            public_to_protected.status
+        );
+
+        let protected_to_private = execute_source(
+            "<?php class Base { protected const TOKEN = 1; } class Child extends Base { private const TOKEN = 2; }",
+        );
+        assert_eq!(
+            protected_to_private.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            protected_to_private
+                .status
+                .message()
+                .expect("compile message")
+                .contains(
+                    "E_PHP_VM_CLASS_CONSTANT_VISIBILITY_OVERRIDE: Access level to Child::TOKEN must be protected (as in class Base) or weaker"
+                ),
+            "{:?}",
+            protected_to_private.status
+        );
+
+        let private_parent = execute_source(
+            "<?php class Base { private const TOKEN = 'base'; } class Child extends Base { public const TOKEN = 'child'; } echo Child::TOKEN;",
+        );
+        assert!(
+            private_parent.status.is_success(),
+            "{:?}",
+            private_parent.status
+        );
+        assert_eq!(private_parent.output.as_bytes(), b"child");
+    }
+
+    #[test]
+    fn constants_do_not_inherit_private_parent_constants() {
+        let result = execute_source(
+            "<?php class Base { private const TOKEN = 'base'; } class Child extends Base { public static function check() { try { var_dump(self::TOKEN); } catch (Error $e) { echo $e->getMessage(); } } } Child::check();",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"Undefined constant Child::TOKEN");
+    }
+
+    #[test]
+    fn concrete_classes_validate_inherited_interface_contracts() {
+        let abstract_defers_missing_method = execute_source(
+            "<?php interface Contract { public function build(); } abstract class Base implements Contract {}",
+        );
+        assert!(
+            abstract_defers_missing_method.status.is_success(),
+            "{:?}",
+            abstract_defers_missing_method.status
+        );
+
+        let inherited_signature_mismatch = execute_source(
+            "<?php interface Contract { public function __construct(); } abstract class Base implements Contract {} class Child extends Base { public function __construct($value) {} }",
+        );
+        assert_eq!(
+            inherited_signature_mismatch.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            inherited_signature_mismatch
+                .status
+                .message()
+                .expect("compile message")
+                .contains(
+                    "E_PHP_VM_INTERFACE_METHOD_SIGNATURE: Declaration of Child::__construct($value) must be compatible with Contract::__construct()"
+                ),
+            "{:?}",
+            inherited_signature_mismatch.status
+        );
+
+        let concrete_parent_signature_mismatch = execute_source(
+            "<?php interface Contract { public function __construct(); } class Base implements Contract { public function __construct() {} } class Child extends Base { public function __construct($value) {} }",
+        );
+        assert_eq!(
+            concrete_parent_signature_mismatch.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            concrete_parent_signature_mismatch
+                .status
+                .message()
+                .expect("compile message")
+                .contains(
+                    "E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: Declaration of Child::__construct($value) must be compatible with Contract::__construct()"
+                ),
+            "{:?}",
+            concrete_parent_signature_mismatch.status
+        );
+    }
+
+    #[test]
+    fn interfaces_reject_private_methods_bodies_and_plain_properties() {
+        let protected_constant = execute_source("<?php interface I { protected const TOKEN = 1; }");
+        assert_eq!(
+            protected_constant.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            protected_constant
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Access type for interface constant I::TOKEN must be public"),
+            "{:?}",
+            protected_constant.status
+        );
+
+        let private_method = execute_source("<?php interface I { private function err(); }");
+        assert_eq!(
+            private_method.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            private_method
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Access type for interface method I::err() must be public"),
+            "{:?}",
+            private_method.status
+        );
+
+        let method_body = execute_source("<?php interface I { function err() {} }");
+        assert_eq!(method_body.status.exit_status(), ExitStatus::CompileError);
+        assert!(
+            method_body
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Interface function I::err() cannot contain body"),
+            "{:?}",
+            method_body.status
+        );
+
+        let plain_property = execute_source("<?php interface I { public $member; }");
+        assert_eq!(
+            plain_property.status.exit_status(),
+            ExitStatus::CompileError
+        );
+        assert!(
+            plain_property
+                .status
+                .message()
+                .expect("compile message")
+                .contains("Interfaces may only include hooked properties"),
+            "{:?}",
+            plain_property.status
+        );
+    }
+
+    #[test]
+    fn interface_instantiation_raises_catchable_error() {
+        let result = execute_source(
+            "<?php interface I {} try { new I(); } catch (Error $e) { echo $e->getMessage(); }",
+        );
+        assert_eq!(result.status.exit_status(), ExitStatus::Success);
+        assert_eq!(result.output.as_bytes(), b"Cannot instantiate interface i");
     }
 
     #[test]
@@ -36698,6 +40652,26 @@ mod tests {
         );
         assert_eq!(private_scope.output.as_bytes(), b"A|B");
 
+        let private_parent_public_child = execute_source(
+            "<?php class PrivateParentProperty { private $p = 'A'; public function showA() { echo $this->p; } } class PublicChildProperty extends PrivateParentProperty { public $p = 'B'; public function showB() { echo $this->p; } } $object = new PublicChildProperty(); $object->showA(); $object->showB(); echo $object->p;",
+        );
+        assert!(
+            private_parent_public_child.status.is_success(),
+            "{:?}",
+            private_parent_public_child.status
+        );
+        assert_eq!(private_parent_public_child.output.as_bytes(), b"ABB");
+
+        let protected_child_override = execute_source(
+            "<?php class ProtectedParentProperty { protected $p = 'A'; public function showA() { echo $this->p; } } class ProtectedChildProperty extends ProtectedParentProperty { protected $p = 'B'; public function showB() { echo $this->p; } } $object = new ProtectedChildProperty(); $object->showA(); $object->showB();",
+        );
+        assert!(
+            protected_child_override.status.is_success(),
+            "{:?}",
+            protected_child_override.status
+        );
+        assert_eq!(protected_child_override.output.as_bytes(), b"BB");
+
         let protected_scope = execute_source(
             "<?php class A { protected $x; public function setA($x) { $this->x = $x; } } class B extends A { public function read() { return $this->x; } } $b = new B(); $b->setA('ok'); echo $b->read();",
         );
@@ -36707,6 +40681,32 @@ mod tests {
             protected_scope.status
         );
         assert_eq!(protected_scope.output.as_bytes(), b"ok");
+
+        let private_debug_labels = execute_source(
+            "<?php class A { private $c; } class B extends A { private $c; } class C extends B { private $c; } var_dump(new C());",
+        );
+        assert!(
+            private_debug_labels.status.is_success(),
+            "{:?}",
+            private_debug_labels.status
+        );
+        let output = private_debug_labels.output.to_string_lossy();
+        assert!(output.contains("[\"c\":\"A\":private]"), "{output}");
+        assert!(output.contains("[\"c\":\"B\":private]"), "{output}");
+        assert!(output.contains("[\"c\":\"C\":private]"), "{output}");
+
+        let recreate_parent_private_as_dynamic = execute_source(
+            "<?php #[AllowDynamicProperties] class C { private $p = 'test'; function unsetPrivate() { unset($this->p); } } class D extends C { function setP() { $this->p = 'changed in D'; } } $d = new D(); $d->unsetPrivate(); $d->setP(); echo $d->p, '|'; $d = new D(); $d->unsetPrivate(); $d->p = 'changed globally'; echo $d->p;",
+        );
+        assert!(
+            recreate_parent_private_as_dynamic.status.is_success(),
+            "{:?}",
+            recreate_parent_private_as_dynamic.status
+        );
+        assert_eq!(
+            recreate_parent_private_as_dynamic.output.as_bytes(),
+            b"changed in D|changed globally"
+        );
     }
 
     #[test]
@@ -38297,6 +42297,28 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     #[test]
+    fn method_call_uses_calling_scope_private_method_before_child_override() {
+        let source = "<?php class PrivateScopeBase { public function pub() { $this->priv(); } private function priv() { echo 'base'; } } class PrivateScopeChild extends PrivateScopeBase { public function priv() { echo 'child'; } } $object = new PrivateScopeChild(); for ($i = 0; $i < 4; $i++) { $object->pub(); $object->priv(); }";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"basechildbasechildbasechildbasechild"
+        );
+        let counters = result.counters.expect("counters");
+        assert!(counters.method_ic_hits > 0, "{counters:?}");
+        assert_eq!(counters.method_ic_guard_failures, 0, "{counters:?}");
+    }
+
+    #[test]
     fn method_call_inline_cache_handles_trait_method_alias() {
         let source = "<?php trait PerfMethodTrait { public function base() { return 't'; } } class PerfMethodTraitUser { use PerfMethodTrait { base as alias; } } $object = new PerfMethodTraitUser(); for ($i = 0; $i < 8; $i++) { echo $object->alias(); }";
         let on = execute_source_with_options(
@@ -38888,6 +42910,13 @@ echo perf_jit_unstable_types_debug(4), "\n";
 
     #[test]
     fn magic_dispatch_recursion_guards_return_deterministic_errors() {
+        let isset = execute_source(
+            "<?php class RecursiveMagicIsset { public function __isset($name) { echo $name; return isset($this->$name); } } $object = new RecursiveMagicIsset(); var_export(isset($object->missing));",
+        );
+
+        assert!(isset.status.is_success(), "{:?}", isset.status);
+        assert_eq!(isset.output.as_bytes(), b"missingfalse");
+
         let property = execute_source(
             "<?php class RecursiveMagicProperty { public function __get($name) { return $this->$name; } } echo (new RecursiveMagicProperty())->missing;",
         );
@@ -40665,7 +44694,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
             "{missing_message}"
         );
         assert!(
-            missing_message.ends_with(" and exactly 1 expected"),
+            missing_message.contains(" and exactly 1 expected in /tmp/phrust-test.php:"),
             "{missing_message}"
         );
 
@@ -40786,6 +44815,31 @@ echo perf_jit_unstable_types_debug(4), "\n";
             "{failure_output}"
         );
         assert!(failure_output.contains("  thrown in "), "{failure_output}");
+    }
+
+    #[test]
+    fn callback_type_error_can_be_caught_as_error_parent() {
+        let result = execute_source(
+            "<?php class A {} function accepts_a(A $a) {} try { call_user_func('accepts_a', 1); } catch (Error $e) { echo get_class($e), ':', $e->getCode(); }",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"TypeError:0");
+    }
+
+    #[test]
+    fn caught_error_method_calls_work_inside_string_interpolation() {
+        let result = execute_source(
+            "<?php class A {} function accepts_a(A $a) {} try { call_user_func('accepts_a', 1); } catch (Error $ex) { echo \"{$ex->getCode()}: {$ex->getMessage()}\"; }",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.starts_with("0: accepts_a(): Argument #1 ($a)"),
+            "{output}"
+        );
+        assert!(output.contains("must be of type A, int given"), "{output}");
     }
 
     #[test]
@@ -42362,7 +46416,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.to_string_lossy(),
-            "\nNotice: Only variables should be passed by reference in <unknown> on line 0\nint(1)\n"
+            "Notice: Only variables should be passed by reference in <unknown> on line 0\nint(1)\n"
         );
         assert!(result.diagnostics.iter().any(|diagnostic| {
             diagnostic.id() == "E_PHP_VM_BY_REF_ARG_INDIRECT_TEMPORARY_NOTICE"
@@ -42646,7 +46700,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
         assert!(
             arg.diagnostics[0]
                 .message()
-                .contains("function inc_ref argument $x must be a variable"),
+                .contains("inc_ref(): Argument #1 ($x) could not be passed by reference"),
             "{:?}",
             arg.diagnostics[0]
         );
@@ -42768,7 +46822,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
         );
         assert_eq!(
             leading_numeric.output.to_string_lossy(),
-            "\nWarning: A non-numeric value encountered in <unknown> on line 0\nint(3)\n"
+            "Warning: A non-numeric value encountered in <unknown> on line 0\nint(3)\n"
         );
         assert_eq!(
             leading_numeric.diagnostics[0].id(),

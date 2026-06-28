@@ -2,13 +2,15 @@ use super::ClassPropertyEntry;
 
 pub(super) fn property_debug_label(property: &ClassPropertyEntry, display_class: &str) -> String {
     if property.flags.is_private {
-        let name = property
+        if let Some((owner, name)) = property
             .name
             .strip_prefix("private:")
             .and_then(|rest| rest.split_once(':'))
-            .map(|(_, name)| name)
-            .unwrap_or(property.name.as_str());
-        format!("\"{name}\":\"{display_class}\":private")
+        {
+            format!("\"{name}\":\"{owner}\":private")
+        } else {
+            format!("\"{}\":\"{display_class}\":private", property.name)
+        }
     } else if property.flags.is_protected {
         format!("\"{}\":protected", property.name)
     } else {

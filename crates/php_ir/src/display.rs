@@ -512,6 +512,16 @@ fn format_instruction(kind: &InstructionKind) -> String {
             format_operand(object),
             class_name
         ),
+        InstructionKind::DynamicInstanceOf {
+            dst,
+            object,
+            target,
+        } => format!(
+            "dynamic_instanceof r{} {} {}",
+            dst.raw(),
+            format_operand(object),
+            format_operand(target)
+        ),
         InstructionKind::Unary { dst, op, src } => format!(
             "unary r{} {} {}",
             dst.raw(),
@@ -737,6 +747,16 @@ fn format_instruction(kind: &InstructionKind) -> String {
             format_operand(object),
             property
         ),
+        InstructionKind::FetchDynamicProperty {
+            dst,
+            object,
+            property,
+        } => format!(
+            "fetch_dynamic_property r{} {} {}",
+            dst.raw(),
+            format_operand(object),
+            format_operand(property)
+        ),
         InstructionKind::IssetProperty {
             dst,
             object,
@@ -747,6 +767,16 @@ fn format_instruction(kind: &InstructionKind) -> String {
             format_operand(object),
             property
         ),
+        InstructionKind::IssetDynamicProperty {
+            dst,
+            object,
+            property,
+        } => format!(
+            "isset_dynamic_property r{} {} {}",
+            dst.raw(),
+            format_operand(object),
+            format_operand(property)
+        ),
         InstructionKind::EmptyProperty {
             dst,
             object,
@@ -756,6 +786,16 @@ fn format_instruction(kind: &InstructionKind) -> String {
             dst.raw(),
             format_operand(object),
             property
+        ),
+        InstructionKind::EmptyDynamicProperty {
+            dst,
+            object,
+            property,
+        } => format!(
+            "empty_dynamic_property r{} {} {}",
+            dst.raw(),
+            format_operand(object),
+            format_operand(property)
         ),
         InstructionKind::IssetPropertyDim {
             dst,
@@ -784,12 +824,37 @@ fn format_instruction(kind: &InstructionKind) -> String {
         InstructionKind::UnsetProperty { object, property } => {
             format!("unset_property {} ${}", format_operand(object), property)
         }
+        InstructionKind::UnsetDynamicProperty { object, property } => format!(
+            "unset_dynamic_property {} {}",
+            format_operand(object),
+            format_operand(property)
+        ),
         InstructionKind::FetchStaticProperty {
             dst,
             class_name,
             property,
         } => format!(
             "fetch_static_property r{} {}::${}",
+            dst.raw(),
+            class_name,
+            property
+        ),
+        InstructionKind::IssetStaticProperty {
+            dst,
+            class_name,
+            property,
+        } => format!(
+            "isset_static_property r{} {}::${}",
+            dst.raw(),
+            class_name,
+            property
+        ),
+        InstructionKind::EmptyStaticProperty {
+            dst,
+            class_name,
+            property,
+        } => format!(
+            "empty_static_property r{} {}::${}",
             dst.raw(),
             class_name,
             property
@@ -804,6 +869,11 @@ fn format_instruction(kind: &InstructionKind) -> String {
             class_name,
             constant
         ),
+        InstructionKind::FetchObjectClassName { dst, object } => format!(
+            "fetch_object_class_name r{} {}",
+            dst.raw(),
+            format_operand(object)
+        ),
         InstructionKind::AssignProperty {
             dst,
             object,
@@ -814,6 +884,18 @@ fn format_instruction(kind: &InstructionKind) -> String {
             dst.raw(),
             format_operand(object),
             property,
+            format_operand(value)
+        ),
+        InstructionKind::AssignDynamicProperty {
+            dst,
+            object,
+            property,
+            value,
+        } => format!(
+            "assign_dynamic_property r{} {} {} {}",
+            dst.raw(),
+            format_operand(object),
+            format_operand(property),
             format_operand(value)
         ),
         InstructionKind::AssignStaticProperty {

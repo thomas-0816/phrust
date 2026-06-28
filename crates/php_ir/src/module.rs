@@ -104,6 +104,8 @@ pub struct ClassMethodFlags {
     pub is_protected: bool,
     /// `abstract`.
     pub is_abstract: bool,
+    /// Method declaration includes a body block.
+    pub has_body: bool,
     /// `final`.
     pub is_final: bool,
 }
@@ -162,10 +164,14 @@ pub struct ClassConstantEntry {
     pub name: String,
     /// Constant-pool value when the MVP can lower it.
     pub value: Option<ConstId>,
+    /// PHP doc comment attached to this class constant declaration.
+    pub doc_comment: Option<String>,
     /// Constant flags captured from Semantic frontend.
     pub flags: ClassConstantFlags,
     /// Attribute metadata attached to this class constant declaration.
     pub attributes: Vec<AttributeEntry>,
+    /// Source span for the class constant declaration.
+    pub span: IrSpan,
 }
 
 /// Class constant flags.

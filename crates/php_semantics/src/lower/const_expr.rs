@@ -174,7 +174,13 @@ pub fn validate_const_expr_allowed_forms(
 ) -> ConstExprValidation {
     let kind = module.expressions()[expr_id].kind();
     match kind {
-        HirExprKind::Literal { .. } => allowed(ConstExprKind::ScalarLiteral),
+        HirExprKind::Literal { text } => {
+            if literal_allowed_in_const_expr(text) {
+                allowed(ConstExprKind::ScalarLiteral)
+            } else {
+                disallowed(ConstExprKind::Disallowed)
+            }
+        }
         HirExprKind::Name { .. } => allowed(ConstExprKind::Name),
         HirExprKind::Array { elements } | HirExprKind::List { elements } => aggregate(
             module,
@@ -411,6 +417,36 @@ fn validate_new_argument_allowed(
             .all(|arg| validate_const_expr_allowed_forms(module, arg.value, context).allowed),
         _ => validate_const_expr_allowed_forms(module, expr_id, context).allowed,
     }
+}
+
+fn literal_allowed_in_const_expr(text: &str) -> bool {
+    let text = strip_binary_string_prefix(text.trim());
+    let Some(body) = text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+    else {
+        return true;
+    };
+    !double_quoted_body_contains_interpolation(body)
+}
+
+fn double_quoted_body_contains_interpolation(body: &str) -> bool {
+    let mut chars = body.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let _ = chars.next();
+            continue;
+        }
+        if ch == '$' {
+            let Some(next) = chars.peek().copied() else {
+                continue;
+            };
+            if next == '{' || next == '_' || next.is_ascii_alphabetic() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn fold_literal(text: &str) -> Option<ConstValue> {

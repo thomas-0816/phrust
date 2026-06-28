@@ -320,6 +320,15 @@ fn verify_instruction(
             verify_register(*dst, function.register_count, errors);
             verify_operand(object, function, unit, errors);
         }
+        InstructionKind::DynamicInstanceOf {
+            dst,
+            object,
+            target,
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
+            verify_operand(target, function, unit, errors);
+        }
         InstructionKind::Unary { dst, src, .. } | InstructionKind::Cast { dst, src, .. } => {
             verify_register(*dst, function.register_count, errors);
             verify_operand(src, function, unit, errors);
@@ -470,10 +479,33 @@ fn verify_instruction(
             verify_register(*dst, function.register_count, errors);
             verify_operand(object, function, unit, errors);
         }
+        InstructionKind::FetchDynamicProperty {
+            dst,
+            object,
+            property,
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
+            verify_operand(property, function, unit, errors);
+        }
         InstructionKind::IssetProperty { dst, object, .. }
         | InstructionKind::EmptyProperty { dst, object, .. } => {
             verify_register(*dst, function.register_count, errors);
             verify_operand(object, function, unit, errors);
+        }
+        InstructionKind::IssetDynamicProperty {
+            dst,
+            object,
+            property,
+        }
+        | InstructionKind::EmptyDynamicProperty {
+            dst,
+            object,
+            property,
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
+            verify_operand(property, function, unit, errors);
         }
         InstructionKind::IssetPropertyDim {
             dst, object, dims, ..
@@ -490,15 +522,36 @@ fn verify_instruction(
         InstructionKind::UnsetProperty { object, .. } => {
             verify_operand(object, function, unit, errors);
         }
+        InstructionKind::UnsetDynamicProperty { object, property } => {
+            verify_operand(object, function, unit, errors);
+            verify_operand(property, function, unit, errors);
+        }
         InstructionKind::FetchStaticProperty { dst, .. }
+        | InstructionKind::IssetStaticProperty { dst, .. }
+        | InstructionKind::EmptyStaticProperty { dst, .. }
         | InstructionKind::FetchClassConstant { dst, .. } => {
             verify_register(*dst, function.register_count, errors);
+        }
+        InstructionKind::FetchObjectClassName { dst, object } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
         }
         InstructionKind::AssignProperty {
             dst, object, value, ..
         } => {
             verify_register(*dst, function.register_count, errors);
             verify_operand(object, function, unit, errors);
+            verify_operand(value, function, unit, errors);
+        }
+        InstructionKind::AssignDynamicProperty {
+            dst,
+            object,
+            property,
+            value,
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
+            verify_operand(property, function, unit, errors);
             verify_operand(value, function, unit, errors);
         }
         InstructionKind::AssignStaticProperty { dst, value, .. } => {
@@ -952,6 +1005,8 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         | InstructionKind::BindGlobal { .. }
         | InstructionKind::LeaveTry
         | InstructionKind::FetchStaticProperty { .. }
+        | InstructionKind::IssetStaticProperty { .. }
+        | InstructionKind::EmptyStaticProperty { .. }
         | InstructionKind::FetchClassConstant { .. }
         | InstructionKind::NewArray { .. }
         | InstructionKind::IssetLocal { .. }
@@ -974,11 +1029,29 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         | InstructionKind::CloneObject { object: src, .. }
         | InstructionKind::Include { path: src, .. }
         | InstructionKind::Eval { code: src, .. }
+        | InstructionKind::FetchObjectClassName { object: src, .. }
         | InstructionKind::FetchProperty { object: src, .. }
         | InstructionKind::IssetProperty { object: src, .. }
         | InstructionKind::EmptyProperty { object: src, .. }
         | InstructionKind::UnsetProperty { object: src, .. }
         | InstructionKind::ForeachInit { source: src, .. } => operand_register_uses(src, uses),
+        InstructionKind::DynamicInstanceOf { object, target, .. } => {
+            operand_register_uses(object, uses);
+            operand_register_uses(target, uses);
+        }
+        InstructionKind::FetchDynamicProperty {
+            object, property, ..
+        }
+        | InstructionKind::IssetDynamicProperty {
+            object, property, ..
+        }
+        | InstructionKind::EmptyDynamicProperty {
+            object, property, ..
+        }
+        | InstructionKind::UnsetDynamicProperty { object, property } => {
+            operand_register_uses(object, uses);
+            operand_register_uses(property, uses);
+        }
         InstructionKind::IssetPropertyDim { object, dims, .. }
         | InstructionKind::EmptyPropertyDim { object, dims, .. } => {
             operand_register_uses(object, uses);
@@ -1059,6 +1132,16 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
             operand_register_uses(object, uses);
             operand_register_uses(value, uses);
         }
+        InstructionKind::AssignDynamicProperty {
+            object,
+            property,
+            value,
+            ..
+        } => {
+            operand_register_uses(object, uses);
+            operand_register_uses(property, uses);
+            operand_register_uses(value, uses);
+        }
         InstructionKind::AssignStaticProperty { value, .. } => operand_register_uses(value, uses),
         InstructionKind::ArrayInsert {
             array, key, value, ..
@@ -1105,6 +1188,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::Binary { dst, .. }
         | InstructionKind::Compare { dst, .. }
         | InstructionKind::InstanceOf { dst, .. }
+        | InstructionKind::DynamicInstanceOf { dst, .. }
         | InstructionKind::Unary { dst, .. }
         | InstructionKind::Cast { dst, .. }
         | InstructionKind::Yield { dst, .. }
@@ -1126,13 +1210,20 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::DynamicNewObject { dst, .. }
         | InstructionKind::NewObject { dst, .. }
         | InstructionKind::FetchProperty { dst, .. }
+        | InstructionKind::FetchDynamicProperty { dst, .. }
         | InstructionKind::IssetProperty { dst, .. }
+        | InstructionKind::IssetDynamicProperty { dst, .. }
         | InstructionKind::EmptyProperty { dst, .. }
+        | InstructionKind::EmptyDynamicProperty { dst, .. }
         | InstructionKind::IssetPropertyDim { dst, .. }
         | InstructionKind::EmptyPropertyDim { dst, .. }
         | InstructionKind::FetchStaticProperty { dst, .. }
+        | InstructionKind::IssetStaticProperty { dst, .. }
+        | InstructionKind::EmptyStaticProperty { dst, .. }
         | InstructionKind::FetchClassConstant { dst, .. }
+        | InstructionKind::FetchObjectClassName { dst, .. }
         | InstructionKind::AssignProperty { dst, .. }
+        | InstructionKind::AssignDynamicProperty { dst, .. }
         | InstructionKind::AssignStaticProperty { dst, .. }
         | InstructionKind::NewArray { dst }
         | InstructionKind::FetchDim { dst, .. }
@@ -1178,6 +1269,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::EndFinally { .. }
         | InstructionKind::Throw { .. }
         | InstructionKind::UnsetProperty { .. }
+        | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::ArrayInsert { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }

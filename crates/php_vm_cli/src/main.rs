@@ -3,7 +3,11 @@
 use php_bytecode_cache::{
     CacheArtifact, CacheFingerprint, CacheFingerprintInput, CacheHeader, CachedIrArtifact,
 };
-use php_ir::{LoweringOptions, lower_frontend_result, verify_unit};
+use php_ir::{
+    LoweringOptions, lower_frontend_result,
+    module::{IrUnit, normalize_class_name},
+    verify_unit,
+};
 use php_optimizer::{OptimizationLevel, OptimizationReport, PassContext, PassPipeline};
 use php_runtime::{ExitStatus, FilesystemCapabilities, RuntimeContext};
 use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::DiagnosticId};
@@ -372,10 +376,14 @@ where
     if run_options.bytecode_cache.stats {
         write_cache_stats_json(stderr, &cache_stats)?;
     }
-    drop(compiled_pipeline);
     match result.status.exit_status() {
         ExitStatus::Success => Ok(EXIT_SUCCESS),
         ExitStatus::CompileError => {
+            if let Some(pipeline) = compiled_pipeline.as_ref()
+                && write_vm_compile_fatal_line(stderr, pipeline, &result.status)?
+            {
+                return Ok(EXIT_COMPILE_ERROR);
+            }
             write_status(stderr, path, &result.status)?;
             Ok(EXIT_COMPILE_ERROR)
         }
@@ -582,6 +590,25 @@ fn write_frontend_diagnostics<W: Write>(stderr: &mut W, pipeline: &Pipeline) -> 
     for diagnostic in pipeline.frontend.semantic_diagnostics() {
         if diagnostic.severity() == Severity::Error {
             if let Some(span) = diagnostic.span() {
+                if let Some(message) = semantic_diagnostic_php_fatal_message(
+                    diagnostic.id(),
+                    diagnostic.message(),
+                    span,
+                    &pipeline.lowering.unit,
+                ) {
+                    write_php_fatal_line(stderr, &pipeline.path, &pipeline.source, span, &message)?;
+                    continue;
+                }
+                if semantic_diagnostic_uses_php_parse_error_line(diagnostic.id()) {
+                    write_php_parse_error_line(
+                        stderr,
+                        &pipeline.path,
+                        &pipeline.source,
+                        span,
+                        diagnostic.message(),
+                    )?;
+                    return Ok(());
+                }
                 if semantic_diagnostic_uses_php_fatal_line(diagnostic.id()) {
                     write_php_fatal_line(
                         stderr,
@@ -590,6 +617,9 @@ fn write_frontend_diagnostics<W: Write>(stderr: &mut W, pipeline: &Pipeline) -> 
                         span,
                         diagnostic.message(),
                     )?;
+                    if semantic_diagnostic_is_immediate_php_fatal(diagnostic.id()) {
+                        return Ok(());
+                    }
                     continue;
                 }
                 write_span_line(
@@ -641,6 +671,382 @@ fn write_status<W: Write>(
     status: &php_runtime::ExecutionStatus,
 ) -> Result<(), String> {
     writeln!(stderr, "{path}: {status}").map_err(|error| error.to_string())
+}
+
+fn write_vm_compile_fatal_line<W: Write>(
+    stderr: &mut W,
+    pipeline: &Pipeline,
+    status: &php_runtime::ExecutionStatus,
+) -> Result<bool, String> {
+    let Some(message) = status.message() else {
+        return Ok(false);
+    };
+    let Some(display_message) = vm_compile_error_php_fatal_message(message) else {
+        return Ok(false);
+    };
+    let span = if let Some((class_name, method_name)) = vm_compile_error_interface_method(message) {
+        class_method_span(&pipeline.lowering.unit, &class_name, &method_name)
+    } else if let Some((class_name, _, _)) = vm_compile_error_interface_method_missing(message) {
+        class_span(&pipeline.lowering.unit, &class_name)
+    } else if let Some((class_name, constant_name)) = vm_compile_error_interface_constant(message) {
+        class_constant_span(&pipeline.lowering.unit, &class_name, &constant_name)
+    } else if vm_compile_error_interface_property(message) {
+        pipeline
+            .lowering
+            .unit
+            .classes
+            .iter()
+            .find(|class| class.flags.is_interface)
+            .map(|class| class.span)
+    } else if let Some((class_name, method_name)) = vm_compile_error_child_method(message) {
+        class_method_span(&pipeline.lowering.unit, &class_name, &method_name)
+    } else if let Some((class_name, _property_name)) = vm_compile_error_child_property(message) {
+        class_span(&pipeline.lowering.unit, &class_name)
+    } else if let Some((class_name, _constant_name)) = vm_compile_error_child_constant(message) {
+        class_span(&pipeline.lowering.unit, &class_name)
+    } else if let Some((parent_class, method_name)) = vm_compile_error_final_method(message) {
+        overriding_method_span(&pipeline.lowering.unit, &parent_class, &method_name)
+    } else if let Some(class_name) = vm_compile_error_traversable_direct(message) {
+        class_span(&pipeline.lowering.unit, &class_name)
+    } else if let Some(class_name) = vm_compile_error_child_class(message) {
+        class_span(&pipeline.lowering.unit, &class_name)
+    } else {
+        None
+    };
+    let Some(span) = span else {
+        return Ok(false);
+    };
+    write_php_fatal_line(
+        stderr,
+        &pipeline.path,
+        &pipeline.source,
+        TextRange::new(span.start as usize, span.end as usize),
+        &display_message,
+    )?;
+    Ok(true)
+}
+
+fn semantic_diagnostic_php_fatal_message(
+    id: DiagnosticId,
+    message: &str,
+    span: TextRange,
+    unit: &IrUnit,
+) -> Option<String> {
+    match id {
+        DiagnosticId::InvalidConstExpr => {
+            Some("Constant expression contains invalid operations".to_owned())
+        }
+        DiagnosticId::DuplicateClassMember => {
+            let constant_name = message
+                .strip_prefix("duplicate class constant `")?
+                .strip_suffix('`')?;
+            let class_name = class_display_name_containing_span(unit, span)?;
+            Some(format!(
+                "Cannot redefine class constant {class_name}::{constant_name}"
+            ))
+        }
+        DiagnosticId::IncompatibleModifiers => match message {
+            "`static` modifier is not allowed on class constant" => {
+                Some("Cannot use the static modifier on a class constant".to_owned())
+            }
+            "`abstract` modifier is not allowed on class constant" => {
+                Some("Cannot use the abstract modifier on a class constant".to_owned())
+            }
+            "method cannot be both abstract and final" => {
+                Some("Cannot use the final modifier on an abstract method".to_owned())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn class_display_name_containing_span(unit: &IrUnit, span: TextRange) -> Option<&str> {
+    let start = span.start().to_usize();
+    let end = span.end().to_usize();
+    unit.classes
+        .iter()
+        .filter(|class| class.span.start as usize <= start && end <= class.span.end as usize)
+        .min_by_key(|class| class.span.end.saturating_sub(class.span.start))
+        .map(|class| class.display_name.as_str())
+}
+
+fn vm_compile_error_php_fatal_message(message: &str) -> Option<String> {
+    if let Some((class_name, interface_name, method_name)) =
+        vm_compile_error_interface_method_missing(message)
+    {
+        return Some(format!(
+            "Class {class_name} contains 1 abstract method and must therefore be declared abstract or implement the remaining method ({interface_name}::{method_name})"
+        ));
+    }
+
+    message
+        .strip_prefix("E_PHP_VM_METHOD_VISIBILITY_OVERRIDE: ")
+        .or_else(|| message.strip_prefix("E_PHP_VM_STATIC_METHOD_OVERRIDE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_INTERFACE_METHOD_VISIBILITY: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_INTERFACE_METHOD_BODY: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_INTERFACE_METHOD_SIGNATURE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_INTERFACE_PROPERTY: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_INTERFACE_CONSTANT_VISIBILITY: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_FINAL_CLASS_EXTEND: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_FINAL_METHOD_OVERRIDE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_PROPERTY_STATIC_OVERRIDE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_PROPERTY_VISIBILITY_OVERRIDE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_CLASS_CONSTANT_VISIBILITY_OVERRIDE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_CLASS_EXTENDS_INTERFACE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_IMPLEMENTS_NON_INTERFACE: "))
+        .or_else(|| message.strip_prefix("E_PHP_VM_TRAVERSABLE_DIRECT_IMPLEMENTATION: "))
+        .map(str::to_owned)
+}
+
+fn vm_compile_error_interface_method(message: &str) -> Option<(String, String)> {
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_INTERFACE_METHOD_VISIBILITY: ") {
+        let target = rest
+            .strip_prefix("Access type for interface method ")?
+            .split_once("()")?
+            .0;
+        return split_class_method(target);
+    }
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_INTERFACE_METHOD_BODY: ") {
+        let target = rest
+            .strip_prefix("Interface function ")?
+            .split_once("()")?
+            .0;
+        return split_class_method(target);
+    }
+    None
+}
+
+fn vm_compile_error_interface_property(message: &str) -> bool {
+    message.starts_with("E_PHP_VM_INTERFACE_PROPERTY: ")
+}
+
+fn vm_compile_error_interface_method_missing(message: &str) -> Option<(String, String, String)> {
+    let rest = message.strip_prefix("E_PHP_VM_INTERFACE_METHOD_MISSING: ")?;
+    let rest = rest.strip_prefix("class ")?;
+    let (class_name, target) = rest.split_once(" must implement ")?;
+    let (interface_name, method_name) = target.split_once("::")?;
+    Some((
+        class_name.to_owned(),
+        interface_name.to_owned(),
+        method_name.to_owned(),
+    ))
+}
+
+fn vm_compile_error_interface_constant(message: &str) -> Option<(String, String)> {
+    let rest = message.strip_prefix("E_PHP_VM_INTERFACE_CONSTANT_VISIBILITY: ")?;
+    let target = rest
+        .strip_prefix("Access type for interface constant ")?
+        .split_once(" must be public")?
+        .0;
+    split_class_method(target)
+}
+
+fn vm_compile_error_child_method(message: &str) -> Option<(String, String)> {
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_METHOD_VISIBILITY_OVERRIDE: ") {
+        let target = rest.strip_prefix("Access level to ")?.split_once("()")?.0;
+        return split_class_method(target);
+    }
+
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_STATIC_METHOD_OVERRIDE: ") {
+        let (parent_method, class_name) = rest
+            .strip_prefix("Cannot make static method ")
+            .and_then(|rest| rest.split_once("() non static in class "))
+            .or_else(|| {
+                rest.strip_prefix("Cannot make non static method ")
+                    .and_then(|rest| rest.split_once("() static in class "))
+            })?;
+        let (_, method_name) = split_class_method(parent_method)?;
+        return Some((class_name.to_owned(), method_name));
+    }
+
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: ") {
+        let target = rest
+            .strip_prefix("Declaration of ")?
+            .split_once(" must be compatible with ")?
+            .0;
+        return split_class_method(target);
+    }
+
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_INTERFACE_METHOD_SIGNATURE: ") {
+        let target = rest
+            .strip_prefix("Declaration of ")?
+            .split_once(" must be compatible with ")?
+            .0;
+        return split_class_method(target);
+    }
+
+    None
+}
+
+fn vm_compile_error_child_class(message: &str) -> Option<String> {
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_FINAL_CLASS_EXTEND: ") {
+        return Some(
+            rest.strip_prefix("Class ")?
+                .split_once(" cannot extend final class ")?
+                .0
+                .to_owned(),
+        );
+    }
+
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_CLASS_EXTENDS_INTERFACE: ") {
+        return Some(
+            rest.strip_prefix("Class ")?
+                .split_once(" cannot extend interface ")?
+                .0
+                .to_owned(),
+        );
+    }
+
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_IMPLEMENTS_NON_INTERFACE: ") {
+        return Some(rest.split_once(" cannot implement ")?.0.to_owned());
+    }
+
+    None
+}
+
+fn vm_compile_error_final_method(message: &str) -> Option<(String, String)> {
+    let target = message
+        .strip_prefix("E_PHP_VM_FINAL_METHOD_OVERRIDE: ")?
+        .strip_prefix("Cannot override final method ")?
+        .split_once("()")?
+        .0;
+    split_class_method(target)
+}
+
+fn vm_compile_error_traversable_direct(message: &str) -> Option<String> {
+    let rest = message.strip_prefix("E_PHP_VM_TRAVERSABLE_DIRECT_IMPLEMENTATION: ")?;
+    Some(
+        rest.strip_prefix("Class ")?
+            .split_once(" must implement interface Traversable ")?
+            .0
+            .to_owned(),
+    )
+}
+
+fn vm_compile_error_child_property(message: &str) -> Option<(String, String)> {
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_PROPERTY_VISIBILITY_OVERRIDE: ") {
+        let target = rest
+            .strip_prefix("Access level to ")?
+            .split_once(" must be ")?
+            .0;
+        return split_class_property(target);
+    }
+
+    if let Some(rest) = message.strip_prefix("E_PHP_VM_PROPERTY_STATIC_OVERRIDE: ") {
+        let target = rest
+            .split_once(" as static ")
+            .or_else(|| rest.split_once(" as non static "))?
+            .1;
+        return split_class_property(target);
+    }
+
+    None
+}
+
+fn vm_compile_error_child_constant(message: &str) -> Option<(String, String)> {
+    let rest = message.strip_prefix("E_PHP_VM_CLASS_CONSTANT_VISIBILITY_OVERRIDE: ")?;
+    let target = rest
+        .strip_prefix("Access level to ")?
+        .split_once(" must be ")?
+        .0;
+    split_class_constant(target)
+}
+
+fn split_class_method(target: &str) -> Option<(String, String)> {
+    let (class_name, method_name) = target.rsplit_once("::")?;
+    let method_name = method_name
+        .split_once('(')
+        .map_or(method_name, |(name, _)| name);
+    Some((class_name.to_owned(), method_name.to_owned()))
+}
+
+fn split_class_property(target: &str) -> Option<(String, String)> {
+    let (class_name, property_name) = target.rsplit_once("::$")?;
+    Some((class_name.to_owned(), property_name.to_owned()))
+}
+
+fn split_class_constant(target: &str) -> Option<(String, String)> {
+    let (class_name, constant_name) = target.rsplit_once("::")?;
+    Some((class_name.to_owned(), constant_name.to_owned()))
+}
+
+fn class_span(unit: &IrUnit, class_name: &str) -> Option<php_ir::IrSpan> {
+    let normalized_class = normalize_class_name(class_name);
+    unit.classes
+        .iter()
+        .find(|class| normalize_class_name(&class.name) == normalized_class)
+        .map(|class| class.span)
+}
+
+fn class_method_span(unit: &IrUnit, class_name: &str, method_name: &str) -> Option<php_ir::IrSpan> {
+    let normalized_class = normalize_class_name(class_name);
+    let normalized_method = method_name.to_ascii_lowercase();
+    let class = unit
+        .classes
+        .iter()
+        .find(|class| normalize_class_name(&class.name) == normalized_class)?;
+    let method = class
+        .methods
+        .iter()
+        .find(|method| method.name.eq_ignore_ascii_case(&normalized_method))?;
+    unit.functions
+        .get(method.function.index())
+        .map(|function| function.span)
+}
+
+fn class_constant_span(
+    unit: &IrUnit,
+    class_name: &str,
+    constant_name: &str,
+) -> Option<php_ir::IrSpan> {
+    let normalized_class = normalize_class_name(class_name);
+    let class = unit
+        .classes
+        .iter()
+        .find(|class| normalize_class_name(&class.name) == normalized_class)?;
+    class
+        .constants
+        .iter()
+        .find(|constant| constant.name.eq_ignore_ascii_case(constant_name))
+        .map(|constant| constant.span)
+}
+
+fn overriding_method_span(
+    unit: &IrUnit,
+    parent_class: &str,
+    method_name: &str,
+) -> Option<php_ir::IrSpan> {
+    let normalized_method = method_name.to_ascii_lowercase();
+    unit.classes.iter().find_map(|class| {
+        if !unit_class_extends(unit, class, parent_class) {
+            return None;
+        }
+        let method = class
+            .methods
+            .iter()
+            .find(|method| method.name.eq_ignore_ascii_case(&normalized_method))?;
+        unit.functions
+            .get(method.function.index())
+            .map(|function| function.span)
+    })
+}
+
+fn unit_class_extends(unit: &IrUnit, class: &php_ir::ClassEntry, parent_class: &str) -> bool {
+    let normalized_parent = normalize_class_name(parent_class);
+    let mut next = class.parent.as_deref();
+    while let Some(name) = next {
+        if normalize_class_name(name) == normalized_parent {
+            return true;
+        }
+        next = unit
+            .classes
+            .iter()
+            .find(|candidate| normalize_class_name(&candidate.name) == normalize_class_name(name))
+            .and_then(|candidate| candidate.parent.as_deref());
+    }
+    false
 }
 
 fn write_runtime_diagnostics<W: Write>(
@@ -735,6 +1141,19 @@ fn semantic_diagnostic_uses_php_fatal_line(id: DiagnosticId) -> bool {
         DiagnosticId::ClosureUseDuplicatesParameter
             | DiagnosticId::DuplicateClosureUseVariable
             | DiagnosticId::ClosureUseAutoGlobal
+            | DiagnosticId::ThisParameter
+            | DiagnosticId::ThisReassignment
+    )
+}
+
+fn semantic_diagnostic_uses_php_parse_error_line(id: DiagnosticId) -> bool {
+    matches!(id, DiagnosticId::InvalidClassConstantWrite)
+}
+
+fn semantic_diagnostic_is_immediate_php_fatal(id: DiagnosticId) -> bool {
+    matches!(
+        id,
+        DiagnosticId::ThisParameter | DiagnosticId::ThisReassignment
     )
 }
 
@@ -2433,7 +2852,9 @@ mod tests {
     use super::{
         BytecodeCacheMode, EXIT_COMPILE_ERROR, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, JitStatsMode,
         OptimizationLevel, QuickeningMode, cache_file_for, compile_pipeline_with_optimization,
-        parse_run_args, run,
+        parse_run_args, run, vm_compile_error_child_constant, vm_compile_error_child_method,
+        vm_compile_error_child_property, vm_compile_error_interface_constant,
+        vm_compile_error_interface_method_missing,
     };
     use php_bytecode_cache::{CacheFingerprint, CacheFingerprintInput};
     use php_vm::{
@@ -3420,6 +3841,93 @@ mod tests {
         let stderr = String::from_utf8(stderr).unwrap();
         assert!(stderr.contains("missing-semicolon.php"));
         assert!(stderr.contains(".."));
+    }
+
+    #[test]
+    fn class_table_compile_errors_render_php_fatal_line() {
+        let path = std::env::temp_dir().join(format!(
+            "phrust-vm-cli-visibility-{}.php",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "<?php\nclass Base { public function show() {} }\nclass Child extends Base {\n    protected function show() {}\n}\n",
+        )
+        .expect("write temporary PHP source");
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            ["run".to_string(), path.display().to_string()],
+            &mut stdout,
+            &mut stderr,
+        );
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(code, EXIT_COMPILE_ERROR);
+        assert!(stdout.is_empty());
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert!(
+            stderr.contains(
+                "Fatal error: Access level to child::show() must be public (as in class base)"
+            ),
+            "{stderr}"
+        );
+        assert!(stderr.contains(" on line 4"), "{stderr}");
+        assert!(
+            !stderr.contains("E_PHP_VM_METHOD_VISIBILITY_OVERRIDE"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn vm_compile_error_parser_finds_child_method() {
+        assert_eq!(
+            vm_compile_error_child_method(
+                "E_PHP_VM_STATIC_METHOD_OVERRIDE: Cannot make static method base::show() non static in class child",
+            ),
+            Some(("child".to_owned(), "show".to_owned()))
+        );
+        assert_eq!(
+            vm_compile_error_child_method(
+                "E_PHP_VM_METHOD_SIGNATURE_OVERRIDE: Declaration of D::f(array $a) must be compatible with C::f($a)",
+            ),
+            Some(("D".to_owned(), "f".to_owned()))
+        );
+        assert_eq!(
+            vm_compile_error_child_method(
+                "E_PHP_VM_INTERFACE_METHOD_SIGNATURE: Declaration of D::f(array $a) must be compatible with I::f($a)",
+            ),
+            Some(("D".to_owned(), "f".to_owned()))
+        );
+        assert_eq!(
+            vm_compile_error_child_property(
+                "E_PHP_VM_PROPERTY_STATIC_OVERRIDE: Cannot redeclare static A::$p as non static B::$p",
+            ),
+            Some(("B".to_owned(), "p".to_owned()))
+        );
+        assert_eq!(
+            vm_compile_error_child_constant(
+                "E_PHP_VM_CLASS_CONSTANT_VISIBILITY_OVERRIDE: Access level to B::TOKEN must be public (as in class A)",
+            ),
+            Some(("B".to_owned(), "TOKEN".to_owned()))
+        );
+        assert_eq!(
+            vm_compile_error_interface_constant(
+                "E_PHP_VM_INTERFACE_CONSTANT_VISIBILITY: Access type for interface constant A::FOO must be public",
+            ),
+            Some(("A".to_owned(), "FOO".to_owned()))
+        );
+        assert_eq!(
+            vm_compile_error_interface_method_missing(
+                "E_PHP_VM_INTERFACE_METHOD_MISSING: class Derived must implement Contract::run",
+            ),
+            Some((
+                "Derived".to_owned(),
+                "Contract".to_owned(),
+                "run".to_owned()
+            ))
+        );
     }
 
     #[test]
