@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"phar",
+  "priority":"data-platform classification",
+  "selected_manifest":"tests/phpt/manifests/modules/phar.selected.jsonl",
+  "corpus_count":553,
+  "selected_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":552,
+  "scope":["extension_loaded(\"phar\")","Phar class platform probes","Composer PHAR policy"],
+  "non_scope":["phar archive parser","phar:// wrapper","signing","compression","stub execution"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=phar","nix develop -c just composer-smoke","nix develop -c just verify-phpt"],
+  "next_step":"Keep Composer source mode as the supported path until a read-only PHAR MVP is designed."
+}

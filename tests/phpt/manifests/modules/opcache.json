@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"opcache",
+  "priority":"data-platform classification",
+  "selected_manifest":"tests/phpt/manifests/modules/opcache.selected.jsonl",
+  "corpus_count":593,
+  "selected_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":449,
+  "scope":["extension_loaded(\"opcache\")"],
+  "non_scope":["Opcache replacement","preloading","file cache","optimizer passes","JIT"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=opcache","nix develop -c just verify-phpt"],
+  "next_step":"Route ordinary PHP behavior to owning modules; keep cache/JIT behavior out of scope. Function-symbol parity is not asserted while the oracle exposes symbols with the extension unavailable."
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"mysqlnd",
+  "priority":"data-platform classification",
+  "selected_manifest":"tests/phpt/manifests/modules/mysqlnd.selected.jsonl",
+  "corpus_count":0,
+  "selected_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["extension_loaded(\"mysqlnd\")"],
+  "non_scope":["MySQL native driver","network authentication","packet parsing","charset handling"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=mysqlnd","nix develop -c just verify-phpt"],
+  "next_step":"Track mysqlnd through mysqli and pdo_mysql failures until a MySQL driver layer exists."
+}

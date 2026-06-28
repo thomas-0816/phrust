@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"mysqli",
+  "priority":"data-platform classification",
+  "selected_manifest":"tests/phpt/manifests/modules/mysqli.selected.jsonl",
+  "corpus_count":442,
+  "selected_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":442,
+  "scope":["extension_loaded(\"mysqli\")","mysqli class/function platform probes"],
+  "non_scope":["network database clients","MySQL protocol","mysqlnd/libmysql behavior","Zend extension ABI"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=mysqli","nix develop -c just verify-phpt"],
+  "next_step":"Keep mysqli out of core scope unless network database support is explicitly accepted."
+}
