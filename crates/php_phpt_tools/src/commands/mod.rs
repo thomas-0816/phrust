@@ -1306,8 +1306,12 @@ struct ExtensionPolicySpec {
     policy: &'static str,
     required_for_core: bool,
     required_for_composer: bool,
+    required_for_framework: bool,
     needs_stub: bool,
     needs_implementation: bool,
+    implementation_class: &'static str,
+    fixture_or_phpt_example: &'static str,
+    planned_solution_layer: &'static str,
     next_action: &'static str,
 }
 
@@ -1327,8 +1331,12 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         policy: "optional",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: false,
+        implementation_class: "stub-only",
+        fixture_or_phpt_example: "ext/dom/tests/DOMDocument_loadHTML_basic.phpt",
+        planned_solution_layer: "future XML/DOM extension layer",
         next_action: "Keep visible in triage; add stubs only when composer/framework tests require them.",
     },
     ExtensionPolicySpec {
@@ -1336,8 +1344,12 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         policy: "optional",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: false,
+        implementation_class: "stub-only",
+        fixture_or_phpt_example: "ext/xml/tests/xml_parse_into_struct_variation.phpt",
+        planned_solution_layer: "future XML extension layer",
         next_action: "Classify XML parser failures separately from core syntax/runtime failures.",
     },
     ExtensionPolicySpec {
@@ -1345,35 +1357,103 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         policy: "optional",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: false,
+        implementation_class: "stub-only",
+        fixture_or_phpt_example: "ext/simplexml/tests/001.phpt",
+        planned_solution_layer: "future XML/SimpleXML extension layer",
         next_action: "Defer implementation until XML support exists; keep PHPTs counted.",
+    },
+    ExtensionPolicySpec {
+        extension: "xsl",
+        policy: "optional",
+        required_for_core: false,
+        required_for_composer: false,
+        required_for_framework: false,
+        needs_stub: true,
+        needs_implementation: false,
+        implementation_class: "stub-only",
+        fixture_or_phpt_example: "ext/xsl/tests/XSLTProcessor_callables.phpt",
+        planned_solution_layer: "future XML/XSL extension layer",
+        next_action: "Defer XSLT behavior until DOM/XML support exists; keep PHPTs counted.",
     },
     ExtensionPolicySpec {
         extension: "pdo",
         policy: "optional",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: false,
+        implementation_class: "stub-only",
+        fixture_or_phpt_example: "ext/pdo/tests/pdo_001.phpt",
+        planned_solution_layer: "future database extension layer",
         next_action: "Keep database API failures out of core runtime gates while preserving counts.",
+    },
+    ExtensionPolicySpec {
+        extension: "pdo_sqlite",
+        policy: "required-framework",
+        required_for_core: false,
+        required_for_composer: false,
+        required_for_framework: true,
+        needs_stub: true,
+        needs_implementation: true,
+        implementation_class: "MVP",
+        fixture_or_phpt_example: "ext/pdo_sqlite/tests/bug33841.phpt",
+        planned_solution_layer: "future database extension layer",
+        next_action: "Plan SQLite-backed PDO only after PDO contracts are explicit.",
+    },
+    ExtensionPolicySpec {
+        extension: "sqlite3",
+        policy: "required-framework",
+        required_for_core: false,
+        required_for_composer: false,
+        required_for_framework: true,
+        needs_stub: true,
+        needs_implementation: true,
+        implementation_class: "MVP",
+        fixture_or_phpt_example: "ext/sqlite3/tests/sqlite3_01_open.phpt",
+        planned_solution_layer: "future database extension layer",
+        next_action: "Plan a deterministic local SQLite MVP after filesystem policy is stable.",
     },
     ExtensionPolicySpec {
         extension: "mysqli",
         policy: "optional",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: false,
         needs_stub: true,
         needs_implementation: false,
+        implementation_class: "stub-only",
+        fixture_or_phpt_example: "ext/mysqli/tests/mysqli_connect.phpt",
+        planned_solution_layer: "future database extension layer",
         next_action: "Treat as database-extension work, not a blocker for core PHPT green.",
+    },
+    ExtensionPolicySpec {
+        extension: "mysqlnd",
+        policy: "out-of-scope",
+        required_for_core: false,
+        required_for_composer: false,
+        required_for_framework: false,
+        needs_stub: false,
+        needs_implementation: false,
+        implementation_class: "out-of-scope",
+        fixture_or_phpt_example: "ext/mysqlnd",
+        planned_solution_layer: "extension policy",
+        next_action: "No standalone PHPT corpus rows are indexed; keep as out-of-scope driver internals unless MySQL support is requested.",
     },
     ExtensionPolicySpec {
         extension: "soap",
         policy: "out-of-scope",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: false,
         needs_stub: false,
         needs_implementation: false,
+        implementation_class: "out-of-scope",
+        fixture_or_phpt_example: "ext/soap/tests/server001.phpt",
+        planned_solution_layer: "extension policy",
         next_action: "Keep failures documented as extension-policy non-green unless scope changes.",
     },
     ExtensionPolicySpec {
@@ -1381,17 +1461,25 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         policy: "optional",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: false,
+        implementation_class: "stub-only",
+        fixture_or_phpt_example: "ext/intl/tests/collator_create.phpt",
+        planned_solution_layer: "future intl/ICU extension layer",
         next_action: "Defer ICU parity; add targeted stubs only for framework smoke blockers.",
     },
     ExtensionPolicySpec {
         extension: "mbstring",
-        policy: "composer-relevant",
+        policy: "required-composer",
         required_for_core: false,
         required_for_composer: true,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: true,
+        implementation_class: "real-implementation-required",
+        fixture_or_phpt_example: "ext/mbstring/tests/mb_strlen_basic.phpt",
+        planned_solution_layer: "php_std/php_runtime string builtins",
         next_action: "Plan a bounded UTF-8 string MVP after standard.strings is stable.",
     },
     ExtensionPolicySpec {
@@ -1399,17 +1487,25 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         policy: "out-of-scope",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: false,
         needs_stub: false,
         needs_implementation: false,
+        implementation_class: "out-of-scope",
+        fixture_or_phpt_example: "ext/gd/tests/bug39780.phpt",
+        planned_solution_layer: "extension policy",
         next_action: "Keep image-processing PHPTs visible but outside core policy-green.",
     },
     ExtensionPolicySpec {
         extension: "phar",
-        policy: "composer-relevant",
+        policy: "required-composer",
         required_for_core: false,
         required_for_composer: true,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: true,
+        implementation_class: "real-implementation-required",
+        fixture_or_phpt_example: "ext/phar/tests/phar_oo_001.phpt",
+        planned_solution_layer: "php_runtime filesystem/archive layer",
         next_action: "Define a read-only PHAR MVP after filesystem.streams is stable.",
     },
     ExtensionPolicySpec {
@@ -1417,26 +1513,38 @@ const EXTENSION_POLICY: &[ExtensionPolicySpec] = &[
         policy: "out-of-scope",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: false,
         needs_stub: false,
         needs_implementation: false,
+        implementation_class: "out-of-scope",
+        fixture_or_phpt_example: "ext/opcache/tests/opcache_enable_noop_001.phpt",
+        planned_solution_layer: "extension policy",
         next_action: "Keep Opcache/JIT behavior excluded from runtime correctness scope.",
     },
     ExtensionPolicySpec {
         extension: "session",
-        policy: "framework-relevant",
+        policy: "required-framework",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: true,
         needs_stub: true,
         needs_implementation: true,
+        implementation_class: "MVP",
+        fixture_or_phpt_example: "ext/session/tests/session_basic2.phpt",
+        planned_solution_layer: "php_runtime session module",
         next_action: "Implement deterministic local session state only after filesystem primitives are stable.",
     },
     ExtensionPolicySpec {
         extension: "sapi",
-        policy: "target-policy",
+        policy: "out-of-scope",
         required_for_core: false,
         required_for_composer: false,
+        required_for_framework: false,
         needs_stub: false,
         needs_implementation: false,
+        implementation_class: "out-of-scope",
+        fixture_or_phpt_example: "sapi/phpdbg/tests/print_001.phpt",
+        planned_solution_layer: "target CLI/SAPI policy",
         next_action: "Route CLI-compatible tests to phpt.cli and leave CGI/FPM/PHPDBG explicit.",
     },
 ];
@@ -4127,7 +4235,7 @@ fn render_extension_policy_report(metadata: &BaselineMetadata, triage: &PhptTria
         "Generated from baseline `{}` with {} PHPT corpus entries and {} known non-green fingerprints.\n\n",
         metadata.timestamp, metadata.corpus_count, metadata.known_failure_count
     ));
-    out.push_str("Extension PHPTs remain in the corpus and full-regression baseline. Policy classification decides whether a non-green result is core-blocking, optional, target-policy, composer-relevant, framework-relevant, or out-of-scope; it does not remove tests from accounting.\n\n");
+    out.push_str("Extension PHPTs remain in the corpus and full-regression baseline. Policy classification uses `required-core`, `required-composer`, `required-framework`, `optional`, and `out-of-scope`; implementation class uses `stub-only`, `MVP`, `real-implementation-required`, or `already-implemented`. Classification does not remove tests from accounting.\n\n");
     out.push_str("## Policy Table\n\n");
     render_extension_policy_table(&mut out, triage);
     out.push_str("\n## Invariants\n\n");
@@ -4139,14 +4247,14 @@ fn render_extension_policy_report(metadata: &BaselineMetadata, triage: &PhptTria
 }
 
 fn render_extension_policy_table(out: &mut String, triage: &PhptTriage) {
-    out.push_str("| Extension | Policy | PHPT count | PASS | SKIP | FAIL | BORK | Required for Core | Required for Composer | Needs stub | Needs implementation | Next action |\n");
+    out.push_str("| Extension | Policy | PHPT count | PASS | SKIP | FAIL | BORK | Top failure clusters | Required for Core | Required for Composer | Framework relevant | Implementation class | Next action |\n");
     out.push_str(
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |\n",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |\n",
     );
     for spec in EXTENSION_POLICY {
         let stats = extension_policy_stats(triage, spec.extension);
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             spec.extension,
             spec.policy,
             stats.corpus_count,
@@ -4154,38 +4262,36 @@ fn render_extension_policy_table(out: &mut String, triage: &PhptTriage) {
             stats.skip_count,
             stats.fail_count,
             stats.bork_count,
+            format_top_clusters(&stats),
             yes_no(spec.required_for_core),
             yes_no(spec.required_for_composer),
-            yes_no(spec.needs_stub),
-            yes_no(spec.needs_implementation),
+            yes_no(spec.required_for_framework),
+            spec.implementation_class,
             spec.next_action
         ));
     }
 }
 
 fn extension_policy_stats(triage: &PhptTriage, extension: &str) -> ModuleTriageStats {
-    let mut stats = triage
+    triage
         .raw_modules
         .get(extension)
         .cloned()
-        .unwrap_or_default();
-    if extension == "pdo" {
-        merge_extension_stats(&mut stats, triage.raw_modules.get("pdo_mysql"));
-        merge_extension_stats(&mut stats, triage.raw_modules.get("pdo_sqlite"));
-    }
-    stats
+        .unwrap_or_default()
 }
 
-fn merge_extension_stats(target: &mut ModuleTriageStats, source: Option<&ModuleTriageStats>) {
-    let Some(source) = source else {
-        return;
-    };
-    target.corpus_count += source.corpus_count;
-    target.pass_count += source.pass_count;
-    target.skip_count += source.skip_count;
-    target.fail_count += source.fail_count;
-    target.bork_count += source.bork_count;
-    target.known_failure_count += source.known_failure_count;
+fn format_top_clusters(stats: &ModuleTriageStats) -> String {
+    if stats.failure_clusters.is_empty() {
+        return "none".to_string();
+    }
+    let mut clusters = stats.failure_clusters.iter().collect::<Vec<_>>();
+    clusters.sort_by(|left, right| right.1.cmp(left.1).then_with(|| left.0.cmp(right.0)));
+    clusters
+        .into_iter()
+        .take(3)
+        .map(|(cluster, count)| format!("`{cluster}` {count}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -4198,6 +4304,8 @@ fn build_known_gap_rows(
 ) -> Vec<KnownGapCatalogEntry> {
     let mut counts = BTreeMap::<String, usize>::new();
     let mut examples = BTreeMap::<String, String>::new();
+    let mut extension_counts = BTreeMap::<String, usize>::new();
+    let mut extension_examples = BTreeMap::<String, String>::new();
     for failure in failures {
         let id = failure.primary_missing_feature_guess.as_str();
         if id.is_empty() {
@@ -4207,14 +4315,22 @@ fn build_known_gap_rows(
         examples
             .entry(id.to_string())
             .or_insert_with(|| failure.path.clone());
+        *extension_counts
+            .entry(failure.module_tag.clone())
+            .or_default() += 1;
+        extension_examples
+            .entry(failure.module_tag.clone())
+            .or_insert_with(|| failure.path.clone());
     }
     for count in module_counts {
         if count.kind == "bork_subclass" {
             *counts.entry(count.module.clone()).or_default() += count.known_failure_count;
+        } else if count.kind == "raw" {
+            extension_counts.insert(count.module.clone(), count.known_failure_count);
         }
     }
 
-    KNOWN_GAP_CATALOG
+    let mut rows = KNOWN_GAP_CATALOG
         .iter()
         .map(|spec| KnownGapCatalogEntry {
             id: spec.id.to_string(),
@@ -4228,7 +4344,29 @@ fn build_known_gap_rows(
             planned_solution_layer: spec.planned_solution_layer.to_string(),
             baseline_count: *counts.get(spec.id).unwrap_or(&0),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    rows.extend(EXTENSION_POLICY.iter().map(|spec| {
+        let id = format!("extension-policy-{}", spec.extension);
+        KnownGapCatalogEntry {
+            id,
+            title: format!("Extension policy for {}", spec.extension),
+            reference_behavior: format!(
+                "Reference PHP provides the {} extension behavior covered by its PHPT corpus when the extension is enabled.",
+                spec.extension
+            ),
+            current_rust_behavior: format!(
+                "phrust classifies {} as {} with implementation class {}; non-green PHPTs stay visible in full-regression accounting.",
+                spec.extension, spec.policy, spec.implementation_class
+            ),
+            fixture_or_phpt_example: extension_examples
+                .get(spec.extension)
+                .cloned()
+                .unwrap_or_else(|| spec.fixture_or_phpt_example.to_string()),
+            planned_solution_layer: spec.planned_solution_layer.to_string(),
+            baseline_count: *extension_counts.get(spec.extension).unwrap_or(&0),
+        }
+    }));
+    rows
 }
 
 fn render_known_gap_catalog(entries: &[KnownGapCatalogEntry]) -> String {
@@ -6145,18 +6283,31 @@ mod tests {
                 fail_count: 2,
                 bork_count: 0,
                 known_failure_count: 2,
+                failure_clusters: BTreeMap::from([("runtime-output-mismatch".to_string(), 2)]),
                 ..ModuleTriageStats::default()
             },
         );
         triage.raw_modules.insert(
-            "pdo_mysql".to_string(),
+            "pdo".to_string(),
             ModuleTriageStats {
-                corpus_count: 5,
+                corpus_count: 2,
                 pass_count: 0,
                 skip_count: 1,
-                fail_count: 4,
+                fail_count: 1,
                 bork_count: 0,
-                known_failure_count: 5,
+                known_failure_count: 2,
+                ..ModuleTriageStats::default()
+            },
+        );
+        triage.raw_modules.insert(
+            "pdo_sqlite".to_string(),
+            ModuleTriageStats {
+                corpus_count: 4,
+                pass_count: 0,
+                skip_count: 1,
+                fail_count: 3,
+                bork_count: 0,
+                known_failure_count: 4,
                 ..ModuleTriageStats::default()
             },
         );
@@ -6179,10 +6330,17 @@ mod tests {
         assert!(report.contains("Extension PHPTs remain in the corpus"));
         assert!(
             report.contains(
-                "| phar | composer-relevant | 3 | 1 | 0 | 2 | 0 | no | yes | yes | yes |"
+                "| phar | required-composer | 3 | 1 | 0 | 2 | 0 | `runtime-output-mismatch` 2 | no | yes | yes | real-implementation-required |"
             )
         );
-        assert!(report.contains("| pdo | optional | 5 | 0 | 1 | 4 | 0 | no | no | yes | no |"));
+        assert!(
+            report.contains(
+                "| pdo | optional | 2 | 0 | 1 | 1 | 0 | none | no | no | yes | stub-only |"
+            )
+        );
+        assert!(report.contains(
+            "| pdo_sqlite | required-framework | 4 | 0 | 1 | 3 | 0 | none | no | no | yes | MVP |"
+        ));
     }
 
     #[test]
