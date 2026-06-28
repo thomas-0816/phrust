@@ -130,7 +130,7 @@ impl Serializer {
                     .extend_from_slice(format!("\":{}:{{", properties.len()).as_bytes());
                 for (name, property) in properties {
                     self.write_value(
-                        &Value::string(serialized_object_property_name(&object, &name)),
+                        &Value::string(serialized_object_property_name(object, &name)),
                         depth + 1,
                     )?;
                     self.write_value(&property, depth + 1)?;

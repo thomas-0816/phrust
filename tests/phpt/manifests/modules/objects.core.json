@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"objects.core",
+  "priority":10,
+  "selected_manifest":"tests/phpt/manifests/modules/objects.core.selected.jsonl",
+  "corpus_count":2136,
+  "selected_count":16,
+  "pass_count":16,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":1924,
+  "scope":["class construction","constructors","public properties","public methods","$this","basic visibility errors","static methods","static properties","typed property basics"],
+  "non_scope":["magic methods","clone and clone-with","traits","enums","property hooks","SPL","Reflection","SAPI"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=objects.core","nix develop -c just verify-phpt"],
+  "next_step":"Keep the narrow object-core gate green while remaining object.classes gaps move to advanced object branches."
+}

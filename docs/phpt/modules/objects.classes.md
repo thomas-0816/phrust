@@ -2,7 +2,9 @@
 
 - Priority: 10
 - Selected manifest: `tests/phpt/manifests/modules/objects.classes.selected.jsonl`
-- Current counts: 178 PASS, 33 SKIP, 1924 FAIL, 0 BORK from 2136 corpus candidates
+- Current corpus counts: 178 PASS, 33 SKIP, 1924 FAIL, 0 BORK from 2136 corpus candidates
+- Current selected run: 164 PASS, 0 SKIP, 36 FAIL, 0 BORK from 200 selected rows
+- Core close gate: `objects.core` is 16 PASS / 0 FAIL for reference and target
 
 ## Scope
 
@@ -70,6 +72,8 @@
 ## Target Gates
 
 - `nix develop -c just phpt-module MODULE=zend.objects`
+- `nix develop -c just phpt-dev-module MODULE=objects.core`
+- `nix develop -c just phpt-dev-module MODULE=objects.classes`
 
 ## Known Gaps
 
@@ -79,6 +83,21 @@
 - `frontend-parse-or-compile`: 2
 - `runtime-timeout`: 1
 
+Current selected `objects.classes` non-green rows after the `objects.core`
+branch are outside the core construction/property/method/visibility/static/type
+slice. The remaining selected failures group around:
+
+- autoload and ReflectionException catch-type behavior
+- iterator/destructor ordering and exception behavior
+- serialization, `__sleep`, and `__toString` object formatting
+- class constant inheritance and dynamic constant/class lookup edge cases
+- property-reference and by-reference static-property assignment gaps
+- static-as-instance edge cases and broader object/reference COW behavior
+
 ## Next Step
 
-Stabilize constructor/property/method basics before magic behavior.
+Hand off the remaining advanced object subareas to `phpt/b3-objects-advanced`.
+Keep `objects.core` as the branch-local close gate for construction,
+constructors, public properties, public methods, `$this`, selected
+private/protected visibility errors, public static access, and typed-property
+basics.

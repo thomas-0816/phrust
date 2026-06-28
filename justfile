@@ -663,12 +663,12 @@ runtime-fixtures:
     grep -q 'E_PHP_RUNTIME_UNDEFINED_CONSTANT' "$tmp_dir/constants-undefined.err"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/known_gaps/variables/undefined.php > "$tmp_dir/variables-undefined.out" 2> "$tmp_dir/variables-undefined.err"; \
     sed -E 's/on line [0-9]+/on line <line>/' "$tmp_dir/variables-undefined.out" > "$tmp_dir/variables-undefined.normalized"; \
-    printf '\nWarning: Undefined variable $missing in %s/fixtures/runtime/known_gaps/variables/undefined.php on line <line>\nx\n' "$PWD" > "$tmp_dir/variables-undefined.expected"; \
+    printf 'Warning: Undefined variable $missing in %s/fixtures/runtime/known_gaps/variables/undefined.php on line <line>\nx\n' "$PWD" > "$tmp_dir/variables-undefined.expected"; \
     cmp "$tmp_dir/variables-undefined.expected" "$tmp_dir/variables-undefined.normalized"; \
     test ! -s "$tmp_dir/variables-undefined.err"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/errors/warning-continuation.php > "$tmp_dir/errors-warning-continuation.out" 2> "$tmp_dir/errors-warning-continuation.err"; \
     sed -E 's/on line [0-9]+/on line <line>/' "$tmp_dir/errors-warning-continuation.out" > "$tmp_dir/errors-warning-continuation.normalized"; \
-    printf '\nWarning: Undefined variable $missing in %s/fixtures/runtime/valid/errors/warning-continuation.php on line <line>\nok\n' "$PWD" > "$tmp_dir/errors-warning-continuation.expected"; \
+    printf 'Warning: Undefined variable $missing in %s/fixtures/runtime/valid/errors/warning-continuation.php on line <line>\nok\n' "$PWD" > "$tmp_dir/errors-warning-continuation.expected"; \
     cmp "$tmp_dir/errors-warning-continuation.expected" "$tmp_dir/errors-warning-continuation.normalized"; \
     test ! -s "$tmp_dir/errors-warning-continuation.err"; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/control_flow/if-true-false.php > "$tmp_dir/control-if.out"; \
@@ -903,7 +903,8 @@ runtime-fixtures:
     code=$?; \
     set -e; \
     test "$code" -eq 3; \
-    grep -q 'E_PHP_VM_THIS_OUTSIDE_METHOD' "$tmp_dir/objects-this-outside-method.err"; \
+    grep -q 'Uncaught Error: Using $this when not in object context' "$tmp_dir/objects-this-outside-method.out"; \
+    grep -q 'E_PHP_VM_UNCAUGHT_EXCEPTION' "$tmp_dir/objects-this-outside-method.err"; \
     set +e; \
     ${CARGO_TARGET_DIR:-target}/debug/php-vm run fixtures/runtime/valid/objects/static-property.php > "$tmp_dir/objects-static-property.out" 2> "$tmp_dir/objects-static-property.err"; \
     code=$?; \

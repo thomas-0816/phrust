@@ -296,13 +296,20 @@ fn output_preallocation_hint(unit: &IrUnit) -> usize {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ObjectPropertyIterationEntry {
+    key: String,
+    storage_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ForeachIterator {
     Snapshot {
         entries: Vec<(ArrayKey, Value)>,
         position: usize,
     },
     ObjectProperties {
-        entries: Vec<(String, Value)>,
+        object: ObjectRef,
+        entries: Vec<ObjectPropertyIterationEntry>,
         position: usize,
     },
     IteratorObject {
@@ -6355,11 +6362,18 @@ impl Vm {
                 }
                 next
             }
-            Some(ForeachIterator::ObjectProperties { entries, position }) => {
-                let next = entries
-                    .get(position)
-                    .cloned()
-                    .map(|(name, value)| (Some(Value::string(name.into_bytes())), value));
+            Some(ForeachIterator::ObjectProperties {
+                object,
+                entries,
+                position,
+            }) => {
+                let next = entries.get(position).cloned().map(|entry| {
+                    let value = object
+                        .get_property(&entry.storage_name)
+                        .map(|value| effective_value(&value))
+                        .unwrap_or(Value::Null);
+                    (Some(Value::string(entry.key.into_bytes())), value)
+                });
                 if next.is_some()
                     && let Some(ForeachIterator::ObjectProperties { position, .. }) =
                         foreach_iterators.get_mut(&iterator)
@@ -7202,12 +7216,23 @@ impl Vm {
                                 .get(*local);
                             match local_value {
                                 Some(Value::Uninitialized) if is_this_local(function, *local) => {
-                                    return self.runtime_error(
-                                        output,
+                                    match self.raise_runtime_error(
                                         compiled,
+                                        output,
                                         stack,
-                                        "E_PHP_VM_THIS_OUTSIDE_METHOD: $this is not available outside an instance method",
-                                    );
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        "E_PHP_VM_THIS_OUTSIDE_METHOD: Using $this when not in object context"
+                                            .to_owned(),
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                                 Some(Value::Uninitialized)
                                     if load_local_is_pre_call_by_ref_out_param(
@@ -12504,9 +12529,17 @@ impl Vm {
                                 }
                                 next
                             }
-                            Some(ForeachIterator::ObjectProperties { entries, position }) => {
-                                let next = entries.get(position).cloned().map(|(name, value)| {
-                                    (Some(Value::string(name.into_bytes())), value)
+                            Some(ForeachIterator::ObjectProperties {
+                                object,
+                                entries,
+                                position,
+                            }) => {
+                                let next = entries.get(position).cloned().map(|entry| {
+                                    let value = object
+                                        .get_property(&entry.storage_name)
+                                        .map(|value| effective_value(&value))
+                                        .unwrap_or(Value::Null);
+                                    (Some(Value::string(entry.key.into_bytes())), value)
                                 });
                                 if next.is_some()
                                     && let Some(ForeachIterator::ObjectProperties {
@@ -19198,6 +19231,7 @@ impl Vm {
         let entries = object_property_iteration_entries(compiled, &object, scope.as_deref())
             .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
         Ok(ForeachIterator::ObjectProperties {
+            object,
             entries,
             position: 0,
         })
@@ -20454,8 +20488,8 @@ impl Vm {
             compiled,
             state,
             current_scope_class(compiled, stack).as_deref(),
-            &resolved.class,
-            &resolved.method,
+            resolved.class,
+            resolved.method,
         ) {
             return Err(self.runtime_error(output, compiled, stack, message));
         }
@@ -25411,7 +25445,7 @@ fn reflection_class_constant_object(
                 constant
                     .doc_comment
                     .as_ref()
-                    .map_or(Value::Bool(false), |comment| reflection_string(comment)),
+                    .map_or(Value::Bool(false), reflection_string),
             ),
             ("has_default", Value::Bool(value.is_some())),
             ("default", value.unwrap_or(Value::Null)),
@@ -34387,6 +34421,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_NON_STATIC_METHOD_CALL"
         | "E_PHP_VM_INVALID_STATIC_SCOPE"
         | "E_PHP_VM_CURRENT_CLOSURE"
+        | "E_PHP_VM_THIS_OUTSIDE_METHOD"
         | "E_PHP_VM_DYNAMIC_PROPERTY_ERROR"
         | "E_PHP_VM_PIPE_RHS_NOT_CALLABLE"
         | "E_PHP_VM_UNKNOWN_CLASS_CONSTANT"
@@ -35373,7 +35408,7 @@ fn object_property_iteration_entries(
     compiled: &CompiledUnit,
     object: &ObjectRef,
     caller_scope: Option<&str>,
-) -> Result<Vec<(String, Value)>, String> {
+) -> Result<Vec<ObjectPropertyIterationEntry>, String> {
     let class_name = object.class_name();
     let Some(class) = compiled.lookup_class(&class_name) else {
         return Err(format!(
@@ -35391,15 +35426,15 @@ fn object_property_iteration_entries(
         &mut declared_names,
         &mut entries,
     )?;
-    for (name, value) in object.properties_snapshot() {
+    for (name, _value) in object.properties_snapshot() {
         if name.contains(':') || declared_names.iter().any(|declared| declared == &name) {
             continue;
         }
-        if !entries
-            .iter()
-            .any(|(existing, _): &(String, Value)| existing == &name)
-        {
-            entries.push((name, effective_value(&value)));
+        if !entries.iter().any(|existing| existing.key == name) {
+            entries.push(ObjectPropertyIterationEntry {
+                key: name.clone(),
+                storage_name: name,
+            });
         }
     }
     Ok(entries)
@@ -35411,7 +35446,7 @@ fn collect_object_property_iteration_entries(
     object: &ObjectRef,
     caller_scope: Option<&str>,
     declared_names: &mut Vec<String>,
-    entries: &mut Vec<(String, Value)>,
+    entries: &mut Vec<ObjectPropertyIterationEntry>,
 ) -> Result<(), String> {
     if let Some(parent) = parent_class(compiled, class)? {
         collect_object_property_iteration_entries(
@@ -35434,11 +35469,14 @@ fn collect_object_property_iteration_entries(
             continue;
         }
         let storage_name = property_storage_name(class, property);
-        let Some(value) = object.get_property(&storage_name) else {
+        if object.get_property(&storage_name).is_none() {
             continue;
-        };
-        if !entries.iter().any(|(name, _)| name == &property.name) {
-            entries.push((property.name.clone(), effective_value(&value)));
+        }
+        if !entries.iter().any(|entry| entry.key == property.name) {
+            entries.push(ObjectPropertyIterationEntry {
+                key: property.name.clone(),
+                storage_name,
+            });
         }
     }
     Ok(())
@@ -40885,9 +40923,30 @@ good"
     fn methods_classify_visibility_static_and_this_gaps() {
         let this_outside = execute_source("<?php echo $this;");
         assert_eq!(this_outside.status.exit_status(), ExitStatus::RuntimeError);
+        assert!(
+            this_outside
+                .output
+                .as_bytes()
+                .windows(
+                    b"Fatal error: Uncaught Error: Using $this when not in object context".len()
+                )
+                .any(|window| window
+                    == b"Fatal error: Uncaught Error: Using $this when not in object context"),
+            "{}",
+            String::from_utf8_lossy(this_outside.output.as_bytes())
+        );
+
+        let caught_this_outside = execute_source(
+            "<?php try { $this->a = new stdClass; } catch (Error $e) { echo $e->getMessage(); }",
+        );
+        assert!(
+            caught_this_outside.status.is_success(),
+            "{:?}",
+            caught_this_outside.status
+        );
         assert_eq!(
-            this_outside.diagnostics[0].id(),
-            "E_PHP_VM_THIS_OUTSIDE_METHOD"
+            caught_this_outside.output.as_bytes(),
+            b"Using $this when not in object context"
         );
     }
 
@@ -45889,6 +45948,16 @@ echo perf_jit_unstable_types_debug(4), "\n";
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"12|1299");
+    }
+
+    #[test]
+    fn foreach_object_properties_read_values_at_iteration_time() {
+        let result = execute_source(
+            "<?php class MutablePropsFixture { public $a = 1; public $b = 2; } $object = new MutablePropsFixture(); foreach ($object as $key => $value) { echo $key, \":\", $value, \";\"; if ($key === \"a\") { $object->b = 9; } } echo \"|\", $object->b;",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"a:1;b:9;|9");
     }
 
     #[test]
