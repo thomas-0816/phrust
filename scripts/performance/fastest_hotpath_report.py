@@ -610,7 +610,6 @@ def render_markdown(report: dict[str, Any], *, concise: bool = False) -> str:
             "## Correctness Policy",
             "",
             report["correctness_policy"],
-            "",
         ]
     )
     return "\n".join(lines)
