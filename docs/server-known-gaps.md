@@ -7,6 +7,9 @@ adapter.
 
 Known gaps:
 
+- Wave 2 compatibility fixtures and `server-compat-smoke` now exist as the
+  incremental harness for closing these gaps. Prompt 00 keeps future sections
+  as explicit skips until their owning implementation prompts make them strict.
 - Multipart form uploads are not implemented. `$_FILES` is currently empty.
 - Advanced output flushing, buffering, and streaming semantics are not complete.
 - Header support covers common `header()`, `headers_list()`, `headers_sent()`,

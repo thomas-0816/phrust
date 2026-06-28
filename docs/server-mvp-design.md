@@ -66,6 +66,10 @@ curl loop when available and does not enforce throughput thresholds.
 unmodified PHP app surface. See `docs/server-known-gaps.md` for unsupported MVP
 behavior.
 
+`fixtures/server/apps/compat/` and `just server-compat-smoke` are the Wave 2
+compatibility harness. The baseline harness is strict for static serving and
+skips future compatibility sections until their implementation prompts land.
+
 ## Explicit Later Work
 
 - TLS.

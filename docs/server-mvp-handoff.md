@@ -49,6 +49,8 @@ See `docs/server-known-gaps.md` for the current known-gap list.
 
 ## Performance-Critical Next Steps
 
+- Follow the serial Wave 2 plan in `docs/server-wave2-functionality.md` for
+  unmodified PHP app compatibility first, then speed and hardening work.
 - Add execution deadlines for long-running PHP code, not only request body read
   timeouts.
 - Replace simple static-file reads with streaming or platform sendfile support.
