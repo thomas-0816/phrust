@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"soap",
+  "priority":"extension-policy focused",
+  "selected_manifest":"tests/phpt/manifests/modules/soap.selected.jsonl",
+  "corpus_count":589,
+  "selected_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":577,
+  "scope":["extension_loaded(\"soap\")","SOAP class existence platform checks"],
+  "non_scope":["full upstream ext/soap corpus","WSDL","HTTP transport","XML schema","encoding and persistence behavior"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=soap","nix develop -c just verify-phpt"],
+  "next_step":"Keep SOAP out of scope until DOM/XML, streams, HTTP, and schema support exist."
+}

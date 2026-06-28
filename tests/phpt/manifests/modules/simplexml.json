@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"simplexml",
+  "priority":"extension-policy focused",
+  "selected_manifest":"tests/phpt/manifests/modules/simplexml.selected.jsonl",
+  "corpus_count":157,
+  "selected_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":157,
+  "scope":["extension_loaded(\"simplexml\")","SimpleXML class and loader function checks"],
+  "non_scope":["full upstream ext/simplexml corpus","libxml error handling","XML object views","DOM import"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=simplexml","nix develop -c just verify-phpt"],
+  "next_step":"Keep SimpleXML unavailable until DOM/XML parser work can support real XML object views."
+}
