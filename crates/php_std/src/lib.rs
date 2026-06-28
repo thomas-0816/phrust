@@ -1302,6 +1302,186 @@ impl ExtensionRegistry {
                 "pdo_sqlite",
                 ClassKind::Class,
             )),
+            ExtensionDescriptor::new("mysqli")
+                .with_constant(ConstantDescriptor::with_value(
+                    "MYSQLI_ASSOC",
+                    "mysqli",
+                    ConstantValue::Int(1),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "MYSQLI_NUM",
+                    "mysqli",
+                    ConstantValue::Int(2),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "MYSQLI_BOTH",
+                    "mysqli",
+                    ConstantValue::Int(3),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "MYSQLI_REPORT_OFF",
+                    "mysqli",
+                    ConstantValue::Int(0),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "MYSQLI_STORE_RESULT",
+                    "mysqli",
+                    ConstantValue::Int(0),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "MYSQLI_USE_RESULT",
+                    "mysqli",
+                    ConstantValue::Int(1),
+                ))
+                .with_function(FunctionDescriptor::php("mysqli_close", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_connect", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_connect_errno", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_connect_error", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_errno", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_error", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_escape_string", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_fetch_array", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_fetch_assoc", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_fetch_row", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_free_result", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_init", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_num_fields", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_num_rows", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_prepare", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_query", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_real_connect", "mysqli"))
+                .with_function(FunctionDescriptor::php(
+                    "mysqli_real_escape_string",
+                    "mysqli",
+                ))
+                .with_function(FunctionDescriptor::php("mysqli_report", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_select_db", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_set_charset", "mysqli"))
+                .with_function(FunctionDescriptor::php("mysqli_stmt_init", "mysqli"))
+                .with_class(ClassDescriptor::new("mysqli", "mysqli", ClassKind::Class))
+                .with_class(ClassDescriptor::new(
+                    "mysqli_driver",
+                    "mysqli",
+                    ClassKind::Class,
+                ))
+                .with_class(ClassDescriptor::new(
+                    "mysqli_result",
+                    "mysqli",
+                    ClassKind::Class,
+                ))
+                .with_class(ClassDescriptor::new(
+                    "mysqli_stmt",
+                    "mysqli",
+                    ClassKind::Class,
+                ))
+                .with_class(ClassDescriptor::new(
+                    "mysqli_warning",
+                    "mysqli",
+                    ClassKind::Class,
+                )),
+            ExtensionDescriptor::new("curl")
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_URL",
+                    "curl",
+                    ConstantValue::Int(10002),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_RETURNTRANSFER",
+                    "curl",
+                    ConstantValue::Int(19913),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_TIMEOUT",
+                    "curl",
+                    ConstantValue::Int(13),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_TIMEOUT_MS",
+                    "curl",
+                    ConstantValue::Int(155),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_FOLLOWLOCATION",
+                    "curl",
+                    ConstantValue::Int(52),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_HTTPHEADER",
+                    "curl",
+                    ConstantValue::Int(10023),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_POST",
+                    "curl",
+                    ConstantValue::Int(47),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_POSTFIELDS",
+                    "curl",
+                    ConstantValue::Int(10015),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_CUSTOMREQUEST",
+                    "curl",
+                    ConstantValue::Int(10036),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_SSL_VERIFYPEER",
+                    "curl",
+                    ConstantValue::Int(64),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLOPT_SSL_VERIFYHOST",
+                    "curl",
+                    ConstantValue::Int(81),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLINFO_EFFECTIVE_URL",
+                    "curl",
+                    ConstantValue::Int(1048577),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLINFO_HTTP_CODE",
+                    "curl",
+                    ConstantValue::Int(2097154),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLINFO_RESPONSE_CODE",
+                    "curl",
+                    ConstantValue::Int(2097154),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "CURLINFO_TOTAL_TIME",
+                    "curl",
+                    ConstantValue::Int(3145731),
+                ))
+                .with_function(FunctionDescriptor::php("curl_close", "curl"))
+                .with_function(FunctionDescriptor::php("curl_errno", "curl"))
+                .with_function(FunctionDescriptor::php("curl_error", "curl"))
+                .with_function(FunctionDescriptor::php("curl_exec", "curl"))
+                .with_function(FunctionDescriptor::php("curl_getinfo", "curl"))
+                .with_function(FunctionDescriptor::php("curl_init", "curl"))
+                .with_function(FunctionDescriptor::php("curl_setopt", "curl"))
+                .with_function(FunctionDescriptor::php("curl_version", "curl"))
+                .with_class(ClassDescriptor::new("CurlHandle", "curl", ClassKind::Class)),
+            ExtensionDescriptor::new("openssl")
+                .with_constant(ConstantDescriptor::with_value(
+                    "OPENSSL_ALGO_SHA1",
+                    "openssl",
+                    ConstantValue::Int(1),
+                ))
+                .with_constant(ConstantDescriptor::with_value(
+                    "OPENSSL_ALGO_SHA256",
+                    "openssl",
+                    ConstantValue::Int(7),
+                ))
+                .with_function(FunctionDescriptor::php("openssl_digest", "openssl"))
+                .with_function(FunctionDescriptor::php("openssl_get_md_methods", "openssl"))
+                .with_function(FunctionDescriptor::php(
+                    "openssl_random_pseudo_bytes",
+                    "openssl",
+                ))
+                .with_function(FunctionDescriptor::php("openssl_verify", "openssl")),
             ExtensionDescriptor::new("phar")
                 .with_class(ClassDescriptor::new("Phar", "phar", ClassKind::Class))
                 .with_class(ClassDescriptor::new("PharData", "phar", ClassKind::Class))

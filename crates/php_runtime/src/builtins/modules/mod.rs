@@ -1,5 +1,6 @@
 pub(in crate::builtins) mod arrays;
 pub(in crate::builtins) mod core;
+pub(in crate::builtins) mod curl;
 pub(in crate::builtins) mod date;
 pub(in crate::builtins) mod exif;
 pub(in crate::builtins) mod fileinfo;
@@ -11,6 +12,8 @@ pub(in crate::builtins) mod intl;
 pub(in crate::builtins) mod json;
 pub(in crate::builtins) mod math;
 pub(in crate::builtins) mod mbstring;
+pub(in crate::builtins) mod mysqli;
+pub(in crate::builtins) mod openssl;
 pub(in crate::builtins) mod pcre;
 pub(in crate::builtins) mod pdo;
 pub(in crate::builtins) mod reflection;

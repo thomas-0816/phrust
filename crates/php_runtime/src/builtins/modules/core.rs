@@ -6956,7 +6956,7 @@ mod tests {
             vec![
                 "X-Test: one",
                 "X-Test: two",
-                "Set-Cookie: sid=a+b; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/",
+                "Set-Cookie: sid=a%20b; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Path=/",
                 "Set-Cookie: raw=a/b",
             ]
         );
@@ -7014,7 +7014,7 @@ mod tests {
         let headers = array_strings(call_in_context(&mut context, "headers_list", Vec::new()));
         assert_eq!(
             headers,
-            vec!["Set-Cookie: prefs=x; path=/admin; secure; httponly; samesite=Lax"]
+            vec!["Set-Cookie: prefs=x; Path=/admin; Secure; HttpOnly; SameSite=Lax"]
         );
         assert!(output.to_string_lossy().contains("invalid cookie name"));
     }

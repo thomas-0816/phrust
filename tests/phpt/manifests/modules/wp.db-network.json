@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"wp.db-network",
+  "priority":"wordpress db-network extensions",
+  "selected_manifest":"tests/phpt/manifests/modules/wp.db-network.selected.jsonl",
+  "corpus_count":0,
+  "selected_count":10,
+  "pass_count":8,
+  "skip_count":2,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["mysqli/mysqlnd capability-gated implementation work","curl WordPress remote request transport","openssl HTTPS/security/update helpers","external-service skip contracts"],
+  "non_scope":["SAPI/FPM/CGI/Apache/phpdbg","fake DB/network success","shelling out to mysql/curl/openssl binaries","public internet tests"],
+  "target_gates":["nix develop -c cargo test -p php_phpt_tools","nix develop -c cargo test -p php_runtime","PHRUST_NET_TESTS=1 nix develop -c cargo test -p php_runtime curl","nix develop -c just phpt-dev-module MODULE=wp.db-network","nix develop -c just quality-fast"],
+  "next_step":"Run closeout gates and keep live MySQL/cURL PHPTs gated by explicit local environment."
+}

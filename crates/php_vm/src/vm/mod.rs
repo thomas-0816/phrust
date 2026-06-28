@@ -839,6 +839,7 @@ struct ExecutionState {
     upload_registry: UploadRegistry,
     session: php_runtime::SessionState,
     sqlite: php_runtime::SqliteState,
+    mysql: php_runtime::MysqlState,
     error_handlers: Vec<ErrorHandlerEntry>,
     exception_handlers: Vec<CallableValue>,
     diagnostics: Vec<RuntimeDiagnostic>,
@@ -8409,6 +8410,25 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_mysqli_runtime_class(&class_name) {
+                            let object =
+                                match new_mysqli_object(&class_name, values, &mut state.mysql) {
+                                    Ok(object) => object,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if is_pdo_runtime_class(&class_name) {
                             let object = match new_pdo_object(
                                 &class_name,
@@ -8870,6 +8890,31 @@ impl Vm {
                                     return self.runtime_error(output, compiled, stack, message);
                                 }
                             };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_mysqli_runtime_class(class_name) {
+                            let values = match read_call_args(unit, stack, args) {
+                                Ok(values) => values,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            let object =
+                                match new_mysqli_object(class_name, values, &mut state.mysql) {
+                                    Ok(object) => object,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
                             if let Err(message) = stack
                                 .current_mut()
                                 .expect("frame was pushed")
@@ -14321,6 +14366,26 @@ impl Vm {
                                     return self.runtime_error(output, compiled, stack, message);
                                 }
                             };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("caller frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_mysqli_runtime_class(&object.class_name()) {
+                            let value =
+                                match call_mysqli_method(&object, method, values, &mut state.mysql)
+                                {
+                                    Ok(value) => value,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
                             if let Err(message) = stack
                                 .current_mut()
                                 .expect("caller frame is active")
@@ -28865,6 +28930,9 @@ fn object_instanceof(
             if let Some(result) = internal_pdo_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
+            if let Some(result) = internal_mysqli_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
             if let Some(result) = internal_phar_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
@@ -30254,6 +30322,20 @@ fn internal_pdo_instanceof(object_class: &str, target_class: &str) -> Option<boo
     Some(normalize_class_name(object_class) == normalize_class_name(target_class))
 }
 
+fn is_mysqli_runtime_class(class_name: &str) -> bool {
+    matches!(
+        normalize_class_name(class_name).as_str(),
+        "mysqli" | "mysqli_result" | "mysqli_stmt" | "mysqli_driver" | "mysqli_warning"
+    )
+}
+
+fn internal_mysqli_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
+    if !is_mysqli_runtime_class(object_class) {
+        return None;
+    }
+    Some(normalize_class_name(object_class) == normalize_class_name(target_class))
+}
+
 fn is_phar_runtime_class(class_name: &str) -> bool {
     matches!(
         normalize_class_name(class_name).as_str(),
@@ -30391,6 +30473,241 @@ fn zip_runtime_class() -> RuntimeClassEntry {
     }
 }
 
+fn new_mysqli_object(
+    class_name: &str,
+    args: Vec<CallArgument>,
+    mysql: &mut php_runtime::MysqlState,
+) -> Result<ObjectRef, String> {
+    match normalize_class_name(class_name).as_str() {
+        "mysqli" => {
+            let values = call_args_to_positional("mysqli::__construct", args)?;
+            validate_mysqli_arg_count("mysqli::__construct", values.len(), 0, 6)?;
+            let object = mysqli_object(None);
+            if !values.is_empty()
+                && let Some(id) = mysqli_connect_from_test_dsn(mysql)
+            {
+                mysqli_set_connection_id(&object, id);
+            }
+            sync_mysqli_error_properties(&object, mysql);
+            Ok(object)
+        }
+        "mysqli_result" => Err(
+            "E_PHP_VM_MYSQLI_RESULT_CONSTRUCT: mysqli_result objects are created by mysqli::query"
+                .to_owned(),
+        ),
+        "mysqli_stmt" => Err(
+            "E_PHP_VM_MYSQLI_STMT_GAP: mysqli_stmt prepared statements are not implemented in the mysqli MVP"
+                .to_owned(),
+        ),
+        "mysqli_driver" | "mysqli_warning" => Ok(mysqli_empty_object(class_name)),
+        _ => Err(format!(
+            "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
+        )),
+    }
+}
+
+fn call_mysqli_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+    mysql: &mut php_runtime::MysqlState,
+) -> Result<Value, String> {
+    let method = normalize_method_name(method);
+    match normalize_class_name(&object.class_name()).as_str() {
+        "mysqli" => call_mysqli_connection_method(object, &method, args, mysql),
+        "mysqli_result" => call_mysqli_result_method(object, &method, args, mysql),
+        "mysqli_stmt" => Err(format!(
+            "E_PHP_VM_MYSQLI_STMT_GAP: method mysqli_stmt::{method} is not implemented in the mysqli MVP"
+        )),
+        other => Err(format!(
+            "E_PHP_VM_MYSQLI_METHOD_GAP: method {other}::{method} is not implemented in the mysqli MVP"
+        )),
+    }
+}
+
+fn call_mysqli_connection_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+    mysql: &mut php_runtime::MysqlState,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("mysqli::{method}"), args)?;
+    match method {
+        "__construct" | "realconnect" | "real_connect" | "connect" => {
+            validate_mysqli_arg_count("mysqli::real_connect", values.len(), 0, 7)?;
+            if let Some(old_id) = mysqli_connection_id(object) {
+                mysql.close(old_id);
+                object.unset_property("__mysqli_connection");
+            }
+            if let Some(id) = mysqli_connect_from_test_dsn(mysql) {
+                mysqli_set_connection_id(object, id);
+                sync_mysqli_error_properties(object, mysql);
+                Ok(Value::Bool(true))
+            } else {
+                sync_mysqli_error_properties(object, mysql);
+                Ok(Value::Bool(false))
+            }
+        }
+        "query" => {
+            validate_mysqli_arg_count("mysqli::query", values.len(), 1, 2)?;
+            let Some(id) = mysqli_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let sql = to_string(&values[0])?.to_string_lossy();
+            match mysql.query(id, &sql) {
+                Ok(Some(result_id)) => {
+                    let result = mysqli_result_object(result_id);
+                    result.set_property("num_rows", Value::Int(mysql.num_rows(result_id)));
+                    Ok(Value::Object(result))
+                }
+                Ok(None) => Ok(Value::Bool(true)),
+                Err(_) => {
+                    sync_mysqli_error_properties(object, mysql);
+                    Ok(Value::Bool(false))
+                }
+            }
+        }
+        "realescapestring" | "real_escape_string" | "escape_string" => {
+            validate_mysqli_arg_count("mysqli::real_escape_string", values.len(), 1, 1)?;
+            let value = to_string(&values[0])?;
+            Ok(Value::string(mysql_escape_string(value.as_bytes())))
+        }
+        "close" => {
+            validate_mysqli_arg_count("mysqli::close", values.len(), 0, 0)?;
+            let Some(id) = mysqli_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            object.unset_property("__mysqli_connection");
+            Ok(Value::Bool(mysql.close(id)))
+        }
+        "selectdb" | "select_db" => {
+            validate_mysqli_arg_count(&format!("mysqli::{method}"), values.len(), 1, 1)?;
+            let Some(id) = mysqli_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let database = to_string(&values[0])?.to_string_lossy();
+            Ok(Value::Bool(mysql.select_db(id, &database).is_ok()))
+        }
+        "setcharset" | "set_charset" => {
+            validate_mysqli_arg_count(&format!("mysqli::{method}"), values.len(), 1, 1)?;
+            let Some(id) = mysqli_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let charset = to_string(&values[0])?.to_string_lossy();
+            Ok(Value::Bool(mysql.set_charset(id, &charset).is_ok()))
+        }
+        "prepare" => Err(
+            "E_PHP_VM_MYSQLI_PREPARE_UNSUPPORTED: mysqli prepared statements are not implemented in the mysqli MVP"
+                .to_owned(),
+        ),
+        other => Err(format!(
+            "E_PHP_VM_MYSQLI_METHOD_GAP: method mysqli::{other} is not implemented in the mysqli MVP"
+        )),
+    }
+}
+
+fn call_mysqli_result_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+    mysql: &mut php_runtime::MysqlState,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("mysqli_result::{method}"), args)?;
+    let Some(id) = mysqli_result_id(object) else {
+        return Ok(Value::Bool(false));
+    };
+    match method {
+        "fetchassoc" | "fetch_assoc" => {
+            validate_mysqli_arg_count("mysqli_result::fetch_assoc", values.len(), 0, 0)?;
+            Ok(mysql.fetch_array(id, php_runtime::MYSQLI_ASSOC))
+        }
+        "fetchrow" | "fetch_row" => {
+            validate_mysqli_arg_count("mysqli_result::fetch_row", values.len(), 0, 0)?;
+            Ok(mysql.fetch_array(id, php_runtime::MYSQLI_NUM))
+        }
+        "fetcharray" | "fetch_array" => {
+            validate_mysqli_arg_count("mysqli_result::fetch_array", values.len(), 0, 1)?;
+            let mode = values
+                .first()
+                .map(to_int)
+                .transpose()?
+                .unwrap_or(php_runtime::MYSQLI_BOTH);
+            Ok(mysql.fetch_array(id, mode))
+        }
+        "free" | "close" => {
+            validate_mysqli_arg_count("mysqli_result::free", values.len(), 0, 0)?;
+            object.unset_property("__mysqli_result");
+            Ok(Value::Bool(mysql.free_result(id)))
+        }
+        other => Err(format!(
+            "E_PHP_VM_MYSQLI_RESULT_METHOD_GAP: method mysqli_result::{other} is not implemented in the mysqli MVP"
+        )),
+    }
+}
+
+fn mysqli_connect_from_test_dsn(mysql: &mut php_runtime::MysqlState) -> Option<i64> {
+    let Some(options) = php_runtime::MysqlConnectOptions::from_test_env() else {
+        mysql.record_connect_error(
+            2002,
+            format!(
+                "live mysqli connections require {}",
+                php_runtime::MYSQL_TEST_DSN_ENV
+            ),
+        );
+        return None;
+    };
+    match options {
+        Ok(options) => mysql.connect(&options).ok(),
+        Err(error) => {
+            mysql.record_connect_error(2005, error.message);
+            None
+        }
+    }
+}
+
+fn mysqli_object(connection_id: Option<i64>) -> ObjectRef {
+    let object = ObjectRef::new_with_display_name(&mysqli_runtime_class("mysqli"), "mysqli");
+    if let Some(id) = connection_id {
+        mysqli_set_connection_id(&object, id);
+    }
+    object.set_property("connect_errno", Value::Int(0));
+    object.set_property("connect_error", Value::string(""));
+    object.set_property("errno", Value::Int(0));
+    object.set_property("error", Value::string(""));
+    object
+}
+
+fn mysqli_empty_object(class_name: &str) -> ObjectRef {
+    ObjectRef::new_with_display_name(
+        &mysqli_runtime_class(class_name),
+        mysqli_display_name(class_name),
+    )
+}
+
+fn mysqli_result_object(result_id: i64) -> ObjectRef {
+    let object =
+        ObjectRef::new_with_display_name(&mysqli_runtime_class("mysqli_result"), "mysqli_result");
+    object.set_property("__mysqli_result", Value::Int(result_id));
+    object.set_property("num_rows", Value::Int(0));
+    object
+}
+
+fn mysqli_runtime_class(name: &str) -> RuntimeClassEntry {
+    RuntimeClassEntry {
+        name: normalize_class_name(name),
+        parent: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor_id: None,
+        flags: RuntimeClassFlags::default(),
+    }
+}
+
 fn validate_zip_arg_count(
     function: &str,
     actual: usize,
@@ -30400,6 +30717,85 @@ fn validate_zip_arg_count(
     if actual < min || actual > max {
         return Err(format!(
             "E_PHP_VM_ZIP_ARG_COUNT: {function} expects {min}..{max} argument(s), {actual} given"
+        ));
+    }
+    Ok(())
+}
+
+fn mysqli_display_name(class_name: &str) -> String {
+    match normalize_class_name(class_name).as_str() {
+        "mysqli" => "mysqli".to_owned(),
+        "mysqli_result" => "mysqli_result".to_owned(),
+        "mysqli_stmt" => "mysqli_stmt".to_owned(),
+        "mysqli_driver" => "mysqli_driver".to_owned(),
+        "mysqli_warning" => "mysqli_warning".to_owned(),
+        _ => class_name.to_owned(),
+    }
+}
+
+fn mysqli_set_connection_id(object: &ObjectRef, id: i64) {
+    object.set_property("__mysqli_connection", Value::Int(id));
+}
+
+fn mysqli_connection_id(object: &ObjectRef) -> Option<i64> {
+    match object.get_property("__mysqli_connection") {
+        Some(Value::Int(id)) => Some(id),
+        _ => None,
+    }
+}
+
+fn mysqli_result_id(object: &ObjectRef) -> Option<i64> {
+    match object.get_property("__mysqli_result") {
+        Some(Value::Int(id)) => Some(id),
+        _ => None,
+    }
+}
+
+fn sync_mysqli_error_properties(object: &ObjectRef, mysql: &php_runtime::MysqlState) {
+    let errno =
+        mysqli_connection_id(object).map_or_else(|| mysql.connect_errno(), |id| mysql.errno(id));
+    let error =
+        mysqli_connection_id(object).map_or_else(|| mysql.connect_error(), |id| mysql.error(id));
+    object.set_property("connect_errno", Value::Int(mysql.connect_errno()));
+    object.set_property(
+        "connect_error",
+        Value::String(PhpString::from(mysql.connect_error().into_bytes())),
+    );
+    object.set_property("errno", Value::Int(errno));
+    object.set_property("error", Value::String(PhpString::from(error.into_bytes())));
+}
+
+fn mysql_escape_string(value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len());
+    for byte in value {
+        match byte {
+            0 => out.extend_from_slice(b"\\0"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\'' => out.extend_from_slice(b"\\'"),
+            b'"' => out.extend_from_slice(b"\\\""),
+            0x1a => out.extend_from_slice(b"\\Z"),
+            other => out.push(*other),
+        }
+    }
+    out
+}
+
+fn validate_mysqli_arg_count(
+    function: &str,
+    actual: usize,
+    min: usize,
+    max: usize,
+) -> Result<(), String> {
+    if actual < min || actual > max {
+        let expected = if min == max {
+            min.to_string()
+        } else {
+            format!("{min} to {max}")
+        };
+        return Err(format!(
+            "E_PHP_VM_MYSQLI_ARG_COUNT: {function} expects {expected} argument(s), {actual} given"
         ));
     }
     Ok(())
@@ -33735,6 +34131,14 @@ fn internal_enum_class_entry(normalized: &str) -> Option<php_ir::module::ClassEn
         "pdo" => Some(internal_empty_class_entry("pdo", "PDO")),
         "pdostatement" => Some(internal_empty_class_entry("pdostatement", "PDOStatement")),
         "pdorow" => Some(internal_empty_class_entry("pdorow", "PDORow")),
+        "mysqli" => Some(internal_empty_class_entry("mysqli", "mysqli")),
+        "mysqli_driver" => Some(internal_empty_class_entry("mysqli_driver", "mysqli_driver")),
+        "mysqli_result" => Some(internal_empty_class_entry("mysqli_result", "mysqli_result")),
+        "mysqli_stmt" => Some(internal_empty_class_entry("mysqli_stmt", "mysqli_stmt")),
+        "mysqli_warning" => Some(internal_empty_class_entry(
+            "mysqli_warning",
+            "mysqli_warning",
+        )),
         "phar" => Some(internal_empty_class_entry("phar", "Phar")),
         "phardata" => Some(internal_empty_class_entry("phardata", "PharData")),
         "pharfileinfo" => Some(internal_empty_class_entry("pharfileinfo", "PharFileInfo")),
@@ -35987,6 +36391,7 @@ fn execute_builtin_entry(
     context.set_strtok_state(&mut state.strtok_state);
     context.set_http_response_state(&mut state.http_response);
     context.set_upload_registry(&mut state.upload_registry);
+    context.set_mysql_state(&mut state.mysql);
     context.set_mb_internal_encoding(if state.mb_internal_encoding.is_empty() {
         "UTF-8".to_owned()
     } else {

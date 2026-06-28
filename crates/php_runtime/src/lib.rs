@@ -20,6 +20,7 @@ pub mod callable;
 pub mod context;
 pub mod convert;
 pub mod datetime;
+pub mod db;
 pub mod diagnostic;
 pub mod error_output;
 pub mod fiber;
@@ -76,6 +77,10 @@ pub mod api {
         ArithmeticNumber, NumericValue, compare, equal, identical, reset_float_string_precision,
         set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
         to_string,
+    };
+    pub use crate::db::mysql::{
+        MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MysqlCell, MysqlConnectOptions,
+        MysqlConnection, MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow, MysqlState,
     };
     pub use crate::diagnostic::{
         PhpReferenceClassification, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,
@@ -195,6 +200,10 @@ pub use convert::{
     ArithmeticNumber, NumericValue, compare, equal, identical, reset_float_string_precision,
     set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
     to_string,
+};
+pub use db::mysql::{
+    MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MysqlCell, MysqlConnectOptions,
+    MysqlConnection, MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow, MysqlState,
 };
 pub use diagnostic::{
     PhpReferenceClassification, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,

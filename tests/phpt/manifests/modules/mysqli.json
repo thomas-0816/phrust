@@ -1,7 +1,7 @@
 {
   "schema_version":"phpt-module-plan-v1",
   "module":"mysqli",
-  "priority":"data-platform classification",
+  "priority":"wordpress mysqli MVP classification",
   "selected_manifest":"tests/phpt/manifests/modules/mysqli.selected.jsonl",
   "corpus_count":442,
   "selected_count":1,
@@ -10,8 +10,8 @@
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":442,
-  "scope":["extension_loaded(\"mysqli\")","mysqli class/function platform probes"],
-  "non_scope":["network database clients","MySQL protocol","mysqlnd/libmysql behavior","Zend extension ABI"],
+  "scope":["extension_loaded(\"mysqli\")","mysqli class/function platform probes","WordPress mysqli MVP visibility"],
+  "non_scope":["full mysqli PHPT parity","prepared statements until selected fixtures require them","mysqlnd/libmysql behavior","Zend extension ABI"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=mysqli","nix develop -c just verify-phpt"],
-  "next_step":"Keep mysqli out of core scope unless network database support is explicitly accepted."
+  "next_step":"Use wp.db-network for capability-gated live MySQL/MariaDB coverage and keep broad mysqli corpus gaps explicit."
 }

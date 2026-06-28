@@ -1,8 +1,8 @@
 //! Runtime services passed to internal builtins.
 
 use crate::{
-    FilesystemCapabilities, IniRegistry, OutputBuffer, PHP_E_DEPRECATED, PHP_E_WARNING, PcreCache,
-    PhpDiagnosticChannel, PhpDiagnosticDisplayOptions, ReferenceCell, ResourceTable,
+    FilesystemCapabilities, IniRegistry, MysqlState, OutputBuffer, PHP_E_DEPRECATED, PHP_E_WARNING,
+    PcreCache, PhpDiagnosticChannel, PhpDiagnosticDisplayOptions, ReferenceCell, ResourceTable,
     RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity, SessionState, UploadRegistry,
     Value, datetime, emit_php_diagnostic, pcre,
 };
@@ -131,6 +131,7 @@ pub struct BuiltinContext<'a> {
     mb_internal_encoding: String,
     session_state: Option<&'a mut SessionState>,
     session_global: Option<ReferenceCell>,
+    mysql_state: Option<&'a mut MysqlState>,
     diagnostic_display: PhpDiagnosticDisplayOptions,
     diagnostics: Vec<RuntimeDiagnostic>,
 }
@@ -160,6 +161,7 @@ impl<'a> BuiltinContext<'a> {
             mb_internal_encoding: "UTF-8".to_owned(),
             session_state: None,
             session_global: None,
+            mysql_state: None,
             diagnostic_display: PhpDiagnosticDisplayOptions::default(),
             diagnostics: Vec::new(),
         }
@@ -194,6 +196,7 @@ impl<'a> BuiltinContext<'a> {
             mb_internal_encoding: "UTF-8".to_owned(),
             session_state: None,
             session_global: None,
+            mysql_state: None,
             diagnostic_display: PhpDiagnosticDisplayOptions::default(),
             diagnostics: Vec::new(),
         }
@@ -404,6 +407,16 @@ impl<'a> BuiltinContext<'a> {
     /// Request-local session state.
     pub fn session_state(&mut self) -> Option<&mut SessionState> {
         self.session_state.as_deref_mut()
+    }
+
+    /// Sets request-local MySQL/MariaDB extension state.
+    pub fn set_mysql_state(&mut self, state: &'a mut MysqlState) {
+        self.mysql_state = Some(state);
+    }
+
+    /// Returns request-local MySQL/MariaDB extension state.
+    pub fn mysql_state(&mut self) -> Option<&mut MysqlState> {
+        self.mysql_state.as_deref_mut()
     }
 
     /// Writes the current session data into the live `$_SESSION` global.

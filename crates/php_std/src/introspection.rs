@@ -55,10 +55,13 @@ mod tests {
         let mut registry = ExtensionRegistry::standard_library();
 
         assert!(extension_loaded(&registry, "CORE"));
+        assert!(extension_loaded(&registry, "curl"));
         assert!(extension_loaded(&registry, "DATE"));
         assert!(extension_loaded(&registry, "JSON"));
         assert!(extension_loaded(&registry, "PCRE"));
         assert!(extension_loaded(&registry, "mbstring"));
+        assert!(extension_loaded(&registry, "mysqli"));
+        assert!(extension_loaded(&registry, "openssl"));
         assert!(extension_loaded(&registry, "phar"));
         assert!(extension_loaded(&registry, "pdo"));
         assert!(extension_loaded(&registry, "pdo_sqlite"));
@@ -80,6 +83,7 @@ mod tests {
             get_loaded_extensions(&registry),
             [
                 "core",
+                "curl",
                 "date",
                 "exif",
                 "fileinfo",
@@ -88,6 +92,8 @@ mod tests {
                 "iconv",
                 "json",
                 "mbstring",
+                "mysqli",
+                "openssl",
                 "pcre",
                 "pdo",
                 "pdo_sqlite",
@@ -106,7 +112,7 @@ mod tests {
         let Value::Array(array) = get_loaded_extensions_value(&registry) else {
             panic!("expected array");
         };
-        assert_eq!(array.len(), 22);
+        assert_eq!(array.len(), 25);
     }
 
     #[test]
@@ -115,7 +121,10 @@ mod tests {
         registry.enable_extension("test").expect("enable test");
 
         assert!(function_exists(&registry, "STRLEN"));
+        assert!(function_exists(&registry, "curl_exec"));
         assert!(function_exists(&registry, "mb_strlen"));
+        assert!(function_exists(&registry, "mysqli_query"));
+        assert!(function_exists(&registry, "openssl_digest"));
         assert!(function_exists(&registry, "pdo_drivers"));
         assert!(!function_exists(&registry, "__php_std_test_probe"));
         assert!(!function_exists(&registry, "composer_missing_function"));
