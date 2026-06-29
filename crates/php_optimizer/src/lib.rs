@@ -933,6 +933,7 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::FetchClassConstant { dst, .. }
         | InstructionKind::FetchObjectClassName { dst, .. }
         | InstructionKind::AssignProperty { dst, .. }
+        | InstructionKind::AssignPropertyDim { dst, .. }
         | InstructionKind::AssignDynamicProperty { dst, .. }
         | InstructionKind::AssignStaticProperty { dst, .. }
         | InstructionKind::NewArray { dst }
@@ -990,6 +991,7 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::EndFinally { .. }
         | InstructionKind::Throw { .. }
         | InstructionKind::UnsetProperty { .. }
+        | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
@@ -1117,6 +1119,10 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::UnsetProperty { object: src, .. }
         | InstructionKind::AcquireCallable { value: src, .. }
         | InstructionKind::ForeachInit { source: src, .. } => remap_operand_constants(src, remap),
+        InstructionKind::UnsetPropertyDim { object, dims, .. } => {
+            remap_operand_constants(object, remap);
+            remap_operands_constants(dims, remap);
+        }
         InstructionKind::UnsetDynamicProperty { object, property } => {
             remap_operand_constants(object, remap);
             remap_operand_constants(property, remap);
@@ -1213,6 +1219,16 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         } => {
             remap_operand_constants(object, remap);
             remap_operand_constants(replacements, remap);
+        }
+        InstructionKind::AssignPropertyDim {
+            object,
+            dims,
+            value,
+            ..
+        } => {
+            remap_operand_constants(object, remap);
+            remap_operands_constants(dims, remap);
+            remap_operand_constants(value, remap);
         }
         InstructionKind::AssignDynamicProperty {
             object,
@@ -1383,6 +1399,10 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::ForeachInit { source: src, .. } => {
             rewrite_operand_registers(src, aliases)
         }
+        InstructionKind::UnsetPropertyDim { object, dims, .. } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operands_registers(dims, aliases);
+        }
         InstructionKind::UnsetDynamicProperty { object, property } => {
             rewrite_operand_registers(object, aliases);
             rewrite_operand_registers(property, aliases);
@@ -1479,6 +1499,16 @@ fn rewrite_instruction_register_operands(
         } => {
             rewrite_operand_registers(object, aliases);
             rewrite_operand_registers(replacements, aliases);
+        }
+        InstructionKind::AssignPropertyDim {
+            object,
+            dims,
+            value,
+            ..
+        } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operands_registers(dims, aliases);
+            rewrite_operand_registers(value, aliases);
         }
         InstructionKind::AssignDynamicProperty {
             object,

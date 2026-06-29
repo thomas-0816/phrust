@@ -197,6 +197,14 @@ pub const PATHINFO_BASENAME: i64 = 2;
 pub const PATHINFO_EXTENSION: i64 = 4;
 /// `pathinfo()` filename selector.
 pub const PATHINFO_FILENAME: i64 = 8;
+/// INI setting may be changed in user scripts.
+pub const INI_USER: i64 = 1;
+/// INI setting may be changed in directory-level configuration.
+pub const INI_PERDIR: i64 = 2;
+/// INI setting may be changed in system-level configuration.
+pub const INI_SYSTEM: i64 = 4;
+/// INI setting may be changed in every supported context.
+pub const INI_ALL: i64 = INI_USER | INI_PERDIR | INI_SYSTEM;
 /// Normal INI scanner mode.
 pub const INI_SCANNER_NORMAL: i64 = 0;
 /// Raw INI scanner mode.
@@ -408,6 +416,30 @@ mod tests {
                 .and_then(crate::ConstantDescriptor::value),
             Some(ConstantValue::Float(value)) if value.to_f64().is_nan()
         ));
+        assert_eq!(
+            registry
+                .enabled_constant("INI_ALL")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Int(7))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("INI_USER")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Int(1))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("INI_PERDIR")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Int(2))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("INI_SYSTEM")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Int(4))
+        );
     }
 
     #[test]

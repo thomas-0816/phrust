@@ -544,6 +544,12 @@ fn verify_instruction(
         InstructionKind::UnsetProperty { object, .. } => {
             verify_operand(object, function, unit, errors);
         }
+        InstructionKind::UnsetPropertyDim { object, dims, .. } => {
+            verify_operand(object, function, unit, errors);
+            for dim in dims {
+                verify_operand(dim, function, unit, errors);
+            }
+        }
         InstructionKind::UnsetDynamicProperty { object, property } => {
             verify_operand(object, function, unit, errors);
             verify_operand(property, function, unit, errors);
@@ -563,6 +569,20 @@ fn verify_instruction(
         } => {
             verify_register(*dst, function.register_count, errors);
             verify_operand(object, function, unit, errors);
+            verify_operand(value, function, unit, errors);
+        }
+        InstructionKind::AssignPropertyDim {
+            dst,
+            object,
+            dims,
+            value,
+            ..
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
+            for dim in dims {
+                verify_operand(dim, function, unit, errors);
+            }
             verify_operand(value, function, unit, errors);
         }
         InstructionKind::AssignDynamicProperty {
@@ -1069,6 +1089,12 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         | InstructionKind::EmptyProperty { object: src, .. }
         | InstructionKind::UnsetProperty { object: src, .. }
         | InstructionKind::ForeachInit { source: src, .. } => operand_register_uses(src, uses),
+        InstructionKind::UnsetPropertyDim { object, dims, .. } => {
+            operand_register_uses(object, uses);
+            for dim in dims {
+                operand_register_uses(dim, uses);
+            }
+        }
         InstructionKind::DynamicInstanceOf { object, target, .. } => {
             operand_register_uses(object, uses);
             operand_register_uses(target, uses);
@@ -1184,6 +1210,18 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
             operand_register_uses(object, uses);
             operand_register_uses(value, uses);
         }
+        InstructionKind::AssignPropertyDim {
+            object,
+            dims,
+            value,
+            ..
+        } => {
+            operand_register_uses(object, uses);
+            for dim in dims {
+                operand_register_uses(dim, uses);
+            }
+            operand_register_uses(value, uses);
+        }
         InstructionKind::AssignDynamicProperty {
             object,
             property,
@@ -1281,6 +1319,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::FetchClassConstant { dst, .. }
         | InstructionKind::FetchObjectClassName { dst, .. }
         | InstructionKind::AssignProperty { dst, .. }
+        | InstructionKind::AssignPropertyDim { dst, .. }
         | InstructionKind::AssignDynamicProperty { dst, .. }
         | InstructionKind::AssignStaticProperty { dst, .. }
         | InstructionKind::NewArray { dst }
@@ -1328,6 +1367,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::EndFinally { .. }
         | InstructionKind::Throw { .. }
         | InstructionKind::UnsetProperty { .. }
+        | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::ArrayInsert { .. }
         | InstructionKind::ArraySpread { .. }

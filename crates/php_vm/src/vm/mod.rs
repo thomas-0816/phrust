@@ -14390,6 +14390,40 @@ impl Vm {
                             }
                         }
                     }
+                    InstructionKind::UnsetPropertyDim {
+                        object,
+                        property,
+                        dims,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT: cannot unset property {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let dims = match read_dim_operands(unit, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if let Err(message) =
+                            unset_property_dim(compiled, state, stack, &object, property, &dims)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
                     InstructionKind::UnsetDynamicProperty { object, property } => {
                         let object = match read_operand(unit, stack, *object) {
                             Ok(Value::Object(object)) => object,
@@ -15047,6 +15081,58 @@ impl Vm {
                             .expect("frame was pushed")
                             .registers
                             .set(*dst, value)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::AssignPropertyDim {
+                        dst,
+                        object,
+                        property,
+                        dims,
+                        value,
+                        append,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_ASSIGN_NON_OBJECT: cannot assign property {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let dims = match read_dim_operands(unit, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let value = match read_operand(unit, stack, *value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let result = value.clone();
+                        if let Err(message) = assign_property_dim(
+                            compiled, state, stack, &object, property, &dims, value, *append,
+                        ) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, result)
                         {
                             return self.runtime_error(output, compiled, stack, message);
                         }
@@ -31655,6 +31741,90 @@ fn property_state_value(
         .or_else(|| object.get_property(property))
 }
 
+fn property_dimension_storage_name(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    stack: &CallStack,
+    object: &ObjectRef,
+    property: &str,
+    write: bool,
+) -> Result<String, String> {
+    let Some(class) = lookup_class_in_state(compiled, state, &object.class_name()) else {
+        return Ok(property.to_owned());
+    };
+    let scope = current_scope_class(compiled, stack);
+    let Some(resolved) =
+        lookup_property_in_hierarchy(compiled, &class, property, scope.as_deref())?
+    else {
+        return Ok(property.to_owned());
+    };
+    validate_property_access(compiled, stack, resolved.class, resolved.property)?;
+    if write {
+        validate_property_set_access(compiled, stack, resolved.class, resolved.property)?;
+        validate_property_write(resolved.class, resolved.property, object, stack, compiled)?;
+        if resolved.property.flags.is_static {
+            return Err(format!(
+                "E_PHP_VM_NON_STATIC_PROPERTY_ACCESS: property {}::${} is static",
+                resolved.class.name, resolved.property.name
+            ));
+        }
+        if !resolved.property.hooks.backed
+            && (resolved.property.hooks.get.is_some() || resolved.property.hooks.set.is_some())
+        {
+            return Err(format!(
+                "E_PHP_VM_VIRTUAL_PROPERTY_WRITE: property {}::${} has no backing storage",
+                resolved.class.name, resolved.property.name
+            ));
+        }
+    }
+    Ok(property_storage_name(resolved.class, resolved.property))
+}
+
+fn assign_property_dim(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    stack: &CallStack,
+    object: &ObjectRef,
+    property: &str,
+    dims: &[ArrayKey],
+    value: Value,
+    append: bool,
+) -> Result<(), String> {
+    let storage_name =
+        property_dimension_storage_name(compiled, state, stack, object, property, true)?;
+    let mut current = object
+        .get_property(&storage_name)
+        .or_else(|| object.get_property(property))
+        .unwrap_or(Value::Null);
+    if matches!(current, Value::Uninitialized | Value::Null) {
+        current = Value::Array(PhpArray::new());
+    }
+    assign_dim_value(&mut current, dims, value, append)?;
+    object.set_property(storage_name, current);
+    Ok(())
+}
+
+fn unset_property_dim(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    stack: &CallStack,
+    object: &ObjectRef,
+    property: &str,
+    dims: &[ArrayKey],
+) -> Result<(), String> {
+    let storage_name =
+        property_dimension_storage_name(compiled, state, stack, object, property, true)?;
+    let Some(mut current) = object
+        .get_property(&storage_name)
+        .or_else(|| object.get_property(property))
+    else {
+        return Ok(());
+    };
+    unset_dim_value(&mut current, dims);
+    object.set_property(storage_name, current);
+    Ok(())
+}
+
 fn magic_property_call_is_active(
     state: &ExecutionState,
     object: &ObjectRef,
@@ -32623,8 +32793,10 @@ fn method_body_has_inline_blocker(function: &IrFunction) -> bool {
                     | InstructionKind::Include { .. }
                     | InstructionKind::Eval { .. }
                     | InstructionKind::AssignProperty { .. }
+                    | InstructionKind::AssignPropertyDim { .. }
                     | InstructionKind::AssignStaticProperty { .. }
                     | InstructionKind::UnsetProperty { .. }
+                    | InstructionKind::UnsetPropertyDim { .. }
             )
         })
     })
@@ -45473,6 +45645,32 @@ good"
     }
 
     #[test]
+    fn http_superglobals_are_visible_inside_user_functions() {
+        let result = execute_source_with_options(
+            "<?php function show_server() { echo is_array($_SERVER) ? $_SERVER['REQUEST_URI'] : 'bad'; } show_server();",
+            VmOptions {
+                runtime_context: RuntimeContext::controlled_http(
+                    php_runtime::RuntimeHttpRequestContext::new(
+                        "GET",
+                        "127.0.0.1:18080",
+                        "/wp-admin/install.php?step=0",
+                        "/wp-admin/install.php",
+                        "/private/tmp/phrust-wp-live/docroot/wp-admin/install.php",
+                        "/private/tmp/phrust-wp-live/docroot",
+                    ),
+                ),
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "/wp-admin/install.php?step=0"
+        );
+    }
+
+    #[test]
     fn process_surface_is_disabled_by_default_without_crashing() {
         let result = execute_source(
             "<?php
@@ -47685,6 +47883,16 @@ good"
         );
         assert!(missing.status.is_success(), "{:?}", missing.status);
         assert_eq!(missing.output.as_bytes(), b"no");
+    }
+
+    #[test]
+    fn property_dimensions_assignment_append_and_unset_execute_in_class_scope() {
+        let result = execute_source(
+            "<?php class C { private $items = []; public function run() { $this->items['a']['b'] = 3; $this->items[] = 'tail'; echo $this->items['a']['b'], '|', $this->items[0]; unset($this->items['a']['b']); echo '|', isset($this->items['a']['b']) ? 'bad' : 'gone'; } } (new C())->run();",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"3|tail|gone");
     }
 
     #[test]
@@ -53561,6 +53769,16 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
 
         assert!(appended.status.is_success(), "{:?}", appended.status);
         assert_eq!(appended.output.as_bytes(), b"123");
+    }
+
+    #[test]
+    fn foreach_by_ref_over_property_writes_back_to_property() {
+        let result = execute_source(
+            "<?php class C { public $items = [1, 2]; public function bump() { foreach ($this->items as &$value) { $value = $value + 1; } unset($value); } } $c = new C(); $c->bump(); foreach ($c->items as $value) { echo $value; }",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"23");
     }
 
     #[test]

@@ -1682,6 +1682,15 @@ fn lower_instruction(
                 value: lower_operand(*value),
             },
         ),
+        InstructionKind::AssignPropertyDim { .. } => {
+            return unsupported_instruction(
+                instruction,
+                "property dimension assignment".to_owned(),
+            );
+        }
+        InstructionKind::UnsetPropertyDim { .. } => {
+            return unsupported_instruction(instruction, "property dimension unset".to_owned());
+        }
         InstructionKind::Echo { src } => (
             DenseOpcode::Echo,
             DenseOperands::Operand {

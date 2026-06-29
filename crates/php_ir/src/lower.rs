@@ -542,6 +542,10 @@ impl TraitVisibility {
     }
 }
 
+const AUTO_GLOBAL_NAMES: &[&str] = &[
+    "argc", "argv", "_SERVER", "_ENV", "_GET", "_POST", "_COOKIE", "_FILES", "_REQUEST", "_SESSION",
+];
+
 /// Lowers a Semantic frontend frontend result into a minimal runtime IR unit.
 #[must_use]
 pub fn lower_frontend_result(
@@ -595,6 +599,7 @@ pub fn lower_frontend_result(
 
     let mut context = LoweringContext::new(frontend, options, file);
     context.function_names.insert(function, String::new());
+    let block = context.lower_auto_global_bindings(&mut builder, function, block, module_ir_span);
     let block = context.lower_global_constant_declarations(&mut builder, function, block);
     context.lower_function_declarations(&mut builder, function);
     context.lower_class_declarations(&mut builder, function);
@@ -660,6 +665,28 @@ pub fn lower_frontend_result(
 }
 
 impl LoweringContext<'_> {
+    fn lower_auto_global_bindings(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+        span: IrSpan,
+    ) -> BlockId {
+        for name in AUTO_GLOBAL_NAMES {
+            let local = builder.intern_local(function, *name);
+            builder.emit(
+                function,
+                block,
+                InstructionKind::BindGlobal {
+                    local,
+                    name: (*name).to_owned(),
+                },
+                span,
+            );
+        }
+        block
+    }
+
     fn lower_global_constant_declarations(
         &mut self,
         builder: &mut IrBuilder,
@@ -1283,6 +1310,7 @@ impl LoweringContext<'_> {
             ),
             span,
         );
+        let block = self.lower_auto_global_bindings(builder, function, block, span);
         let current = self.lower_constructor_property_promotions(
             builder,
             function,
@@ -1470,6 +1498,7 @@ impl LoweringContext<'_> {
                 ),
                 span,
             );
+            let block = self.lower_auto_global_bindings(builder, function, block, span);
             let current = match hook.body() {
                 HirPropertyHookBody::Expression => {
                     if let Some(expr) = self.outermost_expr_inside(hook.span()) {
@@ -1926,6 +1955,7 @@ impl LoweringContext<'_> {
                 format!("hir:function:{name}:body"),
                 span,
             );
+            let block = self.lower_auto_global_bindings(builder, function, block, span);
             let current = self.lower_stmt_list(builder, function, block, signature.body().to_vec());
             if !builder.is_terminated(function, current) {
                 builder.terminate_return(function, current, None, span);
@@ -3070,71 +3100,89 @@ impl LoweringContext<'_> {
                 );
                 return block;
             };
-            let Some(source_local) = self.variable_local(builder, function, source) else {
-                self.unsupported(
-                    UnsupportedFeature::ByReferenceForeach,
-                    self.span_for(SourceMappedId::from(source)),
-                    "by-reference foreach source must be a simple local array variable",
-                );
-                return block;
-            };
-            let iterator = builder.alloc_register(function);
-            builder.emit(
-                function,
-                block,
-                InstructionKind::ForeachInitRef {
-                    iterator,
-                    local: source_local,
-                },
-                span,
-            );
-
-            let condition_block = builder.append_block(function);
-            let body_block = builder.append_block(function);
-            let after_block = builder.append_block(function);
-            self.jump_if_open(builder, function, block, condition_block, span);
-
-            let has_value = builder.alloc_register(function);
-            let key_reg = key_local.map(|_| builder.alloc_register(function));
-            builder.emit(
-                function,
-                condition_block,
-                InstructionKind::ForeachNextRef {
-                    has_value,
-                    iterator,
-                    key: key_reg,
-                    value_local,
-                },
-                span,
-            );
-            builder.terminate_jump_if(
-                function,
-                condition_block,
-                Operand::Register(has_value),
-                body_block,
-                after_block,
-                span,
-            );
-
-            if let (Some(key_local), Some(key_reg)) = (key_local, key_reg) {
-                builder.emit(
+            if let Some(source_local) = self.variable_local(builder, function, source) {
+                return self.lower_foreach_ref_local(
+                    builder,
                     function,
-                    body_block,
-                    InstructionKind::StoreLocal {
-                        local: key_local,
-                        src: Operand::Register(key_reg),
-                    },
+                    block,
+                    source_local,
+                    key_local,
+                    value_local,
+                    body,
                     span,
                 );
             }
-            self.loop_stack.push(LoopTargets {
-                break_block: after_block,
-                continue_block: condition_block,
-            });
-            let body_end = self.lower_stmt_list(builder, function, body_block, body);
-            self.loop_stack.pop();
-            self.jump_if_open(builder, function, body_end, condition_block, span);
-            return after_block;
+            if let Some(target) = self.property_assignment_target(source) {
+                let Some(object) =
+                    self.lower_expr_to_register(builder, function, block, target.receiver)
+                else {
+                    return block;
+                };
+                let property_value = builder.alloc_register(function);
+                let fetch = builder.emit(
+                    function,
+                    object.block,
+                    InstructionKind::FetchProperty {
+                        dst: property_value,
+                        object: Operand::Register(object.register),
+                        property: target.property.clone(),
+                    },
+                    span,
+                );
+                self.add_expr_source_map(builder, function, object.block, fetch, source, span);
+                let source_local = builder.intern_local(
+                    function,
+                    format!("__phrust:foreach-ref-property:{}", stmt_id.raw()),
+                );
+                builder.emit(
+                    function,
+                    object.block,
+                    InstructionKind::StoreLocal {
+                        local: source_local,
+                        src: Operand::Register(property_value),
+                    },
+                    span,
+                );
+                let after_block = self.lower_foreach_ref_local(
+                    builder,
+                    function,
+                    object.block,
+                    source_local,
+                    key_local,
+                    value_local,
+                    body,
+                    span,
+                );
+                let writeback = builder.alloc_register(function);
+                builder.emit(
+                    function,
+                    after_block,
+                    InstructionKind::LoadLocal {
+                        dst: writeback,
+                        local: source_local,
+                    },
+                    span,
+                );
+                let dst = builder.alloc_register(function);
+                builder.emit(
+                    function,
+                    after_block,
+                    InstructionKind::AssignProperty {
+                        dst,
+                        object: Operand::Register(object.register),
+                        property: target.property,
+                        value: Operand::Register(writeback),
+                    },
+                    span,
+                );
+                return after_block;
+            }
+            self.unsupported(
+                UnsupportedFeature::ByReferenceForeach,
+                self.span_for(SourceMappedId::from(source)),
+                "by-reference foreach source must be a simple local array variable",
+            );
+            return block;
         }
 
         let Some(source_value) = self.lower_expr_to_register(builder, function, block, source)
@@ -3217,6 +3265,77 @@ impl LoweringContext<'_> {
             continue_block: condition_block,
         });
         let body_end = self.lower_stmt_list(builder, function, body_entry, body);
+        self.loop_stack.pop();
+        self.jump_if_open(builder, function, body_end, condition_block, span);
+        after_block
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_foreach_ref_local(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+        source_local: LocalId,
+        key_local: Option<LocalId>,
+        value_local: LocalId,
+        body: Vec<StmtId>,
+        span: IrSpan,
+    ) -> BlockId {
+        let iterator = builder.alloc_register(function);
+        builder.emit(
+            function,
+            block,
+            InstructionKind::ForeachInitRef {
+                iterator,
+                local: source_local,
+            },
+            span,
+        );
+
+        let condition_block = builder.append_block(function);
+        let body_block = builder.append_block(function);
+        let after_block = builder.append_block(function);
+        self.jump_if_open(builder, function, block, condition_block, span);
+
+        let has_value = builder.alloc_register(function);
+        let key_reg = key_local.map(|_| builder.alloc_register(function));
+        builder.emit(
+            function,
+            condition_block,
+            InstructionKind::ForeachNextRef {
+                has_value,
+                iterator,
+                key: key_reg,
+                value_local,
+            },
+            span,
+        );
+        builder.terminate_jump_if(
+            function,
+            condition_block,
+            Operand::Register(has_value),
+            body_block,
+            after_block,
+            span,
+        );
+
+        if let (Some(key_local), Some(key_reg)) = (key_local, key_reg) {
+            builder.emit(
+                function,
+                body_block,
+                InstructionKind::StoreLocal {
+                    local: key_local,
+                    src: Operand::Register(key_reg),
+                },
+                span,
+            );
+        }
+        self.loop_stack.push(LoopTargets {
+            break_block: after_block,
+            continue_block: condition_block,
+        });
+        let body_end = self.lower_stmt_list(builder, function, body_block, body);
         self.loop_stack.pop();
         self.jump_if_open(builder, function, body_end, condition_block, span);
         after_block
@@ -3954,6 +4073,43 @@ impl LoweringContext<'_> {
                     InstructionKind::UnsetDynamicProperty {
                         object: Operand::Register(object.register),
                         property: Operand::Register(property.register),
+                    },
+                    span,
+                );
+                continue;
+            }
+            if let Some(target) = self.property_dim_target(expr) {
+                if target.append {
+                    self.unsupported(
+                        UnsupportedFeature::HirStatement,
+                        self.span_for(SourceMappedId::from(expr)),
+                        "unset of append dimension is invalid for the runtime MVP",
+                    );
+                    continue;
+                }
+                let Some(object) =
+                    self.lower_expr_to_register(builder, function, current, target.receiver)
+                else {
+                    continue;
+                };
+                current = object.block;
+                let mut dims = Vec::with_capacity(target.dims.len());
+                for dim in target.dims {
+                    let Some(dim_value) =
+                        self.lower_expr_to_register(builder, function, current, dim)
+                    else {
+                        continue;
+                    };
+                    current = dim_value.block;
+                    dims.push(Operand::Register(dim_value.register));
+                }
+                builder.emit(
+                    function,
+                    current,
+                    InstructionKind::UnsetPropertyDim {
+                        object: Operand::Register(object.register),
+                        property: target.property,
+                        dims,
                     },
                     span,
                 );
@@ -6782,6 +6938,7 @@ impl LoweringContext<'_> {
             format!("hir:closure:{}:body", function.raw()),
             span,
         );
+        let block = self.lower_auto_global_bindings(builder, function, block, span);
         let current =
             self.lower_stmt_list(builder, function, block, self.statement_ids_inside(range));
         if !builder.is_terminated(function, current) {
@@ -6879,6 +7036,7 @@ impl LoweringContext<'_> {
             format!("hir:{}:{}:body", signature.kind().as_str(), function.raw()),
             span,
         );
+        let block = self.lower_auto_global_bindings(builder, function, block, span);
         match signature.kind() {
             SignatureKind::ArrowFunction => {
                 let Some(body) = arrow_body.or_else(|| {
@@ -7825,6 +7983,12 @@ impl LoweringContext<'_> {
         }
         if operator == "="
             && let Some(left) = left
+            && let Some(target) = self.property_dim_target(left)
+        {
+            return self.lower_property_dim_assign_to_register(builder, site, target, right);
+        }
+        if operator == "="
+            && let Some(left) = left
             && let Some(target) = self.dynamic_property_dim_target(left)
         {
             return self
@@ -7995,6 +8159,59 @@ impl LoweringContext<'_> {
                 object: Operand::Register(object.register),
                 property: target.property,
                 value: Operand::Register(value.register),
+            },
+            site.span,
+        );
+        self.add_expr_source_map(
+            builder,
+            site.function,
+            value.block,
+            instruction,
+            site.expr,
+            site.span,
+        );
+        Some(LoweredExpr {
+            register: dst,
+            block: value.block,
+        })
+    }
+
+    fn lower_property_dim_assign_to_register(
+        &mut self,
+        builder: &mut IrBuilder,
+        site: LowerSite,
+        target: PropertyDimTarget,
+        right: Option<ExprId>,
+    ) -> Option<LoweredExpr> {
+        let Some(right) = right else {
+            self.unsupported(
+                UnsupportedFeature::HirStatement,
+                site.range,
+                "property array assignment is missing its right operand",
+            );
+            return None;
+        };
+        let object =
+            self.lower_expr_to_register(builder, site.function, site.block, target.receiver)?;
+        let mut current = object.block;
+        let mut dims = Vec::with_capacity(target.dims.len());
+        for dim in target.dims {
+            let dim = self.lower_expr_to_register(builder, site.function, current, dim)?;
+            current = dim.block;
+            dims.push(Operand::Register(dim.register));
+        }
+        let value = self.lower_expr_to_register(builder, site.function, current, right)?;
+        let dst = builder.alloc_register(site.function);
+        let instruction = builder.emit(
+            site.function,
+            value.block,
+            InstructionKind::AssignPropertyDim {
+                dst,
+                object: Operand::Register(object.register),
+                property: target.property,
+                dims,
+                value: Operand::Register(value.register),
+                append: target.append,
             },
             site.span,
         );
@@ -11361,6 +11578,45 @@ mod tests {
             "{snapshot}"
         );
         assert!(snapshot.contains("binary r"), "{snapshot}");
+    }
+
+    #[test]
+    fn property_dimensions_assignment_append_and_unset_lower_to_dedicated_ir() {
+        let frontend = analyze_source(
+            "<?php class C { private $callbacks = array(); public function run($priority, $idx) { $this->callbacks[$priority][$idx] = array('function' => 'f'); $this->callbacks[] = 'tail'; unset($this->callbacks[$priority][$idx]); } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("assign_property_dim r"), "{snapshot}");
+        assert!(snapshot.contains("append_property_dim r"), "{snapshot}");
+        assert!(snapshot.contains("unset_property_dim r"), "{snapshot}");
+        assert!(snapshot.contains("$callbacks"), "{snapshot}");
+    }
+
+    #[test]
+    fn by_ref_foreach_over_property_lowers_through_hidden_local_writeback() {
+        let frontend = analyze_source(
+            "<?php class C { private $iterations = array(1); public function run() { foreach ($this->iterations as &$iteration) { $iteration = $iteration + 1; } unset($iteration); } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("fetch_property r"), "{snapshot}");
+        assert!(
+            snapshot.contains("__phrust:foreach-ref-property"),
+            "{snapshot}"
+        );
+        assert!(snapshot.contains("foreach_init_ref iter"), "{snapshot}");
+        assert!(snapshot.contains("assign_property r"), "{snapshot}");
+        assert!(
+            !snapshot.contains("E_PHP_IR_UNSUPPORTED_BY_REF_FOREACH"),
+            "{snapshot}"
+        );
     }
 
     #[test]

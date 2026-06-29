@@ -470,6 +470,12 @@ pub enum InstructionKind {
     },
     /// Unsets an instance property slot.
     UnsetProperty { object: Operand, property: String },
+    /// Unsets an instance property array dimension.
+    UnsetPropertyDim {
+        object: Operand,
+        property: String,
+        dims: Vec<Operand>,
+    },
     /// Unsets an instance property slot by runtime property name.
     UnsetDynamicProperty { object: Operand, property: Operand },
     /// Fetches a static property by class and static property name.
@@ -504,6 +510,15 @@ pub enum InstructionKind {
         object: Operand,
         property: String,
         value: Operand,
+    },
+    /// Assigns or appends to an instance property array dimension by static property name.
+    AssignPropertyDim {
+        dst: RegId,
+        object: Operand,
+        property: String,
+        dims: Vec<Operand>,
+        value: Operand,
+        append: bool,
     },
     /// Assigns an instance property by runtime property name.
     AssignDynamicProperty {

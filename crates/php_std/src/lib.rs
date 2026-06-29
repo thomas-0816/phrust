@@ -1036,6 +1036,26 @@ fn standard_library_standard_extension() -> ExtensionDescriptor {
             ConstantValue::Int(constants::PATHINFO_FILENAME),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "INI_USER",
+            "standard",
+            ConstantValue::Int(constants::INI_USER),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "INI_PERDIR",
+            "standard",
+            ConstantValue::Int(constants::INI_PERDIR),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "INI_SYSTEM",
+            "standard",
+            ConstantValue::Int(constants::INI_SYSTEM),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "INI_ALL",
+            "standard",
+            ConstantValue::Int(constants::INI_ALL),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "INI_SCANNER_NORMAL",
             "standard",
             ConstantValue::Int(constants::INI_SCANNER_NORMAL),
@@ -3632,6 +3652,10 @@ mod tests {
             "PATHINFO_BASENAME",
             "PATHINFO_EXTENSION",
             "PATHINFO_FILENAME",
+            "INI_USER",
+            "INI_PERDIR",
+            "INI_SYSTEM",
+            "INI_ALL",
             "INI_SCANNER_NORMAL",
             "INI_SCANNER_RAW",
             "INI_SCANNER_TYPED",

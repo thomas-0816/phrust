@@ -1606,6 +1606,7 @@ fn check_instruction(
         | InstructionKind::EmptyPropertyDim { .. }
         | InstructionKind::EmptyDynamicPropertyDim { .. }
         | InstructionKind::UnsetProperty { .. }
+        | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::FetchStaticProperty { .. }
         | InstructionKind::IssetStaticProperty { .. }
@@ -1613,6 +1614,7 @@ fn check_instruction(
         | InstructionKind::FetchClassConstant { .. }
         | InstructionKind::FetchObjectClassName { .. }
         | InstructionKind::AssignProperty { .. }
+        | InstructionKind::AssignPropertyDim { .. }
         | InstructionKind::AssignDynamicProperty { .. }
         | InstructionKind::AssignStaticProperty { .. } => {
             rejected.push(JitEligibilityReason::instruction(

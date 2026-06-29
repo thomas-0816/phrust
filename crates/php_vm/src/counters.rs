@@ -452,8 +452,10 @@ impl VmCounters {
             | InstructionKind::IssetDynamicPropertyDim { .. }
             | InstructionKind::EmptyDynamicPropertyDim { .. }
             | InstructionKind::UnsetProperty { .. }
+            | InstructionKind::UnsetPropertyDim { .. }
             | InstructionKind::UnsetDynamicProperty { .. }
             | InstructionKind::AssignProperty { .. }
+            | InstructionKind::AssignPropertyDim { .. }
             | InstructionKind::AssignDynamicProperty { .. }
             | InstructionKind::AssignStaticProperty { .. } => self.property_accesses += 1,
             InstructionKind::InstanceOf { .. } | InstructionKind::DynamicInstanceOf { .. } => {
@@ -3976,6 +3978,7 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::IssetPropertyDim { .. } => "isset_property_dim",
         InstructionKind::EmptyPropertyDim { .. } => "empty_property_dim",
         InstructionKind::UnsetProperty { .. } => "unset_property",
+        InstructionKind::UnsetPropertyDim { .. } => "unset_property_dim",
         InstructionKind::UnsetDynamicProperty { .. } => "unset_dynamic_property",
         InstructionKind::FetchStaticProperty { .. } => "fetch_static_property",
         InstructionKind::IssetStaticProperty { .. } => "isset_static_property",
@@ -3983,6 +3986,7 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::FetchClassConstant { .. } => "fetch_class_constant",
         InstructionKind::FetchObjectClassName { .. } => "fetch_object_class_name",
         InstructionKind::AssignProperty { .. } => "assign_property",
+        InstructionKind::AssignPropertyDim { .. } => "assign_property_dim",
         InstructionKind::AssignDynamicProperty { .. } => "assign_dynamic_property",
         InstructionKind::AssignStaticProperty { .. } => "assign_static_property",
         InstructionKind::NewArray { .. } => "new_array",
