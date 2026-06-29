@@ -1372,6 +1372,16 @@ fn collect_destructor_candidate_objects(
     }
 }
 
+fn release_unrooted_object_handles(value: &Value, stack: &CallStack, state: &ExecutionState) {
+    let mut candidates = Vec::new();
+    collect_destructor_candidate_objects(value, &mut BTreeSet::new(), &mut candidates);
+    for object in candidates {
+        if !object_has_php_visible_root(stack, state, object.id()) {
+            object.release_php_handle();
+        }
+    }
+}
+
 fn value_reaches_object_id(value: &Value, object_id: u64, seen: &mut BTreeSet<GcEntityId>) -> bool {
     match value {
         Value::Array(array) => {
@@ -6548,6 +6558,12 @@ impl Vm {
                                 return result;
                             }
                         };
+                        let previous = stack
+                            .current()
+                            .expect("bytecode frame was pushed")
+                            .locals
+                            .get(LocalId::new(local))
+                            .unwrap_or(Value::Uninitialized);
                         if let Err(message) = stack
                             .current_mut()
                             .expect("bytecode frame was pushed")
@@ -6559,15 +6575,11 @@ impl Vm {
                             return result;
                         }
                         if instruction.opcode == DenseOpcode::StoreLocalDiscard {
-                            let value = match self.read_dense_operand(compiled, stack, src) {
-                                Ok(value) => value,
-                                Err(message) => {
-                                    let result =
-                                        self.runtime_error(output, compiled, stack, message);
-                                    stack.pop_recycle();
-                                    return result;
-                                }
-                            };
+                            if let Err(message) = unset_dense_register_operand(stack, src) {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
                             let mut exception_handlers = Vec::new();
                             let mut pending_control = None;
                             if let Some(outcome) = self.run_destructors_for_unreferenced_value(
@@ -6577,7 +6589,7 @@ impl Vm {
                                 state,
                                 &mut exception_handlers,
                                 &mut pending_control,
-                                &value,
+                                &previous,
                             ) {
                                 match outcome {
                                     RaiseOutcome::Done(result) => {
@@ -7920,6 +7932,11 @@ impl Vm {
                                 return result;
                             }
                         };
+                        if let Err(message) = unset_dense_register_operand(stack, src) {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
                         let mut exception_handlers = Vec::new();
                         let mut pending_control = None;
                         if let Some(outcome) = self.run_destructors_for_unreferenced_value(
@@ -9377,8 +9394,9 @@ impl Vm {
                     if let Some(target) = handle_throw(
                         compiled,
                         value.clone(),
-                        &mut exception_handlers,
                         stack,
+                        state,
+                        &mut exception_handlers,
                         &mut pending_control,
                     ) {
                         block_id = target;
@@ -9421,8 +9439,9 @@ impl Vm {
                     if let Some(target) = handle_throw(
                         compiled,
                         value.clone(),
-                        &mut exception_handlers,
                         stack,
+                        state,
+                        &mut exception_handlers,
                         &mut pending_control,
                     ) {
                         block_id = target;
@@ -9903,8 +9922,9 @@ impl Vm {
                                         if let Some(target) = handle_throw(
                                             compiled,
                                             throwable.clone(),
-                                            &mut exception_handlers,
                                             stack,
+                                            state,
+                                            &mut exception_handlers,
                                             &mut pending_control,
                                         ) {
                                             block_id = target;
@@ -10099,6 +10119,9 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
+                        if let Err(message) = unset_register_operand(stack, *src) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
                         if let Some(outcome) = self.run_destructors_for_unreferenced_value(
                             compiled,
                             output,
@@ -11103,8 +11126,9 @@ impl Vm {
                                     if let Some(target) = handle_throw(
                                         compiled,
                                         throwable.clone(),
-                                        &mut exception_handlers,
                                         stack,
+                                        state,
+                                        &mut exception_handlers,
                                         &mut pending_control,
                                     ) {
                                         block_id = target;
@@ -11164,8 +11188,9 @@ impl Vm {
                             if let Some(target) = handle_throw(
                                 compiled,
                                 value.clone(),
-                                &mut exception_handlers,
                                 stack,
+                                state,
+                                &mut exception_handlers,
                                 &mut pending_control,
                             ) {
                                 block_id = target;
@@ -11189,8 +11214,9 @@ impl Vm {
                         if let Some(target) = handle_throw(
                             compiled,
                             value.clone(),
-                            &mut exception_handlers,
                             stack,
+                            state,
+                            &mut exception_handlers,
                             &mut pending_control,
                         ) {
                             block_id = target;
@@ -13212,8 +13238,9 @@ impl Vm {
                                         if let Some(target) = handle_throw(
                                             compiled,
                                             throwable.clone(),
-                                            &mut exception_handlers,
                                             stack,
+                                            state,
+                                            &mut exception_handlers,
                                             &mut pending_control,
                                         ) {
                                             block_id = target;
@@ -16583,8 +16610,9 @@ impl Vm {
                                                         if let Some(target) = handle_throw(
                                                             compiled,
                                                             throwable.clone(),
-                                                            &mut exception_handlers,
                                                             stack,
+                                                            state,
+                                                            &mut exception_handlers,
                                                             &mut pending_control,
                                                         ) {
                                                             block_id = target;
@@ -17695,8 +17723,9 @@ impl Vm {
                             if let Some(target) = handle_throw(
                                 compiled,
                                 throwable.clone(),
-                                &mut exception_handlers,
                                 stack,
+                                state,
+                                &mut exception_handlers,
                                 &mut pending_control,
                             ) {
                                 block_id = target;
@@ -17834,8 +17863,9 @@ impl Vm {
                                     if let Some(target) = handle_throw(
                                         compiled,
                                         throwable.clone(),
-                                        &mut exception_handlers,
                                         stack,
+                                        state,
+                                        &mut exception_handlers,
                                         &mut pending_control,
                                     ) {
                                         block_id = target;
@@ -17877,8 +17907,9 @@ impl Vm {
                                     if let Some(target) = handle_throw(
                                         compiled,
                                         throwable.clone(),
-                                        &mut exception_handlers,
                                         stack,
+                                        state,
+                                        &mut exception_handlers,
                                         &mut pending_control,
                                     ) {
                                         block_id = target;
@@ -18316,8 +18347,9 @@ impl Vm {
                                     if let Some(target) = handle_throw(
                                         compiled,
                                         throwable.clone(),
-                                        &mut exception_handlers,
                                         stack,
+                                        state,
+                                        &mut exception_handlers,
                                         &mut pending_control,
                                     ) {
                                         block_id = target;
@@ -18519,8 +18551,9 @@ impl Vm {
                                             if let Some(target) = handle_throw(
                                                 compiled,
                                                 throwable.clone(),
-                                                &mut exception_handlers,
                                                 stack,
+                                                state,
+                                                &mut exception_handlers,
                                                 &mut pending_control,
                                             ) {
                                                 block_id = target;
@@ -18557,8 +18590,9 @@ impl Vm {
                                 if let Some(target) = handle_throw(
                                     compiled,
                                     throwable.clone(),
-                                    &mut exception_handlers,
                                     stack,
+                                    state,
+                                    &mut exception_handlers,
                                     &mut pending_control,
                                 ) {
                                     block_id = target;
@@ -18640,8 +18674,9 @@ impl Vm {
                             if let Some(target) = handle_throw(
                                 compiled,
                                 throwable.clone(),
-                                &mut exception_handlers,
                                 stack,
+                                state,
+                                &mut exception_handlers,
                                 &mut pending_control,
                             ) {
                                 block_id = target;
@@ -19254,8 +19289,9 @@ impl Vm {
                             if let Some(target) = handle_throw(
                                 compiled,
                                 throwable.clone(),
-                                &mut exception_handlers,
                                 stack,
+                                state,
+                                &mut exception_handlers,
                                 &mut pending_control,
                             ) {
                                 block_id = target;
@@ -19472,8 +19508,9 @@ impl Vm {
                             if let Some(target) = handle_throw(
                                 compiled,
                                 throwable.clone(),
-                                &mut exception_handlers,
                                 stack,
+                                state,
+                                &mut exception_handlers,
                                 &mut pending_control,
                             ) {
                                 block_id = target;
@@ -19529,8 +19566,9 @@ impl Vm {
                             if let Some(target) = handle_throw(
                                 compiled,
                                 throwable.clone(),
-                                &mut exception_handlers,
                                 stack,
+                                state,
+                                &mut exception_handlers,
                                 &mut pending_control,
                             ) {
                                 block_id = target;
@@ -25668,6 +25706,7 @@ impl Vm {
                 continue;
             }
             let Some(entry) = state.destructor_queue.take_for_object(object.id()) else {
+                object.release_php_handle();
                 continue;
             };
             let scope = current_scope_class(compiled, stack);
@@ -25710,6 +25749,7 @@ impl Vm {
                     result,
                 ));
             }
+            object.release_php_handle();
         }
 
         None
@@ -28696,8 +28736,9 @@ impl Vm {
             if let Some(target) = handle_throw(
                 compiled,
                 throwable.clone(),
-                handlers,
                 stack,
+                state,
+                handlers,
                 pending_control,
             ) {
                 return RaiseOutcome::Caught(target);
@@ -28734,8 +28775,9 @@ impl Vm {
             if let Some(target) = handle_throw(
                 compiled,
                 throwable.clone(),
-                handlers,
                 stack,
+                state,
+                handlers,
                 pending_control,
             ) {
                 return RaiseOutcome::Caught(target);
@@ -28765,8 +28807,9 @@ impl Vm {
             if let Some(target) = handle_throw(
                 compiled,
                 throwable.clone(),
-                handlers,
                 stack,
+                state,
+                handlers,
                 pending_control,
             ) {
                 return RaiseOutcome::Caught(target);
@@ -29368,18 +29411,24 @@ fn throwable_string(object: &ObjectRef) -> String {
 fn handle_throw(
     compiled: &CompiledUnit,
     value: Value,
-    handlers: &mut Vec<ExceptionHandler>,
     stack: &mut CallStack,
+    state: &ExecutionState,
+    handlers: &mut Vec<ExceptionHandler>,
     pending_control: &mut Option<PendingControl>,
 ) -> Option<BlockId> {
     while let Some(handler) = handlers.pop() {
         if let Some(catch) = handler.catch
             && catch_matches(compiled, &value, &handler.catch_types).unwrap_or(false)
         {
-            if let Some(local) = handler.exception_local
-                && let Some(frame) = stack.current_mut()
-            {
-                let _ = frame.locals.set(local, value);
+            if let Some(local) = handler.exception_local {
+                let previous = stack
+                    .current()
+                    .and_then(|frame| frame.locals.get(local))
+                    .unwrap_or(Value::Uninitialized);
+                if let Some(frame) = stack.current_mut() {
+                    let _ = frame.locals.set(local, value.clone());
+                }
+                release_unrooted_object_handles(&previous, stack, state);
             }
             return Some(catch);
         }
@@ -46783,6 +46832,25 @@ fn read_operand(unit: &IrUnit, stack: &CallStack, operand: Operand) -> Result<Va
             })
         }
     }
+}
+
+fn unset_register_operand(stack: &mut CallStack, operand: Operand) -> Result<(), String> {
+    let Operand::Register(id) = operand else {
+        return Ok(());
+    };
+    let frame = stack.current_mut().ok_or("no active frame")?;
+    frame.registers.unset(id)
+}
+
+fn unset_dense_register_operand(
+    stack: &mut CallStack,
+    operand: DenseOperand,
+) -> Result<(), String> {
+    if operand.kind != DenseOperandKind::Register {
+        return Ok(());
+    }
+    let frame = stack.current_mut().ok_or("no active frame")?;
+    frame.registers.unset(RegId::new(operand.index))
 }
 
 fn next_block_id(function: &IrFunction, current: BlockId) -> Result<BlockId, String> {

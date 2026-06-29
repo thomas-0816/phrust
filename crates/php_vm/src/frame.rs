@@ -182,6 +182,15 @@ impl RegisterFile {
         slot.set(value);
         Ok(())
     }
+
+    /// Clears a dead temporary register without affecting PHP-visible storage.
+    pub fn unset(&mut self, id: RegId) -> Result<(), String> {
+        let Some(slot) = self.registers.get_mut(id.index()) else {
+            return Err(format!("invalid register r{}", id.raw()));
+        };
+        *slot = TempValue::uninitialized();
+        Ok(())
+    }
 }
 
 /// One executing frame.

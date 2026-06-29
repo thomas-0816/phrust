@@ -9,7 +9,7 @@ use std::rc::{Rc, Weak};
 struct ObjectStorage {
     class_name: String,
     display_name: String,
-    _id_guard: ObjectIdGuard,
+    id_guard: Option<ObjectIdGuard>,
     properties: HashMap<String, Value>,
     property_order: Vec<String>,
     property_debug_labels: HashMap<String, String>,
@@ -98,7 +98,7 @@ impl ObjectRef {
             storage: Rc::new(RefCell::new(ObjectStorage {
                 class_name: class.name.clone(),
                 display_name,
-                _id_guard: ObjectIdGuard::new(id),
+                id_guard: Some(ObjectIdGuard::new(id)),
                 properties,
                 property_order,
                 property_debug_labels,
@@ -150,7 +150,7 @@ impl ObjectRef {
             storage: Rc::new(RefCell::new(ObjectStorage {
                 class_name: storage.class_name.clone(),
                 display_name: storage.display_name.clone(),
-                _id_guard: ObjectIdGuard::new(id),
+                id_guard: Some(ObjectIdGuard::new(id)),
                 properties: storage.properties.clone(),
                 property_order: storage.property_order.clone(),
                 property_debug_labels: storage.property_debug_labels.clone(),
@@ -226,6 +226,14 @@ impl ObjectRef {
         let mut storage = self.storage.borrow_mut();
         storage.properties.clear();
         storage.property_order.clear();
+    }
+
+    /// Releases the PHP-visible object handle after the VM proves the object has
+    /// no PHP-visible roots. Internal stale temporaries may still hold storage
+    /// clones until the current frame completes, so handle lifetime is tracked
+    /// separately from Rust storage lifetime.
+    pub fn release_php_handle(&self) {
+        self.storage.borrow_mut().id_guard.take();
     }
 
     /// Returns a snapshot of runtime properties in PHP insertion/declaration order.
