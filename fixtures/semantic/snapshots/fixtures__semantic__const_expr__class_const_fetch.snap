@@ -8,7 +8,7 @@ symbols:
   - function const_expr_class_fetch
 hir_summary:
   statements: 2
-  expressions: 15
+  expressions: 16
   types: 4
   const_exprs: 5
   class_likes: 1

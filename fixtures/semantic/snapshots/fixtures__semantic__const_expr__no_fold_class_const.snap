@@ -8,7 +8,7 @@ symbols:
   - constant CONST_EXPR_NO_FOLD_CLASS_CONST
 hir_summary:
   statements: 0
-  expressions: 4
+  expressions: 5
   types: 0
   const_exprs: 2
   class_likes: 1

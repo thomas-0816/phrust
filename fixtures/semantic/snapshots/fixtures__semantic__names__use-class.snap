@@ -7,7 +7,7 @@ symbols:
   []
 hir_summary:
   statements: 1
-  expressions: 4
+  expressions: 5
   types: 0
   const_exprs: 0
   class_likes: 0
