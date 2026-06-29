@@ -1,14 +1,22 @@
 --TEST--
-intl: framework-style fallback branch
+intl: bounded normalizer, grapheme, and transliterator behavior
 --DESCRIPTION--
-Focused intl stub coverage for code that branches on extension_loaded("intl").
+Generated intl MVP coverage for bounded NFC, character slicing, and Latin ASCII transliteration.
+--EXTENSIONS--
+intl
 --FILE--
 <?php
-if (extension_loaded("intl")) {
-    echo "unexpected intl success\n";
-} else {
-    echo "intl platform requirement is unsatisfied\n";
-}
+var_dump(Normalizer::isNormalized("abc"));
+var_dump(Normalizer::normalize("abc"));
+echo grapheme_strlen("hé"), "\n";
+echo grapheme_substr("héllo", 1, 3), "\n";
+echo transliterator_transliterate("Latin-ASCII", "Héllo"), "\n";
+echo intl_get_error_code(), "\n";
 ?>
 --EXPECT--
-intl platform requirement is unsatisfied
+bool(true)
+string(3) "abc"
+2
+éll
+Hello
+0

@@ -1,64 +1,35 @@
 # xml
 
-- Strategy: platform-unavailable policy harness
-- Classification: optional
+- Strategy: bounded parser MVP
+- Classification: optional, enabled for the local WordPress XML slice
 - Selected manifest: `tests/phpt/manifests/modules/xml.selected.jsonl`
-- Selected gate: 1 generated PHPT covering XML parser platform visibility
-- Corpus snapshot: 65 `xml`-owned candidates in
-  `tests/phpt/manifests/phpt-corpus.jsonl`; committed known outcomes are
-  64 FAIL, 1 BORK, and 65 known non-green outcomes.
-
-## Decision
-
-Do not implement the XML SAX parser extension in this branch.
-
-The XML extension exposes Expat-backed parser resources/objects, callback
-registration, parser options, byte/line/column tracking, encoding behavior, and
-error-code constants. Returning successful parse results without that state
-machine would be a false positive.
+- Selected gate: 2 generated PHPTs covering platform visibility and strict
+  parse/reject behavior
 
 ## Runtime Contract
 
-- `extension_loaded("xml")` returns `false`.
-- `class_exists("XMLParser", false)` returns `false`.
-- `function_exists("xml_parser_create")`,
-  `function_exists("xml_parse")`, and `function_exists("xml_error_string")`
-  return `false`.
-- `defined("XML_ERROR_NONE")` returns `false`.
+- `extension_loaded("xml")` returns `true`.
+- `xml_parser_create()` returns a bounded `XMLParser` object.
+- `xml_parse(XMLParser $parser, string $data, bool $is_final = false)` returns
+  `1` for a strict single-root XML document and `0` for malformed XML.
+- Built-in XML entities are decoded. Unresolved entities, DTDs, processing
+  instructions beyond the XML declaration, and trailing content are rejected.
+- The PHP SAX parser API remains unsupported.
 
 ## Required PHPTs
 
-Required for this strategy:
-
 - `tests/phpt/generated/xml/platform-checks.phpt`
+- `tests/phpt/generated/xml/parser-basic.phpt`
 
 ## Unsupported Area
 
-- Stable ID: `XML-FAMILY-XML-SAX-PARSER`
-- Reference behavior summary: PHP with `ext/xml` enabled exposes XML parser
-  constants, `XMLParser`, and parser/callback functions declared in
-  `ext/xml/xml.stub.php`.
-- Current phrust behavior: XML is not registered in the standard-library
-  extension registry, so extension, class, function, and constant probes return
-  false.
-- Fixture path: `tests/phpt/generated/xml/platform-checks.phpt`
-- Next owner layer: future `php_std` extension metadata and `php_runtime`
-  parser resource/object support.
-
-## Out-of-Scope PHPTs
-
-Out of scope for this branch:
-
-- Upstream `ext/xml/tests/**`
-- XML parser creation and callback dispatch
-- Encoding, namespace, error-code, and parser position parity
+| Stable ID | Reference behavior summary | Current phrust behavior | Fixture path | Next owner layer |
+| --- | --- | --- | --- | --- |
+| `XML-DOM-INTL-XML-SAX-CALLBACKS` | PHP `ext/xml` exposes parser callbacks, parser options, and position/error constants. | Only `XMLParser`, `xml_parser_create`, and strict `xml_parse` are implemented; SAX callbacks are absent. | `tests/phpt/generated/xml/platform-checks.phpt` | future XML parser resource layer |
+| `XML-DOM-INTL-LIBXML-ERROR-STATE` | libxml reports structured parse diagnostics and global error state. | Parse failures are deterministic boolean false or runtime errors; no libxml error buffer is modeled. | `tests/phpt/generated/xml/parser-basic.phpt` | future libxml compatibility layer |
 
 ## Target Gates
 
+- `nix develop -c just phpt-module-target MODULE=xml`
 - `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=xml`
 - `nix develop -c just verify-phpt`
-
-## Next Step
-
-Keep XML parser PHPTs classified and defer real behavior until an approved XML
-parser dependency and runtime object/resource model are selected.

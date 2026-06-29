@@ -46,6 +46,7 @@ pub mod todo_runtime;
 pub mod tokenizer;
 pub mod types;
 pub mod value;
+pub mod xml;
 
 /// Stable runtime surface for VM, executor, server, and standard-library code.
 ///

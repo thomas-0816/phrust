@@ -1,1 +1,3 @@
 {"path":"tests/phpt/generated/dom/platform-checks.phpt"}
+{"path":"tests/phpt/generated/dom/domdocument-basic.phpt"}
+{"path":"tests/phpt/generated/dom/domdocument-node-apis.phpt"}

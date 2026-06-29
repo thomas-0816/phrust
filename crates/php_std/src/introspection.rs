@@ -85,12 +85,14 @@ mod tests {
                 "core",
                 "curl",
                 "date",
+                "dom",
                 "exif",
                 "fileinfo",
                 "filter",
                 "gd",
                 "hash",
                 "iconv",
+                "intl",
                 "json",
                 "mbstring",
                 "mysqli",
@@ -102,10 +104,14 @@ mod tests {
                 "random",
                 "reflection",
                 "session",
+                "simplexml",
                 "spl",
                 "sqlite3",
                 "standard",
                 "tokenizer",
+                "xml",
+                "xmlreader",
+                "xmlwriter",
                 "zip",
                 "zlib"
             ]
@@ -113,7 +119,7 @@ mod tests {
         let Value::Array(array) = get_loaded_extensions_value(&registry) else {
             panic!("expected array");
         };
-        assert_eq!(array.len(), 26);
+        assert_eq!(array.len(), 32);
     }
 
     #[test]

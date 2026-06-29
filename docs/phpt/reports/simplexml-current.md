@@ -1,24 +1,25 @@
 # simplexml Current Focus Report
 
-Focused policy harness:
+Focused bounded SimpleXML harness:
 
 | Outcome | Count |
 | --- | ---: |
-| PASS | 1 |
+| PASS | 3 |
 | FAIL | 0 |
 | SKIP | 0 |
 | BORK | 0 |
 
-## Selected Fixture
+## Selected Fixtures
 
 - `tests/phpt/generated/simplexml/platform-checks.phpt`
+- `tests/phpt/generated/simplexml/simplexml-basic.phpt`
+- `tests/phpt/generated/simplexml/wordpress-snippets.phpt`
 
 ## Current Policy
 
-SimpleXML is classified as optional and unavailable. No XML object view or DOM
-interop behavior was added.
-
-## Deferred Implementation
-
-`XML-FAMILY-SIMPLEXML-REAL-IMPLEMENTATION` remains deferred until DOM/XML parser
-work exists.
+The `simplexml` extension is enabled for `simplexml_load_string`,
+`SimpleXMLElement`, text conversion, child access, attributes, iteration, and
+`asXML()` over the shared strict XML tree. The selected slice includes
+WordPress-style RSS title/item reads, plugin metadata attributes, and simple
+config option iteration. Namespaces, XPath, DOM import, file loading, and
+libxml error state remain documented gaps.

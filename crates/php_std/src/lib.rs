@@ -1583,16 +1583,59 @@ impl ExtensionRegistry {
                 .with_function(FunctionDescriptor::php("mb_strpos", "mbstring"))
                 .with_function(FunctionDescriptor::php("mb_substr", "mbstring")),
             ExtensionDescriptor::new("intl")
-                .enabled_by_default(false)
+                .enabled_by_default(true)
+                .with_function(FunctionDescriptor::php("grapheme_substr", "intl"))
                 .with_function(FunctionDescriptor::php("grapheme_strlen", "intl"))
                 .with_function(FunctionDescriptor::php("intl_get_error_code", "intl"))
+                .with_function(FunctionDescriptor::php("normalizer_is_normalized", "intl"))
                 .with_function(FunctionDescriptor::php("normalizer_normalize", "intl"))
+                .with_function(FunctionDescriptor::php(
+                    "transliterator_transliterate",
+                    "intl",
+                ))
                 .with_class(ClassDescriptor::new("Collator", "intl", ClassKind::Class))
                 .with_class(ClassDescriptor::new("IntlChar", "intl", ClassKind::Class))
                 .with_class(ClassDescriptor::new("Locale", "intl", ClassKind::Class))
+                .with_class(ClassDescriptor::new("Normalizer", "intl", ClassKind::Class))
                 .with_class(ClassDescriptor::new(
                     "NumberFormatter",
                     "intl",
+                    ClassKind::Class,
+                )),
+            ExtensionDescriptor::new("xml")
+                .enabled_by_default(true)
+                .with_function(FunctionDescriptor::php("xml_parser_create", "xml"))
+                .with_function(FunctionDescriptor::php("xml_parse", "xml"))
+                .with_class(ClassDescriptor::new("XMLParser", "xml", ClassKind::Class)),
+            ExtensionDescriptor::new("dom")
+                .enabled_by_default(true)
+                .with_class(ClassDescriptor::new("DOMDocument", "dom", ClassKind::Class))
+                .with_class(ClassDescriptor::new("DOMElement", "dom", ClassKind::Class))
+                .with_class(ClassDescriptor::new("DOMNode", "dom", ClassKind::Class))
+                .with_class(ClassDescriptor::new("DOMNodeList", "dom", ClassKind::Class)),
+            ExtensionDescriptor::new("simplexml")
+                .enabled_by_default(true)
+                .with_function(FunctionDescriptor::php(
+                    "simplexml_load_string",
+                    "simplexml",
+                ))
+                .with_class(ClassDescriptor::new(
+                    "SimpleXMLElement",
+                    "simplexml",
+                    ClassKind::Class,
+                )),
+            ExtensionDescriptor::new("xmlreader")
+                .enabled_by_default(true)
+                .with_class(ClassDescriptor::new(
+                    "XMLReader",
+                    "xmlreader",
+                    ClassKind::Class,
+                )),
+            ExtensionDescriptor::new("xmlwriter")
+                .enabled_by_default(true)
+                .with_class(ClassDescriptor::new(
+                    "XMLWriter",
+                    "xmlwriter",
                     ClassKind::Class,
                 )),
             ExtensionDescriptor::new("hash")
@@ -2228,11 +2271,11 @@ mod tests {
     }
 
     #[test]
-    fn bounded_mbstring_is_enabled_while_intl_stays_hidden() {
+    fn bounded_mbstring_and_intl_are_enabled() {
         let registry = ExtensionRegistry::standard_library();
 
         assert!(registry.is_extension_enabled("mbstring"));
-        assert!(!registry.is_extension_enabled("intl"));
+        assert!(registry.is_extension_enabled("intl"));
 
         for name in [
             "mb_check_encoding",
@@ -2256,15 +2299,21 @@ mod tests {
             "normalizer_normalize",
         ] {
             assert!(
-                registry.enabled_php_function(name).is_none(),
-                "{name} should stay hidden while intl is disabled"
+                registry.enabled_php_function(name).is_some(),
+                "{name} should be visible in the bounded intl MVP"
             );
         }
 
-        for name in ["Collator", "IntlChar", "Locale", "NumberFormatter"] {
+        for name in [
+            "Collator",
+            "IntlChar",
+            "Locale",
+            "Normalizer",
+            "NumberFormatter",
+        ] {
             assert!(
-                registry.enabled_class(name).is_none(),
-                "{name} should stay hidden while intl is disabled"
+                registry.enabled_class(name).is_some(),
+                "{name} should be visible in the bounded intl MVP"
             );
         }
     }

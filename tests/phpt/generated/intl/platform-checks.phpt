@@ -1,7 +1,9 @@
 --TEST--
-intl: platform checks stay negative for disabled strategy
+intl: bounded platform checks
 --DESCRIPTION--
-Focused intl stub coverage for Composer-style platform checks.
+Focused intl coverage for the bounded Unicode helper MVP.
+--EXTENSIONS--
+intl
 --FILE--
 <?php
 var_dump(extension_loaded("intl"));
@@ -12,13 +14,15 @@ var_dump(class_exists("Locale"));
 var_dump(class_exists("NumberFormatter"));
 var_dump(class_exists("Collator"));
 var_dump(class_exists("IntlChar"));
+var_dump(class_exists("Normalizer"));
 ?>
 --EXPECT--
-bool(false)
-bool(false)
-bool(false)
-bool(false)
-bool(false)
-bool(false)
-bool(false)
-bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)

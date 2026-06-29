@@ -1,68 +1,45 @@
 # dom
 
-- Strategy: platform-unavailable policy harness
-- Classification: optional
+- Strategy: bounded XML-backed DOM MVP
+- Classification: optional, enabled for `DOMDocument`, `DOMElement`,
+  `DOMNode`, and `DOMNodeList`
 - Selected manifest: `tests/phpt/manifests/modules/dom.selected.jsonl`
-- Selected gate: 1 generated PHPT covering DOM platform visibility
-- Corpus snapshot: 879 `dom`-owned candidates in
-  `tests/phpt/manifests/phpt-corpus.jsonl`; committed baseline counts are
-  7 PASS, 14 SKIP, 851 FAIL, 7 BORK, and 879 known non-green outcomes.
-
-## Decision
-
-Do not implement DOM in this branch.
-
-The DOM extension requires a document object model, namespace-aware node
-ownership, HTML/XML parsing and serialization, XPath integration, libxml error
-state, file/stream loading, Reflection metadata, and class behavior across a
-large object surface. A fake parser or partial successful `DOMDocument` object
-would make framework probes believe DOM exists while leaving PHP-visible
-behavior incorrect.
+- Selected gate: 3 generated PHPTs covering platform visibility,
+  `DOMDocument::loadXML`/`saveXML`, node-list lookup, attributes, and bounded
+  mutation
 
 ## Runtime Contract
 
-- `extension_loaded("dom")` returns `false`.
-- `class_exists("DOMDocument", false)`, `class_exists("DOMElement", false)`,
-  `class_exists("DOMNode", false)`, and `class_exists("DOMXPath", false)`
-  return `false`.
-- No DOM parsing, serialization, XPath, schema validation, or libxml behavior is
-  implemented by this branch.
+- `extension_loaded("dom")` returns `true`.
+- `DOMDocument`, `DOMElement`, `DOMNode`, and `DOMNodeList` exist.
+- `DOMDocument::loadXML()` parses the shared strict XML tree.
+- `DOMDocument::saveXML()` serializes that tree.
+- `DOMDocument::createElement()` creates XML-backed element objects.
+- `DOMDocument::appendChild()` sets the document root for constructed
+  documents.
+- `DOMDocument::getElementsByTagName()` returns a countable, iterable
+  `DOMNodeList` with `length` and `item()`.
+- `$document->documentElement->tagName` and `textContent` are available for the
+  root element.
+- `DOMElement` exposes `nodeName`, `nodeValue`, `tagName`, and `textContent`.
+- `DOMElement::getAttribute()`, `setAttribute()`, and bounded `appendChild()`
+  operate on that element object.
 
 ## Required PHPTs
 
-Required for this strategy:
-
 - `tests/phpt/generated/dom/platform-checks.phpt`
-
-This fixture records platform visibility only. It is not a DOM behavior test.
+- `tests/phpt/generated/dom/domdocument-basic.phpt`
+- `tests/phpt/generated/dom/domdocument-node-apis.phpt`
 
 ## Unsupported Area
 
-- Stable ID: `XML-FAMILY-DOM-REAL-IMPLEMENTATION`
-- Reference behavior summary: PHP with `ext/dom` enabled exposes the DOM class
-  hierarchy from `ext/dom/php_dom.stub.php` and executes the upstream
-  `ext/dom/tests/**` corpus against a libxml-backed object model.
-- Current phrust behavior: DOM is not registered in the standard-library
-  extension registry, so extension and class probes return false.
-- Fixture path: `tests/phpt/generated/dom/platform-checks.phpt`
-- Next owner layer: future `php_std` extension registry metadata plus
-  `php_runtime`/`php_vm` object, stream, and XML integration.
-
-## Out-of-Scope PHPTs
-
-Out of scope for this branch:
-
-- Upstream `ext/dom/tests/**`
-- XML/HTML parse and serialize behavior
-- XPath and schema validation
-- DOM node mutation, liveness, namespace, and Reflection parity
+| Stable ID | Reference behavior summary | Current phrust behavior | Fixture path | Next owner layer |
+| --- | --- | --- | --- | --- |
+| `XML-DOM-INTL-DOM-NODE-MODEL` | PHP DOM exposes a large live node hierarchy with mutation, ownership, namespaces, XPath, and schema validation. | The MVP supports constructed document roots, element-local attributes/append, and countable/iterable node lists; it does not model full live node ownership or the full DOM hierarchy. | `tests/phpt/generated/dom/domdocument-node-apis.phpt` | future DOM object model |
+| `XML-DOM-INTL-DOM-LIBXML-HTML` | DOM XML/HTML parsing uses libxml options, errors, files, streams, and HTML mode behavior. | Only strict in-memory XML strings are accepted. | `tests/phpt/generated/dom/domdocument-basic.phpt` | future libxml/stream integration |
 
 ## Target Gates
 
+- `nix develop -c just phpt-module-target MODULE=dom`
 - `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=dom`
 - `nix develop -c just verify-phpt`
-
-## Next Step
-
-Keep DOM counted in PHPT bookkeeping and defer real behavior to a dedicated
-DOM/XML implementation strategy.

@@ -1,7 +1,9 @@
 --TEST--
-intl: common symbols are guarded while extension is unavailable
+intl: common bounded symbols are available
 --DESCRIPTION--
-Focused intl stub coverage that keeps common ICU-backed symbols unavailable.
+Focused intl coverage for the bounded helper surface.
+--EXTENSIONS--
+intl
 --FILE--
 <?php
 foreach ([
@@ -17,15 +19,17 @@ foreach ([
     "NumberFormatter",
     "Collator",
     "IntlChar",
+    "Normalizer",
 ] as $class) {
     echo $class, class_exists($class) ? " available\n" : " unavailable\n";
 }
 ?>
 --EXPECT--
-intl_get_error_code unavailable
-grapheme_strlen unavailable
-normalizer_normalize unavailable
-Locale unavailable
-NumberFormatter unavailable
-Collator unavailable
-IntlChar unavailable
+intl_get_error_code available
+grapheme_strlen available
+normalizer_normalize available
+Locale available
+NumberFormatter available
+Collator available
+IntlChar available
+Normalizer available

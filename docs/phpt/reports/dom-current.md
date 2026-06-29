@@ -1,24 +1,25 @@
 # dom Current Focus Report
 
-Focused policy harness:
+Focused bounded DOM harness:
 
 | Outcome | Count |
 | --- | ---: |
-| PASS | 1 |
+| PASS | 3 |
 | FAIL | 0 |
 | SKIP | 0 |
 | BORK | 0 |
 
-## Selected Fixture
+## Selected Fixtures
 
 - `tests/phpt/generated/dom/platform-checks.phpt`
+- `tests/phpt/generated/dom/domdocument-basic.phpt`
+- `tests/phpt/generated/dom/domdocument-node-apis.phpt`
 
 ## Current Policy
 
-DOM is classified as optional and unavailable. No runtime stubs or XML parsing
-behavior were added.
-
-## Deferred Implementation
-
-`XML-FAMILY-DOM-REAL-IMPLEMENTATION` remains deferred to a future DOM/XML
-strategy.
+The `dom` extension is enabled for `DOMDocument`, `DOMElement`, `DOMNode`, and
+`DOMNodeList` backed by the shared strict XML tree. The selected slice covers
+XML load/save, constructed document roots, element-local attributes and append,
+node properties, and countable/iterable `getElementsByTagName()` results. XPath,
+full live DOM node ownership, namespaces, HTML parsing, schema validation, and
+libxml error state remain documented gaps.

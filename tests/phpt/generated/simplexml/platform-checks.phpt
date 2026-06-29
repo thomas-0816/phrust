@@ -1,7 +1,9 @@
 --TEST--
-simplexml: platform checks stay negative for policy harness
+simplexml: bounded SimpleXML platform checks
 --DESCRIPTION--
-Focused XML-family policy coverage for SimpleXML platform visibility.
+Focused SimpleXML coverage for the bounded XML-backed object surface.
+--EXTENSIONS--
+simplexml
 --FILE--
 <?php
 var_dump(extension_loaded("simplexml"));
@@ -12,9 +14,9 @@ var_dump(function_exists("simplexml_load_file"));
 var_dump(function_exists("simplexml_import_dom"));
 ?>
 --EXPECT--
+bool(true)
+bool(true)
 bool(false)
-bool(false)
-bool(false)
-bool(false)
+bool(true)
 bool(false)
 bool(false)

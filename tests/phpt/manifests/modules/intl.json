@@ -1,7 +1,7 @@
 {
   "schema_version":"phpt-module-plan-v1",
   "module":"intl",
-  "priority":"extension-policy focused",
+  "priority":"bounded intl MVP",
   "selected_manifest":"tests/phpt/manifests/modules/intl.selected.jsonl",
   "corpus_count":477,
   "selected_count":3,
@@ -9,9 +9,9 @@
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":467,
-  "scope":["Composer/platform-check visibility","extension_loaded(\"intl\")","guarded common intl symbol probes"],
-  "non_scope":["full upstream ext/intl corpus","ICU locale data","collation and normalization parity","formatters and converters"],
-  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=intl","nix develop -c just verify-phpt","nix develop -c just verify-stdlib"],
-  "next_step":"Keep intl unavailable until a reference-backed ICU strategy is selected."
+  "known_failure_count":464,
+  "scope":["extension_loaded(\"intl\")","Normalizer NFC static methods","normalizer_* functions","grapheme_strlen","grapheme_substr","Latin-ASCII transliteration","intl_get_error_code"],
+  "non_scope":["full upstream ext/intl corpus","ICU locale data","collation parity","formatter behavior","IDNA","break iterators","full grapheme cluster segmentation"],
+  "target_gates":["nix develop -c just phpt-module-target MODULE=intl","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=intl","nix develop -c just verify-phpt","nix develop -c just verify-stdlib"],
+  "next_step":"Promote ICU-backed locale, normalization, formatter, and collator parity only after a reference-backed ICU strategy is selected."
 }

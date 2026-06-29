@@ -1,23 +1,23 @@
 # xml Current Focus Report
 
-Focused policy harness:
+Focused bounded parser harness:
 
 | Outcome | Count |
 | --- | ---: |
-| PASS | 1 |
+| PASS | 2 |
 | FAIL | 0 |
 | SKIP | 0 |
 | BORK | 0 |
 
-## Selected Fixture
+## Selected Fixtures
 
 - `tests/phpt/generated/xml/platform-checks.phpt`
+- `tests/phpt/generated/xml/parser-basic.phpt`
 
 ## Current Policy
 
-XML is classified as optional and unavailable. No SAX parser, parser resource,
-callback dispatch, or XML dependency was added.
-
-## Deferred Implementation
-
-`XML-FAMILY-XML-SAX-PARSER` remains deferred to a future XML parser strategy.
+The `xml` extension is enabled for `XMLParser`, `xml_parser_create`, and strict
+in-memory `xml_parse`. It accepts single-root XML, decodes built-in entities,
+and rejects unresolved entities or malformed input. SAX parser callbacks remain
+unsupported under
+`XML-DOM-INTL-XML-SAX-CALLBACKS`.

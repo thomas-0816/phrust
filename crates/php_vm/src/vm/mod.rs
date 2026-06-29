@@ -95,6 +95,7 @@ const SORT_ASC: i64 = 4;
 const SORT_LOCALE_STRING: i64 = 5;
 const SORT_NATURAL: i64 = 6;
 const SORT_FLAG_CASE: i64 = 8;
+const NORMALIZER_FORM_C: i64 = 4;
 #[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_SIDE_EXIT_THRESHOLD: u64 = 2;
 #[cfg(feature = "jit-cranelift")]
@@ -8706,6 +8707,23 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_xml_runtime_class(&class_name) {
+                            let object = match new_xml_runtime_object(&class_name, values) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         let Some(class) = lookup_class_in_state(compiled, state, &class_name)
                         else {
                             return self.runtime_error(
@@ -9177,6 +9195,29 @@ impl Vm {
                                 values,
                                 &self.options.runtime_context,
                             ) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_xml_runtime_class(class_name) {
+                            let values = match read_call_args(unit, stack, args) {
+                                Ok(values) => values,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            let object = match new_xml_runtime_object(class_name, values) {
                                 Ok(object) => object,
                                 Err(message) => {
                                     return self.runtime_error(output, compiled, stack, message);
@@ -10805,6 +10846,9 @@ impl Vm {
                         let value = if constant.eq_ignore_ascii_case("class") {
                             Value::String(PhpString::from_test_str(&class.display_name))
                         } else if let Some(value) = pdo_class_constant_value(&class.name, constant)
+                        {
+                            value
+                        } else if let Some(value) = xml_class_constant_value(&class.name, constant)
                         {
                             value
                         } else {
@@ -14609,6 +14653,27 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_xml_runtime_class(&object.class_name()) {
+                            let value = match call_xml_runtime_method(
+                                &object,
+                                method,
+                                values.into_iter().map(|arg| arg.value).collect(),
+                            ) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("caller frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         let receiver_class = normalize_class_name(&object.class_name());
                         let lowered_method = normalize_method_name(method);
                         let scope = current_scope_class(compiled, stack);
@@ -15137,6 +15202,32 @@ impl Vm {
                                             .runtime_error(output, compiled, stack, message);
                                     }
                                 };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("caller frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if normalize_class_name(class_name) == "normalizer" {
+                            let values = match read_call_args(unit, stack, args) {
+                                Ok(values) => values,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            let value = match call_normalizer_static_method(
+                                method,
+                                values.into_iter().map(|arg| arg.value).collect(),
+                            ) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                             if let Err(message) = stack
                                 .current_mut()
                                 .expect("caller frame is active")
@@ -20039,6 +20130,13 @@ impl Vm {
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
         }
+        if is_xml_runtime_class(&object.class_name()) {
+            let values = args.into_iter().map(|arg| arg.value).collect();
+            return match call_xml_runtime_method(&object, method, values) {
+                Ok(value) => VmResult::success(output.clone(), Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
         let Some(_class) = lookup_class_in_state(compiled, state, &object.class_name()) else {
             return self.runtime_error(
                 output,
@@ -21526,6 +21624,20 @@ impl Vm {
                 .map(|value| PhpString::from(value.into_bytes()))
                 .map_err(|message| self.runtime_error(output, compiled, stack, message));
         }
+        if normalize_class_name(&object.class_name()) == "simplexmlelement" {
+            return match php_runtime::xml::simplexml_text(&object) {
+                Value::String(value) => Ok(value),
+                other => Err(self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    format!(
+                        "E_PHP_VM_TOSTRING_RETURN_TYPE: SimpleXMLElement::__toString(): Return value must be of type string, {} returned",
+                        value_type_name(&other)
+                    ),
+                )),
+            };
+        }
         let Some(class) = lookup_class_in_state(compiled, state, &object.class_name()) else {
             return Err(self.runtime_error(
                 output,
@@ -22281,6 +22393,14 @@ impl Vm {
         }
         if is_php_token_runtime_class(class_name) {
             let value = match php_token_static_method_value(class_name, method, args) {
+                Ok(value) => value,
+                Err(message) => return self.runtime_error(output, compiled, stack, message),
+            };
+            return VmResult::success(output.clone(), Some(value));
+        }
+        if normalize_class_name(class_name) == "normalizer" {
+            let values = args.into_iter().map(|arg| arg.value).collect();
+            let value = match call_normalizer_static_method(method, values) {
                 Ok(value) => value,
                 Err(message) => return self.runtime_error(output, compiled, stack, message),
             };
@@ -32009,6 +32129,333 @@ fn pdo_class_constant_value(class_name: &str, constant: &str) -> Option<Value> {
     Some(value)
 }
 
+fn is_xml_runtime_class(class_name: &str) -> bool {
+    matches!(
+        normalize_class_name(class_name).as_str(),
+        "domdocument"
+            | "domnode"
+            | "domelement"
+            | "domnodelist"
+            | "simplexmlelement"
+            | "xmlparser"
+            | "xmlreader"
+            | "xmlwriter"
+    )
+}
+
+fn new_xml_runtime_object(class_name: &str, args: Vec<CallArgument>) -> Result<ObjectRef, String> {
+    let class_name = normalize_class_name(class_name);
+    match class_name.as_str() {
+        "domdocument" => {
+            validate_xml_arg_count("DOMDocument::__construct", &args, 0, 0)?;
+            Ok(php_runtime::xml::new_dom_document())
+        }
+        "domnode" => {
+            validate_xml_arg_count("DOMNode::__construct", &args, 0, 0)?;
+            Ok(php_runtime::xml::new_dom_node())
+        }
+        "domelement" => {
+            validate_xml_arg_count("DOMElement::__construct", &args, 1, 1)?;
+            let name = xml_string_arg("DOMElement::__construct", args[0].value.clone())?;
+            Ok(php_runtime::xml::new_dom_element(
+                &php_runtime::xml::XmlElement {
+                    name,
+                    attributes: Vec::new(),
+                    children: Vec::new(),
+                },
+            ))
+        }
+        "domnodelist" => {
+            validate_xml_arg_count("DOMNodeList::__construct", &args, 0, 0)?;
+            Ok(php_runtime::xml::new_dom_node_list(Vec::new()))
+        }
+        "simplexmlelement" => {
+            validate_xml_arg_count("SimpleXMLElement::__construct", &args, 1, 1)?;
+            let xml = xml_string_arg("SimpleXMLElement::__construct", args[0].value.clone())?;
+            match php_runtime::xml::simplexml_load_string(&xml)? {
+                Value::Object(object) => Ok(object),
+                _ => Err(
+                    "E_PHP_VM_XML_INTERNAL: SimpleXMLElement constructor did not return object"
+                        .to_owned(),
+                ),
+            }
+        }
+        "xmlparser" => {
+            validate_xml_arg_count("XMLParser::__construct", &args, 0, 0)?;
+            Ok(php_runtime::xml::new_xml_parser())
+        }
+        "xmlreader" => {
+            validate_xml_arg_count("XMLReader::__construct", &args, 0, 0)?;
+            Ok(php_runtime::xml::new_xml_reader())
+        }
+        "xmlwriter" => {
+            validate_xml_arg_count("XMLWriter::__construct", &args, 0, 0)?;
+            Ok(php_runtime::xml::new_xml_writer())
+        }
+        _ => Err(format!(
+            "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not an XML runtime class"
+        )),
+    }
+}
+
+fn call_xml_runtime_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Value, String> {
+    let class_name = normalize_class_name(&object.class_name());
+    let method = normalize_method_name(method);
+    match (class_name.as_str(), method.as_str()) {
+        ("domdocument", "loadxml") => {
+            validate_xml_value_count("DOMDocument::loadXML", &args, 1, 1)?;
+            let xml = xml_string_arg("DOMDocument::loadXML", args[0].clone())?;
+            php_runtime::xml::dom_document_load_xml(object, &xml)
+        }
+        ("domdocument", "savexml") => {
+            validate_xml_value_count("DOMDocument::saveXML", &args, 0, 0)?;
+            Ok(php_runtime::xml::dom_document_save_xml(object))
+        }
+        ("domdocument", "createelement") => {
+            validate_xml_value_count("DOMDocument::createElement", &args, 1, 2)?;
+            let name = xml_string_arg("DOMDocument::createElement", args[0].clone())?;
+            let value = args
+                .get(1)
+                .map(|value| xml_string_arg("DOMDocument::createElement", value.clone()))
+                .transpose()?;
+            Ok(php_runtime::xml::dom_document_create_element(
+                &name,
+                value.as_deref(),
+            ))
+        }
+        ("domdocument", "appendchild") => {
+            validate_xml_value_count("DOMDocument::appendChild", &args, 1, 1)?;
+            let Value::Object(child) = args[0].clone() else {
+                return Err(
+                    "E_PHP_VM_XML_TYPE_ERROR: DOMDocument::appendChild expects DOMNode".to_owned(),
+                );
+            };
+            Ok(php_runtime::xml::dom_document_append_child(object, &child))
+        }
+        ("domdocument", "documentelement") => {
+            validate_xml_value_count("DOMDocument::documentElement", &args, 0, 0)?;
+            Ok(php_runtime::xml::dom_document_element(object))
+        }
+        ("domdocument", "getelementsbytagname") => {
+            validate_xml_value_count("DOMDocument::getElementsByTagName", &args, 1, 1)?;
+            let name = xml_string_arg("DOMDocument::getElementsByTagName", args[0].clone())?;
+            Ok(php_runtime::xml::dom_document_get_elements_by_tag_name(
+                object, &name,
+            ))
+        }
+        ("domelement", "getelementsbytagname") => {
+            validate_xml_value_count("DOMElement::getElementsByTagName", &args, 1, 1)?;
+            let name = xml_string_arg("DOMElement::getElementsByTagName", args[0].clone())?;
+            Ok(php_runtime::xml::dom_element_get_elements_by_tag_name(
+                object, &name,
+            ))
+        }
+        ("domelement", "getattribute") => {
+            validate_xml_value_count("DOMElement::getAttribute", &args, 1, 1)?;
+            let name = xml_string_arg("DOMElement::getAttribute", args[0].clone())?;
+            Ok(php_runtime::xml::dom_element_get_attribute(object, &name))
+        }
+        ("domelement", "setattribute") => {
+            validate_xml_value_count("DOMElement::setAttribute", &args, 2, 2)?;
+            let name = xml_string_arg("DOMElement::setAttribute", args[0].clone())?;
+            let value = xml_string_arg("DOMElement::setAttribute", args[1].clone())?;
+            Ok(php_runtime::xml::dom_element_set_attribute(
+                object, &name, &value,
+            ))
+        }
+        ("domelement", "appendchild") => {
+            validate_xml_value_count("DOMElement::appendChild", &args, 1, 1)?;
+            let Value::Object(child) = args[0].clone() else {
+                return Err(
+                    "E_PHP_VM_XML_TYPE_ERROR: DOMElement::appendChild expects DOMNode".to_owned(),
+                );
+            };
+            Ok(php_runtime::xml::dom_element_append_child(object, &child))
+        }
+        ("domnodelist", "item") => {
+            validate_xml_value_count("DOMNodeList::item", &args, 1, 1)?;
+            let index = to_int(&args[0])?;
+            Ok(php_runtime::xml::dom_node_list_item(object, index))
+        }
+        ("simplexmlelement", "asxml") => {
+            validate_xml_value_count("SimpleXMLElement::asXML", &args, 0, 0)?;
+            Ok(php_runtime::xml::simplexml_as_xml(object))
+        }
+        ("simplexmlelement", "attributes") => {
+            validate_xml_value_count("SimpleXMLElement::attributes", &args, 0, 0)?;
+            Ok(php_runtime::xml::simplexml_attributes(object))
+        }
+        ("simplexmlelement", "__tostring") => {
+            validate_xml_value_count("SimpleXMLElement::__toString", &args, 0, 0)?;
+            Ok(php_runtime::xml::simplexml_text(object))
+        }
+        ("xmlreader", "xml") => {
+            validate_xml_value_count("XMLReader::XML", &args, 1, 1)?;
+            let xml = xml_string_arg("XMLReader::XML", args[0].clone())?;
+            php_runtime::xml::xml_reader_xml(object, &xml)
+        }
+        ("xmlreader", "read") => {
+            validate_xml_value_count("XMLReader::read", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_reader_read(object))
+        }
+        ("xmlreader", "getattribute") => {
+            validate_xml_value_count("XMLReader::getAttribute", &args, 1, 1)?;
+            let name = xml_string_arg("XMLReader::getAttribute", args[0].clone())?;
+            Ok(php_runtime::xml::xml_reader_get_attribute(object, &name))
+        }
+        ("xmlreader", "close") => {
+            validate_xml_value_count("XMLReader::close", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_reader_close(object))
+        }
+        ("xmlwriter", "openmemory") => {
+            validate_xml_value_count("XMLWriter::openMemory", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_writer_open_memory(object))
+        }
+        ("xmlwriter", "startdocument") => {
+            validate_xml_value_count("XMLWriter::startDocument", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_writer_start_document(object))
+        }
+        ("xmlwriter", "startelement") => {
+            validate_xml_value_count("XMLWriter::startElement", &args, 1, 1)?;
+            let name = xml_string_arg("XMLWriter::startElement", args[0].clone())?;
+            Ok(php_runtime::xml::xml_writer_start_element(object, &name))
+        }
+        ("xmlwriter", "writeattribute") => {
+            validate_xml_value_count("XMLWriter::writeAttribute", &args, 2, 2)?;
+            let name = xml_string_arg("XMLWriter::writeAttribute", args[0].clone())?;
+            let value = xml_string_arg("XMLWriter::writeAttribute", args[1].clone())?;
+            Ok(php_runtime::xml::xml_writer_write_attribute(
+                object, &name, &value,
+            ))
+        }
+        ("xmlwriter", "text") => {
+            validate_xml_value_count("XMLWriter::text", &args, 1, 1)?;
+            let value = xml_string_arg("XMLWriter::text", args[0].clone())?;
+            Ok(php_runtime::xml::xml_writer_text(object, &value))
+        }
+        ("xmlwriter", "endelement") => {
+            validate_xml_value_count("XMLWriter::endElement", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_writer_end_element(object))
+        }
+        ("xmlwriter", "enddocument") => {
+            validate_xml_value_count("XMLWriter::endDocument", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_writer_end_document(object))
+        }
+        ("xmlwriter", "outputmemory") => {
+            validate_xml_value_count("XMLWriter::outputMemory", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_writer_output_memory(object))
+        }
+        _ => Err(format!(
+            "E_PHP_VM_UNKNOWN_METHOD: method {}::{method} is not implemented in the XML runtime slice",
+            object.display_name()
+        )),
+    }
+}
+
+fn call_normalizer_static_method(method: &str, args: Vec<Value>) -> Result<Value, String> {
+    let method = normalize_method_name(method);
+    match method.as_str() {
+        "normalize" => {
+            validate_xml_value_count("Normalizer::normalize", &args, 1, 2)?;
+            let _ = xml_string_arg("Normalizer::normalize", args[0].clone())?;
+            let form = args
+                .get(1)
+                .map(|value| to_int(value))
+                .transpose()?
+                .unwrap_or(NORMALIZER_FORM_C);
+            if form != NORMALIZER_FORM_C {
+                return Err(
+                    "E_PHP_RUNTIME_UNSUPPORTED_INTL: Normalizer::normalize only supports NFC"
+                        .to_owned(),
+                );
+            }
+            Ok(args[0].clone())
+        }
+        "isnormalized" => {
+            validate_xml_value_count("Normalizer::isNormalized", &args, 1, 2)?;
+            let _ = xml_string_arg("Normalizer::isNormalized", args[0].clone())?;
+            let form = args
+                .get(1)
+                .map(|value| to_int(value))
+                .transpose()?
+                .unwrap_or(NORMALIZER_FORM_C);
+            if form != NORMALIZER_FORM_C {
+                return Err(
+                    "E_PHP_RUNTIME_UNSUPPORTED_INTL: Normalizer::isNormalized only supports NFC"
+                        .to_owned(),
+                );
+            }
+            Ok(Value::Bool(true))
+        }
+        _ => Err(format!(
+            "E_PHP_VM_UNKNOWN_METHOD: method Normalizer::{method} is not implemented"
+        )),
+    }
+}
+
+fn xml_class_constant_value(class_name: &str, constant: &str) -> Option<Value> {
+    if normalize_class_name(class_name) != "xmlreader" {
+        return None;
+    }
+    let value = match constant.to_ascii_uppercase().as_str() {
+        "NONE" => php_runtime::xml::XML_READER_NONE,
+        "ELEMENT" => php_runtime::xml::XML_READER_ELEMENT,
+        "TEXT" => php_runtime::xml::XML_READER_TEXT,
+        "END_ELEMENT" => php_runtime::xml::XML_READER_END_ELEMENT,
+        _ => return None,
+    };
+    Some(Value::Int(value))
+}
+
+fn xml_string_arg(name: &str, value: Value) -> Result<String, String> {
+    to_string(&value)
+        .map(|value| value.to_string_lossy())
+        .map_err(|message| format!("E_PHP_VM_XML_TYPE_ERROR: {name} expects string: {message}"))
+}
+
+fn validate_xml_arg_count(
+    name: &str,
+    args: &[CallArgument],
+    min: usize,
+    max: usize,
+) -> Result<(), String> {
+    for arg in args {
+        if let Some(name) = &arg.name {
+            return Err(format!(
+                "E_PHP_VM_XML_NAMED_ARG: XML runtime methods do not accept named argument ${name}"
+            ));
+        }
+    }
+    validate_xml_count(name, args.len(), min, max)
+}
+
+fn validate_xml_value_count(
+    name: &str,
+    args: &[Value],
+    min: usize,
+    max: usize,
+) -> Result<(), String> {
+    validate_xml_count(name, args.len(), min, max)
+}
+
+fn validate_xml_count(name: &str, len: usize, min: usize, max: usize) -> Result<(), String> {
+    if len < min || len > max {
+        let expected = if min == max {
+            min.to_string()
+        } else {
+            format!("{min} to {max}")
+        };
+        return Err(format!(
+            "E_PHP_VM_XML_ARITY: {name} expects {expected} argument(s), {len} given"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_pdo_arg_count(
     function: &str,
     actual: usize,
@@ -34463,6 +34910,18 @@ fn internal_enum_class_entry(normalized: &str) -> Option<php_ir::module::ClassEn
         "pharfileinfo" => Some(internal_empty_class_entry("pharfileinfo", "PharFileInfo")),
         "ziparchive" => Some(internal_empty_class_entry("ziparchive", "ZipArchive")),
         "gdimage" => Some(internal_empty_class_entry("gdimage", "GdImage")),
+        "domdocument" => Some(internal_empty_class_entry("domdocument", "DOMDocument")),
+        "domnode" => Some(internal_empty_class_entry("domnode", "DOMNode")),
+        "domelement" => Some(internal_empty_class_entry("domelement", "DOMElement")),
+        "domnodelist" => Some(internal_empty_class_entry("domnodelist", "DOMNodeList")),
+        "simplexmlelement" => Some(internal_empty_class_entry(
+            "simplexmlelement",
+            "SimpleXMLElement",
+        )),
+        "xmlparser" => Some(internal_empty_class_entry("xmlparser", "XMLParser")),
+        "xmlreader" => Some(internal_empty_class_entry("xmlreader", "XMLReader")),
+        "xmlwriter" => Some(internal_empty_class_entry("xmlwriter", "XMLWriter")),
+        "normalizer" => Some(internal_empty_class_entry("normalizer", "Normalizer")),
         _ => None,
     }
 }
@@ -34604,6 +35063,9 @@ fn class_constant_value_by_name(
         ))));
     }
     if let Some(value) = pdo_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = xml_class_constant_value(class_name, constant_name) {
         return Ok(Some(value));
     }
     if class.flags.is_enum
@@ -37908,6 +38370,40 @@ fn object_property_iteration_entries(
     caller_scope: Option<&str>,
 ) -> Result<Vec<ObjectPropertyIterationEntry>, String> {
     let class_name = object.class_name();
+    if normalize_class_name(&class_name) == "simplexmlelement" {
+        return Ok(object
+            .properties_snapshot()
+            .into_iter()
+            .filter_map(|(name, _)| {
+                if name.starts_with("__") || name.contains(':') {
+                    None
+                } else {
+                    Some(ObjectPropertyIterationEntry {
+                        key: name.clone(),
+                        storage_name: name,
+                    })
+                }
+            })
+            .collect());
+    }
+    if normalize_class_name(&class_name) == "domnodelist" {
+        let Some(Value::Array(entries)) = object.get_property("__entries") else {
+            return Ok(Vec::new());
+        };
+        return Ok(entries
+            .iter()
+            .filter_map(|(key, _)| match key {
+                ArrayKey::Int(index) => Some(ObjectPropertyIterationEntry {
+                    key: index.to_string(),
+                    storage_name: index.to_string(),
+                }),
+                ArrayKey::String(key) => Some(ObjectPropertyIterationEntry {
+                    key: key.to_string_lossy(),
+                    storage_name: key.to_string_lossy(),
+                }),
+            })
+            .collect());
+    }
     let Some(class) = compiled.lookup_class(&class_name) else {
         return Err(format!(
             "E_PHP_VM_UNKNOWN_CLASS: class {} is not defined",

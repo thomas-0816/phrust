@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"xmlreader",
+  "priority":"bounded XMLReader MVP",
+  "selected_manifest":"tests/phpt/manifests/modules/xmlreader.selected.jsonl",
+  "corpus_count":0,
+  "selected_count":1,
+  "pass_count":1,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["extension_loaded(\"xmlreader\")","XMLReader::XML","XMLReader::read","nodeType","name","value","getAttribute","close"],
+  "non_scope":["full upstream ext/xmlreader corpus","stream/file readers","namespaces","validation","attribute iteration","libxml errors"],
+  "target_gates":["nix develop -c just phpt-module-target MODULE=xmlreader","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=xmlreader","nix develop -c just verify-phpt"],
+  "next_step":"Promote file/stream readers and namespace behavior after the XML tree model is broadened."
+}
