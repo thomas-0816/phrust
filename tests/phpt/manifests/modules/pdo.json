@@ -4,14 +4,14 @@
   "priority":"data-platform classification",
   "selected_manifest":"tests/phpt/manifests/modules/pdo.selected.jsonl",
   "corpus_count":296,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":3,
+  "pass_count":3,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":296,
-  "scope":["extension_loaded(\"pdo\")","PDO class platform probe","PDOException platform probe"],
-  "non_scope":["network database clients","PDO driver implementation","query execution","Zend extension ABI"],
+  "scope":["extension_loaded(\"pdo\")","PDO class platform probe","PDOException platform probe","SQLite DSN construction","PDO exec/query/prepare","PDOStatement execute/fetch/fetchAll/fetchColumn/rowCount/columnCount","transactions","lastInsertId","selected ERRMODE_EXCEPTION failures"],
+  "non_scope":["network database clients","non-SQLite PDO drivers","full cursor scrollability","Zend extension ABI"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=pdo","nix develop -c just verify-phpt"],
-  "next_step":"Keep PDO unavailable until a real PDO abstraction and driver policy exist."
+  "next_step":"Broaden non-SQLite drivers and advanced cursor/attribute behavior only with selected fixtures."
 }

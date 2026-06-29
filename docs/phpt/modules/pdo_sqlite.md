@@ -3,7 +3,10 @@
 - Strategy: SQLite-backed PDO MVP
 - Classification: real implementation, still incomplete
 - Selected manifest: `tests/phpt/manifests/modules/pdo_sqlite.selected.jsonl`
-- Fixture: `tests/phpt/generated/pdo_sqlite/platform-checks.phpt`
+- Fixtures:
+  - `tests/phpt/generated/pdo_sqlite/platform-checks.phpt`
+  - `tests/phpt/generated/pdo_sqlite/prepared-transactions.phpt`
+  - `tests/phpt/generated/pdo_sqlite/errmode-exception.phpt`
 
 ## Implemented Scope
 
@@ -15,19 +18,23 @@ Implemented behavior:
 - `extension_loaded("pdo_sqlite")` and PDO driver discovery with `sqlite`.
 - SQLite `:memory:` and root-constrained local file DSNs.
 - `PDO::exec`, `query`, and `prepare` with `PDOStatement::execute`.
+- `PDOStatement::execute` with positional and named parameter arrays.
+- `PDOStatement::bindValue` and selected `bindParam` value binding.
+- `PDO::beginTransaction`, `commit`, `rollBack`, and `lastInsertId`.
 - `PDOStatement::fetch`, `fetchAll`, `fetchColumn`, `columnCount`, and
-  `closeCursor` for associative, numeric, both, and column fetch modes.
+  `closeCursor` for associative, numeric, both, column, and object fetch modes.
 - Basic `errorCode` and `errorInfo` plumbing through the SQLite connection.
+- Selected `PDO::ERRMODE_EXCEPTION` handling for SQLite query and statement
+  execution failures with catchable `PDOException` objects.
 
 ## Remaining Gaps
 
 - Stable ID: `PHPT-DATA-PDO-SQLITE-MVP-GAPS`
-- Bound parameters are not implemented; prepared statements currently execute
-  stored SQL without non-empty parameter arrays.
 - SQLite-specific PDO callbacks (`sqliteCreateFunction`,
   `sqliteCreateAggregate`, and `sqliteCreateCollation`) are not implemented.
-- Transactions, persistent connections, full attribute behavior, exact warning
-  text, exception-mode behavior, and advanced fetch modes remain incomplete.
+- Persistent connections, full attribute behavior, exact warning text,
+  by-reference `bindParam` mutation parity, and advanced fetch modes remain
+  incomplete.
 - Non-SQLite PDO drivers remain unavailable.
 
 ## Source References

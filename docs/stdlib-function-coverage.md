@@ -6,11 +6,11 @@ Reference status: `available`
 
 | Status | Count |
 | --- | ---: |
-| implemented | 638 |
+| implemented | 642 |
 | partial | 67 |
 | stub | 63 |
 | missing | 157 |
-| known_gap | 652 |
+| known_gap | 648 |
 
 ## Extension Summary
 
@@ -21,7 +21,7 @@ Reference status: `available`
 | core | constants | 31 | 0 | 4 | 57 | 0 |
 | standard | functions | 277 | 0 | 45 | 0 | 269 |
 | standard | classes | 0 | 1 | 0 | 0 | 5 |
-| standard | constants | 104 | 0 | 8 | 0 | 269 |
+| standard | constants | 108 | 0 | 8 | 0 | 265 |
 | json | functions | 5 | 0 | 0 | 0 | 0 |
 | json | classes | 0 | 2 | 0 | 0 | 0 |
 | json | constants | 28 | 0 | 0 | 0 | 1 |

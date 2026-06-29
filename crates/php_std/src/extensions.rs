@@ -1529,6 +1529,11 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             ConstantValue::Int(52),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_HEADER",
+            "curl",
+            ConstantValue::Int(42),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "CURLOPT_HTTPHEADER",
             "curl",
             ConstantValue::Int(10023),
@@ -1572,6 +1577,11 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             "CURLINFO_RESPONSE_CODE",
             "curl",
             ConstantValue::Int(2097154),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLINFO_HEADER_SIZE",
+            "curl",
+            ConstantValue::Int(2097163),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "CURLINFO_TOTAL_TIME",

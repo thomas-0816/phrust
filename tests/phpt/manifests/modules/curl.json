@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"curl",
+  "priority":"application HTTP client MVP",
+  "selected_manifest":"tests/phpt/manifests/modules/curl.selected.jsonl",
+  "corpus_count":0,
+  "selected_count":4,
+  "pass_count":2,
+  "skip_count":2,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["curl extension visibility","CurlHandle class visibility","curl_init","curl_setopt","curl_exec","curl_getinfo","curl_errno","curl_error","curl_close","curl_version","default-off network policy","explicit local HTTP test gate","POST string/array bodies","outgoing headers","bounded local redirects","response-header inclusion and header-size info"],
+  "non_scope":["public internet tests","HTTPS/TLS transport until a TLS stack is selected for php_runtime","curl_multi_*","full libcurl option matrix","SAPI transport behavior"],
+  "target_gates":["nix develop -c cargo test -p php_runtime curl","PHRUST_NET_TESTS=1 nix develop -c cargo test -p php_runtime curl","nix develop -c just phpt-dev-module MODULE=curl","nix develop -c just phpt-dev-module MODULE=closure.extensions"],
+  "next_step":"Add HTTPS only after a TLS stack is selected for php_runtime; broaden curl_multi_* and option parity behind deterministic fixtures."
+}

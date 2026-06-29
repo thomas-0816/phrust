@@ -4,14 +4,14 @@
   "priority":"data-platform classification",
   "selected_manifest":"tests/phpt/manifests/modules/pdo_sqlite.selected.jsonl",
   "corpus_count":80,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":3,
+  "pass_count":3,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":80,
-  "scope":["extension_loaded(\"pdo_sqlite\")","PDO SQLite class/platform probes"],
-  "non_scope":["fake query success","PDO driver implementation","SQLite execution without an approved dependency"],
+  "scope":["extension_loaded(\"pdo_sqlite\")","PDO SQLite class/platform probes","prepared parameters","transactions","object fetch basics","selected ERRMODE_EXCEPTION failures"],
+  "non_scope":["fake query success","non-SQLite PDO drivers","SQLite execution without an approved dependency"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=pdo_sqlite","nix develop -c just verify-phpt"],
   "next_step":"Enable only after PDO core and real SQLite execution are available."
 }

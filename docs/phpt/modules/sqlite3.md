@@ -15,24 +15,27 @@ Implemented behavior:
   visibility for framework probes.
 - `:memory:` databases and root-constrained local file databases.
 - `SQLite3::__construct`, `open`, `exec`, `query`, `querySingle`,
-  `lastErrorCode`, `lastExtendedErrorCode`, `lastErrorMsg`, and `close`.
+  `prepare`, `lastErrorCode`, `lastExtendedErrorCode`, `lastErrorMsg`,
+  `lastInsertRowID`, `changes`, `busyTimeout`, `escapeString`, and `close`.
 - `SQLite3Result::fetchArray`, `fetchAll`, `reset`, `finalize`, and
   `numColumns`.
+- `SQLite3Stmt::bindValue`, selected `bindParam`, `execute`, `reset`, `clear`,
+  and `close` for migration-style positional and named parameter flows.
 - Common SQLite3 constants for fetch modes, value types, open flags, and
   deterministic functions.
 
 The generated fixture covers in-memory query execution, result iteration,
 successful error state, close behavior, and a local file database round trip.
+The prepared/status fixture covers bound inserts, selected result execution,
+`lastInsertRowID`, `changes`, `busyTimeout`, and `escapeString`.
 
 ## Remaining Gaps
 
 - Stable ID: `PHPT-DATA-SQLITE3-MVP-GAPS`
-- `SQLite3Stmt` exists for compatibility probes, but prepared statements,
-  scalar binding, and statement execution are not implemented yet.
 - Exact PHP warning text and all error-code edge cases are not complete.
 - Callbacks, custom SQL functions, collations, authorizers, backups, blob
-  streams, busy timeout, loadable extensions, and exception-mode behavior are
-  outside this MVP.
+  streams, loadable extensions, and exception-mode behavior are outside this
+  MVP.
 - The implementation intentionally does not provide network databases or PDO;
   PDO_SQLite owns SQLite-specific PDO integration.
 

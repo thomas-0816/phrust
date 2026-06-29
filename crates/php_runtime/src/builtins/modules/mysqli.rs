@@ -6,11 +6,17 @@ use crate::builtins::{
     RuntimeSourceSpan,
 };
 use crate::{
-    MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MysqlConnectOptions, ObjectRef,
-    PhpString, Value,
+    MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_SQLITE_COMPAT_ENV,
+    MysqlConnectOptions, ObjectRef, PhpString, Value,
 };
+use std::env;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
+    BuiltinEntry::new(
+        "mysqli_affected_rows",
+        builtin_mysqli_affected_rows,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "mysqli_close",
         builtin_mysqli_close,
@@ -69,6 +75,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "mysqli_init",
         builtin_mysqli_init,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mysqli_insert_id",
+        builtin_mysqli_insert_id,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -176,11 +187,15 @@ pub(in crate::builtins::modules) fn builtin_mysqli_query(
     };
     match state.query(id, &sql) {
         Ok(Some(result_id)) => {
+            sync_mysqli_status_properties(&object, state);
             let result = mysqli_result_object(result_id);
             result.set_property("num_rows", Value::Int(state.num_rows(result_id)));
             Ok(Value::Object(result))
         }
-        Ok(None) => Ok(Value::Bool(true)),
+        Ok(None) => {
+            sync_mysqli_status_properties(&object, state);
+            Ok(Value::Bool(true))
+        }
         Err(_) => Ok(Value::Bool(false)),
     }
 }
@@ -315,6 +330,40 @@ pub(in crate::builtins::modules) fn builtin_mysqli_error(
     Ok(Value::String(PhpString::from(error.into_bytes())))
 }
 
+pub(in crate::builtins::modules) fn builtin_mysqli_affected_rows(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_affected_rows", &args, 1)?;
+    let object = mysqli_object_arg("mysqli_affected_rows", args.first())?;
+    let Some(id) = mysqli_connection_id(&object) else {
+        return Ok(Value::Int(-1));
+    };
+    Ok(Value::Int(
+        context
+            .mysql_state()
+            .map_or(-1, |state| state.affected_rows(id)),
+    ))
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_insert_id(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_insert_id", &args, 1)?;
+    let object = mysqli_object_arg("mysqli_insert_id", args.first())?;
+    let Some(id) = mysqli_connection_id(&object) else {
+        return Ok(Value::Int(0));
+    };
+    Ok(Value::Int(
+        context
+            .mysql_state()
+            .map_or(0, |state| state.last_insert_id(id)),
+    ))
+}
+
 pub(in crate::builtins::modules) fn builtin_mysqli_connect_errno(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -414,10 +463,18 @@ fn connect_from_test_dsn(context: &mut BuiltinContext<'_>) -> BuiltinResult {
     let Some(state) = context.mysql_state() else {
         return Ok(Value::Bool(false));
     };
+    if mysqli_sqlite_compat_enabled() {
+        return match state.connect_sqlite_compat() {
+            Ok(id) => Ok(Value::Object(mysqli_object(Some(id)))),
+            Err(_) => Ok(Value::Bool(false)),
+        };
+    }
     let Some(options) = MysqlConnectOptions::from_test_env() else {
         state.record_connect_error(
             2002,
-            format!("live mysqli connections require {MYSQL_TEST_DSN_ENV}"),
+            format!(
+                "live mysqli connections require {MYSQL_TEST_DSN_ENV}; selected SQLite compatibility fixtures require {MYSQLI_SQLITE_COMPAT_ENV}=1"
+            ),
         );
         return Ok(Value::Bool(false));
     };
@@ -431,6 +488,15 @@ fn connect_from_test_dsn(context: &mut BuiltinContext<'_>) -> BuiltinResult {
             Ok(Value::Bool(false))
         }
     }
+}
+
+fn mysqli_sqlite_compat_enabled() -> bool {
+    env::var(MYSQLI_SQLITE_COMPAT_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn fetch_array(
@@ -456,6 +522,8 @@ pub fn mysqli_object(connection_id: Option<i64>) -> ObjectRef {
     object.set_property("connect_error", Value::String(PhpString::from("")));
     object.set_property("errno", Value::Int(0));
     object.set_property("error", Value::String(PhpString::from("")));
+    object.set_property("affected_rows", Value::Int(0));
+    object.set_property("insert_id", Value::Int(0));
     object
 }
 
@@ -538,6 +606,18 @@ fn mysql_escape_string(value: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+fn sync_mysqli_status_properties(object: &ObjectRef, state: &crate::MysqlState) {
+    if let Some(id) = mysqli_connection_id(object) {
+        object.set_property("errno", Value::Int(state.errno(id)));
+        object.set_property(
+            "error",
+            Value::String(PhpString::from(state.error(id).into_bytes())),
+        );
+        object.set_property("affected_rows", Value::Int(state.affected_rows(id)));
+        object.set_property("insert_id", Value::Int(state.last_insert_id(id)));
+    }
 }
 
 fn expect_mysqli_arity(

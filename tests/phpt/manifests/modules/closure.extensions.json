@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"closure.extensions",
+  "priority":"application extension closure dashboard",
+  "selected_manifest":"tests/phpt/manifests/modules/closure.extensions.selected.jsonl",
+  "corpus_count":0,
+  "selected_count":43,
+  "pass_count":39,
+  "skip_count":4,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["database connectivity and query basics","mysqli opt-in SQLite compatibility query/fetch/status flow","PDO SQLite selected exception mode","SQLite3 prepared binding and status helpers","HTTP client local transport, POST, headers, redirects, and TLS/hash/OpenSSL helpers","XML parse/read basics","fileinfo/exif/GD media metadata basics","zlib/archive/compression primitives","filter/iconv/sodium/bcmath/gmp utility support","APCu/Redis/Memcached cache probe APIs","PHAR and session application support"],
+  "non_scope":["FPM/FastCGI/CGI/Apache mod_php/phpdbg","Zend extension ABI","public internet tests","network database protocols without explicit capability gates","full libcurl/OpenSSL/libxml/ICU/libmagic parity","full GD drawing API","full Redis/Memcached daemon protocols"],
+  "target_gates":["nix develop -c just phpt-dev-module MODULE=closure.extensions","nix develop -c just verify-phpt"],
+  "next_step":"Use this aggregate as the branch-wide closure gate while promoting missing behavior one focused module at a time."
+}

@@ -4,14 +4,14 @@
   "priority":"wordpress mysqli MVP classification",
   "selected_manifest":"tests/phpt/manifests/modules/mysqli.selected.jsonl",
   "corpus_count":442,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":2,
+  "pass_count":2,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":442,
-  "scope":["extension_loaded(\"mysqli\")","mysqli class/function platform probes","WordPress mysqli MVP visibility"],
-  "non_scope":["full mysqli PHPT parity","prepared statements until selected fixtures require them","mysqlnd/libmysql behavior","Zend extension ABI"],
+  "scope":["extension_loaded(\"mysqli\")","mysqli class/function platform probes","WordPress mysqli MVP visibility","opt-in SQLite compatibility query/fetch/status flow"],
+  "non_scope":["full mysqli PHPT parity","prepared statements until selected fixtures require them","mysqlnd/libmysql behavior","Zend extension ABI","MySQL wire-protocol parity for the SQLite compatibility adapter"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=mysqli","nix develop -c just verify-phpt"],
-  "next_step":"Use wp.db-network for capability-gated live MySQL/MariaDB coverage and keep broad mysqli corpus gaps explicit."
+  "next_step":"Broaden prepared-statement coverage only with selected fixtures; keep live MySQL/MariaDB under PHRUST_MYSQL_TEST_DSN and SQLite compatibility under PHRUST_MYSQLI_SQLITE_COMPAT."
 }

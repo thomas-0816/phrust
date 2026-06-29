@@ -1,0 +1,43 @@
+{"path":"tests/phpt/generated/mysqli/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"database connectivity surface: mysqli platform visibility"}
+{"path":"tests/phpt/generated/mysqli/sqlite-compat-query.phpt","module":"closure.extensions","kind":"contract","reason":"database query basics: mysqli SQLite compatibility query, fetch, insert id, affected rows, and error state"}
+{"path":"tests/phpt/generated/pdo/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"database connectivity surface: PDO platform visibility"}
+{"path":"tests/phpt/generated/pdo_sqlite/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"database connectivity surface: PDO SQLite platform visibility"}
+{"path":"tests/phpt/generated/pdo_sqlite/prepared-transactions.phpt","module":"closure.extensions","kind":"contract","reason":"database migration primitives: PDO SQLite parameters, row ids, object fetch, and transactions"}
+{"path":"tests/phpt/generated/pdo_sqlite/errmode-exception.phpt","module":"closure.extensions","kind":"contract","reason":"database error handling: PDO SQLite ERRMODE_EXCEPTION catchability"}
+{"path":"tests/phpt/generated/sqlite3/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"database connectivity surface: SQLite3 platform visibility and query basics"}
+{"path":"tests/phpt/generated/sqlite3/prepared-status.phpt","module":"closure.extensions","kind":"contract","reason":"database migration primitives: SQLite3 prepared binding, status helpers, and escaping"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-platform-mvp.phpt","module":"closure.extensions","kind":"contract","reason":"database query basics: mysqli functions, classes, and fetch constants"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-default-off.phpt","module":"closure.extensions","kind":"contract","reason":"database connectivity surface: live MySQL remains capability-gated by default"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-object-wpdb-mvp.phpt","module":"closure.extensions","kind":"contract","reason":"database query basics: WordPress-style mysqli object initialization"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-live-query-dsn.phpt","module":"closure.extensions","kind":"contract","reason":"database query basics: explicit DSN-gated live mysqli query"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-object-live-wpdb-dsn.phpt","module":"closure.extensions","kind":"contract","reason":"database query basics: explicit DSN-gated wpdb object query and escaped insert"}
+{"path":"tests/phpt/generated/wp.db-network/curl-platform-mvp.phpt","module":"closure.extensions","kind":"contract","reason":"HTTP client surface: cURL functions, class, and constants"}
+{"path":"tests/phpt/generated/wp.db-network/curl-default-off.phpt","module":"closure.extensions","kind":"contract","reason":"HTTP client surface: network execution stays default-off"}
+{"path":"tests/phpt/generated/wp.db-network/curl-local-http.phpt","module":"closure.extensions","kind":"contract","reason":"HTTP client surface: explicit local HTTP URL gate"}
+{"path":"tests/phpt/generated/curl/local-post-redirect-headers.phpt","module":"closure.extensions","kind":"contract","reason":"HTTP client surface: explicit local POST fields, headers, redirects, and response headers"}
+{"path":"tests/phpt/generated/wp.db-network/openssl-platform-mvp.phpt","module":"closure.extensions","kind":"contract","reason":"TLS/hash support: selected OpenSSL helpers are visible"}
+{"path":"tests/phpt/generated/wp.db-network/openssl-helpers-mvp.phpt","module":"closure.extensions","kind":"contract","reason":"TLS/hash support: digest, random bytes, method listing, and explicit verify gap"}
+{"path":"tests/phpt/generated/phar/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"archive support: read-only local PHAR surface"}
+{"path":"tests/phpt/generated/session/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"application state support: request-local session surface"}
+{"path":"tests/phpt/generated/xml/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"XML parser basics: ext/xml visibility"}
+{"path":"tests/phpt/generated/xml/parser-basic.phpt","module":"closure.extensions","kind":"contract","reason":"XML parser basics: strict parse/reject behavior"}
+{"path":"tests/phpt/generated/xml/parser-error-state.phpt","module":"closure.extensions","kind":"contract","reason":"XML parser basics: deterministic parser error helpers"}
+{"path":"tests/phpt/generated/simplexml/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"XML read basics: SimpleXML visibility"}
+{"path":"tests/phpt/generated/simplexml/simplexml-basic.phpt","module":"closure.extensions","kind":"contract","reason":"XML read basics: element text, attributes, child access, iteration, and asXML"}
+{"path":"tests/phpt/generated/simplexml/load-file.phpt","module":"closure.extensions","kind":"contract","reason":"XML read basics: local SimpleXML file loading"}
+{"path":"tests/phpt/generated/simplexml/wordpress-snippets.phpt","module":"closure.extensions","kind":"contract","reason":"XML read basics: WordPress-style RSS/plugin/config snippets"}
+{"path":"tests/phpt/generated/intl/platform-checks.phpt","module":"closure.extensions","kind":"contract","reason":"intl support: platform and class visibility"}
+{"path":"tests/phpt/generated/intl/guarded-common-symbols.phpt","module":"closure.extensions","kind":"contract","reason":"intl support: guarded common symbol probes"}
+{"path":"tests/phpt/generated/intl/framework-fallback.phpt","module":"closure.extensions","kind":"contract","reason":"intl support: normalization, grapheme, transliteration fallback helpers"}
+{"path":"tests/phpt/generated/fileinfo/mime-basic.phpt","module":"closure.extensions","kind":"contract","reason":"media metadata basics: deterministic MIME sniffing"}
+{"path":"tests/phpt/generated/exif/jpeg-metadata-basic.phpt","module":"closure.extensions","kind":"contract","reason":"media metadata basics: image type, size, and selected JPEG EXIF tags"}
+{"path":"tests/phpt/generated/gd/image-basic.phpt","module":"closure.extensions","kind":"contract","reason":"media helpers: selected GD image load/resize/write surface"}
+{"path":"tests/phpt/generated/zlib/compression-basic.phpt","module":"closure.extensions","kind":"contract","reason":"compression primitives: gzip/zlib/raw roundtrips"}
+{"path":"tests/phpt/generated/filter/basic.phpt","module":"closure.extensions","kind":"contract","reason":"filter support: common validation and sanitization"}
+{"path":"tests/phpt/generated/iconv/basic.phpt","module":"closure.extensions","kind":"contract","reason":"encoding support: UTF-8, ASCII, and ISO-8859-1 conversions"}
+{"path":"tests/phpt/generated/sodium/basic.phpt","module":"closure.extensions","kind":"contract","reason":"crypto support: selected real sodium helpers"}
+{"path":"tests/phpt/generated/bcmath/basic.phpt","module":"closure.extensions","kind":"contract","reason":"math support: bounded decimal arithmetic"}
+{"path":"tests/phpt/generated/gmp/basic.phpt","module":"closure.extensions","kind":"contract","reason":"math support: BigInt facade arithmetic"}
+{"path":"tests/phpt/generated/apcu/basic.phpt","module":"closure.extensions","kind":"contract","reason":"in-memory cache APIs: request-local APCu"}
+{"path":"tests/phpt/generated/redis/basic.phpt","module":"closure.extensions","kind":"contract","reason":"in-memory/external cache APIs: Redis probe surface remains explicit"}
+{"path":"tests/phpt/generated/memcached/basic.phpt","module":"closure.extensions","kind":"contract","reason":"in-memory/external cache APIs: Memcached probe surface remains explicit"}

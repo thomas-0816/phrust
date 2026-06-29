@@ -2,12 +2,16 @@
 
 use crate::{ArrayKey, PhpArray, PhpString, Value};
 use mysql::{Conn, Opts, Row, Value as MysqlValue, prelude::Queryable};
+use rusqlite::types::ValueRef as SqliteValueRef;
+use rusqlite::{Connection as SqliteConnection, OpenFlags};
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
 
 /// Environment variable that enables live MySQL/MariaDB tests.
 pub const MYSQL_TEST_DSN_ENV: &str = "PHRUST_MYSQL_TEST_DSN";
+/// Environment variable that enables the deterministic mysqli SQLite adapter.
+pub const MYSQLI_SQLITE_COMPAT_ENV: &str = "PHRUST_MYSQLI_SQLITE_COMPAT";
 
 /// `mysqli_fetch_array()` associative columns.
 pub const MYSQLI_ASSOC: i64 = 1;
@@ -25,9 +29,17 @@ struct MysqlBufferedResult {
 
 #[derive(Debug)]
 struct MysqlRuntimeConnection {
-    connection: MysqlConnection,
+    connection: MysqlConnectionBackend,
     last_errno: i64,
     last_error: String,
+    affected_rows: i64,
+    last_insert_id: i64,
+}
+
+#[derive(Debug)]
+enum MysqlConnectionBackend {
+    Live(MysqlConnection),
+    SqliteCompat(MysqliSqliteCompatConnection),
 }
 
 /// Request-local MySQL/MariaDB connections and buffered result sets.
@@ -66,18 +78,28 @@ impl MysqlState {
     pub fn connect(&mut self, options: &MysqlConnectOptions) -> Result<i64, MysqlError> {
         match MysqlConnection::connect(options) {
             Ok(connection) => {
+                let id = self.insert_connection(MysqlConnectionBackend::Live(connection));
                 self.connect_errno = 0;
                 self.connect_error.clear();
-                self.next_connection_id = self.next_connection_id.saturating_add(1).max(1);
-                let id = self.next_connection_id;
-                self.connections.insert(
-                    id,
-                    MysqlRuntimeConnection {
-                        connection,
-                        last_errno: 0,
-                        last_error: String::new(),
-                    },
-                );
+                Ok(id)
+            }
+            Err(error) => {
+                self.connect_errno = error.mysql_errno();
+                self.connect_error = error.message.clone();
+                Err(error)
+            }
+        }
+    }
+
+    /// Opens a deterministic request-local SQLite-backed mysqli compatibility
+    /// connection. This is not MySQL protocol parity; callers must keep it
+    /// behind explicit selected fixtures or application-bootstrap gates.
+    pub fn connect_sqlite_compat(&mut self) -> Result<i64, MysqlError> {
+        match MysqliSqliteCompatConnection::open_memory() {
+            Ok(connection) => {
+                let id = self.insert_connection(MysqlConnectionBackend::SqliteCompat(connection));
+                self.connect_errno = 0;
+                self.connect_error.clear();
                 Ok(id)
             }
             Err(error) => {
@@ -106,6 +128,8 @@ impl MysqlState {
             Ok(result) => {
                 connection.last_errno = 0;
                 connection.last_error.clear();
+                connection.affected_rows = result.affected_rows;
+                connection.last_insert_id = result.last_insert_id;
                 if result.columns.is_empty() {
                     return Ok(None);
                 }
@@ -164,9 +188,11 @@ impl MysqlState {
             ));
         };
         match connection.connection.execute(sql) {
-            Ok(()) => {
+            Ok(result) => {
                 connection.last_errno = 0;
                 connection.last_error.clear();
+                connection.affected_rows = result.affected_rows;
+                connection.last_insert_id = result.last_insert_id;
                 Ok(())
             }
             Err(error) => {
@@ -238,6 +264,38 @@ impl MysqlState {
             .get(&id)
             .map_or(0, |result| result.columns.len() as i64)
     }
+
+    /// Returns the row count affected by the most recent statement.
+    #[must_use]
+    pub fn affected_rows(&self, id: i64) -> i64 {
+        self.connections
+            .get(&id)
+            .map_or(-1, |connection| connection.affected_rows)
+    }
+
+    /// Returns the last auto-increment row id from the connection.
+    #[must_use]
+    pub fn last_insert_id(&self, id: i64) -> i64 {
+        self.connections
+            .get(&id)
+            .map_or(0, |connection| connection.last_insert_id)
+    }
+
+    fn insert_connection(&mut self, connection: MysqlConnectionBackend) -> i64 {
+        self.next_connection_id = self.next_connection_id.saturating_add(1).max(1);
+        let id = self.next_connection_id;
+        self.connections.insert(
+            id,
+            MysqlRuntimeConnection {
+                connection,
+                last_errno: 0,
+                last_error: String::new(),
+                affected_rows: 0,
+                last_insert_id: 0,
+            },
+        );
+        id
+    }
 }
 
 /// MySQL connection options parsed from a DSN.
@@ -306,29 +364,133 @@ impl MysqlConnection {
                 "MySQL query must not be empty",
             ));
         }
-        let mut result = self.conn.query_iter(sql).map_err(MysqlError::from_client)?;
-        let columns = result
-            .columns()
-            .as_ref()
-            .iter()
-            .map(|column| column.name_str().into_owned())
-            .collect::<Vec<_>>();
-        let mut rows = Vec::new();
-        for row in result.by_ref() {
-            rows.push(convert_row(row.map_err(MysqlError::from_client)?));
-        }
-        Ok(MysqlQueryResult { columns, rows })
+        let (columns, rows) = {
+            let mut result = self.conn.query_iter(sql).map_err(MysqlError::from_client)?;
+            let columns = result
+                .columns()
+                .as_ref()
+                .iter()
+                .map(|column| column.name_str().into_owned())
+                .collect::<Vec<_>>();
+            let mut rows = Vec::new();
+            for row in result.by_ref() {
+                rows.push(convert_row(row.map_err(MysqlError::from_client)?));
+            }
+            (columns, rows)
+        };
+        let affected_rows = self.conn.affected_rows().try_into().unwrap_or(i64::MAX);
+        let last_insert_id = self.conn.last_insert_id().try_into().unwrap_or(i64::MAX);
+        Ok(MysqlQueryResult {
+            columns,
+            rows,
+            affected_rows,
+            last_insert_id,
+        })
     }
 
     /// Runs a SQL statement that does not return rows.
-    pub fn execute(&mut self, sql: &str) -> Result<(), MysqlError> {
+    pub fn execute(&mut self, sql: &str) -> Result<MysqlQueryResult, MysqlError> {
         if sql.trim().is_empty() {
             return Err(MysqlError::new(
                 MysqlErrorKind::InvalidQuery,
                 "MySQL query must not be empty",
             ));
         }
-        self.conn.query_drop(sql).map_err(MysqlError::from_client)
+        self.conn.query_drop(sql).map_err(MysqlError::from_client)?;
+        Ok(MysqlQueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            affected_rows: self.conn.affected_rows().try_into().unwrap_or(i64::MAX),
+            last_insert_id: self.conn.last_insert_id().try_into().unwrap_or(i64::MAX),
+        })
+    }
+}
+
+impl MysqlConnectionBackend {
+    fn query(&mut self, sql: &str) -> Result<MysqlQueryResult, MysqlError> {
+        match self {
+            Self::Live(connection) => connection.query(sql),
+            Self::SqliteCompat(connection) => connection.query(sql),
+        }
+    }
+
+    fn execute(&mut self, sql: &str) -> Result<MysqlQueryResult, MysqlError> {
+        match self {
+            Self::Live(connection) => connection.execute(sql),
+            Self::SqliteCompat(connection) => connection.execute(sql),
+        }
+    }
+}
+
+/// SQLite-backed compatibility connection for selected mysqli application
+/// fixtures. SQL accepted here is SQLite SQL, not a MySQL dialect.
+#[derive(Debug)]
+pub struct MysqliSqliteCompatConnection {
+    conn: SqliteConnection,
+}
+
+impl MysqliSqliteCompatConnection {
+    fn open_memory() -> Result<Self, MysqlError> {
+        let conn = SqliteConnection::open_in_memory_with_flags(
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        )
+        .map_err(Self::error)?;
+        Ok(Self { conn })
+    }
+
+    fn query(&mut self, sql: &str) -> Result<MysqlQueryResult, MysqlError> {
+        if sql.trim().is_empty() {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            ));
+        }
+        let mut statement = self.conn.prepare(sql).map_err(Self::error)?;
+        let column_count = statement.column_count();
+        if column_count == 0 {
+            drop(statement);
+            return self.execute(sql);
+        }
+        let columns = statement
+            .column_names()
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        let mut query = statement.query([]).map_err(Self::error)?;
+        while let Some(row) = query.next().map_err(Self::error)? {
+            let mut values = Vec::with_capacity(column_count);
+            for index in 0..column_count {
+                values.push(sqlite_cell(row.get_ref(index).map_err(Self::error)?));
+            }
+            rows.push(MysqlRow { values });
+        }
+        Ok(MysqlQueryResult {
+            columns,
+            rows,
+            affected_rows: 0,
+            last_insert_id: self.conn.last_insert_rowid(),
+        })
+    }
+
+    fn execute(&mut self, sql: &str) -> Result<MysqlQueryResult, MysqlError> {
+        if sql.trim().is_empty() {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            ));
+        }
+        let affected_rows = self.conn.execute(sql, []).map_err(Self::error)?;
+        Ok(MysqlQueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            affected_rows: affected_rows.try_into().unwrap_or(i64::MAX),
+            last_insert_id: self.conn.last_insert_rowid(),
+        })
+    }
+
+    fn error(error: rusqlite::Error) -> MysqlError {
+        MysqlError::new(MysqlErrorKind::Client, error.to_string())
     }
 }
 
@@ -339,6 +501,10 @@ pub struct MysqlQueryResult {
     pub columns: Vec<String>,
     /// Buffered row values.
     pub rows: Vec<MysqlRow>,
+    /// Number of rows affected by the statement.
+    pub affected_rows: i64,
+    /// Last insert row id visible to the connection.
+    pub last_insert_id: i64,
 }
 
 /// One buffered MySQL row.
@@ -443,6 +609,17 @@ fn convert_value(value: MysqlValue) -> MysqlCell {
     }
 }
 
+fn sqlite_cell(value: SqliteValueRef<'_>) -> MysqlCell {
+    match value {
+        SqliteValueRef::Null => MysqlCell::Null,
+        SqliteValueRef::Integer(value) => MysqlCell::Int(i128::from(value)),
+        SqliteValueRef::Real(value) => MysqlCell::Float(value.to_string()),
+        SqliteValueRef::Text(value) | SqliteValueRef::Blob(value) => {
+            MysqlCell::Bytes(value.to_vec())
+        }
+    }
+}
+
 fn row_to_array(columns: &[String], row: &MysqlRow, mode: i64) -> Value {
     let mut array = PhpArray::new();
     if mode & MYSQLI_NUM != 0 {
@@ -522,5 +699,50 @@ mod tests {
             .expect("run simple query");
         assert_eq!(result.columns, vec!["one"]);
         assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn sqlite_compat_query_fetch_error_and_status_are_tracked() {
+        let mut state = MysqlState::default();
+        let id = state
+            .connect_sqlite_compat()
+            .expect("open compatibility backend");
+
+        assert_eq!(
+            state
+                .query(
+                    id,
+                    "CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
+                )
+                .expect("create table"),
+            None
+        );
+        assert_eq!(
+            state
+                .query(id, "INSERT INTO items (name) VALUES ('alpha')")
+                .expect("insert row"),
+            None
+        );
+        assert_eq!(state.affected_rows(id), 1);
+        assert_eq!(state.last_insert_id(id), 1);
+
+        let result_id = state
+            .query(id, "SELECT id, name FROM items ORDER BY id")
+            .expect("select rows")
+            .expect("row result");
+        assert_eq!(state.num_rows(result_id), 1);
+        assert_eq!(state.num_fields(result_id), 2);
+        let row = state.fetch_array(result_id, MYSQLI_ASSOC);
+        let Value::Array(row) = row else {
+            panic!("expected mysqli row array");
+        };
+        assert_eq!(
+            row.get(&ArrayKey::String(PhpString::from("name"))),
+            Some(&Value::string("alpha"))
+        );
+
+        assert!(state.query(id, "SELECT missing FROM items").is_err());
+        assert_ne!(state.errno(id), 0);
+        assert!(!state.error(id).is_empty());
     }
 }

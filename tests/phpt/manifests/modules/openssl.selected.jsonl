@@ -1,0 +1,2 @@
+{"path":"tests/phpt/generated/wp.db-network/openssl-platform-mvp.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-wp-db-network-v3","reason":"exposes selected OpenSSL helper functions and constants"}
+{"path":"tests/phpt/generated/wp.db-network/openssl-helpers-mvp.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260628T000000Z","generator_version":"phpt-wp-db-network-v3","reason":"covers digest, random bytes, method listing, and explicit verify-gap behavior"}

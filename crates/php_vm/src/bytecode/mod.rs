@@ -1452,9 +1452,13 @@ fn lower_function(
     for block in &function.blocks {
         let first_instruction = dense.instructions.len() as u32;
         for instruction in &block.instructions {
-            dense
-                .instructions
-                .push(lower_instruction(instruction, spans, names)?);
+            if should_lower_as_dense_nop(function, instruction) {
+                dense.instructions.push(lower_dense_nop(instruction, spans));
+            } else {
+                dense
+                    .instructions
+                    .push(lower_instruction(instruction, spans, names)?);
+            }
         }
         let terminator = block.terminator.as_ref().ok_or_else(|| DenseLowerError {
             code: DenseLowerErrorCode::UnsupportedTerminator,
@@ -1473,6 +1477,43 @@ fn lower_function(
         });
     }
     Ok(dense)
+}
+
+fn should_lower_as_dense_nop(function: &IrFunction, instruction: &Instruction) -> bool {
+    let InstructionKind::BindGlobal { local, name } = &instruction.kind else {
+        return false;
+    };
+    function.flags.is_top_level
+        && is_auto_global_name(name)
+        && function
+            .locals
+            .get(local.index())
+            .is_some_and(|local_name| local_name == name)
+}
+
+fn is_auto_global_name(name: &str) -> bool {
+    matches!(
+        name,
+        "argc"
+            | "argv"
+            | "_SERVER"
+            | "_ENV"
+            | "_GET"
+            | "_POST"
+            | "_COOKIE"
+            | "_FILES"
+            | "_REQUEST"
+            | "_SESSION"
+    )
+}
+
+fn lower_dense_nop(instruction: &Instruction, spans: &mut Vec<IrSpan>) -> DenseInstruction {
+    DenseInstruction {
+        opcode: DenseOpcode::Nop,
+        operands: DenseOperands::None,
+        span: push_span(spans, instruction.span),
+        cache_slot: None,
+    }
 }
 
 fn lower_instruction(

@@ -9596,6 +9596,9 @@ impl Vm {
                 .enumerate()
                 .skip(instruction_start)
             {
+                if should_skip_top_level_auto_global_bind(function, instruction) {
+                    continue;
+                }
                 if self.options.trace {
                     self.record_trace_event(
                         function_id,
@@ -16826,7 +16829,22 @@ impl Vm {
                             ) {
                                 Ok(value) => value,
                                 Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                             };
                             if let Err(message) = stack
@@ -16889,7 +16907,22 @@ impl Vm {
                             ) {
                                 Ok(value) => value,
                                 Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                             };
                             if let Err(message) = stack
@@ -26608,6 +26641,7 @@ fn internal_throwable_display_name(class_name: &str) -> String {
         "argumentcounterror" => "ArgumentCountError".to_owned(),
         "fibererror" => "FiberError".to_owned(),
         "jsonexception" => "JsonException".to_owned(),
+        "pdoexception" => "PDOException".to_owned(),
         "logicexception" => "LogicException".to_owned(),
         "badfunctioncallexception" => "BadFunctionCallException".to_owned(),
         "badmethodcallexception" => "BadMethodCallException".to_owned(),
@@ -26629,7 +26663,9 @@ fn internal_throwable_parent(class_name: &str) -> Option<&'static str> {
     match normalize_class_name(class_name).as_str() {
         "typeerror" | "valueerror" | "fibererror" => Some("Error"),
         "argumentcounterror" => Some("TypeError"),
-        "jsonexception" | "logicexception" | "runtimeexception" => Some("Exception"),
+        "jsonexception" | "pdoexception" | "logicexception" | "runtimeexception" => {
+            Some("Exception")
+        }
         "badfunctioncallexception"
         | "domainexception"
         | "invalidargumentexception"
@@ -26657,6 +26693,7 @@ fn internal_throwable_instanceof(object_class: &str, target_class: &str) -> Opti
             | "argumentcounterror"
             | "fibererror"
             | "jsonexception"
+            | "pdoexception"
             | "logicexception"
             | "badfunctioncallexception"
             | "badmethodcallexception"
@@ -31660,6 +31697,11 @@ fn object_instanceof(
         Value::Fiber(_) => Ok(normalize_class_name(class_name) == "fiber"),
         Value::Callable(_) => Ok(is_closure_runtime_class(class_name)),
         Value::Object(object) => {
+            if is_std_class_runtime_class(&object.class_name())
+                && is_std_class_runtime_class(class_name)
+            {
+                return Ok(true);
+            }
             if let Some(result) = internal_throwable_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
@@ -33326,11 +33368,15 @@ fn call_mysqli_connection_method(
             let sql = to_string(&values[0])?.to_string_lossy();
             match mysql.query(id, &sql) {
                 Ok(Some(result_id)) => {
+                    sync_mysqli_error_properties(object, mysql);
                     let result = mysqli_result_object(result_id);
                     result.set_property("num_rows", Value::Int(mysql.num_rows(result_id)));
                     Ok(Value::Object(result))
                 }
-                Ok(None) => Ok(Value::Bool(true)),
+                Ok(None) => {
+                    sync_mysqli_error_properties(object, mysql);
+                    Ok(Value::Bool(true))
+                }
                 Err(_) => {
                     sync_mysqli_error_properties(object, mysql);
                     Ok(Value::Bool(false))
@@ -33341,6 +33387,20 @@ fn call_mysqli_connection_method(
             validate_mysqli_arg_count("mysqli::real_escape_string", values.len(), 1, 1)?;
             let value = to_string(&values[0])?;
             Ok(Value::string(mysql_escape_string(value.as_bytes())))
+        }
+        "affectedrows" | "affected_rows" => {
+            validate_mysqli_arg_count("mysqli::affected_rows", values.len(), 0, 0)?;
+            let Some(id) = mysqli_connection_id(object) else {
+                return Ok(Value::Int(-1));
+            };
+            Ok(Value::Int(mysql.affected_rows(id)))
+        }
+        "insertid" | "insert_id" => {
+            validate_mysqli_arg_count("mysqli::insert_id", values.len(), 0, 0)?;
+            let Some(id) = mysqli_connection_id(object) else {
+                return Ok(Value::Int(0));
+            };
+            Ok(Value::Int(mysql.last_insert_id(id)))
         }
         "close" => {
             validate_mysqli_arg_count("mysqli::close", values.len(), 0, 0)?;
@@ -33416,12 +33476,16 @@ fn call_mysqli_result_method(
 }
 
 fn mysqli_connect_from_test_dsn(mysql: &mut php_runtime::MysqlState) -> Option<i64> {
+    if mysqli_sqlite_compat_enabled() {
+        return mysql.connect_sqlite_compat().ok();
+    }
     let Some(options) = php_runtime::MysqlConnectOptions::from_test_env() else {
         mysql.record_connect_error(
             2002,
             format!(
-                "live mysqli connections require {}",
-                php_runtime::MYSQL_TEST_DSN_ENV
+                "live mysqli connections require {}; selected SQLite compatibility fixtures require {}=1",
+                php_runtime::MYSQL_TEST_DSN_ENV,
+                php_runtime::MYSQLI_SQLITE_COMPAT_ENV
             ),
         );
         return None;
@@ -33435,6 +33499,15 @@ fn mysqli_connect_from_test_dsn(mysql: &mut php_runtime::MysqlState) -> Option<i
     }
 }
 
+fn mysqli_sqlite_compat_enabled() -> bool {
+    std::env::var(php_runtime::MYSQLI_SQLITE_COMPAT_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 fn mysqli_object(connection_id: Option<i64>) -> ObjectRef {
     let object = ObjectRef::new_with_display_name(&mysqli_runtime_class("mysqli"), "mysqli");
     if let Some(id) = connection_id {
@@ -33444,6 +33517,8 @@ fn mysqli_object(connection_id: Option<i64>) -> ObjectRef {
     object.set_property("connect_error", Value::string(""));
     object.set_property("errno", Value::Int(0));
     object.set_property("error", Value::string(""));
+    object.set_property("affected_rows", Value::Int(0));
+    object.set_property("insert_id", Value::Int(0));
     object
 }
 
@@ -33533,6 +33608,10 @@ fn sync_mysqli_error_properties(object: &ObjectRef, mysql: &php_runtime::MysqlSt
     );
     object.set_property("errno", Value::Int(errno));
     object.set_property("error", Value::String(PhpString::from(error.into_bytes())));
+    if let Some(id) = mysqli_connection_id(object) {
+        object.set_property("affected_rows", Value::Int(mysql.affected_rows(id)));
+        object.set_property("insert_id", Value::Int(mysql.last_insert_id(id)));
+    }
 }
 
 fn mysql_escape_string(value: &[u8]) -> Vec<u8> {
@@ -34104,9 +34183,40 @@ fn call_pdo_connection_method(
                 return Ok(Value::Bool(false));
             };
             let sql = to_string(&values[0])?.to_string_lossy();
+            match sqlite.exec_changes(id, &sql) {
+                Some(changes) => Ok(Value::Int(changes)),
+                None => pdo_sqlite_failure(object, sqlite, Some(id)),
+            }
+        }
+        "begintransaction" => {
+            validate_pdo_arg_count("PDO::beginTransaction", values.len(), 0, 0)?;
+            let Some(id) = pdo_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            Ok(Value::Bool(sqlite.exec(id, "BEGIN")))
+        }
+        "commit" => {
+            validate_pdo_arg_count("PDO::commit", values.len(), 0, 0)?;
+            let Some(id) = pdo_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            Ok(Value::Bool(sqlite.exec(id, "COMMIT")))
+        }
+        "rollback" => {
+            validate_pdo_arg_count("PDO::rollBack", values.len(), 0, 0)?;
+            let Some(id) = pdo_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            Ok(Value::Bool(sqlite.exec(id, "ROLLBACK")))
+        }
+        "lastinsertid" => {
+            validate_pdo_arg_count("PDO::lastInsertId", values.len(), 0, 1)?;
+            let Some(id) = pdo_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
             Ok(sqlite
-                .exec_changes(id, &sql)
-                .map(Value::Int)
+                .last_insert_rowid(id)
+                .map(|id| Value::string(id.to_string().into_bytes()))
                 .unwrap_or(Value::Bool(false)))
         }
         "query" => {
@@ -34116,12 +34226,13 @@ fn call_pdo_connection_method(
             };
             let sql = to_string(&values[0])?.to_string_lossy();
             let Some(result_id) = sqlite.query(id, &sql) else {
-                return Ok(Value::Bool(false));
+                return pdo_sqlite_failure(object, sqlite, Some(id));
             };
             Ok(Value::Object(pdo_statement_object(
                 id,
                 &sql,
                 pdo_default_fetch_mode(object),
+                pdo_errmode(object),
                 Some(result_id),
             )))
         }
@@ -34135,6 +34246,7 @@ fn call_pdo_connection_method(
                 id,
                 &sql,
                 pdo_default_fetch_mode(object),
+                pdo_errmode(object),
                 None,
             )))
         }
@@ -34188,11 +34300,6 @@ fn call_pdo_statement_method(
     match method {
         "execute" => {
             validate_pdo_arg_count("PDOStatement::execute", values.len(), 0, 1)?;
-            if let Some(Value::Array(params)) = values.first()
-                && !params.is_empty()
-            {
-                return Ok(Value::Bool(false));
-            }
             let Some(id) = pdo_connection_id(object) else {
                 return Ok(Value::Bool(false));
             };
@@ -34201,18 +34308,35 @@ fn call_pdo_statement_method(
                 object.unset_property("__pdo_result");
             }
             let query = pdo_query_string(object);
+            let (query, params) = pdo_statement_execution_params(object, values.first(), &query)?;
             if pdo_query_returns_rows(&query) {
-                let Some(result_id) = sqlite.query(id, &query) else {
-                    return Ok(Value::Bool(false));
+                let result_id = if params.is_empty() {
+                    sqlite.query(id, &query)
+                } else {
+                    sqlite.query_params(id, &query, &params)
+                };
+                let Some(result_id) = result_id else {
+                    return pdo_sqlite_failure(object, sqlite, Some(id));
                 };
                 object.set_property("__pdo_result", Value::Int(result_id));
                 object.set_property("__pdo_row_count", Value::Int(0));
             } else {
-                let Some(changes) = sqlite.exec_changes(id, &query) else {
-                    return Ok(Value::Bool(false));
+                let changes = if params.is_empty() {
+                    sqlite.exec_changes(id, &query)
+                } else {
+                    sqlite.exec_changes_params(id, &query, &params)
+                };
+                let Some(changes) = changes else {
+                    return pdo_sqlite_failure(object, sqlite, Some(id));
                 };
                 object.set_property("__pdo_row_count", Value::Int(changes));
             }
+            Ok(Value::Bool(true))
+        }
+        "bindvalue" | "bindparam" => {
+            validate_pdo_arg_count("PDOStatement::bindValue", values.len(), 2, 3)?;
+            let key = pdo_param_key(&values[0])?;
+            pdo_set_bound_param(object, key, values[1].clone());
             Ok(Value::Bool(true))
         }
         "fetch" => {
@@ -34224,7 +34348,7 @@ fn call_pdo_statement_method(
             if mode == 7 {
                 return Ok(pdo_fetch_column(sqlite, result_id, 0));
             }
-            Ok(sqlite.fetch_array(result_id, pdo_sqlite_fetch_mode(mode)))
+            Ok(pdo_fetch_row(sqlite, result_id, mode))
         }
         "fetchall" => {
             validate_pdo_arg_count("PDOStatement::fetchAll", values.len(), 0, usize::MAX)?;
@@ -34240,6 +34364,17 @@ fn call_pdo_statement_method(
                         break;
                     }
                     rows.append(value);
+                }
+                return Ok(Value::Array(rows));
+            }
+            if mode == 5 {
+                let mut rows = PhpArray::new();
+                loop {
+                    let row = pdo_fetch_row(sqlite, result_id, mode);
+                    if matches!(row, Value::Bool(false)) {
+                        break;
+                    }
+                    rows.append(row);
                 }
                 return Ok(Value::Array(rows));
             }
@@ -34303,6 +34438,7 @@ fn pdo_statement_object(
     connection_id: i64,
     query: &str,
     default_fetch_mode: i64,
+    errmode: i64,
     result_id: Option<i64>,
 ) -> ObjectRef {
     let object =
@@ -34311,6 +34447,7 @@ fn pdo_statement_object(
     object.set_property("queryString", Value::string(query));
     object.set_property("__pdo_query", Value::string(query));
     object.set_property("__pdo_default_fetch_mode", Value::Int(default_fetch_mode));
+    object.set_property("__pdo_errmode", Value::Int(errmode));
     object.set_property("__pdo_row_count", Value::Int(0));
     if let Some(result_id) = result_id {
         object.set_property("__pdo_result", Value::Int(result_id));
@@ -34395,10 +34532,247 @@ fn pdo_fetch_column(sqlite: &mut php_runtime::SqliteState, result_id: i64, colum
         .unwrap_or(Value::Bool(false))
 }
 
+fn pdo_fetch_row(sqlite: &mut php_runtime::SqliteState, result_id: i64, mode: i64) -> Value {
+    if mode == 5 {
+        return pdo_assoc_row_to_object(sqlite.fetch_array(result_id, php_runtime::SQLITE3_ASSOC));
+    }
+    sqlite.fetch_array(result_id, pdo_sqlite_fetch_mode(mode))
+}
+
+fn pdo_assoc_row_to_object(row: Value) -> Value {
+    let Value::Array(array) = row else {
+        return row;
+    };
+    let object = ObjectRef::new_with_display_name(&std_class_entry(), "stdClass");
+    for (key, value) in array.iter() {
+        let Some(property) = key.as_string() else {
+            continue;
+        };
+        object.set_property(property.to_string_lossy(), value.clone());
+    }
+    Value::Object(object)
+}
+
+fn pdo_param_key(value: &Value) -> Result<ArrayKey, String> {
+    match value {
+        Value::Int(index) if *index >= 1 => Ok(ArrayKey::Int(*index)),
+        Value::String(name) if !name.is_empty() => Ok(ArrayKey::String(name.clone())),
+        Value::Reference(cell) => pdo_param_key(&cell.get()),
+        _ => Err(format!(
+            "E_PHP_VM_PDO_PARAM_KEY: unsupported PDO parameter key {}",
+            value_type_name(value)
+        )),
+    }
+}
+
+fn pdo_set_bound_param(object: &ObjectRef, key: ArrayKey, value: Value) {
+    let mut params = match object.get_property("__pdo_bound_params") {
+        Some(Value::Array(params)) => params,
+        _ => PhpArray::new(),
+    };
+    params.insert(key, value);
+    object.set_property("__pdo_bound_params", Value::Array(params));
+}
+
+fn pdo_statement_execution_params(
+    object: &ObjectRef,
+    execute_arg: Option<&Value>,
+    query: &str,
+) -> Result<(String, Vec<Value>), String> {
+    if let Some(Value::Array(params)) = execute_arg
+        && !params.is_empty()
+    {
+        return pdo_query_and_params_from_execute_array(query, params);
+    }
+    if let Some(Value::Reference(cell)) = execute_arg {
+        return pdo_statement_execution_params(object, Some(&cell.get()), query);
+    }
+    let Some(Value::Array(params)) = object.get_property("__pdo_bound_params") else {
+        return Ok((query.to_owned(), Vec::new()));
+    };
+    pdo_query_and_params_from_bound_array(query, &params)
+}
+
+fn pdo_query_and_params_from_execute_array(
+    query: &str,
+    params: &PhpArray,
+) -> Result<(String, Vec<Value>), String> {
+    let (positional, named) = pdo_split_execute_params(params);
+    if !named.is_empty() {
+        return pdo_rewrite_named_query(query, &named);
+    }
+    Ok((query.to_owned(), positional))
+}
+
+fn pdo_query_and_params_from_bound_array(
+    query: &str,
+    params: &PhpArray,
+) -> Result<(String, Vec<Value>), String> {
+    let (positional, named) = pdo_split_bound_params(params);
+    if !named.is_empty() {
+        return pdo_rewrite_named_query(query, &named);
+    }
+    Ok((query.to_owned(), positional))
+}
+
+fn pdo_split_execute_params(params: &PhpArray) -> (Vec<Value>, HashMap<String, Value>) {
+    let mut positional = Vec::new();
+    let mut named = HashMap::new();
+    for (key, value) in params.iter() {
+        match key {
+            ArrayKey::Int(_) => positional.push(value.clone()),
+            ArrayKey::String(name) => {
+                named.insert(pdo_normalize_named_param(name), value.clone());
+            }
+        }
+    }
+    (positional, named)
+}
+
+fn pdo_split_bound_params(params: &PhpArray) -> (Vec<Value>, HashMap<String, Value>) {
+    let mut positional_pairs = Vec::new();
+    let mut named = HashMap::new();
+    for (key, value) in params.iter() {
+        match key {
+            ArrayKey::Int(index) if *index >= 1 => {
+                positional_pairs.push((*index, value.clone()));
+            }
+            ArrayKey::Int(_) => {}
+            ArrayKey::String(name) => {
+                named.insert(pdo_normalize_named_param(name), value.clone());
+            }
+        }
+    }
+    positional_pairs.sort_by_key(|(index, _)| *index);
+    let positional = positional_pairs
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect::<Vec<_>>();
+    (positional, named)
+}
+
+fn pdo_normalize_named_param(name: &PhpString) -> String {
+    name.to_string_lossy()
+        .trim_start_matches(':')
+        .to_ascii_lowercase()
+}
+
+fn pdo_rewrite_named_query(
+    query: &str,
+    named: &HashMap<String, Value>,
+) -> Result<(String, Vec<Value>), String> {
+    let mut out = String::with_capacity(query.len());
+    let mut params = Vec::new();
+    let bytes = query.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        if in_single {
+            let ch = query[i..].chars().next().expect("valid utf-8");
+            out.push(ch);
+            i += ch.len_utf8();
+            if ch == '\'' {
+                if query[i..].starts_with('\'') {
+                    out.push('\'');
+                    i += 1;
+                } else {
+                    in_single = false;
+                }
+            }
+            continue;
+        }
+        if in_double {
+            let ch = query[i..].chars().next().expect("valid utf-8");
+            out.push(ch);
+            i += ch.len_utf8();
+            if ch == '"' {
+                in_double = false;
+            }
+            continue;
+        }
+        match bytes[i] {
+            b'\'' => {
+                out.push('\'');
+                in_single = true;
+                i += 1;
+            }
+            b'"' => {
+                out.push('"');
+                in_double = true;
+                i += 1;
+            }
+            b':' if pdo_named_placeholder_starts(bytes, i) => {
+                let start = i + 1;
+                let mut end = start + 1;
+                while end < bytes.len() && pdo_is_placeholder_continue(bytes[end]) {
+                    end += 1;
+                }
+                let name = query[start..end].to_ascii_lowercase();
+                let Some(value) = named.get(&name) else {
+                    return Err(format!(
+                        "E_PHP_VM_PDO_PARAM_MISSING: missing bound PDO parameter :{name}"
+                    ));
+                };
+                out.push('?');
+                params.push(value.clone());
+                i = end;
+            }
+            _ => {
+                let ch = query[i..].chars().next().expect("valid utf-8");
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    Ok((out, params))
+}
+
+fn pdo_named_placeholder_starts(bytes: &[u8], offset: usize) -> bool {
+    bytes[offset] == b':'
+        && offset
+            .checked_sub(1)
+            .is_none_or(|previous| bytes[previous] != b':')
+        && bytes
+            .get(offset + 1)
+            .is_some_and(|byte| pdo_is_placeholder_start(*byte))
+}
+
+fn pdo_is_placeholder_start(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic()
+}
+
+fn pdo_is_placeholder_continue(byte: u8) -> bool {
+    pdo_is_placeholder_start(byte) || byte.is_ascii_digit()
+}
+
 fn pdo_int_property(object: &ObjectRef, property: &str, default: i64) -> Value {
     match object.get_property(property) {
         Some(Value::Int(value)) => Value::Int(value),
         _ => Value::Int(default),
+    }
+}
+
+fn pdo_errmode(object: &ObjectRef) -> i64 {
+    match object.get_property("__pdo_errmode") {
+        Some(Value::Int(value)) => value,
+        _ => 0,
+    }
+}
+
+fn pdo_sqlite_failure(
+    object: &ObjectRef,
+    sqlite: &php_runtime::SqliteState,
+    connection_id: Option<i64>,
+) -> Result<Value, String> {
+    let message = connection_id.map_or_else(
+        || "not an open SQLite database".to_owned(),
+        |id| sqlite.last_error_msg(id),
+    );
+    if pdo_errmode(object) == 2 {
+        Err(format!("E_PHP_VM_PDO_EXCEPTION: {message}"))
+    } else {
+        Ok(Value::Bool(false))
     }
 }
 
@@ -34885,9 +35259,7 @@ fn call_sqlite_method(
     match normalize_class_name(&class_name).as_str() {
         "sqlite3" => call_sqlite3_method(object, &method, args, sqlite, runtime_context),
         "sqlite3result" => call_sqlite3_result_method(object, &method, args, sqlite),
-        "sqlite3stmt" => Err(format!(
-            "E_PHP_VM_SQLITE_STMT_GAP: method SQLite3Stmt::{method} is not implemented in the SQLite3 MVP"
-        )),
+        "sqlite3stmt" => call_sqlite3_stmt_method(object, &method, args, sqlite),
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_METHOD: method {class_name}::{method} is not defined"
         )),
@@ -34942,6 +35314,14 @@ fn call_sqlite3_method(
                 .map(sqlite_result_object)
                 .unwrap_or(Value::Bool(false)))
         }
+        "prepare" => {
+            validate_sqlite_arg_count("SQLite3::prepare", values.len(), 1, 1)?;
+            let Some(id) = sqlite_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let sql = to_string(&values[0])?.to_string_lossy();
+            Ok(sqlite_stmt_object(id, &sql))
+        }
         "querysingle" => {
             validate_sqlite_arg_count("SQLite3::querySingle", values.len(), 1, 2)?;
             let Some(id) = sqlite_connection_id(object) else {
@@ -34967,6 +35347,35 @@ fn call_sqlite3_method(
                     )
                     .into_bytes(),
             ))
+        }
+        "lastinsertrowid" => {
+            validate_sqlite_arg_count("SQLite3::lastInsertRowID", values.len(), 0, 0)?;
+            Ok(Value::Int(
+                sqlite_connection_id(object)
+                    .and_then(|id| sqlite.last_insert_rowid(id))
+                    .unwrap_or(0),
+            ))
+        }
+        "changes" => {
+            validate_sqlite_arg_count("SQLite3::changes", values.len(), 0, 0)?;
+            Ok(Value::Int(
+                sqlite_connection_id(object)
+                    .and_then(|id| sqlite.changes(id))
+                    .unwrap_or(0),
+            ))
+        }
+        "escapestring" => {
+            validate_sqlite_arg_count("SQLite3::escapeString", values.len(), 1, 1)?;
+            let value = to_string(&values[0])?.to_string_lossy();
+            Ok(Value::string(php_runtime::sqlite::escape_string(&value)))
+        }
+        "busytimeout" => {
+            validate_sqlite_arg_count("SQLite3::busyTimeout", values.len(), 1, 1)?;
+            let Some(id) = sqlite_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let milliseconds = to_int(&values[0])?;
+            Ok(Value::Bool(sqlite.busy_timeout(id, milliseconds)))
         }
         "close" => {
             validate_sqlite_arg_count("SQLite3::close", values.len(), 0, 0)?;
@@ -35030,9 +35439,84 @@ fn call_sqlite3_result_method(
     }
 }
 
+fn call_sqlite3_stmt_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+    sqlite: &mut php_runtime::SqliteState,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("SQLite3Stmt::{method}"), args)?;
+    match method {
+        "bindvalue" | "bindparam" => {
+            validate_sqlite_arg_count("SQLite3Stmt::bindValue", values.len(), 2, 3)?;
+            let key = sqlite_param_key(&values[0])?;
+            sqlite_set_bound_param(object, key, values[1].clone());
+            Ok(Value::Bool(true))
+        }
+        "execute" => {
+            validate_sqlite_arg_count("SQLite3Stmt::execute", values.len(), 0, 0)?;
+            let Some(id) = sqlite_stmt_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            if let Some(result_id) = sqlite_stmt_result_id(object) {
+                sqlite.finalize_result(result_id);
+                object.unset_property("__sqlite3_stmt_result");
+            }
+            let query = sqlite_stmt_query(object);
+            let (query, params) = sqlite_stmt_execution_params(object, &query)?;
+            if pdo_query_returns_rows(&query) {
+                let result_id = if params.is_empty() {
+                    sqlite.query(id, &query)
+                } else {
+                    sqlite.query_params(id, &query, &params)
+                };
+                let Some(result_id) = result_id else {
+                    return Ok(Value::Bool(false));
+                };
+                object.set_property("__sqlite3_stmt_result", Value::Int(result_id));
+                Ok(sqlite_result_object(result_id))
+            } else {
+                let changes = if params.is_empty() {
+                    sqlite.exec_changes(id, &query)
+                } else {
+                    sqlite.exec_changes_params(id, &query, &params)
+                };
+                Ok(Value::Bool(changes.is_some()))
+            }
+        }
+        "reset" | "clear" => {
+            validate_sqlite_arg_count("SQLite3Stmt::reset", values.len(), 0, 0)?;
+            if let Some(result_id) = sqlite_stmt_result_id(object) {
+                sqlite.finalize_result(result_id);
+                object.unset_property("__sqlite3_stmt_result");
+            }
+            Ok(Value::Bool(true))
+        }
+        "close" => {
+            validate_sqlite_arg_count("SQLite3Stmt::close", values.len(), 0, 0)?;
+            if let Some(result_id) = sqlite_stmt_result_id(object) {
+                sqlite.finalize_result(result_id);
+            }
+            object.unset_property("__sqlite3_stmt_connection");
+            object.unset_property("__sqlite3_stmt_result");
+            Ok(Value::Bool(true))
+        }
+        other => Err(format!(
+            "E_PHP_VM_SQLITE_STMT_METHOD_GAP: method SQLite3Stmt::{other} is not implemented in the SQLite3 MVP"
+        )),
+    }
+}
+
 fn sqlite_result_object(result_id: i64) -> Value {
     let object = ObjectRef::new_with_display_name(&sqlite_class("SQLite3Result"), "SQLite3Result");
     object.set_property("__sqlite3_result", Value::Int(result_id));
+    Value::Object(object)
+}
+
+fn sqlite_stmt_object(connection_id: i64, query: &str) -> Value {
+    let object = ObjectRef::new_with_display_name(&sqlite_class("SQLite3Stmt"), "SQLite3Stmt");
+    object.set_property("__sqlite3_stmt_connection", Value::Int(connection_id));
+    object.set_property("__sqlite3_stmt_query", Value::string(query));
     Value::Object(object)
 }
 
@@ -35077,6 +35561,62 @@ fn sqlite_result_id(object: &ObjectRef) -> Option<i64> {
         Some(Value::Int(id)) => Some(id),
         _ => None,
     }
+}
+
+fn sqlite_stmt_connection_id(object: &ObjectRef) -> Option<i64> {
+    match object.get_property("__sqlite3_stmt_connection") {
+        Some(Value::Int(id)) => Some(id),
+        _ => None,
+    }
+}
+
+fn sqlite_stmt_result_id(object: &ObjectRef) -> Option<i64> {
+    match object.get_property("__sqlite3_stmt_result") {
+        Some(Value::Int(id)) => Some(id),
+        _ => None,
+    }
+}
+
+fn sqlite_stmt_query(object: &ObjectRef) -> String {
+    match object.get_property("__sqlite3_stmt_query") {
+        Some(Value::String(value)) => value.to_string_lossy(),
+        _ => String::new(),
+    }
+}
+
+fn sqlite_param_key(value: &Value) -> Result<ArrayKey, String> {
+    match value {
+        Value::Int(index) if *index >= 1 => Ok(ArrayKey::Int(*index)),
+        Value::String(name) if !name.is_empty() => Ok(ArrayKey::String(name.clone())),
+        Value::Reference(cell) => sqlite_param_key(&cell.get()),
+        _ => Err(format!(
+            "E_PHP_VM_SQLITE_PARAM_KEY: unsupported SQLite3Stmt parameter key {}",
+            value_type_name(value)
+        )),
+    }
+}
+
+fn sqlite_set_bound_param(object: &ObjectRef, key: ArrayKey, value: Value) {
+    let mut params = match object.get_property("__sqlite3_stmt_bound_params") {
+        Some(Value::Array(params)) => params,
+        _ => PhpArray::new(),
+    };
+    params.insert(key, value);
+    object.set_property("__sqlite3_stmt_bound_params", Value::Array(params));
+}
+
+fn sqlite_stmt_execution_params(
+    object: &ObjectRef,
+    query: &str,
+) -> Result<(String, Vec<Value>), String> {
+    let Some(Value::Array(params)) = object.get_property("__sqlite3_stmt_bound_params") else {
+        return Ok((query.to_owned(), Vec::new()));
+    };
+    let (positional, named) = pdo_split_bound_params(&params);
+    if !named.is_empty() {
+        return pdo_rewrite_named_query(query, &named);
+    }
+    Ok((query.to_owned(), positional))
 }
 
 fn sqlite_resolve_database_path(
@@ -38568,6 +39108,37 @@ fn assign_process_ref_arg(
     Ok(())
 }
 
+fn should_skip_top_level_auto_global_bind(
+    function: &IrFunction,
+    instruction: &Instruction,
+) -> bool {
+    let InstructionKind::BindGlobal { local, name } = &instruction.kind else {
+        return false;
+    };
+    function.flags.is_top_level
+        && is_auto_global_name(name)
+        && function
+            .locals
+            .get(local.index())
+            .is_some_and(|local_name| local_name == name)
+}
+
+fn is_auto_global_name(name: &str) -> bool {
+    matches!(
+        name,
+        "argc"
+            | "argv"
+            | "_SERVER"
+            | "_ENV"
+            | "_GET"
+            | "_POST"
+            | "_COOKIE"
+            | "_FILES"
+            | "_REQUEST"
+            | "_SESSION"
+    )
+}
+
 fn bind_top_level_global_locals(
     function: &IrFunction,
     stack: &mut CallStack,
@@ -39974,6 +40545,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         "E_PHP_RUNTIME_BUILTIN_TYPE" => "TypeError",
         "E_PHP_RUNTIME_BUILTIN_VALUE" => "ValueError",
         "E_PHP_RUNTIME_JSON_EXCEPTION" => "JsonException",
+        "E_PHP_VM_PDO_EXCEPTION" => "PDOException",
         "E_PHP_STD_MISSING_ARGUMENT" | "E_PHP_STD_TOO_MANY_ARGUMENTS" => "ArgumentCountError",
         "E_PHP_STD_TYPE_ERROR" => "TypeError",
         "E_PHP_STD_VALUE_ERROR" => "ValueError",

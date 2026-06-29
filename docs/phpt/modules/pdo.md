@@ -18,6 +18,8 @@ Implemented behavior:
 - SQLite DSN construction through `new PDO("sqlite:...")`.
 - `PDO::exec`, `query`, `prepare`, `errorCode`, `errorInfo`,
   `getAttribute`, `setAttribute`, and `quote`.
+- Selected `PDO::ERRMODE_EXCEPTION` handling for SQLite query and statement
+  execution failures.
 - `PDOStatement::execute`, `fetch`, `fetchAll`, `fetchColumn`,
   `columnCount`, `rowCount`, `closeCursor`, `errorCode`, `errorInfo`, and
   `setFetchMode`.
@@ -28,8 +30,8 @@ Implemented behavior:
 - Only the SQLite driver is available; MySQL, PostgreSQL, ODBC, Firebird, and
   other drivers are explicitly out of scope.
 - Persistent connections, transactions, cursor orientation, full attribute
-  handling, exception-mode behavior, bound parameters, bound columns, lazy rows,
-  object/class fetch modes, and exact warning text are not complete.
+  handling, bound parameters beyond the selected SQLite slice, bound columns,
+  lazy rows, object/class fetch modes, and exact warning text are not complete.
 - PDO class constants are available for the MVP set only.
 
 ## Source References

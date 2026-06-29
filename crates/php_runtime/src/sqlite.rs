@@ -1,11 +1,12 @@
 //! Request-local SQLite3 extension state.
 
 use crate::{ArrayKey, PhpArray, PhpString, Value};
-use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::types::{Value as RusqliteValue, ValueRef};
+use rusqlite::{Connection, OpenFlags, params_from_iter};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 
 /// `SQLite3Result::fetchArray()` associative columns.
 pub const SQLITE3_ASSOC: i64 = 1;
@@ -137,10 +138,52 @@ impl SqliteState {
         }
     }
 
+    /// Executes a parameterized statement and returns SQLite's affected row count.
+    pub fn exec_changes_params(&mut self, id: i64, sql: &str, params: &[Value]) -> Option<i64> {
+        let connection = self.connections.get_mut(&id)?;
+        let sqlite_params = params
+            .iter()
+            .map(sqlite_param_value)
+            .collect::<Vec<RusqliteValue>>();
+        match connection
+            .connection
+            .execute(sql, params_from_iter(sqlite_params.iter()))
+        {
+            Ok(changes) => {
+                connection.last_error_code = 0;
+                connection.last_error_msg = "not an error".to_owned();
+                Some(changes.try_into().unwrap_or(i64::MAX))
+            }
+            Err(error) => {
+                set_connection_error(connection, error);
+                None
+            }
+        }
+    }
+
     /// Executes a query and stores all rows in a request-local result set.
     pub fn query(&mut self, id: i64, sql: &str) -> Option<i64> {
         let connection = self.connections.get_mut(&id)?;
         match materialize_query(&connection.connection, sql) {
+            Ok(result) => {
+                connection.last_error_code = 0;
+                connection.last_error_msg = "not an error".to_owned();
+                self.next_result_id = self.next_result_id.saturating_add(1).max(1);
+                let result_id = self.next_result_id;
+                self.results.insert(result_id, result);
+                Some(result_id)
+            }
+            Err(error) => {
+                set_connection_error(connection, error);
+                None
+            }
+        }
+    }
+
+    /// Executes a parameterized query and stores all rows in a request-local result set.
+    pub fn query_params(&mut self, id: i64, sql: &str, params: &[Value]) -> Option<i64> {
+        let connection = self.connections.get_mut(&id)?;
+        match materialize_query_params(&connection.connection, sql, params) {
             Ok(result) => {
                 connection.last_error_code = 0;
                 connection.last_error_msg = "not an error".to_owned();
@@ -191,6 +234,48 @@ impl SqliteState {
             || "not an open SQLite3 database".to_owned(),
             |connection| connection.last_error_msg.clone(),
         )
+    }
+
+    /// Returns SQLite's last inserted rowid for the connection.
+    #[must_use]
+    pub fn last_insert_rowid(&self, id: i64) -> Option<i64> {
+        self.connections
+            .get(&id)
+            .map(|connection| connection.connection.last_insert_rowid())
+    }
+
+    /// Returns SQLite's changed row count for the connection.
+    #[must_use]
+    pub fn changes(&self, id: i64) -> Option<i64> {
+        self.connections.get(&id).map(|connection| {
+            connection
+                .connection
+                .changes()
+                .try_into()
+                .unwrap_or(i64::MAX)
+        })
+    }
+
+    /// Sets SQLite's busy timeout for the connection.
+    pub fn busy_timeout(&mut self, id: i64, milliseconds: i64) -> bool {
+        let Some(connection) = self.connections.get_mut(&id) else {
+            return false;
+        };
+        let milliseconds = milliseconds.max(0) as u64;
+        match connection
+            .connection
+            .busy_timeout(Duration::from_millis(milliseconds))
+        {
+            Ok(()) => {
+                connection.last_error_code = 0;
+                connection.last_error_msg = "not an error".to_owned();
+                true
+            }
+            Err(error) => {
+                set_connection_error(connection, error);
+                false
+            }
+        }
     }
 
     /// Fetches one row from a materialized result set.
@@ -254,6 +339,26 @@ fn open_flags(flags: i64) -> OpenFlags {
 }
 
 fn materialize_query(connection: &Connection, sql: &str) -> Result<SqliteResult, rusqlite::Error> {
+    materialize_query_with(connection, sql, Vec::new())
+}
+
+fn materialize_query_params(
+    connection: &Connection,
+    sql: &str,
+    params: &[Value],
+) -> Result<SqliteResult, rusqlite::Error> {
+    let sqlite_params = params
+        .iter()
+        .map(sqlite_param_value)
+        .collect::<Vec<RusqliteValue>>();
+    materialize_query_with(connection, sql, sqlite_params)
+}
+
+fn materialize_query_with(
+    connection: &Connection,
+    sql: &str,
+    params: Vec<RusqliteValue>,
+) -> Result<SqliteResult, rusqlite::Error> {
     let mut statement = connection.prepare(sql)?;
     let columns = statement
         .column_names()
@@ -261,7 +366,7 @@ fn materialize_query(connection: &Connection, sql: &str) -> Result<SqliteResult,
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let column_count = statement.column_count();
-    let mut query = statement.query([])?;
+    let mut query = statement.query(params_from_iter(params.iter()))?;
     let mut out = Vec::new();
     while let Some(row) = query.next()? {
         let mut values = Vec::with_capacity(column_count);
@@ -278,6 +383,23 @@ fn materialize_query(connection: &Connection, sql: &str) -> Result<SqliteResult,
         rows: out,
         offset: 0,
     })
+}
+
+fn sqlite_param_value(value: &Value) -> RusqliteValue {
+    match value {
+        Value::Null | Value::Uninitialized => RusqliteValue::Null,
+        Value::Bool(value) => RusqliteValue::Integer(i64::from(*value)),
+        Value::Int(value) => RusqliteValue::Integer(*value),
+        Value::Float(value) => RusqliteValue::Real(value.to_f64()),
+        Value::String(value) => RusqliteValue::Text(value.to_string_lossy()),
+        Value::Reference(cell) => sqlite_param_value(&cell.get()),
+        Value::Array(_)
+        | Value::Object(_)
+        | Value::Resource(_)
+        | Value::Fiber(_)
+        | Value::Generator(_)
+        | Value::Callable(_) => RusqliteValue::Null,
+    }
 }
 
 fn sqlite_value(value: ValueRef<'_>) -> Value {
@@ -305,6 +427,12 @@ fn row_to_array(row: &SqliteRow, mode: i64) -> Value {
         }
     }
     Value::Array(array)
+}
+
+/// Escapes a string for inclusion in a SQLite string literal.
+#[must_use]
+pub fn escape_string(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 fn set_connection_error(connection: &mut SqliteConnection, error: rusqlite::Error) {
@@ -339,6 +467,10 @@ mod tests {
         let row = state.fetch_array(result, SQLITE3_ASSOC);
         assert!(matches!(row, Value::Array(_)));
         assert!(state.finalize_result(result));
+        assert_eq!(state.last_insert_rowid(db), Some(1));
+        assert_eq!(state.changes(db), Some(1));
+        assert!(state.busy_timeout(db, 25));
+        assert_eq!(super::escape_string("can't"), "can''t");
         assert!(state.close(db));
     }
 }

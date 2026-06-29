@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"openssl",
+  "priority":"application crypto/TLS helper MVP",
+  "selected_manifest":"tests/phpt/manifests/modules/openssl.selected.jsonl",
+  "corpus_count":0,
+  "selected_count":2,
+  "pass_count":2,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["openssl extension visibility","openssl_random_pseudo_bytes","openssl_digest","openssl_get_md_methods","explicit openssl_verify unsupported-result contract","OPENSSL_ALGO_SHA256"],
+  "non_scope":["certificate/key parsing","openssl_encrypt/decrypt","signature verification parity","TLS stream transport","host OpenSSL configuration"],
+  "target_gates":["nix develop -c cargo test -p php_runtime openssl","nix develop -c just phpt-dev-module MODULE=openssl","nix develop -c just phpt-dev-module MODULE=closure.extensions"],
+  "next_step":"Promote certificate/key helpers and encrypt/decrypt only with dependency-backed deterministic fixtures."
+}

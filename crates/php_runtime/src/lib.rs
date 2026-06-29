@@ -76,8 +76,9 @@ pub mod api {
         to_string,
     };
     pub use crate::db::mysql::{
-        MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MysqlCell, MysqlConnectOptions,
-        MysqlConnection, MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow, MysqlState,
+        MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_SQLITE_COMPAT_ENV,
+        MysqlCell, MysqlConnectOptions, MysqlConnection, MysqlError, MysqlErrorKind,
+        MysqlQueryResult, MysqlRow, MysqlState,
     };
     pub use crate::diagnostic::{
         PhpReferenceClassification, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,
@@ -199,8 +200,9 @@ pub use convert::{
     to_string,
 };
 pub use db::mysql::{
-    MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MysqlCell, MysqlConnectOptions,
-    MysqlConnection, MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow, MysqlState,
+    MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_SQLITE_COMPAT_ENV, MysqlCell,
+    MysqlConnectOptions, MysqlConnection, MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow,
+    MysqlState,
 };
 pub use diagnostic::{
     PhpReferenceClassification, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError,

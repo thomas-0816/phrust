@@ -1,2 +1,3 @@
 {"path":"tests/phpt/generated/xml/platform-checks.phpt"}
 {"path":"tests/phpt/generated/xml/parser-basic.phpt"}
+{"path":"tests/phpt/generated/xml/parser-error-state.phpt"}

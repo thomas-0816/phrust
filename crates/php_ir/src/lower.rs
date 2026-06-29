@@ -460,6 +460,7 @@ struct StaticPropertyDimTarget {
 #[derive(Clone, Debug)]
 struct ClassConstantTarget {
     class_name: String,
+    display_class_name: Option<String>,
     constant: String,
 }
 
@@ -599,7 +600,6 @@ pub fn lower_frontend_result(
 
     let mut context = LoweringContext::new(frontend, options, file);
     context.function_names.insert(function, String::new());
-    let block = context.lower_auto_global_bindings(&mut builder, function, block, module_ir_span);
     let block = context.lower_global_constant_declarations(&mut builder, function, block);
     context.lower_function_declarations(&mut builder, function);
     context.lower_class_declarations(&mut builder, function);
@@ -670,9 +670,14 @@ impl LoweringContext<'_> {
         builder: &mut IrBuilder,
         function: FunctionId,
         block: BlockId,
+        use_span: TextRange,
         span: IrSpan,
     ) -> BlockId {
         for name in AUTO_GLOBAL_NAMES {
+            let variable_name = format!("${name}");
+            if !self.function_like_uses_variable(use_span, &variable_name) {
+                continue;
+            }
             let local = builder.intern_local(function, *name);
             builder.emit(
                 function,
@@ -1310,7 +1315,8 @@ impl LoweringContext<'_> {
             ),
             span,
         );
-        let block = self.lower_auto_global_bindings(builder, function, block, span);
+        let block =
+            self.lower_auto_global_bindings(builder, function, block, input.signature.span(), span);
         let current = self.lower_constructor_property_promotions(
             builder,
             function,
@@ -1498,7 +1504,8 @@ impl LoweringContext<'_> {
                 ),
                 span,
             );
-            let block = self.lower_auto_global_bindings(builder, function, block, span);
+            let block =
+                self.lower_auto_global_bindings(builder, function, block, hook.span(), span);
             let current = match hook.body() {
                 HirPropertyHookBody::Expression => {
                     if let Some(expr) = self.outermost_expr_inside(hook.span()) {
@@ -1955,7 +1962,8 @@ impl LoweringContext<'_> {
                 format!("hir:function:{name}:body"),
                 span,
             );
-            let block = self.lower_auto_global_bindings(builder, function, block, span);
+            let block =
+                self.lower_auto_global_bindings(builder, function, block, signature.span(), span);
             let current = self.lower_stmt_list(builder, function, block, signature.body().to_vec());
             if !builder.is_terminated(function, current) {
                 builder.terminate_return(function, current, None, span);
@@ -4187,6 +4195,7 @@ impl LoweringContext<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn terminate_condition_targets(
         &mut self,
         builder: &mut IrBuilder,
@@ -5047,7 +5056,9 @@ impl LoweringContext<'_> {
                 && !matches!(normalized_class_name.as_str(), "self" | "static" | "parent")
             {
                 let dst = builder.alloc_register(site.function);
-                let constant = builder.intern_constant(IrConstant::String(target.class_name));
+                let constant = builder.intern_constant(IrConstant::String(
+                    target.display_class_name.unwrap_or(target.class_name),
+                ));
                 let instruction = builder.emit(
                     site.function,
                     site.block,
@@ -6938,7 +6949,7 @@ impl LoweringContext<'_> {
             format!("hir:closure:{}:body", function.raw()),
             span,
         );
-        let block = self.lower_auto_global_bindings(builder, function, block, span);
+        let block = self.lower_auto_global_bindings(builder, function, block, range, span);
         let current =
             self.lower_stmt_list(builder, function, block, self.statement_ids_inside(range));
         if !builder.is_terminated(function, current) {
@@ -7036,7 +7047,8 @@ impl LoweringContext<'_> {
             format!("hir:{}:{}:body", signature.kind().as_str(), function.raw()),
             span,
         );
-        let block = self.lower_auto_global_bindings(builder, function, block, span);
+        let block =
+            self.lower_auto_global_bindings(builder, function, block, signature.span(), span);
         match signature.kind() {
             SignatureKind::ArrowFunction => {
                 let Some(body) = arrow_body.or_else(|| {
@@ -9503,6 +9515,20 @@ impl LoweringContext<'_> {
         }
     }
 
+    fn static_class_display_name(&self, expr: ExprId) -> Option<String> {
+        let module = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())?;
+        let expression = module.expressions().get(expr)?;
+        match expression.kind() {
+            HirExprKind::Name { resolution } => {
+                Some(resolution.source().trim_start_matches('\\').to_owned())
+            }
+            _ => None,
+        }
+    }
+
     fn static_property_name(&self, expr: ExprId) -> Option<String> {
         let module = self
             .frontend
@@ -9639,6 +9665,7 @@ impl LoweringContext<'_> {
         }
         Some(ClassConstantTarget {
             class_name: self.static_class_name((*target)?)?,
+            display_class_name: self.static_class_display_name((*target)?),
             constant: self.static_property_name(member_expr)?,
         })
     }
@@ -10553,6 +10580,7 @@ fn is_internal_throwable_class(normalized: &str) -> bool {
             | "argumentcounterror"
             | "fibererror"
             | "jsonexception"
+            | "pdoexception"
             | "logicexception"
             | "badfunctioncallexception"
             | "badmethodcallexception"
@@ -11294,6 +11322,18 @@ mod tests {
             !snapshot.contains("Sodium\\paragonie_sodium_compat::KEYBYTES"),
             "{snapshot}"
         );
+    }
+
+    #[test]
+    fn class_name_constant_preserves_source_spelling() {
+        let frontend = analyze_source("<?php class ClassNameBase {} echo ClassNameBase::class;");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("string \"ClassNameBase\""), "{snapshot}");
+        assert!(!snapshot.contains("string \"classnamebase\""), "{snapshot}");
     }
 
     #[test]

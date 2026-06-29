@@ -1,1 +1,3 @@
 {"path":"tests/phpt/generated/pdo/platform-checks.phpt"}
+{"path":"tests/phpt/generated/pdo_sqlite/prepared-transactions.phpt"}
+{"path":"tests/phpt/generated/pdo_sqlite/errmode-exception.phpt"}
