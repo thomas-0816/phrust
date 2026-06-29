@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"closure.core",
+  "priority":10,
+  "selected_manifest":"tests/phpt/manifests/modules/closure.core.selected.jsonl",
+  "corpus_count":0,
+  "selected_count":33,
+  "pass_count":33,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["$GLOBALS and dynamic globals","array spread/unpack","references and copy-on-write","include scope","function defaults and argument binding","dynamic object and property dispatch","late static binding","fatal and warning output parity"],
+  "non_scope":["standard library completeness","SPL and extension iterables","Zend extension ABI","server SAPIs"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=closure.core","nix develop -c just verify-phpt"],
+  "next_step":"selected dashboard is green; keep it green while driving vertical fixes for globals, arrays, references, dynamic object dispatch, and fatal/warning parity."
+}

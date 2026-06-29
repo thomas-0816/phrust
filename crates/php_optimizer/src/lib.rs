@@ -1050,6 +1050,8 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::BindReferencePropertyDim { .. }
         | InstructionKind::BindReferenceDimFromProperty { .. }
         | InstructionKind::BindReferenceFromDim { .. }
+        | InstructionKind::BindReferenceProperty { .. }
+        | InstructionKind::BindReferenceStaticProperty { .. }
         | InstructionKind::BindReferenceFromCall { .. }
         | InstructionKind::InitStaticLocal { .. }
         | InstructionKind::Discard { .. }
@@ -1215,6 +1217,9 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::EmptyProperty { object, .. } => {
             remap_operand_constants(object, remap);
         }
+        InstructionKind::BindReferenceProperty { object, .. } => {
+            remap_operand_constants(object, remap);
+        }
         InstructionKind::FetchDynamicProperty {
             object, property, ..
         }
@@ -1361,6 +1366,7 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::LoadLocalQuiet { .. }
         | InstructionKind::BindReference { .. }
         | InstructionKind::BindGlobal { .. }
+        | InstructionKind::BindReferenceStaticProperty { .. }
         | InstructionKind::EmitDiagnostic { .. }
         | InstructionKind::EnterTry { .. }
         | InstructionKind::LeaveTry
@@ -1501,6 +1507,9 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::FetchProperty { object, .. }
         | InstructionKind::IssetProperty { object, .. }
         | InstructionKind::EmptyProperty { object, .. } => {
+            rewrite_operand_registers(object, aliases);
+        }
+        InstructionKind::BindReferenceProperty { object, .. } => {
             rewrite_operand_registers(object, aliases);
         }
         InstructionKind::FetchDynamicProperty {
@@ -1650,6 +1659,7 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::LoadLocalQuiet { .. }
         | InstructionKind::BindReference { .. }
         | InstructionKind::BindGlobal { .. }
+        | InstructionKind::BindReferenceStaticProperty { .. }
         | InstructionKind::EmitDiagnostic { .. }
         | InstructionKind::EnterTry { .. }
         | InstructionKind::LeaveTry

@@ -4907,6 +4907,9 @@ impl LoweringContext<'_> {
                 block: current,
             });
         };
+        let display_class_name = self
+            .static_class_source_name(class)
+            .unwrap_or_else(|| class_name.clone());
         let normalized_class_name = normalize_class_name(&class_name);
         if is_internal_throwable_class(&normalized_class_name) {
             let message = args.first().map(|arg| arg.value);
@@ -4951,7 +4954,7 @@ impl LoweringContext<'_> {
             current,
             InstructionKind::NewObject {
                 dst,
-                class_name: normalize_class_name(&class_name),
+                class_name: display_class_name,
                 args: operands,
             },
             site.span,
@@ -7457,6 +7460,47 @@ impl LoweringContext<'_> {
                     );
                     register
                 }
+                InterpolatedPart::Property { receiver, property } => {
+                    let object_register = builder.alloc_register(site.function);
+                    let local = builder.intern_local(site.function, receiver);
+                    let instruction = builder.emit(
+                        site.function,
+                        current,
+                        InstructionKind::LoadLocal {
+                            dst: object_register,
+                            local,
+                        },
+                        site.span,
+                    );
+                    self.add_expr_source_map(
+                        builder,
+                        site.function,
+                        current,
+                        instruction,
+                        site.expr,
+                        site.span,
+                    );
+                    let register = builder.alloc_register(site.function);
+                    let instruction = builder.emit(
+                        site.function,
+                        current,
+                        InstructionKind::FetchProperty {
+                            dst: register,
+                            object: Operand::Register(object_register),
+                            property,
+                        },
+                        site.span,
+                    );
+                    self.add_expr_source_map(
+                        builder,
+                        site.function,
+                        current,
+                        instruction,
+                        site.expr,
+                        site.span,
+                    );
+                    register
+                }
             };
 
             value = Some(if let Some(left) = value {
@@ -8152,6 +8196,12 @@ impl LoweringContext<'_> {
         }
         if operator == "="
             && let Some(left) = left
+            && let Some(target) = self.property_dim_target(left)
+        {
+            return self.lower_property_dim_assign_to_register(builder, site, target, right);
+        }
+        if operator == "="
+            && let Some(left) = left
             && let Some(target) = self.dynamic_property_target(left)
         {
             return self.lower_dynamic_property_assign_to_register(builder, site, target, right);
@@ -8826,6 +8876,55 @@ impl LoweringContext<'_> {
         left: Option<ExprId>,
         right: Option<ExprId>,
     ) -> Option<LoweredExpr> {
+        if let Some(target) = left.and_then(|left| self.static_property_target(left)) {
+            let Some(source) =
+                right.and_then(|right| self.variable_local(builder, site.function, right))
+            else {
+                self.unsupported(
+                    UnsupportedFeature::HirStatement,
+                    site.range,
+                    "static property by-reference assignment source must be a simple local variable",
+                );
+                return None;
+            };
+            let bind = builder.emit(
+                site.function,
+                site.block,
+                InstructionKind::BindReferenceStaticProperty {
+                    class_name: target.class_name,
+                    property: target.property,
+                    source,
+                },
+                site.span,
+            );
+            self.add_expr_source_map(
+                builder,
+                site.function,
+                site.block,
+                bind,
+                site.expr,
+                site.span,
+            );
+            let dst = builder.alloc_register(site.function);
+            let load = builder.emit(
+                site.function,
+                site.block,
+                InstructionKind::LoadLocal { dst, local: source },
+                site.span,
+            );
+            self.add_expr_source_map(
+                builder,
+                site.function,
+                site.block,
+                load,
+                site.expr,
+                site.span,
+            );
+            return Some(LoweredExpr {
+                register: dst,
+                block: site.block,
+            });
+        }
         if let Some(left) = left
             && let Some(target) = self.property_dim_target(left)
         {
@@ -9941,6 +10040,18 @@ impl LoweringContext<'_> {
                         .unwrap_or_else(|| resolution.source()),
                 )
                 .or_else(|| Some(display_class_name(resolution.source()))),
+            _ => None,
+        }
+    }
+
+    fn static_class_source_name(&self, expr: ExprId) -> Option<String> {
+        let module = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())?;
+        let expression = module.expressions().get(expr)?;
+        match expression.kind() {
+            HirExprKind::Name { resolution } => Some(resolution.source().to_owned()),
             _ => None,
         }
     }
@@ -13036,6 +13147,28 @@ mod tests {
             &parts[3],
             InterpolatedPart::MethodCall { receiver, method }
                 if receiver == "ex" && method == "getMessage"
+        ));
+    }
+
+    #[test]
+    fn simple_property_interpolation_lowers_fetch_property() {
+        let frontend = analyze_source(
+            "<?php class D { private $counter = 2; function f() { echo \"($this->counter)\"; } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("fetch_property r"), "{snapshot}");
+        assert!(snapshot.contains("local:0 $this"), "{snapshot}");
+        assert!(snapshot.contains("$counter"), "{snapshot}");
+
+        let parts = interpolated_literal_parts("\"($this->counter)\"").expect("parts");
+        assert!(matches!(
+            &parts[1],
+            InterpolatedPart::Property { receiver, property }
+                if receiver == "this" && property == "counter"
         ));
     }
 

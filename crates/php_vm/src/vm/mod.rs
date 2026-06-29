@@ -51,7 +51,9 @@ use php_ir::instruction::{
     BinaryOp, CallableKind, CastKind, ClosureCaptureArg, CompareOp, IncludeKind, Instruction,
     InstructionKind, IrCallArg, IrCallArgValueKind, IrDiagnosticSeverity, TerminatorKind, UnaryOp,
 };
-use php_ir::module::{ClassEntry, ClassPropertyEntry, IrUnit, normalize_class_name};
+use php_ir::module::{
+    ClassEntry, ClassPropertyEntry, IrUnit, display_class_name, normalize_class_name,
+};
 use php_ir::operand::Operand;
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
@@ -82,7 +84,7 @@ use php_runtime::{
     undefined_variable_warning, unsupported_feature, value_matches_runtime_type, value_type_name,
 };
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -916,6 +918,7 @@ struct ExecutionState {
     dynamic_units: Vec<CompiledUnit>,
     dynamic_functions: Vec<DynamicFunctionEntry>,
     dynamic_classes: Vec<DynamicClassEntry>,
+    validated_class_dependencies: HashSet<String>,
     user_constants: HashMap<String, Value>,
     shutdown_functions: Vec<ShutdownFunctionEntry>,
     ini: IniRegistry,
@@ -2178,6 +2181,17 @@ impl Vm {
                 &mut state,
                 throwable,
             );
+        }
+        if result.status.is_success()
+            && let Some(error) = self.validate_runtime_class_dependencies(
+                &unit,
+                &unit,
+                &mut output,
+                &mut stack,
+                &mut state,
+            )
+        {
+            result = error;
         }
         if result.status.is_success() {
             match self.run_shutdown_functions(&unit, &mut output, &mut state) {
@@ -6565,6 +6579,69 @@ impl Vm {
                             }
                         }
                     }
+                    DenseOpcode::InitStaticLocal => {
+                        let DenseOperands::StaticLocal {
+                            local,
+                            name,
+                            default,
+                        } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(name) = dense.names.get(name as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode static local name n{name}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        self.record_counter_alias_state_transition(
+                            AliasState::NoReferencesObserved,
+                            AliasState::EscapedReference,
+                        );
+                        self.record_counter_fast_path_disabled_by_reference(
+                            AliasState::EscapedReference,
+                        );
+                        let key = (function_id.raw(), name.clone());
+                        let cell = if let Some(cell) = state.static_locals.get(&key) {
+                            cell.clone()
+                        } else {
+                            let value = match self.read_dense_operand(compiled, stack, default) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            };
+                            let cell = ReferenceCell::new(value);
+                            state.static_locals.insert(key, cell.clone());
+                            cell
+                        };
+                        let local = LocalId::new(local);
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .locals
+                            .bind_reference_cell(local, cell)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        self.record_counter_alias_state(local_alias_state(stack, local));
+                    }
                     DenseOpcode::BinaryConcatEcho => {
                         let DenseOperands::Binary { dst, lhs, rhs } = instruction.operands else {
                             let result = self.invalid_bytecode_operand_shape(
@@ -10457,6 +10534,455 @@ impl Vm {
                         self.record_counter_alias_state(local_alias_state(stack, *target));
                         self.record_lvalue_trace_event("bind-reference-from-dim", *local, &dims);
                     }
+                    InstructionKind::BindReferenceProperty {
+                        object,
+                        property,
+                        source,
+                    } => {
+                        self.record_counter_alias_state_transition(
+                            AliasState::NoReferencesObserved,
+                            AliasState::PropertyOrArrayDimReference,
+                        );
+                        self.record_counter_fast_path_disabled_by_reference(
+                            AliasState::PropertyOrArrayDimReference,
+                        );
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(Value::Callable(_)) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    format!(
+                                        "E_PHP_VM_DYNAMIC_PROPERTY_ERROR: Cannot create dynamic property Closure::${property}"
+                                    ),
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            Ok(other) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_REFERENCE_NON_OBJECT: cannot assign property reference {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if is_std_class_runtime_class(&object.class_name()) {
+                            let cell = match stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .locals
+                                .ensure_reference_cell(*source)
+                            {
+                                Ok(cell) => cell,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            object.set_property(property, Value::Reference(cell));
+                            self.record_counter_alias_state(local_alias_state(stack, *source));
+                            continue;
+                        }
+                        let class =
+                            match lookup_class_in_state(compiled, state, &object.class_name()) {
+                                Some(class) => class,
+                                None => {
+                                    return self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        format!(
+                                            "E_PHP_VM_UNKNOWN_CLASS: class {} is not defined",
+                                            object.class_name()
+                                        ),
+                                    );
+                                }
+                            };
+                        let scope = current_scope_class(compiled, stack);
+                        let resolved = match lookup_property_in_hierarchy(
+                            compiled,
+                            &class,
+                            property,
+                            scope.as_deref(),
+                        ) {
+                            Ok(Some(resolved)) => resolved,
+                            Ok(None) => {
+                                let cell = match stack
+                                    .current_mut()
+                                    .expect("frame was pushed")
+                                    .locals
+                                    .ensure_reference_cell(*source)
+                                {
+                                    Ok(cell) => cell,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
+                                match self.call_magic_property_method(
+                                    compiled,
+                                    object.clone(),
+                                    "__set",
+                                    property,
+                                    vec![
+                                        CallArgument::positional(Value::String(
+                                            PhpString::from_test_str(property),
+                                        )),
+                                        CallArgument::positional(Value::Reference(cell.clone())),
+                                    ],
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(Some(_)) => {
+                                        self.record_counter_alias_state(local_alias_state(
+                                            stack, *source,
+                                        ));
+                                        continue;
+                                    }
+                                    Ok(None) => {}
+                                    Err(result) => return result,
+                                }
+                                diagnostics.push(RuntimeDiagnostic::new(
+                                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
+                                    RuntimeSeverity::Deprecation,
+                                    format!(
+                                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
+                                        object.class_name()
+                                    ),
+                                    RuntimeSourceSpan::default(),
+                                    stack_trace(compiled, stack),
+                                    None,
+                                ));
+                                object.set_property(property, Value::Reference(cell));
+                                self.record_counter_alias_state(local_alias_state(stack, *source));
+                                continue;
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let entry = resolved.property;
+                        if entry.flags.is_static {
+                            if let Err(message) =
+                                validate_property_access(compiled, stack, resolved.class, entry)
+                                    .and_then(|()| {
+                                        validate_property_set_access(
+                                            compiled,
+                                            stack,
+                                            resolved.class,
+                                            entry,
+                                        )
+                                    })
+                            {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            let cell = match stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .locals
+                                .ensure_reference_cell(*source)
+                            {
+                                Ok(cell) => cell,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            emit_static_property_as_non_static_notice(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                resolved.class,
+                                entry,
+                                instruction.span,
+                            );
+                            object.set_property(property, Value::Reference(cell));
+                            self.record_counter_alias_state(local_alias_state(stack, *source));
+                            continue;
+                        }
+                        if let Err(message) =
+                            validate_property_access(compiled, stack, resolved.class, entry)
+                                .and_then(|()| {
+                                    validate_property_set_access(
+                                        compiled,
+                                        stack,
+                                        resolved.class,
+                                        entry,
+                                    )
+                                })
+                        {
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
+                        if entry.hooks.get.is_some() || entry.hooks.set.is_some() {
+                            return self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!(
+                                    "E_PHP_VM_PROPERTY_REFERENCE_HOOK: property {}::${} cannot be assigned by reference through hooks yet",
+                                    resolved.class.name, entry.name
+                                ),
+                            );
+                        }
+                        let cell = match stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .locals
+                            .ensure_reference_cell(*source)
+                        {
+                            Ok(cell) => cell,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let reference = Value::Reference(cell);
+                        let property_type = ir_runtime_type(entry.type_.as_ref());
+                        if let Err(message) = check_property_type(
+                            compiled,
+                            resolved.class.display_name.as_str(),
+                            property,
+                            &property_type,
+                            &reference,
+                            self.typecheck_fast_path_context(),
+                        ) {
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
+                        if let Err(message) =
+                            validate_property_write(resolved.class, entry, &object, stack, compiled)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        let storage_name = property_storage_name(resolved.class, entry);
+                        object.set_property(storage_name, reference);
+                        self.record_counter_alias_state(local_alias_state(stack, *source));
+                    }
+                    InstructionKind::BindReferenceStaticProperty {
+                        class_name,
+                        property,
+                        source,
+                    } => {
+                        self.record_counter_alias_state_transition(
+                            AliasState::NoReferencesObserved,
+                            AliasState::PropertyOrArrayDimReference,
+                        );
+                        self.record_counter_fast_path_disabled_by_reference(
+                            AliasState::PropertyOrArrayDimReference,
+                        );
+                        let class =
+                            match resolve_static_class_name(compiled, state, stack, class_name) {
+                                Ok(class) => class,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
+                        let scope = current_scope_class(compiled, stack);
+                        let resolved = match lookup_property_in_hierarchy(
+                            compiled,
+                            &class,
+                            property,
+                            scope.as_deref(),
+                        ) {
+                            Ok(Some(resolved)) => resolved,
+                            Ok(None) => {
+                                let message = format!(
+                                    "E_PHP_VM_UNKNOWN_STATIC_PROPERTY: Access to undeclared static property {}::${property}",
+                                    class.display_name
+                                );
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if !resolved.property.flags.is_static {
+                            return self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!(
+                                    "E_PHP_VM_NON_STATIC_PROPERTY_ACCESS: property {}::${} is not static",
+                                    resolved.class.name, resolved.property.name
+                                ),
+                            );
+                        }
+                        if let Err(message) = validate_property_access(
+                            compiled,
+                            stack,
+                            resolved.class,
+                            resolved.property,
+                        ) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        let cell = match stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .locals
+                            .ensure_reference_cell(*source)
+                        {
+                            Ok(cell) => cell,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let reference = Value::Reference(cell);
+                        let property_type = ir_runtime_type(resolved.property.type_.as_ref());
+                        if let Err(message) = check_property_type(
+                            compiled,
+                            resolved.class.display_name.as_str(),
+                            resolved.property.name.as_str(),
+                            &property_type,
+                            &reference,
+                            self.typecheck_fast_path_context(),
+                        ) {
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
+                        let key = static_property_key(resolved.class, resolved.property);
+                        let current = if let Some(value) = state.static_properties.get(&key) {
+                            value.clone()
+                        } else {
+                            match static_property_default(unit, resolved.class, resolved.property) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            }
+                        };
+                        if let Err(message) = validate_static_property_write(
+                            compiled,
+                            stack,
+                            resolved.class,
+                            resolved.property,
+                            &current,
+                        ) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        state.static_properties.insert(key, reference);
+                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            &mut exception_handlers,
+                            &mut pending_control,
+                            &current,
+                        ) {
+                            match outcome {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
+                        self.record_counter_alias_state(local_alias_state(stack, *source));
+                    }
                     InstructionKind::InitStaticLocal {
                         local,
                         name,
@@ -10687,21 +11213,29 @@ impl Vm {
                         class_name,
                         args,
                     } => {
-                        let class_name = match read_operand(unit, stack, *class_name) {
+                        let (class_name, display_class_name) = match read_operand(
+                            unit,
+                            stack,
+                            *class_name,
+                        ) {
                             Ok(Value::String(value)) => {
-                                normalize_class_name(&value.to_string_lossy())
+                                let display = value.to_string_lossy();
+                                (normalize_class_name(&display), display)
                             }
-                            Ok(Value::Object(object)) => normalize_class_name(&object.class_name()),
+                            Ok(Value::Object(object)) => {
+                                let display = object.class_name();
+                                (normalize_class_name(&display), display)
+                            }
                             Ok(other) => {
                                 return self.runtime_error(
-                                    output,
-                                    compiled,
-                                    stack,
-                                    format!(
-                                        "E_PHP_VM_INVALID_DYNAMIC_CLASS_NAME: class name must be string or object, {} given",
-                                        value_type_name(&other)
-                                    ),
-                                );
+                                        output,
+                                        compiled,
+                                        stack,
+                                        format!(
+                                            "E_PHP_VM_INVALID_DYNAMIC_CLASS_NAME: class name must be string or object, {} given",
+                                            value_type_name(&other)
+                                        ),
+                                    );
                             }
                             Err(message) => {
                                 return self.runtime_error(output, compiled, stack, message);
@@ -10904,14 +11438,24 @@ impl Vm {
                         }
                         let Some(class) = lookup_class_in_state(compiled, state, &class_name)
                         else {
-                            return self.runtime_error(
-                                output,
+                            match self.raise_runtime_error(
                                 compiled,
+                                output,
                                 stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
                                 format!(
-                                    "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
+                                    "E_PHP_VM_UNKNOWN_CLASS: Class \"{display_class_name}\" not found"
                                 ),
-                            );
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         };
                         let runtime_class =
                             match runtime_class_entry(compiled, state, &class, &|value| {
@@ -11108,10 +11652,45 @@ impl Vm {
                             };
                             let values =
                                 values.into_iter().map(|arg| arg.value).collect::<Vec<_>>();
+                            if let Err(result) = self.preflight_reflection_constructor(
+                                compiled, class_name, &values, output, stack, state,
+                            ) {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
                             let object = match reflection_new_object(compiled, class_name, values) {
                                 Ok(object) => object,
                                 Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    match self.route_throwable_result(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        result,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                             };
                             if let Err(message) = stack
@@ -11604,13 +12183,47 @@ impl Vm {
                                                 .runtime_error(output, compiled, stack, message);
                                         }
                                     };
+                                    if let Err(result) = self.preflight_reflection_constructor(
+                                        compiled, class_name, &values, output, stack, state,
+                                    ) {
+                                        match self.route_throwable_result(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            result,
+                                        ) {
+                                            RaiseOutcome::Caught(target) => {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            RaiseOutcome::Done(result) => return *result,
+                                        }
+                                    }
                                     let object =
                                         match reflection_new_object(compiled, class_name, values) {
                                             Ok(object) => object,
                                             Err(message) => {
-                                                return self.runtime_error(
+                                                let result = self.runtime_error(
                                                     output, compiled, stack, message,
                                                 );
+                                                match self.route_throwable_result(
+                                                    compiled,
+                                                    output,
+                                                    stack,
+                                                    state,
+                                                    &mut exception_handlers,
+                                                    &mut pending_control,
+                                                    result,
+                                                ) {
+                                                    RaiseOutcome::Caught(target) => {
+                                                        block_id = target;
+                                                        continue 'dispatch;
+                                                    }
+                                                    RaiseOutcome::Done(result) => return *result,
+                                                }
                                             }
                                         };
                                     if let Err(message) = stack
@@ -12404,7 +13017,7 @@ impl Vm {
                                         stack,
                                         state,
                                         &mut diagnostics,
-                                        &object.class_name(),
+                                        resolved.class.display_name.as_str(),
                                         property,
                                         instruction.span,
                                     ) {
@@ -13965,6 +14578,19 @@ impl Vm {
                                 }
                                 continue;
                             }
+                            if resolved.property.flags.is_static {
+                                emit_static_property_as_non_static_notice(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    resolved.class,
+                                    resolved.property,
+                                    instruction.span,
+                                );
+                                object.unset_property(property);
+                                continue;
+                            }
                             let storage_name =
                                 property_storage_name(resolved.class, resolved.property);
                             if resolved.property.flags.is_typed {
@@ -14687,58 +15313,6 @@ impl Vm {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
-                    InstructionKind::AssignPropertyDim {
-                        dst,
-                        object,
-                        property,
-                        dims,
-                        value,
-                        append,
-                    } => {
-                        let object = match read_operand(unit, stack, *object) {
-                            Ok(Value::Object(object)) => object,
-                            Ok(other) => {
-                                return self.runtime_error(
-                                    output,
-                                    compiled,
-                                    stack,
-                                    format!(
-                                        "E_PHP_VM_PROPERTY_ASSIGN_NON_OBJECT: cannot assign property {property} on {}",
-                                        value_type_name(&other)
-                                    ),
-                                );
-                            }
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
-                        let dims = match read_dim_operands(unit, stack, dims) {
-                            Ok(dims) => dims,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
-                        let value = match read_operand(unit, stack, *value) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
-                        let result = value.clone();
-                        if let Err(message) = assign_property_dim(
-                            compiled, state, stack, &object, property, &dims, value, *append,
-                        ) {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                        if let Err(message) = stack
-                            .current_mut()
-                            .expect("frame was pushed")
-                            .registers
-                            .set(*dst, result)
-                        {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                    }
                     InstructionKind::AssignDynamicProperty {
                         dst,
                         object,
@@ -15169,6 +15743,274 @@ impl Vm {
                             }
                         }
                         object.set_property(storage_name, value.clone());
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, value)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::AssignPropertyDim {
+                        dst,
+                        object,
+                        property,
+                        dims,
+                        append,
+                        value,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_DIM_ASSIGN_NON_OBJECT: cannot assign property dimension {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let dims = match read_dim_operands(unit, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let value = match read_operand(unit, stack, *value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        if is_std_class_runtime_class(&object.class_name()) {
+                            let mut current = object.get_property(property).unwrap_or(Value::Null);
+                            if matches!(current, Value::Uninitialized | Value::Null) {
+                                current = Value::Array(PhpArray::new());
+                            }
+                            if let Err(message) =
+                                assign_dim_value(&mut current, &dims, value.clone(), *append)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            object.set_property(property, current);
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        let class =
+                            match lookup_class_in_state(compiled, state, &object.class_name()) {
+                                Some(class) => class,
+                                None => {
+                                    return self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        format!(
+                                            "E_PHP_VM_UNKNOWN_CLASS: class {} is not defined",
+                                            object.class_name()
+                                        ),
+                                    );
+                                }
+                            };
+                        let scope = current_scope_class(compiled, stack);
+                        let resolved = match lookup_property_in_hierarchy(
+                            compiled,
+                            &class,
+                            property,
+                            scope.as_deref(),
+                        ) {
+                            Ok(Some(resolved)) => resolved,
+                            Ok(None) => {
+                                let mut current =
+                                    object.get_property(property).unwrap_or(Value::Null);
+                                if matches!(current, Value::Uninitialized | Value::Null) {
+                                    current = Value::Array(PhpArray::new());
+                                }
+                                if let Err(message) =
+                                    assign_dim_value(&mut current, &dims, value.clone(), *append)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                diagnostics.push(RuntimeDiagnostic::new(
+                                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
+                                    RuntimeSeverity::Deprecation,
+                                    format!(
+                                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
+                                        object.class_name()
+                                    ),
+                                    RuntimeSourceSpan::default(),
+                                    stack_trace(compiled, stack),
+                                    None,
+                                ));
+                                object.set_property(property, current);
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("frame was pushed")
+                                    .registers
+                                    .set(*dst, value)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                continue;
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let entry = resolved.property;
+                        if entry.flags.is_static {
+                            if let Err(message) =
+                                validate_property_access(compiled, stack, resolved.class, entry)
+                                    .and_then(|()| {
+                                        validate_property_set_access(
+                                            compiled,
+                                            stack,
+                                            resolved.class,
+                                            entry,
+                                        )
+                                    })
+                            {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            emit_static_property_as_non_static_notice(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                resolved.class,
+                                entry,
+                                instruction.span,
+                            );
+                            let mut current = object.get_property(property).unwrap_or(Value::Null);
+                            if matches!(current, Value::Uninitialized | Value::Null) {
+                                current = Value::Array(PhpArray::new());
+                            }
+                            if let Err(message) =
+                                assign_dim_value(&mut current, &dims, value.clone(), *append)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            object.set_property(property, current);
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if let Err(message) =
+                            validate_property_access(compiled, stack, resolved.class, entry)
+                                .and_then(|()| {
+                                    validate_property_set_access(
+                                        compiled,
+                                        stack,
+                                        resolved.class,
+                                        entry,
+                                    )
+                                })
+                        {
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
+                        if entry.hooks.get.is_some() || entry.hooks.set.is_some() {
+                            return self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!(
+                                    "E_PHP_VM_PROPERTY_DIM_HOOK: property {}::${} dimension assignment through hooks is not implemented",
+                                    resolved.class.name, entry.name
+                                ),
+                            );
+                        }
+                        let storage_name = property_storage_name(resolved.class, entry);
+                        let mut current = property_state_value(compiled, stack, &object, property)
+                            .unwrap_or(Value::Null);
+                        if matches!(current, Value::Uninitialized | Value::Null) {
+                            current = Value::Array(PhpArray::new());
+                        }
+                        if let Err(message) =
+                            assign_dim_value(&mut current, &dims, value.clone(), *append)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        let property_type = ir_runtime_type(entry.type_.as_ref());
+                        if let Err(message) = check_property_type(
+                            compiled,
+                            resolved.class.display_name.as_str(),
+                            property,
+                            &property_type,
+                            &current,
+                            self.typecheck_fast_path_context(),
+                        ) {
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
+                        if let Err(message) =
+                            validate_property_write(resolved.class, entry, &object, stack, compiled)
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        object.set_property(storage_name, current);
                         if let Err(message) = stack
                             .current_mut()
                             .expect("frame was pushed")
@@ -16014,7 +16856,23 @@ impl Vm {
                             },
                         ) {
                             Ok(iterator) => iterator,
-                            Err(result) => return result,
+                            Err(result) => {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
                         };
                         self.record_runtime_trace_event(format!(
                             "foreach init iterator=r{} kind={}",
@@ -16075,7 +16933,21 @@ impl Vm {
                                         state,
                                     )
                                 {
-                                    return result;
+                                    match self.route_throwable_result(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        result,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                                 let valid = match self.call_object_method_value(
                                     compiled,
@@ -16092,7 +16964,23 @@ impl Vm {
                                                 .runtime_error(output, compiled, stack, message);
                                         }
                                     },
-                                    Err(result) => return result,
+                                    Err(result) => {
+                                        match self.route_throwable_result(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            result,
+                                        ) {
+                                            RaiseOutcome::Caught(target) => {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            RaiseOutcome::Done(result) => return *result,
+                                        }
+                                    }
                                 };
                                 if !valid {
                                     None
@@ -16106,7 +16994,23 @@ impl Vm {
                                         state,
                                     ) {
                                         Ok(value) => value,
-                                        Err(result) => return result,
+                                        Err(result) => {
+                                            match self.route_throwable_result(
+                                                compiled,
+                                                output,
+                                                stack,
+                                                state,
+                                                &mut exception_handlers,
+                                                &mut pending_control,
+                                                result,
+                                            ) {
+                                                RaiseOutcome::Caught(target) => {
+                                                    block_id = target;
+                                                    continue 'dispatch;
+                                                }
+                                                RaiseOutcome::Done(result) => return *result,
+                                            }
+                                        }
                                     };
                                     let entry_key = if key.is_some() {
                                         match self.call_object_method_value(
@@ -16118,7 +17022,23 @@ impl Vm {
                                             state,
                                         ) {
                                             Ok(value) => Some(value),
-                                            Err(result) => return result,
+                                            Err(result) => {
+                                                match self.route_throwable_result(
+                                                    compiled,
+                                                    output,
+                                                    stack,
+                                                    state,
+                                                    &mut exception_handlers,
+                                                    &mut pending_control,
+                                                    result,
+                                                ) {
+                                                    RaiseOutcome::Caught(target) => {
+                                                        block_id = target;
+                                                        continue 'dispatch;
+                                                    }
+                                                    RaiseOutcome::Done(result) => return *result,
+                                                }
+                                            }
                                         }
                                     } else {
                                         None
@@ -16902,6 +17822,25 @@ impl Vm {
                         if is_reflection_runtime_class(&object.class_name()) {
                             let values =
                                 values.into_iter().map(|arg| arg.value).collect::<Vec<_>>();
+                            if let Err(result) = self.preflight_reflection_class_method(
+                                compiled, &object, method, &values, output, stack, state,
+                            ) {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
                             let value = match reflection_method_value(
                                 compiled,
                                 &object,
@@ -16914,7 +17853,23 @@ impl Vm {
                             ) {
                                 Ok(value) => value,
                                 Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    match self.route_throwable_result(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        result,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                             };
                             if let Err(message) = stack
@@ -19019,10 +19974,10 @@ impl Vm {
         class_name: &str,
     ) -> Result<bool, String> {
         if !self.options.inline_caches.enabled() {
-            return object_instanceof(compiled, value, class_name);
+            return object_instanceof_in_state(compiled, state, value, class_name);
         }
         let Some(subject) = class_relation_subject_name(value) else {
-            return object_instanceof(compiled, value, class_name);
+            return object_instanceof_in_state(compiled, state, value, class_name);
         };
         let key = ClassRelationCacheKey {
             kind: ClassRelationKind::InstanceOf,
@@ -19048,7 +20003,7 @@ impl Vm {
                 self.record_counter_instanceof_cache_miss();
             }
         }
-        let matches = object_instanceof(compiled, value, class_name)?;
+        let matches = object_instanceof_in_state(compiled, state, value, class_name)?;
         state.class_relation_cache.install(
             key,
             epochs,
@@ -23046,7 +24001,7 @@ impl Vm {
                 needs_next: false,
             });
         }
-        match class_implements_interface(compiled, &class_name, "Iterator", &mut Vec::new()) {
+        match class_is_a_in_state(compiled, state, &class_name, "Iterator") {
             Ok(true) => {
                 self.call_object_method_value(
                     compiled,
@@ -23064,12 +24019,7 @@ impl Vm {
             Ok(false) => {}
             Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
         }
-        match class_implements_interface(
-            compiled,
-            &class_name,
-            "IteratorAggregate",
-            &mut Vec::new(),
-        ) {
+        match class_is_a_in_state(compiled, state, &class_name, "IteratorAggregate") {
             Ok(true) => {
                 let inner = self.call_object_method_value(
                     compiled,
@@ -23725,6 +24675,11 @@ impl Vm {
             return reflection_object_to_string(&object)
                 .map(|value| PhpString::from(value.into_bytes()))
                 .map_err(|message| self.runtime_error(output, compiled, stack, message));
+        }
+        if internal_throwable_instanceof(&object.class_name(), "throwable").is_some() {
+            return Ok(PhpString::from_bytes(
+                throwable_string(&object).into_bytes(),
+            ));
         }
         if normalize_class_name(&object.class_name()) == "simplexmlelement" {
             return match php_runtime::xml::simplexml_text(&object) {
@@ -24578,6 +25533,17 @@ impl Vm {
             Ok(class) => class,
             Err(message) => return self.runtime_error(output, compiled, stack, message),
         };
+        let normalized_method = normalize_method_name(method);
+        if class.flags.is_enum && matches!(normalized_method.as_str(), "cases" | "from" | "tryfrom")
+        {
+            let value = match enum_static_method(compiled, state, &class, method, args, &|value| {
+                self.constant_value(compiled.unit(), value)
+            }) {
+                Ok(value) => value,
+                Err(message) => return self.runtime_error(output, compiled, stack, message),
+            };
+            return VmResult::success(output.clone(), Some(value));
+        }
         let scope = method_lookup_scope_for_static_call(compiled, stack, class_name);
         let resolved = match lookup_method_in_hierarchy(compiled, &class, method, scope.as_deref())
         {
@@ -25120,7 +26086,7 @@ impl Vm {
             state.include_stack.len(),
         ));
         let include_instructions_before = self.current_instructions_executed();
-        let result =
+        let mut result =
             self.execute_function(&included, included.unit().entry, call, output, stack, state);
         let include_instructions_after = self.current_instructions_executed();
         let include_instructions_executed = include_instructions_before
@@ -25136,6 +26102,12 @@ impl Vm {
             state.include_stack.len(),
             include_instructions_executed,
         ));
+        if result.status.is_success()
+            && let Some(error) =
+                self.validate_runtime_class_dependencies(compiled, &included, output, stack, state)
+        {
+            result = error;
+        }
         state.include_stack.pop();
         if result.status.is_success() {
             write_shared_locals_to_current_frame(compiled, stack, &shared);
@@ -25800,6 +26772,16 @@ impl Vm {
             .skip(1)
             .map(CallArgument::positional)
             .collect();
+        if let Err(result) = self.preflight_user_callback(
+            compiled,
+            &callback,
+            "call_user_func",
+            output,
+            stack,
+            state,
+        ) {
+            return result;
+        }
         self.call_callable_with_by_ref_value_warnings(
             compiled, callback, args, output, stack, state,
         )
@@ -25831,8 +26813,186 @@ impl Vm {
             );
         };
         let args = call_args_from_php_array(array);
+        if let Err(result) = self.preflight_user_callback(
+            compiled,
+            &callback,
+            "call_user_func_array",
+            output,
+            stack,
+            state,
+        ) {
+            return result;
+        }
         self.call_callable_with_by_ref_value_warnings(
             compiled, callback, args, output, stack, state,
+        )
+    }
+
+    fn preflight_user_callback(
+        &self,
+        compiled: &CompiledUnit,
+        callback: &Value,
+        builtin: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        match callable_resolve_reference(callback.clone()) {
+            Value::String(name) => {
+                let name = name.to_string_lossy();
+                if let Some((class_name, method)) = name.split_once("::") {
+                    self.preflight_static_user_callback(
+                        compiled, class_name, method, builtin, output, stack, state,
+                    )?;
+                }
+            }
+            Value::Array(array) => {
+                let elements = array
+                    .iter()
+                    .map(|(_, value)| value.clone())
+                    .collect::<Vec<_>>();
+                let [target, method]: [Value; 2] = match elements.try_into() {
+                    Ok(elements) => elements,
+                    Err(_) => return Ok(()),
+                };
+                let Some(method) = callable_string_value(method) else {
+                    return Ok(());
+                };
+                match callable_resolve_reference(target) {
+                    Value::Object(object) => self.preflight_object_user_callback(
+                        compiled, &object, &method, builtin, output, stack, state,
+                    )?,
+                    Value::String(class_name) => self.preflight_static_user_callback(
+                        compiled,
+                        &class_name.to_string_lossy(),
+                        &method,
+                        builtin,
+                        output,
+                        stack,
+                        state,
+                    )?,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn preflight_static_user_callback(
+        &self,
+        compiled: &CompiledUnit,
+        class_name: &str,
+        method: &str,
+        builtin: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        let exists = self.class_like_exists_with_autoload_cache(
+            compiled,
+            class_name,
+            AutoloadClassLookupKind::Class,
+            true,
+            None,
+            output,
+            stack,
+            state,
+        )?;
+        if !exists {
+            return Err(self.callable_type_error(
+                compiled,
+                output,
+                stack,
+                format!(
+                    "{builtin}(): Argument #1 ($callback) must be a valid callback, class \"{class_name}\" not found"
+                ),
+            ));
+        }
+        let Some(resolved) =
+            lookup_resolved_method_in_state(compiled, state, class_name, method, None)
+                .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+        else {
+            return Ok(());
+        };
+        self.preflight_resolved_user_callback(
+            compiled,
+            &resolved.class,
+            &resolved.method,
+            builtin,
+            output,
+            stack,
+        )
+    }
+
+    fn preflight_object_user_callback(
+        &self,
+        compiled: &CompiledUnit,
+        object: &ObjectRef,
+        method: &str,
+        builtin: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        let Some(resolved) =
+            lookup_resolved_method_in_state(compiled, state, &object.class_name(), method, None)
+                .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+        else {
+            return Ok(());
+        };
+        self.preflight_resolved_user_callback(
+            compiled,
+            &resolved.class,
+            &resolved.method,
+            builtin,
+            output,
+            stack,
+        )
+    }
+
+    fn preflight_resolved_user_callback(
+        &self,
+        compiled: &CompiledUnit,
+        class: &php_ir::module::ClassEntry,
+        method: &php_ir::module::ClassMethodEntry,
+        builtin: &str,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+    ) -> Result<(), VmResult> {
+        let visibility = if method.flags.is_private {
+            Some("private")
+        } else if method.flags.is_protected {
+            Some("protected")
+        } else {
+            None
+        };
+        let Some(visibility) = visibility else {
+            return Ok(());
+        };
+        Err(self.callable_type_error(
+            compiled,
+            output,
+            stack,
+            format!(
+                "{builtin}(): Argument #1 ($callback) must be a valid callback, cannot access {visibility} method {}::{}()",
+                class.display_name, method.name
+            ),
+        ))
+    }
+
+    fn callable_type_error(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+        message: String,
+    ) -> VmResult {
+        self.runtime_error(
+            output,
+            compiled,
+            stack,
+            format!("E_PHP_RUNTIME_BUILTIN_TYPE: {message}"),
         )
     }
 
@@ -26345,6 +27505,231 @@ impl Vm {
         Ok(exists)
     }
 
+    fn validate_runtime_class_dependencies(
+        &self,
+        compiled: &CompiledUnit,
+        declared_unit: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Option<VmResult> {
+        for class in &declared_unit.unit().classes {
+            let normalized_class = normalize_class_name(&class.name);
+            if !state
+                .validated_class_dependencies
+                .insert(normalized_class.clone())
+            {
+                continue;
+            }
+
+            if let Some(parent) = class.parent.as_deref() {
+                let display = class_dependency_display_name(declared_unit, class, parent);
+                match self.class_like_exists_with_autoload_cache(
+                    compiled,
+                    &display,
+                    AutoloadClassLookupKind::Class,
+                    true,
+                    None,
+                    output,
+                    stack,
+                    state,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Some(self.class_dependency_not_found(
+                            declared_unit,
+                            class,
+                            &display,
+                            "Class",
+                            output,
+                            stack,
+                            state,
+                        ));
+                    }
+                    Err(result) => return Some(result),
+                }
+            }
+
+            for interface in &class.interfaces {
+                let display = class_dependency_display_name(declared_unit, class, interface);
+                match self.class_like_exists_with_autoload_cache(
+                    compiled,
+                    &display,
+                    AutoloadClassLookupKind::Interface,
+                    true,
+                    None,
+                    output,
+                    stack,
+                    state,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Some(self.class_dependency_not_found(
+                            declared_unit,
+                            class,
+                            &display,
+                            "Interface",
+                            output,
+                            stack,
+                            state,
+                        ));
+                    }
+                    Err(result) => return Some(result),
+                }
+            }
+        }
+        None
+    }
+
+    fn class_dependency_not_found(
+        &self,
+        compiled: &CompiledUnit,
+        class: &php_ir::module::ClassEntry,
+        dependency: &str,
+        kind: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        let message = Value::string(format!("{kind} \"{dependency}\" not found").into_bytes());
+        let throwable = match make_exception_object("Error", &message) {
+            Ok(object) => Value::Object(object),
+            Err(message) => {
+                return self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    format!("E_PHP_VM_CLASS_DEPENDENCY_ERROR: {message}"),
+                );
+            }
+        };
+        tag_throwable_location(&throwable, compiled, class.span);
+        state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+        self.handle_uncaught_exception(compiled, output, stack, state, throwable)
+    }
+
+    fn preflight_reflection_constructor(
+        &self,
+        compiled: &CompiledUnit,
+        reflection_class: &str,
+        values: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        let reflection_class = normalize_class_name(reflection_class);
+        if !matches!(
+            reflection_class.as_str(),
+            "reflectionclass"
+                | "reflectionmethod"
+                | "reflectionproperty"
+                | "reflectionclassconstant"
+                | "reflectionenum"
+                | "reflectionenumunitcase"
+                | "reflectionenumbackedcase"
+        ) {
+            return Ok(());
+        }
+        let Some(class_name) = values.first().and_then(reflection_value_string) else {
+            return Ok(());
+        };
+        let exists = self.class_like_exists_with_autoload_cache(
+            compiled,
+            &class_name,
+            AutoloadClassLookupKind::Class,
+            true,
+            None,
+            output,
+            stack,
+            state,
+        )?;
+        if exists {
+            return Ok(());
+        }
+        Err(self.runtime_error(
+            output,
+            compiled,
+            stack,
+            format!("E_PHP_VM_REFLECTION_UNKNOWN_CLASS: Class \"{class_name}\" does not exist"),
+        ))
+    }
+
+    fn preflight_reflection_class_method(
+        &self,
+        compiled: &CompiledUnit,
+        object: &ObjectRef,
+        method: &str,
+        values: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        if normalize_class_name(&object.class_name()) != "reflectionclass" {
+            return Ok(());
+        }
+        match normalize_method_name(method).as_str() {
+            "getproperty" => {
+                let Some(property) = values.first().and_then(reflection_value_string) else {
+                    return Ok(());
+                };
+                let Some((class_name, _property)) = property.split_once("::") else {
+                    return Ok(());
+                };
+                let class_name = normalize_class_name(class_name);
+                let exists = self.class_like_exists_with_autoload_cache(
+                    compiled,
+                    &class_name,
+                    AutoloadClassLookupKind::Class,
+                    true,
+                    None,
+                    output,
+                    stack,
+                    state,
+                )?;
+                if exists {
+                    Ok(())
+                } else {
+                    Err(self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!(
+                            "E_PHP_VM_REFLECTION_UNKNOWN_CLASS: Class \"{class_name}\" does not exist"
+                        ),
+                    ))
+                }
+            }
+            "implementsinterface" => {
+                let Some(interface_name) = values.first().and_then(reflection_value_string) else {
+                    return Ok(());
+                };
+                let exists = self.class_like_exists_with_autoload_cache(
+                    compiled,
+                    &interface_name,
+                    AutoloadClassLookupKind::Interface,
+                    true,
+                    None,
+                    output,
+                    stack,
+                    state,
+                )?;
+                if exists {
+                    Ok(())
+                } else {
+                    Err(self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!(
+                            "E_PHP_VM_REFLECTION_UNKNOWN_CLASS: Interface \"{interface_name}\" does not exist"
+                        ),
+                    ))
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn autoload_class(
         &self,
         compiled: &CompiledUnit,
@@ -26802,6 +28187,7 @@ fn internal_throwable_display_name(class_name: &str) -> String {
         "fibererror" => "FiberError".to_owned(),
         "jsonexception" => "JsonException".to_owned(),
         "pdoexception" => "PDOException".to_owned(),
+        "reflectionexception" => "ReflectionException".to_owned(),
         "logicexception" => "LogicException".to_owned(),
         "badfunctioncallexception" => "BadFunctionCallException".to_owned(),
         "badmethodcallexception" => "BadMethodCallException".to_owned(),
@@ -26823,9 +28209,11 @@ fn internal_throwable_parent(class_name: &str) -> Option<&'static str> {
     match normalize_class_name(class_name).as_str() {
         "typeerror" | "valueerror" | "fibererror" => Some("Error"),
         "argumentcounterror" => Some("TypeError"),
-        "jsonexception" | "pdoexception" | "logicexception" | "runtimeexception" => {
-            Some("Exception")
-        }
+        "jsonexception"
+        | "pdoexception"
+        | "reflectionexception"
+        | "logicexception"
+        | "runtimeexception" => Some("Exception"),
         "badfunctioncallexception"
         | "domainexception"
         | "invalidargumentexception"
@@ -26854,6 +28242,7 @@ fn internal_throwable_instanceof(object_class: &str, target_class: &str) -> Opti
             | "fibererror"
             | "jsonexception"
             | "pdoexception"
+            | "reflectionexception"
             | "logicexception"
             | "badfunctioncallexception"
             | "badmethodcallexception"
@@ -27329,7 +28718,7 @@ fn collect_class_lineage_compiled_inner<'a>(
     seen.push(normalized);
     if let Some(parent_name) = class.parent.as_deref() {
         let Some(parent) = compiled.lookup_class(parent_name) else {
-            if internal_runtime_parent_is_known(class, parent_name) {
+            if internal_runtime_class_entry(&normalize_class_name(parent_name)).is_some() {
                 lineage.push(class);
                 seen.pop();
                 return Ok(());
@@ -27604,6 +28993,10 @@ fn reflection_string_arg(args: &[Value], index: usize, owner: &str) -> Result<St
         ));
     };
     Ok(to_string(value)?.to_string_lossy())
+}
+
+fn reflection_value_string(value: &Value) -> Option<String> {
+    to_string(value).ok().map(|value| value.to_string_lossy())
 }
 
 fn reflection_string(value: impl AsRef<str>) -> Value {
@@ -28034,6 +29427,17 @@ fn reflection_method_value(
             "getinterfacenames" => Ok(object
                 .get_property("interfaces")
                 .unwrap_or_else(empty_array_value)),
+            "implementsinterface" => {
+                let class = reflection_object_string_property(object, "class")?;
+                let interface =
+                    reflection_string_arg(&args, 0, "ReflectionClass::implementsInterface")?;
+                Ok(Value::Bool(class_implements_interface(
+                    compiled,
+                    &class,
+                    &interface,
+                    &mut Vec::new(),
+                )?))
+            }
             "getparentclass" => match object.get_property("parent") {
                 Some(Value::String(parent)) => {
                     let parent = parent.to_string_lossy();
@@ -31068,6 +32472,9 @@ fn parent_class<'a>(
     if internal_runtime_parent_is_known(class, parent) {
         return Ok(None);
     }
+    if internal_runtime_class_entry(&normalize_class_name(parent)).is_some() {
+        return Ok(None);
+    }
     compiled.lookup_class(parent).map(Some).ok_or_else(|| {
         format!(
             "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
@@ -31741,6 +33148,11 @@ fn class_is_or_extends(
             ));
         }
         seen.push(current);
+        if let Some(parent_name) = class.parent.as_deref()
+            && let Some(result) = internal_throwable_instanceof(parent_name, &ancestor_name)
+        {
+            return Ok(result);
+        }
         let Some(parent) = parent_class(compiled, class)? else {
             return Ok(false);
         };
@@ -31899,6 +33311,61 @@ fn object_instanceof(
                 return Ok(result);
             }
             class_is_or_implements(compiled, &object.class_name(), class_name)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn object_instanceof_in_state(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    value: &Value,
+    class_name: &str,
+) -> Result<bool, String> {
+    match value {
+        Value::Reference(cell) => {
+            object_instanceof_in_state(compiled, state, &cell.get(), class_name)
+        }
+        Value::Fiber(_) => Ok(normalize_class_name(class_name) == "fiber"),
+        Value::Callable(_) => Ok(is_closure_runtime_class(class_name)),
+        Value::Object(object) => {
+            if let Some(result) = internal_throwable_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_spl_iterator_instanceof(&object.class_name(), class_name)
+            {
+                return Ok(result);
+            }
+            if let Some(result) =
+                internal_spl_container_instanceof(&object.class_name(), class_name)
+            {
+                return Ok(result);
+            }
+            if let Some(result) = internal_spl_file_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_date_time_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_sqlite_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_pdo_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_mysqli_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_phar_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_zip_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_gd_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            class_is_a_in_state(compiled, state, &object.class_name(), class_name)
         }
         _ => Ok(false),
     }
@@ -32436,6 +33903,8 @@ fn method_body_has_inline_blocker(function: &IrFunction) -> bool {
                     | InstructionKind::AssignProperty { .. }
                     | InstructionKind::AssignPropertyDim { .. }
                     | InstructionKind::AssignStaticProperty { .. }
+                    | InstructionKind::BindReferenceProperty { .. }
+                    | InstructionKind::BindReferenceStaticProperty { .. }
                     | InstructionKind::UnsetProperty { .. }
                     | InstructionKind::UnsetPropertyDim { .. }
             )
@@ -38129,6 +39598,47 @@ fn class_like_exists_direct(
         })
 }
 
+fn class_dependency_display_name(
+    compiled: &CompiledUnit,
+    class: &php_ir::module::ClassEntry,
+    normalized_dependency: &str,
+) -> String {
+    let normalized_dependency = normalize_class_name(normalized_dependency);
+    let Some(file) = compiled.unit().files.get(class.span.file.index()) else {
+        return normalized_dependency;
+    };
+    let Ok(source) = std::fs::read_to_string(&file.path) else {
+        return normalized_dependency;
+    };
+    let start = (class.span.start as usize).min(source.len());
+    let end = (class.span.end as usize).min(source.len()).max(start);
+    let declaration = source[start..end]
+        .split_once('{')
+        .map_or(&source[start..end], |(head, _)| head);
+    for token in php_name_tokens(declaration) {
+        if normalize_class_name(&token) == normalized_dependency {
+            return display_class_name(&token);
+        }
+    }
+    normalized_dependency
+}
+
+fn php_name_tokens(source: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in source.chars() {
+        if ch == '\\' || ch == '_' || ch.is_alphanumeric() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 fn dynamic_class_owner_in_state(state: &ExecutionState, class_name: &str) -> Option<CompiledUnit> {
     let unit_index = dynamic_class_owner_index_in_state(state, class_name)?;
     state.dynamic_units.get(unit_index).cloned()
@@ -40735,6 +42245,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_THIS_OUTSIDE_METHOD"
         | "E_PHP_VM_DYNAMIC_PROPERTY_ERROR"
         | "E_PHP_VM_PIPE_RHS_NOT_CALLABLE"
+        | "E_PHP_VM_UNKNOWN_CLASS"
         | "E_PHP_VM_UNKNOWN_CLASS_CONSTANT"
         | "E_PHP_VM_PRIVATE_CLASS_CONSTANT_ACCESS"
         | "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS"
@@ -40747,6 +42258,9 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNDEFINED_METHOD"
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_NON_STATIC_METHOD"
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNRESOLVED_DYNAMIC" => "TypeError",
+        "E_PHP_VM_REFLECTION_UNKNOWN_CLASS"
+        | "E_PHP_VM_REFLECTION_UNKNOWN_METHOD"
+        | "E_PHP_VM_REFLECTION_UNKNOWN_PROPERTY" => "ReflectionException",
         _ => return None,
     };
     let message = diagnostic
@@ -43808,7 +45322,8 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::LoadLocal
         | DenseOpcode::LoadLocalEcho
         | DenseOpcode::StoreLocal
-        | DenseOpcode::StoreLocalDiscard => "locals",
+        | DenseOpcode::StoreLocalDiscard
+        | DenseOpcode::InitStaticLocal => "locals",
         DenseOpcode::BinaryAdd
         | DenseOpcode::BinarySub
         | DenseOpcode::BinaryMul
@@ -43889,6 +45404,8 @@ fn dense_bytecode_reference_aliasing_message(message: &str) -> bool {
         || message.contains("BindGlobal")
         || message.contains("BindReferenceDim")
         || message.contains("BindReferenceFromDim")
+        || message.contains("BindReferenceProperty")
+        || message.contains("BindReferenceStaticProperty")
         || message.contains("BindReferenceFromCall")
         || message.contains("ForeachInitRef")
         || message.contains("ForeachNextRef")
@@ -44656,6 +46173,16 @@ mod tests {
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"D|2");
+    }
+
+    #[test]
+    fn enums_execute_unit_cases_static_method() {
+        let result = execute_source(
+            "<?php enum Status { case Draft; case Published; } foreach (Status::cases() as $case) { echo $case->name, \"\\n\"; }",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"Draft\nPublished\n");
     }
 
     #[test]

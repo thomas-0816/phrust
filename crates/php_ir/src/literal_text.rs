@@ -80,6 +80,10 @@ pub(crate) enum InterpolatedPart {
         receiver: String,
         method: String,
     },
+    Property {
+        receiver: String,
+        property: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,6 +105,13 @@ struct ParsedInterpolatedVariable {
 struct ParsedInterpolatedMethodCall {
     receiver: String,
     method: String,
+    end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ParsedInterpolatedProperty {
+    receiver: String,
+    property: String,
     end: usize,
 }
 
@@ -145,6 +156,23 @@ fn parse_interpolated_double_quoted_body(
             parts.push(InterpolatedPart::MethodCall {
                 receiver: parsed.receiver,
                 method: parsed.method,
+            });
+            index = parsed.end;
+            chunk_start = parsed.end;
+            continue;
+        }
+        if body[index] == b'$'
+            && let Some(parsed) = parse_simple_interpolated_property(body, index)
+        {
+            parts.push(InterpolatedPart::Bytes(
+                unescape_double_quoted_php_string_with_quote_mode(
+                    &body[chunk_start..index],
+                    decode_escaped_quote,
+                ),
+            ));
+            parts.push(InterpolatedPart::Property {
+                receiver: parsed.receiver,
+                property: parsed.property,
             });
             index = parsed.end;
             chunk_start = parsed.end;
@@ -285,6 +313,53 @@ fn parse_braced_interpolated_method_call(
         receiver,
         method,
         end: index + 3,
+    })
+}
+
+fn parse_simple_interpolated_property(
+    bytes: &[u8],
+    start: usize,
+) -> Option<ParsedInterpolatedProperty> {
+    if bytes.get(start).copied() != Some(b'$') {
+        return None;
+    }
+    let mut index = start + 1;
+    if !is_php_variable_start(bytes.get(index).copied()?) {
+        return None;
+    }
+    index += 1;
+    while bytes
+        .get(index)
+        .copied()
+        .is_some_and(is_php_variable_continue)
+    {
+        index += 1;
+    }
+    let receiver = std::str::from_utf8(&bytes[start + 1..index])
+        .ok()?
+        .to_string();
+    if bytes.get(index).copied() != Some(b'-') || bytes.get(index + 1).copied() != Some(b'>') {
+        return None;
+    }
+    index += 2;
+    let property_start = index;
+    if !is_php_variable_start(bytes.get(index).copied()?) {
+        return None;
+    }
+    index += 1;
+    while bytes
+        .get(index)
+        .copied()
+        .is_some_and(is_php_variable_continue)
+    {
+        index += 1;
+    }
+    Some(ParsedInterpolatedProperty {
+        receiver,
+        property: std::str::from_utf8(&bytes[property_start..index])
+            .ok()?
+            .to_string(),
+        end: index,
     })
 }
 

@@ -526,6 +526,26 @@ fn format_instruction(kind: &InstructionKind) -> String {
                 dims
             )
         }
+        InstructionKind::BindReferenceProperty {
+            object,
+            property,
+            source,
+        } => format!(
+            "bind_reference_property {} ${} local:{}",
+            format_operand(object),
+            property,
+            source.raw()
+        ),
+        InstructionKind::BindReferenceStaticProperty {
+            class_name,
+            property,
+            source,
+        } => format!(
+            "bind_reference_static_property {}::${} local:{}",
+            class_name,
+            property,
+            source.raw()
+        ),
         InstructionKind::BindReferenceFromCall { target, name, args } => {
             let args = format_call_args(args);
             format!(

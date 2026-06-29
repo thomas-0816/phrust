@@ -1,3 +1,4 @@
+use crate::PhpExecutorOptions;
 use crate::diagnostics::{
     write_frontend_diagnostics, write_runtime_diagnostics, write_vm_compile_fatal_line,
 };
@@ -5,7 +6,7 @@ use crate::pipeline::compile_source;
 use crate::request::{include_loader_for, runtime_context_for};
 use php_diagnostics::{DebugEvent, DiagnosticLayer, DiagnosticOutputFormat, DiagnosticPhase};
 use php_runtime::api::ExitStatus;
-use php_vm::api::{Vm, VmOptions};
+use php_vm::api::Vm;
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
@@ -100,14 +101,13 @@ where
     )?;
     let include_loader = include_loader_for(&input)?;
     let runtime_context = runtime_context_for(&input, include_loader.as_ref());
-    let vm = Vm::with_options(VmOptions {
-        include_loader,
-        runtime_context,
-        trace: input.debug,
-        trace_runtime: input.debug,
-        trace_includes: input.debug,
-        ..VmOptions::default()
-    });
+    let mut vm_options = PhpExecutorOptions::managed_fast_runtime().vm_options;
+    vm_options.include_loader = include_loader;
+    vm_options.runtime_context = runtime_context;
+    vm_options.trace = input.debug;
+    vm_options.trace_runtime = input.debug;
+    vm_options.trace_includes = input.debug;
+    let vm = Vm::with_options(vm_options);
     emit_debug_event(
         stderr,
         &input,
@@ -159,6 +159,11 @@ where
             write_runtime_diagnostics(stderr, &input.source_path, &result.diagnostics)?;
             writeln!(stderr, "{}: {}", input.source_path, result.status)
                 .map_err(|error| error.to_string())?;
+            Ok(EXIT_PHP_ERROR)
+        }
+        ExitStatus::RuntimeError | ExitStatus::Fatal | ExitStatus::Unsupported
+            if php_output_contains_rendered_error(result.output.as_bytes()) =>
+        {
             Ok(EXIT_PHP_ERROR)
         }
         ExitStatus::RuntimeError | ExitStatus::Fatal | ExitStatus::Unsupported => {
@@ -219,5 +224,88 @@ fn emit_debug_event<W: Write>(
         stderr
             .write_all(rendered.as_bytes())
             .map_err(|error| error.to_string())
+    }
+}
+
+fn php_output_contains_rendered_error(output: &[u8]) -> bool {
+    output
+        .windows(b"Fatal error:".len())
+        .any(|window| window == b"Fatal error:")
+        || output
+            .windows(b"Parse error:".len())
+            .any(|window| window == b"Parse error:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rendered_php_runtime_fatal_does_not_emit_structured_stderr() {
+        let input = test_input("<?php class C {} echo C::$p;");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_PHP_ERROR);
+        let stdout = String::from_utf8(stdout).expect("stdout utf8");
+        assert!(
+            stdout.contains(
+                "Fatal error: Uncaught Error: Access to undeclared static property C::$p"
+            ),
+            "{stdout}"
+        );
+        assert_eq!(stderr, b"");
+    }
+
+    #[test]
+    fn unrendered_runtime_error_keeps_structured_stderr() {
+        let input = test_input("<?php missing_runtime_function();");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_PHP_ERROR);
+        assert_eq!(stdout, b"");
+        let stderr = String::from_utf8(stderr).expect("stderr utf8");
+        assert!(stderr.contains("runtime-diagnostic"), "{stderr}");
+        assert!(
+            stderr.contains("engine-compat-test.php: runtime_error"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn compatibility_entrypoint_uses_managed_fast_runtime_for_recursion() {
+        let input = test_input(
+            "<?php function f($i) { if ($i > 4) { echo 'stop'; return; } f($i + 1); } f(0);",
+        );
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(stdout, b"stop");
+        assert_eq!(stderr, b"");
+    }
+
+    fn test_input(source: &str) -> EngineInput {
+        EngineInput {
+            source: source.to_string(),
+            source_path: "engine-compat-test.php".to_string(),
+            real_path: None,
+            script_name: "engine-compat-test.php".to_string(),
+            script_args: Vec::new(),
+            cwd: std::env::current_dir().expect("current dir"),
+            env: Vec::new(),
+            ini: CliIniOptions::default(),
+            stdin: Vec::new(),
+            debug: false,
+            debug_log: None,
+            debug_format: DiagnosticOutputFormat::Text,
+        }
     }
 }

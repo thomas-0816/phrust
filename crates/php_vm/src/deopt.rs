@@ -1158,7 +1158,8 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         | DenseOpcode::ArrayInsert
         | DenseOpcode::FetchDim
         | DenseOpcode::AssignDim
-        | DenseOpcode::AppendDim => vec![VmDeoptReason::ReferenceCowIdentity],
+        | DenseOpcode::AppendDim
+        | DenseOpcode::InitStaticLocal => vec![VmDeoptReason::ReferenceCowIdentity],
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => vec![
             VmDeoptReason::GuardFailed,
             VmDeoptReason::HelperStatus,

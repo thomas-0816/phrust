@@ -857,6 +857,7 @@ impl<'a> Planner<'a> {
             | InstructionKind::FetchStaticProperty { class_name, .. }
             | InstructionKind::IssetStaticProperty { class_name, .. }
             | InstructionKind::EmptyStaticProperty { class_name, .. }
+            | InstructionKind::BindReferenceStaticProperty { class_name, .. }
             | InstructionKind::AssignStaticProperty { class_name, .. } => {
                 self.add_lookup_edge(owner, "class", &class_name);
             }

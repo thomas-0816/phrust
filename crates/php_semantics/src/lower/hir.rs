@@ -1632,6 +1632,9 @@ impl HirLowerer<'_> {
                 );
                 continue;
             }
+            if self.try_push_postfix_expr(node, &mut out, child) {
+                continue;
+            }
             if child.kind().name() == "PROPERTY_FETCH_EXPR"
                 && let Some(receiver) = out.pop()
             {
@@ -1856,6 +1859,9 @@ impl HirLowerer<'_> {
     fn expr_operands(&mut self, node: &SyntaxNode, context: ResolveContext) -> Vec<ExprId> {
         let mut out = Vec::new();
         for child in syntax_child_nodes(node).filter(|child| ExprNode::cast(child).is_some()) {
+            if self.try_push_postfix_expr(node, &mut out, child) {
+                continue;
+            }
             if child.kind().name() == "CALL_EXPR"
                 && let Some(previous) = out.pop()
                 && self.expr_has_trailing_call(node, previous, child)
@@ -2020,6 +2026,52 @@ impl HirLowerer<'_> {
             },
             span,
         )
+    }
+
+    fn try_push_postfix_expr(
+        &mut self,
+        node: &SyntaxNode,
+        out: &mut Vec<ExprId>,
+        child: &SyntaxNode,
+    ) -> bool {
+        if child.kind().name() != "POSTFIX_EXPR" {
+            return false;
+        }
+        let Some(previous) = out.last().copied() else {
+            return false;
+        };
+        if !self
+            .database
+            .source_map()
+            .span(previous)
+            .is_some_and(|span| {
+                span.end() <= child.text_range().start()
+                    && only_trivia_between(
+                        node,
+                        span.end().to_usize(),
+                        child.text_range().start().to_usize(),
+                    )
+            })
+        {
+            return false;
+        }
+        let Some(previous) = out.pop() else {
+            return false;
+        };
+        let span = TextRange::new(
+            self.frontend_span(previous)
+                .map(|span| span.start().to_usize())
+                .unwrap_or_else(|| child.text_range().start().to_usize()),
+            child.text_range().end().to_usize(),
+        );
+        out.push(self.alloc_expr(
+            HirExprKind::Unary {
+                operator: first_operator_text(child).unwrap_or_else(|| "postfix".to_owned()),
+                expr: Some(previous),
+            },
+            span,
+        ));
+        true
     }
 
     fn expr_has_trailing_call(&self, node: &SyntaxNode, expr: ExprId, call: &SyntaxNode) -> bool {
@@ -2932,6 +2984,50 @@ mod tests {
         assert!(
             has_logical_and_assignment,
             "`and` should bind looser than assignment"
+        );
+        assert!(reporter.into_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn lowers_postfix_increment_inside_binary_expression() {
+        let source = "<?php if ($i++ > 10) { echo $i; }\n";
+        let parse = parse_source_file(source);
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", source.len()));
+        let mut reporter = DiagnosticReporter::new();
+
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        let module = database.module(module_id).expect("module");
+        let has_postfix_binary_operand = module.expressions().iter().any(|(_, expr)| {
+            let HirExprKind::Binary {
+                operator,
+                left: Some(left),
+                ..
+            } = expr.kind()
+            else {
+                return false;
+            };
+            operator == ">"
+                && matches!(
+                    module.expressions()[*left].kind(),
+                    HirExprKind::Unary {
+                        operator,
+                        expr: Some(_),
+                    } if operator == "++"
+                )
+        });
+
+        assert!(
+            has_postfix_binary_operand,
+            "postfix increment should remain the binary left operand"
         );
         assert!(reporter.into_diagnostics().is_empty());
     }

@@ -128,6 +128,8 @@ pub enum DenseOpcode {
     Discard = 13,
     /// Terminate the current script/request.
     Exit = 53,
+    /// Bind a local to a request-persistent static local cell.
+    InitStaticLocal = 54,
 }
 
 impl DenseOpcode {
@@ -202,6 +204,7 @@ impl DenseOpcode {
             Self::Return => "return",
             Self::Discard => "discard",
             Self::Exit => "exit",
+            Self::InitStaticLocal => "init_static_local",
         }
     }
 
@@ -302,6 +305,12 @@ pub enum DenseOperands {
     RegOperand { dst: u32, src: DenseOperand },
     /// Local destination/source and generic operand.
     LocalOperand { local: u32, src: DenseOperand },
+    /// Local slot, name side-table index, and default-value operand.
+    StaticLocal {
+        local: u32,
+        name: u32,
+        default: DenseOperand,
+    },
     /// Binary operation over two predecoded operands.
     Binary {
         dst: u32,
@@ -1290,6 +1299,7 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         DenseOpcode::CallFunction
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
+        | DenseOpcode::InitStaticLocal
         | DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert
         | DenseOpcode::FetchProperty
@@ -1553,6 +1563,18 @@ fn lower_instruction(
             DenseOperands::LocalOperand {
                 local: local.raw(),
                 src: lower_operand(*src),
+            },
+        ),
+        InstructionKind::InitStaticLocal {
+            local,
+            name,
+            default,
+        } => (
+            DenseOpcode::InitStaticLocal,
+            DenseOperands::StaticLocal {
+                local: local.raw(),
+                name: push_name(names, name).index() as u32,
+                default: lower_operand(*default),
             },
         ),
         InstructionKind::Binary { dst, op, lhs, rhs } => (
@@ -2104,6 +2126,18 @@ fn verify_instruction(
             verify_operand(*src, unit, function, errors);
         }
         (
+            DenseOpcode::InitStaticLocal,
+            DenseOperands::StaticLocal {
+                local,
+                name,
+                default,
+            },
+        ) => {
+            verify_local(*local, function, errors);
+            verify_name(*name, unit, errors);
+            verify_operand(*default, unit, function, errors);
+        }
+        (
             DenseOpcode::BinaryAdd
             | DenseOpcode::BinarySub
             | DenseOpcode::BinaryMul
@@ -2563,6 +2597,11 @@ fn render_operands(operands: &DenseOperands) -> String {
         DenseOperands::RegConst { dst, constant } => format!("r{dst} c{constant}"),
         DenseOperands::RegOperand { dst, src } => format!("r{dst} {}", render_operand(*src)),
         DenseOperands::LocalOperand { local, src } => format!("l{local} {}", render_operand(*src)),
+        DenseOperands::StaticLocal {
+            local,
+            name,
+            default,
+        } => format!("l{local} n{name} default={}", render_operand(*default)),
         DenseOperands::Binary { dst, lhs, rhs } => {
             format!("r{dst} {} {}", render_operand(*lhs), render_operand(*rhs))
         }

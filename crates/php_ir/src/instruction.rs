@@ -259,6 +259,18 @@ pub enum InstructionKind {
         local: LocalId,
         dims: Vec<Operand>,
     },
+    /// `object->property =& source` for instance property references.
+    BindReferenceProperty {
+        object: Operand,
+        property: String,
+        source: LocalId,
+    },
+    /// `class::$property =& source` for static property references.
+    BindReferenceStaticProperty {
+        class_name: String,
+        property: String,
+        source: LocalId,
+    },
     /// `target =& function(args...)` for by-reference function returns.
     BindReferenceFromCall {
         target: LocalId,

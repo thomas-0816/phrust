@@ -415,6 +415,10 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
             slots.insert(OsrVmSlot::Local(*local));
             collect_operand_slot(*src, slots);
         }
+        DenseOperands::StaticLocal { local, default, .. } => {
+            slots.insert(OsrVmSlot::Local(*local));
+            collect_operand_slot(*default, slots);
+        }
         DenseOperands::Binary { dst, lhs, rhs } => {
             slots.insert(OsrVmSlot::Register(*dst));
             collect_operand_slot(*lhs, slots);
