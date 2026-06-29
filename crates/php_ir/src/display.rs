@@ -797,6 +797,30 @@ fn format_instruction(kind: &InstructionKind) -> String {
             format_operand(object),
             format_operand(property)
         ),
+        InstructionKind::IssetDynamicPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+        } => format!(
+            "isset_dynamic_property_dim r{} {} {} [{}]",
+            dst.raw(),
+            format_operand(object),
+            format_operand(property),
+            format_operands(dims)
+        ),
+        InstructionKind::EmptyDynamicPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+        } => format!(
+            "empty_dynamic_property_dim r{} {} {} [{}]",
+            dst.raw(),
+            format_operand(object),
+            format_operand(property),
+            format_operands(dims)
+        ),
         InstructionKind::IssetPropertyDim {
             dst,
             object,
@@ -931,6 +955,9 @@ fn format_instruction(kind: &InstructionKind) -> String {
                 out.push_str(&format!(" by_ref=local:{}", local.raw()));
             }
             out
+        }
+        InstructionKind::ArraySpread { array, source } => {
+            format!("array_spread r{} {}", array.raw(), format_operand(source))
         }
         InstructionKind::FetchDim {
             dst,

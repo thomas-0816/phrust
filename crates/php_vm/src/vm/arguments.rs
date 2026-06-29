@@ -54,8 +54,7 @@ pub(super) fn prepare_arguments(
             }
             if bound[index].is_some() {
                 return Err(format!(
-                    "E_PHP_VM_DUPLICATE_NAMED_ARG: function {} argument ${name} was already provided",
-                    function.name
+                    "E_PHP_VM_DUPLICATE_NAMED_ARG: Named parameter ${name} overwrites previous argument"
                 ));
             }
             bound[index] = Some(CallArgument {
@@ -96,8 +95,8 @@ pub(super) fn prepare_arguments(
         }
         if bound[positional_index].is_some() {
             return Err(format!(
-                "E_PHP_VM_DUPLICATE_NAMED_ARG: function {} argument ${} was already provided",
-                function.name, function.params[positional_index].name
+                "E_PHP_VM_DUPLICATE_NAMED_ARG: Named parameter ${} overwrites previous argument",
+                function.params[positional_index].name
             ));
         }
         bound[positional_index] = Some(CallArgument {

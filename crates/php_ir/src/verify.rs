@@ -507,6 +507,25 @@ fn verify_instruction(
             verify_operand(object, function, unit, errors);
             verify_operand(property, function, unit, errors);
         }
+        InstructionKind::IssetDynamicPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+        }
+        | InstructionKind::EmptyDynamicPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+        } => {
+            verify_register(*dst, function.register_count, errors);
+            verify_operand(object, function, unit, errors);
+            verify_operand(property, function, unit, errors);
+            for dim in dims {
+                verify_operand(dim, function, unit, errors);
+            }
+        }
         InstructionKind::IssetPropertyDim {
             dst, object, dims, ..
         }
@@ -575,6 +594,10 @@ fn verify_instruction(
             if let Some(local) = by_ref_local {
                 verify_local(*local, function.local_count, errors);
             }
+        }
+        InstructionKind::ArraySpread { array, source } => {
+            verify_register(*array, function.register_count, errors);
+            verify_operand(source, function, unit, errors);
         }
         InstructionKind::FetchDim {
             dst, array, key, ..
@@ -1052,6 +1075,24 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
             operand_register_uses(object, uses);
             operand_register_uses(property, uses);
         }
+        InstructionKind::IssetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            ..
+        }
+        | InstructionKind::EmptyDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            ..
+        } => {
+            operand_register_uses(object, uses);
+            operand_register_uses(property, uses);
+            for dim in dims {
+                operand_register_uses(dim, uses);
+            }
+        }
         InstructionKind::IssetPropertyDim { object, dims, .. }
         | InstructionKind::EmptyPropertyDim { object, dims, .. } => {
             operand_register_uses(object, uses);
@@ -1152,6 +1193,10 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
             }
             operand_register_uses(value, uses);
         }
+        InstructionKind::ArraySpread { array, source } => {
+            uses.push(*array);
+            operand_register_uses(source, uses);
+        }
         InstructionKind::FetchDim { array, key, .. } => {
             operand_register_uses(array, uses);
             operand_register_uses(key, uses);
@@ -1215,6 +1260,8 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::IssetDynamicProperty { dst, .. }
         | InstructionKind::EmptyProperty { dst, .. }
         | InstructionKind::EmptyDynamicProperty { dst, .. }
+        | InstructionKind::IssetDynamicPropertyDim { dst, .. }
+        | InstructionKind::EmptyDynamicPropertyDim { dst, .. }
         | InstructionKind::IssetPropertyDim { dst, .. }
         | InstructionKind::EmptyPropertyDim { dst, .. }
         | InstructionKind::FetchStaticProperty { dst, .. }
@@ -1271,6 +1318,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::UnsetProperty { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::ArrayInsert { .. }
+        | InstructionKind::ArraySpread { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
         | InstructionKind::EmitDiagnostic { .. }

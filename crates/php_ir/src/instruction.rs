@@ -438,6 +438,20 @@ pub enum InstructionKind {
         object: Operand,
         property: Operand,
     },
+    /// Tests whether a runtime-named instance property array dimension exists and is not null.
+    IssetDynamicPropertyDim {
+        dst: RegId,
+        object: Operand,
+        property: Operand,
+        dims: Vec<Operand>,
+    },
+    /// Tests whether a runtime-named instance property array dimension is empty.
+    EmptyDynamicPropertyDim {
+        dst: RegId,
+        object: Operand,
+        property: Operand,
+        dims: Vec<Operand>,
+    },
     /// Tests whether an instance property array dimension exists and is not null.
     IssetPropertyDim {
         dst: RegId,
@@ -512,6 +526,8 @@ pub enum InstructionKind {
         value: Operand,
         by_ref_local: Option<LocalId>,
     },
+    /// Extends an array register with PHP array-unpack/spread semantics.
+    ArraySpread { array: RegId, source: Operand },
     /// General array dimension fetch.
     FetchDim {
         dst: RegId,

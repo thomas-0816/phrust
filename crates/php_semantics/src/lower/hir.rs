@@ -1440,6 +1440,39 @@ impl HirLowerer<'_> {
     fn expr_operands(&mut self, node: &SyntaxNode, context: ResolveContext) -> Vec<ExprId> {
         let mut out = Vec::new();
         for child in syntax_child_nodes(node).filter(|child| ExprNode::cast(child).is_some()) {
+            if child.kind().name() == "CALL_EXPR"
+                && let Some(previous) = out.pop()
+                && self.expr_has_trailing_call(node, previous, child)
+            {
+                let args = self.call_args(child);
+                let current_kind = self
+                    .database
+                    .module(self.module_id)
+                    .and_then(|module| module.expressions().get(previous))
+                    .map(|expr| expr.kind().as_str())
+                    .unwrap_or_default();
+                let kind = if current_kind == "property_fetch" {
+                    HirExprKind::MethodCall {
+                        receiver: None,
+                        method: Some(previous),
+                        args,
+                        nullsafe: has_descendant_token_text(child, "?->"),
+                    }
+                } else {
+                    HirExprKind::Call {
+                        callee: Some(previous),
+                        args,
+                    }
+                };
+                let span = TextRange::new(
+                    self.frontend_span(previous)
+                        .map(|span| span.start().to_usize())
+                        .unwrap_or_else(|| child.text_range().start().to_usize()),
+                    child.text_range().end().to_usize(),
+                );
+                out.push(self.alloc_expr(kind, span));
+                continue;
+            }
             if child.kind().name() == "PROPERTY_FETCH_EXPR"
                 && let Some(receiver) = out.pop()
             {
@@ -1514,51 +1547,20 @@ impl HirLowerer<'_> {
                 ));
                 continue;
             }
-            if child.kind().name() == "CALL_EXPR"
-                && let Some(callee) = out.last().copied()
-                && self.database.source_map().span(callee).is_some_and(|span| {
-                    only_trivia_between(
-                        node,
-                        span.end().to_usize(),
-                        child.text_range().start().to_usize(),
-                    )
-                })
-            {
-                let Some(previous) = out.pop() else {
-                    continue;
-                };
-                let args = self.call_args(child);
-                let current_kind = self
-                    .database
-                    .module(self.module_id)
-                    .and_then(|module| module.expressions().get(previous))
-                    .map(|expr| expr.kind().as_str())
-                    .unwrap_or_default();
-                let kind = if current_kind == "property_fetch" {
-                    HirExprKind::MethodCall {
-                        receiver: None,
-                        method: Some(previous),
-                        args,
-                        nullsafe: has_descendant_token_text(child, "?->"),
-                    }
-                } else {
-                    HirExprKind::Call {
-                        callee: Some(previous),
-                        args,
-                    }
-                };
-                let span = TextRange::new(
-                    self.frontend_span(previous)
-                        .map(|span| span.start().to_usize())
-                        .unwrap_or_else(|| child.text_range().start().to_usize()),
-                    child.text_range().end().to_usize(),
-                );
-                out.push(self.alloc_expr(kind, span));
-                continue;
-            }
             out.push(self.lower_expr(child, context));
         }
         out
+    }
+
+    fn expr_has_trailing_call(&self, node: &SyntaxNode, expr: ExprId, call: &SyntaxNode) -> bool {
+        self.database.source_map().span(expr).is_some_and(|span| {
+            span.end() <= call.text_range().start()
+                && only_trivia_between(
+                    node,
+                    span.end().to_usize(),
+                    call.text_range().start().to_usize(),
+                )
+        })
     }
 
     fn property_name_literal(&mut self, node: &SyntaxNode) -> Option<ExprId> {

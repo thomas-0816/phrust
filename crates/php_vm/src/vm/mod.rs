@@ -763,6 +763,7 @@ struct ExecutionState {
     dynamic_functions: Vec<DynamicFunctionEntry>,
     dynamic_classes: Vec<DynamicClassEntry>,
     user_constants: HashMap<String, Value>,
+    shutdown_functions: Vec<ShutdownFunctionEntry>,
     ini: IniRegistry,
     default_timezone: String,
     env: Vec<(String, String)>,
@@ -776,6 +777,7 @@ struct ExecutionState {
     mb_internal_encoding: String,
     preg_last_error: php_runtime::pcre::PcreLastErrorState,
     json_last_error: i64,
+    last_error: Option<LastErrorEntry>,
     http_response: RuntimeHttpResponseState,
     upload_registry: UploadRegistry,
     session: php_runtime::SessionState,
@@ -875,6 +877,20 @@ struct DynamicClassEntry {
 struct ErrorHandlerEntry {
     callback: CallableValue,
     levels: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LastErrorEntry {
+    level: i64,
+    message: String,
+    file: String,
+    line: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ShutdownFunctionEntry {
+    callback: Value,
+    args: Vec<CallArgument>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -989,6 +1005,20 @@ fn gc_roots_from_vm(stack: &CallStack, state: &ExecutionState) -> Vec<GcRoot> {
             Value::Object(entry.object.clone()),
         ));
     }
+    for (index, entry) in state.shutdown_functions.iter().enumerate() {
+        roots.push(GcRoot::value(
+            GcRootKind::Temporary,
+            format!("shutdown-function:{index}:callback"),
+            entry.callback.clone(),
+        ));
+        for (arg_index, arg) in entry.args.iter().enumerate() {
+            roots.push(GcRoot::value(
+                GcRootKind::Temporary,
+                format!("shutdown-function:{index}:arg{arg_index}"),
+                arg.value.clone(),
+            ));
+        }
+    }
     for (fiber_id, continuations) in &state.fiber_continuations {
         for (continuation_index, continuation) in continuations.iter().enumerate() {
             for (index, value) in continuation.frame.registers.iter() {
@@ -1037,6 +1067,18 @@ fn object_has_php_visible_root(stack: &CallStack, state: &ExecutionState, object
             return true;
         }
     }
+    for entry in &state.shutdown_functions {
+        if value_reaches_object_id(&entry.callback, object_id, &mut BTreeSet::new()) {
+            return true;
+        }
+        if entry
+            .args
+            .iter()
+            .any(|arg| value_reaches_object_id(&arg.value, object_id, &mut BTreeSet::new()))
+        {
+            return true;
+        }
+    }
     if value_reaches_object_id(
         &Value::Array(state.globals.globals_array()),
         object_id,
@@ -1061,6 +1103,29 @@ fn object_has_php_visible_root(stack: &CallStack, state: &ExecutionState, object
         }
     }
     false
+}
+
+fn completed_frame_values_for_destructor_scan(stack: &CallStack) -> Vec<Value> {
+    let Some(frame) = stack.current() else {
+        return Vec::new();
+    };
+    frame
+        .registers
+        .iter()
+        .map(|(_, value)| value.clone())
+        .chain(frame.locals.iter().map(|(_, slot)| slot.read()))
+        .filter(|value| !value.is_uninitialized())
+        .collect()
+}
+
+fn value_has_preserved_destructor_candidate(value: &Value, preserved: &[Value]) -> bool {
+    let mut candidates = Vec::new();
+    collect_destructor_candidate_objects(value, &mut BTreeSet::new(), &mut candidates);
+    candidates.iter().any(|object| {
+        preserved
+            .iter()
+            .any(|root| value_reaches_object_id(root, object.id(), &mut BTreeSet::new()))
+    })
 }
 
 fn collect_destructor_candidate_objects(
@@ -1938,6 +2003,17 @@ impl Vm {
                 &mut state,
                 throwable,
             );
+        }
+        if result.status.is_success() {
+            match self.run_shutdown_functions(&unit, &mut output, &mut state) {
+                Ok(diagnostics) => {
+                    result.diagnostics.extend(diagnostics);
+                    result.output = output.clone();
+                }
+                Err(error) => {
+                    result = error;
+                }
+            }
         }
         if result.status.is_success() {
             match self.run_shutdown_destructors(&unit, &mut output, &mut state) {
@@ -9852,15 +9928,28 @@ impl Vm {
                         let object = match read_operand(unit, stack, *object) {
                             Ok(Value::Object(object)) => object,
                             Ok(other) => {
-                                return self.runtime_error(
-                                    output,
+                                let receiver_type = value_type_name(&other);
+                                if let Err(result) = self.emit_non_object_property_read_warning(
                                     compiled,
+                                    output,
                                     stack,
-                                    format!(
-                                        "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT: cannot fetch property {property} from {}",
-                                        value_type_name(&other)
-                                    ),
-                                );
+                                    state,
+                                    &mut diagnostics,
+                                    receiver_type,
+                                    property,
+                                    instruction.span,
+                                ) {
+                                    return result;
+                                }
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("frame was pushed")
+                                    .registers
+                                    .set(*dst, Value::Null)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                continue;
                             }
                             Err(message) => {
                                 return self.runtime_error(output, compiled, stack, message);
@@ -11015,15 +11104,28 @@ impl Vm {
                                     Ok(property) => property,
                                     Err(result) => return result,
                                 };
-                                return self.runtime_error(
-                                    output,
+                                let receiver_type = value_type_name(&other);
+                                if let Err(result) = self.emit_non_object_property_read_warning(
                                     compiled,
+                                    output,
                                     stack,
-                                    format!(
-                                        "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT: cannot fetch property {property} from {}",
-                                        value_type_name(&other)
-                                    ),
-                                );
+                                    state,
+                                    &mut diagnostics,
+                                    receiver_type,
+                                    &property,
+                                    instruction.span,
+                                ) {
+                                    return result;
+                                }
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("frame was pushed")
+                                    .registers
+                                    .set(*dst, Value::Null)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                continue;
                             }
                             Err(message) => {
                                 return self.runtime_error(output, compiled, stack, message);
@@ -11035,6 +11137,47 @@ impl Vm {
                             Ok(property) => property,
                             Err(result) => return result,
                         };
+                        if let Some(class) =
+                            lookup_class_in_state(compiled, state, &object.class_name())
+                        {
+                            let scope = current_scope_class(compiled, stack);
+                            match lookup_property_in_hierarchy(
+                                compiled,
+                                &class,
+                                &property,
+                                scope.as_deref(),
+                            ) {
+                                Ok(Some(resolved)) => {
+                                    if let Err(access_error) = validate_property_access(
+                                        compiled,
+                                        stack,
+                                        resolved.class,
+                                        resolved.property,
+                                    ) {
+                                        match self.raise_runtime_error(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            instruction.span,
+                                            access_error,
+                                        ) {
+                                            RaiseOutcome::Caught(target) => {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            RaiseOutcome::Done(result) => return *result,
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            }
+                        }
                         let value = match property_state_value(compiled, stack, &object, &property)
                         {
                             Some(value) => value,
@@ -11375,6 +11518,96 @@ impl Vm {
                                         Err(result) => return result,
                                     }
                                 }
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(*dst, Value::Bool(result))
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::IssetDynamicPropertyDim {
+                        dst,
+                        object,
+                        property,
+                        dims,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => Some(object),
+                            Ok(_) => None,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property = match self
+                            .dynamic_property_name(unit, compiled, stack, *property, output, state)
+                        {
+                            Ok(property) => property,
+                            Err(result) => return result,
+                        };
+                        let dims = match read_dim_operands(unit, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let value = object.as_ref().and_then(|object| {
+                            property_state_value(compiled, stack, object, &property).and_then(
+                                |value| fetch_dim_path_value(&value, &dims).ok().flatten(),
+                            )
+                        });
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .set(
+                                *dst,
+                                Value::Bool(!matches!(value, None | Some(Value::Null))),
+                            )
+                        {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::EmptyDynamicPropertyDim {
+                        dst,
+                        object,
+                        property,
+                        dims,
+                    } => {
+                        let object = match read_operand(unit, stack, *object) {
+                            Ok(Value::Object(object)) => Some(object),
+                            Ok(_) => None,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let property = match self
+                            .dynamic_property_name(unit, compiled, stack, *property, output, state)
+                        {
+                            Ok(property) => property,
+                            Err(result) => return result,
+                        };
+                        let dims = match read_dim_operands(unit, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let value = object
+                            .as_ref()
+                            .and_then(|object| {
+                                property_state_value(compiled, stack, object, &property).and_then(
+                                    |value| fetch_dim_path_value(&value, &dims).ok().flatten(),
+                                )
+                            })
+                            .unwrap_or(Value::Uninitialized);
+                        let result = match php_empty(&value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
                             }
                         };
                         if let Err(message) = stack
@@ -12901,6 +13134,39 @@ impl Vm {
                         if was_packed && !array_value.is_packed_fast() {
                             self.record_counter_array_packed_to_mixed_transition();
                         }
+                    }
+                    InstructionKind::ArraySpread { array, source } => {
+                        let source = match read_operand(unit, stack, *source) {
+                            Ok(Value::Array(array)) => array,
+                            Ok(other) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_ARRAY_SPREAD_NON_ARRAY: cannot unpack {} into array literal",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                            }
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let Some(Value::Array(array_value)) = stack
+                            .current_mut()
+                            .expect("frame was pushed")
+                            .registers
+                            .get_mut(*array)
+                        else {
+                            return self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                "E_PHP_VM_ARRAY_SPREAD_TARGET: target is not an array register",
+                            );
+                        };
+                        array_value.spread_extend(&source);
                     }
                     InstructionKind::FetchDim {
                         dst,
@@ -16111,10 +16377,56 @@ impl Vm {
                     } else {
                         None
                     };
+                    let completed_frame_values =
+                        if function_may_hold_destructor_sensitive_value(function) {
+                            completed_frame_values_for_destructor_scan(stack)
+                        } else {
+                            Vec::new()
+                        };
+                    let mut preserved_values = Vec::new();
+                    if let Some(value) = &value {
+                        preserved_values.push(value.clone());
+                    }
+                    if let Some(reference) = &return_ref {
+                        preserved_values.push(Value::Reference(reference.clone()));
+                    }
                     if let Some(shared) = call.shared_top_level_locals.as_deref_mut() {
                         export_shared_locals(function, stack, shared);
                     }
                     stack.pop_recycle();
+                    if !completed_frame_values.is_empty() {
+                        let mut destructor_handlers = Vec::new();
+                        let mut destructor_pending_control = None;
+                        for frame_value in completed_frame_values {
+                            if value_has_preserved_destructor_candidate(
+                                &frame_value,
+                                &preserved_values,
+                            ) {
+                                continue;
+                            }
+                            if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut destructor_handlers,
+                                &mut destructor_pending_control,
+                                &frame_value,
+                            ) {
+                                match outcome {
+                                    RaiseOutcome::Caught(_) => {
+                                        return self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            "E_PHP_VM_DESTRUCTOR_RETURN_CATCH: destructor during frame teardown cannot resume a completed frame",
+                                        );
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                        }
+                    }
                     let mut result =
                         VmResult::success_with_diagnostics(output.clone(), value, diagnostics);
                     result.return_ref = return_ref;
@@ -16899,6 +17211,17 @@ impl Vm {
                 let _ = state.error_handlers.pop();
                 VmResult::success(output.clone(), Some(Value::Bool(true)))
             }
+            "error_get_last" => {
+                if !values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_ERROR_ARITY: error_get_last expects no arguments",
+                    );
+                }
+                VmResult::success(output.clone(), Some(Self::error_get_last_value(state)))
+            }
             "set_exception_handler" => {
                 if values.len() != 1 {
                     return self.runtime_error(
@@ -16932,6 +17255,32 @@ impl Vm {
                 }
                 let _ = state.exception_handlers.pop();
                 VmResult::success(output.clone(), Some(Value::Bool(true)))
+            }
+            "register_shutdown_function" => {
+                if values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_ERROR_ARITY: register_shutdown_function expects at least one argument",
+                    );
+                }
+                let callback =
+                    match acquire_callable_value(compiled, state, stack, values[0].clone()) {
+                        Ok(callback) => callback,
+                        Err(message) => {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                    };
+                let args = values
+                    .into_iter()
+                    .skip(1)
+                    .map(CallArgument::positional)
+                    .collect();
+                state
+                    .shutdown_functions
+                    .push(ShutdownFunctionEntry { callback, args });
+                VmResult::success(output.clone(), Some(Value::Null))
             }
             "trigger_error" | "user_error" => {
                 self.call_trigger_error_builtin(compiled, name, values, output, stack, state)
@@ -17008,6 +17357,7 @@ impl Vm {
 
         let reported = error_reporting_allows(state, level);
         if reported {
+            Self::record_last_error(state, level, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
@@ -17082,6 +17432,31 @@ impl Vm {
         ))
     }
 
+    fn record_last_error(state: &mut ExecutionState, level: i64, diagnostic: &RuntimeDiagnostic) {
+        let span = diagnostic.source_span();
+        state.last_error = Some(LastErrorEntry {
+            level,
+            message: diagnostic.message().to_owned(),
+            file: span.file.clone().unwrap_or_default(),
+            line: span.start as i64,
+        });
+    }
+
+    fn error_get_last_value(state: &ExecutionState) -> Value {
+        let Some(last_error) = &state.last_error else {
+            return Value::Null;
+        };
+        let mut array = PhpArray::new();
+        array.insert(string_key("type"), Value::Int(last_error.level));
+        array.insert(
+            string_key("message"),
+            Value::string(last_error.message.clone()),
+        );
+        array.insert(string_key("file"), Value::string(last_error.file.clone()));
+        array.insert(string_key("line"), Value::Int(last_error.line));
+        Value::Array(array)
+    }
+
     fn emit_undefined_property_warning(
         &self,
         compiled: &CompiledUnit,
@@ -17110,6 +17485,48 @@ impl Vm {
             &diagnostic,
         )?;
         if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+            emit_vm_diagnostic(
+                output,
+                state,
+                &diagnostic,
+                php_runtime::PhpDiagnosticChannel::Warning,
+                php_runtime::PHP_E_WARNING,
+            );
+            diagnostics.push(diagnostic);
+        }
+        Ok(())
+    }
+
+    fn emit_non_object_property_read_warning(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+        receiver_type: &str,
+        property: &str,
+        span: php_ir::IrSpan,
+    ) -> Result<(), VmResult> {
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_VM_PROPERTY_FETCH_NON_OBJECT",
+            RuntimeSeverity::Warning,
+            format!("Attempt to read property \"{property}\" on {receiver_type}"),
+            runtime_source_span(compiled, span),
+            stack_trace(compiled, stack),
+            None,
+        );
+        let handled = self.dispatch_error_handler(
+            compiled,
+            output,
+            stack,
+            state,
+            php_runtime::PHP_E_WARNING,
+            &diagnostic,
+        )?;
+        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
@@ -21830,6 +22247,50 @@ impl Vm {
                             entry.object.class_name(),
                             entry.class_name.clone(),
                         ),
+                    output,
+                    &mut stack,
+                    state,
+                );
+                if let Some(throwable) = state.pending_throw.take() {
+                    return Err(self.handle_uncaught_exception(
+                        compiled, output, &mut stack, state, throwable,
+                    ));
+                }
+                if !result.status.is_success() {
+                    return Err(result);
+                }
+                diagnostics.extend(result.diagnostics);
+            }
+        }
+        Ok(diagnostics)
+    }
+
+    fn run_shutdown_functions(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        state: &mut ExecutionState,
+    ) -> Result<Vec<RuntimeDiagnostic>, VmResult> {
+        let mut diagnostics = Vec::new();
+        let mut executed = 0usize;
+        while !state.shutdown_functions.is_empty() {
+            let entries = std::mem::take(&mut state.shutdown_functions);
+            for entry in entries {
+                executed += 1;
+                if executed > 4096 {
+                    let stack = CallStack::new();
+                    return Err(self.runtime_error(
+                        output,
+                        compiled,
+                        &stack,
+                        "E_PHP_VM_SHUTDOWN_FUNCTION_QUEUE_OVERFLOW: shutdown function queue exceeded 4096 executions",
+                    ));
+                }
+                let mut stack = CallStack::new();
+                let result = self.call_callable(
+                    compiled,
+                    entry.callback,
+                    entry.args,
                     output,
                     &mut stack,
                     state,
@@ -34497,6 +34958,8 @@ fn is_error_handling_builtin_name(name: &str) -> bool {
         "error_reporting"
             | "set_error_handler"
             | "restore_error_handler"
+            | "error_get_last"
+            | "register_shutdown_function"
             | "trigger_error"
             | "user_error"
             | "set_exception_handler"
@@ -37295,7 +37758,7 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         "E_PHP_STD_VALUE_ERROR" => "ValueError",
         "E_PHP_VM_TOO_FEW_ARGS" | "E_PHP_VM_TOO_MANY_ARGS" => "ArgumentCountError",
         "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE" => "Error",
-        "E_PHP_VM_UNKNOWN_NAMED_ARG" => "Error",
+        "E_PHP_VM_UNKNOWN_NAMED_ARG" | "E_PHP_VM_DUPLICATE_NAMED_ARG" => "Error",
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",
         "E_PHP_VM_TOSTRING_RETURN_TYPE" => "TypeError",
@@ -39632,7 +40095,7 @@ fn call_builtin_args_to_positional(
 fn internal_builtin_generated_named_args_supported(function: &str) -> bool {
     matches!(
         function,
-        "round" | "str_contains" | "str_starts_with" | "str_ends_with" | "strtolower"
+        "round" | "strlen" | "str_contains" | "str_starts_with" | "str_ends_with" | "strtolower"
     )
 }
 
@@ -39671,7 +40134,7 @@ fn call_internal_builtin_named_args_to_positional(
             };
             if reordered[index].is_some() {
                 return Err(InternalBuiltinArgError::Message(format!(
-                    "E_PHP_VM_DUPLICATE_NAMED_ARG: function {function} got duplicate argument ${name}"
+                    "E_PHP_VM_DUPLICATE_NAMED_ARG: Named parameter ${name} overwrites previous argument"
                 )));
             }
             reordered[index] = Some(arg);
@@ -47765,7 +48228,7 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(result.output.as_bytes(), b"m|after|d");
+        assert_eq!(result.output.as_bytes(), b"m|dafter|");
         let counters = result.counters.expect("counters");
         assert_eq!(
             counters
@@ -48431,9 +48894,14 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
         let duplicate =
             execute_source("<?php function one($value) { return $value; } one(1, value: 2);");
         assert_eq!(duplicate.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(
-            duplicate.diagnostics[0].id(),
-            "E_PHP_VM_DUPLICATE_NAMED_ARG"
+        assert_eq!(duplicate.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
+        assert!(
+            duplicate
+                .output
+                .to_string_lossy()
+                .contains("Uncaught Error: Named parameter $value overwrites previous argument"),
+            "{}",
+            duplicate.output.to_string_lossy()
         );
 
         let positional_after_named =
@@ -48946,7 +49414,7 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
     fn internal_function_dispatch_cache_preserves_error_paths() {
         let cases = [
             (
-                "<?php strlen(string: 'abc');",
+                "<?php is_int(value: 1);",
                 ExitStatus::RuntimeError,
                 b"".as_slice(),
             ),

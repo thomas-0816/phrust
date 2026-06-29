@@ -1,0 +1,22 @@
+--TEST--
+Generated wp.core-language: dynamic object method call dispatch
+--DESCRIPTION--
+module: wp.core-language
+generated timestamp: 20260629T000000Z
+generator version: wp-wave3-core-language-v1
+reason: application dispatchers call object methods selected at runtime
+oracle: Reference PHP 8.5.7
+--FILE--
+<?php
+class WpWave3DynamicMethod {
+    public function render($value) {
+        return "object:$value";
+    }
+}
+
+$object = new WpWave3DynamicMethod();
+$method = "render";
+echo $object->$method("ok"), "\n";
+?>
+--EXPECT--
+object:ok

@@ -408,6 +408,8 @@ impl VmCounters {
             | InstructionKind::IssetDynamicProperty { .. }
             | InstructionKind::EmptyProperty { .. }
             | InstructionKind::EmptyDynamicProperty { .. }
+            | InstructionKind::IssetDynamicPropertyDim { .. }
+            | InstructionKind::EmptyDynamicPropertyDim { .. }
             | InstructionKind::UnsetProperty { .. }
             | InstructionKind::UnsetDynamicProperty { .. }
             | InstructionKind::AssignProperty { .. }
@@ -3447,6 +3449,8 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::IssetDynamicProperty { .. } => "isset_dynamic_property",
         InstructionKind::EmptyProperty { .. } => "empty_property",
         InstructionKind::EmptyDynamicProperty { .. } => "empty_dynamic_property",
+        InstructionKind::IssetDynamicPropertyDim { .. } => "isset_dynamic_property_dim",
+        InstructionKind::EmptyDynamicPropertyDim { .. } => "empty_dynamic_property_dim",
         InstructionKind::IssetPropertyDim { .. } => "isset_property_dim",
         InstructionKind::EmptyPropertyDim { .. } => "empty_property_dim",
         InstructionKind::UnsetProperty { .. } => "unset_property",
@@ -3461,6 +3465,7 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::AssignStaticProperty { .. } => "assign_static_property",
         InstructionKind::NewArray { .. } => "new_array",
         InstructionKind::ArrayInsert { .. } => "array_insert",
+        InstructionKind::ArraySpread { .. } => "array_spread",
         InstructionKind::FetchDim { .. } => "fetch_dim",
         InstructionKind::AssignDim { .. } => "assign_dim",
         InstructionKind::AppendDim { .. } => "append_dim",

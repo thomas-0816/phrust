@@ -923,6 +923,8 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::IssetDynamicProperty { dst, .. }
         | InstructionKind::EmptyProperty { dst, .. }
         | InstructionKind::EmptyDynamicProperty { dst, .. }
+        | InstructionKind::IssetDynamicPropertyDim { dst, .. }
+        | InstructionKind::EmptyDynamicPropertyDim { dst, .. }
         | InstructionKind::IssetPropertyDim { dst, .. }
         | InstructionKind::EmptyPropertyDim { dst, .. }
         | InstructionKind::FetchStaticProperty { dst, .. }
@@ -942,7 +944,9 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::IssetDim { dst, .. }
         | InstructionKind::EmptyDim { dst, .. }
         | InstructionKind::ArrayGet { dst, .. } => vec![*dst],
-        InstructionKind::ArrayInsert { array, .. } => vec![*array],
+        InstructionKind::ArrayInsert { array, .. } | InstructionKind::ArraySpread { array, .. } => {
+            vec![*array]
+        }
         InstructionKind::ForeachInit { iterator, .. }
         | InstructionKind::ForeachInitRef { iterator, .. } => vec![*iterator],
         InstructionKind::ForeachNext {
@@ -1146,6 +1150,22 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
             remap_operand_constants(object, remap);
             remap_operand_constants(property, remap);
         }
+        InstructionKind::IssetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            ..
+        }
+        | InstructionKind::EmptyDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            ..
+        } => {
+            remap_operand_constants(object, remap);
+            remap_operand_constants(property, remap);
+            remap_operands_constants(dims, remap);
+        }
         InstructionKind::Yield { key, value, .. } => {
             remap_optional_operand_constants(key, remap);
             remap_optional_operand_constants(value, remap);
@@ -1215,6 +1235,9 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         InstructionKind::ArrayInsert { key, value, .. } => {
             remap_optional_operand_constants(key, remap);
             remap_operand_constants(value, remap);
+        }
+        InstructionKind::ArraySpread { source, .. } => {
+            remap_operand_constants(source, remap);
         }
         InstructionKind::FetchDim { array, key, .. } => {
             remap_operand_constants(array, remap);
@@ -1389,6 +1412,22 @@ fn rewrite_instruction_register_operands(
             rewrite_operand_registers(object, aliases);
             rewrite_operand_registers(property, aliases);
         }
+        InstructionKind::IssetDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            ..
+        }
+        | InstructionKind::EmptyDynamicPropertyDim {
+            object,
+            property,
+            dims,
+            ..
+        } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_operand_registers(property, aliases);
+            rewrite_operands_registers(dims, aliases);
+        }
         InstructionKind::Yield { key, value, .. } => {
             rewrite_optional_operand_registers(key, aliases);
             rewrite_optional_operand_registers(value, aliases);
@@ -1458,6 +1497,9 @@ fn rewrite_instruction_register_operands(
         InstructionKind::ArrayInsert { key, value, .. } => {
             rewrite_optional_operand_registers(key, aliases);
             rewrite_operand_registers(value, aliases);
+        }
+        InstructionKind::ArraySpread { source, .. } => {
+            rewrite_operand_registers(source, aliases);
         }
         InstructionKind::FetchDim { array, key, .. } => {
             rewrite_operand_registers(array, aliases);

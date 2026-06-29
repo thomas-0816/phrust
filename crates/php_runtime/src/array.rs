@@ -781,6 +781,21 @@ impl PhpArray {
         key
     }
 
+    /// Merges array-spread entries into this array using PHP array-unpack
+    /// semantics: integer keys append/reindex, string keys overwrite.
+    pub fn spread_extend(&mut self, source: &Self) {
+        for (key, value) in source.iter() {
+            match key {
+                ArrayKey::Int(_) => {
+                    self.append(value.clone());
+                }
+                ArrayKey::String(key) => {
+                    self.insert(ArrayKey::String(key.clone()), value.clone());
+                }
+            }
+        }
+    }
+
     /// Returns a value by normalized key.
     #[must_use]
     pub fn get(&self, key: &ArrayKey) -> Option<&Value> {

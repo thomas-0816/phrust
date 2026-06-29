@@ -3,7 +3,7 @@
 - Priority: 10
 - Selected manifest: `tests/phpt/manifests/modules/objects.classes.selected.jsonl`
 - Current corpus counts: 178 PASS, 33 SKIP, 1924 FAIL, 0 BORK from 2136 corpus candidates
-- Current selected run: 164 PASS, 0 SKIP, 36 FAIL, 0 BORK from 200 selected rows
+- Current selected run: 128 PASS, 0 SKIP, 72 FAIL, 0 BORK from 200 selected rows
 - Core close gate: `objects.core` is 16 PASS / 0 FAIL for reference and target
 
 ## Scope
@@ -101,9 +101,8 @@ static-as-instance edge cases, and broader object/reference COW behavior.
 - `frontend-parse-or-compile`: 2
 - `runtime-timeout`: 1
 
-Current selected `objects.classes` non-green rows after the `objects.core`
-branch are outside the core construction/property/method/visibility/static/type
-slice. The remaining selected failures group around:
+Current selected `objects.classes` non-green rows are outside the
+`wp.core-language` slice. The remaining selected failures group around:
 
 - autoload and ReflectionException catch-type behavior
 - iterator/destructor ordering and exception behavior

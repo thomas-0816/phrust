@@ -2,7 +2,7 @@
 
 - Priority: 6
 - Selected manifest: `tests/phpt/manifests/modules/diagnostics.output.selected.jsonl`
-- Last focused run: 2026-06-28
+- Last focused run: 2026-06-29
 - Current counts: 6 PASS, 0 SKIP, 0 FAIL, 0 BORK from 6 selected
   generated candidates
 
@@ -37,7 +37,7 @@
 - `nix develop -c just phpt-module MODULE=diagnostics.output`
 - `nix develop -c just verify-runtime`
 
-Last focused run on 2026-06-28:
+Last focused run on 2026-06-29:
 
 - Selected module gate:
   `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src TARGET_PHP=target/debug/phrust-php PHPT_TARGET_MODE=php-cli PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=diagnostics.output`

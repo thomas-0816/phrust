@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"wp.core-language",
+  "priority":11,
+  "selected_manifest":"tests/phpt/manifests/modules/wp.core-language.selected.jsonl",
+  "corpus_count":19,
+  "selected_count":19,
+  "pass_count":19,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["dynamic symbols","dynamic properties","nullsafe access","named arguments","argument unpacking","array spread","destructors","shutdown functions","custom error handlers","exception/finally edges"],
+  "non_scope":["extensions","server SAPIs","database drivers","media/XML/crypto modules"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=wp.core-language"],
+  "next_step":"Keep wp.core-language green while broader objects.classes parity is handled by the owning class/runtime gap areas."
+}

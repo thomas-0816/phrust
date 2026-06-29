@@ -1337,6 +1337,9 @@ fn lower_instruction(
                 by_ref_local: by_ref_local.map(LocalId::raw),
             },
         ),
+        InstructionKind::ArraySpread { .. } => {
+            return unsupported_instruction(instruction, "array spread".to_owned());
+        }
         InstructionKind::FetchDim {
             dst,
             array,
