@@ -8271,6 +8271,22 @@ impl Vm {
         }
     }
 
+    fn runtime_error_at_optional_span(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+        state: &mut ExecutionState,
+        span: Option<IrSpan>,
+        message: String,
+    ) -> VmResult {
+        if let Some(span) = span {
+            self.dense_runtime_error(compiled, output, stack, state, span, message)
+        } else {
+            self.runtime_error(output, compiled, stack, message)
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn dense_fetch_property_value(
         &self,
@@ -50387,6 +50403,41 @@ good"
         assert_eq!(
             caught_property_write.output.as_bytes(),
             b"caught:Cannot access private property Secret::$hidden"
+        );
+    }
+
+    #[test]
+    fn dense_static_methods_report_visibility_errors_as_uncaught_throwables() {
+        let private = execute_source_with_options(
+            "<?php class StaticSecret { private static function hidden() { return 1; } } StaticSecret::hidden();",
+            VmOptions {
+                execution_format: ExecutionFormat::Bytecode,
+                ..VmOptions::default()
+            },
+        );
+        assert_eq!(private.status.exit_status(), ExitStatus::RuntimeError);
+        assert!(
+            private.output.to_string_lossy().contains(
+                "Uncaught Error: Call to private method StaticSecret::hidden() from global scope"
+            ),
+            "{}",
+            private.output.to_string_lossy()
+        );
+
+        let protected = execute_source_with_options(
+            "<?php class StaticSecret { protected static function hidden() { return 1; } } StaticSecret::hidden();",
+            VmOptions {
+                execution_format: ExecutionFormat::Bytecode,
+                ..VmOptions::default()
+            },
+        );
+        assert_eq!(protected.status.exit_status(), ExitStatus::RuntimeError);
+        assert!(
+            protected.output.to_string_lossy().contains(
+                "Uncaught Error: Call to protected method StaticSecret::hidden() from global scope"
+            ),
+            "{}",
+            protected.output.to_string_lossy()
         );
     }
 

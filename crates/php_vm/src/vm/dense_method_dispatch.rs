@@ -174,7 +174,9 @@ impl Vm {
                 state,
             ) {
                 Ok(Some(result)) => result,
-                Ok(None) => self.runtime_error(output, compiled, stack, message),
+                Ok(None) => self.runtime_error_at_optional_span(
+                    compiled, output, stack, state, call_span, message,
+                ),
                 Err(result) => result,
             };
         }
@@ -185,7 +187,9 @@ impl Vm {
             declaring_class,
             method_entry,
         ) {
-            return self.runtime_error(output, compiled, stack, message);
+            return self.runtime_error_at_optional_span(
+                compiled, output, stack, state, call_span, message,
+            );
         }
 
         let has_by_ref_argument = dense_call_has_by_ref_argument(&args);
@@ -393,7 +397,9 @@ impl Vm {
                     if let Err(message) =
                         validate_method_callable(compiled, stack, declaring_class, method_entry)
                     {
-                        self.runtime_error(output, compiled, stack, message)
+                        self.runtime_error_at_optional_span(
+                            compiled, output, stack, state, call_span, message,
+                        )
                     } else {
                         self.runtime_error(
                             output,
@@ -409,7 +415,9 @@ impl Vm {
         if let Err(message) =
             validate_method_callable(compiled, stack, declaring_class, method_entry)
         {
-            return self.runtime_error(output, compiled, stack, message);
+            return self.runtime_error_at_optional_span(
+                compiled, output, stack, state, call_span, message,
+            );
         }
 
         let has_magic_call =
@@ -544,7 +552,9 @@ impl Vm {
         if let Err(message) =
             validate_method_callable(&owner, stack, &declaring_class, &method_entry)
         {
-            return self.runtime_error(output, compiled, stack, message);
+            return self.runtime_error_at_optional_span(
+                compiled, output, stack, state, call_span, message,
+            );
         }
         self.execute_function(
             &owner,
