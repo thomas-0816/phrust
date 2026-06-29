@@ -5,6 +5,7 @@ pub(in crate::builtins) mod core;
 pub(in crate::builtins) mod ctype;
 pub(in crate::builtins) mod curl;
 pub(in crate::builtins) mod date;
+pub(in crate::builtins) mod debug_output;
 pub(in crate::builtins) mod exif;
 pub(in crate::builtins) mod fileinfo;
 pub(in crate::builtins) mod filesystem;

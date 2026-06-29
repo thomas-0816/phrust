@@ -11,6 +11,7 @@ pub mod display;
 pub mod function;
 pub mod ids;
 pub mod instruction;
+mod literal_text;
 pub mod lower;
 pub mod module;
 pub mod operand;
