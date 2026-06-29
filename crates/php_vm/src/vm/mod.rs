@@ -80,9 +80,10 @@ use php_runtime::{
     RuntimeHttpResponseState, RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame, RuntimeType,
     Slot, UploadRegistry, Value, VmCompileDiagnostic, compare, division_by_zero_mvp,
     emit_php_diagnostic, equal, error_reporting_allows_level, identical,
-    reset_float_string_precision, runtime_type_name, set_float_string_precision,
-    to_arithmetic_number, to_bool, to_float, to_int, to_number, to_string, undefined_function,
-    undefined_variable_warning, unsupported_feature, value_matches_runtime_type, value_type_name,
+    reset_float_string_precision, runtime_type_name, serialize as serialize_value,
+    set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
+    to_string, undefined_function, undefined_variable_warning, unsupported_feature,
+    value_matches_runtime_type, value_type_name,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -20343,6 +20344,11 @@ impl Vm {
                 {
                     return self.runtime_error(output, compiled, stack, message);
                 }
+                if let Some(result) = self.try_execute_serialize_with_magic(
+                    compiled, &name, &values, call_span, output, stack, state,
+                ) {
+                    return result;
+                }
                 self.execute_internal_registry_builtin(
                     &name,
                     values,
@@ -22610,6 +22616,17 @@ impl Vm {
             {
                 return self.runtime_error(output, compiled, stack, message);
             }
+            if let Some(result) = self.try_execute_serialize_with_magic(
+                compiled,
+                &normalized,
+                &values,
+                call_span,
+                output,
+                stack,
+                state,
+            ) {
+                return result;
+            }
             return self.execute_internal_registry_builtin(
                 &normalized,
                 values,
@@ -22760,6 +22777,11 @@ impl Vm {
                         && let Some(message) = debug_info_gap_message(compiled, &values)
                     {
                         return self.runtime_error(output, compiled, stack, message);
+                    }
+                    if let Some(result) = self.try_execute_serialize_with_magic(
+                        compiled, &name, &values, call_span, output, stack, state,
+                    ) {
+                        return result;
                     }
                     self.execute_internal_registry_builtin(
                         &name, values, output, stack, state, compiled,
@@ -24786,6 +24808,191 @@ impl Vm {
             &diagnostic,
         )?;
         if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            emit_vm_diagnostic(
+                output,
+                state,
+                &diagnostic,
+                php_runtime::PhpDiagnosticChannel::Warning,
+                php_runtime::PHP_E_WARNING,
+            );
+            state.diagnostics.push(diagnostic);
+        }
+        Ok(())
+    }
+
+    fn try_execute_serialize_with_magic(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        values: &[Value],
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Option<VmResult> {
+        if name != "serialize" || values.len() != 1 {
+            return None;
+        }
+        let Value::Object(object) = effective_value(&values[0]) else {
+            return None;
+        };
+        let result =
+            self.serialize_object_with_magic(compiled, object, call_span, output, stack, state);
+        Some(match result {
+            Ok(value) => VmResult::success(OutputBuffer::new(), Some(Value::String(value))),
+            Err(result) => result,
+        })
+    }
+
+    fn serialize_object_with_magic(
+        &self,
+        compiled: &CompiledUnit,
+        object: ObjectRef,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<PhpString, VmResult> {
+        let Some(class) = lookup_class_in_state(compiled, state, &object.class_name()) else {
+            return serialize_value(&Value::Object(object)).map_err(|error| {
+                self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                )
+            });
+        };
+        let resolved = match lookup_method_in_hierarchy(compiled, &class, "__sleep", None) {
+            Ok(Some(method)) => method,
+            Ok(None) => {
+                return serialize_value(&Value::Object(object)).map_err(|error| {
+                    self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                    )
+                });
+            }
+            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+        };
+        if resolved.method.flags.is_static {
+            return Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_SLEEP_METHOD_INACCESSIBLE: method {}::__sleep is not public instance",
+                    resolved.class.name
+                ),
+            ));
+        }
+        let result = self.execute_function(
+            compiled,
+            resolved.method.function,
+            FunctionCall::new(Vec::new(), Vec::new())
+                .with_this(object.clone())
+                .with_class_context(
+                    resolved.class.name.clone(),
+                    object.class_name(),
+                    resolved.class.name.clone(),
+                )
+                .with_optional_call_span(call_span),
+            output,
+            stack,
+            state,
+        );
+        if !result.status.is_success() {
+            return Err(result);
+        }
+        let Value::Array(selected) = effective_value(&result.return_value.unwrap_or(Value::Null))
+        else {
+            return Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_SLEEP_RETURN_TYPE: {}::__sleep(): Return value must be of type array",
+                    class.display_name
+                ),
+            ));
+        };
+        let runtime_class = runtime_class_entry(
+            compiled,
+            state,
+            &class,
+            &|value| self.constant_value(compiled.unit(), value),
+            &|reference| class_constant_reference_value(compiled, state, reference),
+            &|reference| named_constant_reference_value(compiled, state, reference),
+        )
+        .map_err(|error| self.runtime_error(output, compiled, stack, error.into_message()))?;
+        let filtered = ObjectRef::new_with_display_name(&runtime_class, object.display_name());
+        for (storage_name, _) in filtered.properties_snapshot() {
+            filtered.unset_property(&storage_name);
+        }
+        let source_properties = object.properties_snapshot();
+        for (_, selected_name) in selected.iter() {
+            let Value::String(selected_name) = effective_value(selected_name) else {
+                continue;
+            };
+            let selected_name = selected_name.to_string_lossy();
+            let Some((storage_name, value)) =
+                sleep_property_value(&source_properties, &selected_name)
+            else {
+                self.emit_serialize_sleep_missing_property_warning(
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    &selected_name,
+                    call_span,
+                )?;
+                continue;
+            };
+            filtered.set_property(storage_name, effective_value(&value));
+        }
+        serialize_value(&Value::Object(filtered)).map_err(|error| {
+            self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+            )
+        })
+    }
+
+    fn emit_serialize_sleep_missing_property_warning(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        property: &str,
+        call_span: Option<php_ir::IrSpan>,
+    ) -> Result<(), VmResult> {
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_VM_SERIALIZE_SLEEP_MISSING_PROPERTY",
+            RuntimeSeverity::Warning,
+            format!(
+                "serialize(): \"{property}\" returned as member variable from __sleep() but does not exist"
+            ),
+            call_span
+                .map(|span| runtime_source_span(compiled, span))
+                .unwrap_or_default(),
+            stack_trace(compiled, stack),
+            Some(php_runtime::PhpReferenceClassification::Warning),
+        );
+        let handled = self.dispatch_error_handler(
+            compiled,
+            output,
+            stack,
+            state,
+            php_runtime::PHP_E_WARNING,
+            &diagnostic,
+        )?;
+        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
             emit_vm_diagnostic(
                 output,
                 state,
@@ -40604,6 +40811,26 @@ fn private_storage_parts(storage_name: &str) -> Option<(String, String)> {
         .map(|(class, property)| (class.to_owned(), property.to_owned()))
 }
 
+fn sleep_property_value(
+    properties: &[(String, Value)],
+    selected_name: &str,
+) -> Option<(String, Value)> {
+    properties.iter().find_map(|(storage_name, value)| {
+        if storage_name == selected_name {
+            return Some((storage_name.clone(), value.clone()));
+        }
+        if let Some((owner, property)) = private_storage_parts(storage_name)
+            && (property == selected_name || selected_name == format!("\0{owner}\0{property}"))
+        {
+            return Some((storage_name.clone(), value.clone()));
+        }
+        if selected_name == format!("\0*\0{storage_name}") {
+            return Some((storage_name.clone(), value.clone()));
+        }
+        None
+    })
+}
+
 fn class_display_name(compiled: &CompiledUnit, normalized_class: &str) -> Option<String> {
     compiled
         .unit()
@@ -50606,6 +50833,68 @@ good"
         assert_eq!(
             recreate_parent_private_as_dynamic.output.as_bytes(),
             b"changed in D|changed globally"
+        );
+    }
+
+    #[test]
+    fn serialize_invokes_sleep_and_warns_for_missing_property() {
+        let result = execute_source(
+            r#"<?php
+class foo {
+    private $private = 'private';
+    protected $protected = 'protected';
+    public $public = 'public';
+    public function __sleep() {
+        return array('private', 'protected', 'public', 'no_such');
+    }
+}
+$foo = new foo();
+$data = serialize($foo);
+var_dump(str_replace("\0", '\0', $data));
+"#,
+        );
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.contains(
+                "Warning: serialize(): \"no_such\" returned as member variable from __sleep() but does not exist"
+            ),
+            "{output}"
+        );
+        assert!(
+            output.contains(
+                r#"string(114) "O:3:"foo":3:{s:12:"\0foo\0private";s:7:"private";s:12:"\0*\0protected";s:9:"protected";s:6:"public";s:6:"public";}""#
+            ),
+            "{output}"
+        );
+
+        let mangled_parent_private = execute_source(
+            r#"<?php
+class foo {
+    private $private = 'private';
+    protected $protected = 'protected';
+    public $public = 'public';
+}
+class bar extends foo {
+    public function __sleep() {
+        return array("\0foo\0private", 'protected', 'public');
+    }
+}
+var_dump(str_replace("\0", '\0', serialize(new bar())));
+"#,
+        );
+        assert!(
+            mangled_parent_private.status.is_success(),
+            "{:?}",
+            mangled_parent_private.status
+        );
+        let output = mangled_parent_private.output.to_string_lossy();
+        assert!(!output.contains("Warning: serialize()"), "{output}");
+        assert!(
+            output.contains(
+                r#"string(114) "O:3:"bar":3:{s:12:"\0foo\0private";s:7:"private";s:12:"\0*\0protected";s:9:"protected";s:6:"public";s:6:"public";}""#
+            ),
+            "{output}"
         );
     }
 
