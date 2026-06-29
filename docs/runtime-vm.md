@@ -57,16 +57,18 @@ go through one call path:
 - simple public static methods execute without `$this`.
 
 Selected builtins are resolved after user functions through
-`php_runtime::BuiltinRegistry`. Dynamic function calls, array callables,
-invokable objects, full callable fallback, and by-reference call semantics are
-known gaps.
+`php_runtime::BuiltinRegistry`. Dynamic string calls, array method callables,
+invokable objects, and first-class callables route through the unified callable
+helper for covered fixtures. Namespace/import fallback, unresolved-callable
+edge cases, closure rebinding, and by-reference call semantics remain known
+gaps.
 
 Fixture proof: `fixtures/runtime/valid/functions/simple.php`,
 `fixtures/runtime/valid/functions/defaults.php`,
 `fixtures/runtime/valid/functions/variadic-sum.php`,
 `fixtures/runtime/valid/functions/closure-use.php`,
 `fixtures/runtime/valid/objects/method-call.php`, and
-`fixtures/runtime/known_gaps/functions/dynamic-call.php`.
+`fixtures/runtime/valid/functions/dynamic-call.php`.
 
 ## Dispatch and Control Flow
 

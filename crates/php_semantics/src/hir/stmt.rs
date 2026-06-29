@@ -50,7 +50,9 @@ pub enum HirStmtKind {
     },
     /// For statement.
     For {
-        expressions: Vec<ExprId>,
+        init: Vec<ExprId>,
+        condition: Vec<ExprId>,
+        update: Vec<ExprId>,
         body: Vec<StmtId>,
     },
     /// Foreach statement.

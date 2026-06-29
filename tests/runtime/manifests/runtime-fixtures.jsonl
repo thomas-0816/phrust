@@ -14,18 +14,20 @@
 {"id":"references-by-value","path":"fixtures/runtime/valid/references/by-value.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"12\n"}}
 {"id":"references-local-alias","path":"fixtures/runtime/valid/references/local-alias.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"23\n"}}
 {"id":"constants-global","path":"fixtures/runtime/valid/constants/global.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"42|runtime\n"}}
-{"id":"constants-builtin","path":"fixtures/runtime/valid/constants/builtin.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"8.5.7\n"}}
+{"id":"constants-builtin","path":"fixtures/runtime/valid/constants/builtin.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"8.5.7|80507|8|5|7|8|/|:\n"}}
+{"id":"constants-define","path":"fixtures/runtime/valid/constants/define.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"bool(true)\nbool(true)\nok|ok|bool(false)\n"}}
 {"id":"constants-magic-top","path":"fixtures/runtime/valid/constants/magic-top-level.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"{repo}/fixtures/runtime/valid/constants/magic-top-level.php\n{repo}/fixtures/runtime/valid/constants\n4||||\n"}}
 {"id":"constants-magic-function","path":"fixtures/runtime/valid/constants/magic-function.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"magic_function_fixture|3||magic_function_fixture|\n"}}
 {"id":"constants-magic-method","path":"fixtures/runtime/valid/constants/magic-method.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"MagicMethodFixture|MagicMethodFixture::show\n"}}
 {"id":"constants-undefined","path":"fixtures/runtime/invalid/constants/undefined.php","tags":["runtime","constants","invalid"],"expect":{"exit":3,"stderr_contains":"E_PHP_RUNTIME_UNDEFINED_CONSTANT"}}
-{"id":"variables-undefined","path":"fixtures/runtime/known_gaps/variables/undefined.php","tags":["runtime","variables","known-gap"],"expect":{"exit":0,"stdout":"\nWarning: Undefined variable $missing in {repo}/fixtures/runtime/known_gaps/variables/undefined.php on line <line>\nx\n","normalize_stdout":["line_numbers"],"stderr":""}}
+{"id":"variables-undefined","path":"fixtures/runtime/valid/variables/undefined.php","tags":["runtime","variables"],"expect":{"exit":0,"stdout":"\nWarning: Undefined variable $missing in {repo}/fixtures/runtime/valid/variables/undefined.php on line <line>\nx\n","normalize_stdout":["line_numbers"],"stderr":""}}
 {"id":"errors-warning-continuation","path":"fixtures/runtime/valid/errors/warning-continuation.php","tags":["runtime","errors"],"expect":{"exit":0,"stdout":"\nWarning: Undefined variable $missing in {repo}/fixtures/runtime/valid/errors/warning-continuation.php on line <line>\nok\n","normalize_stdout":["line_numbers"],"stderr":""}}
 {"id":"control-if","path":"fixtures/runtime/valid/control_flow/if-true-false.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"tf\n"}}
 {"id":"control-nested-if","path":"fixtures/runtime/valid/control_flow/nested-if.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"nested\n"}}
 {"id":"control-while","path":"fixtures/runtime/valid/control_flow/while-counter.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"012\n"}}
 {"id":"control-do","path":"fixtures/runtime/valid/control_flow/do-while-once.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"once\n"}}
 {"id":"control-for","path":"fixtures/runtime/valid/control_flow/for-loop.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"012\n"}}
+{"id":"control-for-multi-expression","path":"fixtures/runtime/valid/control_flow/for-multi-expression.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"0:3;1:2;2:1;\n"}}
 {"id":"control-break","path":"fixtures/runtime/valid/control_flow/break.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"12\n"}}
 {"id":"control-continue","path":"fixtures/runtime/valid/control_flow/continue.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"134\n"}}
 {"id":"control-short-circuit","path":"fixtures/runtime/valid/control_flow/short-circuit.php","tags":["runtime","control-flow"],"expect":{"exit":0,"stdout":"ok0|ok0\n"}}
@@ -38,6 +40,7 @@
 {"id":"functions-two-args","path":"fixtures/runtime/valid/functions/two-args.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"5\n"}}
 {"id":"functions-local-scope","path":"fixtures/runtime/valid/functions/local-scope.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"2|10\n"}}
 {"id":"functions-factorial","path":"fixtures/runtime/valid/functions/factorial.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"120\n"}}
+{"id":"functions-dynamic-call","path":"fixtures/runtime/valid/functions/dynamic-call.php","tags":["runtime","functions","callables"],"expect":{"exit":0,"stdout":"hi\n"}}
 {"id":"functions-return-no-value","path":"fixtures/runtime/valid/functions/return-no-value.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"x\n"}}
 {"id":"functions-defaults","path":"fixtures/runtime/valid/functions/defaults.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"hi world!|hi php?\n"}}
 {"id":"functions-variadic-sum","path":"fixtures/runtime/valid/functions/variadic-sum.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"5\n"}}

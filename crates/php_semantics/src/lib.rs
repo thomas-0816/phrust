@@ -1428,8 +1428,22 @@ fn push_statement_kind_json(out: &mut String, kind: &hir::HirStmtKind) {
             }
             out.push(']');
         }
-        hir::HirStmtKind::For { expressions, body }
-        | hir::HirStmtKind::Declare { expressions, body } => {
+        hir::HirStmtKind::For {
+            init,
+            condition,
+            update,
+            body,
+        } => {
+            out.push_str(",\"init\":");
+            push_expr_ids_json(out, init);
+            out.push_str(",\"condition\":");
+            push_expr_ids_json(out, condition);
+            out.push_str(",\"update\":");
+            push_expr_ids_json(out, update);
+            out.push_str(",\"body\":");
+            push_stmt_ids_json(out, body);
+        }
+        hir::HirStmtKind::Declare { expressions, body } => {
             out.push_str(",\"expressions\":");
             push_expr_ids_json(out, expressions);
             out.push_str(",\"body\":");

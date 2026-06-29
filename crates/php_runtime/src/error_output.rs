@@ -102,11 +102,25 @@ impl PhpDiagnosticLocation {
     /// Creates a deterministic fallback location from a runtime source span.
     #[must_use]
     pub fn from_span(span: &RuntimeSourceSpan) -> Self {
-        Self {
-            file: span.file.clone().unwrap_or_else(|| "<unknown>".to_owned()),
-            line: span.start,
-        }
+        let file = span.file.clone().unwrap_or_else(|| "<unknown>".to_owned());
+        let line = span
+            .file
+            .as_deref()
+            .and_then(|file| line_number_for_offset(file, span.start))
+            .unwrap_or(span.start);
+        Self { file, line }
     }
+}
+
+fn line_number_for_offset(file: &str, offset: u32) -> Option<u32> {
+    let bytes = std::fs::read(file).ok()?;
+    let offset = usize::try_from(offset).ok()?.min(bytes.len());
+    Some(
+        1 + bytes[..offset]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count() as u32,
+    )
 }
 
 /// Returns whether the current error-reporting mask allows the level.
@@ -190,6 +204,25 @@ mod tests {
             line,
             "\nWarning: Undefined variable $x in fixture.php on line 7\n"
         );
+    }
+
+    #[test]
+    fn display_location_resolves_byte_offset_to_line_when_file_exists() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "phrust-runtime-source-span-{}.php",
+            std::process::id()
+        ));
+        std::fs::write(&path, "<?php\n// comment\necho $missing;\n").expect("write fixture");
+        let start = "<?php\n// comment\necho ".len() as u32;
+        let location = PhpDiagnosticLocation::from_span(&RuntimeSourceSpan {
+            file: Some(path.display().to_string()),
+            start,
+            end: start + 8,
+        });
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(location.line, 3);
     }
 
     #[test]

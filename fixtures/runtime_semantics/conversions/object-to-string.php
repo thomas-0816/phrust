@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: expect=known_gap known_gap=E_PHP_RUNTIME_OBJECT_TO_STRING_GAP
+// runtime-semantics: expect=pass
 class StringableBox
 {
     public function __toString()

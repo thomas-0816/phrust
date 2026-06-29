@@ -160,10 +160,7 @@ impl HirLowerer<'_> {
                 condition: self.first_stmt_expr_child_or_placeholder(node),
                 body: self.stmt_children(node),
             },
-            Some(Stmt::For(_)) => HirStmtKind::For {
-                expressions: self.stmt_expr_children(node),
-                body: self.stmt_children(node),
-            },
+            Some(Stmt::For(_)) => self.lower_for_stmt(node),
             Some(Stmt::Foreach(_)) => self.lower_foreach_stmt(node),
             Some(Stmt::Switch(_)) => HirStmtKind::Switch {
                 condition: self.first_switch_condition_or_placeholder(node),
@@ -927,6 +924,49 @@ impl HirLowerer<'_> {
         expressions
     }
 
+    fn lower_for_stmt(&mut self, node: &SyntaxNode) -> HirStmtKind {
+        let mut header_separators = descendant_tokens::<TokenView<'_>>(node)
+            .filter(|token| token.text() == ";")
+            .map(|token| token.text_range().start().to_usize());
+        let first_separator = header_separators.next();
+        let second_separator = header_separators.next();
+
+        let (init, condition, update) = if let (Some(first_separator), Some(second_separator)) =
+            (first_separator, second_separator)
+        {
+            (
+                self.stmt_expr_children_in_range(node, 0, first_separator),
+                self.stmt_expr_children_in_range(node, first_separator + 1, second_separator),
+                self.stmt_expr_children_in_range(node, second_separator + 1, usize::MAX),
+            )
+        } else {
+            (self.stmt_expr_children(node), Vec::new(), Vec::new())
+        };
+
+        HirStmtKind::For {
+            init,
+            condition,
+            update,
+            body: self.stmt_children(node),
+        }
+    }
+
+    fn stmt_expr_children_in_range(
+        &mut self,
+        node: &SyntaxNode,
+        start: usize,
+        end: usize,
+    ) -> Vec<ExprId> {
+        let mut expressions = Vec::new();
+        for child in syntax_child_nodes(node) {
+            if Stmt::cast(child).is_some() {
+                continue;
+            }
+            self.collect_expr_descendants_in_range(child, start, end, &mut expressions);
+        }
+        expressions
+    }
+
     fn lower_foreach_stmt(&mut self, node: &SyntaxNode) -> HirStmtKind {
         let expressions = self.stmt_expr_children(node);
         let (source, key_target, value_target) = match expressions.as_slice() {
@@ -1242,6 +1282,33 @@ impl HirLowerer<'_> {
                 continue;
             }
             self.collect_expr_descendants(child, expressions);
+        }
+    }
+
+    fn collect_expr_descendants_in_range(
+        &mut self,
+        node: &SyntaxNode,
+        start: usize,
+        end: usize,
+        expressions: &mut Vec<ExprId>,
+    ) {
+        let range = node.text_range();
+        let node_start = range.start().to_usize();
+        let node_end = range.end().to_usize();
+        if node_end <= start || node_start >= end {
+            return;
+        }
+        if ExprNode::cast(node).is_some() {
+            if node_start >= start && node_end <= end {
+                expressions.push(self.lower_expr(node, ResolveContext::ConstantFetch));
+            }
+            return;
+        }
+        for child in syntax_child_nodes(node) {
+            if Stmt::cast(child).is_some() {
+                continue;
+            }
+            self.collect_expr_descendants_in_range(child, start, end, expressions);
         }
     }
 

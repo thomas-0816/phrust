@@ -368,6 +368,14 @@ struct IfParts {
     else_body: Vec<StmtId>,
 }
 
+#[derive(Clone, Debug)]
+struct ForParts {
+    init: Vec<ExprId>,
+    condition: Vec<ExprId>,
+    update: Vec<ExprId>,
+    body: Vec<StmtId>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CaptureSpec {
     name: String,
@@ -2358,9 +2366,23 @@ impl LoweringContext<'_> {
             HirStmtKind::DoWhile { condition, body } => {
                 self.lower_do_while_stmt(builder, function, block, stmt_id, condition, body)
             }
-            HirStmtKind::For { expressions, body } => {
-                self.lower_for_stmt(builder, function, block, stmt_id, expressions, body)
-            }
+            HirStmtKind::For {
+                init,
+                condition,
+                update,
+                body,
+            } => self.lower_for_stmt(
+                builder,
+                function,
+                block,
+                stmt_id,
+                ForParts {
+                    init,
+                    condition,
+                    update,
+                    body,
+                },
+            ),
             HirStmtKind::Foreach {
                 source,
                 key_target,
@@ -2764,46 +2786,35 @@ impl LoweringContext<'_> {
         function: FunctionId,
         block: BlockId,
         stmt_id: StmtId,
-        expressions: Vec<ExprId>,
-        body: Vec<StmtId>,
+        parts: ForParts,
     ) -> BlockId {
+        let ForParts {
+            init,
+            condition,
+            update,
+            body,
+        } = parts;
         let span = span_from_range(self.file, self.span_for(SourceMappedId::from(stmt_id)));
-        if expressions.len() > 4 {
-            self.unsupported(
-                UnsupportedFeature::ForHeaderMultiExpression,
-                self.span_for(SourceMappedId::from(stmt_id)),
-                "for headers with multiple expressions per section are not lowered yet",
-            );
-        }
-        let (init, condition, update): (&[ExprId], Option<ExprId>, Option<ExprId>) =
-            if expressions.len() == 4 {
-                (
-                    &expressions[..2],
-                    expressions.get(2).copied(),
-                    expressions.get(3).copied(),
-                )
-            } else {
-                (
-                    expressions.get(..1).unwrap_or_default(),
-                    expressions.get(1).copied(),
-                    expressions.get(2).copied(),
-                )
-            };
         let mut current = block;
         for init in init {
-            current = self.lower_expr_stmt(builder, function, current, *init);
+            current = self.lower_expr_stmt(builder, function, current, init);
         }
         let condition_block = builder.append_block(function);
         let after_block = builder.append_block(function);
         let body_block = builder.append_block(function);
         let update_block = builder.append_block(function);
         self.jump_if_open(builder, function, current, condition_block, span);
-        if let Some(condition) = condition {
+        if let Some((last_condition, leading_conditions)) = condition.split_last() {
+            let mut current_condition = condition_block;
+            for condition in leading_conditions {
+                current_condition =
+                    self.lower_expr_stmt(builder, function, current_condition, *condition);
+            }
             self.terminate_condition_true_target(
                 builder,
                 function,
-                condition_block,
-                Some(condition),
+                current_condition,
+                Some(*last_condition),
                 body_block,
                 span,
             );
@@ -2817,10 +2828,11 @@ impl LoweringContext<'_> {
         let body_end = self.lower_stmt_list(builder, function, body_block, body);
         self.loop_stack.pop();
         self.jump_if_open(builder, function, body_end, update_block, span);
-        if let Some(update) = update {
-            self.lower_expr_stmt(builder, function, update_block, update);
+        let mut current_update = update_block;
+        for update in update {
+            current_update = self.lower_expr_stmt(builder, function, current_update, update);
         }
-        self.jump_if_open(builder, function, update_block, condition_block, span);
+        self.jump_if_open(builder, function, current_update, condition_block, span);
         after_block
     }
 
@@ -10858,6 +10870,24 @@ mod tests {
         let snapshot = result.unit.to_snapshot_text();
         assert!(snapshot.contains("local:0 $x"), "{snapshot}");
         assert!(snapshot.contains("local:1 $count"), "{snapshot}");
+        assert!(snapshot.matches("store_local").count() >= 2, "{snapshot}");
+        assert!(
+            !snapshot.contains("E_PHP_IR_UNSUPPORTED_FOR_HEADER_MULTI_EXPR"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn for_loop_lowers_multi_expression_header_sections() {
+        let frontend =
+            analyze_source("<?php for ($i = 0, $j = 3; $i < 3; $i++, $j--) { echo $i; }");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("local:0 $i"), "{snapshot}");
+        assert!(snapshot.contains("local:1 $j"), "{snapshot}");
         assert!(snapshot.matches("store_local").count() >= 2, "{snapshot}");
         assert!(
             !snapshot.contains("E_PHP_IR_UNSUPPORTED_FOR_HEADER_MULTI_EXPR"),

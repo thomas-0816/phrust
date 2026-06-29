@@ -255,10 +255,11 @@ Local slots are indexed by `LocalId` in the IR function table. The VM stores
 `ValueSlot`s in the slot array so ordinary assignments stay by-value while the
 Work item `BindReference` instruction can bind two local slots to one
 `ReferenceCell`. Writes through either alias update the shared cell for simple
-`$b =& $a` fixtures only. Undefined local reads evaluate as `Null` and emit a structured
-`E_PHP_RUNTIME_UNDEFINED_VARIABLE_WARNING` diagnostic. The fixture
-`fixtures/runtime/known_gaps/variables/undefined.php` locks this MVP behavior;
-full PHP warning text and variable names remain outside the current subset.
+`$b =& $a` fixtures only. Undefined local reads evaluate as `Null`, emit a
+PHP-formatted warning with the variable name on the output channel, and
+continue execution for the covered fixtures. The fixture
+`fixtures/runtime/valid/variables/undefined.php` locks this MVP behavior;
+wider warning-channel parity remains outside the current subset.
 
 Object-property references and by-reference foreach over temporary sources are
 distinct known gaps. IR lowering emits stable IDs for those cases rather than
@@ -338,28 +339,28 @@ storage, so ordinary local writes inside the closure do not mutate the caller's
 local slots in this MVP.
 
 `use (&$x)` is preserved in IR capture metadata and captures the source local's
-reference cell at execution. Calling a non-closure variable through the
-closure-call path produces `E_PHP_VM_CALL_NON_CLOSURE`. `Closure::bind`, string
-callable fallback, array callable fallback, and full first-class-callable
-compatibility are not implemented.
+reference cell at execution. Closure, dynamic string, array method, static
+method, invokable-object, and first-class callable values execute through the
+unified callable path for covered fixtures. `Closure::bind`, complete
+namespace/import fallback, and invalid-callable edge cases remain known gaps.
 
 ## Callable And Pipe MVP
 
-Work item introduces a narrow runtime callable model. Simple first-class
-callable names resolve to `CallableValue::UserFunction` when the compiled unit
-contains a matching user function, or to `CallableValue::InternalBuiltin` for
-registered entries in `php_runtime::BuiltinRegistry`. Closure values from
-Work item are callable through the same helper. Method callables and unresolved
-dynamic callables are explicit placeholder/gap variants.
+Work item introduces a runtime callable model. Simple first-class callable names
+resolve to `CallableValue::UserFunction` when the compiled unit contains a
+matching user function, or to `CallableValue::InternalBuiltin` for registered
+entries in `php_runtime::BuiltinRegistry`. Closure values, dynamic string
+callables, array method callables, static method callables, and invokable
+objects are callable through the same helper for covered fixtures. Unresolved
+dynamic callables remain explicit placeholder/gap variants.
 
 The PHP 8.5 pipe operator evaluates the LHS first, evaluates or resolves the
 RHS callable second, and then calls that callable with exactly one argument.
-The supported RHS forms are `foo(...)` for simple user functions or selected
-builtins, and closure values such as `$f`. Non-callable RHS values fail with
-`E_PHP_VM_PIPE_RHS_NOT_CALLABLE`. Unresolved callable names fail with
-`E_PHP_VM_UNRESOLVED_CALLABLE`. Full PHP callable syntax, method callables,
-array callables, invokable objects, and complete first-class callable
-compatibility remain known gaps.
+The supported RHS forms include simple user functions, selected builtins,
+closures, dynamic string callables, and invokable objects. Non-callable RHS
+values fail with `E_PHP_VM_PIPE_RHS_NOT_CALLABLE`. Unresolved callable names
+fail with `E_PHP_VM_UNRESOLVED_CALLABLE`. Complete namespace/import fallback
+and wider callable edge cases remain known gaps.
 
 ## Builtins I MVP
 

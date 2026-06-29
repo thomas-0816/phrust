@@ -189,18 +189,18 @@ Runtime decisions are captured in these ADRs:
 | Feature | Syntax supported | HIR supported | IR supported | VM execution | Reference diff status | Known gap ID |
 | --- | --- | --- | --- | --- | --- | --- |
 | Scalars and echo | yes | yes | yes | yes | green curated fixtures | none |
-| Local variables and assignment | yes | yes | yes | partial | undefined variable wording differs | `E_PHP_RUNTIME_UNDEFINED_VARIABLE_WARNING` |
+| Local variables and assignment | yes | yes | yes | partial | curated assignment and undefined-variable fixtures pass | none |
 | Arithmetic, concat, comparisons, casts | yes | yes | yes | partial | numeric-string edge cases differ | `E_PHP_RUNTIME_NUMERIC_STRING_MATRIX` |
 | Direct user functions | yes | yes | yes | yes | green curated fixtures | none |
 | Defaults, variadics, returns | yes | yes | yes | partial | PHP type/coercion wording differs | `E_PHP_RUNTIME_WEAK_STRICT_TYPES_COERCION` |
 | Closures and arrow functions | yes | yes | yes | partial | by-value/by-reference captures, static closure locals, and arrow by-value captures execute; full Closure binding remains deferred | `E_PHP_RUNTIME_UNSUPPORTED_CLOSURE_BINDING` |
-| Dynamic function/callable forms | yes | partial | partial | partial | not PHP-compatible | `E_PHP_IR_UNSUPPORTED_DYNAMIC_FUNCTION_CALL` |
-| PHP 8.5 pipe operator | yes | yes | yes | partial | simple callables only | `E_PHP_VM_PIPE_RHS_NOT_CALLABLE` |
+| Dynamic function/callable forms | yes | yes | yes | partial | dynamic strings, array callables, invokable objects, and first-class callables pass curated fixtures | `E_PHP_VM_UNRESOLVED_CALLABLE` |
+| PHP 8.5 pipe operator | yes | yes | yes | partial | callable dispatch and non-callable RHS errors pass curated fixtures | none |
 | Selected builtins | yes | yes | yes | partial | strict supported subset only | `E_PHP_RUNTIME_UNSUPPORTED_STDLIB` |
 | Arrays | yes | yes | yes | partial | key/COW/reference edges differ | `E_PHP_RUNTIME_ARRAY_REFERENCE_COW` |
-| Foreach over arrays | yes | yes | yes | partial | by-value snapshots and local-array by-reference foreach execute; non-array and Traversable sources deferred | `E_PHP_VM_UNSUPPORTED_FOREACH_SOURCE` |
+| Foreach over arrays and Traversable sources | yes | yes | yes | partial | arrays, public-property objects, Iterator, IteratorAggregate, generator sources, and invalid-source warnings pass curated fixtures | `E_PHP_RUNTIME_FOREACH_MUTATION_COMPAT` |
 | References | yes | partial | partial | partial | simple local alias only | `E_PHP_RUNTIME_UNSUPPORTED_REFERENCE_SEMANTICS` |
-| Global and magic constants | yes | partial | partial | partial | limited predefined constants | `E_PHP_RUNTIME_PREDEFINED_CONSTANT_MATRIX` |
+| Global and magic constants | yes | partial | partial | partial | fixture-covered predefined and user-defined constants pass; full constant-expression matrix remains | `E_PHP_RUNTIME_CONST_EXPR_MATRIX` |
 | Include/require | yes | yes | yes | partial | root-constrained local model | `E_PHP_RUNTIME_INCLUDE_SCOPE_MATRIX` |
 | Concrete classes and `new` | yes | yes | yes | partial | public concrete class subset | `E_PHP_IR_UNSUPPORTED_CLASSLIKE_OBJECT` |
 | Public properties and methods | yes | yes | yes | partial | visibility/inheritance missing | `E_PHP_IR_UNSUPPORTED_OBJECT_PROPERTY_MODIFIER` |
@@ -212,7 +212,7 @@ Runtime decisions are captured in these ADRs:
 | Generators and `yield from` | yes | yes | classified | no | known gap | `E_PHP_IR_UNSUPPORTED_GENERATOR` |
 | Fibers | yes | yes | classified | no | known gap | `E_PHP_IR_UNSUPPORTED_FIBER` |
 | Eval | yes | yes | classified | no | known gap | `E_PHP_IR_UNSUPPORTED_EVAL` |
-| Autoload, traits, enums, reflection | yes | yes | classified | no | known gap | `E_PHP_IR_UNSUPPORTED_AUTOLOAD` |
+| Autoload, traits, enums, reflection | yes | yes | partial | partial | autoload, trait, enum, and reflection subsets pass curated fixtures; wider parity remains | `E_PHP_IR_UNSUPPORTED_REFLECTION` |
 
 ## Top 20 Reference Deviations by Runtime semantics Risk
 
@@ -230,8 +230,10 @@ Runtime decisions are captured in these ADRs:
    IDs: `E_PHP_IR_UNSUPPORTED_CLASSLIKE_OBJECT`,
    `E_PHP_IR_UNSUPPORTED_OBJECT_PROPERTY_MODIFIER`,
    `E_PHP_RUNTIME_UNSUPPORTED_MAGIC_METHODS`.
-5. Autoloading: class/function lookup never invokes autoload callbacks.
-   ID: `E_PHP_IR_UNSUPPORTED_AUTOLOAD`.
+5. Autoloading: request-local SPL callbacks execute for covered class and
+   interface lookup fixtures, but Composer path conventions and the wider SPL
+   autoload API remain incomplete. IDs: `E_PHP_VM_AUTOLOAD_INVALID_CALLBACK`,
+   `E_PHP_VM_AUTOLOAD_ARITY`, `E_PHP_RUNTIME_COMPOSER_AUTOLOAD_MATRIX`.
 6. Include compatibility: include_path, stream wrappers, cwd policy, and
    complete cross-file symbol side effects are missing. IDs:
    `E_PHP_VM_INCLUDE_MISSING`, `E_PHP_RUNTIME_INCLUDE_SCOPE_MATRIX`.
@@ -251,11 +253,13 @@ Runtime decisions are captured in these ADRs:
     state and `$GLOBALS` aliasing are not complete. IDs:
     `E_PHP_RUNTIME_SUPERGLOBALS_FULL_MATRIX`,
     `E_PHP_RUNTIME_GLOBALS_ALIAS_MATRIX`.
-12. Dynamic calls and callable resolution: variable functions, method
-    callables, array callables, invokable objects, namespace fallback, and
-    closure binding remain incomplete. IDs:
-    `E_PHP_IR_UNSUPPORTED_DYNAMIC_FUNCTION_CALL`,
-    `E_PHP_VM_UNSUPPORTED_METHOD_CALLABLE`.
+12. Dynamic calls and callable resolution: dynamic string calls, method
+    callables, array callables, invokable objects, and first-class callables are
+    executable for covered fixtures; namespace/import fallback, invalid-callable
+    edge cases, and closure binding remain incomplete. IDs:
+    `E_PHP_VM_UNRESOLVED_CALLABLE`,
+    `E_PHP_VM_INVALID_CALLABLE_ARRAY`,
+    `E_PHP_RUNTIME_UNSUPPORTED_CLOSURE_BINDING`.
 13. Generators and `yield from`: classified at lowering, not executable.
     IDs: `E_PHP_IR_UNSUPPORTED_GENERATOR`,
     `E_PHP_IR_UNSUPPORTED_YIELD_FROM`.
@@ -265,14 +269,16 @@ Runtime decisions are captured in these ADRs:
     `E_PHP_IR_UNSUPPORTED_EVAL`.
 16. Reflection/SPL metadata: reflection is classified as unsupported and SPL
     behavior is absent. ID: `E_PHP_IR_UNSUPPORTED_REFLECTION`.
-17. Foreach beyond arrays: Traversable objects and temporary by-reference
-    foreach sources are not executable. IDs:
-    `E_PHP_VM_UNSUPPORTED_FOREACH_SOURCE`,
-    `E_PHP_IR_UNSUPPORTED_BY_REF_FOREACH`.
-18. Constants: runtime `define()`, complete predefined constants, and full
-    constant-expression behavior are incomplete. IDs:
-    `E_PHP_RUNTIME_DEFINE`,
-    `E_PHP_RUNTIME_PREDEFINED_CONSTANT_MATRIX`.
+17. Foreach beyond arrays: public-property objects, Iterator,
+    IteratorAggregate, generator sources, and invalid-source warnings are
+    executable for covered fixtures; temporary by-reference foreach sources and
+    the full mutation matrix remain incomplete. IDs:
+    `E_PHP_IR_UNSUPPORTED_BY_REF_FOREACH`,
+    `E_PHP_RUNTIME_FOREACH_MUTATION_COMPAT`.
+18. Constants: runtime `define()`, `defined()`, `constant()`, and
+    fixture-covered predefined constants execute; the full PHP 8.5
+    constant-expression matrix remains incomplete. ID:
+    `E_PHP_RUNTIME_CONST_EXPR_MATRIX`.
 19. Warning and fatal text compatibility: VM emits structured diagnostics
     instead of PHP CLI wording. ID: `E_PHP_RUNTIME_WARNING_CHANNEL_COMPAT`.
 20. Zend ABI, opcache/JIT, resources, and stream wrappers are intentionally

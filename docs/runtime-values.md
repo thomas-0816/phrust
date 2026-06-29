@@ -21,11 +21,11 @@ is not yet PHP-compatible.
 
 `Uninitialized` is an internal VM state for locals and registers. Publicly
 observable undefined-variable behavior is emitted as structured diagnostics and
-covered by known-gap fixtures.
+covered by valid fixtures.
 
 Fixture proof: `fixtures/runtime/valid/scalars/expressions.php`,
 `fixtures/runtime/valid/variables/assignment.php`, and
-`fixtures/runtime/known_gaps/variables/undefined.php`.
+`fixtures/runtime/valid/variables/undefined.php`.
 
 ## Strings
 
@@ -129,15 +129,16 @@ selected internal builtins, method placeholders, and unresolved dynamic
 callables. The VM resolves simple user functions before builtins. The PHP 8.5
 pipe MVP calls one resolved callable with the LHS value as its only argument.
 
-Variable functions beyond closure values, array callables, invokable objects,
-method callables, complete namespace/import fallback, and dynamic callable
-resolution are known gaps.
+Dynamic string functions, array callables, invokable objects, method callables,
+and first-class callable values execute for covered fixtures. Complete
+namespace/import fallback and wider dynamic callable resolution remain known
+gaps.
 
 Fixture proof: `fixtures/runtime/valid/functions/closure-use.php`,
 `fixtures/runtime/valid/php85/pipe-user-function.php`,
 `fixtures/runtime/valid/php85/pipe-builtin.php`,
 `fixtures/runtime/invalid/php85/pipe-not-callable.php`, and
-`fixtures/runtime/known_gaps/functions/dynamic-call.php`.
+`fixtures/runtime/valid/functions/dynamic-call.php`.
 
 ## Diagnostics Boundary
 

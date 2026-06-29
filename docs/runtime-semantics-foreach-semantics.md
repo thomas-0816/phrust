@@ -37,8 +37,10 @@ MVP while making the array, Copy-on-Write, and reference behavior explicit.
 
 - `E_PHP_IR_UNSUPPORTED_BY_REF_FOREACH` still covers by-reference foreach over
   temporary or nonlocal source expressions.
-- `E_PHP_VM_UNSUPPORTED_FOREACH_SOURCE` covers non-array, non-object, and
-  unsupported Traversable-like sources.
+- Invalid non-array and non-object sources now emit fixture-covered warning and
+  empty-iteration behavior when lowering reaches runtime. Unsupported
+  Traversable-like edge cases are tracked under the mutation and standard
+  library gaps below rather than a broad foreach-source diagnostic.
 - `E_PHP_RUNTIME_ARRAYACCESS_STDLIB_GAP` covers ArrayAccess offset indexing and
   the wider SPL surface. `ArrayAccess` alone is not treated as Traversable.
 - `E_PHP_RUNTIME_FOREACH_MUTATION_COMPAT` covers the complete PHP mutation

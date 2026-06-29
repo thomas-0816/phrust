@@ -342,17 +342,18 @@ when the VM enters the closure frame.
 `use (&$x)` is detected and preserved as `by_ref=true` in the IR and snapshot
 format. Runtime execution captures the source local's reference cell so later
 mutations and writes through the closure observe the same storage. Full
-`Closure::bind`, first-class callable compatibility, and string/array callable
-fallback remain outside this Work item MVP.
+`Closure::bind`, namespace/import fallback, and wider invalid-callable edge
+cases remain outside this Work item MVP.
 
-Work item supports first-class callable names in the actual Semantic frontend HIR shape
-for pipe RHS (`HirExprKind::FirstClassCallable { callee: Name }`) and closure
-values stored in variables. Simple unqualified names resolve in the VM to user
-functions first, then `php_runtime::BuiltinRegistry` entries. Non-callable RHS
-values reach runtime and fail with `E_PHP_VM_PIPE_RHS_NOT_CALLABLE`, preserving
-left-to-right evaluation. Method callables, array callables, invokable objects,
-and dynamic callable syntax are represented as known gaps, not silently
-executed.
+Work item supports first-class callable names in the actual Semantic frontend
+HIR shape for pipe RHS (`HirExprKind::FirstClassCallable { callee: Name }`),
+closure values stored in variables, dynamic string calls, array method
+callables, static method callables, and invokable objects. Simple unqualified
+names resolve in the VM to user functions first, then
+`php_runtime::BuiltinRegistry` entries. Non-callable RHS values reach runtime
+and fail with `E_PHP_VM_PIPE_RHS_NOT_CALLABLE`, preserving left-to-right
+evaluation. Unresolved namespace/import fallback cases are represented as known
+gaps, not silently executed.
 
 Unsupported-feature diagnostic IDs are stable strings such as:
 
@@ -360,24 +361,19 @@ Unsupported-feature diagnostic IDs are stable strings such as:
 - `E_PHP_IR_UNSUPPORTED_YIELD_FROM`
 - `E_PHP_IR_UNSUPPORTED_FIBER`
 - `E_PHP_IR_UNSUPPORTED_EVAL`
-- `E_PHP_IR_UNSUPPORTED_AUTOLOAD`
 - `E_PHP_IR_UNSUPPORTED_REFLECTION`
 - `E_PHP_IR_UNSUPPORTED_TRAIT_RUNTIME`
 - `E_PHP_IR_UNSUPPORTED_ENUM_RUNTIME`
 - `E_PHP_IR_UNSUPPORTED_PROPERTY_HOOKS`
 - `E_PHP_IR_UNSUPPORTED_REFERENCE_SEMANTICS`
 - `E_PHP_IR_UNSUPPORTED_HIR_STATEMENT`
-- `E_PHP_IR_UNSUPPORTED_DYNAMIC_FUNCTION_CALL`
 - `E_PHP_IR_UNSUPPORTED_BY_REF_PARAMETER`
 - `E_PHP_IR_UNSUPPORTED_BY_REF_RETURN`
 - `E_PHP_IR_UNSUPPORTED_ADVANCED_PARAMETER`
 - `E_PHP_IR_UNSUPPORTED_CLASSLIKE_OBJECT`
 - `E_PHP_IR_UNSUPPORTED_OBJECT_METHOD_MODIFIER`
 - `E_PHP_IR_UNSUPPORTED_OBJECT_PROPERTY_MODIFIER`
-- `E_PHP_VM_CALL_NON_CLOSURE`
-- `E_PHP_VM_PIPE_RHS_NOT_CALLABLE`
 - `E_PHP_VM_UNRESOLVED_CALLABLE`
-- `E_PHP_VM_UNSUPPORTED_METHOD_CALLABLE`
 - `E_PHP_VM_PARAM_TYPE_MISMATCH`
 - `E_PHP_VM_RETURN_TYPE_MISMATCH`
 - `E_PHP_VM_PROPERTY_TYPE_MISMATCH`
