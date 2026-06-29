@@ -18,7 +18,7 @@ use crate::literal_text::{
 use crate::module::{
     AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,
     ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags, ClassPropertyEntry,
-    ClassPropertyFlags, ClassPropertyHooks, IrUnit, normalize_class_name,
+    ClassPropertyFlags, ClassPropertyHooks, IrUnit, display_class_name, normalize_class_name,
 };
 use crate::operand::Operand;
 use crate::source_map::{IrSourceMapTarget, IrSpan};
@@ -950,17 +950,7 @@ impl LoweringContext<'_> {
             else {
                 continue;
             };
-            let display_class_name = class_like
-                .fqn()
-                .map(|name| {
-                    name.parts()
-                        .iter()
-                        .map(|part| part.original())
-                        .collect::<Vec<_>>()
-                        .join("\\")
-                })
-                .or_else(|| class_like.name().map(ToOwned::to_owned))
-                .unwrap_or_else(|| name.clone());
+            let display_class_name = class_like_display_name(&class_like, &name);
             let name = normalize_class_name(&name);
             let span = span_from_range(
                 self.file,
@@ -9657,11 +9647,28 @@ impl LoweringContext<'_> {
             .module(self.frontend.module().module_id())?;
         let expression = module.expressions().get(expr)?;
         match expression.kind() {
-            HirExprKind::Name { resolution } => {
-                Some(resolution.source().trim_start_matches('\\').to_owned())
-            }
+            HirExprKind::Name { resolution } => self
+                .declared_class_display_name(
+                    resolution
+                        .resolved()
+                        .or_else(|| resolution.fallback())
+                        .unwrap_or_else(|| resolution.source()),
+                )
+                .or_else(|| Some(display_class_name(resolution.source()))),
             _ => None,
         }
+    }
+
+    fn declared_class_display_name(&self, class_name: &str) -> Option<String> {
+        let module = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())?;
+        let normalized = normalize_class_name(class_name);
+        module.class_likes().iter().find_map(|(_, class_like)| {
+            (class_like_normalized_name(class_like)? == normalized)
+                .then(|| class_like_display_name(class_like, class_name))
+        })
     }
 
     fn static_property_name(&self, expr: ExprId) -> Option<String> {
@@ -10873,6 +10880,20 @@ fn class_like_normalized_name(class_like: &HirClassLike) -> Option<String> {
         .map(|name| normalize_class_name(&name))
 }
 
+fn class_like_display_name(class_like: &HirClassLike, fallback: &str) -> String {
+    class_like
+        .fqn()
+        .map(|name| {
+            name.parts()
+                .iter()
+                .map(|part| part.original())
+                .collect::<Vec<_>>()
+                .join("\\")
+        })
+        .or_else(|| class_like.name().map(ToOwned::to_owned))
+        .unwrap_or_else(|| display_class_name(fallback))
+}
+
 fn named_constant_from_default_source(
     source: &str,
     named_constants: &HashMap<String, IrConstant>,
@@ -11503,6 +11524,20 @@ mod tests {
         let snapshot = result.unit.to_snapshot_text();
         assert!(snapshot.contains("string \"ClassNameBase\""), "{snapshot}");
         assert!(!snapshot.contains("string \"classnamebase\""), "{snapshot}");
+    }
+
+    #[test]
+    fn namespaced_class_name_constant_uses_declared_fqn_display() {
+        let frontend = analyze_source("<?php namespace P21\\Ns; class Child {} echo Child::class;");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(
+            snapshot.contains("string \"P21\\\\Ns\\\\Child\""),
+            "{snapshot}"
+        );
     }
 
     #[test]

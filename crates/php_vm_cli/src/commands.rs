@@ -5388,6 +5388,8 @@ mod tests {
         let code = run(
             [
                 "run".to_string(),
+                "--error-format".to_string(),
+                "text".to_string(),
                 fixture("fixtures/runtime/invalid/errors/undefined-function.php"),
             ],
             &mut stdout,
@@ -5436,6 +5438,8 @@ mod tests {
         let code = run(
             [
                 "run".to_string(),
+                "--error-format".to_string(),
+                "text".to_string(),
                 fixture("fixtures/runtime/valid/arrays/missing-key.php"),
             ],
             &mut stdout,
