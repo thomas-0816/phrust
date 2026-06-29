@@ -1011,6 +1011,7 @@ struct CompileJson<'a> {
     parser_diagnostics: Vec<ParserDiagnosticJson<'a>>,
     semantic_diagnostics: Vec<SemanticDiagnosticJson<'a>>,
     lowering_diagnostics: Vec<LoweringDiagnosticJson<'a>>,
+    verification_diagnostics: Vec<VerificationDiagnosticJson<'a>>,
     ir: IrJson,
     optimizer: Option<OptimizerReportJson<'a>>,
 }
@@ -1024,6 +1025,7 @@ impl<'a> CompileJson<'a> {
             parser_diagnostics: parser_diagnostics_json(&pipeline.path, &pipeline.frontend),
             semantic_diagnostics: semantic_diagnostics_json(&pipeline.path, &pipeline.frontend),
             lowering_diagnostics: lowering_diagnostics_json(&pipeline.path, &pipeline.lowering),
+            verification_diagnostics: verification_diagnostics_json(&pipeline.lowering),
             ir: IrJson {
                 version: pipeline.lowering.unit.version,
                 functions: pipeline.lowering.unit.functions.len(),
@@ -1058,6 +1060,12 @@ struct LoweringDiagnosticJson<'a> {
     id: &'a str,
     message: &'a str,
     span: RangeJson,
+}
+
+#[derive(Serialize)]
+struct VerificationDiagnosticJson<'a> {
+    id: &'a str,
+    message: &'a str,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -4168,6 +4176,21 @@ fn lowering_diagnostics_json<'a>(
         .collect()
 }
 
+fn verification_diagnostics_json(
+    lowering: &php_ir::LoweringResult,
+) -> Vec<VerificationDiagnosticJson<'_>> {
+    match &lowering.verification {
+        Ok(()) => Vec::new(),
+        Err(errors) => errors
+            .iter()
+            .map(|error| VerificationDiagnosticJson {
+                id: error.diagnostic_id(),
+                message: &error.message,
+            })
+            .collect(),
+    }
+}
+
 fn render_markdown_report(pipeline: &Pipeline, vm_result: Option<&VmResult>) -> String {
     let mut out = String::new();
     out.push_str("# PHP VM Report\n\n");
@@ -4277,6 +4300,9 @@ fn diagnostics_text(pipeline: &Pipeline) -> String {
     }
     if let Err(errors) = &pipeline.lowering.verification {
         lines.push(format!("IR verification failed: {} error(s)", errors.len()));
+        for error in errors {
+            lines.push(format!("{} {}", error.diagnostic_id(), error.message));
+        }
     }
     if lines.is_empty() {
         "none".to_string()

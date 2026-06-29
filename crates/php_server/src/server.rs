@@ -1284,6 +1284,7 @@ async fn execute_php_request(
             lookup
         }
         Err(PhpExecutionError::Compile(output)) => {
+            log_php_execution_failure(&script_path, &output);
             return (
                 php_output_response(*output, parts.method == Method::HEAD),
                 None,
@@ -1404,10 +1405,12 @@ async fn execute_php_request(
                     script_cache_hit,
                 );
             }
+            log_php_execution_failure(&script_log_path, &output);
             (php_output_response(output, is_head), script_cache_hit)
         }
         Err(PhpExecutionError::Compile(output)) => {
             cleanup_uploaded_files(&upload_cleanup);
+            log_php_execution_failure(&script_log_path, &output);
             (php_output_response(*output, is_head), script_cache_hit)
         }
         Err(PhpExecutionError::Engine(error)) => {
@@ -1463,6 +1466,34 @@ fn execute_compiled_php_with_state(
         },
     );
     Ok(output)
+}
+
+fn log_php_execution_failure(script_path: &Path, output: &PhpExecutionOutput) {
+    if output.status == PhpExecutionStatus::Success {
+        return;
+    }
+
+    let diagnostics = output
+        .runtime_diagnostics
+        .iter()
+        .take(5)
+        .map(|diagnostic| format!("{}: {}", diagnostic.id(), diagnostic.message()))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let diagnostic_summary = if diagnostics.is_empty() {
+        output.diagnostics_text.trim()
+    } else {
+        diagnostics.as_str()
+    };
+
+    warn!(
+        script=%script_path.display(),
+        status=?output.status,
+        runtime_diagnostics=output.runtime_diagnostics.len(),
+        stdout_bytes=output.stdout.len(),
+        diagnostics=%diagnostic_summary,
+        "php execution failed"
+    );
 }
 
 fn seed_session_state(

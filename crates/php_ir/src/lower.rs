@@ -350,6 +350,8 @@ struct MethodFunctionInput<'a> {
     display_class_name: &'a str,
     display_method_name: &'a str,
     signature: &'a FunctionSignature,
+    class_constant_initializers: &'a ClassConstantInitializerMap,
+    class_parents: &'a ClassParentMap,
     main_function: FunctionId,
 }
 
@@ -509,6 +511,8 @@ struct TraitCompositionInput<'a> {
     class_like: &'a php_semantics::hir::HirClassLike,
     class_name: &'a str,
     display_class_name: &'a str,
+    class_constant_initializers: &'a ClassConstantInitializerMap,
+    class_parents: &'a ClassParentMap,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -587,7 +591,7 @@ pub fn lower_frontend_result(
 
     let mut context = LoweringContext::new(frontend, options, file);
     context.function_names.insert(function, String::new());
-    context.lower_global_constant_declarations(&mut builder);
+    let block = context.lower_global_constant_declarations(&mut builder, function, block);
     context.lower_function_declarations(&mut builder, function);
     context.lower_class_declarations(&mut builder, function);
     let current_block = context.lower_top_level(&mut builder, function, block);
@@ -652,36 +656,62 @@ pub fn lower_frontend_result(
 }
 
 impl LoweringContext<'_> {
-    fn lower_global_constant_declarations(&mut self, builder: &mut IrBuilder) {
+    fn lower_global_constant_declarations(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+    ) -> BlockId {
         let Some(module) = self
             .frontend
             .database()
             .module(self.frontend.module().module_id())
         else {
-            return;
+            return block;
         };
         let entries = module.declaration_table().entries().to_vec();
         let mut initializers = self.global_const_initializers().into_iter();
+        let mut current = block;
         for declaration in entries
             .iter()
             .filter(|entry| entry.kind() == DeclarationKind::Constant)
         {
-            let Some(Some(constant)) = initializers.next() else {
+            let span = span_from_range(self.file, declaration.span());
+            let name = declaration.fqn().canonical(NameKind::Constant);
+            let Some((expr_id, constant)) = initializers.next() else {
                 self.unsupported(
                     UnsupportedFeature::HirStatement,
                     declaration.span(),
-                    "global const initializer is not a folded Semantic frontend constant expression",
+                    "global const initializer is missing from the Semantic frontend",
                 );
                 continue;
             };
-            let value = builder.intern_constant(constant);
-            let span = span_from_range(self.file, declaration.span());
-            builder.register_constant_name(
-                declaration.fqn().canonical(NameKind::Constant),
-                value,
+            if let Some(constant) = constant {
+                let value = builder.intern_constant(constant);
+                builder.register_constant_name(name, value, span);
+                continue;
+            }
+            let Some(value) = self.lower_expr_to_register(builder, function, current, expr_id)
+            else {
+                self.unsupported(
+                    UnsupportedFeature::HirStatement,
+                    declaration.span(),
+                    "global const initializer is not a lowerable constant expression",
+                );
+                continue;
+            };
+            current = value.block;
+            builder.emit(
+                function,
+                current,
+                InstructionKind::RegisterConstant {
+                    name,
+                    value: Operand::Register(value.register),
+                },
                 span,
             );
         }
+        current
     }
 
     fn lower_class_declarations(&mut self, builder: &mut IrBuilder, main_function: FunctionId) {
@@ -842,6 +872,8 @@ impl LoweringContext<'_> {
                     class_like: &class_like,
                     class_name: &name,
                     display_class_name: &display_class_name,
+                    class_constant_initializers: &class_constant_initializers,
+                    class_parents: &class_parents,
                 },
                 &mut methods,
             );
@@ -896,6 +928,8 @@ impl LoweringContext<'_> {
                                 display_class_name: &display_class_name,
                                 display_method_name: &display_method_name,
                                 signature: &signature,
+                                class_constant_initializers: &class_constant_initializers,
+                                class_parents: &class_parents,
                                 main_function,
                             },
                         );
@@ -1184,16 +1218,14 @@ impl LoweringContext<'_> {
             span,
         );
         for param in input.signature.parameters() {
-            if param.flags().is_by_ref() {
-                self.unsupported(
-                    UnsupportedFeature::ByReferenceParameter,
-                    param.span(),
-                    "by-reference method parameters are not executable in the method-runtime method MVP",
-                );
-            }
             let local_name = local_name(param.name()).to_owned();
             let local = builder.intern_local(function, &local_name);
-            let default = self.lower_param_default(param);
+            let default = self.lower_param_default_with_class_constants(
+                param,
+                Some(input.class_name),
+                input.class_constant_initializers,
+                input.class_parents,
+            );
             if param.default().is_some() && default.is_none() {
                 self.unsupported(
                     UnsupportedFeature::AdvancedParameter,
@@ -1491,6 +1523,8 @@ impl LoweringContext<'_> {
             class_like,
             class_name,
             display_class_name,
+            class_constant_initializers,
+            class_parents,
         } = input;
         let mut candidates = Vec::<TraitMethodCandidate>::new();
         let mut removed = HashSet::<(String, String)>::new();
@@ -1622,6 +1656,8 @@ impl LoweringContext<'_> {
                     display_class_name,
                     display_method_name: &candidate.display_method_name,
                     signature: &candidate.signature,
+                    class_constant_initializers,
+                    class_parents,
                     main_function,
                 },
             );
@@ -1713,7 +1749,7 @@ impl LoweringContext<'_> {
         }
     }
 
-    fn global_const_initializers(&self) -> Vec<Option<IrConstant>> {
+    fn global_const_initializers(&self) -> Vec<(ExprId, Option<IrConstant>)> {
         let module = self
             .frontend
             .database()
@@ -1722,6 +1758,13 @@ impl LoweringContext<'_> {
             return Vec::new();
         };
         let named_constants = predefined_constant_initializer_map();
+        let class_likes = module
+            .class_likes()
+            .iter()
+            .map(|(id, class_like)| (id, class_like.clone()))
+            .collect::<Vec<_>>();
+        let class_constant_initializers = collect_class_constant_initializers(module, &class_likes);
+        let class_parents = collect_class_parents(&class_likes);
         module
             .const_exprs()
             .iter()
@@ -1730,12 +1773,21 @@ impl LoweringContext<'_> {
                     && const_expr.is_allowed()
             })
             .map(|(_, const_expr)| {
-                constant_from_expr_with_names(module, const_expr.expr_id(), &named_constants)
-                    .or_else(|| {
-                        const_expr
-                            .folded_value()
-                            .and_then(ir_constant_from_const_value)
-                    })
+                let value = constant_from_expr_with_class_constants(
+                    module,
+                    const_expr.expr_id(),
+                    &named_constants,
+                    None,
+                    &class_constant_initializers,
+                    &class_parents,
+                    &mut Vec::new(),
+                )
+                .or_else(|| {
+                    const_expr
+                        .folded_value()
+                        .and_then(ir_constant_from_const_value)
+                });
+                (const_expr.expr_id(), value)
             })
             .collect()
     }
@@ -1758,7 +1810,7 @@ impl LoweringContext<'_> {
             .filter_map(|entry| {
                 values
                     .next()
-                    .and_then(|value| value.map(|value| (entry, value)))
+                    .and_then(|(_, value)| value.map(|value| (entry, value)))
             })
             .flat_map(|(entry, value)| {
                 [
@@ -1781,6 +1833,7 @@ impl LoweringContext<'_> {
             return;
         };
         let signatures = module.signatures().to_vec();
+        let mut registered_conditional_names = HashSet::new();
         for signature in signatures {
             if signature.kind() != SignatureKind::Function {
                 continue;
@@ -1805,7 +1858,13 @@ impl LoweringContext<'_> {
             );
             builder.set_function_attributes(function, attributes);
             self.function_names.insert(function, name.to_string());
-            builder.register_function_name(normalize_function_name(&registered_name), function);
+            let normalized_name = normalize_function_name(&registered_name);
+            let declaration_kind = function_declaration_kind(module, &signature, &normalized_name);
+            if declaration_kind != Some(DeclarationKind::ConditionalFunction)
+                || registered_conditional_names.insert(normalized_name.clone())
+            {
+                builder.register_function_name(normalized_name, function);
+            }
             builder.set_return_type(function, self.lower_return_type(signature.return_type()));
             builder.set_returns_by_ref(function, signature.by_ref_return());
             builder.add_source_map(
@@ -1871,6 +1930,16 @@ impl LoweringContext<'_> {
     }
 
     fn lower_param_default(&self, param: &Parameter) -> Option<IrConstant> {
+        self.lower_param_default_with_class_constants(param, None, &HashMap::new(), &HashMap::new())
+    }
+
+    fn lower_param_default_with_class_constants(
+        &self,
+        param: &Parameter,
+        current_class: Option<&str>,
+        class_constants: &ClassConstantInitializerMap,
+        class_parents: &ClassParentMap,
+    ) -> Option<IrConstant> {
         let default = param.default()?;
         let module = self
             .frontend
@@ -1882,7 +1951,18 @@ impl LoweringContext<'_> {
                 .source_text
                 .as_str()
                 .get(default.span().start().to_usize()..default.span().end().to_usize())
-                .and_then(|source| named_constant_from_default_source(source, &named_constants));
+                .and_then(|source| {
+                    named_constant_from_default_source(source, &named_constants).or_else(|| {
+                        class_constant_from_default_source(
+                            module,
+                            source,
+                            current_class,
+                            &named_constants,
+                            class_constants,
+                            class_parents,
+                        )
+                    })
+                });
         }
         module
             .const_exprs()
@@ -1914,7 +1994,15 @@ impl LoweringContext<'_> {
                 {
                     return Some(value);
                 }
-                constant_from_expr_with_names(module, const_expr.expr_id(), &named_constants)
+                constant_from_expr_with_class_constants(
+                    module,
+                    const_expr.expr_id(),
+                    &named_constants,
+                    current_class,
+                    class_constants,
+                    class_parents,
+                    &mut Vec::new(),
+                )
             })
             .or_else(|| {
                 self.source_text
@@ -1922,6 +2010,16 @@ impl LoweringContext<'_> {
                     .get(default.span().start().to_usize()..default.span().end().to_usize())
                     .and_then(|source| {
                         named_constant_from_default_source(source, &named_constants)
+                            .or_else(|| {
+                                class_constant_from_default_source(
+                                    module,
+                                    source,
+                                    current_class,
+                                    &named_constants,
+                                    class_constants,
+                                    class_parents,
+                                )
+                            })
                             .or_else(|| literal_constant(source))
                     })
             })
@@ -3374,19 +3472,6 @@ impl LoweringContext<'_> {
                     .map(|name| builder.intern_local(function, name))
             })
             .collect::<Vec<_>>();
-
-        for catch in &parts.catches {
-            if !catch_types_supported(catch) {
-                self.unsupported(
-                    UnsupportedFeature::CatchType,
-                    self.span_for(SourceMappedId::from(stmt_id)),
-                    format!(
-                        "catch types {:?} are outside the exception exception MVP",
-                        catch.types
-                    ),
-                );
-            }
-        }
 
         if let Some(finally) = finally_block {
             builder.emit(
@@ -10217,12 +10302,23 @@ fn qualified_function_name(
     short_name.to_owned()
 }
 
-fn catch_types_supported(catch: &HirCatchClause) -> bool {
-    catch.types.is_empty()
-        || catch.types.iter().all(|ty| {
-            let normalized = normalize_class_name(ty);
-            is_internal_throwable_class(&normalized)
+fn function_declaration_kind(
+    module: &HirModule,
+    signature: &FunctionSignature,
+    normalized_name: &str,
+) -> Option<DeclarationKind> {
+    module
+        .declaration_table()
+        .entries()
+        .iter()
+        .find(|entry| {
+            matches!(
+                entry.kind(),
+                DeclarationKind::Function | DeclarationKind::ConditionalFunction
+            ) && entry.fqn().canonical(NameKind::Function) == normalized_name
+                && range_contains(signature.span(), entry.span())
         })
+        .map(|entry| entry.kind())
 }
 
 fn is_internal_throwable_class(normalized: &str) -> bool {
@@ -10402,6 +10498,44 @@ fn named_constant_from_default_source(
         .map_or(source, |(_, value)| value)
         .trim();
     named_constants.get(value).cloned()
+}
+
+fn class_constant_from_default_source(
+    module: &HirModule,
+    source: &str,
+    current_class: Option<&str>,
+    named_constants: &HashMap<String, IrConstant>,
+    class_constants: &ClassConstantInitializerMap,
+    class_parents: &ClassParentMap,
+) -> Option<IrConstant> {
+    let value = source
+        .split_once('=')
+        .map_or(source, |(_, value)| value)
+        .trim();
+    let (target, member) = value.split_once("::")?;
+    let member = member.trim();
+    if member.is_empty() {
+        return None;
+    }
+    let target_class =
+        if target.eq_ignore_ascii_case("self") || target.eq_ignore_ascii_case("static") {
+            current_class.map(normalize_class_name)?
+        } else if target.eq_ignore_ascii_case("parent") {
+            current_class
+                .map(normalize_class_name)
+                .and_then(|class| class_parents.get(&class).cloned().flatten())?
+        } else {
+            normalize_class_name(target.trim_start_matches('\\'))
+        };
+    resolve_class_constant_initializer(
+        module,
+        &target_class,
+        member,
+        named_constants,
+        class_constants,
+        class_parents,
+        &mut Vec::new(),
+    )
 }
 
 fn constant_from_expr_with_names(
@@ -11421,6 +11555,64 @@ mod tests {
     }
 
     #[test]
+    fn global_const_initializers_can_alias_class_constants() {
+        let frontend = analyze_source(
+            "<?php namespace Sodium; class Compat { const KEYBYTES = 32; } const CRYPTO_KEYBYTES = Compat::KEYBYTES;",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        assert_eq!(result.unit.constant_table.len(), 1);
+        let value = &result.unit.constants[result.unit.constant_table[0].value.index()];
+        assert_eq!(value, &IrConstant::Int(32));
+    }
+
+    #[test]
+    fn global_const_initializers_can_register_external_class_constants_at_runtime() {
+        let frontend =
+            analyze_source("<?php namespace Sodium; const CRYPTO_KEYBYTES = Compat::KEYBYTES;");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        assert!(result.unit.constant_table.is_empty());
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(
+            snapshot.contains("fetch_class_constant r0 sodium\\compat::KEYBYTES"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("register_constant \"Sodium\\\\CRYPTO_KEYBYTES\" r0"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn static_class_constant_targets_use_class_import_resolution() {
+        let frontend = analyze_source(
+            "<?php namespace Sodium; use ParagonIE_Sodium_Compat; const CRYPTO_KEYBYTES = ParagonIE_Sodium_Compat::KEYBYTES;",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(
+            snapshot.contains("fetch_class_constant r0 paragonie_sodium_compat::KEYBYTES"),
+            "{snapshot}"
+        );
+        assert!(
+            !snapshot.contains("Sodium\\ParagonIE_Sodium_Compat::KEYBYTES"),
+            "{snapshot}"
+        );
+        assert!(
+            !snapshot.contains("Sodium\\paragonie_sodium_compat::KEYBYTES"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
     fn class_constant_forward_references_lower_to_ir_constants() {
         let frontend = analyze_source(
             "<?php class C { const CONST_2 = self::CONST_1; const CONST_1 = self::BASE_CONST; const BASE_CONST = 'hello'; }",
@@ -11459,6 +11651,44 @@ mod tests {
             values.get("BASE_CONST"),
             Some(&IrConstant::String("hello".into()))
         );
+    }
+
+    #[test]
+    fn method_parameter_defaults_can_use_class_constants() {
+        let frontend = analyze_source(
+            "<?php class C { const LIMIT = 32; public static function f($limit = self::LIMIT) { return $limit; } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let method = result
+            .unit
+            .functions
+            .iter()
+            .find(|function| function.name == "C::f")
+            .expect("method function");
+        assert_eq!(method.params[0].default, Some(IrConstant::Int(32)));
+    }
+
+    #[test]
+    fn custom_typed_catches_and_by_ref_method_parameters_lower_to_ir() {
+        let frontend = analyze_source(
+            "<?php class MyEx extends Exception {} class C { public function fill(&$value) { try { throw new MyEx('x'); } catch (MyEx $e) { $value = $e->getMessage(); } } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let method = result
+            .unit
+            .functions
+            .iter()
+            .find(|function| function.name == "C::fill")
+            .expect("method function");
+        assert!(method.params[0].by_ref);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("catch_types=[myex]"), "{snapshot}");
     }
 
     #[test]
@@ -11565,6 +11795,48 @@ mod tests {
         assert!(snapshot.contains("isset_static_property r"), "{snapshot}");
         assert!(snapshot.contains("empty_static_property r"), "{snapshot}");
         assert!(snapshot.contains("C::$p"), "{snapshot}");
+    }
+
+    #[test]
+    fn construct_empty_superglobal_dim_lowers_to_empty_dim_instruction() {
+        let frontend = analyze_source(
+            "<?php const RECOVERY_MODE_COOKIE = 'wordpress_rec'; if (empty($_COOKIE[RECOVERY_MODE_COOKIE])) { echo 'missing'; }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("empty_dim r"), "{snapshot}");
+        assert!(snapshot.contains("RECOVERY_MODE_COOKIE"), "{snapshot}");
+    }
+
+    #[test]
+    fn construct_isset_interpolated_dim_lowers_to_isset_dim_instruction() {
+        let frontend = analyze_source(
+            r#"<?php function plugin($plugins, $extension) { if (isset($plugins["{$extension['slug']}/{$extension['slug']}.php"])) { return $plugins["{$extension['slug']}/{$extension['slug']}.php"]; } }"#,
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("isset_dim r"), "{snapshot}");
+        assert!(snapshot.contains("fetch_dim r"), "{snapshot}");
+    }
+
+    #[test]
+    fn construct_isset_nested_dim_key_lowers_to_isset_dim_instruction() {
+        let frontend = analyze_source(
+            "<?php function error_name($core_errors, $error) { if (isset($core_errors[$error['type']])) { echo $core_errors[$error['type']]; } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("isset_dim r"), "{snapshot}");
+        assert!(snapshot.contains("fetch_dim r"), "{snapshot}");
     }
 
     #[test]
@@ -12366,6 +12638,31 @@ mod tests {
         let snapshot = result.unit.to_snapshot_text();
         assert!(snapshot.contains("function_name \"performanceic\\\\hot\" => function:1"));
         assert!(snapshot.contains("\"performanceic\\\\hot\""));
+    }
+
+    #[test]
+    fn conditional_duplicate_functions_keep_bodies_without_duplicate_lookup_entries() {
+        let frontend = analyze_source(
+            "<?php if (false) : function branch_dup() { return 'no'; } else : function branch_dup() { return 'yes'; } endif;",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        assert_eq!(result.unit.functions.len(), 3);
+        assert_eq!(result.unit.function_table.len(), 1);
+        assert_eq!(result.unit.function_table[0].name, "branch_dup");
+        assert_eq!(
+            result
+                .unit
+                .functions
+                .iter()
+                .filter(|function| function.name == "branch_dup")
+                .count(),
+            2
+        );
+        let snapshot = result.unit.to_snapshot_text();
+        assert_eq!(snapshot.matches("function_name \"branch_dup\"").count(), 1);
     }
 
     #[test]

@@ -411,6 +411,9 @@ fn format_instruction(kind: &InstructionKind) -> String {
         InstructionKind::FetchConst { dst, name } => {
             format!("fetch_const r{} {:?}", dst.raw(), name)
         }
+        InstructionKind::RegisterConstant { name, value } => {
+            format!("register_constant {:?} {}", name, format_operand(value))
+        }
         InstructionKind::Move { dst, src } => {
             format!("move r{} {}", dst.raw(), format_operand(src))
         }

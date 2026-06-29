@@ -838,6 +838,9 @@ impl<'a> Planner<'a> {
             InstructionKind::FetchConst { name, .. } => {
                 self.add_lookup_edge(owner, "constant", &name);
             }
+            InstructionKind::RegisterConstant { name, .. } => {
+                self.add_lookup_edge(owner, "constant", &name);
+            }
             InstructionKind::FetchClassConstant {
                 class_name,
                 constant,

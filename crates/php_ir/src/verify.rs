@@ -259,6 +259,9 @@ fn verify_instruction(
         InstructionKind::FetchConst { dst, .. } => {
             verify_register(*dst, function.register_count, errors);
         }
+        InstructionKind::RegisterConstant { value, .. } => {
+            verify_operand(value, function, unit, errors);
+        }
         InstructionKind::Move { dst, src } => {
             verify_register(*dst, function.register_count, errors);
             verify_operand(src, function, unit, errors);
@@ -1046,6 +1049,7 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         | InstructionKind::EmitDiagnostic { .. }
         | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => {}
+        InstructionKind::RegisterConstant { value, .. } => operand_register_uses(value, uses),
         InstructionKind::Move { src, .. }
         | InstructionKind::StoreLocal { src, .. }
         | InstructionKind::InitStaticLocal { default: src, .. }
@@ -1309,6 +1313,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
             }
         }
         InstructionKind::Nop
+        | InstructionKind::RegisterConstant { .. }
         | InstructionKind::StoreLocal { .. }
         | InstructionKind::BindReference { .. }
         | InstructionKind::BindGlobal { .. }

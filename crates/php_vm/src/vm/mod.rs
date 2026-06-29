@@ -10184,7 +10184,19 @@ impl Vm {
                         let value = match self.constant_value(unit, *constant) {
                             Ok(value) => value,
                             Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    instruction_runtime_error_context(
+                                        message,
+                                        unit,
+                                        function,
+                                        block_id,
+                                        instruction_index,
+                                        instruction,
+                                    ),
+                                );
                             }
                         };
                         if let Err(message) = stack
@@ -10228,6 +10240,33 @@ impl Vm {
                             .set(*dst, value)
                         {
                             return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::RegisterConstant { name, value } => {
+                        let value = match read_operand(unit, stack, *value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    instruction_runtime_error_context(
+                                        message,
+                                        unit,
+                                        function,
+                                        block_id,
+                                        instruction_index,
+                                        instruction,
+                                    ),
+                                );
+                            }
+                        };
+                        if compiled.lookup_constant(name).is_none()
+                            && !state.user_constants.contains_key(name)
+                        {
+                            state
+                                .user_constants
+                                .insert(name.clone(), effective_value(&value));
                         }
                     }
                     InstructionKind::Move { dst, src } => {
@@ -13456,19 +13495,17 @@ impl Vm {
                                     .iter()
                                     .find(|case| case.name.eq_ignore_ascii_case(constant))
                             {
-                                let object = match enum_case_object(
-                                    compiled,
-                                    state,
-                                    &class,
-                                    case,
-                                    &|value| self.constant_value(compiled.unit(), value),
-                                ) {
-                                    Ok(object) => object,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                };
+                                let owner = class_owner_in_state(compiled, state, &class.name);
+                                let object =
+                                    match enum_case_object(&owner, state, &class, case, &|value| {
+                                        self.constant_value(owner.unit(), value)
+                                    }) {
+                                        Ok(object) => object,
+                                        Err(message) => {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                    };
                                 let target =
                                     match dynamic_class_owner_index_in_state(state, &class.name) {
                                         Some(unit_index) => {
@@ -13596,8 +13633,9 @@ impl Vm {
                                     member: resolved.constant.name.clone(),
                                 },
                             };
+                            let owner = class_owner_in_state(compiled, state, &resolved.class.name);
                             let value = match resolved.constant.value {
-                                Some(value) => match constant_value(unit, value) {
+                                Some(value) => match constant_value(owner.unit(), value) {
                                     Ok(value) => value,
                                     Err(message) => {
                                         return self
@@ -21794,47 +21832,10 @@ impl Vm {
         state: &ExecutionState,
         name: &str,
     ) -> Option<FunctionCallCacheTarget> {
-        if is_autoload_builtin_name(name) || is_symbol_introspection_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::AutoloadOrSymbolIntrospection,
-                name: name.to_owned(),
-            });
-        }
-        if is_config_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::Config,
-                name: name.to_owned(),
-            });
-        }
-        if is_error_handling_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::ErrorHandling,
-                name: name.to_owned(),
-            });
-        }
-        if is_output_buffering_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::OutputBuffering,
-                name: name.to_owned(),
-            });
-        }
-        if is_environment_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::Environment,
-                name: name.to_owned(),
-            });
-        }
-        if is_process_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::Process,
-                name: name.to_owned(),
-            });
-        }
-        if is_pcre_callback_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::PcreCallback,
-                name: name.to_owned(),
-            });
+        if !name.contains('\\')
+            && let Some(target) = builtin_function_call_target(name)
+        {
+            return Some(target);
         }
         if let Some(function) = compiled.lookup_function(name) {
             return Some(FunctionCallCacheTarget::CurrentUnit { function });
@@ -21845,23 +21846,26 @@ impl Vm {
                 function,
             });
         }
-        if is_array_callback_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::ArrayCallback,
-                name: name.to_owned(),
-            });
+
+        if let Some(fallback_name) = namespaced_function_global_fallback(name) {
+            if let Some(function) = compiled.lookup_function(fallback_name) {
+                return Some(FunctionCallCacheTarget::CurrentUnit { function });
+            }
+            if let Some((unit_index, function)) =
+                dynamic_function_target_in_state(state, fallback_name)
+            {
+                return Some(FunctionCallCacheTarget::DynamicUnit {
+                    unit_index,
+                    function,
+                });
+            }
+            if let Some(target) = builtin_function_call_target(fallback_name) {
+                return Some(target);
+            }
         }
-        if is_array_sort_builtin_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::ArraySort,
-                name: name.to_owned(),
-            });
-        }
-        if let Some(name) = internal_registry_builtin_call_name(name) {
-            return Some(FunctionCallCacheTarget::Builtin {
-                kind: FunctionCallBuiltinKind::InternalRegistry,
-                name,
-            });
+
+        if let Some(target) = builtin_function_call_target(name) {
+            return Some(target);
         }
         None
     }
@@ -28304,6 +28308,29 @@ fn normalize_exit_code(code: i64) -> i32 {
 
 fn compiled_unit_cache_key(compiled: &CompiledUnit) -> u64 {
     std::ptr::from_ref(compiled.unit()) as usize as u64
+}
+
+fn instruction_runtime_error_context(
+    message: String,
+    unit: &IrUnit,
+    function: &IrFunction,
+    block_id: BlockId,
+    instruction_index: usize,
+    instruction: &Instruction,
+) -> String {
+    let source = unit
+        .files
+        .first()
+        .map(|file| file.path.as_str())
+        .unwrap_or("<unknown>");
+    format!(
+        "{message} in {source} function={} block:{} instruction:{} {:?} constants={}",
+        function.name,
+        block_id.raw(),
+        instruction_index,
+        instruction.kind,
+        unit.constants.len()
+    )
 }
 
 #[cfg(feature = "jit-cranelift")]
@@ -44137,6 +44164,72 @@ fn internal_registry_builtin_call_name(name: &str) -> Option<String> {
     registry.contains(short).then(|| short.to_owned())
 }
 
+fn builtin_function_call_target(name: &str) -> Option<FunctionCallCacheTarget> {
+    if is_autoload_builtin_name(name) || is_symbol_introspection_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::AutoloadOrSymbolIntrospection,
+            name: name.to_owned(),
+        });
+    }
+    if is_config_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::Config,
+            name: name.to_owned(),
+        });
+    }
+    if is_error_handling_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::ErrorHandling,
+            name: name.to_owned(),
+        });
+    }
+    if is_output_buffering_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::OutputBuffering,
+            name: name.to_owned(),
+        });
+    }
+    if is_environment_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::Environment,
+            name: name.to_owned(),
+        });
+    }
+    if is_process_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::Process,
+            name: name.to_owned(),
+        });
+    }
+    if is_pcre_callback_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::PcreCallback,
+            name: name.to_owned(),
+        });
+    }
+    if is_array_callback_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::ArrayCallback,
+            name: name.to_owned(),
+        });
+    }
+    if is_array_sort_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::ArraySort,
+            name: name.to_owned(),
+        });
+    }
+    internal_registry_builtin_call_name(name).map(|name| FunctionCallCacheTarget::Builtin {
+        kind: FunctionCallBuiltinKind::InternalRegistry,
+        name,
+    })
+}
+
+fn namespaced_function_global_fallback(name: &str) -> Option<&str> {
+    let short = name.rsplit_once('\\')?.1;
+    (!short.is_empty()).then_some(short)
+}
+
 fn has_array_operand(value: &Value) -> bool {
     match value {
         Value::Array(_) => true,
@@ -49499,6 +49592,26 @@ echo perf_jit_unstable_types_debug(4), "\n";
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"3");
+    }
+
+    #[test]
+    fn function_calls_fallback_to_global_context_builtin_from_namespace() {
+        let result = execute_source(
+            "<?php namespace Sodium; echo is_callable('strlen') ? 'callable' : 'no';",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"callable");
+    }
+
+    #[test]
+    fn function_calls_prefer_namespaced_user_function_over_context_builtin_fallback() {
+        let result = execute_source(
+            "<?php namespace Sodium; function is_callable($value) { return 'local'; } echo is_callable('strlen');",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"local");
     }
 
     #[test]

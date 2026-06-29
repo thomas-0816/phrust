@@ -210,6 +210,8 @@ pub enum InstructionKind {
     LoadConst { dst: RegId, constant: ConstId },
     /// `dst = global_constant(name)`.
     FetchConst { dst: RegId, name: String },
+    /// Registers a global constant at runtime.
+    RegisterConstant { name: String, value: Operand },
     /// `dst = src`.
     Move { dst: RegId, src: Operand },
     /// `dst = local`.

@@ -56,7 +56,7 @@ impl NodeKey {
 
     fn expr(node: &SyntaxNode, context: ResolveContext) -> Self {
         let mut key = Self::new(node);
-        if node.kind().name() == "NAME" {
+        if matches!(ExprNode::cast(node), Some(ExprNode::Name(_))) {
             key.kind.push('@');
             key.kind.push_str(context.as_str());
         }
@@ -221,6 +221,13 @@ impl HirLowerer<'_> {
     }
 
     fn lower_expr_wrapper(&mut self, node: &SyntaxNode, context: ResolveContext) -> ExprId {
+        if let Some(construct) = syntax_child_nodes(node)
+            .find(|child| matches!(ExprNode::cast(child), Some(ExprNode::Construct(_))))
+        {
+            let kind = self.construct_expr_kind(construct);
+            return self.alloc_expr(kind, node.text_range());
+        }
+
         let mut current = None;
         let mut current_node_kind = None::<String>;
         let mut previous_child = None::<&SyntaxNode>;
@@ -288,7 +295,9 @@ impl HirLowerer<'_> {
                     let member = self
                         .first_expr_child(child, false)
                         .or_else(|| self.static_member_literal(child));
-                    let target = current.or_else(|| self.static_reserved_target_name(child));
+                    let target = current
+                        .map(|target| self.reclassify_static_access_target(target))
+                        .or_else(|| self.static_reserved_target_name(child));
                     current = Some(self.alloc_expr(
                         HirExprKind::StaticAccess { target, member },
                         cover_child_span(node, child),
@@ -488,7 +497,7 @@ impl HirLowerer<'_> {
             },
             Some(ExprNode::StaticAccess(_)) => HirExprKind::StaticAccess {
                 target: self
-                    .first_expr_child(node, false)
+                    .first_expr_child_with_context(node, ResolveContext::ClassLike)
                     .or_else(|| self.static_reserved_target_name(node)),
                 member: self
                     .nth_expr_child(node, 1, false)
@@ -1116,16 +1125,33 @@ impl HirLowerer<'_> {
         rest = rest[variable_len..].trim();
         loop {
             if let Some(after_open) = rest.strip_prefix('[') {
-                let close = after_open.find(']')?;
+                let close = find_construct_dimension_close(after_open)?;
                 let dim_text = after_open[..close].trim();
-                let dim = (!dim_text.is_empty()).then(|| {
-                    self.alloc_expr(
+                let dim = if dim_text.is_empty() {
+                    None
+                } else if let Some(expr) = self.simple_construct_operand_source(dim_text, range) {
+                    Some(expr)
+                } else if is_simple_construct_identifier(dim_text) {
+                    Some(self.alloc_expr(
+                        HirExprKind::Name {
+                            resolution: HirNameResolution::new(
+                                dim_text,
+                                ResolveContext::ConstantFetch.as_str(),
+                                "unresolved",
+                                None,
+                                None,
+                            ),
+                        },
+                        range,
+                    ))
+                } else {
+                    Some(self.alloc_expr(
                         HirExprKind::Literal {
                             text: dim_text.to_owned(),
                         },
                         range,
-                    )
-                });
+                    ))
+                };
                 current = self.alloc_expr(
                     HirExprKind::DimFetch {
                         receiver: Some(current),
@@ -1570,6 +1596,7 @@ impl HirLowerer<'_> {
                 let Some(target) = out.pop() else {
                     continue;
                 };
+                let target = self.reclassify_static_access_target(target);
                 let member = self
                     .first_expr_child(child, false)
                     .or_else(|| self.static_member_literal(child));
@@ -1828,6 +1855,7 @@ impl HirLowerer<'_> {
                 let Some(target) = out.pop() else {
                     continue;
                 };
+                let target = self.reclassify_static_access_target(target);
                 let member = self
                     .first_expr_child(child, false)
                     .or_else(|| self.static_member_literal(child));
@@ -1849,6 +1877,59 @@ impl HirLowerer<'_> {
             out.push(self.lower_expr(child, context));
         }
         out
+    }
+
+    fn reclassify_static_access_target(&mut self, target: ExprId) -> ExprId {
+        let Some(span) = self.frontend_span(target) else {
+            return target;
+        };
+        let Some(source) = self
+            .database
+            .module(self.module_id)
+            .and_then(|module| module.expressions().get(target))
+            .and_then(|expr| match expr.kind() {
+                HirExprKind::Name { resolution } => Some(resolution.source().to_owned()),
+                _ => None,
+            })
+        else {
+            return target;
+        };
+        if source.eq_ignore_ascii_case("self")
+            || source.eq_ignore_ascii_case("parent")
+            || source.eq_ignore_ascii_case("static")
+        {
+            return target;
+        }
+        let qualified = QualifiedName::parse(&source);
+        let result = self
+            .scope
+            .resolver()
+            .resolve(&qualified, ResolveContext::ClassLike);
+        let name_kind =
+            crate::symbols::resolution::NameResolver::name_kind(ResolveContext::ClassLike);
+        let (resolved, fallback) = match &result {
+            ResolvedName::FullyQualified(name) => (Some(name.canonical(name_kind)), None),
+            ResolvedName::MaybeRuntimeFallback {
+                namespaced,
+                fallback,
+            } => (
+                Some(namespaced.canonical(name_kind)),
+                Some(fallback.canonical(name_kind)),
+            ),
+            ResolvedName::Dynamic | ResolvedName::Unresolved => (None, None),
+        };
+        self.alloc_expr(
+            HirExprKind::Name {
+                resolution: HirNameResolution::new(
+                    source,
+                    ResolveContext::ClassLike.as_str(),
+                    result.classification(),
+                    resolved,
+                    fallback,
+                ),
+            },
+            span,
+        )
     }
 
     fn expr_has_trailing_call(&self, node: &SyntaxNode, expr: ExprId, call: &SyntaxNode) -> bool {
@@ -2087,6 +2168,36 @@ fn split_construct_args(source: &str) -> Vec<&str> {
     }
     args.push(source[start..].trim());
     args
+}
+
+fn find_construct_dimension_close(source: &str) -> Option<usize> {
+    let mut quote = None::<u8>;
+    let mut escaped = false;
+    let mut bracket_depth = 0usize;
+    for (index, byte) in source.bytes().enumerate() {
+        if let Some(quoted) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                continue;
+            }
+            if byte == quoted {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' if bracket_depth == 0 => return Some(index),
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn only_trivia_between(node: &SyntaxNode, left_end: usize, right_start: usize) -> bool {
