@@ -1040,14 +1040,9 @@ impl HirLowerer<'_> {
             let inner = inner.trim();
             if inner.is_empty() {
                 None
-            } else if is_quoted_construct_operand(inner) {
-                Some(self.alloc_expr(
-                    HirExprKind::Literal {
-                        text: inner.to_owned(),
-                    },
-                    node.text_range(),
-                ))
-            } else if inner.bytes().all(|byte| byte.is_ascii_digit()) {
+            } else if is_quoted_construct_operand(inner)
+                || inner.bytes().all(|byte| byte.is_ascii_digit())
+            {
                 Some(self.alloc_expr(
                     HirExprKind::Literal {
                         text: inner.to_owned(),
@@ -1645,11 +1640,9 @@ impl HirLowerer<'_> {
         if node_end <= start || node_start >= end {
             return;
         }
-        if ExprNode::cast(node).is_some() {
-            if node_start >= start && node_end <= end {
-                expressions.push(self.lower_expr(node, context));
-                return;
-            }
+        if ExprNode::cast(node).is_some() && node_start >= start && node_end <= end {
+            expressions.push(self.lower_expr(node, context));
+            return;
         }
         for child in syntax_child_nodes(node) {
             if Stmt::cast(child).is_some() {

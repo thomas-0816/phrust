@@ -1,0 +1,49 @@
+{"path":"tests/phpt/generated/closure.stdlib/config-error-memory.phpt","module":"closure.stdlib","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"closure-stdlib-v1","reason":"request-aware config, environment, error, memory, and time-limit helper parity"}
+{"path":"tests/phpt/generated/closure.stdlib/output-buffer-nested-state.phpt","module":"closure.stdlib","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"closure-stdlib-v1","reason":"nested output-buffer stack state, clean, and flush parity"}
+{"path":"tests/phpt/generated/closure.stdlib/serialization-debug-formatting.phpt","module":"closure.stdlib","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"closure-stdlib-v1","reason":"serialization and debug-output formatting parity for implemented values"}
+{"path":"tests/phpt/generated/closure.stdlib/filesystem-glob-stat.phpt","module":"closure.stdlib","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"closure-stdlib-v1","reason":"local filesystem, stat, glob, and stream-adjacent helper parity"}
+{"path":"tests/phpt/generated/closure.stdlib/string-format-query-html.phpt","module":"closure.stdlib","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"closure-stdlib-v1","reason":"printf, query-string, URL, and HTML helper parity"}
+{"path":"tests/phpt/generated/closure.stdlib/json-pcre-date-flags.phpt","module":"closure.stdlib","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"closure-stdlib-v1","reason":"JSON flag, PCRE capture/replacement, and Date formatting parity"}
+{"path":"tests/phpt/generated/closure.stdlib/spl-reflection-introspection.phpt","module":"closure.stdlib","kind":"contract","generated_timestamp":"20260629T000000Z","generator_version":"closure-stdlib-v1","reason":"selected SPL iterator and Reflection metadata parity"}
+{"path":"tests/phpt/generated/wp.core-builtins/ini-env-config.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"existing config/env request helper coverage"}
+{"path":"tests/phpt/generated/wp.core-builtins/output-buffering.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"existing WordPress-style output-buffer capture coverage"}
+{"path":"tests/phpt/generated/wp.core-builtins/url-filter-hash-password-serialization.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"existing URL, filter, hash, password, and serialization helper coverage"}
+{"path":"tests/phpt/generated/wp.core-builtins/filter-helpers.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"existing filter helper coverage"}
+{"path":"tests/phpt/generated/standard.output/output-buffer-basic-state.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"output-buffer state coverage"}
+{"path":"tests/phpt/generated/standard.output/output-buffer-nested-clean.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"nested output-buffer clean coverage"}
+{"path":"tests/phpt/generated/standard.output/output-buffer-clean-flush.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"output-buffer clean and flush coverage"}
+{"path":"tests/phpt/generated/standard.serialization/serialize-unserialize-scalars-arrays.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"scalar and array serialization coverage"}
+{"path":"tests/phpt/generated/standard.serialization/serialize-unserialize-simple-object.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"simple public object serialization coverage"}
+{"path":"tests/phpt/generated/standard.serialization/unserialize-reference-record-gap.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"explicit unsupported PHP reference-record coverage"}
+{"path":"tests/phpt/generated/standard.variables/debug-formatting-smoke.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"debug output helper coverage"}
+{"path":"tests/phpt/generated/standard.variables/gettype-resource-smoke.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"resource gettype coverage"}
+{"path":"tests/phpt/generated/standard.variables/is-object-countable-smoke.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"object and countable predicate coverage"}
+{"path":"tests/phpt/generated/standard.variables/isset-empty-smoke.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"isset and empty coverage"}
+{"path":"tests/phpt/generated/standard.url-html/htmlspecialchars-htmlentities-smoke.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"HTML escaping helper coverage"}
+{"path":"tests/phpt/generated/standard.url-html/http-build-query-smoke.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"query-string helper coverage"}
+{"path":"tests/phpt/generated/standard.url-html/url-encode-decode-smoke.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"URL encode/decode helper coverage"}
+{"path":"tests/phpt/generated/filesystem.streams/local-file-roundtrip.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"local file roundtrip coverage"}
+{"path":"tests/phpt/generated/filesystem.streams/local-file-resource.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"local file resource coverage"}
+{"path":"tests/phpt/generated/filesystem.streams/local-filesystem-mutations.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"local filesystem mutation coverage"}
+{"path":"tests/phpt/generated/filesystem.streams/php-memory-stream.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"php memory stream coverage"}
+{"path":"tests/phpt/generated/filesystem.streams/php-temp-stream.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"php temp stream coverage"}
+{"path":"tests/phpt/generated/filesystem.streams/stream-seek-contents.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"stream seek and contents coverage"}
+{"path":"tests/phpt/generated/wp.request-filesystem/local-permission-stat.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"permission, stat, realpath, and glob coverage"}
+{"path":"tests/phpt/generated/wp.request-filesystem/temp-directory-stream-context.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"temporary directory and stream context coverage"}
+{"path":"tests/phpt/generated/json/json-encode-basics.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"JSON encode basics"}
+{"path":"tests/phpt/generated/json/json-decode-basics.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"JSON decode basics"}
+{"path":"tests/phpt/generated/json/json-encode-common-flags.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"JSON common flag coverage"}
+{"path":"tests/phpt/generated/json/json-last-error-state.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"JSON last-error state coverage"}
+{"path":"tests/phpt/generated/json/json-throw-on-error.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"JSON throw-on-error coverage"}
+{"path":"tests/phpt/generated/pcre/preg-match-captures.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"PCRE captures coverage"}
+{"path":"tests/phpt/generated/pcre/preg-replace-split-grep-quote.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"PCRE replace, split, grep, and quote coverage"}
+{"path":"tests/phpt/generated/pcre/preg-last-error-state.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"PCRE last-error state coverage"}
+{"path":"tests/phpt/generated/date/date-time-functions.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"Date/time function coverage"}
+{"path":"tests/phpt/generated/date/timezone-state.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"timezone state coverage"}
+{"path":"tests/phpt/generated/date/datetime-format.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"DateTime formatting coverage"}
+{"path":"tests/phpt/generated/spl.interfaces/interface-method-surface.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"SPL interface surface coverage"}
+{"path":"tests/phpt/generated/spl.array-iterator/iterator-helpers.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"SPL iterator helper coverage"}
+{"path":"tests/phpt/generated/spl.array-iterator/iterator-mvps.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"SPL iterator MVP coverage"}
+{"path":"tests/phpt/generated/reflection.functions/builtin-and-user-functions.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"ReflectionFunction coverage"}
+{"path":"tests/phpt/generated/reflection.parameters/internal-parameter-arginfo.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"ReflectionParameter internal arginfo coverage"}
+{"path":"tests/phpt/generated/reflection.classes/class-basics.phpt","module":"closure.stdlib","kind":"existing-contract","reason":"ReflectionClass coverage"}

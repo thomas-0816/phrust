@@ -1,8 +1,9 @@
 //! Core builtin implementations and cross-module helpers.
 
 use super::super::context::{
-    JSON_ERROR_SYNTAX, JSON_ERROR_UTF8, JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT,
-    JSON_THROW_ON_ERROR, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, json_error_message,
+    JSON_ERROR_SYNTAX, JSON_ERROR_UTF8, JSON_HEX_AMP, JSON_HEX_APOS, JSON_HEX_QUOT, JSON_HEX_TAG,
+    JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR, JSON_UNESCAPED_SLASHES,
+    JSON_UNESCAPED_UNICODE, json_error_message,
 };
 use super::super::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
@@ -2527,6 +2528,19 @@ pub(in crate::builtins::modules) fn normalize_json_encoded(
 
     if flags & JSON_UNESCAPED_SLASHES == 0 {
         encoded = encoded.replace('/', "\\/");
+    }
+
+    if flags & JSON_HEX_TAG != 0 {
+        encoded = encoded.replace('<', "\\u003C").replace('>', "\\u003E");
+    }
+    if flags & JSON_HEX_AMP != 0 {
+        encoded = encoded.replace('&', "\\u0026");
+    }
+    if flags & JSON_HEX_APOS != 0 {
+        encoded = encoded.replace('\'', "\\u0027");
+    }
+    if flags & JSON_HEX_QUOT != 0 {
+        encoded = encoded.replace("\\\"", "\\u0022");
     }
 
     // serde_json already keeps non-ASCII text unescaped and preserves the
@@ -6856,7 +6870,8 @@ mod tests {
         SORT_NUMERIC, SORT_REGULAR, SORT_STRING, php_float_debug_string, php_float_export_string,
     };
     use crate::builtins::context::{
-        JSON_ERROR_NONE, JSON_OBJECT_AS_ARRAY, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
+        JSON_ERROR_NONE, JSON_HEX_AMP, JSON_HEX_APOS, JSON_HEX_QUOT, JSON_HEX_TAG,
+        JSON_OBJECT_AS_ARRAY, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
     };
     use crate::{
         ArrayKey, BuiltinRegistry, ClassEntry, ClassFlags, FilesystemCapabilities, ObjectRef,
@@ -9183,6 +9198,15 @@ mod tests {
                 vec![Value::Array(ordered), Value::Int(JSON_UNESCAPED_SLASHES)]
             ),
             Value::string(r#"{"url":"https://example.test/a","snow":"☃","n":1}"#)
+        );
+        let hex_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_encode",
+                vec![Value::string("<tag>&'\""), Value::Int(hex_flags)]
+            ),
+            Value::string(r#""\u003Ctag\u003E\u0026\u0027\u0022""#)
         );
         assert_eq!(
             call_in_context(&mut context, "json_encode", vec![Value::float(42.0)]),

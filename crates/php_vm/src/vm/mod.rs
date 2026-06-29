@@ -8920,6 +8920,26 @@ impl Vm {
         state: &mut ExecutionState,
     ) -> VmResult {
         let object = match callable_resolve_reference(object) {
+            Value::Generator(generator) => {
+                self.record_counter_dense_call_fallback("generator_method_receiver");
+                let value = match self
+                    .call_generator_method(compiled, generator, method, args, output, stack, state)
+                {
+                    Ok(value) => value,
+                    Err(result) => return result,
+                };
+                return VmResult::success(output.clone(), Some(value));
+            }
+            Value::Fiber(fiber) => {
+                self.record_counter_dense_call_fallback("fiber_method_receiver");
+                let value = match self
+                    .call_fiber_method(compiled, fiber, method, args, output, stack, state)
+                {
+                    Ok(value) => value,
+                    Err(result) => return result,
+                };
+                return VmResult::success(output.clone(), Some(value));
+            }
             Value::Object(object) => object,
             other => {
                 self.record_counter_dense_call_fallback("non_object_method_receiver");
@@ -9167,6 +9187,16 @@ impl Vm {
         let epoch = state.lookup_epoch();
         let receiver_class = class.name.clone();
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
+
+        if class.flags.is_enum && matches!(lowered_method.as_str(), "cases" | "from" | "tryfrom") {
+            self.record_counter_dense_call_fallback("enum_static_method");
+            return match enum_static_method(compiled, state, &class, method, args, &|value| {
+                self.constant_value(compiled.unit(), value)
+            }) {
+                Ok(value) => VmResult::success(output.clone(), Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
 
         self.observe_dense_call_inline_cache(
             compiled,
@@ -28854,16 +28884,12 @@ fn reflection_method_value(
             "getattributes" => Ok(object
                 .get_property("attributes")
                 .unwrap_or_else(empty_array_value)),
-            "getparameters" => Ok(object
-                .get_property("parameters")
-                .unwrap_or_else(empty_array_value)),
-            "getnumberofparameters" => Ok(object
-                .get_property("parameter_count")
-                .unwrap_or(Value::Int(0))),
-            "getnumberofrequiredparameters" => Ok(object
-                .get_property("required_parameter_count")
-                .unwrap_or(Value::Int(0))),
-            "getreturntype" => Ok(object.get_property("return_type").unwrap_or(Value::Null)),
+            "getparameters" => reflection_function_parameters_value(object),
+            "getnumberofparameters" => reflection_function_parameter_count_value(object),
+            "getnumberofrequiredparameters" => {
+                reflection_function_required_parameter_count_value(object)
+            }
+            "getreturntype" => reflection_function_return_type_value(object),
             "getfilename" => Ok(object.get_property("file").unwrap_or(Value::Bool(false))),
             "getstartline" => Ok(object.get_property("start_line").unwrap_or(Value::Bool(false))),
             "getendline" => Ok(object.get_property("end_line").unwrap_or(Value::Bool(false))),
@@ -29251,6 +29277,88 @@ fn reflection_internal_function_object(function: &str) -> Result<ObjectRef, Stri
     ))
 }
 
+fn reflection_internal_function_listing_object(function: &str) -> Result<ObjectRef, String> {
+    let registry = php_std::ExtensionRegistry::standard_library();
+    let descriptor = registry.enabled_php_function(function).ok_or_else(|| {
+        format!("E_PHP_VM_REFLECTION_UNKNOWN_FUNCTION: function {function} is not defined")
+    })?;
+    Ok(reflection_object(
+        "ReflectionFunction",
+        vec![
+            ("name", reflection_string(descriptor.name())),
+            ("attributes", empty_array_value()),
+            ("file", Value::Bool(false)),
+            ("start_line", Value::Bool(false)),
+            ("end_line", Value::Bool(false)),
+            ("is_closure", Value::Bool(false)),
+            ("static_variables", empty_array_value()),
+            ("closure_scope_class", Value::Null),
+            ("is_internal", Value::Bool(true)),
+            ("extension", reflection_string(descriptor.extension())),
+        ],
+    ))
+}
+
+fn reflection_lazy_internal_function_signature(
+    object: &ObjectRef,
+) -> Result<Option<InternalReflectionSignature>, String> {
+    if !matches!(object.get_property("is_internal"), Some(Value::Bool(true)))
+        || object.get_property("class").is_some()
+    {
+        return Ok(None);
+    }
+    let name = reflection_object_string_property(object, "name")?;
+    Ok(Some(internal_function_signature(&name)))
+}
+
+fn reflection_function_parameters_value(object: &ObjectRef) -> Result<Value, String> {
+    if let Some(parameters) = object.get_property("parameters") {
+        return Ok(parameters);
+    }
+    if let Some(signature) = reflection_lazy_internal_function_signature(object)? {
+        return Ok(reflection_internal_parameters_value(&signature.params));
+    }
+    Ok(empty_array_value())
+}
+
+fn reflection_function_parameter_count_value(object: &ObjectRef) -> Result<Value, String> {
+    if let Some(parameter_count) = object.get_property("parameter_count") {
+        return Ok(parameter_count);
+    }
+    if let Some(signature) = reflection_lazy_internal_function_signature(object)? {
+        return Ok(Value::Int(signature.params.len() as i64));
+    }
+    Ok(Value::Int(0))
+}
+
+fn reflection_function_required_parameter_count_value(object: &ObjectRef) -> Result<Value, String> {
+    if let Some(required_parameter_count) = object.get_property("required_parameter_count") {
+        return Ok(required_parameter_count);
+    }
+    if let Some(signature) = reflection_lazy_internal_function_signature(object)? {
+        return Ok(Value::Int(
+            signature
+                .params
+                .iter()
+                .filter(|param| !param.optional)
+                .count() as i64,
+        ));
+    }
+    Ok(Value::Int(0))
+}
+
+fn reflection_function_return_type_value(object: &ObjectRef) -> Result<Value, String> {
+    if let Some(return_type) = object.get_property("return_type") {
+        return Ok(return_type);
+    }
+    if let Some(signature) = reflection_lazy_internal_function_signature(object)? {
+        return Ok(signature.return_type.map_or(Value::Null, |name| {
+            reflection_named_type_value(name, signature.return_allows_null, true)
+        }));
+    }
+    Ok(Value::Null)
+}
+
 fn reflection_internal_class_object(class_name: &str) -> Result<ObjectRef, String> {
     let registry = php_std::ExtensionRegistry::standard_library();
     let descriptor = registry.enabled_class(class_name).ok_or_else(|| {
@@ -29458,7 +29566,9 @@ fn reflection_extension_functions_value(extension: &str) -> Result<Value, String
         reflection_assoc_insert(
             &mut array,
             function.name(),
-            Value::Object(reflection_internal_function_object(function.name())?),
+            Value::Object(reflection_internal_function_listing_object(
+                function.name(),
+            )?),
         );
     }
     Ok(Value::Array(array))

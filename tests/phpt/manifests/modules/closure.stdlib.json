@@ -1,0 +1,17 @@
+{
+  "schema_version":"phpt-module-plan-v1",
+  "module":"closure.stdlib",
+  "priority":17,
+  "selected_manifest":"tests/phpt/manifests/modules/closure.stdlib.selected.jsonl",
+  "corpus_count":49,
+  "selected_count":49,
+  "pass_count":49,
+  "skip_count":0,
+  "fail_count":0,
+  "bork_count":0,
+  "known_failure_count":0,
+  "scope":["config/env helpers","output buffering","serialization/debug output","local filesystem/streams/stat/glob","string formatting/query/html helpers","JSON/PCRE/Date flags","selected SPL/Reflection"],
+  "non_scope":["SAPI servers","network streams","Zend extension ABI","unserialize allowed_classes enforcement","serialization magic hooks","full SPL aggregate corpus"],
+  "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=closure.stdlib"],
+  "next_step":"selected closure stdlib contracts are closed and green; keep them green while later work promotes broader SPL aggregate and serialization options parity."
+}

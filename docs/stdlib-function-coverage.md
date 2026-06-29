@@ -6,11 +6,11 @@ Reference status: `available`
 
 | Status | Count |
 | --- | ---: |
-| implemented | 573 |
+| implemented | 638 |
 | partial | 67 |
 | stub | 63 |
-| missing | 161 |
-| known_gap | 713 |
+| missing | 157 |
+| known_gap | 652 |
 
 ## Extension Summary
 
@@ -18,19 +18,19 @@ Reference status: `available`
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | core | functions | 0 | 0 | 0 | 62 | 0 |
 | core | classes | 0 | 2 | 0 | 38 | 0 |
-| core | constants | 27 | 0 | 4 | 61 | 0 |
+| core | constants | 31 | 0 | 4 | 57 | 0 |
 | standard | functions | 277 | 0 | 45 | 0 | 269 |
 | standard | classes | 0 | 1 | 0 | 0 | 5 |
-| standard | constants | 61 | 0 | 8 | 0 | 312 |
+| standard | constants | 104 | 0 | 8 | 0 | 269 |
 | json | functions | 5 | 0 | 0 | 0 | 0 |
 | json | classes | 0 | 2 | 0 | 0 | 0 |
-| json | constants | 11 | 0 | 0 | 0 | 18 |
+| json | constants | 28 | 0 | 0 | 0 | 1 |
 | pcre | functions | 9 | 0 | 0 | 0 | 2 |
 | pcre | classes | 0 | 0 | 0 | 0 | 0 |
 | pcre | constants | 15 | 0 | 0 | 0 | 4 |
 | date | functions | 6 | 0 | 0 | 0 | 42 |
 | date | classes | 0 | 5 | 0 | 0 | 10 |
-| date | constants | 0 | 0 | 0 | 0 | 17 |
+| date | constants | 1 | 0 | 0 | 0 | 16 |
 | spl | functions | 8 | 0 | 0 | 0 | 7 |
 | spl | classes | 0 | 30 | 6 | 0 | 25 |
 | spl | constants | 0 | 0 | 0 | 0 | 0 |

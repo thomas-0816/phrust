@@ -338,6 +338,12 @@ struct LoopTargets {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct ConditionTargets {
+    true_block: BlockId,
+    false_block: BlockId,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct MethodFunctionInput<'a> {
     class_name: &'a str,
     method_name: &'a str,
@@ -2712,8 +2718,10 @@ impl LoweringContext<'_> {
             function,
             condition_block,
             condition,
-            then_block,
-            first_false_target,
+            ConditionTargets {
+                true_block: then_block,
+                false_block: first_false_target,
+            },
             span,
         );
 
@@ -2733,8 +2741,10 @@ impl LoweringContext<'_> {
                 function,
                 condition_block,
                 branch.condition,
-                body_block,
-                false_target,
+                ConditionTargets {
+                    true_block: body_block,
+                    false_block: false_target,
+                },
                 span,
             );
             let body_end = self.lower_stmt_list(builder, function, body_block, branch.body);
@@ -2769,8 +2779,10 @@ impl LoweringContext<'_> {
             function,
             condition_block,
             condition,
-            body_block,
-            after_block,
+            ConditionTargets {
+                true_block: body_block,
+                false_block: after_block,
+            },
             span,
         );
         self.loop_stack.push(LoopTargets {
@@ -2865,8 +2877,10 @@ impl LoweringContext<'_> {
                 function,
                 current_condition,
                 Some(*last_condition),
-                body_block,
-                after_block,
+                ConditionTargets {
+                    true_block: body_block,
+                    false_block: after_block,
+                },
                 span,
             );
         } else {
@@ -3630,11 +3644,8 @@ impl LoweringContext<'_> {
                 continue;
             };
             match statement.kind() {
-                HirStmtKind::Label { name } => {
-                    if let Some(name) = name {
-                        labels.push((name.clone(), *stmt));
-                    }
-                }
+                HirStmtKind::Label { name: Some(name) } => labels.push((name.clone(), *stmt)),
+                HirStmtKind::Label { name: None } => {}
                 HirStmtKind::Block { statements }
                 | HirStmtKind::While {
                     body: statements, ..
@@ -3937,8 +3948,7 @@ impl LoweringContext<'_> {
         function: FunctionId,
         block: BlockId,
         condition: Option<ExprId>,
-        true_target: BlockId,
-        false_target: BlockId,
+        targets: ConditionTargets,
         span: IrSpan,
     ) {
         let Some(condition) = condition else {
@@ -3954,8 +3964,8 @@ impl LoweringContext<'_> {
                 function,
                 value.block,
                 Operand::Register(value.register),
-                true_target,
-                false_target,
+                targets.true_block,
+                targets.false_block,
                 span,
             );
         }
