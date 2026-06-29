@@ -161,6 +161,24 @@ fn parse_interpolated_double_quoted_body(
             chunk_start = parsed.end;
             continue;
         }
+        if body[index] == b'{'
+            && body.get(index + 1).copied() == Some(b'$')
+            && let Some(parsed) = parse_braced_interpolated_property(body, index)
+        {
+            parts.push(InterpolatedPart::Bytes(
+                unescape_double_quoted_php_string_with_quote_mode(
+                    &body[chunk_start..index],
+                    decode_escaped_quote,
+                ),
+            ));
+            parts.push(InterpolatedPart::Property {
+                receiver: parsed.receiver,
+                property: parsed.property,
+            });
+            index = parsed.end;
+            chunk_start = parsed.end;
+            continue;
+        }
         if body[index] == b'$'
             && let Some(parsed) = parse_simple_interpolated_property(body, index)
         {
@@ -361,6 +379,21 @@ fn parse_simple_interpolated_property(
             .to_string(),
         end: index,
     })
+}
+
+fn parse_braced_interpolated_property(
+    bytes: &[u8],
+    start: usize,
+) -> Option<ParsedInterpolatedProperty> {
+    if bytes.get(start).copied() != Some(b'{') || bytes.get(start + 1).copied() != Some(b'$') {
+        return None;
+    }
+    let mut parsed = parse_simple_interpolated_property(bytes, start + 1)?;
+    if bytes.get(parsed.end).copied() != Some(b'}') {
+        return None;
+    }
+    parsed.end += 1;
+    Some(parsed)
 }
 
 fn parse_deprecated_dollar_brace_interpolated_variable(

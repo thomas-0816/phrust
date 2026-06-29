@@ -14,7 +14,7 @@ Fresh focused module measurements from this branch:
 | `operators.conversions` | 5 PASS | 5 PASS | green |
 | `arrays.references` | 6 PASS | 6 PASS | green |
 | `zend.functions` | 29 PASS | 29 PASS | green |
-| `objects.classes` | 200 PASS | 196 PASS / 4 FAIL | backlog |
+| `objects.classes` | 200 PASS | 197 PASS / 3 FAIL | backlog |
 | `closure.core` | 33 PASS | 33 PASS | green |
 
 The new `closure.core` dashboard selects 33 focused/generated fixtures across:
@@ -74,7 +74,7 @@ module. Its top failure groups are:
 | remaining fatal/exception output parity | class-not-found and iterator exception cases | `php_vm` and `php_runtime::error_output` |
 | unsupported by-reference static/property targets | `E_PHP_IR_UNSUPPORTED_HIR_STATEMENT`, `E_PHP_IR_UNSUPPORTED_PROPERTY_REFERENCE` | `php_ir`, `php_runtime::reference`, `php_runtime::object` |
 | iterator/destructor order and exception routing | iterator and destructor class fixtures | `php_vm`, `php_runtime::object` |
-| serialization and stringification parity | `serialize_001`, `tostring_001` | `php_runtime::object`, standard object formatting |
+| stringification and object formatting parity | `tostring_001` | `php_runtime::object`, standard object formatting |
 | class constants, dynamic lookup, autoload, and Reflection catch types | eval declaration, autoload, ReflectionException fixtures | `php_semantics`, `php_runtime::object`, `php_vm` |
 
 These are dashboard gaps, not selected `closure.core` gate failures. The
@@ -90,7 +90,7 @@ Prompt 1.1 focused source gates already run on this branch:
 - `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=operators.conversions`: PASS, reference 5 PASS and target 5 PASS.
 - `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=arrays.references`: PASS, reference 6 PASS and target 6 PASS.
 - `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=zend.functions`: PASS, reference 29 PASS and target 29 PASS.
-- `TMPDIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-datetime-fatal REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_WORK_DIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-datetime-fatal PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`: FAIL as expected for the dashboard, reference 200 PASS and target 196 PASS / 4 FAIL. `tests/classes/autoload_020.phpt` and `tests/classes/bug65768.phpt` are now PASS.
+- `TMPDIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-serializable-final REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_WORK_DIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-serializable-final PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`: FAIL as expected for the dashboard, reference 200 PASS and target 197 PASS / 3 FAIL. `tests/classes/autoload_020.phpt`, `tests/classes/bug65768.phpt`, and `tests/classes/serialize_001.phpt` are now PASS.
 
 Prompt 1.1 closeout:
 
@@ -137,6 +137,15 @@ Prompt 1.1 broad check:
   object names trigger registered autoload callbacks. Unresolved classes are
   materialized as `__PHP_Incomplete_Class` with
   `__PHP_Incomplete_Class_Name`, matching the selected `autoload_020.phpt` row.
+- Legacy `Serializable` objects now emit the PHP 8.5 deprecation, route
+  `serialize()` through public instance `Serializable::serialize()`, encode the
+  legacy `C:<class>:{payload}` wire format, call `Serializable::unserialize()`
+  during `unserialize()`, and throw the selected catchable `Exception` when
+  `serialize()` returns a non-string/non-NULL value. This matches the selected
+  `serialize_001.phpt` row.
+- Braced property interpolation now lowers `{$this->property}` through the same
+  property-fetch path as `$this->property`, which keeps selected magic and
+  serialization method output byte-compatible with PHP.
 
 ## Closed And Narrowed Gap IDs
 
@@ -157,8 +166,8 @@ remain, but the current behavior and executable fixtures are now narrowed:
 | `E_PHP_RUNTIME_BUILTIN_ARITY`, `E_PHP_RUNTIME_BUILTIN_TYPE` | Added selected catchable builtin arity/type diagnostic fixtures; full arginfo/coercion matrices remain gaps. |
 
 The highest-risk remaining core blockers are iterator/destructor ordering,
-legacy `Serializable` hooks, eval declaration merging, Reflection catch
-behavior, and remaining fatal text/object-id parity. Those blockers explain the current
+eval declaration merging, Reflection catch behavior, and remaining
+fatal text/object-id parity. Those blockers explain the current
 `objects.classes` dashboard backlog rather than the selected `closure.core`
 gate.
 
@@ -169,7 +178,7 @@ The focused implementation gates were rerun after the runtime fixes:
 - Prompt 1.2 globals: `cargo test -p php_runtime globals` PASS (3 tests), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=closure.core` PASS (33/33), and `just runtime-semantics-fixtures` PASS with refs/COW 7 pass + 2 known gaps, object semantics 73 pass + 10 known gaps, generator/fiber 26 pass + 1 known gap, real-world 1 pass + 2 known gaps, regressions 2 pass + 1 known gap.
 - Prompt 1.3 arrays: `cargo test -p php_runtime array` PASS (61 tests), `cargo test -p php_ir` PASS (69 unit tests + 7 bytecode snapshots), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=closure.core` PASS (33/33), and `just phpt-dev-module MODULE=standard.arrays` PASS (17/17).
 - Prompt 1.4 references: `cargo test -p php_runtime reference` PASS (22 tests), `cargo test -p php_runtime array` PASS (61 tests), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=arrays.references` PASS (6/6), and `just phpt-dev-module MODULE=closure.core` PASS (33/33).
-- Prompt 1.5 dynamic objects/static binding: `cargo test -p php_ir` PASS (69 unit tests + 7 bytecode snapshots), `cargo test -p php_runtime object` PASS (30 tests), `cargo test -p php_vm` PASS (493 tests), `just phpt-dev-module MODULE=closure.core` PASS (33/33), and `just phpt-dev-module MODULE=objects.classes` remains dashboard backlog with reference 200 PASS and target 196 PASS / 4 non-green.
+- Prompt 1.5 dynamic objects/static binding: `cargo test -p php_ir` PASS (69 unit tests + 7 bytecode snapshots), `cargo test -p php_runtime object` PASS (30 tests), `cargo test -p php_vm` PASS (493 tests), `just phpt-dev-module MODULE=closure.core` PASS (33/33), and `just phpt-dev-module MODULE=objects.classes` remains dashboard backlog with reference 200 PASS and target 197 PASS / 3 non-green.
 - Prompt 1.6 diagnostics/output: `cargo test -p php_runtime` PASS (256 tests), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=diagnostics.output` PASS (6/6), and `just phpt-dev-module MODULE=closure.core` PASS (33/33).
 
 All PHPT module runs above used:
@@ -183,5 +192,5 @@ host-generated entries.
 
 - `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src nix develop -c just verify-runtime`: PASS. Runtime fixtures passed 125 cases; runtime semantics diff passed with total 289, pass 240, fail 0, skip 0, known_gap 49; runtime hardening clippy passed.
 - `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src nix develop -c just verify-stdlib`: PASS. `php_std` passed 66 tests plus registry dump, VM std bridge passed 2 tests, standard-library diff totals were stdlib 37 pass + 6 known gaps, streams 2 pass, json/pcre/date 3 pass, and spl/reflection 2 pass.
-- Closeout module dashboard: `closure.core` 33/33 PASS, `zend.basic` 10/10 PASS, `operators.conversions` 5/5 PASS, `arrays.references` 6/6 PASS, `zend.functions` 29/29 PASS, and `objects.classes` remains 196 PASS / 4 non-green against a 200 PASS reference run.
+- Closeout module dashboard: `closure.core` 33/33 PASS, `zend.basic` 10/10 PASS, `operators.conversions` 5/5 PASS, `arrays.references` 6/6 PASS, `zend.functions` 29/29 PASS, and `objects.classes` remains 197 PASS / 3 non-green against a 200 PASS reference run.
 - Known-gap catalog updates: `docs/runtime-known-gaps.md` and `docs/known_gaps/runtime.jsonl` now record the closed/narrowed closure-core rows above.

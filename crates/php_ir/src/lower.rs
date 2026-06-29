@@ -13370,7 +13370,7 @@ mod tests {
     #[test]
     fn simple_property_interpolation_lowers_fetch_property() {
         let frontend = analyze_source(
-            "<?php class D { private $counter = 2; function f() { echo \"($this->counter)\"; } }",
+            "<?php class D { private $counter = 2; function f() { echo \"($this->counter)\"; echo \"({$this->counter})\"; } }",
         );
         let result = lower_frontend_result(&frontend, LoweringOptions::default());
 
@@ -13382,6 +13382,12 @@ mod tests {
         assert!(snapshot.contains("$counter"), "{snapshot}");
 
         let parts = interpolated_literal_parts("\"($this->counter)\"").expect("parts");
+        assert!(matches!(
+            &parts[1],
+            InterpolatedPart::Property { receiver, property }
+                if receiver == "this" && property == "counter"
+        ));
+        let parts = interpolated_literal_parts("\"({$this->counter})\"").expect("parts");
         assert!(matches!(
             &parts[1],
             InterpolatedPart::Property { receiver, property }

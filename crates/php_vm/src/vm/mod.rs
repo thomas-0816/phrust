@@ -2132,6 +2132,7 @@ impl Vm {
         apply_float_string_precision(&state.ini);
         seed_runtime_globals(&mut state.globals, &self.options.runtime_context);
         emit_private_final_method_warnings(&unit, &mut output, &mut state);
+        emit_serializable_interface_deprecations(&unit, &mut output, &mut state);
         let mut result = if self.options.execution_format.attempts_bytecode() {
             match self.try_execute_bytecode_entry(&unit, &mut output, &mut stack, &mut state) {
                 BytecodeEntryAttempt::Executed(result) => *result,
@@ -24878,6 +24879,14 @@ impl Vm {
         let Value::String(input) = effective_value(&values[0]) else {
             return None;
         };
+        if let Some(custom) = parse_legacy_serializable_payload(&input) {
+            let result =
+                self.unserialize_legacy_serializable(compiled, custom, output, stack, state);
+            return Some(match result {
+                Ok(value) => VmResult::success(OutputBuffer::new(), Some(value)),
+                Err(result) => result,
+            });
+        }
         let value = match unserialize_value(&input, UnserializeOptions::default()) {
             Ok(value) => value,
             Err(_) => return None,
@@ -24963,6 +24972,19 @@ impl Vm {
                 )
             });
         };
+        if class_implements_in_state(
+            compiled,
+            state,
+            &class.name,
+            "Serializable",
+            &mut Vec::new(),
+        )
+        .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+        {
+            return self.serialize_legacy_serializable(
+                compiled, object, &class, call_span, output, stack, state,
+            );
+        }
         let resolved = match lookup_method_in_hierarchy(compiled, &class, "__sleep", None) {
             Ok(Some(method)) => method,
             Ok(None) => {
@@ -25060,6 +25082,164 @@ impl Vm {
                 format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
             )
         })
+    }
+
+    fn serialize_legacy_serializable(
+        &self,
+        compiled: &CompiledUnit,
+        object: ObjectRef,
+        class: &php_ir::module::ClassEntry,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<PhpString, VmResult> {
+        let resolved = match lookup_method_in_hierarchy(compiled, class, "serialize", None) {
+            Ok(Some(method)) => method,
+            Ok(None) => {
+                return serialize_value(&Value::Object(object)).map_err(|error| {
+                    self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                    )
+                });
+            }
+            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+        };
+        if resolved.method.flags.is_static {
+            return Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_SERIALIZABLE_METHOD_INACCESSIBLE: method {}::serialize is not public instance",
+                    resolved.class.name
+                ),
+            ));
+        }
+        let result = self.execute_function(
+            compiled,
+            resolved.method.function,
+            FunctionCall::new(Vec::new(), Vec::new())
+                .with_this(object)
+                .with_class_context(
+                    resolved.class.name.clone(),
+                    class.name.clone(),
+                    resolved.class.name.clone(),
+                )
+                .with_optional_call_span(call_span),
+            output,
+            stack,
+            state,
+        );
+        if !result.status.is_success() {
+            return Err(result);
+        }
+        match effective_value(&result.return_value.unwrap_or(Value::Null)) {
+            Value::String(payload) => Ok(legacy_serializable_wire(&class.display_name, &payload)),
+            Value::Null => Ok(PhpString::from_test_str("N;")),
+            _ => Err(self.throw_exception_result(
+                compiled,
+                output,
+                stack,
+                state,
+                call_span.unwrap_or_default(),
+                format!(
+                    "{}::serialize() must return a string or NULL",
+                    class.display_name
+                ),
+            )),
+        }
+    }
+
+    fn unserialize_legacy_serializable(
+        &self,
+        compiled: &CompiledUnit,
+        payload: LegacySerializablePayload,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, VmResult> {
+        self.autoload_class(compiled, &payload.class_name, output, stack, state)?;
+        let Some(class) = lookup_class_in_state(compiled, state, &payload.class_name) else {
+            let source = ObjectRef::new_with_display_name(
+                &empty_runtime_class(&payload.class_name),
+                payload.class_name.clone(),
+            );
+            return Ok(Value::Object(incomplete_class_object(
+                source.display_name(),
+                source,
+            )));
+        };
+        let runtime_class = runtime_class_entry(
+            compiled,
+            state,
+            &class,
+            &|value| self.constant_value(compiled.unit(), value),
+            &|reference| class_constant_reference_value(compiled, state, reference),
+            &|reference| named_constant_reference_value(compiled, state, reference),
+        )
+        .map_err(|error| self.runtime_error(output, compiled, stack, error.into_message()))?;
+        let object = ObjectRef::new_with_display_name(&runtime_class, class.display_name.clone());
+        let resolved = match lookup_method_in_hierarchy(compiled, &class, "unserialize", None) {
+            Ok(Some(method)) => method,
+            Ok(None) => return Ok(Value::Object(object)),
+            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+        };
+        if resolved.method.flags.is_static {
+            return Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_SERIALIZABLE_METHOD_INACCESSIBLE: method {}::unserialize is not public instance",
+                    resolved.class.name
+                ),
+            ));
+        }
+        let result = self.execute_function(
+            compiled,
+            resolved.method.function,
+            FunctionCall::new(
+                vec![CallArgument::positional(Value::String(payload.payload))],
+                Vec::new(),
+            )
+            .with_this(object.clone())
+            .with_class_context(
+                resolved.class.name.clone(),
+                class.name.clone(),
+                resolved.class.name.clone(),
+            ),
+            output,
+            stack,
+            state,
+        );
+        if !result.status.is_success() {
+            return Err(result);
+        }
+        Ok(Value::Object(object))
+    }
+
+    fn throw_exception_result(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+        state: &mut ExecutionState,
+        span: php_ir::IrSpan,
+        message: String,
+    ) -> VmResult {
+        let message_value = Value::string(message.into_bytes());
+        let throwable = match make_exception_object("Exception", &message_value) {
+            Ok(object) => Value::Object(object),
+            Err(message) => return self.runtime_error(output, compiled, stack, message),
+        };
+        tag_throwable_location(&throwable, compiled, span);
+        state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+        state.pending_throw = Some(throwable);
+        VmResult::propagating_exception(output.clone())
     }
 
     fn emit_serialize_sleep_missing_property_warning(
@@ -29010,6 +29190,98 @@ fn incomplete_class_object(class_name: String, source: ObjectRef) -> ObjectRef {
     object
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LegacySerializablePayload {
+    class_name: String,
+    payload: PhpString,
+}
+
+fn legacy_serializable_wire(class_name: &str, payload: &PhpString) -> PhpString {
+    let class_bytes = class_name.as_bytes();
+    let payload_bytes = payload.as_bytes();
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(format!("C:{}:\"", class_bytes.len()).as_bytes());
+    encoded.extend_from_slice(class_bytes);
+    encoded.extend_from_slice(format!("\":{}:{{", payload_bytes.len()).as_bytes());
+    encoded.extend_from_slice(payload_bytes);
+    encoded.extend_from_slice(b"}");
+    PhpString::from_bytes(encoded)
+}
+
+fn parse_legacy_serializable_payload(input: &PhpString) -> Option<LegacySerializablePayload> {
+    let bytes = input.as_bytes();
+    let mut offset = 0usize;
+    expect_serialized_byte(bytes, &mut offset, b'C')?;
+    expect_serialized_byte(bytes, &mut offset, b':')?;
+    let class_len = take_serialized_usize(bytes, &mut offset, b':')?;
+    expect_serialized_byte(bytes, &mut offset, b'"')?;
+    let class = take_serialized_bytes(bytes, &mut offset, class_len)?;
+    expect_serialized_byte(bytes, &mut offset, b'"')?;
+    expect_serialized_byte(bytes, &mut offset, b':')?;
+    let payload_len = take_serialized_usize(bytes, &mut offset, b':')?;
+    expect_serialized_byte(bytes, &mut offset, b'{')?;
+    let payload = take_serialized_bytes(bytes, &mut offset, payload_len)?;
+    expect_serialized_byte(bytes, &mut offset, b'}')?;
+    if offset != bytes.len() {
+        return None;
+    }
+    Some(LegacySerializablePayload {
+        class_name: String::from_utf8_lossy(&class).into_owned(),
+        payload: PhpString::from_bytes(payload),
+    })
+}
+
+fn take_serialized_usize(bytes: &[u8], offset: &mut usize, delimiter: u8) -> Option<usize> {
+    let start = *offset;
+    while *offset < bytes.len() && bytes[*offset] != delimiter {
+        *offset += 1;
+    }
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let value = std::str::from_utf8(&bytes[start..*offset])
+        .ok()?
+        .parse::<usize>()
+        .ok()?;
+    *offset += 1;
+    Some(value)
+}
+
+fn take_serialized_bytes(bytes: &[u8], offset: &mut usize, length: usize) -> Option<Vec<u8>> {
+    let end = offset.checked_add(length)?;
+    if end > bytes.len() {
+        return None;
+    }
+    let value = bytes[*offset..end].to_vec();
+    *offset = end;
+    Some(value)
+}
+
+fn expect_serialized_byte(bytes: &[u8], offset: &mut usize, expected: u8) -> Option<()> {
+    let actual = bytes.get(*offset).copied()?;
+    if actual != expected {
+        return None;
+    }
+    *offset += 1;
+    Some(())
+}
+
+fn empty_runtime_class(name: &str) -> RuntimeClassEntry {
+    RuntimeClassEntry {
+        name: normalize_class_name(name),
+        parent: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor_id: None,
+        flags: RuntimeClassFlags::default(),
+    }
+}
+
 fn internal_throwable_method_value(
     object: &ObjectRef,
     method: &str,
@@ -32185,6 +32457,44 @@ fn emit_private_final_method_warnings(
                 state.diagnostics.push(diagnostic);
             }
         }
+    }
+}
+
+fn emit_serializable_interface_deprecations(
+    compiled: &CompiledUnit,
+    output: &mut OutputBuffer,
+    state: &mut ExecutionState,
+) {
+    for class in compiled.class_table() {
+        if class.flags.is_interface || class.flags.is_trait {
+            continue;
+        }
+        let implements_serializable =
+            class_implements_interface(compiled, &class.name, "Serializable", &mut Vec::new())
+                .unwrap_or(false);
+        if !implements_serializable || !error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED)
+        {
+            continue;
+        }
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_VM_SERIALIZABLE_INTERFACE_DEPRECATED",
+            RuntimeSeverity::Deprecation,
+            format!(
+                "{} implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() instead (or in addition, if support for old PHP versions is necessary)",
+                class.display_name
+            ),
+            runtime_source_span(compiled, class.span),
+            Vec::new(),
+            None,
+        );
+        emit_vm_diagnostic(
+            output,
+            state,
+            &diagnostic,
+            php_runtime::PhpDiagnosticChannel::Deprecated,
+            php_runtime::PHP_E_DEPRECATED,
+        );
+        state.diagnostics.push(diagnostic);
     }
 }
 
