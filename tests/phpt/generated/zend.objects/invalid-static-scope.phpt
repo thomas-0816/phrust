@@ -4,7 +4,7 @@ Generated zend.objects: invalid static access is catchable Error
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-static-v1
-reason: Prompt 14.5 invalid static access catchable Error
+reason: invalid static access catchable Error
 --FILE--
 <?php
 class ScopeTarget {

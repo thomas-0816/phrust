@@ -1,7 +1,7 @@
 --TEST--
 date: request-local timezone state drives date()
 --DESCRIPTION--
-Generated focused Prompt 19.2 coverage for date_default_timezone_get(), date_default_timezone_set(), date(), and separate request-local state.
+Generated focused coverage for date_default_timezone_get(), date_default_timezone_set(), date(), and separate request-local state.
 --FILE--
 <?php
 echo date_default_timezone_get(), "\n";

@@ -4,7 +4,7 @@ Generated arrays.references: isset and empty over local array dimensions
 module: arrays.references
 generated timestamp: 20260628T000000Z
 generator version: phpt-arrays-references-v1
-reason: Prompt 2C focused coverage for isset() and empty() on present, null, missing, and nested array dimensions from Reference PHP output
+reason: focused coverage for isset() and empty() on present, null, missing, and nested array dimensions from Reference PHP output
 --FILE--
 <?php
 $a = ["x" => 0, "n" => null, "nested" => ["y" => "0", "z" => ""]];

@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: mysqli connect is default-off without DSN
 --DESCRIPTION--
-Prompt 3.3 contract: mysqli is loaded, but live host connections require the
+contract: mysqli is loaded, but live host connections require the
 explicit PHRUST_MYSQL_TEST_DSN gate and never fake success.
 --SKIPIF--
 <?php

@@ -4,7 +4,7 @@ Generated zend.objects: public property read and write
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-basics-v1
-reason: Prompt 14.3 public property read/write baseline
+reason: public property read/write baseline
 --FILE--
 <?php
 class Box {

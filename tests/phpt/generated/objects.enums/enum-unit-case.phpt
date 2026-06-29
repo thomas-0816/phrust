@@ -4,7 +4,7 @@ Generated objects.enums: unit enum case
 module: objects.enums
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-traits-enums-v1
-reason: Prompt 2.5 unit enum case baseline
+reason: unit enum case baseline
 --FILE--
 <?php
 enum ObjectUnitStatus {

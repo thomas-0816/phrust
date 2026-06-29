@@ -1,7 +1,7 @@
 --TEST--
 mbstring: bounded UTF-8 MVP platform checks
 --DESCRIPTION--
-Focused mbstring Prompt 2F platform coverage. Reference output captured from
+Focused mbstring platform coverage. Reference output captured from
 PHP 8.5.7 php-src with --enable-mbstring --disable-mbregex.
 --FILE--
 <?php

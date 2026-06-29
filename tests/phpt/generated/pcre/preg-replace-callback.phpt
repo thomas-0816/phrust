@@ -1,7 +1,7 @@
 --TEST--
 pcre: preg_replace_callback dispatches named functions and closures
 --DESCRIPTION--
-Generated focused Prompt 18 coverage for real VM callable dispatch through preg_replace_callback.
+Generated focused coverage for real VM callable dispatch through preg_replace_callback.
 --FILE--
 <?php
 function pcre_wrap($m) {

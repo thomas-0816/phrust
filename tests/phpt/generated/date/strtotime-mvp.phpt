@@ -1,7 +1,7 @@
 --TEST--
 date: strtotime controlled MVP
 --DESCRIPTION--
-Generated focused Prompt 19.6 coverage for ISO-like dates, timestamp-like input, and selected relative modifiers.
+Generated focused coverage for ISO-like dates, timestamp-like input, and selected relative modifiers.
 --FILE--
 <?php
 date_default_timezone_set("UTC");

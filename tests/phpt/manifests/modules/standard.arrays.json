@@ -13,5 +13,5 @@
   "scope":["count","array_key_exists","array_keys","array_values","array_merge","array_slice","array_splice","array_column","in_array","array_search","array_unique","range","deterministic sort/asort/ksort"],
   "non_scope":["array COW engine work","callback-heavy array builtins without VM callable dispatch"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.arrays","nix develop -c just verify-stdlib"],
-  "next_step":"Keep the Prompt 2D selected array builtin gate green while expanding callback and broader upstream array PHPT coverage."
+  "next_step":"Keep the selected array builtin gate green while expanding callback and broader upstream array PHPT coverage."
 }

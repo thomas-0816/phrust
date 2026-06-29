@@ -4,7 +4,7 @@ Generated arrays.references: copy-on-write separation for nested arrays and elem
 module: arrays.references
 generated timestamp: 20260628T000000Z
 generator version: phpt-arrays-references-v1
-reason: Prompt 2C focused coverage for by-value array assignment sharing until scalar and nested writes separate from Reference PHP output
+reason: focused coverage for by-value array assignment sharing until scalar and nested writes separate from Reference PHP output
 --FILE--
 <?php
 $a = ["x" => 1, "nested" => ["y" => 2]];

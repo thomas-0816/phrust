@@ -4,7 +4,7 @@ Generated objects.enums: enum method
 module: objects.enums
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-traits-enums-v1
-reason: Prompt 2.5 enum method baseline
+reason: enum method baseline
 --FILE--
 <?php
 enum ObjectMethodDirection {

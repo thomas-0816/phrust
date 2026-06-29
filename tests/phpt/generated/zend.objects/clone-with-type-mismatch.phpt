@@ -4,7 +4,7 @@ Generated zend.objects: clone-with typed property mismatch
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 14.8 clone-with typed property mismatch baseline
+reason: clone-with typed property mismatch baseline
 --FILE--
 <?php
 class CloneWithMismatchBox {

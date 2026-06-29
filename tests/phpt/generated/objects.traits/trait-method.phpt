@@ -4,7 +4,7 @@ Generated objects.traits: trait method composition
 module: objects.traits
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-traits-enums-v1
-reason: Prompt 2.4 trait method composition baseline
+reason: trait method composition baseline
 --FILE--
 <?php
 trait TraitMethodBoxTrait {

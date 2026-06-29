@@ -13,5 +13,5 @@
   "scope":["timezone defaults","time/date/gmdate/microtime","DateTime and DateTimeImmutable MVP","DateTimeZone MVP","restricted strtotime","DateInterval MVP"],
   "non_scope":["complete timelib natural-language parity","complete tzdb/DST transitions","complete Date/Time class method surface"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=date"],
-  "next_step":"Keep the focused Prompt 19 Date/Time fixtures green while promoting broader upstream date PHPT rows incrementally."
+  "next_step":"Keep the focused Date/Time fixtures green while promoting broader upstream date PHPT rows incrementally."
 }

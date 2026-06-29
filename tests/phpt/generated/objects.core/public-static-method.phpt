@@ -4,7 +4,7 @@ Generated objects.core: public static methods with self and parent
 module: objects.core
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-static-v1
-reason: Prompt 14.5 public static method baseline
+reason: public static method baseline
 --FILE--
 <?php
 class Base {

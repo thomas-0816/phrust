@@ -4,7 +4,7 @@ Generated zend.objects: cloned public properties are independent
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 14.8 independent clone property baseline
+reason: independent clone property baseline
 --FILE--
 <?php
 class ClonePropertyBox {

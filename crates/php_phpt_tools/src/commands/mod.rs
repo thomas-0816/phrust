@@ -3026,13 +3026,15 @@ fn target_cli_skip_reason(
             || source.contains("proc_open(")
             || source.contains("shell_exec(")
         {
-            return Some("process-control functions are outside the Prompt 1B CLI contract");
+            return Some("process-control functions are outside the php-cli target contract");
         }
         if manifest_path == "sapi/cli/tests/bug77561.phpt" {
-            return Some("include-path expression runtime gap outside the Prompt 1B CLI contract");
+            return Some("include-path expression runtime gap outside the php-cli target contract");
         }
         if manifest_path == "sapi/cli/tests/bug70006.phpt" {
-            return Some("STDOUT default-parameter lowering is outside the Prompt 1B CLI contract");
+            return Some(
+                "STDOUT default-parameter lowering is outside the php-cli target contract",
+            );
         }
     }
     if section(sections, "PHPDBG").is_some() {
@@ -6934,7 +6936,7 @@ mod tests {
                 &sections,
                 "<?php require __DIR__ . '/bug77561.inc';"
             ),
-            Some("include-path expression runtime gap outside the Prompt 1B CLI contract")
+            Some("include-path expression runtime gap outside the php-cli target contract")
         );
         assert_eq!(
             target_cli_skip_reason(

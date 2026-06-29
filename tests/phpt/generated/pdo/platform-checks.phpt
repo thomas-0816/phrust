@@ -1,7 +1,7 @@
 --TEST--
 pdo: SQLite-backed core MVP surface
 --DESCRIPTION--
-Generated Prompt 4G coverage for PDO extension visibility, core constants,
+Generated coverage for PDO extension visibility, core constants,
 driver listing, metadata, and error state.
 --EXTENSIONS--
 pdo

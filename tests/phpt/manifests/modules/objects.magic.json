@@ -13,5 +13,5 @@
   "scope":["__get","__set","__isset","__unset","__call","__callStatic","__invoke","__toString"],
   "non_scope":["serialization magic","__debugInfo","recursive by-reference magic lvalues","Reflection of magic methods"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=objects.magic"],
-  "next_step":"Prompt 2.2 magic MVP is green; keep selected magic-method contracts green until final objects-core closeout."
+  "next_step":"magic MVP is green; keep selected magic-method contracts green until final objects-core closeout."
 }

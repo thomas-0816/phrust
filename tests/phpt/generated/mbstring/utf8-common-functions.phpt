@@ -1,7 +1,7 @@
 --TEST--
 mbstring: bounded UTF-8 common functions
 --DESCRIPTION--
-Focused mbstring Prompt 2F UTF-8 coverage for length, substring, and case
+Focused mbstring UTF-8 coverage for length, substring, and case
 conversion. Reference output captured from PHP 8.5.7 php-src with
 --enable-mbstring --disable-mbregex.
 --FILE--

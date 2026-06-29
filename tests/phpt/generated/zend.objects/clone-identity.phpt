@@ -4,7 +4,7 @@ Generated zend.objects: clone creates distinct object identity
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 14.8 clone identity baseline
+reason: clone identity baseline
 --FILE--
 <?php
 class CloneIdentityBox {

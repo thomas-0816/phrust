@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: selected OpenSSL helpers are visible
 --DESCRIPTION--
-Prompt 3.7 coverage for HTTPS/security/update helper startup.
+coverage for HTTPS/security/update helper startup.
 --SKIPIF--
 <?php
 if (!extension_loaded("openssl")) {

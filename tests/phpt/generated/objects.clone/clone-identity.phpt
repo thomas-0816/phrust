@@ -4,7 +4,7 @@ Generated objects.clone: clone creates distinct object identity
 module: objects.clone
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 2.3 clone identity baseline
+reason: clone identity baseline
 --FILE--
 <?php
 class CloneIdentityBox {

@@ -4,7 +4,7 @@ Generated objects.core: public static property read and write
 module: objects.core
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-static-v1
-reason: Prompt 14.5 static property read/write baseline
+reason: static property read/write baseline
 --FILE--
 <?php
 class Counter {

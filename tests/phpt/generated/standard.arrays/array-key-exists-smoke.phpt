@@ -4,7 +4,7 @@ Generated standard.arrays: array_key_exists and key_exists smoke
 module: standard.arrays
 generated timestamp: 20260628T000000Z
 generator version: phpt-standard-arrays-v2
-reason: Prompt 2D focused coverage for array_key_exists() and key_exists() with null values, integer keys, string keys, and missing keys from Reference PHP output
+reason: focused coverage for array_key_exists() and key_exists() with null values, integer keys, string keys, and missing keys from Reference PHP output
 --FILE--
 <?php
 $a = ["x" => null, 0 => "zero", "08" => "zero-eight"];

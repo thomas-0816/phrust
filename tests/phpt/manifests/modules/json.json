@@ -13,5 +13,5 @@
   "scope":["json_encode basics","json_decode basics","json last-error state","common JSON flags"],
   "non_scope":["full JsonSerializable without object model readiness","full ext/json corpus","json_validate"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=json"],
-  "next_step":"Prompt 17 is closed for the selected JSON module; keep JsonSerializable dispatch as the next documented semantic expansion point."
+  "next_step":"is closed for the selected JSON module; keep JsonSerializable dispatch as the next documented semantic expansion point."
 }

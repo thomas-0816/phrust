@@ -13,5 +13,5 @@
   "scope":["unit enum case singleton","backed enum case values","cases()","from()","tryFrom()","enum methods"],
   "non_scope":["enum serialization","ReflectionEnum","exhaustive invalid enum diagnostics"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=objects.enums"],
-  "next_step":"Prompt 2.5 enums MVP is green; keep enum work bounded to selected valid MVP behavior until final objects-core closeout."
+  "next_step":"enums MVP is green; keep enum work bounded to selected valid MVP behavior until final objects-core closeout."
 }

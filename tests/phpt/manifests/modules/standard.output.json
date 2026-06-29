@@ -13,5 +13,5 @@
   "scope":["output buffering","nested output buffers"],
   "non_scope":["output-buffer callbacks","handler-list APIs","chunk-size parity"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.output"],
-  "next_step":"Prompt 16.6 selected output-buffer contracts are closed and green; keep callbacks and handler APIs as documented gaps."
+  "next_step":"selected output-buffer contracts are closed and green; keep callbacks and handler APIs as documented gaps."
 }

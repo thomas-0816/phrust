@@ -4,7 +4,7 @@ Generated objects.enums: backed enum from and tryFrom
 module: objects.enums
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-traits-enums-v1
-reason: Prompt 2.5 backed enum from/tryFrom baseline
+reason: backed enum from/tryFrom baseline
 --FILE--
 <?php
 enum ObjectLookupStatus: string {

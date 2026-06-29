@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: curl HTTP execution is default-off
 --DESCRIPTION--
-Prompt 3.6 contract: cURL network execution requires the explicit
+contract: cURL network execution requires the explicit
 PHRUST_NET_TESTS=1 gate and never fakes success.
 --SKIPIF--
 <?php

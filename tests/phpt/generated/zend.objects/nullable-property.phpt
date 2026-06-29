@@ -4,7 +4,7 @@ Generated zend.objects: nullable property accepts null and typed values
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-typed-properties-v1
-reason: Prompt 14.6 nullable property baseline
+reason: nullable property baseline
 --FILE--
 <?php
 class Box {

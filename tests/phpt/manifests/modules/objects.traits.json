@@ -13,5 +13,5 @@
   "scope":["importing trait methods into classes","simple alias","simple precedence","method origin metadata preservation"],
   "non_scope":["trait properties","trait constants","nested trait uses","exhaustive conflict diagnostics","Reflection trait APIs"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=objects.traits"],
-  "next_step":"Prompt 2.4 traits MVP is green; keep trait work bounded to selected method-composition behavior until final objects-core closeout."
+  "next_step":"traits MVP is green; keep trait work bounded to selected method-composition behavior until final objects-core closeout."
 }

@@ -4,7 +4,7 @@ Generated objects.magic: magic __unset
 module: objects.magic
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-magic-v1
-reason: Prompt 2.2 magic __unset baseline
+reason: magic __unset baseline
 --FILE--
 <?php
 class MagicUnsetBox {

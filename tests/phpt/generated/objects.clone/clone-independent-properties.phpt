@@ -4,7 +4,7 @@ Generated objects.clone: cloned public properties are independent
 module: objects.clone
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 2.3 independent clone property baseline
+reason: independent clone property baseline
 --FILE--
 <?php
 class ClonePropertyBox {

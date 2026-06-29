@@ -12,5 +12,5 @@
   "scope":["local filesystem","php://memory streams","resources","include_path","include/require"],
   "non_scope":["network streams","PHAR streams","extension-backed wrappers","user stream wrappers"],
   "target_gates":["nix develop -c cargo test -p php_runtime","nix develop -c cargo test -p php_vm","nix develop -c just phpt-dev-module MODULE=filesystem.streams","nix develop -c just verify-phpt"],
-  "next_step":"Prompt 15 closed at 11 selected fixtures passing on reference and target; continue with Prompt 16.1 standard-core dashboard."
+  "next_step":"closed at 11 selected fixtures passing on reference and target; continue with standard-core dashboard."
 }

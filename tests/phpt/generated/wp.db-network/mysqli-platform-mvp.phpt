@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: mysqli MVP platform visibility
 --DESCRIPTION--
-Prompt 3.3 coverage for WordPress DB/network branch startup. Binaries without a
+coverage for WordPress DB/network branch startup. Binaries without a
 native or target mysqli module skip cleanly.
 --SKIPIF--
 <?php

@@ -13,5 +13,5 @@
   "scope":["shallow clone","object identity difference","independent property map after clone","__clone","PHP 8.5 clone-with public property replacements","simple typed public replacement checks"],
   "non_scope":["private/protected clone-with replacements","readonly clone-with matrix","full property-hook clone-with matrix","serialization magic"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=objects.clone"],
-  "next_step":"Prompt 2.3 clone MVP is green; keep selected clone and clone-with contracts green while preserving explicit unsupported replacement gaps."
+  "next_step":"clone MVP is green; keep selected clone and clone-with contracts green while preserving explicit unsupported replacement gaps."
 }

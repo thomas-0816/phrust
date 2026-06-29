@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: selected OpenSSL helper behavior
 --DESCRIPTION--
-Prompt 3.7 coverage for digest, random bytes, method listing, and explicit
+coverage for digest, random bytes, method listing, and explicit
 verification gap behavior.
 --SKIPIF--
 <?php

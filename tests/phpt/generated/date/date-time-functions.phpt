@@ -1,7 +1,7 @@
 --TEST--
 date: time, microtime, date and gmdate focused output
 --DESCRIPTION--
-Generated focused Prompt 19.3 coverage for time(), microtime(), date(), gmdate(), and selected deterministic format characters.
+Generated focused coverage for time(), microtime(), date(), gmdate(), and selected deterministic format characters.
 --FILE--
 <?php
 if (time() > 0) {

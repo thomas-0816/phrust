@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: curl MVP platform visibility
 --DESCRIPTION--
-Prompt 3.6 coverage for WordPress remote request transport startup.
+coverage for WordPress remote request transport startup.
 --SKIPIF--
 <?php
 if (!extension_loaded("curl")) {

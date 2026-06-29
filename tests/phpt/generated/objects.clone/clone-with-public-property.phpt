@@ -4,7 +4,7 @@ Generated objects.clone: clone-with public property replacement
 module: objects.clone
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 2.3 clone-with public property baseline
+reason: clone-with public property baseline
 --FILE--
 <?php
 class CloneWithBox {

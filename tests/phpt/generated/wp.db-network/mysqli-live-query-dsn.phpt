@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: mysqli live query through DSN gate
 --DESCRIPTION--
-Prompt 3.3/3.4 live MySQL/MariaDB query contract.
+live MySQL/MariaDB query contract.
 --SKIPIF--
 <?php
 if (!extension_loaded("mysqli")) {

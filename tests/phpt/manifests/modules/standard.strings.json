@@ -13,5 +13,5 @@
   "scope":["strlen","substr","strpos","str_contains","trim","explode","implode","sprintf","printf","str_replace","strtolower","strtoupper","strtok"],
   "non_scope":["frontend literal decoding"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.strings","nix develop -c just verify-stdlib"],
-  "next_step":"Keep the Prompt 2E selected string builtin gate green while expanding broader binary-safe and formatting coverage."
+  "next_step":"Keep the selected string builtin gate green while expanding broader binary-safe and formatting coverage."
 }

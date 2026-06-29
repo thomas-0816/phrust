@@ -4,7 +4,7 @@ Generated standard.arrays: array_unique comparison modes smoke
 module: standard.arrays
 generated timestamp: 20260628T000000Z
 generator version: phpt-standard-arrays-v2
-reason: Prompt 2D focused coverage for array_unique() key preservation and default versus SORT_REGULAR comparison behavior from Reference PHP output
+reason: focused coverage for array_unique() key preservation and default versus SORT_REGULAR comparison behavior from Reference PHP output
 --FILE--
 <?php
 $values = ["a" => "1", "b" => 1, "c" => "01", "d" => "1"];

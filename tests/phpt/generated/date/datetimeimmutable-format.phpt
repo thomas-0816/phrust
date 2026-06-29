@@ -1,7 +1,7 @@
 --TEST--
 date: DateTimeImmutable add() returns a new object
 --DESCRIPTION--
-Generated focused Prompt 19.4 and 19.7 coverage for DateTimeImmutable construction, format(), getTimestamp(), and immutable add() behavior.
+Generated focused and 19.7 coverage for DateTimeImmutable construction, format(), getTimestamp(), and immutable add() behavior.
 --FILE--
 <?php
 $zone = new DateTimeZone("UTC");

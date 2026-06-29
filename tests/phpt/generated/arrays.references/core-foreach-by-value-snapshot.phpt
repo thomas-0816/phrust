@@ -4,7 +4,7 @@ Generated arrays.references: foreach by-value snapshots local array iteration
 module: arrays.references
 generated timestamp: 20260628T000000Z
 generator version: phpt-arrays-references-v1
-reason: Prompt 2C focused coverage for by-value foreach using an iteration snapshot while the source array mutates from Reference PHP output
+reason: focused coverage for by-value foreach using an iteration snapshot while the source array mutates from Reference PHP output
 --FILE--
 <?php
 $items = [1, 2];

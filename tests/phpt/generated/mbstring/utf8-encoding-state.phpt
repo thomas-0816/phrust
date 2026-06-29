@@ -1,7 +1,7 @@
 --TEST--
 mbstring: bounded UTF-8 encoding state and detection
 --DESCRIPTION--
-Focused mbstring Prompt 2F UTF-8 coverage for internal encoding,
+Focused mbstring UTF-8 coverage for internal encoding,
 mb_detect_encoding, mb_check_encoding, and narrow UTF-8 mb_convert_encoding.
 Reference output captured from PHP 8.5.7 php-src with --enable-mbstring
 --disable-mbregex.

@@ -1,7 +1,7 @@
 --TEST--
 session: CLI request-local state
 --DESCRIPTION--
-Generated Prompt 4E coverage for deterministic CLI-only session functions and $_SESSION state.
+Generated coverage for deterministic CLI-only session functions and $_SESSION state.
 --EXTENSIONS--
 session
 --FILE--

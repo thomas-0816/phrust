@@ -12,5 +12,5 @@
   "scope":["ordered arrays","key normalization","append","unset holes","isset/empty array dimensions","array element references","copy-on-write separation","foreach by-value snapshots","foreach by-reference over local arrays"],
   "non_scope":["SPL collection classes","object property references","by-reference method returns","ReflectionReference","extension-specific iterable objects"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=arrays.references"],
-  "next_step":"Keep the Prompt 2C selected core array/reference gate green while promoting broader php-src reference, object, SPL, and extension cases into later focused modules."
+  "next_step":"Keep the selected core array/reference gate green while promoting broader php-src reference, object, SPL, and extension cases into later focused modules."
 }

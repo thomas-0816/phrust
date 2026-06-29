@@ -4,7 +4,7 @@ Generated arrays.references: array element references and unset cells
 module: arrays.references
 generated timestamp: 20260628T000000Z
 generator version: phpt-arrays-references-v1
-reason: Prompt 2C focused coverage for array element reference aliases, unset preserving the reference cell, and append-by-reference from Reference PHP output
+reason: focused coverage for array element reference aliases, unset preserving the reference cell, and append-by-reference from Reference PHP output
 --FILE--
 <?php
 $a = ["x" => 1, "y" => 2];

@@ -4,7 +4,7 @@ Generated standard.arrays: array_splice replacement and reindex smoke
 module: standard.arrays
 generated timestamp: 20260628T000000Z
 generator version: phpt-standard-arrays-v2
-reason: Prompt 2D focused coverage for array_splice() removed values, replacement values, and numeric reindexing from Reference PHP output
+reason: focused coverage for array_splice() removed values, replacement values, and numeric reindexing from Reference PHP output
 --FILE--
 <?php
 $a = [10, 20, 30, 40];

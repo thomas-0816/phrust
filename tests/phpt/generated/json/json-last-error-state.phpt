@@ -1,7 +1,7 @@
 --TEST--
 json: last error state smoke
 --DESCRIPTION--
-Generated focused Prompt 17.1 coverage for json_last_error() and json_last_error_msg() state transitions.
+Generated focused coverage for json_last_error() and json_last_error_msg() state transitions.
 --FILE--
 <?php
 var_dump(json_last_error());

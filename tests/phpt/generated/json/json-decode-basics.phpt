@@ -1,7 +1,7 @@
 --TEST--
 json: decode object and array basics
 --DESCRIPTION--
-Generated focused Prompt 17.1 coverage for json_decode() associative-array and stdClass object output.
+Generated focused coverage for json_decode() associative-array and stdClass object output.
 --FILE--
 <?php
 var_dump(json_decode('{"a":1,"b":[true,null]}', true));

@@ -4,7 +4,7 @@ Generated objects.core: constructor initializes public property
 module: objects.core
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-basics-v1
-reason: Prompt 14.3 constructor/property baseline
+reason: constructor/property baseline
 --FILE--
 <?php
 class C {

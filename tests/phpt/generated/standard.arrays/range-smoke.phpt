@@ -4,7 +4,7 @@ Generated standard.arrays: range numeric and character smoke
 module: standard.arrays
 generated timestamp: 20260628T000000Z
 generator version: phpt-standard-arrays-v2
-reason: Prompt 2D focused coverage for range() increasing numeric, character step, and decreasing default-step output from Reference PHP output
+reason: focused coverage for range() increasing numeric, character step, and decreasing default-step output from Reference PHP output
 --FILE--
 <?php
 var_dump(range(1, 5, 2));

@@ -13,5 +13,5 @@
   "scope":["math and numeric standard builtins"],
   "non_scope":["operator conversion semantics"],
   "target_gates":["nix develop -c cargo test -p php_runtime","nix develop -c just phpt-dev-module MODULE=standard.math","nix develop -c just verify-stdlib"],
-  "next_step":"Prompt 16.2 selected math contracts are closed with 161 PASS and 11 reference-style SKIP outcomes; continue reducing broader numeric edge cases outside the focused gate."
+  "next_step":"selected math contracts are closed with 161 PASS and 11 reference-style SKIP outcomes; continue reducing broader numeric edge cases outside the focused gate."
 }

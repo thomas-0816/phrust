@@ -1,33 +1,28 @@
-# Runtime semantics Final Audit
+# runtime-semantics Final Audit
 
-Runtime semantics closes with executable semantics, fixture evidence, and explicit gaps.
-The runtime path remains:
+Runtime semantics owns executable PHP behavior over the existing frontend,
+runtime, and VM pipeline:
 
 ```text
 php_lexer -> php_syntax -> php_ast -> php_semantics/HIR -> php_ir -> php_runtime -> php_vm -> php_vm_cli
 ```
 
-No second lexer, parser, semantic frontend, or source-string execution path was
-introduced.
+No second lexer, parser, semantic frontend, or source-string execution path is
+part of this layer.
 
-## Final Gate
+## Required Gates
 
-The required final gates are:
+Run these before handing off runtime semantics changes:
 
 ```bash
-nix develop -c just verify-foundation
-nix develop -c just verify-lexer
-nix develop -c just verify-frontend
-nix develop -c just verify-frontend
-nix develop -c just verify-runtime
 nix develop -c just verify-runtime
 nix develop -c cargo test --workspace
 ```
 
-`verify-runtime` includes formatting, Clippy, workspace tests, Runtime
-verification, Runtime semantics fixture gates, the Runtime semantics diff harness, PHPT smoke
-allowlist checks, hardening lints, the devshell toolchain audit, and final
-documentation checks.
+`verify-runtime` includes formatting, linting, workspace tests, Runtime
+verification, Runtime semantics fixture gates, the Runtime semantics diff
+harness, PHPT smoke allowlist checks, hardening lints, the devshell toolchain
+audit, and documentation checks.
 
 ## Evidence Map
 
@@ -47,18 +42,18 @@ documentation checks.
 
 ## Docs and CI Consistency
 
-- `README.md` points to the Runtime semantics contract, known-gap catalog, coverage
-  matrix, unsafe audit, and standard library roadmap.
-- `AGENTS.md` keeps Runtime semantics boundaries and requires `verify-runtime` before
-  closing Runtime semantics work.
-- `.github/workflows/runtime-semantics.yml` runs `nix develop -c just verify-runtime` and
-  uploads Runtime semantics/Runtime report artifacts when present.
-- `scripts/verify-runtime.sh` asserts final docs, PHPT allowlist categories,
-  regression metadata, and minimization tooling.
+- `README.md` points to the runtime semantics contract, known-gap catalog,
+  coverage matrix, unsafe audit, and standard-library roadmap.
+- `AGENTS.md` keeps runtime semantics boundaries and requires `verify-runtime`
+  before handing off runtime semantics changes.
+- `.github/workflows/runtime-semantics.yml` runs
+  `nix develop -c just verify-runtime` and uploads Runtime semantics/Runtime
+  report artifacts when present.
+- `scripts/verify/runtime-semantics.sh` asserts final docs, PHPT allowlist
+  categories, regression metadata, and minimization tooling.
 
 ## Closure Criteria
 
-Runtime semantics is complete when the final gates above pass. Any red gate must be
-classified as an existing baseline issue, a new regression, or an allowed
-known gap before the layer is considered closed. New regressions are not
-accepted as Runtime semantics completion.
+Any red gate must be classified as an existing baseline issue, a new
+regression, or an allowed known gap before a runtime semantics change is
+accepted. New regressions are not accepted.

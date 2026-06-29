@@ -1,13 +1,13 @@
-# Standard library Final Audit
+# Standard Library Validation Summary
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-This audit records the required standard-library gates, the optional coverage
-implemented in-tree, and the remaining known gaps carried as performance input.
+This document records the current standard-library validation contract,
+fixture coverage, generated metadata surface, and known-gap handoff points.
 
 ## Required Gates
 
-Run these before closing Standard library:
+Run these before handing off standard-library changes:
 
 ```bash
 nix develop -c just verify-stdlib
@@ -39,33 +39,38 @@ must not be replaced by placeholder skip scripts.
   for autoload, environment, JSON config, routing, DateTime/version parsing,
   arrays, and reflection attributes.
 
-## Optional Coverage
+## Generated Metadata
 
-- Reference metadata extraction exists through
+- Reference metadata extraction uses
   `scripts/stdlib/list_reference_functions.php`,
   `scripts/stdlib/list_reference_classes.php`,
   `scripts/stdlib/list_reference_constants.php`, and
-  `scripts/stdlib/function_coverage.py`. Committed arginfo generation is
-  available through `just generate-arginfo`, and strict snapshot drift
-  verification is available through `just verify-generated-arginfo`;
-  `performance-tests` runs the generator against a local php-src-style fixture
+  `scripts/stdlib/function_coverage.py`.
+- Committed arginfo generation is available through `just generate-arginfo`.
+- Strict snapshot drift verification is available through
+  `just verify-generated-arginfo`.
+- `performance-tests` runs the generator against a local php-src-style fixture
   with manual overrides.
-- PHAR remains governed by ADR-0066. Composer source mode is the
-  required path; read-only PHAR support is not enabled in Standard library.
-- Tokenizer extension metadata and runtime smoke coverage are
-  included in `performance-tests`.
-- Online Composer and Packagist access are default-off; local
-  source-mode Composer smoke is available through `composer-smoke-source`.
-- Hash/random support is implemented and covered by
-  `STDLIB_HASH_RANDOM`.
+
+Generated run output belongs under `target/` and must not be committed.
+
+## Current Boundaries
+
+- PHAR remains governed by ADR-0066. Composer source mode is the required path;
+  read-only PHAR support is not enabled in the standard-library layer.
+- Tokenizer extension metadata and runtime smoke coverage are included in
+  `performance-tests`.
+- Online Composer and Packagist access are default-off; local source-mode
+  Composer smoke is available through `composer-smoke-source`.
+- Hash/random support is implemented and covered by `STDLIB_HASH_RANDOM`.
 - Larger Composer source checkouts are opt-in through
   `PHRUST_STDLIB_COMPOSER_SOURCE_DIR` and skip explicitly when absent.
 
-## Performance Inputs
+## Known-Gap Inputs
 
-Performance should consume `docs/stdlib-known-gaps.md`,
-`docs/function-stdlib-coverage.md`, and `docs/extension-stdlib-coverage.md` as
-the authoritative gap map. Highest-priority carryovers are full arginfo
-generation/import, byte-perfect extension diagnostics, full Date/Time timelib
-parity, complete hash algorithm coverage, PHAR only if ADR-0066 is superseded,
-and broader upstream PHPT promotion.
+Use `docs/stdlib-known-gaps.md`, `docs/stdlib-function-coverage.md`, and
+`docs/stdlib-extension-coverage.md` as the standard-library gap and coverage
+map. Current carryovers include full PHP extension parity, byte-perfect
+extension diagnostics, complete Date/Time timelib parity, complete hash
+algorithm coverage, PHAR support only if ADR-0066 is superseded, and broader
+upstream PHPT promotion.

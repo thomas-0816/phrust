@@ -4,7 +4,7 @@ Generated standard.arrays: deterministic sort, asort, and ksort smoke
 module: standard.arrays
 generated timestamp: 20260628T000000Z
 generator version: phpt-standard-arrays-v2
-reason: Prompt 2D focused coverage for deterministic non-callback sorting builtins mutating arrays by reference from Reference PHP output
+reason: focused coverage for deterministic non-callback sorting builtins mutating arrays by reference from Reference PHP output
 --FILE--
 <?php
 $a = ["b" => 3, "a" => 1, "c" => 2];

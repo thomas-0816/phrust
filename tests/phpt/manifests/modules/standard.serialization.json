@@ -13,5 +13,5 @@
   "scope":["serialize","unserialize","value persistence"],
   "non_scope":["session module persistence"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.serialization"],
-  "next_step":"Prompt 16.7 selected serialization contracts are closed and green; keep reference identity records and magic hooks as documented gaps."
+  "next_step":"selected serialization contracts are closed and green; keep reference identity records and magic hooks as documented gaps."
 }

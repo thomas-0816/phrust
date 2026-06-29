@@ -1,7 +1,7 @@
 --TEST--
 pcre: preg_match and preg_match_all capture shapes
 --DESCRIPTION--
-Generated focused Prompt 18 coverage for named captures, offset capture, set-order match_all, and offset-base handling.
+Generated focused coverage for named captures, offset capture, set-order match_all, and offset-base handling.
 --FILE--
 <?php
 $m = null;

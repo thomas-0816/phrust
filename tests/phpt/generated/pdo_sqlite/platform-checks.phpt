@@ -1,7 +1,7 @@
 --TEST--
 pdo_sqlite: SQLite DSN query and statement MVP
 --DESCRIPTION--
-Generated Prompt 4G coverage for PDO_SQLite query, prepare/execute, fetch
+Generated coverage for PDO_SQLite query, prepare/execute, fetch
 modes, and local file persistence.
 --EXTENSIONS--
 pdo

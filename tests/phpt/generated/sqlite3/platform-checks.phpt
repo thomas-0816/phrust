@@ -1,7 +1,7 @@
 --TEST--
 sqlite3: local MVP query and result behavior
 --DESCRIPTION--
-Generated Prompt 4F coverage for deterministic SQLite3 :memory: and local file
+Generated coverage for deterministic SQLite3 :memory: and local file
 database behavior.
 --EXTENSIONS--
 sqlite3

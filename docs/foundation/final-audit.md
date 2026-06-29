@@ -1,77 +1,47 @@
-# Foundation Final Audit
+# Foundation Validation Summary
 
-Date: 2026-06-19
+Target: PHP `8.5.7`, tag `php-8.5.7`.
 
-Target: PHP `8.5.7`, tag `php-8.5.7`
+The foundation layer defines the repository contract for the pinned PHP
+reference, Nix development shell, Rust workspace, source-integrity rules, and
+validation commands. It does not provide engine execution behavior.
 
-Result: PASS
+## Current Contract
 
-## Summary
+- `flake.nix` and `flake.lock` provide the Nix development environment.
+- `Cargo.toml` defines the Rust workspace.
+- `AGENTS.md`, `README.md`, and `docs/contributing.md` describe workflow,
+  scope, and validation rules.
+- `references/php-src.lock.example.toml`,
+  `references/php-src.lock.toml`, and `references/php-src.metadata.json`
+  record the pinned PHP reference metadata.
+- `third_party/php-src` is a local-only reference checkout and must not be
+  committed.
+- `docs/adr/0001-target-php-version.md` through
+  `docs/adr/0005-layer-boundaries.md` define the initial architectural
+  decisions.
+- `docs/foundation/` records compatibility target, syntax sources, runtime
+  boundaries, test matrix, copying policy, risk register, and definition of
+  done.
 
-Foundation is complete for the repository foundation. The project has a Nix Flake
-development shell, a Rust workspace skeleton, a pinned PHP reference contract,
-reference bootstrap/metadata/build scripts, documentation, fixture structure,
-CI preparation, and a central verification command.
+## Validation
 
-No PHP engine, lexer, parser, AST/CST, VM, runtime value model, JIT, extension,
-or Zend ABI implementation was added.
-
-## Fulfilled Points
-
-- `flake.nix` and `flake.lock` exist.
-- `nix develop` provides the Foundation development shell.
-- `Cargo.toml` defines a minimal Rust workspace with placeholder crates only.
-- `AGENTS.md` documents the Foundation working rules.
-- `README.md` documents quickstart, target, scope, and CI commands.
-- PHP reference target is consistently `8.5.7` / `php-8.5.7`.
-- `references/php-src.lock.example.toml` exists.
-- `references/php-src.lock.toml` was generated from the network reference.
-- `references/php-src.metadata.json` was generated.
-- `third_party/php-src` is ignored and is not intended for commit.
-- Optional reference PHP CLI was built and reports PHP `8.5.7`.
-- `token_get_all` is available in the built reference CLI.
-- `docs/adr/*` contains the Foundation decisions.
-- `docs/foundation/**` contains compatibility, syntax, runtime, test, risk,
-  license/copying, completion, and audit documentation.
-- `tests/fixtures/*` contains only placeholder structure.
-- `.github/workflows/foundation.yml` runs the required Nix-based Foundation gate.
-
-## Commands Run
+Use the foundation gate when changing reference metadata, Nix setup, workspace
+structure, or foundation documentation:
 
 ```bash
-nix --extra-experimental-features 'nix-command flakes' flake show
-nix --extra-experimental-features 'nix-command flakes' develop -c just help
-nix --extra-experimental-features 'nix-command flakes' develop -c cargo fmt --all --check
-nix --extra-experimental-features 'nix-command flakes' develop -c cargo clippy --workspace --all-targets -- -D warnings
-nix --extra-experimental-features 'nix-command flakes' develop -c cargo test --workspace
-nix --extra-experimental-features 'nix-command flakes' develop -c just bootstrap-ref
-nix --extra-experimental-features 'nix-command flakes' develop -c just extract-ref-metadata
-nix --extra-experimental-features 'nix-command flakes' develop -c just build-ref-php
-nix --extra-experimental-features 'nix-command flakes' develop -c just verify-ref
-nix --extra-experimental-features 'nix-command flakes' develop -c just verify-foundation
+nix develop -c just verify-foundation
 ```
 
-## Command Results
+The gate checks required files, required content markers, reference bootstrap
+scripts, Rust formatting/lint/tests, the optional reference lockfile, and the
+optional local `third_party/php-src` checkout when present.
 
-- `nix flake show`: passed.
-- `just help`: passed.
-- Rust formatting, linting, and tests: passed.
-- `just bootstrap-ref`: passed; resolved commit
-  `35eab8c08bc590758d05813b0ff7a3d8c3e67b79`.
-- `just extract-ref-metadata`: passed.
-- `just build-ref-php`: passed; CLI reports PHP `8.5.7`.
-- `just verify-ref`: passed; `token_get_all` is available.
-- `just verify-foundation`: passed.
+Reference-dependent checks must skip clearly when no PHP reference binary is
+available and must be strict when `REFERENCE_PHP` is explicitly set.
 
-## Open Optional Points
+## Boundaries
 
-No Foundation blockers remain.
-
-Future layers still need to implement actual compatibility work:
-
-- Token fixtures against `token_get_all()`.
-- Source/span primitives beyond placeholders.
-- Lexer, parser, runtime, and PHPT test harness work.
-- Composer and framework smoke tests.
-
-These are explicitly outside Foundation.
+Foundation documentation is a current contract, not a task archive. PHP engine
+behavior belongs in the owning lexer, syntax, frontend, runtime, standard
+library, server, performance, or PHPT layer documentation.

@@ -1,7 +1,7 @@
 --TEST--
 date: DateTime construction and format MVP
 --DESCRIPTION--
-Generated focused Prompt 19.4 coverage for DateTime construction, default timezone, format(), getTimestamp(), and date_format().
+Generated focused coverage for DateTime construction, default timezone, format(), getTimestamp(), and date_format().
 --FILE--
 <?php
 date_default_timezone_set("Europe/Berlin");

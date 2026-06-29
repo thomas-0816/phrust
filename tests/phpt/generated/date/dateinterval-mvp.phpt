@@ -1,7 +1,7 @@
 --TEST--
 date: DateInterval focused MVP
 --DESCRIPTION--
-Generated focused Prompt 19.7 coverage for DateInterval ISO subset parsing, properties, format(), date_interval_format(), and DateTime add/sub integration.
+Generated focused coverage for DateInterval ISO subset parsing, properties, format(), date_interval_format(), and DateTime add/sub integration.
 --FILE--
 <?php
 $interval = new DateInterval("P1DT2H3M4S");

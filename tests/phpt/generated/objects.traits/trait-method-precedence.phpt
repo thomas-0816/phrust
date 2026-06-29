@@ -4,7 +4,7 @@ Generated objects.traits: trait method precedence
 module: objects.traits
 generated timestamp: 20260628T000000Z
 generator version: phpt-objects-advanced-v1
-reason: Prompt 2.4 trait method precedence baseline
+reason: trait method precedence baseline
 --FILE--
 <?php
 trait TraitPrecedenceLeft {

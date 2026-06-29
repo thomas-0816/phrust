@@ -4,7 +4,7 @@ Generated objects.core: private property external access is Error
 module: objects.core
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-visibility-v1
-reason: Prompt 14.4 private property external visibility error
+reason: private property external visibility error
 --FILE--
 <?php
 class Secret {

@@ -4,7 +4,7 @@ Generated zend.objects: magic __toString
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-magic-v1
-reason: Prompt 14.7 magic __toString baseline
+reason: magic __toString baseline
 --FILE--
 <?php
 class MagicStringBox {

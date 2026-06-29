@@ -4,7 +4,7 @@ Generated objects.enums: backed enum case
 module: objects.enums
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-traits-enums-v1
-reason: Prompt 2.5 backed enum case baseline
+reason: backed enum case baseline
 --FILE--
 <?php
 enum ObjectBackedStatus: string {

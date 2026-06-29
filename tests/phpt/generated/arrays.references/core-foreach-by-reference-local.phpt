@@ -4,7 +4,7 @@ Generated arrays.references: foreach by-reference over a local array
 module: arrays.references
 generated timestamp: 20260628T000000Z
 generator version: phpt-arrays-references-v1
-reason: Prompt 2C focused coverage for local-array by-reference foreach, appended entries, value mutation, and the lingering loop reference from Reference PHP output
+reason: focused coverage for local-array by-reference foreach, appended entries, value mutation, and the lingering loop reference from Reference PHP output
 --FILE--
 <?php
 $items = [1, 2];

@@ -1,7 +1,7 @@
 --TEST--
 date: DateTimeZone focused registry MVP
 --DESCRIPTION--
-Generated focused Prompt 19.5 coverage for DateTimeZone construction, getName(), timezone_name_get(), timezone_open(), and DateTime constructor timezone argument.
+Generated focused coverage for DateTimeZone construction, getName(), timezone_name_get(), timezone_open(), and DateTime constructor timezone argument.
 --FILE--
 <?php
 $zone = new DateTimeZone("UTC");

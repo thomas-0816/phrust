@@ -13,5 +13,5 @@
   "scope":["URL encoding helpers","HTML escaping helpers"],
   "non_scope":["complete entity tables","non-default charsets","full http_build_query parity"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.url-html","nix develop -c just verify-stdlib"],
-  "next_step":"Prompt 16.8 selected URL/HTML contracts are closed and green; keep full charset/entity tables and uncommon flags as documented gaps."
+  "next_step":"selected URL/HTML contracts are closed and green; keep full charset/entity tables and uncommon flags as documented gaps."
 }

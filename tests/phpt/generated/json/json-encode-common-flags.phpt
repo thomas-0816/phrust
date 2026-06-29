@@ -1,7 +1,7 @@
 --TEST--
 json: encode common flags
 --DESCRIPTION--
-Generated focused Prompt 17.1 coverage for JSON_PRETTY_PRINT, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, and JSON_PRESERVE_ZERO_FRACTION.
+Generated focused coverage for JSON_PRETTY_PRINT, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, and JSON_PRESERVE_ZERO_FRACTION.
 --FILE--
 <?php
 var_dump(json_encode(

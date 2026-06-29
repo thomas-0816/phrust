@@ -4,7 +4,7 @@ Generated zend.objects: trait method alias
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-traits-enums-v1
-reason: Prompt 14.9 trait method alias baseline
+reason: trait method alias baseline
 --FILE--
 <?php
 trait TraitAliasBoxTrait {

@@ -4,7 +4,7 @@ Generated standard.arrays: array_column values and index keys smoke
 module: standard.arrays
 generated timestamp: 20260628T000000Z
 generator version: phpt-standard-arrays-v2
-reason: Prompt 2D focused coverage for array_column() column extraction, index keys, null column values, and missing index fallback from Reference PHP output
+reason: focused coverage for array_column() column extraction, index keys, null column values, and missing index fallback from Reference PHP output
 --FILE--
 <?php
 $rows = [

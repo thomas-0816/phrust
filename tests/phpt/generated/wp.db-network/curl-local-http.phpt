@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: curl local HTTP smoke through explicit URL gate
 --DESCRIPTION--
-Prompt 3.6 contract for real HTTP execution. The URL must point at a local
+contract for real HTTP execution. The URL must point at a local
 test server; public internet endpoints are not part of this module.
 --SKIPIF--
 <?php

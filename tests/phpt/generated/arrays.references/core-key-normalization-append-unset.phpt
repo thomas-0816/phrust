@@ -4,7 +4,7 @@ Generated arrays.references: key normalization, append keys, and unset holes
 module: arrays.references
 generated timestamp: 20260628T000000Z
 generator version: phpt-arrays-references-v1
-reason: Prompt 2C focused coverage for ordered array keys, numeric-string key normalization, append next-key tracking, and unset holes from Reference PHP output
+reason: focused coverage for ordered array keys, numeric-string key normalization, append next-key tracking, and unset holes from Reference PHP output
 --FILE--
 <?php
 $a = [];

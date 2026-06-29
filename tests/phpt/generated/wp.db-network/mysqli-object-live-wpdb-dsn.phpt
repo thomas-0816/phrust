@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: mysqli object wpdb-style live query through DSN
 --DESCRIPTION--
-Prompt 3.4 live WordPress wpdb shape: connect, set utf8mb4, create a temporary
+live WordPress wpdb shape: connect, set utf8mb4, create a temporary
 table, insert an escaped value, select it back, and fetch through mysqli_result.
 --SKIPIF--
 <?php

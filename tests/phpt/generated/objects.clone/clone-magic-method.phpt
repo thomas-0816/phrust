@@ -4,7 +4,7 @@ Generated objects.clone: __clone runs on clone
 module: objects.clone
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 2.3 __clone baseline
+reason: __clone baseline
 --FILE--
 <?php
 class CloneMagicBox {

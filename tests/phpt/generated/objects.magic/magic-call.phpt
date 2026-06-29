@@ -4,7 +4,7 @@ Generated objects.magic: magic __call
 module: objects.magic
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-magic-v1
-reason: Prompt 2.2 magic __call baseline
+reason: magic __call baseline
 --FILE--
 <?php
 class MagicCallBox {

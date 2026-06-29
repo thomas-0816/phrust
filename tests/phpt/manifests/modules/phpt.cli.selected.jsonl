@@ -1,6 +1,6 @@
-{"path":"tests/phpt/generated/phpt.cli/argv-argc-superglobals.phpt","source":"generated","provenance":"Prompt 1B CLI argv and argc contract"}
-{"path":"tests/phpt/generated/phpt.cli/ini-overrides.phpt","source":"generated","provenance":"Prompt 1B CLI -d/INI runtime visibility contract"}
-{"path":"tests/phpt/generated/phpt.cli/stdin.phpt","source":"generated","provenance":"Prompt 1B CLI STDIN contract"}
+{"path":"tests/phpt/generated/phpt.cli/argv-argc-superglobals.phpt","source":"generated","provenance":"CLI argv and argc contract"}
+{"path":"tests/phpt/generated/phpt.cli/ini-overrides.phpt","source":"generated","provenance":"CLI -d/INI runtime visibility contract"}
+{"path":"tests/phpt/generated/phpt.cli/stdin.phpt","source":"generated","provenance":"CLI STDIN contract"}
 {"path":"sapi/phpdbg/tests/gh12962.phpt"}
 {"path":"sapi/phpdbg/tests/bug73615.phpt"}
 {"path":"sapi/fpm/tests/status-ping.phpt"}

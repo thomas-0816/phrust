@@ -4,7 +4,7 @@ Generated zend.objects: unit enum case
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-traits-enums-v1
-reason: Prompt 14.9 unit enum case baseline
+reason: unit enum case baseline
 --FILE--
 <?php
 enum ObjectUnitStatus {

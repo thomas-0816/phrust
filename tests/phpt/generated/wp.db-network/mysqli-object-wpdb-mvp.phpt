@@ -1,7 +1,7 @@
 --TEST--
 wp.db-network: mysqli object API default-off wpdb shape
 --DESCRIPTION--
-Prompt 3.4 contract: the mysqli object surface exists for WordPress-style
+contract: the mysqli object surface exists for WordPress-style
 initialization, while real network connection remains DSN-gated.
 --SKIPIF--
 <?php

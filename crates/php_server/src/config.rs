@@ -610,8 +610,10 @@ mod tests {
         fs,
         net::SocketAddr,
         path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
+        sync::atomic::{AtomicU64, Ordering},
     };
+
+    static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn parses_required_docroot_and_defaults() {
@@ -930,10 +932,7 @@ index = "../bad.php"
     }
 
     fn temp_config(contents: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
+        let unique = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "phrust-server-config-{}-{unique}.toml",
             std::process::id()

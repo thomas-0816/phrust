@@ -1,7 +1,7 @@
 --TEST--
 json: encode scalar, array, and object basics
 --DESCRIPTION--
-Generated focused Prompt 17.1 coverage for json_encode() scalar, list, map, nested, and simple object output.
+Generated focused coverage for json_encode() scalar, list, map, nested, and simple object output.
 --FILE--
 <?php
 var_dump(json_encode(null));

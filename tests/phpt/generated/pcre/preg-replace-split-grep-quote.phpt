@@ -1,7 +1,7 @@
 --TEST--
 pcre: replace, split, grep, and quote MVP behavior
 --DESCRIPTION--
-Generated focused Prompt 18 coverage for replacement backrefs/count, split flags, grep, and preg_quote delimiter escaping.
+Generated focused coverage for replacement backrefs/count, split flags, grep, and preg_quote delimiter escaping.
 --FILE--
 <?php
 $count = null;

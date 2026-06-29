@@ -4,7 +4,7 @@ Generated standard.strings: str_replace and ASCII case conversion smoke
 module: standard.strings
 generated timestamp: 20260628T000000Z
 generator version: phpt-standard-strings-v2
-reason: Prompt 2E focused coverage for str_replace() array subjects and replacement count plus strtolower()/strtoupper() ASCII conversion from Reference PHP output
+reason: focused coverage for str_replace() array subjects and replacement count plus strtolower()/strtoupper() ASCII conversion from Reference PHP output
 --FILE--
 <?php
 $result = str_replace(["red", "blue"], ["green", "yellow"], ["red blue", "red"], $count);

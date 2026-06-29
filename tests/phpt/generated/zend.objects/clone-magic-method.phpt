@@ -4,7 +4,7 @@ Generated zend.objects: __clone runs on clone
 module: zend.objects
 generated timestamp: 20260627T000000Z
 generator version: phpt-objects-clone-v1
-reason: Prompt 14.8 __clone baseline
+reason: __clone baseline
 --FILE--
 <?php
 class CloneMagicBox {
