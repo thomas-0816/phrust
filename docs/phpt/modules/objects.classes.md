@@ -3,7 +3,7 @@
 - Priority: 10
 - Selected manifest: `tests/phpt/manifests/modules/objects.classes.selected.jsonl`
 - Current corpus counts: 178 PASS, 33 SKIP, 1924 FAIL, 0 BORK from 2136 corpus candidates
-- Current selected run: 128 PASS, 0 SKIP, 72 FAIL, 0 BORK from 200 selected rows
+- Current selected run: 191 PASS, 0 SKIP, 9 FAIL, 0 BORK from 200 selected rows
 - Core close gate: `objects.core` is 16 PASS / 0 FAIL for reference and target
 
 ## Scope
@@ -75,6 +75,20 @@
 - `nix develop -c just phpt-dev-module MODULE=objects.core`
 - `nix develop -c just phpt-dev-module MODULE=objects.classes`
 
+## Branch 1 Closure Runtime Impact
+
+On `phpt/closure-core-runtime-semantics`, after the closure runtime semantics
+work and class-constant initializer fatal-output fix:
+
+- `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
+- reference: 200 PASS
+- target: 191 PASS, 9 FAIL
+
+The selected `tests/classes/constants_error_004.phpt` case now matches PHP's
+class-constant initializer fatal location and `[constant expression]()` trace
+frame. Remaining failures are dashboard backlog items outside the
+`closure.core` gate.
+
 ## Branch 2 Advanced Integration Impact
 
 On `main`, after the completed object-core branch and the Branch 2 advanced
@@ -107,9 +121,8 @@ Current selected `objects.classes` non-green rows are outside the
 - autoload and ReflectionException catch-type behavior
 - iterator/destructor ordering and exception behavior
 - serialization, `__sleep`, and `__toString` object formatting
-- class constant inheritance and dynamic constant/class lookup edge cases
-- property-reference and by-reference static-property assignment gaps
-- static-as-instance edge cases and broader object/reference COW behavior
+- eval declaration merging and runtime class-declaration dependency catchability
+- autoload incomplete-class behavior and object formatting parity
 
 ## Next Step
 

@@ -11454,8 +11454,8 @@ impl Vm {
                             &|reference| named_constant_reference_value(compiled, state, reference),
                         ) {
                             Ok(class) => class,
-                            Err(message) => {
-                                match self.raise_runtime_error(
+                            Err(error) => {
+                                match self.raise_runtime_class_entry_error(
                                     compiled,
                                     output,
                                     stack,
@@ -11463,7 +11463,7 @@ impl Vm {
                                     &mut exception_handlers,
                                     &mut pending_control,
                                     instruction.span,
-                                    message,
+                                    error,
                                 ) {
                                     RaiseOutcome::Caught(target) => {
                                         block_id = target;
@@ -12287,8 +12287,8 @@ impl Vm {
                             &|reference| named_constant_reference_value(compiled, state, reference),
                         ) {
                             Ok(class) => class,
-                            Err(message) => {
-                                match self.raise_runtime_error(
+                            Err(error) => {
+                                match self.raise_runtime_class_entry_error(
                                     compiled,
                                     output,
                                     stack,
@@ -12296,7 +12296,7 @@ impl Vm {
                                     &mut exception_handlers,
                                     &mut pending_control,
                                     instruction.span,
-                                    message,
+                                    error,
                                 ) {
                                     RaiseOutcome::Caught(target) => {
                                         block_id = target;
@@ -12584,8 +12584,13 @@ impl Vm {
                             &|reference| named_constant_reference_value(compiled, state, reference),
                         ) {
                             Ok(class) => class,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
+                            Err(error) => {
+                                return self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    error.into_message(),
+                                );
                             }
                         };
                         if let Err(message) = validate_object_mvp(&runtime_class) {
@@ -28049,6 +28054,44 @@ impl Vm {
         RaiseOutcome::Done(Box::new(result))
     }
 
+    fn raise_runtime_class_entry_error(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        handlers: &mut Vec<ExceptionHandler>,
+        pending_control: &mut Option<PendingControl>,
+        operation_span: IrSpan,
+        error: RuntimeClassEntryError,
+    ) -> RaiseOutcome {
+        let location_span = error.constant_initializer_span.unwrap_or(operation_span);
+        let trace = error
+            .constant_initializer_span
+            .map(|_| {
+                capture_backtrace_string_with_constant_expression(compiled, stack, operation_span)
+            })
+            .unwrap_or_else(|| capture_backtrace_string(compiled, stack));
+        let result = self.runtime_error(output, compiled, stack, error.message);
+        if let Some(throwable) = runtime_error_throwable(&result) {
+            tag_throwable_location(&throwable, compiled, location_span);
+            state.pending_trace = Some(trace);
+            if let Some(target) = handle_throw(
+                compiled,
+                throwable.clone(),
+                handlers,
+                stack,
+                pending_control,
+            ) {
+                return RaiseOutcome::Caught(target);
+            }
+            return RaiseOutcome::Done(Box::new(
+                self.propagate_exception(output, stack, state, throwable),
+            ));
+        }
+        RaiseOutcome::Done(Box::new(result))
+    }
+
     fn route_throwable_result(
         &self,
         compiled: &CompiledUnit,
@@ -28677,6 +28720,44 @@ fn uncaught_exception(
     )
 }
 
+#[derive(Clone, Debug)]
+struct RuntimeClassEntryError {
+    message: String,
+    constant_initializer_span: Option<IrSpan>,
+}
+
+impl RuntimeClassEntryError {
+    fn new(message: String) -> Self {
+        Self {
+            message,
+            constant_initializer_span: None,
+        }
+    }
+
+    fn with_constant_initializer_span(message: String, span: IrSpan) -> Self {
+        Self {
+            message,
+            constant_initializer_span: Some(span),
+        }
+    }
+
+    fn into_message(self) -> String {
+        self.message
+    }
+}
+
+impl From<String> for RuntimeClassEntryError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<RuntimeClassEntryError> for String {
+    fn from(error: RuntimeClassEntryError) -> Self {
+        error.into_message()
+    }
+}
+
 fn runtime_class_entry(
     compiled: &CompiledUnit,
     state: &ExecutionState,
@@ -28684,9 +28765,10 @@ fn runtime_class_entry(
     constant_value: &impl Fn(ConstId) -> Result<Value, String>,
     class_constant_reference_value: &impl Fn(&ClassConstantReference) -> Result<Value, String>,
     named_constant_reference_value: &impl Fn(&NamedConstantReference) -> Result<Value, String>,
-) -> Result<RuntimeClassEntry, String> {
+) -> Result<RuntimeClassEntry, RuntimeClassEntryError> {
     let mut lineage = Vec::new();
-    collect_class_lineage(compiled, state, class, &mut lineage)?;
+    collect_class_lineage(compiled, state, class, &mut lineage)
+        .map_err(RuntimeClassEntryError::new)?;
     let mut properties = Vec::new();
     let mut constants = Vec::new();
     for class in &lineage {
@@ -28832,7 +28914,7 @@ fn push_runtime_properties(
     constant_value: &impl Fn(ConstId) -> Result<Value, String>,
     class_constant_reference_value: &impl Fn(&ClassConstantReference) -> Result<Value, String>,
     named_constant_reference_value: &impl Fn(&NamedConstantReference) -> Result<Value, String>,
-) -> Result<(), String> {
+) -> Result<(), RuntimeClassEntryError> {
     for property in &class.properties {
         if (property.hooks.get.is_some() || property.hooks.set.is_some())
             && !property.hooks.backed
@@ -28856,16 +28938,17 @@ fn push_runtime_properties(
                     set_function_id: property.hooks.set.map(|id| id.index() as u32),
                     backed: false,
                 },
-                attributes: runtime_attributes(&property.attributes, constant_value)?,
+                attributes: runtime_attributes(&property.attributes, constant_value)
+                    .map_err(RuntimeClassEntryError::new)?,
             });
             continue;
         }
         let default = if let Some(default) = property.default {
-            constant_value(default)?
+            constant_value(default).map_err(RuntimeClassEntryError::new)?
         } else if let Some(reference) = &property.default_class_constant {
-            class_constant_reference_value(reference)?
+            class_constant_reference_value(reference).map_err(RuntimeClassEntryError::new)?
         } else if let Some(reference) = &property.default_named_constant {
-            named_constant_reference_value(reference)?
+            named_constant_reference_value(reference).map_err(RuntimeClassEntryError::new)?
         } else if property.flags.is_typed {
             Value::Uninitialized
         } else {
@@ -28889,7 +28972,8 @@ fn push_runtime_properties(
                 set_function_id: property.hooks.set.map(|id| id.index() as u32),
                 backed: property.hooks.backed,
             },
-            attributes: runtime_attributes(&property.attributes, constant_value)?,
+            attributes: runtime_attributes(&property.attributes, constant_value)
+                .map_err(RuntimeClassEntryError::new)?,
         });
     }
     Ok(())
@@ -28901,14 +28985,20 @@ fn push_runtime_constants(
     constant_value: &impl Fn(ConstId) -> Result<Value, String>,
     class_constant_reference_value: &impl Fn(&ClassConstantReference) -> Result<Value, String>,
     named_constant_reference_value: &impl Fn(&NamedConstantReference) -> Result<Value, String>,
-) -> Result<(), String> {
+) -> Result<(), RuntimeClassEntryError> {
     for constant in &class.constants {
         let value = if let Some(value) = constant.value {
-            constant_value(value)?
+            constant_value(value).map_err(|message| {
+                RuntimeClassEntryError::with_constant_initializer_span(message, constant.span)
+            })?
         } else if let Some(reference) = &constant.value_class_constant {
-            class_constant_reference_value(reference)?
+            class_constant_reference_value(reference).map_err(|message| {
+                RuntimeClassEntryError::with_constant_initializer_span(message, constant.span)
+            })?
         } else if let Some(reference) = &constant.value_named_constant {
-            named_constant_reference_value(reference)?
+            named_constant_reference_value(reference).map_err(|message| {
+                RuntimeClassEntryError::with_constant_initializer_span(message, constant.span)
+            })?
         } else {
             Value::Null
         };
@@ -28919,7 +29009,8 @@ fn push_runtime_constants(
                 is_private: constant.flags.is_private,
                 is_protected: constant.flags.is_protected,
             },
-            attributes: runtime_attributes(&constant.attributes, constant_value)?,
+            attributes: runtime_attributes(&constant.attributes, constant_value)
+                .map_err(RuntimeClassEntryError::new)?,
         });
     }
     Ok(())
@@ -31152,7 +31243,8 @@ fn enum_case_object(
         constant_value,
         &|reference| class_constant_reference_value(compiled, state, reference),
         &|reference| named_constant_reference_value(compiled, state, reference),
-    )?;
+    )
+    .map_err(RuntimeClassEntryError::into_message)?;
     let object = ObjectRef::new_with_display_name(&runtime_class, class.display_name.clone());
     object.set_property("name", Value::String(PhpString::from_test_str(&case.name)));
     if runtime_class.enum_backing_type.is_some() {
@@ -41386,6 +41478,27 @@ fn capture_backtrace_string_with_failed_call(
     lines.join("\n")
 }
 
+fn capture_backtrace_string_with_constant_expression(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    call_span: php_ir::IrSpan,
+) -> String {
+    let file = compiled
+        .unit()
+        .files
+        .get(call_span.file.index())
+        .map(|file| file.path.clone())
+        .unwrap_or_default();
+    let line = source_span_display_line(compiled, call_span, false)
+        .unwrap_or_else(|| i64::from(call_span.start));
+    let mut lines = vec![format!("#0 {file}({line}): [constant expression]()")];
+    let rest = capture_backtrace_string_from_index(compiled, stack, 1);
+    if !rest.is_empty() {
+        lines.push(rest);
+    }
+    lines.join("\n")
+}
+
 fn capture_backtrace_string_from_index(
     compiled: &CompiledUnit,
     stack: &CallStack,
@@ -46743,6 +46856,34 @@ mod tests {
             result.diagnostics[0].id(),
             "E_PHP_RUNTIME_UNDEFINED_CONSTANT"
         );
+    }
+
+    #[test]
+    fn class_constant_initializer_errors_use_initializer_location() {
+        let result = execute_source(
+            "<?php
+class C
+{
+    const c1 = D::hello;
+}
+
+$a = new C();
+",
+        );
+
+        assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.contains("Fatal error: Uncaught Error: Class \"D\" not found in "),
+            "{output}"
+        );
+        assert!(output.contains("\nStack trace:\n#0 "), "{output}");
+        assert!(
+            output.contains("): [constant expression]()\n#1 {main}"),
+            "{output}"
+        );
+        assert!(output.contains("  thrown in "), "{output}");
+        assert!(output.contains(" on line "), "{output}");
     }
 
     #[test]
