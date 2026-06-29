@@ -3605,6 +3605,12 @@ impl LoweringContext<'_> {
         let body_end = self.lower_stmt_list(builder, function, body_entry, body);
         self.loop_stack.pop();
         self.jump_if_open(builder, function, body_end, condition_block, span);
+        builder.emit(
+            function,
+            after_block,
+            InstructionKind::ForeachCleanup { iterator },
+            span,
+        );
         after_block
     }
 

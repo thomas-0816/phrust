@@ -4009,6 +4009,7 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::UnsetDim { .. } => "unset_dim",
         InstructionKind::ForeachInit { .. } => "foreach_init",
         InstructionKind::ForeachNext { .. } => "foreach_next",
+        InstructionKind::ForeachCleanup { .. } => "foreach_cleanup",
         InstructionKind::ForeachInitRef { .. } => "foreach_init_ref",
         InstructionKind::ForeachNextRef { .. } => "foreach_next_ref",
         InstructionKind::ArrayGet { .. } => "array_get",

@@ -1065,6 +1065,7 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
+        | InstructionKind::ForeachCleanup { .. }
         | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => Vec::new(),
     }
@@ -1377,6 +1378,7 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::EmptyLocal { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::ForeachNext { .. }
+        | InstructionKind::ForeachCleanup { .. }
         | InstructionKind::ForeachInitRef { .. }
         | InstructionKind::ForeachNextRef { .. }
         | InstructionKind::Unsupported { .. }
@@ -1667,6 +1669,7 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::EmptyLocal { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::ForeachNext { .. }
+        | InstructionKind::ForeachCleanup { .. }
         | InstructionKind::ForeachInitRef { .. }
         | InstructionKind::ForeachNextRef { .. }
         | InstructionKind::Unsupported { .. }

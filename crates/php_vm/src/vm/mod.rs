@@ -1382,6 +1382,15 @@ fn release_unrooted_object_handles(value: &Value, stack: &CallStack, state: &Exe
     }
 }
 
+fn foreach_iterator_candidate_value(iterator: ForeachIterator) -> Option<Value> {
+    match iterator {
+        ForeachIterator::IteratorObject { object, .. }
+        | ForeachIterator::ObjectProperties { object, .. } => Some(Value::Object(object)),
+        ForeachIterator::Generator { generator, .. } => Some(Value::Generator(generator)),
+        ForeachIterator::Snapshot { .. } | ForeachIterator::ByReference { .. } => None,
+    }
+}
+
 fn value_reaches_object_id(value: &Value, object_id: u64, seen: &mut BTreeSet<GcEntityId>) -> bool {
     match value {
         Value::Array(array) => {
@@ -7739,6 +7748,55 @@ impl Vm {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
                             return result;
+                        }
+                    }
+                    DenseOpcode::ForeachCleanup => {
+                        let DenseOperands::ForeachCleanup { iterator } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        if let Some(value) = foreach_iterators
+                            .remove(&RegId::new(iterator))
+                            .and_then(foreach_iterator_candidate_value)
+                        {
+                            let mut exception_handlers = Vec::new();
+                            let mut pending_control = None;
+                            if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                &value,
+                            ) {
+                                match outcome {
+                                    RaiseOutcome::Done(result) => {
+                                        stack.pop_recycle();
+                                        return *result;
+                                    }
+                                    RaiseOutcome::Caught(target) => {
+                                        let result = self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            format!(
+                                                "E_PHP_VM_DENSE_DESTRUCTOR_CATCH_UNSUPPORTED: destructor caught at block {} during foreach cleanup",
+                                                target.raw()
+                                            ),
+                                        );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                }
+                            }
                         }
                     }
                     DenseOpcode::FetchProperty => {
@@ -17289,6 +17347,29 @@ impl Vm {
                         }
                         if let Err(message) = frame.registers.set(*value, entry_value) {
                             return self.runtime_error(output, compiled, stack, message);
+                        }
+                    }
+                    InstructionKind::ForeachCleanup { iterator } => {
+                        if let Some(value) = foreach_iterators
+                            .remove(iterator)
+                            .and_then(foreach_iterator_candidate_value)
+                            && let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                &value,
+                            )
+                        {
+                            match outcome {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                     }
                     InstructionKind::ForeachInitRef { iterator, local } => {
@@ -46936,7 +47017,9 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim => "arrays",
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => "properties",
-        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext => "foreach",
+        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
+            "foreach"
+        }
         DenseOpcode::Echo => "output",
         DenseOpcode::Jump
         | DenseOpcode::JumpIfFalse

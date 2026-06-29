@@ -623,6 +623,8 @@ pub enum InstructionKind {
         key: Option<RegId>,
         value: RegId,
     },
+    /// Releases foreach iterator state after normal exhaustion or break.
+    ForeachCleanup { iterator: RegId },
     /// Creates a by-reference foreach iterator from a local array variable.
     ForeachInitRef { iterator: RegId, local: LocalId },
     /// Advances a by-reference foreach iterator and binds the value local.

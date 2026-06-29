@@ -506,6 +506,9 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
             }
             slots.insert(OsrVmSlot::Register(*value));
         }
+        DenseOperands::ForeachCleanup { iterator } => {
+            slots.insert(OsrVmSlot::Iterator(*iterator));
+        }
         DenseOperands::FetchProperty {
             dst,
             object,

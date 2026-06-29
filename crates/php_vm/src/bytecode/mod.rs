@@ -102,6 +102,8 @@ pub enum DenseOpcode {
     ForeachInit = 46,
     /// Advance a by-value foreach iterator.
     ForeachNext = 47,
+    /// Release by-value foreach iterator state.
+    ForeachCleanup = 55,
     /// `rN = object->property`.
     FetchProperty = 48,
     /// `object->property = value`.
@@ -191,6 +193,7 @@ impl DenseOpcode {
             Self::AppendDim => "append_dim",
             Self::ForeachInit => "foreach_init",
             Self::ForeachNext => "foreach_next",
+            Self::ForeachCleanup => "foreach_cleanup",
             Self::FetchProperty => "fetch_property",
             Self::AssignProperty => "assign_property",
             Self::CallMethod => "call_method",
@@ -369,6 +372,8 @@ pub enum DenseOperands {
         key: Option<u32>,
         value: u32,
     },
+    /// Foreach iterator cleanup.
+    ForeachCleanup { iterator: u32 },
     /// Declared property fetch operands.
     FetchProperty {
         dst: u32,
@@ -1308,6 +1313,7 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::AppendDim
         | DenseOpcode::ForeachInit
         | DenseOpcode::ForeachNext
+        | DenseOpcode::ForeachCleanup
         | DenseOpcode::UnaryPlus
         | DenseOpcode::UnaryMinus
         | DenseOpcode::UnaryNot
@@ -1717,6 +1723,12 @@ fn lower_instruction(
                 iterator: iterator.raw(),
                 key: key.map(RegId::raw),
                 value: value.raw(),
+            },
+        ),
+        InstructionKind::ForeachCleanup { iterator } => (
+            DenseOpcode::ForeachCleanup,
+            DenseOperands::ForeachCleanup {
+                iterator: iterator.raw(),
             },
         ),
         InstructionKind::FetchProperty {
@@ -2282,6 +2294,9 @@ fn verify_instruction(
             }
             verify_register(*value, function, errors);
         }
+        (DenseOpcode::ForeachCleanup, DenseOperands::ForeachCleanup { iterator }) => {
+            verify_register(*iterator, function, errors);
+        }
         (
             DenseOpcode::FetchProperty,
             DenseOperands::FetchProperty {
@@ -2680,6 +2695,7 @@ fn render_operands(operands: &DenseOperands) -> String {
             let key = key.map_or_else(|| "-".to_string(), |key| format!("r{key}"));
             format!("r{has_value} r{iterator} key={key} value=r{value}")
         }
+        DenseOperands::ForeachCleanup { iterator } => format!("r{iterator}"),
         DenseOperands::FetchProperty {
             dst,
             object,

@@ -1140,6 +1140,9 @@ fn format_instruction(kind: &InstructionKind) -> String {
                 value.raw()
             )
         }
+        InstructionKind::ForeachCleanup { iterator } => {
+            format!("foreach_cleanup iter:r{}", iterator.raw())
+        }
         InstructionKind::ForeachInitRef { iterator, local } => {
             format!(
                 "foreach_init_ref iter:r{} local:{}",

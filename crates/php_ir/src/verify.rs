@@ -778,6 +778,9 @@ fn verify_instruction(
             }
             verify_register(*value, function.register_count, errors);
         }
+        InstructionKind::ForeachCleanup { iterator } => {
+            verify_register(*iterator, function.register_count, errors);
+        }
         InstructionKind::ForeachInitRef { iterator, local } => {
             verify_register(*iterator, function.register_count, errors);
             verify_local(*local, function.local_count, errors);
@@ -1366,6 +1369,7 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
             operand_register_uses(value, uses);
         }
         InstructionKind::ForeachNext { iterator, .. }
+        | InstructionKind::ForeachCleanup { iterator }
         | InstructionKind::ForeachNextRef { iterator, .. } => uses.push(*iterator),
     }
 }
@@ -1483,6 +1487,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::ArrayInsert { .. }
         | InstructionKind::ArraySpread { .. }
+        | InstructionKind::ForeachCleanup { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
         | InstructionKind::EmitDiagnostic { .. }
