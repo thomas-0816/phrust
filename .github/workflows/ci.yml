@@ -33,7 +33,7 @@ env:
 jobs:
   rust:
     name: rust workspace
-    runs-on: ubuntu-latest
+    runs-on: mayflower-k8s-runners
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,7 +58,7 @@ jobs:
 
   quality-fast:
     name: fast quality gate
-    runs-on: ubuntu-latest
+    runs-on: mayflower-k8s-runners
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,7 +74,7 @@ jobs:
 
   domain-gates:
     name: ${{ matrix.gate }}
-    runs-on: ubuntu-latest
+    runs-on: mayflower-k8s-runners
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +112,7 @@ jobs:
 
   phpt-smoke:
     name: phpt smoke
-    runs-on: ubuntu-latest
+    runs-on: mayflower-k8s-runners
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -136,7 +136,7 @@ jobs:
 
   quality:
     name: rust quality
-    runs-on: ubuntu-latest
+    runs-on: mayflower-k8s-runners
     if: github.event_name == 'workflow_dispatch' && inputs.run_quality == 'true'
     steps:
       - name: Checkout
@@ -153,7 +153,7 @@ jobs:
 
   full-phpt:
     name: full phpt regression
-    runs-on: ubuntu-latest
+    runs-on: mayflower-k8s-runners
     if: github.event_name == 'workflow_dispatch' && inputs.run_full_phpt == 'true'
     steps:
       - name: Checkout
