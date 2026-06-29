@@ -52,8 +52,8 @@ use php_ir::instruction::{
     InstructionKind, IrCallArg, IrCallArgValueKind, IrDiagnosticSeverity, TerminatorKind, UnaryOp,
 };
 use php_ir::module::{
-    ClassConstantReference, ClassEntry, ClassPropertyEntry, IrUnit, NamedConstantReference,
-    display_class_name, normalize_class_name,
+    ClassConstantReference, ClassEntry, ClassPropertyEntry, DeferredConstExpr, IrUnit,
+    NamedConstantReference, display_class_name, normalize_class_name,
 };
 use php_ir::operand::Operand;
 use php_ir::source_map::IrSpan;
@@ -34136,10 +34136,45 @@ fn static_property_default(
         class_constant_reference_value(compiled, state, reference)
     } else if let Some(reference) = &property.default_named_constant {
         named_constant_reference_value(compiled, state, reference)
+    } else if let Some(expr) = &property.default_expr {
+        deferred_const_expr_value(compiled, state, expr)
     } else if property.flags.is_typed {
         Ok(Value::Uninitialized)
     } else {
         Ok(Value::Null)
+    }
+}
+
+fn deferred_const_expr_value(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    expr: &DeferredConstExpr,
+) -> Result<Value, String> {
+    match expr {
+        DeferredConstExpr::Literal(value) => Ok(inline_constant_value(value)),
+        DeferredConstExpr::NamedConstant(reference) => {
+            named_constant_reference_value(compiled, state, reference)
+        }
+        DeferredConstExpr::ClassConstant(reference) => {
+            class_constant_reference_value(compiled, state, reference)
+        }
+        DeferredConstExpr::Array(entries) => {
+            let mut array = PhpArray::new();
+            for entry in entries {
+                let value = deferred_const_expr_value(compiled, state, &entry.value)?;
+                if let Some(key) = &entry.key {
+                    let key_value = deferred_const_expr_value(compiled, state, key)?;
+                    if let Some(key) = ArrayKey::from_value_mvp(&key_value) {
+                        array.insert(key, value);
+                    } else {
+                        array.append(value);
+                    }
+                } else {
+                    array.append(value);
+                }
+            }
+            Ok(Value::Array(array))
+        }
     }
 }
 
@@ -41105,6 +41140,12 @@ fn lookup_class_constant_in_state_inner(
     let resolved =
         lookup_class_constant_in_state_inner(compiled, state, parent, constant_name, seen)?;
     seen.pop();
+    if resolved
+        .as_ref()
+        .is_some_and(|(_, constant)| constant.flags.is_private)
+    {
+        return Ok(None);
+    }
     Ok(resolved)
 }
 

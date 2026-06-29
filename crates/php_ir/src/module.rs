@@ -125,6 +125,9 @@ pub struct ClassPropertyEntry {
     /// Runtime-resolved named constant default for values created by `define()`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_named_constant: Option<NamedConstantReference>,
+    /// Runtime-resolved composite constant expression default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_expr: Option<DeferredConstExpr>,
     /// Optional Semantic frontend lowered runtime type enforced by the VM MVP.
     pub type_: Option<IrReturnType>,
     /// Property flags captured from Semantic frontend.
@@ -134,6 +137,33 @@ pub struct ClassPropertyEntry {
     /// Attribute metadata attached to this property declaration.
     pub attributes: Vec<AttributeEntry>,
 }
+
+/// Constant expression preserved for runtime initializer resolution.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum DeferredConstExpr {
+    /// Literal constant value.
+    Literal(IrConstant),
+    /// Runtime-resolved named constant.
+    NamedConstant(NamedConstantReference),
+    /// Runtime-resolved class constant.
+    ClassConstant(ClassConstantReference),
+    /// PHP array constant expression.
+    Array(Vec<DeferredConstArrayEntry>),
+}
+
+impl Eq for DeferredConstExpr {}
+
+/// One deferred PHP array entry.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct DeferredConstArrayEntry {
+    /// Explicit key. `None` means append with the next integer key.
+    pub key: Option<DeferredConstExpr>,
+    /// Stored value.
+    pub value: DeferredConstExpr,
+}
+
+impl Eq for DeferredConstArrayEntry {}
 
 /// Class property flags.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

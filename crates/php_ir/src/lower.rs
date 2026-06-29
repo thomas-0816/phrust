@@ -18,8 +18,8 @@ use crate::literal_text::{
 use crate::module::{
     AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassConstantReference, ClassEntry,
     ClassEnumBackingType, ClassEnumCaseEntry, ClassFlags, ClassMethodEntry, ClassMethodFlags,
-    ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks, IrUnit, NamedConstantReference,
-    display_class_name, normalize_class_name,
+    ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks, DeferredConstArrayEntry,
+    DeferredConstExpr, IrUnit, NamedConstantReference, display_class_name, normalize_class_name,
 };
 use crate::operand::Operand;
 use crate::source_map::{IrSourceMapTarget, IrSpan};
@@ -998,6 +998,7 @@ impl LoweringContext<'_> {
                     default: None,
                     default_class_constant: None,
                     default_named_constant: None,
+                    default_expr: None,
                     type_: Some(IrReturnType::String),
                     flags: ClassPropertyFlags {
                         is_readonly: true,
@@ -1013,6 +1014,7 @@ impl LoweringContext<'_> {
                         default: None,
                         default_class_constant: None,
                         default_named_constant: None,
+                        default_expr: None,
                         type_: Some(match backing_type {
                             ClassEnumBackingType::Int => IrReturnType::Int,
                             ClassEnumBackingType::String => IrReturnType::String,
@@ -1171,11 +1173,26 @@ impl LoweringContext<'_> {
                                 } else {
                                     None
                                 };
+                            let default_expr = if default.is_none()
+                                && default_class_constant.is_none()
+                                && default_named_constant.is_none()
+                            {
+                                self.lower_deferred_property_default(
+                                    item.default(),
+                                    Some(&name),
+                                    Some(&display_class_name),
+                                    &class_constant_initializers,
+                                    &class_parents,
+                                )
+                            } else {
+                                None
+                            };
                             properties.push(ClassPropertyEntry {
                                 name: local_name(item.name()).to_owned(),
                                 default,
                                 default_class_constant,
                                 default_named_constant,
+                                default_expr,
                                 type_: property_type.clone(),
                                 flags: ClassPropertyFlags {
                                     is_static: property.modifiers().is_static(),
@@ -1334,6 +1351,7 @@ impl LoweringContext<'_> {
                 default: None,
                 default_class_constant: None,
                 default_named_constant: None,
+                default_expr: None,
                 type_: self.lower_runtime_type(param.type_id()),
                 flags: ClassPropertyFlags {
                     is_private: promotion.visibility() == Visibility::Private,
@@ -2346,6 +2364,167 @@ impl LoweringContext<'_> {
             class_constants,
             class_parents,
         )
+    }
+
+    fn lower_deferred_property_default(
+        &self,
+        default: Option<ConstExprId>,
+        current_class: Option<&str>,
+        current_class_display: Option<&str>,
+        class_constants: &ClassConstantInitializerMap,
+        class_parents: &ClassParentMap,
+    ) -> Option<DeferredConstExpr> {
+        let const_expr_id = default?;
+        if let Some(value) =
+            self.lower_const_expr_magic_constant(const_expr_id, current_class_display)
+        {
+            return Some(DeferredConstExpr::Literal(value));
+        }
+        let module = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())?;
+        let const_expr = module.const_exprs().get(const_expr_id)?;
+        if !matches!(
+            const_expr.context(),
+            ConstExprContext::PropertyDefault | ConstExprContext::PromotedPropertyDefault
+        ) || !const_expr.is_allowed()
+        {
+            return None;
+        }
+        let named_constants = self.global_constant_initializer_map();
+        self.lower_deferred_const_expr(
+            module,
+            const_expr.expr_id(),
+            &named_constants,
+            current_class,
+            class_constants,
+            class_parents,
+            &mut Vec::new(),
+        )
+    }
+
+    fn lower_deferred_const_expr(
+        &self,
+        module: &HirModule,
+        expr_id: ExprId,
+        named_constants: &HashMap<String, IrConstant>,
+        current_class: Option<&str>,
+        class_constants: &ClassConstantInitializerMap,
+        class_parents: &ClassParentMap,
+        visiting_class_constants: &mut Vec<(String, String)>,
+    ) -> Option<DeferredConstExpr> {
+        if let Some(value) = constant_from_expr_with_class_constants(
+            module,
+            expr_id,
+            named_constants,
+            current_class,
+            class_constants,
+            class_parents,
+            visiting_class_constants,
+        ) {
+            return Some(DeferredConstExpr::Literal(value));
+        }
+
+        let expr = module.expressions().get(expr_id)?;
+        match expr.kind() {
+            HirExprKind::Literal { text } => literal_constant(text).map(DeferredConstExpr::Literal),
+            HirExprKind::Name { resolution } => language_constant(resolution.source())
+                .or_else(|| named_constant_value(named_constants, resolution))
+                .map(DeferredConstExpr::Literal)
+                .or_else(|| {
+                    named_constant_reference_from_resolution(resolution)
+                        .map(DeferredConstExpr::NamedConstant)
+                }),
+            HirExprKind::StaticAccess { target, member } => self
+                .lower_deferred_class_constant_reference(
+                    module,
+                    *target,
+                    *member,
+                    current_class,
+                    class_parents,
+                )
+                .map(DeferredConstExpr::ClassConstant),
+            HirExprKind::Array { elements } => {
+                let mut entries = Vec::with_capacity(elements.len());
+                for element_id in elements {
+                    let element = module.expressions().get(*element_id)?;
+                    match element.kind() {
+                        HirExprKind::ArrayPair {
+                            key,
+                            value,
+                            unpack,
+                            by_ref,
+                        } => {
+                            if *unpack || *by_ref {
+                                return None;
+                            }
+                            let key = match key {
+                                Some(key) => Some(self.lower_deferred_const_expr(
+                                    module,
+                                    *key,
+                                    named_constants,
+                                    current_class,
+                                    class_constants,
+                                    class_parents,
+                                    visiting_class_constants,
+                                )?),
+                                None => None,
+                            };
+                            let value = self.lower_deferred_const_expr(
+                                module,
+                                (*value)?,
+                                named_constants,
+                                current_class,
+                                class_constants,
+                                class_parents,
+                                visiting_class_constants,
+                            )?;
+                            entries.push(DeferredConstArrayEntry { key, value });
+                        }
+                        _ => {
+                            let value = self.lower_deferred_const_expr(
+                                module,
+                                *element_id,
+                                named_constants,
+                                current_class,
+                                class_constants,
+                                class_parents,
+                                visiting_class_constants,
+                            )?;
+                            entries.push(DeferredConstArrayEntry { key: None, value });
+                        }
+                    }
+                }
+                Some(DeferredConstExpr::Array(entries))
+            }
+            _ => None,
+        }
+    }
+
+    fn lower_deferred_class_constant_reference(
+        &self,
+        module: &HirModule,
+        target: Option<ExprId>,
+        member: Option<ExprId>,
+        current_class: Option<&str>,
+        class_parents: &ClassParentMap,
+    ) -> Option<ClassConstantReference> {
+        Some(ClassConstantReference {
+            class_name: class_constant_initializer_target_class(
+                module,
+                target?,
+                current_class,
+                class_parents,
+            )?,
+            display_class_name: class_constant_initializer_target_display_class(
+                module,
+                target?,
+                current_class,
+                class_parents,
+            )?,
+            constant_name: class_constant_initializer_member_name(module, member?)?,
+        })
     }
 
     fn lower_class_constant_value(
@@ -12038,6 +12217,30 @@ fn named_constant_value(
         .into_iter()
         .flatten()
         .find_map(|name| named_constants.get(name).cloned())
+}
+
+fn named_constant_reference_from_resolution(
+    resolution: &HirNameResolution,
+) -> Option<NamedConstantReference> {
+    let mut names = Vec::new();
+    for candidate in [
+        resolution.resolved(),
+        resolution.fallback(),
+        Some(resolution.source()),
+        resolution.source().strip_prefix('\\'),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let name = candidate.trim_start_matches('\\').to_owned();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    (!names.is_empty()).then(|| NamedConstantReference {
+        display_name: resolution.source().trim_start_matches('\\').to_owned(),
+        names,
+    })
 }
 
 fn predefined_constant_initializer_map() -> HashMap<String, IrConstant> {

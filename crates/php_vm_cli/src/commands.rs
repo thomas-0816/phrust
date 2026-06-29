@@ -2720,13 +2720,15 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
             code_size_bytes_estimate: 0,
             unsupported_reason: Some("array_reference_cow_and_key_state"),
         },
-        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext => BaselineStencilClass {
-            helper_calls: 1,
-            deopt_slots: 1,
-            compile_cost_units: 5,
-            code_size_bytes_estimate: 0,
-            unsupported_reason: Some("foreach_iterator_state"),
-        },
+        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
+            BaselineStencilClass {
+                helper_calls: 1,
+                deopt_slots: 1,
+                compile_cost_units: 5,
+                code_size_bytes_estimate: 0,
+                unsupported_reason: Some("foreach_iterator_state"),
+            }
+        }
     }
 }
 
@@ -3013,7 +3015,7 @@ fn classify_copy_patch_stencil_instruction(
         | DenseOpcode::AppendDim => unsupported_copy_patch_class(
             "array_mutation_requires_reference_cow_and_allocator_state",
         ),
-        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext => {
+        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             unsupported_copy_patch_class("foreach_requires_iterator_mutation_and_resume_state")
         }
         DenseOpcode::BinaryDiv
@@ -3244,7 +3246,7 @@ fn classify_mid_tier_instruction(
             );
             plan.deopt_points += 1;
         }
-        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext => {
+        DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             push_unique(&mut plan.rejection_reasons, "cow_mutation_ambiguity");
             plan.deopt_points += 1;
         }

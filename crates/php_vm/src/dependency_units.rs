@@ -1557,6 +1557,7 @@ mod tests {
                 default: Some(include_path),
                 default_class_constant: None,
                 default_named_constant: None,
+                default_expr: None,
                 type_: None,
                 flags: ClassPropertyFlags::default(),
                 hooks: ClassPropertyHooks::default(),

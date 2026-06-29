@@ -46,6 +46,7 @@ functions:
       instr:5 span=file:0@72..78 echo r10
       term span=file:0@6..81 jump block:2
     block:4
+      instr:0 span=file:0@6..81 foreach_cleanup iter:r5
       term span=file:0@0..82 return const:0
 source_map:
   function:0 <= hir:module:0 span=file:0@0..82
