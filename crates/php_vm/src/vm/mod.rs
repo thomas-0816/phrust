@@ -28148,7 +28148,7 @@ impl Vm {
         let location = php_runtime::PhpDiagnosticLocation::from_span(&source_span);
         let message = "DateTimeInterface can't be implemented by user classes";
         output.write_test_str(&format!(
-            "\nFatal error: {message} in {} on line {}\nStack trace:\n#0 {{main}}\n",
+            "\nFatal error: {message} in {} on line {}\n",
             location.file, location.line
         ));
         VmResult::runtime_error_with_diagnostic(
@@ -47490,6 +47490,7 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
             output.contains("DateTimeInterface can't be implemented by user classes"),
             "{output}"
         );
+        assert!(!output.contains("Stack trace:"), "{output}");
     }
 
     #[test]

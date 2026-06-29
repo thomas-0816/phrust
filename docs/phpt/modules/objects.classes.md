@@ -3,7 +3,7 @@
 - Priority: 10
 - Selected manifest: `tests/phpt/manifests/modules/objects.classes.selected.jsonl`
 - Current corpus counts: 178 PASS, 33 SKIP, 1924 FAIL, 0 BORK from 2136 corpus candidates
-- Current selected run: 195 PASS, 0 SKIP, 5 FAIL, 0 BORK from 200 selected rows
+- Current selected run: 196 PASS, 0 SKIP, 4 FAIL, 0 BORK from 200 selected rows
 - Core close gate: `objects.core` is 16 PASS / 0 FAIL for reference and target
 
 ## Scope
@@ -81,19 +81,18 @@ On `phpt/closure-core-runtime-semantics`, after the closure runtime semantics
 work plus selected class-output/declaration dependency/serialization/autoload
 fixes:
 
-- `TMPDIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-autoload-rebuilt REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_WORK_DIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-autoload-rebuilt PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
+- `TMPDIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-datetime-fatal REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_WORK_DIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-datetime-fatal PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
 - reference: 200 PASS
-- target: 195 PASS, 5 FAIL
+- target: 196 PASS, 4 FAIL
 
 The selected `tests/classes/constants_error_004.phpt` case now matches PHP's
 class-constant initializer fatal location and `[constant expression]()` trace
 frame. The selected `tests/classes/bug23951.phpt` and
 `tests/classes/bug75765.phpt` cases now match PHP for nested `print_r()` object
 property arrays and catchable missing-parent class declarations. The selected
-`tests/classes/bug65768.phpt` case now reaches the PHP-compatible
-DateTimeInterface fatal after `date_diff()`, but remains in the dashboard
-backlog because the PHPT runner still reports an output-format mismatch for the
-fatal path/trace expectation. The selected `tests/classes/bug26737.phpt` and
+`tests/classes/bug65768.phpt` case now matches PHP's interval values and
+DateTimeInterface fatal line after `date_diff()` without a synthetic stack trace
+block. The selected `tests/classes/bug26737.phpt` and
 `tests/classes/private_members_serialization.phpt` cases now match PHP for
 `__sleep()` property selection, including missing-property warnings and mangled
 parent-private property names.
@@ -133,7 +132,7 @@ Current selected `objects.classes` non-green rows are outside the
 - ReflectionException catch-type behavior
 - iterator/destructor ordering and exception behavior
 - legacy `Serializable` hooks and `__toString` object formatting
-- eval declaration merging and DateTimeInterface fatal output formatting
+- eval declaration merging
 - object formatting parity
 
 ## Next Step
