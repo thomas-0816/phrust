@@ -51,6 +51,19 @@ is `--opt-level=0` plus disabled quickening, inline caches, bytecode cache, and
 JIT once those flags exist. A performance result is not actionable if the A/B
 correctness comparison fails.
 
+## Application-Flow Suite
+
+`docs/performance-app-flows.md` describes the application-flow performance
+suite. It runs ten deterministic PHP application-style fixtures through Phrust
+baseline/fast rows and, when available, the pinned reference PHP CLI. The suite
+is intended to complement microbenchmark and framework-like smoke tests with
+request-shaped flows covering routing, service lookup, templating, validation,
+hydration, collections, middleware, auth policy, and translation lookup.
+
+Wall-clock measurements from this suite are advisory host-local trend data.
+Correctness, manifest/schema validity, and Phrust/reference equivalence are the
+gate conditions; speed ratios are reported, not enforced.
+
 ## Validation Commands
 
 Standard Performance workflow:

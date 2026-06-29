@@ -76,6 +76,8 @@ help:
       '  just inline-cache-smoke   Run inline-cache smoke gate' \
       '  just jit-smoke            Run default-off JIT smoke gate' \
       '  just framework-smoke      Run offline framework-like performance smoke' \
+      '  just app-flow-smoke      Run CI-safe app-flow engine comparison smoke' \
+      '  just app-flow-matrix     Run full application-flow Phrust/reference matrix' \
       '  just release-benchmark-smoke Run production release performance smoke' \
       '  just pgo-benchmark-smoke  Run optional PGO performance smoke' \
       '  just bolt-benchmark-smoke Run optional Linux BOLT performance smoke' \
@@ -310,6 +312,7 @@ verify-performance:
     @just acceleration-matrix
     @just fastest-engine-matrix
     @just fast-preset-smoke
+    @just app-flow-smoke
     @just baseline-native-stencil-smoke
     @just copy-patch-stencil-smoke
     @just mid-tier-plan-smoke
@@ -873,6 +876,7 @@ performance-tests:
     scripts/performance/hotpath_inventory.py --self-test
     scripts/performance/fastest_hotpath_report.py --self-test
     scripts/performance/perf_report.py --self-test
+    scripts/performance/app_flow_matrix.py --self-test
 
 performance-regression:
     scripts/performance_regression_smoke.sh
@@ -945,6 +949,14 @@ bolt-benchmark-smoke:
 framework-smoke:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/framework_micro_smoke.py
+
+app-flow-smoke:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/app_flow_matrix.py --smoke --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}"
+
+app-flow-matrix:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/app_flow_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --iterations "${PHRUST_APP_FLOW_ITERATIONS:-5}" --warmups "${PHRUST_APP_FLOW_WARMUPS:-1}" --scale "${PHRUST_APP_FLOW_SCALE:-2}" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}"
 
 acceleration-matrix:
     cargo build -p php_vm_cli --bin php-vm

@@ -219,10 +219,12 @@ fn parse_gmp(name: &str, value: &Value, base: i64) -> Result<BigInt, BuiltinErro
 
 fn parse_gmp_text(text: &str, base: i64) -> Option<BigInt> {
     let mut text = text.trim();
-    let negative = text.strip_prefix('-').map_or(false, |rest| {
+    let negative = if let Some(rest) = text.strip_prefix('-') {
         text = rest;
         true
-    });
+    } else {
+        false
+    };
     if let Some(rest) = text.strip_prefix('+') {
         text = rest;
     }

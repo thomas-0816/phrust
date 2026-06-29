@@ -1,0 +1,105 @@
+{
+  "schema": "phrust-app-flow-performance-v1",
+  "scenarios": [
+    {
+      "id": "front_controller_routing",
+      "name": "Front Controller Routing",
+      "group": "routing",
+      "fixture": "front_controller_routing.php",
+      "expected_output": "app-flow front_controller_routing checksum=1960 items=80",
+      "expected_checksum": 1960,
+      "summary": "Dispatches static and parameterized routes through controller handlers.",
+      "rationale": "Exercises route table lookup, path parameter extraction, method calls, arrays, and string assembly."
+    },
+    {
+      "id": "dependency_container_resolution",
+      "name": "Dependency Container Resolution",
+      "group": "container",
+      "fixture": "dependency_container_resolution.php",
+      "expected_output": "app-flow dependency_container_resolution checksum=454 items=40",
+      "expected_checksum": 454,
+      "summary": "Builds singleton services from factories and performs repeated hot lookups.",
+      "rationale": "Exercises closures, object construction, property access, method dispatch, and cached service resolution."
+    },
+    {
+      "id": "template_render_escape",
+      "name": "Template Render And Escape",
+      "group": "templating",
+      "fixture": "template_render_escape.php",
+      "expected_output": "app-flow template_render_escape checksum=7875 items=75",
+      "expected_checksum": 7875,
+      "summary": "Renders list/detail HTML fragments with escaping and output buffering.",
+      "rationale": "Exercises nested arrays, loops, conditionals, htmlspecialchars, concatenation, and buffer capture."
+    },
+    {
+      "id": "config_bootstrap_merge",
+      "name": "Config Bootstrap Merge",
+      "group": "configuration",
+      "fixture": "config_bootstrap_merge.php",
+      "expected_output": "app-flow config_bootstrap_merge checksum=1570 items=180",
+      "expected_checksum": 1570,
+      "summary": "Merges default and override configuration and repeatedly resolves normalized paths.",
+      "rationale": "Exercises nested array merge logic, scalar coercion, dotted lookup, and repeated config access."
+    },
+    {
+      "id": "request_validation_errors",
+      "name": "Request Validation Errors",
+      "group": "validation",
+      "fixture": "request_validation_errors.php",
+      "expected_output": "app-flow request_validation_errors checksum=3663 items=90",
+      "expected_checksum": 3663,
+      "summary": "Validates request payload fields and collects deterministic error and normalized payload data.",
+      "rationale": "Exercises request-shaped arrays, string validation, enum checks, nested input, and error aggregation."
+    },
+    {
+      "id": "model_hydration_json",
+      "name": "Model Hydration JSON",
+      "group": "hydration",
+      "fixture": "model_hydration_json.php",
+      "expected_output": "app-flow model_hydration_json checksum=3275 items=75",
+      "expected_checksum": 3275,
+      "summary": "Hydrates row arrays into DTO objects and emits encoded response arrays.",
+      "rationale": "Exercises constructors, getters/formatters, object fields, response array construction, and json_encode."
+    },
+    {
+      "id": "collection_transform_pagination",
+      "name": "Collection Transform Pagination",
+      "group": "collections",
+      "fixture": "collection_transform_pagination.php",
+      "expected_output": "app-flow collection_transform_pagination checksum=8050 items=80",
+      "expected_checksum": 8050,
+      "summary": "Filters, sorts, paginates, groups, and aggregates deterministic record arrays.",
+      "rationale": "Exercises collection-style loops, usort callbacks, array_slice, grouping, and aggregate arithmetic."
+    },
+    {
+      "id": "middleware_event_pipeline",
+      "name": "Middleware Event Pipeline",
+      "group": "middleware",
+      "fixture": "middleware_event_pipeline.php",
+      "expected_output": "app-flow middleware_event_pipeline checksum=13076 items=60",
+      "expected_checksum": 13076,
+      "summary": "Passes request arrays through middleware-like phases and records event counters.",
+      "rationale": "Exercises request/response arrays, fanout counters, controller calls, mutations, and response decoration."
+    },
+    {
+      "id": "session_auth_policy",
+      "name": "Session Auth Policy",
+      "group": "auth",
+      "fixture": "session_auth_policy.php",
+      "expected_output": "app-flow session_auth_policy checksum=82190 items=225",
+      "expected_checksum": 82190,
+      "summary": "Evaluates session authorization decisions with role maps, CSRF checks, and decision caching.",
+      "rationale": "Exercises session-shaped state, nested permission maps, boolean policy logic, and cache lookups."
+    },
+    {
+      "id": "translation_lookup_interpolation",
+      "name": "Translation Lookup Interpolation",
+      "group": "translation",
+      "fixture": "translation_lookup_interpolation.php",
+      "expected_output": "app-flow translation_lookup_interpolation checksum=2847 items=90",
+      "expected_checksum": 2847,
+      "summary": "Looks up localized strings with fallback and placeholder interpolation.",
+      "rationale": "Exercises nested translation maps, locale fallback, str_replace interpolation, and plural-like branches."
+    }
+  ]
+}

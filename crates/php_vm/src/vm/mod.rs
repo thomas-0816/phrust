@@ -32366,7 +32366,7 @@ fn call_normalizer_static_method(method: &str, args: Vec<Value>) -> Result<Value
             let _ = xml_string_arg("Normalizer::normalize", args[0].clone())?;
             let form = args
                 .get(1)
-                .map(|value| to_int(value))
+                .map(to_int)
                 .transpose()?
                 .unwrap_or(NORMALIZER_FORM_C);
             if form != NORMALIZER_FORM_C {
@@ -32382,7 +32382,7 @@ fn call_normalizer_static_method(method: &str, args: Vec<Value>) -> Result<Value
             let _ = xml_string_arg("Normalizer::isNormalized", args[0].clone())?;
             let form = args
                 .get(1)
-                .map(|value| to_int(value))
+                .map(to_int)
                 .transpose()?
                 .unwrap_or(NORMALIZER_FORM_C);
             if form != NORMALIZER_FORM_C {
@@ -38396,15 +38396,15 @@ fn object_property_iteration_entries(
         };
         return Ok(entries
             .iter()
-            .filter_map(|(key, _)| match key {
-                ArrayKey::Int(index) => Some(ObjectPropertyIterationEntry {
+            .map(|(key, _)| match key {
+                ArrayKey::Int(index) => ObjectPropertyIterationEntry {
                     key: index.to_string(),
                     storage_name: index.to_string(),
-                }),
-                ArrayKey::String(key) => Some(ObjectPropertyIterationEntry {
+                },
+                ArrayKey::String(key) => ObjectPropertyIterationEntry {
                     key: key.to_string_lossy(),
                     storage_name: key.to_string_lossy(),
-                }),
+                },
             })
             .collect());
     }
