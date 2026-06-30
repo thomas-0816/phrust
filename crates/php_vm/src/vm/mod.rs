@@ -10687,10 +10687,21 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        if let Err(message) =
-                            bind_dim_local_to_reference_cell(stack, *local, &dims, *append, cell)
-                        {
-                            return self.runtime_error(output, compiled, stack, message);
+                        if dims.is_empty() && !append {
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("frame was pushed")
+                                .locals
+                                .bind_reference_cell(*local, cell)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        } else {
+                            if let Err(message) = bind_dim_local_to_reference_cell(
+                                stack, *local, &dims, *append, cell,
+                            ) {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
                         }
                     }
                     InstructionKind::BindReferenceFromDim {
@@ -13094,13 +13105,68 @@ impl Vm {
                                     ),
                                 );
                             };
-                            if ir_property.flags.is_static
-                                || ir_property.flags.is_private
-                                || ir_property.flags.is_protected
-                                || ir_property.flags.set_is_private
-                                || ir_property.flags.set_is_protected
-                                || ir_property.flags.is_readonly
+                            if let Err(message) =
+                                validate_property_access(compiled, stack, &class, ir_property)
                             {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            if let Err(message) =
+                                validate_property_set_access(compiled, stack, &class, ir_property)
+                            {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            if ir_property.flags.is_readonly || class.flags.is_readonly {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    format!(
+                                        "E_PHP_VM_READONLY_PROPERTY_WRITE: Cannot modify protected(set) readonly property {}::${property} from global scope",
+                                        class.display_name
+                                    ),
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            if ir_property.flags.is_static {
                                 match self.raise_runtime_error(
                                     compiled,
                                     output,
@@ -47725,6 +47791,9 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_INTERFACE_INSTANTIATION"
         | "E_PHP_VM_PRIVATE_PROPERTY_ACCESS"
         | "E_PHP_VM_PROTECTED_PROPERTY_ACCESS"
+        | "E_PHP_VM_PRIVATE_PROPERTY_SET_ACCESS"
+        | "E_PHP_VM_PROTECTED_PROPERTY_SET_ACCESS"
+        | "E_PHP_VM_READONLY_PROPERTY_WRITE"
         | "E_PHP_VM_UNINITIALIZED_PROPERTY"
         | "E_PHP_VM_UNINITIALIZED_STATIC_PROPERTY"
         | "E_PHP_VM_UNKNOWN_STATIC_PROPERTY"
@@ -55571,9 +55640,10 @@ good"
         assert_eq!(readonly.status.exit_status(), ExitStatus::RuntimeError);
         assert_eq!(readonly.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
         assert!(
-            readonly.output.to_string_lossy().contains(
-                "Uncaught Error: property Locked::$value uses modifiers outside the reflection-clone clone-with MVP"
-            ),
+            readonly
+                .output
+                .to_string_lossy()
+                .contains("Uncaught Error: Cannot modify protected(set) readonly property Locked::$value from global scope"),
             "{}",
             readonly.output.to_string_lossy()
         );

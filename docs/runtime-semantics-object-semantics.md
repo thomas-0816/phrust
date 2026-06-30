@@ -342,17 +342,21 @@ Work item completes the fixture-covered clone path:
   the original object.
 
 The shallow copy preserves runtime `Value` payloads, including `ReferenceCell`
-values if an object property already contains one. Creating object-property
-references through PHP syntax is still blocked earlier by
-`E_PHP_IR_UNSUPPORTED_PROPERTY_REFERENCE`, so the reference-preservation
-contract is documented with an explicit known-gap fixture until property slots
-fully participate in the reference/COW model.
+values if an object property already contains one. Direct declared and dynamic
+object-property storage references now participate in the reference-cell model,
+so clone reference preservation is covered by
+`fixtures/runtime_semantics/clone_with/reference-property.php`.
+Property-hook and magic-property reference lvalues plus invalid typed-property
+writes through reference cells remain tracked under
+`E_PHP_IR_UNSUPPORTED_PROPERTY_REFERENCE`.
 
 Clone-with replacement of private, protected, readonly, static, or wider
 hook-backed properties remains intentionally specific rather than approximated:
 
-- private/protected/readonly/static replacement attempts outside the Work item
-  asymmetric setter subset currently produce
+- private/protected replacement attempts outside the Work item asymmetric setter
+  subset route through the regular property visibility `Error` path;
+- readonly replacement attempts route through the readonly write `Error` path;
+- static replacement attempts still produce
   `E_PHP_VM_UNSUPPORTED_PROPERTY_MODIFIER`;
 - fixture-covered public hooked replacements dispatch `set` hooks on the clone
   after `__clone`;

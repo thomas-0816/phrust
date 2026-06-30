@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: category=known_gaps expect=known_gap known_gap=E_PHP_RUNTIME_UNSUPPORTED_READONLY_ASYMMETRIC
+// runtime-semantics: category=types expect=pass
 // PHP reference: readonly properties can be initialized once and then read normally.
 class ReadonlyFixtureBox
 {

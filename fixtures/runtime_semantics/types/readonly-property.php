@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: expect=known_gap known_gap=E_PHP_RUNTIME_UNSUPPORTED_READONLY_PROPERTY
+// runtime-semantics: category=types expect=pass
 class Box {
     public readonly int $value;
 

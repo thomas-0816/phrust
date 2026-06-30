@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: category=clone_with expect=known_gap known_gap=E_PHP_IR_UNSUPPORTED_PROPERTY_REFERENCE
+// runtime-semantics: category=clone_with expect=pass
 class CloneReferenceProperty {
     public mixed $value;
 }
