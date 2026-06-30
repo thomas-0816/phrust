@@ -2025,6 +2025,7 @@ impl Vm {
                     upload_registry: UploadRegistry::default(),
                     session: php_runtime::SessionState::default(),
                     return_value: None,
+                    returned_explicitly: false,
                     process_exit_code: None,
                     yielded: None,
                     fiber_suspension: None,
@@ -2076,6 +2077,7 @@ impl Vm {
                             output: output.clone(),
                             diagnostics: Vec::new(),
                             return_value: None,
+                            returned_explicitly: false,
                             process_exit_code: None,
                             yielded: None,
                             fiber_suspension: None,
@@ -8251,11 +8253,14 @@ impl Vm {
                             }
                         };
                         stack.pop_recycle();
-                        return VmResult::success_with_diagnostics(
-                            output.clone(),
-                            value,
-                            diagnostics,
+                        let mut result =
+                            VmResult::success_with_diagnostics(output.clone(), value, diagnostics);
+                        result.returned_explicitly = !is_synthetic_eof_return(
+                            ir_function,
+                            dense_instruction_span(dense, instruction),
+                            result.return_value.as_ref(),
                         );
+                        return result;
                     }
                     DenseOpcode::Exit => {
                         let DenseOperands::Exit { value } = instruction.operands else {
@@ -17665,6 +17670,7 @@ impl Vm {
                                 output: output.clone(),
                                 diagnostics: vec![diagnostic],
                                 return_value: None,
+                                returned_explicitly: false,
                                 process_exit_code: None,
                                 yielded: None,
                                 fiber_suspension: None,
@@ -20179,6 +20185,7 @@ impl Vm {
                             output: output.clone(),
                             diagnostics: vec![diagnostic],
                             return_value: None,
+                            returned_explicitly: false,
                             process_exit_code: None,
                             yielded: None,
                             fiber_suspension: None,
@@ -20360,6 +20367,11 @@ impl Vm {
                     let mut result =
                         VmResult::success_with_diagnostics(output.clone(), value, diagnostics);
                     result.return_ref = return_ref;
+                    result.returned_explicitly = !is_synthetic_eof_return(
+                        function,
+                        terminator.span,
+                        result.return_value.as_ref(),
+                    );
                     return result;
                 }
                 TerminatorKind::Jump { target } => {
@@ -24696,6 +24708,7 @@ impl Vm {
                     output: output.clone(),
                     diagnostics: vec![diagnostic],
                     return_value: None,
+                    returned_explicitly: false,
                     process_exit_code: None,
                     yielded: None,
                     fiber_suspension: None,
@@ -27416,6 +27429,8 @@ impl Vm {
         }
         state.include_stack.pop();
         if result.status.is_success() {
+            result.return_value =
+                include_return_value(result.return_value.take(), result.returned_explicitly);
             write_shared_locals_to_current_frame(compiled, stack, &shared);
         }
         result
@@ -45324,6 +45339,32 @@ fn current_source_path(compiled: &CompiledUnit, stack: &CallStack) -> Option<Pat
     let function = compiled.unit().functions.get(frame.function.index())?;
     let file = compiled.unit().files.get(function.span.file.index())?;
     Some(PathBuf::from(&file.path))
+}
+
+fn dense_instruction_span(dense: &DenseBytecodeUnit, instruction: &DenseInstruction) -> IrSpan {
+    dense
+        .spans
+        .get(instruction.span.index())
+        .copied()
+        .unwrap_or_default()
+}
+
+fn is_synthetic_eof_return(
+    function: &IrFunction,
+    terminator_span: IrSpan,
+    return_value: Option<&Value>,
+) -> bool {
+    function.flags.is_top_level
+        && terminator_span == function.span
+        && matches!(return_value, None | Some(Value::Null))
+}
+
+fn include_return_value(return_value: Option<Value>, returned_explicitly: bool) -> Option<Value> {
+    if returned_explicitly {
+        Some(return_value.unwrap_or(Value::Null))
+    } else {
+        None
+    }
 }
 
 fn shared_locals_from_current_frame(

@@ -440,19 +440,28 @@ impl IncludeLoader {
         let raw = Path::new(path);
         let mut candidates = Vec::new();
         if raw.is_absolute() {
-            candidates.push(raw.to_path_buf());
+            push_include_candidate(&mut candidates, raw.to_path_buf());
+        } else if path_has_explicit_relative_prefix(raw) {
+            if let Some(cwd) = cwd {
+                push_include_candidate(&mut candidates, cwd.join(raw));
+            } else {
+                push_include_candidate(&mut candidates, raw.to_path_buf());
+            }
         } else {
             let base = including_file.and_then(Path::parent);
             for entry in include_path {
-                candidates.push(resolve_include_path_entry(base, cwd, entry).join(raw));
-            }
-            if let Some(parent) = base {
-                candidates.push(parent.join(raw));
+                push_include_candidate(
+                    &mut candidates,
+                    resolve_include_path_entry(cwd, entry).join(raw),
+                );
             }
             if let Some(cwd) = cwd {
-                candidates.push(cwd.join(raw));
+                push_include_candidate(&mut candidates, cwd.join(raw));
             }
-            candidates.push(raw.to_path_buf());
+            if let Some(parent) = base {
+                push_include_candidate(&mut candidates, parent.join(raw));
+            }
+            push_include_candidate(&mut candidates, raw.to_path_buf());
         }
         let mut last_error = None;
         let mut canonical = None;
@@ -628,23 +637,30 @@ pub fn include_path_file_fingerprint(path: &Path) -> Result<IncludePathFileFinge
     })
 }
 
-fn resolve_include_path_entry(base: Option<&Path>, cwd: Option<&Path>, entry: &Path) -> PathBuf {
+fn path_has_explicit_relative_prefix(path: &Path) -> bool {
+    matches!(
+        path.components().next(),
+        Some(std::path::Component::CurDir | std::path::Component::ParentDir)
+    )
+}
+
+fn push_include_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !candidates.contains(&candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn resolve_include_path_entry(cwd: Option<&Path>, entry: &Path) -> PathBuf {
     if entry.is_absolute() {
         return entry.to_path_buf();
     }
-    if entry == Path::new(".") {
-        if let Some(base) = base {
-            return base.to_path_buf();
-        }
-        if let Some(cwd) = cwd {
-            return cwd.to_path_buf();
-        }
+    if entry == Path::new(".")
+        && let Some(cwd) = cwd
+    {
+        return cwd.to_path_buf();
     }
     if let Some(cwd) = cwd {
         return cwd.join(entry);
-    }
-    if let Some(base) = base {
-        return base.join(entry);
     }
     entry.to_path_buf()
 }
@@ -846,6 +862,126 @@ mod tests {
         assert_eq!(stats.compile_hits, 0);
         assert!(binary_add_count(&baseline) > 0);
         assert_eq!(binary_add_count(&optimized), 0);
+    }
+
+    #[test]
+    fn include_path_dot_entry_resolves_to_runtime_cwd() {
+        let fixture = IncludeCacheFixture::new("include-path-dot");
+        let script_dir = fixture.root.join("script");
+        let cwd = fixture.root.join("cwd");
+        fs::create_dir_all(&script_dir).expect("create script dir");
+        fs::create_dir_all(&cwd).expect("create cwd");
+        fs::write(script_dir.join("dep.php"), "<?php echo 'script';\n").expect("write script dep");
+        fs::write(cwd.join("dep.php"), "<?php echo 'cwd';\n").expect("write cwd dep");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+
+        let resolved = loader
+            .resolve_with_include_path(
+                Some(&script_dir.join("index.php")),
+                "dep.php",
+                &[PathBuf::from(".")],
+                Some(&cwd),
+            )
+            .expect("resolve include");
+
+        assert_eq!(
+            resolved.canonical_path,
+            cwd.join("dep.php")
+                .canonicalize()
+                .expect("canonical cwd dep")
+        );
+    }
+
+    #[test]
+    fn explicit_relative_include_ignores_include_path() {
+        let fixture = IncludeCacheFixture::new("explicit-relative");
+        let script_dir = fixture.root.join("script");
+        let include_path = fixture.root.join("include-path");
+        let cwd = fixture.root.join("cwd");
+        fs::create_dir_all(&script_dir).expect("create script dir");
+        fs::create_dir_all(&include_path).expect("create include_path dir");
+        fs::create_dir_all(&cwd).expect("create cwd");
+        fs::write(script_dir.join("dep.php"), "<?php echo 'script';\n").expect("write script dep");
+        fs::write(include_path.join("dep.php"), "<?php echo 'include-path';\n")
+            .expect("write include_path dep");
+        fs::write(cwd.join("dep.php"), "<?php echo 'cwd';\n").expect("write cwd dep");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+
+        let resolved = loader
+            .resolve_with_include_path(
+                Some(&script_dir.join("index.php")),
+                "./dep.php",
+                &[include_path],
+                Some(&cwd),
+            )
+            .expect("resolve include");
+
+        assert_eq!(
+            resolved.canonical_path,
+            cwd.join("dep.php")
+                .canonicalize()
+                .expect("canonical cwd dep")
+        );
+    }
+
+    #[test]
+    fn bare_relative_fallback_uses_cwd_before_including_file_directory() {
+        let fixture = IncludeCacheFixture::new("bare-fallback");
+        let script_dir = fixture.root.join("script");
+        let cwd = fixture.root.join("cwd");
+        fs::create_dir_all(&script_dir).expect("create script dir");
+        fs::create_dir_all(&cwd).expect("create cwd");
+        fs::write(script_dir.join("dep.php"), "<?php echo 'script';\n").expect("write script dep");
+        fs::write(cwd.join("dep.php"), "<?php echo 'cwd';\n").expect("write cwd dep");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+
+        let resolved = loader
+            .resolve_with_include_path(
+                Some(&script_dir.join("nested").join("index.php")),
+                "dep.php",
+                &[],
+                Some(&cwd),
+            )
+            .expect("resolve include");
+
+        assert_eq!(
+            resolved.canonical_path,
+            cwd.join("dep.php")
+                .canonicalize()
+                .expect("canonical cwd dep")
+        );
+    }
+
+    #[test]
+    fn include_loader_rejects_paths_outside_allowed_roots() {
+        let fixture = IncludeCacheFixture::new("outside-root");
+        let outside_root = fixture.root.with_file_name(format!(
+            "{}-outside",
+            fixture
+                .root
+                .file_name()
+                .expect("fixture root name")
+                .to_string_lossy()
+        ));
+        let outside_file = outside_root.join("dep.php");
+        fs::create_dir_all(&outside_root).expect("create outside root");
+        fs::write(&outside_file, "<?php echo 'outside';\n").expect("write outside file");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+
+        let error = loader
+            .resolve_with_include_path(
+                None,
+                &outside_file.to_string_lossy(),
+                &[],
+                Some(&fixture.root),
+            )
+            .expect_err("outside-root include should fail");
+
+        assert!(
+            error.starts_with("E_PHP_VM_INCLUDE_OUTSIDE_ROOT:"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(outside_root);
     }
 
     #[test]
