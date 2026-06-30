@@ -16,7 +16,7 @@ This inventory is derived from Rust VM counters in the performance smoke benchma
 | Output | `output_bytes, output_buffer_appends, output_buffer_batch_writes, output_batched_appends, output_batch_bytes, output_buffer_flushes, output_fast_appends` | 1563 | `tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php` (334) | complete_for_current_counter_set |
 | Type Checks | `type_checks` | 0 | none observed | no_events_in_smoke_corpus |
 | Includes/Autoload | `includes, autoloads` | 3 | `tests/fixtures/performance/perf_smoke/autoload_smoke.php` (2) | complete_for_current_counter_set |
-| Runtime Allocation | `frame_allocations, frame_reuses, frames_allocated, frames_reused, register_files_allocated, register_files_reused, value_clones, string_allocations, array_handle_clones, cow_separations, reference_cell_creations, object_allocations, literal_intern_hits, literal_intern_misses` | 11627 | `tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php` (3033) | complete_for_current_counter_set |
+| Runtime Allocation | `frame_allocations, frame_reuses, frames_allocated, frames_reused, register_files_allocated, register_files_reused, value_clones, string_allocations, array_handle_clones, cow_separations, reference_cell_creations, object_allocations, literal_intern_hits, literal_intern_misses` | 11629 | `tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php` (3033) | complete_for_current_counter_set |
 | Standard Library Calls | `internal_function_dispatches, internal_function_dispatch_cache_hits, internal_function_dispatch_cache_misses` | 83 | `tests/fixtures/performance/perf_smoke/stdlib_dispatch.php` (0) | builtin_dispatch_counters_visible_in_smoke_corpus |
 
 ## Prioritized Candidates

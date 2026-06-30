@@ -15,7 +15,7 @@ This report ranks engine work from VM counters and existing performance artifact
 
 | Rank | Area | Counter events | Class | Top evidence | Next evidence |
 | ---: | --- | ---: | --- | --- | --- |
-| 1 | Optimizer And Runtime Allocation | 910642 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (166858) | Destructor, reference, COW, output-order, and verifier-bracketed optimizer fixtures. |
+| 1 | Optimizer And Runtime Allocation | 913016 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (166878) | Destructor, reference, COW, output-order, and verifier-bracketed optimizer fixtures. |
 | 2 | Dispatch | 223740 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (27763) | Dense opcode, quickening, and superinstruction A/B fixtures. |
 | 3 | Strings And Output | 43205 | `very_high` | `target/performance/app-flows/runs/template_render_escape/phrust-fast-preset/iter-0.counters.json` via `counter-json` (2077) | Output-buffer callback, object conversion, binary string, and diagnostic-order fixtures. |
 | 4 | Calls And Builtins | 31715 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (6297) | Call-shape, by-reference, named-argument, method visibility, and stdlib diffs. |
