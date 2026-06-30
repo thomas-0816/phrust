@@ -113,6 +113,9 @@ impl LocalFile {
         let Some(slot) = self.locals.get_mut(id.index()) else {
             return Err(format!("invalid local local:{}", id.raw()));
         };
+        if slot.is_uninitialized() {
+            slot.write(Value::Null);
+        }
         Lvalue::slot(slot, LvalueKind::LocalVariable)
             .ensure_reference_cell()
             .map_err(|error| error.to_string())

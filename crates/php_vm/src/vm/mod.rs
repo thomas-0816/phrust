@@ -17319,7 +17319,11 @@ impl Vm {
                         self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
                             stack, *local,
                         ));
-                        let local_value = read_local_value(stack, *local);
+                        let local_value = if is_globals_local(function, *local) {
+                            Some(Value::Array(state.globals.globals_array()))
+                        } else {
+                            read_local_value(stack, *local)
+                        };
                         let value = if let (Some(base_value), [key]) =
                             (local_value.as_ref(), dims.as_slice())
                         {
@@ -17359,7 +17363,12 @@ impl Vm {
                         self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
                             stack, *local,
                         ));
-                        let value = read_local_value(stack, *local)
+                        let local_value = if is_globals_local(function, *local) {
+                            Some(Value::Array(state.globals.globals_array()))
+                        } else {
+                            read_local_value(stack, *local)
+                        };
+                        let value = local_value
                             .and_then(|value| fetch_dim_path_value(&value, &dims).ok().flatten())
                             .unwrap_or(Value::Uninitialized);
                         let result = match php_empty(&value) {
@@ -17387,11 +17396,23 @@ impl Vm {
                         self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
                             stack, *local,
                         ));
-                        let was_packed = local_array_is_packed_fast(stack, *local);
-                        if let Err(message) = unset_dim_local(stack, *local, &dims) {
+                        let was_packed = if is_globals_local(function, *local) {
+                            false
+                        } else {
+                            local_array_is_packed_fast(stack, *local)
+                        };
+                        let result = if is_globals_local(function, *local) {
+                            unset_globals_dim(&mut state.globals, &dims)
+                        } else {
+                            unset_dim_local(stack, *local, &dims)
+                        };
+                        if let Err(message) = result {
                             return self.runtime_error(output, compiled, stack, message);
                         }
-                        if was_packed && !local_array_is_packed_fast(stack, *local) {
+                        if !is_globals_local(function, *local)
+                            && was_packed
+                            && !local_array_is_packed_fast(stack, *local)
+                        {
                             self.record_counter_array_packed_to_mixed_transition();
                         }
                         self.record_lvalue_trace_event("array-unset-dim", *local, &dims);
@@ -49934,6 +49955,26 @@ fn assign_globals_dim(
         current = Value::Array(PhpArray::new());
     }
     assign_dim_value(&mut current, rest, value, false)?;
+    cell.set(current);
+    Ok(())
+}
+
+fn unset_globals_dim(globals: &mut GlobalSymbolTable, dims: &[ArrayKey]) -> Result<(), String> {
+    let Some((first, rest)) = dims.split_first() else {
+        return Ok(());
+    };
+    let ArrayKey::String(name) = first else {
+        return Ok(());
+    };
+    let Some(cell) = globals.get_slot(&name.to_string()) else {
+        return Ok(());
+    };
+    if rest.is_empty() {
+        cell.set(Value::Uninitialized);
+        return Ok(());
+    }
+    let mut current = cell.get();
+    unset_dim_value(&mut current, rest);
     cell.set(current);
     Ok(())
 }
