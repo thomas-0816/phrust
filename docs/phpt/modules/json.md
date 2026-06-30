@@ -2,7 +2,7 @@
 
 - Priority: 17.6 closed
 - Selected manifest: `tests/phpt/manifests/modules/json.selected.jsonl`
-- the selected close gate: 15 PASS, 0 SKIP, 0 FAIL, 0 BORK from 15 selected fixtures
+- the selected close gate: 24 PASS, 0 SKIP, 0 FAIL, 0 BORK from 24 selected fixtures
 
 ## Scope
 
@@ -10,14 +10,15 @@
 - `json_decode` associative-array and `stdClass` basics
 - `json_last_error` and `json_last_error_msg`
 - `JSON_THROW_ON_ERROR` failure routing
+- `JSON_FORCE_OBJECT`, default Unicode escaping, decode depth/state/control
+  diagnostics, `JSON_BIGINT_AS_STRING`, and recursive encode diagnostics
 
 ## Non-Scope
 
 - Full upstream `ext/json` corpus
 - `JsonSerializable` userland dispatch until JSON encoding has a clean VM
   method-call bridge
-- Bigint preservation, invalid UTF-8 modes, recursion diagnostics, and complete
-  JSON flag parity
+- Invalid UTF-8 recovery modes and complete JSON flag parity
 - `json_validate`
 
 ## Selected PHPT Fixtures
@@ -27,6 +28,15 @@
 - `tests/phpt/generated/json/json-decode-basics.phpt`
 - `tests/phpt/generated/json/json-last-error-state.phpt`
 - `tests/phpt/generated/json/json-throw-on-error.phpt`
+- `ext/json/tests/001.phpt`
+- `ext/json/tests/002.phpt`
+- `ext/json/tests/003.phpt`
+- `ext/json/tests/004.phpt`
+- `ext/json/tests/005.phpt`
+- `ext/json/tests/006.phpt`
+- `ext/json/tests/007.phpt`
+- `ext/json/tests/008.phpt`
+- `ext/json/tests/009.phpt`
 - `ext/json/tests/json_encode_basic.phpt`
 - `ext/json/tests/json_decode_basic.phpt`
 - `ext/json/tests/json_last_error_error.phpt`
@@ -52,17 +62,24 @@
 
 ## Evidence
 
-- Replaced the broad 88-test selected manifest with a focused 10-test harness.
+- Replaced the broad 88-test selected manifest with a focused selected harness.
 - Added generated oracle fixtures for encode basics, encode common flags, decode
   basics, last-error state transitions, and `JSON_THROW_ON_ERROR`.
-- Latest focused target run: 15 PASS, 0 FAIL.
-- Latest focused reference run: 15 PASS.
+- Promoted upstream `ext/json/tests/001.phpt` through `009.phpt` after the
+  target and reference probes both reached 9 PASS.
+- Latest focused target run: 24 PASS, 0 FAIL.
+- Latest focused reference run: 24 PASS.
 
 ## Known Gaps
 
 - Request-local JSON last-error state now persists across VM builtin calls.
 - `json_encode` now matches the selected scalar/list/map/simple-object, common
   flag, slash escaping, pretty-print, numeric-check, and insertion-order PHPTs.
+- `json_encode` now detects selected recursive array/object graphs and reports
+  `JSON_ERROR_RECURSION`, including partial-output `null` substitution.
+- `json_decode` now enforces selected depth failures, preserves selected big
+  integers with `JSON_BIGINT_AS_STRING`, and distinguishes selected state
+  mismatch and control-character diagnostics.
 - `JSON_THROW_ON_ERROR` decode failures now route to catchable `JsonException`
   through the existing VM throwable path.
 - `JsonSerializable` is deliberately left as `STDLIB-GAP-JSONSERIALIZABLE-DISPATCH`:

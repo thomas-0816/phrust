@@ -12,15 +12,21 @@ use std::time::{Duration, SystemTime};
 
 pub(in crate::builtins) const JSON_ERROR_NONE: i64 = 0;
 pub(in crate::builtins) const JSON_ERROR_DEPTH: i64 = 1;
+pub(in crate::builtins) const JSON_ERROR_STATE_MISMATCH: i64 = 2;
+pub(in crate::builtins) const JSON_ERROR_CTRL_CHAR: i64 = 3;
 pub(in crate::builtins) const JSON_ERROR_SYNTAX: i64 = 4;
 pub(in crate::builtins) const JSON_ERROR_UTF8: i64 = 5;
+pub(in crate::builtins) const JSON_ERROR_RECURSION: i64 = 6;
 pub(in crate::builtins) const JSON_OBJECT_AS_ARRAY: i64 = 1;
+pub(in crate::builtins) const JSON_BIGINT_AS_STRING: i64 = 2;
 pub(in crate::builtins) const JSON_HEX_TAG: i64 = 1;
 pub(in crate::builtins) const JSON_HEX_AMP: i64 = 2;
 pub(in crate::builtins) const JSON_HEX_APOS: i64 = 4;
 pub(in crate::builtins) const JSON_HEX_QUOT: i64 = 8;
+pub(in crate::builtins) const JSON_FORCE_OBJECT: i64 = 16;
 pub(in crate::builtins) const JSON_NUMERIC_CHECK: i64 = 32;
 pub(in crate::builtins) const JSON_PRETTY_PRINT: i64 = 128;
+pub(in crate::builtins) const JSON_PARTIAL_OUTPUT_ON_ERROR: i64 = 512;
 pub(in crate::builtins) const JSON_UNESCAPED_SLASHES: i64 = 64;
 pub(in crate::builtins) const JSON_UNESCAPED_UNICODE: i64 = 256;
 pub(in crate::builtins) const JSON_PRESERVE_ZERO_FRACTION: i64 = 1024;
@@ -767,8 +773,11 @@ pub(in crate::builtins) const fn json_error_message(code: i64) -> &'static str {
     match code {
         JSON_ERROR_NONE => "No error",
         JSON_ERROR_DEPTH => "Maximum stack depth exceeded",
+        JSON_ERROR_STATE_MISMATCH => "State mismatch (invalid or malformed JSON)",
+        JSON_ERROR_CTRL_CHAR => "Control character error, possibly incorrectly encoded",
         JSON_ERROR_SYNTAX => "Syntax error",
         JSON_ERROR_UTF8 => "Malformed UTF-8 characters, possibly incorrectly encoded",
+        JSON_ERROR_RECURSION => "Recursion detected",
         _ => "Unknown error",
     }
 }

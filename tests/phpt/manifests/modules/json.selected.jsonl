@@ -3,6 +3,15 @@
 {"path":"tests/phpt/generated/json/json-decode-basics.phpt"}
 {"path":"tests/phpt/generated/json/json-last-error-state.phpt"}
 {"path":"tests/phpt/generated/json/json-throw-on-error.phpt"}
+{"path":"ext/json/tests/001.phpt"}
+{"path":"ext/json/tests/002.phpt"}
+{"path":"ext/json/tests/003.phpt"}
+{"path":"ext/json/tests/004.phpt"}
+{"path":"ext/json/tests/005.phpt"}
+{"path":"ext/json/tests/006.phpt"}
+{"path":"ext/json/tests/007.phpt"}
+{"path":"ext/json/tests/008.phpt"}
+{"path":"ext/json/tests/009.phpt"}
 {"path":"ext/json/tests/json_encode_basic.phpt"}
 {"path":"ext/json/tests/json_decode_basic.phpt"}
 {"path":"ext/json/tests/json_last_error_error.phpt"}

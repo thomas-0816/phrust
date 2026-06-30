@@ -22,7 +22,7 @@ pcre2 = "0.2"
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_lexer = { path = "../php_lexer", version = "0.1.0" }
 rusqlite = "0.32"
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
 sha1 = "0.10"
 sha2 = "0.10"
 

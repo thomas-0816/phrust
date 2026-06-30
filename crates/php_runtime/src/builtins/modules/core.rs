@@ -1,9 +1,10 @@
 //! Core builtin implementations and cross-module helpers.
 
 use super::super::context::{
-    JSON_ERROR_SYNTAX, JSON_ERROR_UTF8, JSON_HEX_AMP, JSON_HEX_APOS, JSON_HEX_QUOT, JSON_HEX_TAG,
-    JSON_NUMERIC_CHECK, JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
-    JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, json_error_message,
+    JSON_ERROR_RECURSION, JSON_ERROR_SYNTAX, JSON_ERROR_UTF8, JSON_FORCE_OBJECT, JSON_HEX_AMP,
+    JSON_HEX_APOS, JSON_HEX_QUOT, JSON_HEX_TAG, JSON_NUMERIC_CHECK, JSON_PARTIAL_OUTPUT_ON_ERROR,
+    JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR, JSON_UNESCAPED_SLASHES,
+    JSON_UNESCAPED_UNICODE, json_error_message,
 };
 use super::super::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
@@ -1803,11 +1804,71 @@ pub(in crate::builtins::modules) fn is_remote_stream_uri(uri: &str) -> bool {
     )
 }
 
-pub(in crate::builtins::modules) fn php_value_to_json(
+pub(in crate::builtins::modules) fn php_value_to_json_checked(
     value: &Value,
     flags: i64,
+) -> Result<(JsonValue, Option<i64>), i64> {
+    let mut state = JsonEncodeState::new(flags);
+    let json = php_value_to_json_inner(value, flags, &mut state)?;
+    Ok((json, state.first_error))
+}
+
+struct JsonEncodeState {
+    partial: bool,
+    first_error: Option<i64>,
+    active_arrays: Vec<usize>,
+    active_objects: Vec<u64>,
+    active_references: Vec<usize>,
+}
+
+impl JsonEncodeState {
+    const fn new(flags: i64) -> Self {
+        Self {
+            partial: flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0,
+            first_error: None,
+            active_arrays: Vec::new(),
+            active_objects: Vec::new(),
+            active_references: Vec::new(),
+        }
+    }
+
+    fn error_json(&mut self, code: i64) -> Result<JsonValue, i64> {
+        if self.partial {
+            self.first_error.get_or_insert(code);
+            Ok(JsonValue::Null)
+        } else {
+            Err(code)
+        }
+    }
+}
+
+fn php_value_to_json_inner(
+    value: &Value,
+    flags: i64,
+    state: &mut JsonEncodeState,
 ) -> Result<JsonValue, i64> {
-    match deref_value(value) {
+    match value {
+        Value::Reference(cell) => {
+            let id = cell.gc_debug_id();
+            if state.active_references.contains(&id) {
+                return state.error_json(JSON_ERROR_RECURSION);
+            }
+            state.active_references.push(id);
+            let referenced = cell.get();
+            let json = php_value_to_json_inner(&referenced, flags, state);
+            state.active_references.pop();
+            json
+        }
+        _ => php_deref_value_to_json_inner(deref_value(value), flags, state),
+    }
+}
+
+fn php_deref_value_to_json_inner(
+    value: Value,
+    flags: i64,
+    state: &mut JsonEncodeState,
+) -> Result<JsonValue, i64> {
+    match value {
         Value::Null | Value::Uninitialized => Ok(JsonValue::Null),
         Value::Bool(value) => Ok(JsonValue::Bool(value)),
         Value::Int(value) => Ok(JsonValue::Number(JsonNumber::from(value))),
@@ -1855,12 +1916,21 @@ pub(in crate::builtins::modules) fn php_value_to_json(
                 .map_err(|_| JSON_ERROR_UTF8)
         }
         Value::Array(array) => {
-            if let Some(elements) = array.packed_elements() {
-                elements
+            let id = array.gc_debug_id();
+            if state.active_arrays.contains(&id) {
+                return state.error_json(JSON_ERROR_RECURSION);
+            }
+            state.active_arrays.push(id);
+            if flags & JSON_FORCE_OBJECT == 0
+                && let Some(elements) = array.packed_elements()
+            {
+                let json = elements
                     .into_iter()
-                    .map(|value| php_value_to_json(value, flags))
+                    .map(|value| php_value_to_json_inner(value, flags, state))
                     .collect::<Result<Vec<_>, _>>()
-                    .map(JsonValue::Array)
+                    .map(JsonValue::Array);
+                state.active_arrays.pop();
+                json
             } else {
                 let mut object = JsonMap::new();
                 for (key, value) in array.iter() {
@@ -1868,19 +1938,27 @@ pub(in crate::builtins::modules) fn php_value_to_json(
                         ArrayKey::Int(value) => value.to_string(),
                         ArrayKey::String(value) => value.to_string_lossy(),
                     };
-                    object.insert(key, php_value_to_json(value, flags)?);
+                    object.insert(key, php_value_to_json_inner(value, flags, state)?);
                 }
+                state.active_arrays.pop();
                 Ok(JsonValue::Object(object))
             }
         }
         Value::Object(object) => {
-            if let Some(json) = spl_fixed_array_to_json(&object, flags) {
+            let id = object.id();
+            if state.active_objects.contains(&id) {
+                return state.error_json(JSON_ERROR_RECURSION);
+            }
+            state.active_objects.push(id);
+            if let Some(json) = spl_fixed_array_to_json(&object, flags, state) {
+                state.active_objects.pop();
                 return json;
             }
             let mut json = JsonMap::new();
             for (name, value) in object.properties_snapshot() {
-                json.insert(name, php_value_to_json(&value, flags)?);
+                json.insert(name, php_value_to_json_inner(&value, flags, state)?);
             }
+            state.active_objects.pop();
             Ok(JsonValue::Object(json))
         }
         Value::Resource(_)
@@ -1891,7 +1969,11 @@ pub(in crate::builtins::modules) fn php_value_to_json(
     }
 }
 
-fn spl_fixed_array_to_json(object: &ObjectRef, flags: i64) -> Option<Result<JsonValue, i64>> {
+fn spl_fixed_array_to_json(
+    object: &ObjectRef,
+    flags: i64,
+    state: &mut JsonEncodeState,
+) -> Option<Result<JsonValue, i64>> {
     if !object.class_name().eq_ignore_ascii_case("splfixedarray") {
         return None;
     }
@@ -1919,7 +2001,7 @@ fn spl_fixed_array_to_json(object: &ObjectRef, flags: i64) -> Option<Result<Json
         .map_or(0, |index| index.saturating_add(1));
     let mut elements = vec![JsonValue::Null; size];
     for (index, value) in indexed_entries {
-        elements[index] = match php_value_to_json(&value, flags) {
+        elements[index] = match php_value_to_json_inner(&value, flags, state) {
             Ok(value) => value,
             Err(error) => return Some(Err(error)),
         };
@@ -1978,6 +2060,10 @@ pub(in crate::builtins::modules) fn normalize_json_encoded(
         encoded = encoded.replace('/', "\\/");
     }
 
+    if flags & JSON_UNESCAPED_UNICODE == 0 {
+        encoded = escape_json_non_ascii(&encoded);
+    }
+
     if flags & JSON_HEX_TAG != 0 {
         encoded = encoded.replace('<', "\\u003C").replace('>', "\\u003E");
     }
@@ -1991,10 +2077,30 @@ pub(in crate::builtins::modules) fn normalize_json_encoded(
         encoded = encoded.replace("\\\"", "\\u0022");
     }
 
-    // serde_json already keeps non-ASCII text unescaped and preserves the
-    // decimal marker for finite PHP floats, so these flags are explicit no-ops.
-    let _ = flags & (JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
+    // serde_json preserves the decimal marker for finite PHP floats, so this
+    // flag is an explicit no-op after value conversion above.
+    let _ = flags & JSON_PRESERVE_ZERO_FRACTION;
     encoded
+}
+
+fn escape_json_non_ascii(encoded: &str) -> String {
+    let mut normalized = String::with_capacity(encoded.len());
+    for ch in encoded.chars() {
+        if ch.is_ascii() {
+            normalized.push(ch);
+            continue;
+        }
+        let code = ch as u32;
+        if code <= 0xFFFF {
+            normalized.push_str(&format!("\\u{code:04x}"));
+        } else {
+            let code = code - 0x1_0000;
+            let high = 0xD800 + ((code >> 10) & 0x3FF);
+            let low = 0xDC00 + (code & 0x3FF);
+            normalized.push_str(&format!("\\u{high:04x}\\u{low:04x}"));
+        }
+    }
+    normalized
 }
 
 fn json_pretty_indent_for_php(encoded: &str) -> String {
@@ -5444,8 +5550,10 @@ mod tests {
         SORT_NUMERIC, SORT_REGULAR, SORT_STRING,
     };
     use crate::builtins::context::{
-        JSON_ERROR_NONE, JSON_HEX_AMP, JSON_HEX_APOS, JSON_HEX_QUOT, JSON_HEX_TAG,
-        JSON_NUMERIC_CHECK, JSON_OBJECT_AS_ARRAY, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
+        JSON_BIGINT_AS_STRING, JSON_ERROR_CTRL_CHAR, JSON_ERROR_DEPTH, JSON_ERROR_NONE,
+        JSON_ERROR_STATE_MISMATCH, JSON_FORCE_OBJECT, JSON_HEX_AMP, JSON_HEX_APOS, JSON_HEX_QUOT,
+        JSON_HEX_TAG, JSON_NUMERIC_CHECK, JSON_OBJECT_AS_ARRAY, JSON_PRETTY_PRINT,
+        JSON_THROW_ON_ERROR,
     };
     use crate::{
         ArrayKey, BuiltinRegistry, ClassEntry, ClassFlags, FilesystemCapabilities, ObjectRef,
@@ -7792,15 +7900,29 @@ mod tests {
                 "json_encode",
                 vec![Value::Array(ordered.clone())]
             ),
-            Value::string(r#"{"url":"https:\/\/example.test\/a","snow":"☃","n":1}"#)
+            Value::string(r#"{"url":"https:\/\/example.test\/a","snow":"\u2603","n":1}"#)
         );
         assert_eq!(
             call_in_context(
                 &mut context,
                 "json_encode",
-                vec![Value::Array(ordered), Value::Int(JSON_UNESCAPED_SLASHES)]
+                vec![
+                    Value::Array(ordered),
+                    Value::Int(JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+                ]
             ),
             Value::string(r#"{"url":"https://example.test/a","snow":"☃","n":1}"#)
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_encode",
+                vec![
+                    Value::packed_array(vec![Value::Int(1)]),
+                    Value::Int(JSON_FORCE_OBJECT)
+                ]
+            ),
+            Value::string(r#"{"0":1}"#)
         );
         let hex_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         assert_eq!(
@@ -7860,6 +7982,47 @@ mod tests {
         assert_eq!(
             call_in_context(&mut context, "json_last_error", Vec::new()),
             Value::Int(JSON_ERROR_NONE)
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_decode",
+                vec![
+                    Value::string(r#"[123456789012345678901234567890]"#),
+                    Value::Null,
+                    Value::Int(512),
+                    Value::Int(JSON_BIGINT_AS_STRING)
+                ]
+            ),
+            Value::packed_array(vec![Value::string("123456789012345678901234567890")])
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_decode",
+                vec![Value::string("[[1]]"), Value::Null, Value::Int(2)]
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_last_error", Vec::new()),
+            Value::Int(JSON_ERROR_DEPTH)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_decode", vec![Value::string("[1}")]),
+            Value::Null
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_last_error", Vec::new()),
+            Value::Int(JSON_ERROR_STATE_MISMATCH)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_decode", vec![Value::string("\"a\0b\"")]),
+            Value::Null
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_last_error", Vec::new()),
+            Value::Int(JSON_ERROR_CTRL_CHAR)
         );
         assert_eq!(
             call_in_context(
