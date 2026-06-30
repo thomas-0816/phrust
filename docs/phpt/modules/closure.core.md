@@ -75,9 +75,10 @@
 - Array/object/reference COW gaps involving property slots and static-property
   by-reference writes remain owned by `php_ir`, `php_runtime::reference`, and
   `php_runtime::object`.
-- Advanced object behavior from the fresh `objects.classes` run remains open:
-  magic methods, destructors/iterators, serialization, class constants,
-  visibility stack formatting, and Reflection/autoload behavior.
+- Broader object behavior outside the selected `objects.classes` and
+  `closure.core` fixtures remains tracked through runtime known gaps:
+  Reflection API breadth, eval function declarations, typed/static property
+  validation, property hooks, and exact stack/object formatting parity.
 - Fatal output parity still has broad path/stack formatting gaps outside the
   selected diagnostics contracts.
 

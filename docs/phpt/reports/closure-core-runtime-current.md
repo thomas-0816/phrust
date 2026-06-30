@@ -187,13 +187,29 @@ current selected module failures.
 
 ## Prompt 1.2-1.6 Verification
 
-The focused implementation gates were rerun after the runtime fixes:
+The current closeout audit reran the broad crate and focused PHPT gates after
+the runtime fixes:
 
-- Prompt 1.2 globals: `cargo test -p php_runtime globals` PASS (3 tests), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=closure.core` PASS (33/33), and `just runtime-semantics-fixtures` PASS with refs/COW 7 pass + 2 known gaps, object semantics 73 pass + 10 known gaps, generator/fiber 26 pass + 1 known gap, real-world 1 pass + 2 known gaps, regressions 2 pass + 1 known gap.
-- Prompt 1.3 arrays: `cargo test -p php_runtime array` PASS (61 tests), `cargo test -p php_ir` PASS (69 unit tests + 7 bytecode snapshots), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=closure.core` PASS (33/33), and `just phpt-dev-module MODULE=standard.arrays` PASS (17/17).
-- Prompt 1.4 references: `cargo test -p php_runtime reference` PASS (22 tests), `cargo test -p php_runtime array` PASS (61 tests), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=arrays.references` PASS (6/6), and `just phpt-dev-module MODULE=closure.core` PASS (33/33).
-- Prompt 1.5 dynamic objects/static binding: `cargo test -p php_ir` PASS (69 unit tests + 7 bytecode snapshots), `cargo test -p php_runtime object` PASS (30 tests), `cargo test -p php_vm` PASS (493 tests), `just phpt-dev-module MODULE=closure.core` PASS (33/33), and `just phpt-dev-module MODULE=objects.classes` PASS with reference 200 PASS and target 200 PASS.
-- Prompt 1.6 diagnostics/output: `cargo test -p php_runtime` PASS (256 tests), `cargo test -p php_vm` PASS (492 tests), `just phpt-dev-module MODULE=diagnostics.output` PASS (6/6), and `just phpt-dev-module MODULE=closure.core` PASS (33/33).
+- Shared unit gates: `nix develop -c cargo test -p php_runtime` PASS
+  (263 tests), `nix develop -c cargo test -p php_ir` PASS (92 unit tests + 7
+  bytecode snapshots), and `nix develop -c cargo test -p php_vm` PASS
+  (496 tests).
+- Prompt 1.2 globals: `just phpt-dev-module MODULE=closure.core` PASS (33/33)
+  and `just runtime-semantics-fixtures` PASS with refs/COW 7 pass + 2 known
+  gaps, object semantics 73 pass + 10 known gaps, generator/fiber 26 pass + 1
+  known gap, real-world 1 pass + 2 known gaps, and regressions 2 pass + 1 known
+  gap.
+- Prompt 1.3 arrays: `just phpt-dev-module MODULE=standard.arrays` PASS
+  (17/17) and `just phpt-dev-module MODULE=closure.core` PASS (33/33).
+- Prompt 1.4 references: `just phpt-dev-module MODULE=arrays.references` PASS
+  (6/6) and `just phpt-dev-module MODULE=closure.core` PASS (33/33).
+- Prompt 1.5 dynamic objects/static binding:
+  `just phpt-dev-module MODULE=objects.classes` PASS with reference 200 PASS
+  and target 200 PASS, and `just phpt-dev-module MODULE=closure.core` PASS
+  (33/33).
+- Prompt 1.6 diagnostics/output:
+  `just phpt-dev-module MODULE=diagnostics.output` PASS (6/6) and
+  `just phpt-dev-module MODULE=closure.core` PASS (33/33).
 
 All PHPT module runs above used:
 
