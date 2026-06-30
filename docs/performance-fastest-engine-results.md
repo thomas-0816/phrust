@@ -14,8 +14,8 @@ a bounded fixture corpus.
 | --- | --- |
 | Status | `pass` |
 | Fixtures | 12 |
-| Enabled rows | 60 |
-| Skipped rows | 36 |
+| Enabled rows | 36 |
+| Skipped rows | 60 |
 | Known-gap rows | 0 |
 | Iterations | 1 |
 | Warmups | 0 |
@@ -25,14 +25,14 @@ a bounded fixture corpus.
 - `phrust-baseline-ir`
 - `phrust-fast-preset`
 - `phrust-release-fast`
-- `reference-php-cli`
-- `reference-php-cli-opcache`
 
 ## Explicit Skips
 
 - `phrust-cranelift-optional`: Cranelift row not requested; set PHRUST_FASTEST_MATRIX_JIT=1 or --include-jit
 - `phrust-persistent-feedback-optional`: persistent feedback row not requested; set PHRUST_FASTEST_MATRIX_PERSISTENT_FEEDBACK=1 or --include-persistent-feedback
 - `phrust-release-pgo`: engine unavailable: target/pgo/php-vm
+- `reference-php-cli`: REFERENCE_PHP not set and third_party/php-src/sapi/cli/php is unavailable
+- `reference-php-cli-opcache`: REFERENCE_PHP not set and third_party/php-src/sapi/cli/php is unavailable
 
 ## Artifacts
 

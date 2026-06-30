@@ -75,6 +75,16 @@ Small internal builtins and predefined classes/interfaces are allowed only when
 they are necessary to make language semantics, reflection, generators, fibers,
 enums, attributes, or autoloading testable.
 
+Standard-library builtin dispatch is governed by
+[`stdlib-abi-dispatch.md`](stdlib-abi-dispatch.md). New PHP standard-library
+functions should use the registry-backed `InternalRegistry` path unless they
+need VM-only services documented there.
+
+VM public API and module ownership are governed by
+[`api-facades.md`](api-facades.md). Downstream crates should use
+`php_vm::api` for execution-facing types and reserve `php_vm::experimental` for
+performance tooling or VM-internal instrumentation.
+
 ## Semantics Priorities
 
 1. References, slots, Copy-on-Write, array element lvalues, and foreach.
@@ -243,10 +253,24 @@ paths and source text; it does not add a second lexer, parser, or frontend path.
 Included top-level code shares the caller frame's local variable scope for the
 fixture-covered cases, writes modified locals back to the caller, and returns
 the included file's `return` value to the include expression. Relative includes
-inside an included file resolve from that included file's directory. Once
-semantics canonicalize paths through the include loader and are stable within a
-VM request context, so `include_once` and `require_once` skip files already
-loaded by either once form.
+inside an included file search configured `include_path` entries first, then
+the including file directory, the request current working directory, and the raw
+relative path. An `include_path` entry of `.` is resolved to the including file
+directory when one is active, otherwise to the request current working
+directory. Absolute paths bypass relative candidate search. Every local
+filesystem candidate is canonicalized and must remain below a configured
+allowed root. `phar://` includes remain supported for local archives permitted
+by the same filesystem capability roots.
+
+Once semantics canonicalize paths through the include loader and are stable
+within a VM request context, so `include_once` and `require_once` skip files
+already loaded by either once form. The process-local include cache stores only
+path-resolution metadata and compiled include units keyed by canonical path,
+file fingerprint, compiler configuration, and optimization level; request-local
+locals, globals, symbol tables, include-once state, autoload registry state, and
+call-site strictness are never cache payloads. Modified include files invalidate
+stale cache entries through metadata fingerprints. Poisoned cache locks surface
+as deterministic `E_PHP_VM_INCLUDE_CACHE_POISONED` VM errors.
 
 Missing `require` remains fatal and missing `include` continues after emitting a
 structured warning diagnostic. Exact PHP warning stream text and channel
@@ -268,11 +292,13 @@ parse and compile failures emit `E_PHP_VM_EVAL_PARSE_ERROR` or
 the same execution state and is bounded by `E_PHP_VM_EVAL_RECURSION_LIMIT` to
 avoid recursive VM panics.
 
-Eval-time function and class declarations are detected and reported as
-`E_PHP_VM_EVAL_DECLARATION_GAP` instead of being silently ignored or merged
-incorrectly. Merging eval declarations into the active runtime symbol tables,
-autoload-sensitive declaration behavior, exact `ParseError` object parity, and
-wider eval scope interactions remain later work.
+Eval-time function and class declarations are merged into the active request
+dynamic symbol tables for the fixture-covered cases, are available to later
+runtime lookups, can participate in simple inheritance relationships, and keep
+duplicate declaration failures fatal. Eval-generated declarations from
+autoload callbacks are visible to the autoload lookup that triggered them.
+Exact `ParseError` object parity and wider eval scope interactions remain later
+work.
 
 ## Autoload MVP
 
@@ -292,11 +318,12 @@ return without re-entering the callback chain.
 Include-based autoload callbacks can load source files through the same include
 pipeline. Source-backed class and interface metadata from included files is
 registered in a VM dynamic class table for fixture-covered existence checks and
-simple no-constructor object creation. Full Composer compatibility is not
-claimed. standard library needs cross-unit symbol linking for methods, properties with
+simple no-constructor object creation. Autoload callbacks that `eval` class
+declarations register those declarations in the same request-local dynamic
+symbol tables. Full Composer compatibility is not claimed. Standard-library
+coverage still needs cross-unit symbol linking for methods, properties with
 nontrivial defaults, constants, inheritance, trait/enum details, PSR-0/PSR-4
-path rules, autoload priority/prepend behavior, and complete SPL error/object
-parity.
+path rules, and complete SPL error/object parity.
 
 ## Globals and Superglobals MVP
 
@@ -471,6 +498,11 @@ Runtime semantics behavior is split across these topic documents:
 
 - `docs/runtime-semantics-reference-cow.md` for `Slot`, `ReferenceCell`, temporaries, and
   Copy-on-Write invariants;
+- `docs/runtime-state-ownership.md` for `ExecutionState`, `CallStack`,
+  `Frame`, local/register storage, request-global roots, and frame-pool
+  invariants;
+- `docs/api-facades.md` for the stable VM execution API, experimental VM
+  instrumentation facade, and module ownership map;
 - `docs/runtime-semantics-array-semantics.md` and `docs/runtime-semantics-foreach-semantics.md` for
   key normalization, append behavior, element references, foreach snapshots,
   and object/Iterator iteration;

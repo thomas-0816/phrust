@@ -23,14 +23,14 @@ use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::Diagn
 use php_source::{SourceText, TextRange};
 use php_vm::{
     api::{
-        BytecodeLayoutMode, ExecutionFormat, IncludeLoader, JitBlacklistMode, JitMode,
-        SuperinstructionMode, Vm, VmOptions, VmResult,
+        BytecodeLayoutMode, ExecutionFormat, IncludeLoader, InlineCacheMode, JitBlacklistMode,
+        JitMode, QuickeningMode, SuperinstructionMode, TieringOptions, TieringStats, Vm, VmOptions,
+        VmResult,
     },
     experimental::{
-        BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, InlineCacheMode,
-        JitCompileDescriptor, PersistentFeedbackContext, PersistentFeedbackEpochs,
-        PersistentFeedbackLoadReport, PersistentFeedbackStats, PersistentFeedbackStore,
-        QuickeningMode, RegionProfile, TieringOptions, TieringStats, VmCounters,
+        BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, JitCompileDescriptor,
+        PersistentFeedbackContext, PersistentFeedbackEpochs, PersistentFeedbackLoadReport,
+        PersistentFeedbackStats, PersistentFeedbackStore, RegionProfile, VmCounters,
         plan_dependency_units,
     },
 };
@@ -3846,11 +3846,9 @@ mod tests {
     };
     use php_bytecode_cache::{CacheFingerprint, CacheFingerprintInput};
     use php_runtime::api::RuntimeContext;
-    use php_vm::{
-        api::{
-            BytecodeLayoutMode, ExecutionFormat, JitBlacklistMode, JitMode, SuperinstructionMode,
-        },
-        experimental::InlineCacheMode,
+    use php_vm::api::{
+        BytecodeLayoutMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode, JitMode,
+        SuperinstructionMode,
     };
     use serde_json::Value;
     use std::path::{Path, PathBuf};

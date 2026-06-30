@@ -25,7 +25,7 @@ derived from this corpus is local and advisory.
 | `attribute_reflection_warm` | `tests/fixtures/performance/framework_smoke/attribute_reflection_warm.php` | 102 | 0 | 12 | 6 | 0 | 0 | 114 | 9 |
 | `composer_autoload_lookup` | `tests/fixtures/performance/framework_smoke/composer_autoload_lookup.php` | 131 | 8 | 3 | 3 | 6 | 5 | 49 | 4 |
 | `di_container_lookup` | `tests/fixtures/performance/framework_smoke/di_container_lookup.php` | 97 | 4 | 8 | 0 | 5 | 4 | 52 | 4 |
-| `dto_hydration` | `tests/fixtures/performance/framework_smoke/dto_hydration.php` | 168 | 3 | 3 | 9 | 18 | 3 | 34 | 3 |
+| `dto_hydration` | `tests/fixtures/performance/framework_smoke/dto_hydration.php` | 169 | 3 | 3 | 9 | 18 | 3 | 34 | 3 |
 | `json_api_response` | `tests/fixtures/performance/framework_smoke/json_api_response.php` | 0 | 0 | 0 | 0 | 0 | 2 | 107 | 2 |
 | `object_property_method_loop` | `tests/fixtures/performance/framework_smoke/object_property_method_loop.php` | 174 | 0 | 5 | 0 | 20 | 0 | 74 | 15 |
 | `packed_mixed_array_traversal` | `tests/fixtures/performance/framework_smoke/packed_mixed_array_traversal.php` | 0 | 0 | 0 | 0 | 0 | 4 | 44 | 17 |

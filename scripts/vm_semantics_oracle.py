@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare baseline and managed-fast VM semantics for runtime fixtures."""
+"""Compare baseline and fast-tier VM semantics for runtime fixtures."""
 
 from __future__ import annotations
 
@@ -11,6 +11,69 @@ import sys
 from pathlib import Path
 
 import runtime_semantics_diff as fixture_diff
+
+TIER_PROFILES = [
+    {
+        "name": "default",
+        "args": ["--engine-preset=default"],
+        "description": "managed fast preset",
+    },
+    {
+        "name": "bytecode-auto",
+        "args": [
+            "--exec-format=auto",
+            "--superinstructions=off",
+            "--quickening=off",
+            "--inline-caches=off",
+            "--jit=off",
+        ],
+        "description": "dense bytecode with exact rich fallback",
+    },
+    {
+        "name": "superinstructions-auto",
+        "args": [
+            "--exec-format=auto",
+            "--superinstructions=on",
+            "--quickening=off",
+            "--inline-caches=off",
+            "--jit=off",
+        ],
+        "description": "dense bytecode plus superinstructions with exact fallback",
+    },
+    {
+        "name": "quickening-ir",
+        "args": [
+            "--exec-format=ir",
+            "--superinstructions=off",
+            "--quickening=on",
+            "--inline-caches=off",
+            "--jit=off",
+        ],
+        "description": "rich IR with quickening metadata and guarded fast paths",
+    },
+    {
+        "name": "inline-caches-ir",
+        "args": [
+            "--exec-format=ir",
+            "--superinstructions=off",
+            "--quickening=off",
+            "--inline-caches=on",
+            "--jit=off",
+        ],
+        "description": "rich IR with inline caches",
+    },
+    {
+        "name": "jit-noop-ir",
+        "args": [
+            "--exec-format=ir",
+            "--superinstructions=off",
+            "--quickening=off",
+            "--inline-caches=off",
+            "--jit=noop",
+        ],
+        "description": "JIT dispatch plumbing without native code",
+    },
+]
 
 
 def main() -> int:
@@ -43,7 +106,7 @@ def main() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare php-vm baseline profile output with the default managed-fast "
+            "Compare php-vm baseline profile output with every enabled fast-tier "
             "profile for runtime-semantics fixtures."
         )
     )
@@ -102,23 +165,47 @@ def compare_fixture(fixture: fixture_diff.Fixture, rust_vm: Path) -> dict:
             )
         return result(fixture, "known_gap", None, None, None)
 
-    baseline = run_vm(rust_vm, fixture, "baseline")
-    default = run_vm(rust_vm, fixture, "default")
+    baseline = run_vm_profile(rust_vm, fixture, "baseline", ["--engine-preset=baseline"], None)
     if baseline["status"] == "error":
-        return result(fixture, "fail", baseline, default, baseline["message"])
-    if default["status"] == "error":
-        return result(fixture, "fail", baseline, default, default["message"])
+        return result(fixture, "fail", baseline, {}, baseline["message"])
 
-    differences = fixture_diff.normalized_differences(baseline, default)
-    status = "pass" if not differences else "fail"
-    return result(fixture, status, baseline, default, "; ".join(differences) or None)
+    tiers = {}
+    failures = []
+    for profile in TIER_PROFILES:
+        candidate = run_vm_profile(
+            rust_vm,
+            fixture,
+            profile["name"],
+            profile["args"],
+            profile["description"],
+        )
+        tiers[profile["name"]] = candidate
+        if candidate["status"] == "error":
+            failures.append(f"{profile['name']}: {candidate['message']}")
+            continue
+        differences = fixture_diff.normalized_differences(baseline, candidate)
+        if differences:
+            failures.append(f"{profile['name']}: {'; '.join(differences)}")
+
+    status = "pass" if not failures else "fail"
+    return result(fixture, status, baseline, tiers, "; ".join(failures) or None)
 
 
-def run_vm(rust_vm: Path, fixture: fixture_diff.Fixture, profile: str) -> dict:
-    command = [str(rust_vm), "run", f"--engine-preset={profile}", str(fixture.path)]
+def run_vm_profile(
+    rust_vm: Path,
+    fixture: fixture_diff.Fixture,
+    profile: str,
+    profile_args: list[str],
+    description: str | None,
+) -> dict:
+    command = [str(rust_vm), "run", *profile_args, str(fixture.path)]
     if fixture.args:
         command.extend(["--", *fixture.args])
-    return run_process(command, fixture.path)
+    process = run_process(command, fixture.path)
+    process["profile"] = profile
+    process["profile_args"] = profile_args
+    process["description"] = description
+    return process
 
 
 def run_process(command: list[str], fixture_path: Path) -> dict:
@@ -146,9 +233,10 @@ def result(
     fixture: fixture_diff.Fixture,
     status: str,
     baseline: dict | None,
-    default: dict | None,
+    tiers: dict,
     message: str | None,
 ) -> dict:
+    default = tiers.get("default") if isinstance(tiers, dict) else None
     return {
         "file": str(fixture.path),
         "category": fixture.category,
@@ -158,6 +246,7 @@ def result(
         "message": message,
         "baseline": baseline,
         "default": default,
+        "tiers": tiers,
         "metadata": fixture.metadata,
     }
 

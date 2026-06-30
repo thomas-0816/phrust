@@ -1434,7 +1434,13 @@ fn clear_cache_response(state: &AppState, peer: SocketAddr) -> Response<Response
         return response::text(StatusCode::FORBIDDEN, "forbidden\n");
     }
     state.engine.script_cache.clear();
-    state.engine.include_cache.clear();
+    if let Err(error) = state.engine.include_cache.clear() {
+        eprintln!("failed to clear include cache: {error}");
+        return response::text(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "include cache clear failed\n",
+        );
+    }
     response::text(StatusCode::OK, "cache cleared\n")
 }
 

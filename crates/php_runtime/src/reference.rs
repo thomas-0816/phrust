@@ -530,7 +530,23 @@ impl From<Value> for TempValue {
 #[cfg(test)]
 mod tests {
     use super::{Lvalue, LvalueKind, ReferenceCell, Slot, TempValue};
-    use crate::{ArrayKey, PhpArray, Value};
+    use crate::{ArrayKey, ClassEntry, ClassFlags, ObjectRef, PhpArray, Value};
+
+    fn empty_class(name: &str) -> ClassEntry {
+        ClassEntry {
+            name: name.to_owned(),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        }
+    }
 
     #[test]
     fn reference_cell_aliases_updates() {
@@ -628,6 +644,32 @@ mod tests {
         assert_eq!(
             Lvalue::value(&mut value, LvalueKind::ArrayElement).read_value(),
             Value::Int(4)
+        );
+    }
+
+    #[test]
+    fn lvalue_object_property_reference_writes_through_aliases() {
+        let class = empty_class("Box");
+        let object = ObjectRef::new(&class);
+        object.set_property("value", Value::Int(1));
+        let cell = Lvalue::object_property(object.clone(), "value", LvalueKind::ObjectProperty)
+            .ensure_reference_cell()
+            .expect("property reference cell");
+        let mut local = Slot::uninitialized();
+
+        local.bind_reference(cell);
+        local.write(Value::Int(8));
+
+        assert_eq!(
+            object.get_property("value"),
+            Some(Value::Reference(match local {
+                Slot::Reference(ref cell) => cell.clone(),
+                Slot::Value(_) => panic!("expected local reference"),
+            }))
+        );
+        assert_eq!(
+            Lvalue::object_property(object, "value", LvalueKind::ObjectProperty).read_value(),
+            Value::Int(8)
         );
     }
 

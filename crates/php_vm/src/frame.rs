@@ -3,7 +3,8 @@
 use crate::error::VmError;
 use php_ir::IrSpan;
 use php_ir::ids::{FunctionId, LocalId, RegId};
-use php_runtime::{Lvalue, LvalueKind, ReferenceCell, Slot, TempValue, Value};
+use php_runtime::api::RuntimeSourceSpan;
+use php_runtime::{Lvalue, LvalueError, LvalueKind, ReferenceCell, Slot, TempValue, Value};
 
 /// Register storage with checked accessors.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,7 +74,17 @@ impl LocalFile {
         };
         Lvalue::slot(slot, LvalueKind::LocalVariable)
             .write_value(value)
-            .map_err(|error| error.to_string())
+            .map_err(|error| lvalue_error(error, "write"))
+    }
+
+    /// Writes a local and attaches source context to any VM access error.
+    pub fn set_with_span(
+        &mut self,
+        id: LocalId,
+        value: Value,
+        span: RuntimeSourceSpan,
+    ) -> Result<(), VmError> {
+        self.set(id, value).map_err(|error| error.with_span(span))
     }
 
     /// Unsets a local name without writing through a referenced alias cell.
@@ -83,7 +94,12 @@ impl LocalFile {
         };
         Lvalue::slot(slot, LvalueKind::LocalVariable)
             .unset()
-            .map_err(|error| error.to_string())
+            .map_err(|error| lvalue_error(error, "unset"))
+    }
+
+    /// Unsets a local and attaches source context to any VM access error.
+    pub fn unset_with_span(&mut self, id: LocalId, span: RuntimeSourceSpan) -> Result<(), VmError> {
+        self.unset(id).map_err(|error| error.with_span(span))
     }
 
     /// Binds `target` to the same reference cell as `source`.
@@ -99,14 +115,14 @@ impl LocalFile {
         }
         let cell: ReferenceCell = Lvalue::slot(source_slot, LvalueKind::LocalVariable)
             .ensure_reference_cell()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| lvalue_error(error, "bind_reference_source"))?;
         let target_slot = self
             .locals
             .get_mut(target.index())
             .expect("target bounds checked");
         Lvalue::slot(target_slot, LvalueKind::LocalVariable)
             .bind_reference_cell(cell)
-            .map_err(|error| error.to_string())
+            .map_err(|error| lvalue_error(error, "bind_reference_target"))
     }
 
     /// Converts a local to a reference cell and returns that shared cell.
@@ -119,7 +135,7 @@ impl LocalFile {
         }
         Lvalue::slot(slot, LvalueKind::LocalVariable)
             .ensure_reference_cell()
-            .map_err(|error| error.to_string())
+            .map_err(|error| lvalue_error(error, "ensure_reference_cell"))
     }
 
     /// Binds a local to an existing reference cell.
@@ -129,7 +145,7 @@ impl LocalFile {
         };
         Lvalue::slot(slot, LvalueKind::LocalVariable)
             .bind_reference_cell(cell)
-            .map_err(|error| error.to_string())
+            .map_err(|error| lvalue_error(error, "bind_reference_cell"))
     }
 }
 
@@ -195,6 +211,16 @@ impl RegisterFile {
         Ok(())
     }
 
+    /// Writes a register and attaches source context to any VM access error.
+    pub fn set_with_span(
+        &mut self,
+        id: RegId,
+        value: Value,
+        span: RuntimeSourceSpan,
+    ) -> Result<(), VmError> {
+        self.set(id, value).map_err(|error| error.with_span(span))
+    }
+
     /// Clears a dead temporary register without affecting PHP-visible storage.
     pub fn unset(&mut self, id: RegId) -> Result<(), VmError> {
         let Some(slot) = self.registers.get_mut(id.index()) else {
@@ -202,6 +228,11 @@ impl RegisterFile {
         };
         *slot = TempValue::uninitialized();
         Ok(())
+    }
+
+    /// Clears a register and attaches source context to any VM access error.
+    pub fn unset_with_span(&mut self, id: RegId, span: RuntimeSourceSpan) -> Result<(), VmError> {
+        self.unset(id).map_err(|error| error.with_span(span))
     }
 }
 
@@ -213,6 +244,18 @@ fn invalid_local_error(id: LocalId, operation: &'static str) -> VmError {
     )
     .with_context("slot", id.raw())
     .with_context("operation", operation)
+}
+
+fn lvalue_error(error: LvalueError, operation: &'static str) -> VmError {
+    match error {
+        LvalueError::CannotRebindCell { kind } => VmError::internal(
+            "E_PHP_VM_LVALUE_REBIND_CELL",
+            "frame",
+            format!("cannot rebind {} cell storage", kind.as_str()),
+        )
+        .with_context("operation", operation)
+        .with_context("kind", kind.as_str()),
+    }
 }
 
 fn invalid_register_error(id: RegId, operation: &'static str) -> VmError {
@@ -451,5 +494,201 @@ impl CallStack {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CallStack, Frame, FrameActivationContext, FrameTraceArgument};
+    use php_ir::IrSpan;
+    use php_ir::ids::{FileId, FunctionId, LocalId, RegId};
+    use php_runtime::api::RuntimeSourceSpan;
+    use php_runtime::{ClassEntry, ClassFlags, ObjectRef, PhpArray, ReferenceCell, Slot, Value};
+
+    fn empty_class(name: &str) -> ClassEntry {
+        ClassEntry {
+            name: name.to_owned(),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        }
+    }
+
+    fn activation(scope: &str, start: u32) -> FrameActivationContext {
+        FrameActivationContext {
+            scope_class: Some(scope.to_owned()),
+            called_class: Some(format!("{scope}Called")),
+            declaring_class: Some(format!("{scope}Decl")),
+            call_span: Some(IrSpan::new(FileId::new(1), start, start + 1)),
+        }
+    }
+
+    #[test]
+    fn recycled_frames_drop_php_visible_roots_before_pooling() {
+        let mut stack = CallStack::new();
+        let class = empty_class("FrameRoot");
+        let (reference_handle, array_handle, object_handle) = {
+            let object = ObjectRef::new(&class);
+            let object_handle = object.weak_handle();
+            let array = PhpArray::from_packed(vec![Value::Object(object)]);
+            let array_handle = array.weak_handle();
+            let cell = ReferenceCell::new(Value::Array(array));
+            let reference_handle = cell.weak_handle();
+            let mut frame =
+                Frame::new_with_activation_context(FunctionId::new(1), 2, 2, activation("Old", 3));
+            frame.reuse_eligible = true;
+            frame.arguments.push(Value::Reference(cell.clone()));
+            frame.trace_arguments.push(FrameTraceArgument {
+                name: Some("arg".to_owned()),
+                value: Value::Reference(cell.clone()),
+            });
+            frame
+                .registers
+                .set(RegId::new(0), Value::Reference(cell.clone()))
+                .expect("register write");
+            frame
+                .locals
+                .bind_reference_cell(LocalId::new(0), cell)
+                .expect("local reference bind");
+            stack.push(frame);
+            (reference_handle, array_handle, object_handle)
+        };
+
+        assert!(reference_handle.is_alive());
+        assert!(array_handle.is_alive());
+        assert!(object_handle.is_alive());
+
+        assert!(stack.pop_recycle());
+
+        assert!(!reference_handle.is_alive());
+        assert!(!array_handle.is_alive());
+        assert!(!object_handle.is_alive());
+    }
+
+    #[test]
+    fn reusable_frames_reset_metadata_arguments_locals_and_registers() {
+        let mut stack = CallStack::new();
+        let mut frame =
+            Frame::new_with_activation_context(FunctionId::new(1), 2, 2, activation("Old", 10));
+        frame.reuse_eligible = true;
+        frame.arguments.push(Value::Int(1));
+        frame.trace_arguments.push(FrameTraceArgument {
+            name: None,
+            value: Value::Int(2),
+        });
+        frame
+            .registers
+            .set(RegId::new(0), Value::string("old-register"))
+            .expect("register write");
+        frame
+            .locals
+            .set(LocalId::new(0), Value::string("old-local"))
+            .expect("local write");
+        stack.push(frame);
+
+        assert!(stack.pop_recycle());
+        assert!(stack.push_reusable_frame(FunctionId::new(2), 1, 1, activation("New", 20)));
+
+        let frame = stack.current().expect("reused frame");
+        assert_eq!(frame.function, FunctionId::new(2));
+        assert_eq!(frame.scope_class.as_deref(), Some("New"));
+        assert_eq!(frame.called_class.as_deref(), Some("NewCalled"));
+        assert_eq!(frame.declaring_class.as_deref(), Some("NewDecl"));
+        assert_eq!(frame.call_span, Some(IrSpan::new(FileId::new(1), 20, 21)));
+        assert!(frame.arguments.is_empty());
+        assert!(frame.trace_arguments.is_empty());
+        assert_eq!(frame.registers.len(), 1);
+        assert_eq!(
+            frame.registers.get(RegId::new(0)),
+            Some(&Value::Uninitialized)
+        );
+        assert_eq!(frame.locals.iter().len(), 1);
+        assert_eq!(
+            frame.locals.get(LocalId::new(0)),
+            Some(Value::Uninitialized)
+        );
+    }
+
+    #[test]
+    fn non_reusable_frames_never_enter_the_pool() {
+        let mut stack = CallStack::new();
+        stack.push_fresh_frame(FunctionId::new(1), 1, 1, activation("Fresh", 30));
+
+        assert!(!stack.pop_recycle());
+        assert!(!stack.push_reusable_frame(FunctionId::new(2), 1, 1, activation("Next", 40)));
+        assert_eq!(
+            stack.current().expect("new frame").function,
+            FunctionId::new(2)
+        );
+    }
+
+    #[test]
+    fn register_and_local_invalid_access_returns_typed_vm_errors() {
+        let mut frame = Frame::new(FunctionId::new(1), 0, 0);
+
+        let register_error = frame
+            .registers
+            .set(RegId::new(7), Value::Int(1))
+            .expect_err("invalid register");
+        assert_eq!(register_error.code(), "E_PHP_VM_INVALID_REGISTER_SLOT");
+        assert_eq!(
+            register_error
+                .context()
+                .get("operation")
+                .map(String::as_str),
+            Some("write")
+        );
+
+        let local_error = frame
+            .locals
+            .set(LocalId::new(9), Value::Int(1))
+            .expect_err("invalid local");
+        assert_eq!(local_error.code(), "E_PHP_VM_INVALID_LOCAL_SLOT");
+        assert_eq!(
+            local_error.context().get("operation").map(String::as_str),
+            Some("write")
+        );
+
+        assert_eq!(frame.locals.get_slot(LocalId::new(0)), None);
+        assert_eq!(frame.locals.get_slot_mut(LocalId::new(0)), None);
+        assert_eq!(
+            frame
+                .locals
+                .iter()
+                .map(|(_, slot)| slot)
+                .collect::<Vec<&Slot>>(),
+            Vec::<&Slot>::new()
+        );
+    }
+
+    #[test]
+    fn register_and_local_span_helpers_attach_source_context() {
+        let mut frame = Frame::new(FunctionId::new(1), 0, 0);
+        let span = RuntimeSourceSpan {
+            file: Some("fixture.php".to_owned()),
+            start: 12,
+            end: 18,
+        };
+
+        let register_error = frame
+            .registers
+            .unset_with_span(RegId::new(2), span.clone())
+            .expect_err("invalid register");
+        assert_eq!(register_error.code(), "E_PHP_VM_INVALID_REGISTER_SLOT");
+        assert_eq!(register_error.source_span(), Some(&span));
+
+        let local_error = frame
+            .locals
+            .set_with_span(LocalId::new(3), Value::Int(1), span.clone())
+            .expect_err("invalid local");
+        assert_eq!(local_error.code(), "E_PHP_VM_INVALID_LOCAL_SLOT");
+        assert_eq!(local_error.source_span(), Some(&span));
     }
 }

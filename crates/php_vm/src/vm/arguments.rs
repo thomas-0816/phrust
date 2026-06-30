@@ -103,6 +103,7 @@ fn bind_arguments(
     let variadic_index = function.params.iter().position(|param| param.variadic);
     let max = variadic_index.unwrap_or(function.params.len());
     let mut bound: Vec<Option<CallArgument>> = (0..function.params.len()).map(|_| None).collect();
+    let mut highest_frame_param_index: Option<usize> = None;
     let mut variadic_tail = Vec::new();
     let mut positional_index = 0usize;
     let mut saw_named = false;
@@ -149,6 +150,8 @@ fn bind_arguments(
                 .with_context("function", &function.name)
                 .with_context("parameter", name));
             }
+            highest_frame_param_index =
+                Some(highest_frame_param_index.map_or(index, |highest| highest.max(index)));
             bound[index] = Some(CallArgument {
                 name: None,
                 value: arg.value,
@@ -200,6 +203,10 @@ fn bind_arguments(
             .with_context("function", &function.name)
             .with_context("parameter", name));
         }
+        highest_frame_param_index = Some(
+            highest_frame_param_index
+                .map_or(positional_index, |highest| highest.max(positional_index)),
+        );
         bound[positional_index] = Some(CallArgument {
             name: None,
             value: arg.value,
@@ -249,10 +256,17 @@ fn bind_arguments(
     }
 
     let mut prepared = Vec::with_capacity(function.params.len());
+    let mut frame_args = Vec::new();
     let mut trace_args = Vec::new();
     let mut diagnostics = Vec::new();
     for (index, param) in function.params.iter().enumerate() {
         if param.variadic {
+            frame_args.extend(
+                variadic_tail
+                    .iter()
+                    .filter(|arg| arg.key.is_none())
+                    .map(|arg| arg.value.clone()),
+            );
             let sensitive = param_is_sensitive(param);
             trace_args.extend(variadic_tail.iter().map(|arg| FrameTraceArgument {
                 name: arg.key.clone(),
@@ -294,6 +308,9 @@ fn bind_arguments(
                 name: None,
                 value: trace_value_for_param(&arg.value, param_is_sensitive(param)),
             });
+            if highest_frame_param_index.is_some_and(|highest| index <= highest) {
+                frame_args.push(arg.value.clone());
+            }
             prepared.push(PreparedArg {
                 value: arg.value,
                 reference,
@@ -306,11 +323,17 @@ fn bind_arguments(
             });
             if param.by_ref {
                 let reference = ReferenceCell::new(value.clone());
+                if highest_frame_param_index.is_some_and(|highest| index <= highest) {
+                    frame_args.push(value.clone());
+                }
                 prepared.push(PreparedArg {
                     value,
                     reference: Some(reference),
                 });
                 continue;
+            }
+            if highest_frame_param_index.is_some_and(|highest| index <= highest) {
+                frame_args.push(value.clone());
             }
             prepared.push(PreparedArg {
                 value,
@@ -344,9 +367,11 @@ fn bind_arguments(
         name: None,
         value: arg.value.clone(),
     }));
+    frame_args.extend(extra_positional.iter().map(|arg| arg.value.clone()));
     prepared.extend(extra_positional);
     Ok(PreparedArguments {
         args: prepared,
+        frame_args,
         trace_args,
         diagnostics,
     })

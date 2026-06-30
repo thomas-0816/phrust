@@ -30,6 +30,5 @@ pub use input::{
     PhpExecutorOptions, PhpRequestExecutionInput,
 };
 pub use php_optimizer::OptimizationLevel;
-pub use php_vm::api::VmOptions;
-pub use php_vm::include::{IncludeCache, IncludeCacheStats};
+pub use php_vm::api::{IncludeCache, IncludeCacheStats, VmOptions};
 pub use profile::{EngineProfile, EngineProfileName, ParseEngineProfileError};

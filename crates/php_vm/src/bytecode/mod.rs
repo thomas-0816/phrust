@@ -1,8 +1,9 @@
-//! Dense VM bytecode design skeleton.
+//! Dense VM bytecode lowering, verification, and execution metadata.
 //!
 //! This module owns a compact execution-format representation for the VM. It
-//! lowers from verified rich IR, but it does not replace the existing
-//! interpreter path yet.
+//! lowers from verified rich IR, verifies dense invariants, and records
+//! fallback metadata for operations that must execute through the rich
+//! interpreter.
 
 use std::collections::BTreeMap;
 
@@ -693,7 +694,7 @@ impl SuperinstructionSelectionReport {
 }
 
 impl DenseBytecodeUnit {
-    /// Lower a rich IR unit into the dense design skeleton.
+    /// Lower a rich IR unit into the dense bytecode representation.
     pub fn lower_from_ir(unit: &IrUnit) -> Result<Self, DenseLowerError> {
         lower_unit(unit)
     }

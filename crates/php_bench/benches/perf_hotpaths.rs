@@ -4,10 +4,7 @@ use php_lexer::{LexerConfig, lex_all};
 use php_runtime::api::{ArrayKey, PhpArray, PhpString, Value};
 use php_semantics::analyze_source;
 use php_syntax::parse_source_file;
-use php_vm::{
-    api::{CompiledUnit, Vm, VmOptions},
-    experimental::{InlineCacheMode, QuickeningMode},
-};
+use php_vm::api::{CompiledUnit, InlineCacheMode, QuickeningMode, Vm, VmOptions};
 use std::time::Duration;
 
 const FRONTEND_SOURCE: &str = r#"<?php

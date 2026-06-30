@@ -155,10 +155,11 @@ separately from pass/fail fixtures.
 
 `just runtime-semantics-diff` compares PHP-visible exit status, stdout, and
 normalized stderr against the PHP 8.5.7 reference binary. `just
-vm-semantics-oracle` compares the VM baseline engine with the default managed
-fast profile over the same runnable fixture set, so superinstructions,
-quickening, inline caches, dense bytecode selection, and native-tier fallback
-must preserve visible behavior. `just verify-runtime` runs both oracle gates.
+vm-semantics-oracle` compares the VM baseline engine with each fallback-capable
+fast-tier profile over the same runnable fixture set: default managed fast,
+dense bytecode auto fallback, superinstruction auto fallback, quickening, inline
+caches, and noop-JIT dispatch plumbing. Every completed tier must preserve
+visible behavior. `just verify-runtime` runs both oracle gates.
 
 ## Runtime Baseline
 

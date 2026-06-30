@@ -9,19 +9,19 @@ This report ranks engine work from VM counters and existing performance artifact
 | `benchmark_smoke` | `ok` | 16 |  |
 | `framework_smoke` | `ok` | 9 |  |
 | `acceleration_matrix` | `ok` | 127 |  |
-| `counter_json` | `ok` | 501 |  |
+| `counter_json` | `ok` | 346 |  |
 
 ## Ranked Areas
 
 | Rank | Area | Counter events | Class | Top evidence | Next evidence |
 | ---: | --- | ---: | --- | --- | --- |
-| 1 | Optimizer And Runtime Allocation | 1017645 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (162254) | Destructor, reference, COW, output-order, and verifier-bracketed optimizer fixtures. |
-| 2 | Dispatch | 259199 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (27743) | Dense opcode, quickening, and superinstruction A/B fixtures. |
-| 3 | Strings And Output | 59351 | `very_high` | `target/performance/app-flows/runs/template_render_escape/phrust-fast-preset/iter-0.counters.json` via `counter-json` (2077) | Output-buffer callback, object conversion, binary string, and diagnostic-order fixtures. |
-| 4 | Calls And Builtins | 32320 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (6297) | Call-shape, by-reference, named-argument, method visibility, and stdlib diffs. |
-| 5 | Arrays And Foreach | 21642 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (7160) | Packed, mixed, numeric-string key, by-ref foreach, COW, mutation, and order fixtures. |
-| 6 | Properties And Methods | 6487 | `high` | `target/performance/app-flows/runs/model_hydration_json/phrust-fast-preset/iter-0.counters.json` via `counter-json` (1200) | Visibility, typed/readonly properties, magic, hooks, dynamic properties, and override fixtures. |
-| 7 | Native And JIT Candidates | 384 | `medium` | `target/performance/app-flows/runs/dependency_container_resolution/phrust-fast-preset/iter-0.counters.json` via `counter-json` (116) | Feature-gated JIT rows with interpreter fallback, compile-budget, and side-exit reports. |
+| 1 | Optimizer And Runtime Allocation | 910642 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (166858) | Destructor, reference, COW, output-order, and verifier-bracketed optimizer fixtures. |
+| 2 | Dispatch | 223740 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (27763) | Dense opcode, quickening, and superinstruction A/B fixtures. |
+| 3 | Strings And Output | 43205 | `very_high` | `target/performance/app-flows/runs/template_render_escape/phrust-fast-preset/iter-0.counters.json` via `counter-json` (2077) | Output-buffer callback, object conversion, binary string, and diagnostic-order fixtures. |
+| 4 | Calls And Builtins | 31715 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (6297) | Call-shape, by-reference, named-argument, method visibility, and stdlib diffs. |
+| 5 | Arrays And Foreach | 19219 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-fast-preset/iter-0.counters.json` via `counter-json` (7068) | Packed, mixed, numeric-string key, by-ref foreach, COW, mutation, and order fixtures. |
+| 6 | Properties And Methods | 4880 | `high` | `target/performance/app-flows/runs/model_hydration_json/phrust-fast-preset/iter-0.counters.json` via `counter-json` (1200) | Visibility, typed/readonly properties, magic, hooks, dynamic properties, and override fixtures. |
+| 7 | Native And JIT Candidates | 407 | `medium` | `target/performance/app-flows/runs/dependency_container_resolution/phrust-fast-preset/iter-0.counters.json` via `counter-json` (116) | Feature-gated JIT rows with interpreter fallback, compile-budget, and side-exit reports. |
 | 8 | Include And Autoload | 137 | `medium` | `target/performance/inline-cache-smoke/inline_cache-include-path-cache.on.counters.json` via `counter-json` (15) | Include/require warning order, stream-wrapper rejection, generated autoload, and invalidation fixtures. |
 
 ## Optional Profilers

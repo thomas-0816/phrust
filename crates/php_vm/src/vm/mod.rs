@@ -28,6 +28,7 @@ use crate::counters::JitCompileDescriptor;
 use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
 #[cfg(feature = "jit-cranelift")]
 use crate::deopt::GuardKind;
+use crate::error::VmError;
 use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument};
 use crate::include::{IncludeCacheStats, LoadedInclude, include_path_file_fingerprint};
 use crate::inline_cache::{
@@ -410,6 +411,7 @@ struct PreparedArg {
 
 struct PreparedArguments {
     args: Vec<PreparedArg>,
+    frame_args: Vec<Value>,
     trace_args: Vec<FrameTraceArgument>,
     diagnostics: Vec<RuntimeDiagnostic>,
 }
@@ -4337,6 +4339,7 @@ impl Vm {
         &self,
         name: &str,
         values: Vec<Value>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -4371,7 +4374,9 @@ impl Vm {
             Ok(values) => values,
             Err(result) => return result,
         };
-        let values = match validate_internal_builtin_args(name, values, compiled, output, state) {
+        let values = match validate_internal_builtin_args(
+            name, values, compiled, call_span, output, state,
+        ) {
             Ok(values) => values,
             Err(result) => return result,
         };
@@ -4381,7 +4386,7 @@ impl Vm {
             output,
             &self.options.runtime_context,
             state,
-            builtin_source_span(compiled),
+            builtin_source_span(compiled, call_span),
         )
     }
 
@@ -6207,6 +6212,7 @@ impl Vm {
             dense_function.local_count,
         );
         let args = prepared.args;
+        let frame_args = prepared.frame_args;
         let trace_args = prepared.trace_args;
         for diagnostic in prepared.diagnostics {
             let handled = match self.dispatch_error_handler(
@@ -6236,7 +6242,7 @@ impl Vm {
         }
         {
             let frame = stack.current_mut().expect("bytecode frame was pushed");
-            frame.arguments = args.iter().map(|arg| arg.value.clone()).collect();
+            frame.arguments = frame_args;
             frame.trace_arguments = trace_args;
         }
         if let Err(message) = initialize_captures(ir_function, call.captures, stack) {
@@ -9621,6 +9627,7 @@ impl Vm {
                 self.record_counter_generic_frame_fallback(reason);
             }
             let args = prepared.args;
+            let frame_args = prepared.frame_args;
             let trace_args = prepared.trace_args;
             for diagnostic in prepared.diagnostics {
                 let handled = match self.dispatch_error_handler(
@@ -9724,7 +9731,7 @@ impl Vm {
                         self.record_counter_arg_array_avoided();
                     }
                 } else {
-                    frame.arguments = args.iter().map(|arg| arg.value.clone()).collect();
+                    frame.arguments = frame_args;
                     frame.trace_arguments = trace_args;
                 }
             }
@@ -20873,6 +20880,7 @@ impl Vm {
                 self.execute_internal_registry_builtin(
                     &name,
                     values,
+                    call_span,
                     output,
                     stack,
                     state,
@@ -22564,7 +22572,7 @@ impl Vm {
                     &entries,
                     output,
                     state,
-                    builtin_source_span(compiled),
+                    builtin_source_span(compiled, None),
                 )?)
             } else {
                 None
@@ -22694,7 +22702,7 @@ impl Vm {
                 right_sort,
                 output,
                 state,
-                builtin_source_span(compiled),
+                builtin_source_span(compiled, None),
             );
         }
         if matches!(flags & !SORT_FLAG_CASE, SORT_STRING | SORT_LOCALE_STRING) {
@@ -23161,6 +23169,7 @@ impl Vm {
             return self.execute_internal_registry_builtin(
                 &normalized,
                 values,
+                call_span,
                 output,
                 stack,
                 state,
@@ -23318,7 +23327,7 @@ impl Vm {
                             return result;
                         }
                         self.execute_internal_registry_builtin(
-                            &name, values, output, stack, state, compiled,
+                            &name, values, call_span, output, stack, state, compiled,
                         )
                     }
                 }
@@ -26987,7 +26996,10 @@ impl Vm {
                     compiled,
                     instruction_span,
                     kind,
-                    "E_PHP_VM_INCLUDE_DISABLED: include/require loader is not configured",
+                    include_vm_error(
+                        "E_PHP_VM_INCLUDE_DISABLED",
+                        "include/require loader is not configured",
+                    ),
                     state,
                     stack_trace(compiled, stack),
                 );
@@ -27064,11 +27076,15 @@ impl Vm {
                         compiled,
                         instruction_span,
                         kind,
-                        format!(
-                            "E_PHP_VM_INCLUDE_CYCLE: recursive include {} stack=[{}]",
-                            resolved.canonical_path.display(),
-                            format_include_stack(&state.include_stack),
-                        ),
+                        include_vm_error(
+                            "E_PHP_VM_INCLUDE_CYCLE",
+                            format!(
+                                "recursive include {} stack=[{}]",
+                                resolved.canonical_path.display(),
+                                format_include_stack(&state.include_stack),
+                            ),
+                        )
+                        .with_context("canonical_path", resolved.canonical_path.display()),
                         state,
                         stack_trace(compiled, stack),
                     );
@@ -27295,11 +27311,15 @@ impl Vm {
                 compiled,
                 instruction_span,
                 kind,
-                format!(
-                    "E_PHP_VM_INCLUDE_CYCLE: recursive include {} stack=[{}]",
-                    loaded.canonical_path.display(),
-                    format_include_stack(&state.include_stack),
-                ),
+                include_vm_error(
+                    "E_PHP_VM_INCLUDE_CYCLE",
+                    format!(
+                        "recursive include {} stack=[{}]",
+                        loaded.canonical_path.display(),
+                        format_include_stack(&state.include_stack),
+                    ),
+                )
+                .with_context("canonical_path", loaded.canonical_path.display()),
                 state,
                 stack_trace(compiled, stack),
             );
@@ -34620,8 +34640,8 @@ fn protected_scope_is_related_in_state(
     )
 }
 
-/// Renders the calling scope for access-violation messages: PHP says "global
-/// scope" outside a class and "scope <Class>" inside one.
+/// Renders the calling scope for access-violation messages: PHP says
+/// `"global scope"` outside a class and `"scope Class"` inside one.
 fn scope_description(scope: Option<&str>) -> String {
     match scope {
         Some(scope) => format!("scope {scope}"),
@@ -42877,13 +42897,19 @@ fn load_phar_include(
     uri: &str,
     cwd: &Path,
     filesystem: &php_runtime::FilesystemCapabilities,
-) -> Result<LoadedInclude, String> {
-    let parsed = php_runtime::phar::parse_uri(uri, cwd, filesystem)
-        .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
-    let bytes = php_runtime::phar::read_entry(&parsed.archive_path, &parsed.entry_path)
-        .map_err(|error| format!("{}: {}", error.diagnostic_id(), error.message()))?;
+) -> Result<LoadedInclude, VmError> {
+    let parsed = php_runtime::phar::parse_uri(uri, cwd, filesystem).map_err(|error| {
+        include_vm_error(error.diagnostic_id(), error.message()).with_context("path", uri)
+    })?;
+    let bytes = php_runtime::phar::read_entry(&parsed.archive_path, &parsed.entry_path).map_err(
+        |error| include_vm_error(error.diagnostic_id(), error.message()).with_context("path", uri),
+    )?;
     let source = String::from_utf8(bytes).map_err(|_| {
-        format!("E_PHP_VM_INCLUDE_READ: {uri}: PHAR entry is not valid UTF-8 PHP source")
+        include_vm_error(
+            "E_PHP_VM_INCLUDE_READ",
+            format!("{uri}: PHAR entry is not valid UTF-8 PHP source"),
+        )
+        .with_context("path", uri)
     })?;
     Ok(LoadedInclude {
         canonical_path: parsed.synthetic_path,
@@ -42894,13 +42920,18 @@ fn load_phar_include(
 fn compile_loaded_include(
     loaded: LoadedInclude,
     optimization_level: php_optimizer::OptimizationLevel,
-) -> Result<CompiledUnit, String> {
+) -> Result<CompiledUnit, VmError> {
     let frontend = php_semantics::analyze_source(&loaded.source);
     if frontend.has_errors() {
-        return Err(format!(
-            "E_PHP_VM_INCLUDE_COMPILE_ERROR: {} failed frontend analysis",
-            loaded.canonical_path.display()
-        ));
+        return Err(include_vm_error(
+            "E_PHP_VM_INCLUDE_COMPILE_ERROR",
+            format!(
+                "{} failed frontend analysis",
+                loaded.canonical_path.display()
+            ),
+        )
+        .with_context("path", loaded.canonical_path.display())
+        .with_context("stage", "frontend"));
     }
     let mut lowering = php_ir::lower_frontend_result(
         &frontend,
@@ -42911,10 +42942,12 @@ fn compile_loaded_include(
         },
     );
     if !lowering.diagnostics.is_empty() || lowering.verification.is_err() {
-        return Err(format!(
-            "E_PHP_VM_INCLUDE_COMPILE_ERROR: {} failed IR lowering",
-            loaded.canonical_path.display()
-        ));
+        return Err(include_vm_error(
+            "E_PHP_VM_INCLUDE_COMPILE_ERROR",
+            format!("{} failed IR lowering", loaded.canonical_path.display()),
+        )
+        .with_context("path", loaded.canonical_path.display())
+        .with_context("stage", "ir_lowering"));
     }
     if optimization_level.runs_pipeline() {
         php_optimizer::PassPipeline::performance()
@@ -42923,13 +42956,22 @@ fn compile_loaded_include(
                 &php_optimizer::PassContext::new(optimization_level),
             )
             .map_err(|error| {
-                format!(
-                    "E_PHP_VM_INCLUDE_COMPILE_ERROR: {} optimizer failed: {error}",
-                    loaded.canonical_path.display()
+                include_vm_error(
+                    "E_PHP_VM_INCLUDE_COMPILE_ERROR",
+                    format!(
+                        "{} optimizer failed: {error}",
+                        loaded.canonical_path.display()
+                    ),
                 )
+                .with_context("path", loaded.canonical_path.display())
+                .with_context("stage", "optimizer")
             })?;
     }
     Ok(CompiledUnit::new(lowering.unit))
+}
+
+fn include_vm_error(code: &'static str, message: impl Into<String>) -> VmError {
+    VmError::fatal(code, "include", message)
 }
 
 fn include_failure_id(message: &str) -> &str {
@@ -46909,11 +46951,17 @@ fn unknown_builtin_result(name: &str, output: &OutputBuffer) -> VmResult {
     )
 }
 
-fn builtin_source_span(compiled: &CompiledUnit) -> RuntimeSourceSpan {
-    RuntimeSourceSpan {
-        file: compiled.unit().files.first().map(|file| file.path.clone()),
-        start: 0,
-        end: 0,
+fn builtin_source_span(
+    compiled: &CompiledUnit,
+    call_span: Option<php_ir::IrSpan>,
+) -> RuntimeSourceSpan {
+    match call_span {
+        Some(span) => runtime_source_span(compiled, span),
+        None => RuntimeSourceSpan {
+            file: compiled.unit().files.first().map(|file| file.path.clone()),
+            start: 0,
+            end: 0,
+        },
     }
 }
 
@@ -46921,6 +46969,7 @@ fn validate_internal_builtin_args(
     name: &str,
     values: Vec<Value>,
     compiled: &CompiledUnit,
+    call_span: Option<php_ir::IrSpan>,
     output: &mut OutputBuffer,
     state: &ExecutionState,
 ) -> Result<Vec<Value>, VmResult> {
@@ -46941,7 +46990,7 @@ fn validate_internal_builtin_args(
     } else {
         php_std::arginfo::CoercionMode::Weak
     };
-    let span = builtin_source_span(compiled);
+    let span = builtin_source_span(compiled, call_span);
     match php_std::arginfo::ArgumentValidator::new(mode).validate(&info, &values, span) {
         Ok(validated) => {
             for diagnostic in validated.diagnostics() {
@@ -48850,7 +48899,7 @@ fn array_callback_type_error(
         "E_PHP_RUNTIME_BUILTIN_TYPE",
         RuntimeSeverity::FatalError,
         message.clone(),
-        builtin_source_span(compiled),
+        builtin_source_span(compiled, None),
         stack_trace(compiled, stack),
         Some(php_runtime::PhpReferenceClassification::TypeError),
     );
@@ -49032,7 +49081,7 @@ fn emit_sort_bool_compare_deprecation(
         format!(
             "{name}(): Returning bool from comparison function is deprecated, return an integer less than, equal to, or greater than zero"
         ),
-        builtin_source_span(compiled),
+        builtin_source_span(compiled, None),
         stack_trace(compiled, stack),
         None,
     );
@@ -53368,6 +53417,101 @@ good"
         let stats = cache.cache_stats();
         assert_eq!(stats.compile_misses, 1, "{stats:?}");
         assert!(stats.compile_hits >= 1, "{stats:?}");
+    }
+
+    #[test]
+    fn include_cache_keeps_globals_and_declarations_request_local() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-include-cache-request-state-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::write(
+            root.join("lib.php"),
+            "<?php
+            $prompt07Marker = ($prompt07Marker ?? 0) + 1;
+            echo 'include=', $prompt07Marker, '|';
+            function prompt07_cached_value() { return 7; }
+            ",
+        )
+        .expect("request-state include should be written");
+        let cache = Arc::new(IncludeCache::new(1));
+        let options = || VmOptions {
+            include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+            include_cache: Some(Arc::clone(&cache)),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        };
+        let first = execute_source_with_options_and_path(
+            "<?php include 'lib.php'; echo 'value=', prompt07_cached_value(), '|first';",
+            options(),
+            root.join("first.php").to_string_lossy().into_owned(),
+        );
+        let second = execute_source_with_options_and_path(
+            "<?php include 'lib.php'; echo 'value=', prompt07_cached_value(), '|second';",
+            options(),
+            root.join("second.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(first.status.is_success(), "{:?}", first.status);
+        assert!(second.status.is_success(), "{:?}", second.status);
+        assert_eq!(first.output.as_bytes(), b"include=1|value=7|first");
+        assert_eq!(second.output.as_bytes(), b"include=1|value=7|second");
+        let stats = cache.cache_stats();
+        assert_eq!(stats.compile_misses, 1, "{stats:?}");
+        assert!(stats.compile_hits >= 1, "{stats:?}");
+    }
+
+    #[test]
+    fn include_cache_invalidates_dynamic_declaration_strict_types_after_file_edit() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-include-cache-strict-edit-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        let include = root.join("lib.php");
+        std::fs::write(
+            &include,
+            "<?php function prompt07_rewritten_takes_int(int $value): void { echo 'weak=', $value; } prompt07_rewritten_takes_int('42');\n",
+        )
+        .expect("weak include should be written");
+        let cache = Arc::new(IncludeCache::new(1));
+        let options = || VmOptions {
+            include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+            include_cache: Some(Arc::clone(&cache)),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        };
+        let source = "<?php include 'lib.php';";
+        let weak = execute_source_with_options_and_path(
+            source,
+            options(),
+            root.join("weak.php").to_string_lossy().into_owned(),
+        );
+        std::fs::write(
+            &include,
+            "<?php declare(strict_types=1); function prompt07_rewritten_takes_int(int $value): void { echo 'strict=', $value; } prompt07_rewritten_takes_int('42'); echo 'unreachable';\n",
+        )
+        .expect("strict include should be written");
+        let strict = execute_source_with_options_and_path(
+            source,
+            options(),
+            root.join("strict.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(weak.status.is_success(), "{:?}", weak.status);
+        assert_eq!(weak.output.as_bytes(), b"weak=42");
+        assert_eq!(strict.status.exit_status(), ExitStatus::RuntimeError);
+        assert!(
+            strict.output.to_string_lossy().contains("TypeError"),
+            "{}",
+            strict.output.to_string_lossy()
+        );
+        let stats = cache.cache_stats();
+        assert_eq!(stats.compile_misses, 2, "{stats:?}");
+        assert!(stats.stale_invalidations >= 1, "{stats:?}");
     }
 
     #[test]

@@ -14,7 +14,7 @@ block, so patterns never cross branch or return boundaries.
 | --- | ---: |
 | Fixtures | 10 |
 | Dense blocks | 39 |
-| Dense instructions | 228 |
+| Dense instructions | 231 |
 
 ## Top Adjacent Pairs
 

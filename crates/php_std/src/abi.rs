@@ -1,7 +1,8 @@
 //! Safe Rust ABI used by the VM to call standard-library standard-library builtins.
 
 use php_runtime::{
-    OutputBuffer, ReferenceCell, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
+    OutputBuffer, ProcessCapability, ReferenceCell, RuntimeContext, RuntimeDiagnostic,
+    RuntimeRequestMode, RuntimeSeverity, RuntimeSourceSpan, Value,
 };
 
 /// Result returned by a standard-library builtin.
@@ -162,6 +163,20 @@ impl RequestContext {
         }
     }
 
+    /// Creates a request context from the VM runtime request state.
+    #[must_use]
+    pub fn from_runtime(runtime: &RuntimeContext, file: Option<String>) -> Self {
+        Self {
+            sapi: match &runtime.request_mode {
+                RuntimeRequestMode::Cli => "cli",
+                RuntimeRequestMode::Http(_) => "http",
+            },
+            cwd: runtime.cwd.to_string_lossy().into_owned(),
+            file,
+            capabilities: CapabilitySet::from_runtime(runtime),
+        }
+    }
+
     /// SAPI name exposed to builtins.
     #[must_use]
     pub const fn sapi(&self) -> &'static str {
@@ -198,6 +213,18 @@ pub struct CapabilitySet {
     pub host_writes: bool,
 }
 
+impl CapabilitySet {
+    /// Creates ABI capability metadata from the deterministic runtime context.
+    #[must_use]
+    pub fn from_runtime(runtime: &RuntimeContext) -> Self {
+        Self {
+            process: !matches!(runtime.process, ProcessCapability::Disabled),
+            network: false,
+            host_writes: runtime.filesystem.first_allowed_root().is_some(),
+        }
+    }
+}
+
 /// Mutable call context provided by the VM.
 pub struct CallContext<'a> {
     function_name: &'static str,
@@ -205,6 +232,7 @@ pub struct CallContext<'a> {
     source_span: RuntimeSourceSpan,
     output: &'a mut OutputBuffer,
     request: &'a RequestContext,
+    diagnostics: Vec<RuntimeDiagnostic>,
 }
 
 impl<'a> CallContext<'a> {
@@ -222,6 +250,7 @@ impl<'a> CallContext<'a> {
             source_span,
             output,
             request,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -252,6 +281,30 @@ impl<'a> CallContext<'a> {
     #[must_use]
     pub const fn request(&self) -> &RequestContext {
         self.request
+    }
+
+    /// Non-fatal diagnostics emitted by the builtin.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[RuntimeDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Drains non-fatal diagnostics for VM result conversion.
+    #[must_use]
+    pub fn take_diagnostics(&mut self) -> Vec<RuntimeDiagnostic> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Emits a warning diagnostic using the call source span.
+    pub fn warning(&mut self, id: &'static str, message: impl Into<String>) {
+        self.diagnostics.push(RuntimeDiagnostic::new(
+            id,
+            RuntimeSeverity::Warning,
+            message.into(),
+            self.source_span.clone(),
+            Vec::new(),
+            None,
+        ));
     }
 
     /// Creates a fatal diagnostic using the call source span.

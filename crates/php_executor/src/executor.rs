@@ -139,9 +139,8 @@ mod tests {
     use crate::{PhpExecutionStatus, PhpExecutorOptions};
     use php_optimizer::OptimizationLevel;
     use php_runtime::api::RuntimeContext;
-    use php_vm::{
-        api::{ExecutionFormat, JitMode, SuperinstructionMode},
-        experimental::{InlineCacheMode, QuickeningMode},
+    use php_vm::api::{
+        ExecutionFormat, InlineCacheMode, JitMode, QuickeningMode, SuperinstructionMode,
     };
 
     #[test]

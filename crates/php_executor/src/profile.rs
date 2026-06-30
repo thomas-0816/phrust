@@ -1,7 +1,7 @@
 use php_optimizer::OptimizationLevel;
-use php_vm::{
-    api::{BytecodeLayoutMode, ExecutionFormat, JitBlacklistMode, JitMode, SuperinstructionMode},
-    experimental::{InlineCacheMode, QuickeningMode, TieringOptions},
+use php_vm::api::{
+    BytecodeLayoutMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode, JitMode,
+    QuickeningMode, SuperinstructionMode, TieringOptions,
 };
 use std::{fmt, str::FromStr};
 
@@ -171,9 +171,9 @@ impl PhpExecutorOptions {
 mod tests {
     use super::*;
     use php_vm::api::{
-        BytecodeLayoutMode, ExecutionFormat, JitBlacklistMode, JitMode, SuperinstructionMode,
+        BytecodeLayoutMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode, JitMode,
+        QuickeningMode, SuperinstructionMode,
     };
-    use php_vm::experimental::{InlineCacheMode, QuickeningMode};
 
     #[test]
     fn parses_canonical_profiles_and_fast_alias() {

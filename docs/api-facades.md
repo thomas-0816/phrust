@@ -30,7 +30,8 @@ alias. New imports should not use the root when a facade path exists.
 Use `php_vm::api` for stable execution-facing types:
 
 - `Vm`, `VmOptions`, `VmResult`;
-- execution option enums used by `VmOptions`;
+- execution option enums, counters, and result metadata exposed through
+  `VmOptions` and `VmResult`;
 - `CompiledUnit` and include-loader types needed by the executor and cache
   integration.
 
@@ -43,3 +44,23 @@ Use `php_vm::experimental` for performance and VM-internal instrumentation:
 The root re-exports remain for compatibility with older local code. Prompted
 refactors should migrate public boundary crates to the facades before reducing
 root exports.
+
+VM implementation ownership is split by behavior, not by prompt history:
+
+| Behavior | Owner |
+| --- | --- |
+| Stable compile/execute API | `php_vm::api` |
+| Optimization and instrumentation experiments | `php_vm::experimental` |
+| VM options and result construction | `crates/php_vm/src/vm/options.rs`, `crates/php_vm/src/vm/result.rs` |
+| Dispatch loop, control flow, exceptions, and finally unwinding | `crates/php_vm/src/vm/mod.rs` |
+| Calls and argument binding | `crates/php_vm/src/vm/arguments.rs` |
+| Object and method fast dispatch | `crates/php_vm/src/vm/dense_method_dispatch.rs` |
+| Include, require, eval, and autoload cache boundaries | `crates/php_vm/src/include.rs` plus the VM include/eval call sites |
+| Generators and fibers | `crates/php_vm/src/vm/generator_fiber.rs` |
+| Tracing, counters, tiering, quickening, and inline caches | `crates/php_vm/src/counters.rs`, `tiering.rs`, `quickening.rs`, and `inline_cache.rs` |
+| Dense bytecode lowering and fallback metadata | `crates/php_vm/src/bytecode/mod.rs` |
+
+New public execution features should first decide whether they belong in the
+stable `api` facade or the `experimental` facade. VM implementation changes
+should stay inside the owning module above, and broad root imports should not be
+introduced in downstream crates when a facade path exists.

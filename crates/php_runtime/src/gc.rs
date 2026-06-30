@@ -687,4 +687,31 @@ mod tests {
         );
         assert!(!weak.is_alive());
     }
+
+    #[test]
+    fn gc_keeps_rooted_reference_array_cycle_test_hook() {
+        let cell = ReferenceCell::new(Value::Null);
+        let mut array = PhpArray::new();
+        array.append(Value::Reference(cell.clone()));
+        cell.set(Value::Array(array));
+        let weak = cell.weak_handle();
+        let reference_id = GcEntityId::new(GcEntityKind::Reference, cell.gc_debug_id() as u64);
+
+        let mut heap = GcTrackedHeap::new();
+        heap.track_value(&Value::Reference(cell.clone()));
+        let result = heap.collect_cycles([GcRoot::value(
+            GcRootKind::FrameLocal,
+            "frame0.local0",
+            Value::Reference(cell.clone()),
+        )]);
+
+        assert!(
+            !result
+                .collected
+                .iter()
+                .any(|entity| entity.id == reference_id)
+        );
+        assert!(weak.is_alive());
+        assert!(matches!(cell.get(), Value::Array(_)));
+    }
 }

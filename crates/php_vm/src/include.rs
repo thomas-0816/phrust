@@ -85,7 +85,7 @@ impl IncludeCache {
         {
             let mut shard = self.resolution_shards[shard_index]
                 .lock()
-                .expect("include resolution cache shard mutex poisoned");
+                .map_err(|_| include_cache_lock_error("resolution", "lookup"))?;
             if let Some(resolved) = shard.get(&key).cloned() {
                 match include_path_file_fingerprint(&resolved.canonical_path) {
                     Ok(current) if current == resolved.fingerprint => {
@@ -105,7 +105,7 @@ impl IncludeCache {
         let resolved = loader.resolve_with_include_path(including_file, path, include_path, cwd)?;
         let mut shard = self.resolution_shards[shard_index]
             .lock()
-            .expect("include resolution cache shard mutex poisoned");
+            .map_err(|_| include_cache_lock_error("resolution", "insert"))?;
         shard.entry(key).or_insert_with(|| resolved.clone());
         Ok(resolved)
     }
@@ -123,7 +123,7 @@ impl IncludeCache {
             {
                 let mut shard = self.compile_shards[shard_index]
                     .lock()
-                    .expect("compiled include cache shard mutex poisoned");
+                    .map_err(|_| include_cache_lock_error("compiled", "lookup"))?;
                 let stale = remove_stale_compiled_include_entries(&mut shard, &key);
                 if stale > 0 {
                     self.stats
@@ -136,15 +136,15 @@ impl IncludeCache {
                 }
             }
 
-            let Some(_permit) = self.try_begin_compile(&resolved.canonical_path) else {
-                self.wait_for_compile(&resolved.canonical_path);
+            let Some(_permit) = self.try_begin_compile(&resolved.canonical_path)? else {
+                self.wait_for_compile(&resolved.canonical_path)?;
                 continue;
             };
 
             {
                 let shard = self.compile_shards[shard_index]
                     .lock()
-                    .expect("compiled include cache shard mutex poisoned");
+                    .map_err(|_| include_cache_lock_error("compiled", "lookup-after-wait"))?;
                 if let Some(compiled) = shard.get(&key) {
                     self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
                     return Ok(Arc::clone(compiled));
@@ -157,7 +157,7 @@ impl IncludeCache {
                     let compiled = Arc::new(compiled);
                     let mut shard = self.compile_shards[shard_index]
                         .lock()
-                        .expect("compiled include cache shard mutex poisoned");
+                        .map_err(|_| include_cache_lock_error("compiled", "insert"))?;
                     Ok(Arc::clone(shard.entry(key).or_insert(compiled)))
                 }
                 Err(message) => {
@@ -170,19 +170,20 @@ impl IncludeCache {
     }
 
     /// Clears cached include resolutions and compiled include units.
-    pub fn clear(&self) {
+    pub fn clear(&self) -> Result<(), VmError> {
         for shard in &self.resolution_shards {
             shard
                 .lock()
-                .expect("include resolution cache shard mutex poisoned")
+                .map_err(|_| include_cache_lock_error("resolution", "clear"))?
                 .clear();
         }
         for shard in &self.compile_shards {
             shard
                 .lock()
-                .expect("compiled include cache shard mutex poisoned")
+                .map_err(|_| include_cache_lock_error("compiled", "clear"))?
                 .clear();
         }
+        Ok(())
     }
 
     /// Returns current cache counters.
@@ -216,33 +217,34 @@ impl IncludeCache {
         (hasher.finish() as usize) % self.compile_locks.len()
     }
 
-    fn try_begin_compile(&self, path: &Path) -> Option<IncludeCompilePermit<'_>> {
+    fn try_begin_compile(&self, path: &Path) -> Result<Option<IncludeCompilePermit<'_>>, VmError> {
         let shard = &self.compile_locks[self.compile_lock_shard_index(path)];
         let mut in_progress = shard
             .in_progress
             .lock()
-            .expect("include compile lock shard mutex poisoned");
+            .map_err(|_| include_cache_lock_error("compile-lock", "begin"))?;
         if !in_progress.insert(path.to_path_buf()) {
-            return None;
+            return Ok(None);
         }
-        Some(IncludeCompilePermit {
+        Ok(Some(IncludeCompilePermit {
             shard,
             path: path.to_path_buf(),
-        })
+        }))
     }
 
-    fn wait_for_compile(&self, path: &Path) {
+    fn wait_for_compile(&self, path: &Path) -> Result<(), VmError> {
         let shard = &self.compile_locks[self.compile_lock_shard_index(path)];
         let mut in_progress = shard
             .in_progress
             .lock()
-            .expect("include compile lock shard mutex poisoned");
+            .map_err(|_| include_cache_lock_error("compile-lock", "wait"))?;
         while in_progress.contains(path) {
             in_progress = shard
                 .condvar
                 .wait(in_progress)
-                .expect("include compile lock shard mutex poisoned");
+                .map_err(|_| include_cache_lock_error("compile-lock", "wait"))?;
         }
+        Ok(())
     }
 }
 
@@ -286,12 +288,9 @@ struct IncludeCompilePermit<'a> {
 
 impl Drop for IncludeCompilePermit<'_> {
     fn drop(&mut self) {
-        let mut in_progress = self
-            .shard
-            .in_progress
-            .lock()
-            .expect("include compile lock shard mutex poisoned");
-        in_progress.remove(&self.path);
+        if let Ok(mut in_progress) = self.shard.in_progress.lock() {
+            in_progress.remove(&self.path);
+        }
         self.shard.condvar.notify_all();
     }
 }
@@ -599,6 +598,16 @@ fn include_error(code: &'static str, message: impl Into<String>) -> VmError {
     VmError::fatal(code, "include", message)
 }
 
+fn include_cache_lock_error(cache: &'static str, operation: &'static str) -> VmError {
+    VmError::internal(
+        "E_PHP_VM_INCLUDE_CACHE_POISONED",
+        "include",
+        format!("{cache} include cache lock poisoned during {operation}"),
+    )
+    .with_context("cache", cache)
+    .with_context("operation", operation)
+}
+
 pub fn include_path_file_fingerprint(path: &Path) -> Result<IncludePathFileFingerprint, VmError> {
     let metadata = fs::metadata(path).map_err(|error| {
         include_error(
@@ -873,6 +882,94 @@ mod tests {
     }
 
     #[test]
+    fn include_loader_resolution_order_and_allowed_roots_are_explicit() {
+        let fixture = IncludeCacheFixture::new("resolution-order");
+        fs::create_dir_all(fixture.root.join("caller")).expect("caller dir");
+        fs::create_dir_all(fixture.root.join("lib")).expect("lib dir");
+        fs::create_dir_all(fixture.root.join("cwd")).expect("cwd dir");
+        fs::write(
+            fixture.root.join("caller/shared.php"),
+            "<?php echo 'caller';\n",
+        )
+        .expect("caller include");
+        fs::write(
+            fixture.root.join("lib/shared.php"),
+            "<?php echo 'include-path';\n",
+        )
+        .expect("include-path include");
+        fs::write(fixture.root.join("cwd/cwd-only.php"), "<?php echo 'cwd';\n")
+            .expect("cwd include");
+        fixture.write("absolute.php", "<?php echo 'absolute';\n");
+        let outside = std::env::temp_dir().join(format!(
+            "phrust-include-outside-{}-{}.php",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::write(&outside, "<?php echo 'outside';\n").expect("outside include");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let including_file = fixture.root.join("caller/index.php");
+        let cwd = fixture.root.join("cwd");
+
+        let include_path_first = loader
+            .resolve_with_include_path(
+                Some(&including_file),
+                "shared.php",
+                &[fixture.root.join("lib")],
+                Some(&cwd),
+            )
+            .expect("include_path resolution");
+        let including_file_dir = loader
+            .resolve_with_include_path(
+                Some(&including_file),
+                "shared.php",
+                &[PathBuf::from(".")],
+                Some(&cwd),
+            )
+            .expect("including-file resolution");
+        let cwd_fallback = loader
+            .resolve_with_include_path(Some(&including_file), "cwd-only.php", &[], Some(&cwd))
+            .expect("cwd fallback resolution");
+        let absolute = loader
+            .resolve_with_include_path(
+                Some(&including_file),
+                &fixture.root.join("absolute.php").to_string_lossy(),
+                &[],
+                Some(&cwd),
+            )
+            .expect("absolute resolution");
+        let outside_root = loader
+            .resolve_with_include_path(
+                Some(&including_file),
+                &outside.to_string_lossy(),
+                &[],
+                Some(&cwd),
+            )
+            .expect_err("outside root rejected");
+        let _ = fs::remove_file(&outside);
+
+        assert_eq!(
+            include_path_first.canonical_path,
+            fs::canonicalize(fixture.root.join("lib/shared.php")).expect("canonical lib")
+        );
+        assert_eq!(
+            including_file_dir.canonical_path,
+            fs::canonicalize(fixture.root.join("caller/shared.php")).expect("canonical caller")
+        );
+        assert_eq!(
+            cwd_fallback.canonical_path,
+            fs::canonicalize(fixture.root.join("cwd/cwd-only.php")).expect("canonical cwd")
+        );
+        assert_eq!(
+            absolute.canonical_path,
+            fs::canonicalize(fixture.root.join("absolute.php")).expect("canonical absolute")
+        );
+        assert_eq!(outside_root.code(), "E_PHP_VM_INCLUDE_OUTSIDE_ROOT");
+    }
+
+    #[test]
     fn include_loader_reads_phar_entries_under_allowed_roots() {
         let fixture = IncludeCacheFixture::new("phar");
         let archive = fixture.root.join("fixture.phar");
@@ -897,6 +994,69 @@ mod tests {
         assert_eq!(
             loaded.source,
             "<?php echo 'from-phar|';\nreturn 'include-ok';\n"
+        );
+    }
+
+    #[test]
+    fn poisoned_resolution_cache_returns_typed_error() {
+        let fixture = IncludeCacheFixture::new("poison-resolution");
+        fixture.write("lib.php", "<?php echo 'lib';\n");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        poison_mutex(&cache.resolution_shards[0]);
+
+        let error = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect_err("poisoned resolution lock should return an error");
+
+        assert_eq!(error.code(), "E_PHP_VM_INCLUDE_CACHE_POISONED");
+        assert_eq!(
+            error.context().get("cache").map(String::as_str),
+            Some("resolution")
+        );
+    }
+
+    #[test]
+    fn poisoned_compiled_cache_returns_typed_error() {
+        let fixture = IncludeCacheFixture::new("poison-compiled");
+        fixture.write("lib.php", "<?php echo 'lib';\n");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = loader
+            .resolve_with_include_path(None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+        poison_mutex(&cache.compile_shards[0]);
+
+        let error = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect_err("poisoned compile lock should return an error");
+
+        assert_eq!(error.code(), "E_PHP_VM_INCLUDE_CACHE_POISONED");
+        assert_eq!(
+            error.context().get("cache").map(String::as_str),
+            Some("compiled")
+        );
+    }
+
+    #[test]
+    fn poisoned_compile_lock_returns_typed_error() {
+        let fixture = IncludeCacheFixture::new("poison-compile-lock");
+        fixture.write("lib.php", "<?php echo 'lib';\n");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = loader
+            .resolve_with_include_path(None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+        poison_mutex(&cache.compile_locks[0].in_progress);
+
+        let error = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect_err("poisoned compile coordination lock should return an error");
+
+        assert_eq!(error.code(), "E_PHP_VM_INCLUDE_CACHE_POISONED");
+        assert_eq!(
+            error.context().get("cache").map(String::as_str),
+            Some("compile-lock")
         );
     }
 
@@ -973,5 +1133,12 @@ mod tests {
                 )
             })
             .count()
+    }
+
+    fn poison_mutex<T>(mutex: &Mutex<T>) {
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = mutex.lock().expect("lock before poisoning");
+            panic!("poison include-cache mutex for deterministic error test");
+        });
     }
 }

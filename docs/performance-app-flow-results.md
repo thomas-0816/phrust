@@ -16,7 +16,7 @@ timing data is reported. Wall-clock timings are advisory host-local data.
 | Status | `pass` |
 | Mode | `smoke` |
 | Scenarios | 10 |
-| Reference PHP | `available` from `third_party/php-src/sapi/cli/php` |
+| Reference PHP | `skipped` from `third_party/php-src/sapi/cli/php` |
 | Warmups | 0 |
 | Iterations | 1 |
 | Scale | 1 |
@@ -28,43 +28,23 @@ timing data is reported. Wall-clock timings are advisory host-local data.
 
 | Scenario | Row | Correctness | Median ms | Ratio vs ref | Counter highlights | Skip/failure reason |
 | --- | --- | --- | --- | --- | --- | --- |
-| `front_controller_routing` | `reference-php-cli` | `manifest` | 9.625 | 1.000 | n/a | n/a |
-| `front_controller_routing` | `reference-php-cli-opcache` | `reference` | 11.856 | 1.232 | n/a | n/a |
-| `front_controller_routing` | `phrust-baseline-ir` | `pass` | 103.547 | 10.758 | n/a | n/a |
-| `front_controller_routing` | `phrust-fast-preset` | `pass` | 53.536 | 5.562 | instructions_executed=9459, quickening_specialized=189, quickening_guard_hits=385, inline_cache_hits=628, inline_cache_misses=14, output_fast_appends=1, string_concat_fast_path_hits=48, packed_fetch_fast_hits=24, array_packed_append_fast_path_hits=7, array_sequential_foreach_fast_path_hits=100, internal_function_dispatch_cache_hits=277 | n/a |
-| `dependency_container_resolution` | `reference-php-cli` | `manifest` | 8.710 | 1.000 | n/a | n/a |
-| `dependency_container_resolution` | `reference-php-cli-opcache` | `reference` | 11.332 | 1.301 | n/a | n/a |
-| `dependency_container_resolution` | `phrust-baseline-ir` | `pass` | 35.602 | 4.087 | n/a | n/a |
-| `dependency_container_resolution` | `phrust-fast-preset` | `pass` | 44.047 | 5.057 | instructions_executed=2775, quickening_specialized=73, quickening_guard_hits=193, inline_cache_hits=349, inline_cache_misses=23, output_fast_appends=1, string_concat_fast_path_hits=32, internal_function_dispatch_cache_hits=39 | n/a |
-| `template_render_escape` | `reference-php-cli` | `manifest` | 10.152 | 1.000 | n/a | n/a |
-| `template_render_escape` | `reference-php-cli-opcache` | `reference` | 11.230 | 1.106 | n/a | n/a |
-| `template_render_escape` | `phrust-baseline-ir` | `pass` | 22.923 | 2.258 | n/a | n/a |
-| `template_render_escape` | `phrust-fast-preset` | `pass` | 37.515 | 3.695 | instructions_executed=312, bytecode_instructions_executed=6871, quickening_specialized=130, quickening_guard_hits=1417, inline_cache_hits=419, inline_cache_misses=8, output_fast_appends=76, string_concat_fast_path_hits=887, array_packed_append_fast_path_hits=9, array_sequential_foreach_fast_path_hits=100, internal_function_dispatch_cache_hits=24 | n/a |
-| `config_bootstrap_merge` | `reference-php-cli` | `manifest` | 9.176 | 1.000 | n/a | n/a |
-| `config_bootstrap_merge` | `reference-php-cli-opcache` | `reference` | 11.604 | 1.265 | n/a | n/a |
-| `config_bootstrap_merge` | `phrust-baseline-ir` | `pass` | 33.874 | 3.692 | n/a | n/a |
-| `config_bootstrap_merge` | `phrust-fast-preset` | `pass` | 44.310 | 4.829 | instructions_executed=9914, quickening_specialized=80, quickening_guard_hits=493, inline_cache_hits=720, inline_cache_misses=9, output_fast_appends=1, array_packed_append_fast_path_hits=6, array_sequential_foreach_fast_path_hits=210, internal_function_dispatch_cache_hits=303 | n/a |
-| `request_validation_errors` | `reference-php-cli` | `manifest` | 9.424 | 1.000 | n/a | n/a |
-| `request_validation_errors` | `reference-php-cli-opcache` | `reference` | 11.862 | 1.259 | n/a | n/a |
-| `request_validation_errors` | `phrust-baseline-ir` | `pass` | 44.465 | 4.718 | n/a | n/a |
-| `request_validation_errors` | `phrust-fast-preset` | `pass` | 87.561 | 9.292 | instructions_executed=12132, bytecode_instructions_executed=2759, quickening_specialized=238, quickening_guard_hits=804, inline_cache_hits=564, inline_cache_misses=8, output_fast_appends=1, array_packed_append_fast_path_hits=96, array_sequential_foreach_fast_path_hits=30, internal_function_dispatch_cache_hits=238 | n/a |
-| `model_hydration_json` | `reference-php-cli` | `manifest` | 10.198 | 1.000 | n/a | n/a |
-| `model_hydration_json` | `reference-php-cli-opcache` | `reference` | 13.531 | 1.327 | n/a | n/a |
-| `model_hydration_json` | `phrust-baseline-ir` | `pass` | 39.966 | 3.919 | n/a | n/a |
-| `model_hydration_json` | `phrust-fast-preset` | `pass` | 66.889 | 6.559 | instructions_executed=5122, quickening_specialized=99, quickening_guard_hits=203, inline_cache_hits=759, inline_cache_misses=18, property_assign_ic_hits=222, output_fast_appends=1, string_concat_fast_path_hits=67, array_packed_append_fast_path_hits=53, array_sequential_foreach_fast_path_hits=25, internal_function_dispatch_cache_hits=98 | n/a |
-| `collection_transform_pagination` | `reference-php-cli` | `manifest` | 11.031 | 1.000 | n/a | n/a |
-| `collection_transform_pagination` | `reference-php-cli-opcache` | `reference` | 13.135 | 1.191 | n/a | n/a |
-| `collection_transform_pagination` | `phrust-baseline-ir` | `pass` | 46.330 | 4.200 | n/a | n/a |
-| `collection_transform_pagination` | `phrust-fast-preset` | `pass` | 76.344 | 6.921 | instructions_executed=27743, quickening_specialized=213, quickening_guard_hits=713, inline_cache_hits=126, inline_cache_misses=6, output_fast_appends=1, array_packed_append_fast_path_hits=295, array_sequential_foreach_fast_path_hits=20, internal_function_dispatch_cache_hits=97 | n/a |
-| `middleware_event_pipeline` | `reference-php-cli` | `manifest` | 9.156 | 1.000 | n/a | n/a |
-| `middleware_event_pipeline` | `reference-php-cli-opcache` | `reference` | 11.271 | 1.231 | n/a | n/a |
-| `middleware_event_pipeline` | `phrust-baseline-ir` | `pass` | 36.899 | 4.030 | n/a | n/a |
-| `middleware_event_pipeline` | `phrust-fast-preset` | `pass` | 52.315 | 5.714 | instructions_executed=372, bytecode_instructions_executed=11904, quickening_specialized=202, quickening_guard_hits=1238, inline_cache_hits=830, inline_cache_misses=12, output_fast_appends=1, string_concat_fast_path_hits=104, array_packed_append_fast_path_hits=2, array_sequential_foreach_fast_path_hits=30, internal_function_dispatch_cache_hits=418 | n/a |
-| `session_auth_policy` | `reference-php-cli` | `manifest` | 9.630 | 1.000 | n/a | n/a |
-| `session_auth_policy` | `reference-php-cli-opcache` | `reference` | 11.158 | 1.159 | n/a | n/a |
-| `session_auth_policy` | `phrust-baseline-ir` | `pass` | 27.205 | 2.825 | n/a | n/a |
-| `session_auth_policy` | `phrust-fast-preset` | `pass` | 59.880 | 6.218 | instructions_executed=10512, bytecode_instructions_executed=8165, quickening_specialized=129, quickening_guard_hits=1739, inline_cache_hits=498, inline_cache_misses=4, output_fast_appends=1, string_concat_fast_path_hits=217, array_packed_append_fast_path_hits=9, array_sequential_foreach_fast_path_hits=325, internal_function_dispatch_cache_hits=224 | n/a |
-| `translation_lookup_interpolation` | `reference-php-cli` | `manifest` | 9.193 | 1.000 | n/a | n/a |
-| `translation_lookup_interpolation` | `reference-php-cli-opcache` | `reference` | 11.187 | 1.217 | n/a | n/a |
-| `translation_lookup_interpolation` | `phrust-baseline-ir` | `pass` | 25.514 | 2.775 | n/a | n/a |
-| `translation_lookup_interpolation` | `phrust-fast-preset` | `pass` | 40.659 | 4.423 | instructions_executed=372, bytecode_instructions_executed=9271, quickening_specialized=166, quickening_guard_hits=1110, inline_cache_hits=416, inline_cache_misses=6, output_fast_appends=1, string_concat_fast_path_hits=214, array_packed_append_fast_path_hits=3, array_sequential_foreach_fast_path_hits=30, internal_function_dispatch_cache_hits=179 | n/a |
+| `front_controller_routing` | `phrust-baseline-ir` | `manifest` | 95.074 | n/a | n/a | n/a |
+| `front_controller_routing` | `phrust-fast-preset` | `pass` | 36.615 | n/a | instructions_executed=9499, quickening_specialized=191, quickening_guard_hits=385, inline_cache_hits=628, inline_cache_misses=14, output_fast_appends=1, string_concat_fast_path_hits=48, packed_fetch_fast_hits=24, array_packed_append_fast_path_hits=7, array_sequential_foreach_fast_path_hits=100, internal_function_dispatch_cache_hits=277 | n/a |
+| `dependency_container_resolution` | `phrust-baseline-ir` | `manifest` | 27.348 | n/a | n/a | n/a |
+| `dependency_container_resolution` | `phrust-fast-preset` | `pass` | 32.707 | n/a | instructions_executed=2775, quickening_specialized=73, quickening_guard_hits=193, inline_cache_hits=349, inline_cache_misses=23, output_fast_appends=1, string_concat_fast_path_hits=32, internal_function_dispatch_cache_hits=39 | n/a |
+| `template_render_escape` | `phrust-baseline-ir` | `manifest` | 16.557 | n/a | n/a | n/a |
+| `template_render_escape` | `phrust-fast-preset` | `pass` | 25.352 | n/a | instructions_executed=312, bytecode_instructions_executed=6971, quickening_specialized=132, quickening_guard_hits=1417, inline_cache_hits=419, inline_cache_misses=8, output_fast_appends=76, string_concat_fast_path_hits=887, array_packed_append_fast_path_hits=9, array_sequential_foreach_fast_path_hits=100, internal_function_dispatch_cache_hits=24 | n/a |
+| `config_bootstrap_merge` | `phrust-baseline-ir` | `manifest` | 24.095 | n/a | n/a | n/a |
+| `config_bootstrap_merge` | `phrust-fast-preset` | `pass` | 28.571 | n/a | instructions_executed=10128, quickening_specialized=82, quickening_guard_hits=493, inline_cache_hits=720, inline_cache_misses=9, output_fast_appends=1, array_packed_append_fast_path_hits=6, array_sequential_foreach_fast_path_hits=210, internal_function_dispatch_cache_hits=303 | n/a |
+| `request_validation_errors` | `phrust-baseline-ir` | `manifest` | 28.297 | n/a | n/a | n/a |
+| `request_validation_errors` | `phrust-fast-preset` | `pass` | 57.559 | n/a | instructions_executed=13332, bytecode_instructions_executed=2819, quickening_specialized=255, quickening_guard_hits=804, inline_cache_hits=742, inline_cache_misses=10, output_fast_appends=1, array_packed_append_fast_path_hits=126, array_sequential_foreach_fast_path_hits=30, internal_function_dispatch_cache_hits=297 | n/a |
+| `model_hydration_json` | `phrust-baseline-ir` | `manifest` | 27.315 | n/a | n/a | n/a |
+| `model_hydration_json` | `phrust-fast-preset` | `pass` | 42.072 | n/a | instructions_executed=5147, quickening_specialized=100, quickening_guard_hits=203, inline_cache_hits=759, inline_cache_misses=18, property_assign_ic_hits=222, output_fast_appends=1, string_concat_fast_path_hits=67, array_packed_append_fast_path_hits=78, array_sequential_foreach_fast_path_hits=25, internal_function_dispatch_cache_hits=98 | n/a |
+| `collection_transform_pagination` | `phrust-baseline-ir` | `manifest` | 31.546 | n/a | n/a | n/a |
+| `collection_transform_pagination` | `phrust-fast-preset` | `pass` | 48.225 | n/a | instructions_executed=27763, quickening_specialized=215, quickening_guard_hits=713, inline_cache_hits=126, inline_cache_misses=6, output_fast_appends=1, array_packed_append_fast_path_hits=306, array_sequential_foreach_fast_path_hits=20, internal_function_dispatch_cache_hits=97 | n/a |
+| `middleware_event_pipeline` | `phrust-baseline-ir` | `manifest` | 27.943 | n/a | n/a | n/a |
+| `middleware_event_pipeline` | `phrust-fast-preset` | `pass` | 37.135 | n/a | instructions_executed=372, bytecode_instructions_executed=11964, quickening_specialized=204, quickening_guard_hits=1238, inline_cache_hits=830, inline_cache_misses=12, output_fast_appends=1, string_concat_fast_path_hits=104, array_packed_append_fast_path_hits=2, array_sequential_foreach_fast_path_hits=30, internal_function_dispatch_cache_hits=418 | n/a |
+| `session_auth_policy` | `phrust-baseline-ir` | `manifest` | 19.597 | n/a | n/a | n/a |
+| `session_auth_policy` | `phrust-fast-preset` | `pass` | 43.059 | n/a | instructions_executed=10837, bytecode_instructions_executed=8365, quickening_specialized=135, quickening_guard_hits=1739, inline_cache_hits=498, inline_cache_misses=4, output_fast_appends=1, string_concat_fast_path_hits=217, array_packed_append_fast_path_hits=9, array_sequential_foreach_fast_path_hits=325, internal_function_dispatch_cache_hits=224 | n/a |
+| `translation_lookup_interpolation` | `phrust-baseline-ir` | `manifest` | 18.596 | n/a | n/a | n/a |
+| `translation_lookup_interpolation` | `phrust-fast-preset` | `pass` | 32.399 | n/a | instructions_executed=372, bytecode_instructions_executed=9181, quickening_specialized=166, quickening_guard_hits=1110, inline_cache_hits=416, inline_cache_misses=6, output_fast_appends=1, string_concat_fast_path_hits=214, array_packed_append_fast_path_hits=3, array_sequential_foreach_fast_path_hits=30, internal_function_dispatch_cache_hits=179 | n/a |

@@ -4,10 +4,7 @@ use php_runtime::UploadRegistry;
 use php_runtime::api::{
     ExitStatus, RuntimeContext, RuntimeDiagnostic, RuntimeHttpResponseState, SessionState,
 };
-use php_vm::{
-    api::VmOptions,
-    experimental::{TieringStats, VmCounters},
-};
+use php_vm::api::{TieringStats, VmCounters, VmOptions};
 use std::path::PathBuf;
 
 /// Executor-wide defaults.

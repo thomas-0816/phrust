@@ -1,7 +1,13 @@
 # Performance Include Path Cache
 
-Work item adds a request-local include-/require-path cache behind the
-existing inline-cache mode. It caches only path resolution metadata:
+Work item adds two include-cache layers:
+
+- a request-local include-/require-path inline cache behind the existing
+  inline-cache mode, and
+- an optional process-local `IncludeCache` that shares path-resolution metadata
+  and compiled include units across VM requests.
+
+The request-local inline cache stores only path resolution metadata:
 
 - requested include string,
 - current `include_path`,
@@ -10,16 +16,24 @@ existing inline-cache mode. It caches only path resolution metadata:
 - canonical resolved path,
 - file metadata fingerprint.
 
-The cache never stores PHP source text, compiled units, return values, or include
-execution results. Every cache hit still reads the resolved source file through
-the include loader before frontend analysis and IR lowering. `include_once` and
-`require_once` continue to use the existing canonical-path once table after path
-resolution, so a cache hit cannot execute an once file twice.
+The process-local cache stores the same resolution metadata plus compiled
+include units keyed by canonical path, file fingerprint, compiler version,
+debug-assertion mode, and optimization level. It never stores return values,
+include execution results, request locals, globals, symbol tables, autoload
+registries, include-once tables, or call-site strictness state. `include_once`
+and `require_once` continue to use the request-local canonical-path once table
+after path resolution, so a process-local cache hit cannot execute an once file
+twice inside one request and cannot suppress execution in a later request.
 
-The resolver keeps the existing security policy: local filesystem paths only,
-canonical paths constrained to configured include roots, and no remote
-`scheme://` includes. Stale metadata records an include-path IC invalidation and
-falls back to normal resolution.
+The resolver keeps the existing security policy: absolute paths are
+canonicalized directly, relative paths search configured `include_path` entries,
+the including file directory, the request current working directory, and the raw
+relative path, and all local canonical paths must remain below configured
+include roots. Remote `scheme://` includes are rejected; `phar://` is supported
+only for local archives allowed by the configured filesystem roots. Stale
+metadata records an include-path IC invalidation or shared-cache stale
+invalidation and falls back to normal resolution/compilation. Poisoned shared
+cache locks return `E_PHP_VM_INCLUDE_CACHE_POISONED` instead of panicking.
 
 Counters:
 
