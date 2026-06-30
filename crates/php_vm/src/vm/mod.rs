@@ -11018,6 +11018,36 @@ impl Vm {
                         self.record_counter_fast_path_disabled_by_reference(
                             AliasState::PropertyOrArrayDimReference,
                         );
+                        if let Err(result) = self.autoload_static_class_if_missing(
+                            compiled,
+                            class_name,
+                            instruction.span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            match self.route_throwable_result(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                result,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
                         let class =
                             match resolve_static_class_name(compiled, state, stack, class_name) {
                                 Ok(class) => class,
@@ -13796,6 +13826,36 @@ impl Vm {
                         class_name,
                         property,
                     } => {
+                        if let Err(result) = self.autoload_static_class_if_missing(
+                            compiled,
+                            class_name,
+                            instruction.span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            match self.route_throwable_result(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                result,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
                         let class =
                             match resolve_static_class_name(compiled, state, stack, class_name) {
                                 Ok(class) => class,
@@ -14004,10 +14064,24 @@ impl Vm {
                         property,
                     } => {
                         let result = match static_property_isset_empty_result(
-                            compiled, state, stack, class_name, property, false,
+                            self,
+                            compiled,
+                            state,
+                            stack,
+                            class_name,
+                            property,
+                            false,
+                            instruction.span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            output,
                         ) {
                             Ok(result) => result,
-                            Err(message) => {
+                            Err(StaticPropertyIssetEmptyError::Runtime(message)) => {
                                 match self.raise_runtime_error(
                                     compiled,
                                     output,
@@ -14017,6 +14091,23 @@ impl Vm {
                                     &mut pending_control,
                                     instruction.span,
                                     message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            Err(StaticPropertyIssetEmptyError::Vm(result)) => {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    *result,
                                 ) {
                                     RaiseOutcome::Caught(target) => {
                                         block_id = target;
@@ -14041,10 +14132,24 @@ impl Vm {
                         property,
                     } => {
                         let result = match static_property_isset_empty_result(
-                            compiled, state, stack, class_name, property, true,
+                            self,
+                            compiled,
+                            state,
+                            stack,
+                            class_name,
+                            property,
+                            true,
+                            instruction.span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            output,
                         ) {
                             Ok(result) => result,
-                            Err(message) => {
+                            Err(StaticPropertyIssetEmptyError::Runtime(message)) => {
                                 match self.raise_runtime_error(
                                     compiled,
                                     output,
@@ -14054,6 +14159,23 @@ impl Vm {
                                     &mut pending_control,
                                     instruction.span,
                                     message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                            Err(StaticPropertyIssetEmptyError::Vm(result)) => {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    *result,
                                 ) {
                                     RaiseOutcome::Caught(target) => {
                                         block_id = target;
@@ -14077,6 +14199,36 @@ impl Vm {
                         class_name,
                         constant,
                     } => {
+                        if let Err(result) = self.autoload_static_class_if_missing(
+                            compiled,
+                            class_name,
+                            instruction.span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            match self.route_throwable_result(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                result,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
                         let class =
                             match resolve_static_class_name(compiled, state, stack, class_name) {
                                 Ok(class) => class,
@@ -16519,6 +16671,36 @@ impl Vm {
                         property,
                         value,
                     } => {
+                        if let Err(result) = self.autoload_static_class_if_missing(
+                            compiled,
+                            class_name,
+                            instruction.span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            match self.route_throwable_result(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                result,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
                         let class =
                             match resolve_static_class_name(compiled, state, stack, class_name) {
                                 Ok(class) => class,
@@ -19312,6 +19494,36 @@ impl Vm {
                             }
                             continue;
                         }
+                        if let Err(result) = self.autoload_static_class_if_missing(
+                            compiled,
+                            class_name,
+                            instruction.span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            match self.route_throwable_result(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                result,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
+                        }
                         let class =
                             match resolve_static_class_name(compiled, state, stack, class_name) {
                                 Ok(class) => class,
@@ -19666,6 +19878,8 @@ impl Vm {
                                 RaiseOutcome::Done(result) => return *result,
                             }
                         }
+                        let class_owner =
+                            class_owner_in_state(compiled, state, &declaring_class.name);
                         let called_class =
                             called_class_for_static_call(compiled, stack, class_name, &class);
                         let mut call = FunctionCall::new(values, Vec::new())
@@ -19681,7 +19895,7 @@ impl Vm {
                             call = call.with_this(bound_this);
                         }
                         let result = self.execute_function(
-                            compiled,
+                            &class_owner,
                             method_entry.function,
                             call,
                             output,
@@ -26873,6 +27087,17 @@ impl Vm {
             };
             return VmResult::success(output.clone(), Some(value));
         }
+        if let Err(result) = self.autoload_static_class_if_missing(
+            compiled,
+            class_name,
+            call_span.unwrap_or_default(),
+            None,
+            output,
+            stack,
+            state,
+        ) {
+            return result;
+        }
         let class = match resolve_static_class_name(compiled, state, stack, class_name) {
             Ok(class) => class,
             Err(message) => return self.runtime_error(output, compiled, stack, message),
@@ -26972,9 +27197,10 @@ impl Vm {
         {
             return self.runtime_error(output, compiled, stack, message);
         }
+        let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
         self.execute_function(
-            compiled,
+            &class_owner,
             method_entry.function,
             FunctionCall::new(args, Vec::new())
                 .with_call_site_strict_types(compiled.unit().strict_types)
@@ -29333,6 +29559,41 @@ impl Vm {
             }
         }
         Ok(exists)
+    }
+
+    fn autoload_static_class_if_missing(
+        &self,
+        compiled: &CompiledUnit,
+        class_name: &str,
+        span: IrSpan,
+        call_site: Option<(u64, FunctionId, BlockId, InstrId)>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        if is_special_static_class_name(class_name)
+            || class_like_exists_direct(
+                compiled,
+                state,
+                class_name,
+                AutoloadClassLookupKind::ClassLike,
+            )
+        {
+            return Ok(());
+        }
+
+        let lookup_name = static_class_autoload_name(compiled, class_name, span);
+        self.class_like_exists_with_autoload_cache(
+            compiled,
+            &lookup_name,
+            AutoloadClassLookupKind::ClassLike,
+            true,
+            call_site,
+            output,
+            stack,
+            state,
+        )?;
+        Ok(())
     }
 
     fn validate_runtime_class_dependencies(
@@ -35411,14 +35672,33 @@ fn deferred_const_expr_value(
     }
 }
 
+enum StaticPropertyIssetEmptyError {
+    Runtime(String),
+    Vm(Box<VmResult>),
+}
+
+impl From<String> for StaticPropertyIssetEmptyError {
+    fn from(message: String) -> Self {
+        Self::Runtime(message)
+    }
+}
+
 fn static_property_isset_empty_result(
+    vm: &Vm,
     compiled: &CompiledUnit,
     state: &mut ExecutionState,
-    stack: &CallStack,
+    stack: &mut CallStack,
     class_name: &str,
     property: &str,
     is_empty: bool,
-) -> Result<bool, String> {
+    span: IrSpan,
+    call_site: Option<(u64, FunctionId, BlockId, InstrId)>,
+    output: &mut OutputBuffer,
+) -> Result<bool, StaticPropertyIssetEmptyError> {
+    vm.autoload_static_class_if_missing(
+        compiled, class_name, span, call_site, output, stack, state,
+    )
+    .map_err(|result| StaticPropertyIssetEmptyError::Vm(Box::new(result)))?;
     let class = resolve_static_class_name(compiled, state, stack, class_name)?;
     let scope = current_scope_class(compiled, stack);
     let Some(resolved) =
@@ -35427,10 +35707,10 @@ fn static_property_isset_empty_result(
         return Ok(is_empty);
     };
     if !resolved.property.flags.is_static {
-        return Err(format!(
+        return Err(StaticPropertyIssetEmptyError::Runtime(format!(
             "E_PHP_VM_NON_STATIC_PROPERTY_ACCESS: property {}::${} is not static",
             resolved.class.name, resolved.property.name
-        ));
+        )));
     }
     if validate_property_access(compiled, stack, resolved.class, resolved.property).is_err() {
         return Ok(is_empty);
@@ -35447,7 +35727,7 @@ fn static_property_isset_empty_result(
         .cloned()
         .unwrap_or(Value::Uninitialized);
     if is_empty {
-        php_empty(&value)
+        Ok(php_empty(&value)?)
     } else {
         Ok(!matches!(value, Value::Uninitialized | Value::Null))
     }
@@ -35510,6 +35790,52 @@ fn resolve_static_class_name(
             .or_else(|| internal_runtime_class_entry(&normalize_class_name(class_name)))
             .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined")),
     }
+}
+
+fn is_special_static_class_name(class_name: &str) -> bool {
+    matches!(
+        normalize_class_name(class_name).as_str(),
+        "self" | "static" | "parent"
+    )
+}
+
+fn static_class_autoload_name(compiled: &CompiledUnit, class_name: &str, span: IrSpan) -> String {
+    static_class_name_from_source_span(compiled, span)
+        .unwrap_or_else(|| display_class_name(class_name))
+}
+
+fn static_class_name_from_source_span(compiled: &CompiledUnit, span: IrSpan) -> Option<String> {
+    if span == IrSpan::default() {
+        return None;
+    }
+    let file = compiled.unit().files.get(span.file.index())?;
+    let source = fs::read_to_string(&file.path).ok()?;
+    let start = usize::try_from(span.start).ok()?;
+    let end = usize::try_from(span.end).ok()?.min(source.len());
+    if start >= end || start >= source.len() || !source.is_char_boundary(start) {
+        return None;
+    }
+    let end = if source.is_char_boundary(end) {
+        end
+    } else {
+        source[..end].char_indices().last()?.0
+    };
+    let slice = source.get(start..end)?;
+    let before_static_access = slice.split_once("::")?.0.trim_end();
+    let name_start = before_static_access
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| (!is_php_class_name_char(ch)).then_some(index + ch.len_utf8()))
+        .unwrap_or(0);
+    let candidate = before_static_access
+        .get(name_start..)?
+        .trim_start_matches('\\');
+    (!candidate.is_empty() && !is_special_static_class_name(candidate))
+        .then(|| candidate.to_owned())
+}
+
+fn is_php_class_name_char(ch: char) -> bool {
+    ch == '\\' || ch == '_' || ch.is_ascii_alphanumeric()
 }
 
 fn called_class_for_static_call(
@@ -52018,6 +52344,101 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
             result.output.to_string_lossy(),
             "autoload:MissingAutoloadTarget|first"
         );
+    }
+
+    #[test]
+    fn autoload_static_constant_property_and_method_access() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-static-autoload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::write(
+            root.join("Target.php"),
+            "<?php
+            class StaticAutoloadTarget {
+                public const VALUE = 'const';
+                public static string $prop = 'prop';
+                public static function method(): string { return 'method'; }
+            }
+            ",
+        )
+        .expect("autoload target should be written");
+        let source = "<?php
+            spl_autoload_register(function ($class) {
+                echo 'load:', $class, '|';
+                require __DIR__ . '/Target.php';
+            });
+            echo StaticAutoloadTarget::VALUE, '|';
+            echo StaticAutoloadTarget::$prop, '|';
+            echo StaticAutoloadTarget::method(), '|';
+            echo isset(StaticAutoloadTarget::$prop) ? 'isset' : 'missing';
+        ";
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "load:StaticAutoloadTarget|const|prop|method|isset"
+        );
+    }
+
+    #[test]
+    fn autoload_static_method_from_dynamic_include_uses_declaring_unit() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-static-autoload-owner-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::write(
+            root.join("OwnerTarget.php"),
+            "<?php
+            class StaticAutoloadOwnerTarget {
+                public static function method(string $value): string {
+                    return 'owner:' . $value;
+                }
+            }
+            ",
+        )
+        .expect("autoload target should be written");
+        let source = "<?php
+            spl_autoload_register(function ($class) {
+                require __DIR__ . '/OwnerTarget.php';
+            });
+            echo StaticAutoloadOwnerTarget::method('ok');
+        ";
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.to_string_lossy(), "owner:ok");
     }
 
     #[test]

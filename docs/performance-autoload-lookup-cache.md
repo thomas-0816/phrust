@@ -27,6 +27,11 @@ map object to fingerprint. In that case the fingerprint guard is `None`, while
 autoload registration, class table changes, and include_path changes still
 invalidate cached lookups.
 
+The same guarded lookup path is used for unresolved static class-like access,
+including class constants, static properties, static methods, and static-method
+callables. Static lookups still recheck the live class table after autoload
+callback execution before installing or accepting a positive cache hit.
+
 ## Cached Results
 
 Positive results may be reused only while all guards and epochs match. The VM

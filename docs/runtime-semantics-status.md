@@ -250,9 +250,10 @@ Runtime decisions are captured in these ADRs:
    IDs: `E_PHP_IR_UNSUPPORTED_CLASSLIKE_OBJECT`,
    `E_PHP_IR_UNSUPPORTED_OBJECT_PROPERTY_MODIFIER`,
    `E_PHP_RUNTIME_UNSUPPORTED_MAGIC_METHODS`.
-5. Autoloading: request-local SPL callbacks execute for covered class and
-   interface lookup fixtures, but Composer path conventions and the wider SPL
-   autoload API remain incomplete. IDs: `E_PHP_VM_AUTOLOAD_INVALID_CALLBACK`,
+5. Autoloading: request-local SPL callbacks execute for covered class,
+   interface, static class-like lookup, and handwritten Composer-style fixtures.
+   Real Composer metadata fingerprinting and the wider SPL autoload API remain
+   incomplete. IDs: `E_PHP_VM_AUTOLOAD_INVALID_CALLBACK`,
    `E_PHP_VM_AUTOLOAD_ARITY`, `E_PHP_RUNTIME_COMPOSER_AUTOLOAD_MATRIX`.
 6. Include compatibility: include_path, stream wrappers, cwd policy, and
    complete cross-file symbol side effects are missing. IDs:

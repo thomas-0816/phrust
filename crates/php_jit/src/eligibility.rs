@@ -1649,6 +1649,7 @@ fn check_instruction(
         }
         InstructionKind::FetchConst { .. }
         | InstructionKind::RegisterConstant { .. }
+        | InstructionKind::DeclareFunction { .. }
         | InstructionKind::InitStaticLocal { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::Echo { .. }
