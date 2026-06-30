@@ -920,6 +920,7 @@ struct ExecutionState {
     dynamic_units: Vec<CompiledUnit>,
     dynamic_functions: Vec<DynamicFunctionEntry>,
     dynamic_classes: Vec<DynamicClassEntry>,
+    dynamic_constants: Vec<DynamicConstantEntry>,
     validated_class_dependencies: HashSet<String>,
     failed_class_declarations: HashSet<String>,
     user_constants: HashMap<String, Value>,
@@ -1032,6 +1033,13 @@ struct DynamicFunctionEntry {
 struct DynamicClassEntry {
     class: php_ir::module::ClassEntry,
     unit_index: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DynamicConstantEntry {
+    name: String,
+    unit_index: usize,
+    value: ConstId,
 }
 
 enum ClassDependencyValidationFailure {
@@ -5359,6 +5367,7 @@ impl Vm {
             IrConstant::Float(value) => Value::float(*value),
             IrConstant::String(value) => Value::String(self.intern_str(value)),
             IrConstant::StringBytes(value) => Value::String(self.intern_bytes(value)),
+            IrConstant::NamedConstant(_) | IrConstant::ClassConstant { .. } => Value::Null,
             IrConstant::Array(entries) => {
                 let mut array = PhpArray::new();
                 for entry in entries {
@@ -11027,6 +11036,7 @@ impl Vm {
                             match static_property_default(
                                 compiled,
                                 state,
+                                stack,
                                 resolved.class,
                                 resolved.property,
                             ) {
@@ -13649,6 +13659,7 @@ impl Vm {
                             let default = match static_property_default(
                                 compiled,
                                 state,
+                                stack,
                                 &resolved.class,
                                 &resolved.property,
                             ) {
@@ -16361,6 +16372,7 @@ impl Vm {
                             match static_property_default(
                                 compiled,
                                 state,
+                                stack,
                                 &resolved.class,
                                 &resolved.property,
                             ) {
@@ -23243,7 +23255,7 @@ impl Vm {
                 }
                 let key = static_property_key(class, property);
                 if !state.static_properties.contains_key(&key) {
-                    let default = static_property_default(&owner, state, class, property)?;
+                    let default = static_property_default(&owner, state, stack, class, property)?;
                     state.static_properties.insert(key.clone(), default);
                 }
                 let value = state
@@ -26120,7 +26132,7 @@ impl Vm {
                 .value_to_string(compiled, src, output, stack, state)
                 .map(Value::String),
             CastKind::Void => Ok(Value::Null),
-            CastKind::Array => Ok(cast_value_to_array(src)),
+            CastKind::Array => Ok(cast_value_to_array(compiled, stack, src)),
             CastKind::Object => Ok(cast_value_to_object(src)),
         }
     }
@@ -28712,22 +28724,25 @@ impl Vm {
             .function_table
             .iter()
             .any(|entry| entry.function != evaluated.unit().entry);
-        let has_class_declarations = !evaluated.unit().classes.is_empty();
-        if has_named_function_declarations {
-            return eval_failure(
-                output,
-                "E_PHP_VM_EVAL_DECLARATION_GAP: eval declarations are not merged into the active runtime unit",
-                stack_trace(compiled, stack),
-            );
+        let has_source_class_declarations = evaluated
+            .class_table()
+            .iter()
+            .any(|class| !is_lowered_internal_interface_skeleton(class));
+        let has_constant_declarations = !evaluated.unit().constant_table.is_empty();
+        let has_declarations = has_named_function_declarations
+            || has_source_class_declarations
+            || has_constant_declarations;
+        if has_declarations
+            && let Err(message) = register_dynamic_eval_unit(compiled, state, evaluated.clone())
+        {
+            return eval_failure(output, message, stack_trace(compiled, stack));
         }
         let has_closures = evaluated
             .unit()
             .functions
             .iter()
             .any(|function| function.flags.is_closure);
-        if has_class_declarations {
-            register_dynamic_eval_unit(state, evaluated.clone());
-        } else if has_closures {
+        if has_closures && !has_declarations {
             retain_dynamic_closure_unit(state, evaluated.clone());
         }
 
@@ -28762,7 +28777,7 @@ impl Vm {
         );
         state.eval_depth -= 1;
         if result.status.is_success()
-            && has_class_declarations
+            && has_source_class_declarations
             && let Some(error) =
                 self.validate_runtime_class_dependencies(compiled, &evaluated, output, stack, state)
         {
@@ -33130,6 +33145,11 @@ fn method_default_display(default: &IrConstant) -> String {
                 .collect::<String>();
             format!("'{escaped}'")
         }
+        IrConstant::NamedConstant(name) => name.clone(),
+        IrConstant::ClassConstant {
+            class_name,
+            constant_name,
+        } => format!("{class_name}::{constant_name}"),
         IrConstant::Array(_) => "array".to_owned(),
     }
 }
@@ -34142,13 +34162,14 @@ fn static_property_key(
 
 fn static_property_default(
     compiled: &CompiledUnit,
-    state: &ExecutionState,
+    state: &mut ExecutionState,
+    stack: &CallStack,
     class: &php_ir::module::ClassEntry,
     property: &php_ir::module::ClassPropertyEntry,
 ) -> Result<Value, String> {
     if let Some(default) = property.default {
         let owner = class_owner_in_state(compiled, state, &class.name);
-        constant_value(owner.unit(), default)
+        runtime_constant_value(compiled, state, stack, owner.unit(), default)
     } else if let Some(reference) = &property.default_class_constant {
         class_constant_reference_value(compiled, state, reference)
     } else if let Some(reference) = &property.default_named_constant {
@@ -34159,6 +34180,68 @@ fn static_property_default(
         Ok(Value::Uninitialized)
     } else {
         Ok(Value::Null)
+    }
+}
+
+fn runtime_constant_value(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    unit: &IrUnit,
+    constant: ConstId,
+) -> Result<Value, String> {
+    let Some(value) = unit.constants.get(constant.index()) else {
+        return Err(format!("invalid constant const:{}", constant.raw()));
+    };
+    runtime_inline_constant_value(compiled, state, stack, value)
+}
+
+fn runtime_inline_constant_value(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    constant: &IrConstant,
+) -> Result<Value, String> {
+    match constant {
+        IrConstant::Null => Ok(Value::Null),
+        IrConstant::Bool(value) => Ok(Value::Bool(*value)),
+        IrConstant::Int(value) => Ok(Value::Int(*value)),
+        IrConstant::Float(value) => Ok(Value::float(*value)),
+        IrConstant::String(value) => Ok(Value::String(PhpString::from_test_str(value))),
+        IrConstant::StringBytes(value) => Ok(Value::String(PhpString::from_bytes(value.clone()))),
+        IrConstant::NamedConstant(name) => global_constant_value(compiled, state, stack, name)?
+            .ok_or_else(|| format!("E_PHP_VM_UNDEFINED_CONSTANT: constant {name} is not defined")),
+        IrConstant::ClassConstant {
+            class_name,
+            constant_name,
+        } => class_constant_value_by_name(
+            compiled,
+            state,
+            stack,
+            &format!("{class_name}::{constant_name}"),
+        )?
+        .ok_or_else(|| {
+            format!(
+                "E_PHP_VM_UNDEFINED_CLASS_CONSTANT: constant {class_name}::{constant_name} is not defined"
+            )
+        }),
+        IrConstant::Array(entries) => {
+            let mut array = PhpArray::new();
+            for entry in entries {
+                let value = runtime_inline_constant_value(compiled, state, stack, &entry.value)?;
+                if let Some(key) = &entry.key {
+                    let key_value = runtime_inline_constant_value(compiled, state, stack, key)?;
+                    if let Some(key) = ArrayKey::from_value_mvp(&key_value) {
+                        array.insert(key, value);
+                    } else {
+                        array.append(value);
+                    }
+                } else {
+                    array.append(value);
+                }
+            }
+            Ok(Value::Array(array))
+        }
     }
 }
 
@@ -34221,7 +34304,8 @@ fn static_property_isset_empty_result(
     }
     let key = static_property_key(resolved.class, resolved.property);
     if !state.static_properties.contains_key(&key) {
-        let default = static_property_default(compiled, state, resolved.class, resolved.property)?;
+        let default =
+            static_property_default(compiled, state, stack, resolved.class, resolved.property)?;
         state.static_properties.insert(key.clone(), default);
     }
     let value = state
@@ -40506,7 +40590,7 @@ fn autoload_callback_from_value(
     }
 }
 
-fn register_dynamic_unit(state: &mut ExecutionState, unit: CompiledUnit) {
+fn register_dynamic_unit(state: &mut ExecutionState, unit: CompiledUnit) -> usize {
     let unit_index = state.dynamic_units.len();
     for entry in unit.function_table() {
         if state
@@ -40523,31 +40607,82 @@ fn register_dynamic_unit(state: &mut ExecutionState, unit: CompiledUnit) {
         });
     }
     register_dynamic_classes(state, unit_index, unit.unit());
-    state.dynamic_units.push(unit);
-    state.bump_class_table_epoch();
-}
-
-fn register_dynamic_eval_unit(state: &mut ExecutionState, unit: CompiledUnit) {
-    let unit_index = state.dynamic_units.len();
-    for class in &unit.unit().classes {
-        let normalized = normalize_class_name(&class.name);
-        if class.span == IrSpan::default() && runtime_or_std_class_exists(&normalized) {
-            continue;
-        }
+    for entry in unit.constant_table() {
         if state
-            .dynamic_classes
+            .dynamic_constants
             .iter()
-            .any(|existing| normalize_class_name(&existing.class.name) == normalized)
+            .any(|existing| existing.name == entry.name)
         {
             continue;
         }
-        state.dynamic_classes.push(DynamicClassEntry {
-            class: class.clone(),
+        state.dynamic_constants.push(DynamicConstantEntry {
+            name: entry.name.clone(),
             unit_index,
+            value: entry.value,
         });
     }
     state.dynamic_units.push(unit);
     state.bump_class_table_epoch();
+    unit_index
+}
+
+fn register_dynamic_eval_unit(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    unit: CompiledUnit,
+) -> Result<usize, String> {
+    validate_eval_dynamic_declarations(compiled, state, &unit)?;
+    Ok(register_dynamic_unit(state, unit))
+}
+
+fn validate_eval_dynamic_declarations(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    unit: &CompiledUnit,
+) -> Result<(), String> {
+    for entry in unit.function_table() {
+        if compiled.lookup_function(&entry.name).is_some()
+            || dynamic_function_in_state(state, &entry.name).is_some()
+            || BuiltinRegistry::new().contains(&entry.name)
+        {
+            return Err(format!(
+                "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {}()",
+                entry.name
+            ));
+        }
+    }
+    for class in unit.class_table() {
+        if is_lowered_internal_interface_skeleton(class) {
+            continue;
+        }
+        if lookup_class_in_state(compiled, state, &class.name).is_some() {
+            return Err(format!(
+                "E_PHP_VM_CLASS_REDECLARATION: Cannot declare class {}, because the name is already in use",
+                class.display_name
+            ));
+        }
+    }
+    for entry in unit.constant_table() {
+        if compiled.lookup_constant(&entry.name).is_some()
+            || state.user_constants.contains_key(&entry.name)
+        {
+            return Err(format!(
+                "E_PHP_VM_CONSTANT_REDECLARATION: Cannot redeclare constant {}",
+                entry.name
+            ));
+        }
+        if state
+            .dynamic_constants
+            .iter()
+            .any(|existing| existing.name == entry.name)
+        {
+            return Err(format!(
+                "E_PHP_VM_CONSTANT_REDECLARATION: Cannot redeclare constant {}",
+                entry.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn retain_dynamic_closure_unit(state: &mut ExecutionState, unit: CompiledUnit) -> usize {
@@ -40585,6 +40720,25 @@ fn register_dynamic_classes(state: &mut ExecutionState, unit_index: usize, unit:
             unit_index,
         });
     }
+}
+
+fn is_lowered_internal_interface_skeleton(class: &php_ir::module::ClassEntry) -> bool {
+    class.span == php_ir::source_map::IrSpan::default()
+        && class.flags.is_interface
+        && class.methods.is_empty()
+        && class.properties.is_empty()
+        && class.constants.is_empty()
+        && matches!(
+            normalize_class_name(&class.name).as_str(),
+            "traversable"
+                | "iterator"
+                | "iteratoraggregate"
+                | "arrayaccess"
+                | "throwable"
+                | "unitenum"
+                | "backedenum"
+                | "stringable"
+        )
 }
 
 fn block_first_span(block: &php_ir::block::BasicBlock) -> Option<IrSpan> {
@@ -40935,6 +41089,8 @@ fn global_constant_value(
 ) -> Result<Option<Value>, String> {
     if let Some(constant) = compiled.lookup_constant(name) {
         Ok(Some(inline_constant_value(constant)))
+    } else if let Some(value) = dynamic_constant_value_in_state(state, name)? {
+        Ok(Some(value))
     } else if let Some(value) = state.user_constants.get(name) {
         Ok(Some(value.clone()))
     } else if let Some(value) = class_constant_value_by_name(compiled, state, stack, name)? {
@@ -40942,6 +41098,23 @@ fn global_constant_value(
     } else {
         Ok(predefined_constant_value(name))
     }
+}
+
+fn dynamic_constant_value_in_state(
+    state: &ExecutionState,
+    name: &str,
+) -> Result<Option<Value>, String> {
+    let Some(entry) = state
+        .dynamic_constants
+        .iter()
+        .find(|entry| entry.name == name)
+    else {
+        return Ok(None);
+    };
+    let Some(owner) = state.dynamic_units.get(entry.unit_index) else {
+        return Ok(None);
+    };
+    constant_value(owner.unit(), entry.value).map(Some)
 }
 
 fn class_constant_value_by_name(
@@ -40997,7 +41170,7 @@ fn class_constant_value_by_name(
     validate_constant_access(compiled, stack, &resolved_class, &resolved_constant)?;
     if let Some(value) = resolved_constant.value {
         let owner = class_owner_in_state(compiled, state, &resolved_class.name);
-        constant_value(owner.unit(), value).map(Some)
+        runtime_constant_value(compiled, state, stack, owner.unit(), value).map(Some)
     } else if let Some(reference) = &resolved_constant.value_class_constant {
         class_constant_reference_value(compiled, state, reference).map(Some)
     } else if let Some(reference) = &resolved_constant.value_named_constant {
@@ -41015,6 +41188,9 @@ fn named_constant_reference_value(
     for name in &reference.names {
         if let Some(constant) = compiled.lookup_constant(name) {
             return Ok(inline_constant_value(constant));
+        }
+        if let Some(value) = dynamic_constant_value_in_state(state, name)? {
+            return Ok(value);
         }
         if let Some(value) = state.user_constants.get(name) {
             return Ok(value.clone());
@@ -41565,7 +41741,7 @@ fn visible_class_methods(
 fn visible_class_vars(
     compiled: &CompiledUnit,
     stack: &CallStack,
-    state: &ExecutionState,
+    state: &mut ExecutionState,
     class: &php_ir::module::ClassEntry,
 ) -> PhpArray {
     let scope = current_scope_class(compiled, stack);
@@ -41581,7 +41757,7 @@ fn visible_class_vars(
                 property.flags.is_private,
                 property.flags.is_protected,
             ) {
-                let value = static_property_default(compiled, state, &class, property)
+                let value = static_property_default(compiled, state, stack, &class, property)
                     .unwrap_or(Value::Uninitialized);
                 array.insert(php_string_key(&property.name), value);
             }
@@ -42005,12 +42181,6 @@ fn builtin_class_exists(class_name: &str) -> bool {
     php_std::ExtensionRegistry::standard_library()
         .enabled_class(class_name)
         .is_some()
-}
-
-fn runtime_or_std_class_exists(class_name: &str) -> bool {
-    builtin_class_exists(class_name)
-        || internal_runtime_class_entry(class_name).is_some()
-        || internal_enum_class_entry(class_name).is_some()
 }
 
 fn class_extends_in_state(
@@ -43908,6 +44078,19 @@ fn constant_value(unit: &IrUnit, constant: ConstId) -> Result<Value, String> {
         IrConstant::Float(value) => Value::float(*value),
         IrConstant::String(value) => Value::String(PhpString::from_test_str(value)),
         IrConstant::StringBytes(value) => Value::String(PhpString::from_bytes(value.clone())),
+        IrConstant::NamedConstant(name) => {
+            return Err(format!(
+                "E_PHP_VM_UNRESOLVED_CONSTANT_EXPR: constant {name} requires runtime resolution"
+            ));
+        }
+        IrConstant::ClassConstant {
+            class_name,
+            constant_name,
+        } => {
+            return Err(format!(
+                "E_PHP_VM_UNRESOLVED_CONSTANT_EXPR: constant {class_name}::{constant_name} requires runtime resolution"
+            ));
+        }
         IrConstant::Array(entries) => {
             let mut array = PhpArray::new();
             for entry in entries {
@@ -43936,6 +44119,7 @@ fn inline_constant_value(constant: &IrConstant) -> Value {
         IrConstant::Float(value) => Value::float(*value),
         IrConstant::String(value) => Value::String(PhpString::from_test_str(value)),
         IrConstant::StringBytes(value) => Value::String(PhpString::from_bytes(value.clone())),
+        IrConstant::NamedConstant(_) | IrConstant::ClassConstant { .. } => Value::Null,
         IrConstant::Array(entries) => {
             let mut array = PhpArray::new();
             for entry in entries {
@@ -44739,20 +44923,11 @@ fn cast_value_to_object(value: &Value) -> Value {
     }
 }
 
-fn cast_value_to_array(value: &Value) -> Value {
+fn cast_value_to_array(compiled: &CompiledUnit, stack: &CallStack, value: &Value) -> Value {
     match effective_value(value) {
         Value::Array(array) => Value::Array(array),
         Value::Null | Value::Uninitialized => Value::Array(PhpArray::new()),
-        Value::Object(object) => {
-            let mut array = PhpArray::new();
-            for (name, property) in object.properties_snapshot() {
-                array.insert(
-                    ArrayKey::String(PhpString::from(name.as_str())),
-                    effective_value(&property),
-                );
-            }
-            Value::Array(array)
-        }
+        Value::Object(object) => Value::Array(object_vars_array(compiled, stack, &object, true)),
         scalar => Value::packed_array(vec![scalar]),
     }
 }
@@ -48017,6 +48192,26 @@ mod tests {
         assert_eq!(
             result.output.to_string_lossy(),
             "array(0) {\n}\narray(1) {\n  [0]=>\n  string(5) \"type1\"\n}\narray(1) {\n  [0]=>\n  int(10)\n}\narray(1) {\n  [0]=>\n  float(12.34)\n}\narray(2) {\n  [\"a\"]=>\n  int(1)\n  [\"b\"]=>\n  string(3) \"two\"\n}\n"
+        );
+    }
+
+    #[test]
+    fn expressions_array_casts_mangle_declared_object_property_keys() {
+        let result = execute_source(
+            "<?php
+            class foo {
+                private $private = 'private';
+                protected $protected = 'protected';
+                public $public = 'public';
+            }
+            var_export((array) new foo);
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "array (\n  '' . \"\\0\" . 'foo' . \"\\0\" . 'private' => 'private',\n  '' . \"\\0\" . '*' . \"\\0\" . 'protected' => 'protected',\n  'public' => 'public',\n)"
         );
     }
 
@@ -58038,17 +58233,58 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
     }
 
     #[test]
-    fn eval_declarations_are_specific_known_gap() {
-        let result = execute_source("<?php eval('function eval_runtime_fixture() { return 1; }');");
+    fn eval_function_declarations_are_visible_after_eval() {
+        let result = execute_source(
+            "<?php eval('function eval_runtime_fixture() { return 7; }'); echo eval_runtime_fixture();",
+        );
+
+        assert!(result.status.is_success(), "{:#?}", result);
+        assert_eq!(result.output.as_bytes(), b"7");
+    }
+
+    #[test]
+    fn eval_class_declarations_are_visible_after_eval() {
+        let result = execute_source(
+            "<?php eval('class EvalRuntimeFixture { const VALUE = 9; }'); echo EvalRuntimeFixture::VALUE;",
+        );
+
+        assert!(result.status.is_success(), "{:#?}", result);
+        assert_eq!(result.output.as_bytes(), b"9");
+    }
+
+    #[test]
+    fn eval_class_declarations_can_extend_existing_classes() {
+        let result = execute_source(
+            "<?php class EvalParentFixture { const VALUE = 'ok'; } eval('class EvalChildFixture extends EvalParentFixture {}'); echo EvalChildFixture::VALUE;",
+        );
+
+        assert!(result.status.is_success(), "{:#?}", result);
+        assert_eq!(result.output.as_bytes(), b"ok");
+    }
+
+    #[test]
+    fn eval_class_declarations_are_visible_to_later_classes() {
+        let result = execute_source(
+            "<?php class EvalBaseForLaterClass { const VALUE = 'base'; } eval('class EvalMiddleForLaterClass extends EvalBaseForLaterClass {}'); class EvalLaterClass extends EvalMiddleForLaterClass { const OWN = 'own'; } echo EvalMiddleForLaterClass::VALUE, '|', EvalLaterClass::VALUE, '|', EvalLaterClass::OWN;",
+        );
+
+        assert!(result.status.is_success(), "{:#?}", result);
+        assert_eq!(result.output.as_bytes(), b"base|base|own");
+    }
+
+    #[test]
+    fn eval_duplicate_function_declarations_remain_fatal() {
+        let result = execute_source(
+            "<?php function eval_runtime_duplicate() {} eval('function eval_runtime_duplicate() {}');",
+        );
 
         assert!(!result.status.is_success());
         assert!(
+            result.diagnostics.iter().any(|diagnostic| diagnostic.id()
+                == "E_PHP_VM_FUNCTION_REDECLARATION"
+                && diagnostic.message().contains("Cannot redeclare function")),
+            "{:#?}",
             result
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.id() == "E_PHP_VM_EVAL_DECLARATION_GAP"),
-            "diagnostics: {:#?}",
-            result.diagnostics
         );
     }
 

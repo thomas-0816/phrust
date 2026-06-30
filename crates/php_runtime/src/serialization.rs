@@ -57,6 +57,19 @@ pub fn serialize(value: &Value) -> Result<PhpString, SerializationError> {
     Ok(PhpString::from_bytes(writer.output))
 }
 
+/// Serializes an object with an explicit PHP-visible property subset.
+///
+/// This is used by VM-owned magic serialization paths such as `__sleep`, where
+/// userland code selects which stored properties participate in the wire form.
+pub fn serialize_object_properties(
+    object: &ObjectRef,
+    properties: Vec<(String, Value)>,
+) -> Result<PhpString, SerializationError> {
+    let mut writer = Serializer::default();
+    writer.write_object_properties(object, properties, 0)?;
+    Ok(PhpString::from_bytes(writer.output))
+}
+
 /// Parses one PHP serialized value with bounded recursion and allocation.
 pub fn unserialize(
     input: &PhpString,
@@ -121,21 +134,7 @@ impl Serializer {
                 self.output.extend_from_slice(b"}");
             }
             Value::Object(object) => {
-                let class = object.display_name();
-                let properties = object.properties_snapshot();
-                self.output
-                    .extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
-                self.output.extend_from_slice(class.as_bytes());
-                self.output
-                    .extend_from_slice(format!("\":{}:{{", properties.len()).as_bytes());
-                for (name, property) in properties {
-                    self.write_value(
-                        &Value::string(serialized_object_property_name(object, &name)),
-                        depth + 1,
-                    )?;
-                    self.write_value(&property, depth + 1)?;
-                }
-                self.output.extend_from_slice(b"}");
+                self.write_object_properties(object, object.properties_snapshot(), depth)?;
             }
             Value::Fiber(_) | Value::Generator(_) | Value::Callable(_) => {
                 return Err(SerializationError::new(
@@ -158,6 +157,29 @@ impl Serializer {
                 self.active_references.pop();
             }
         }
+        Ok(())
+    }
+
+    fn write_object_properties(
+        &mut self,
+        object: &ObjectRef,
+        properties: Vec<(String, Value)>,
+        depth: usize,
+    ) -> Result<(), SerializationError> {
+        let class = object.display_name();
+        self.output
+            .extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
+        self.output.extend_from_slice(class.as_bytes());
+        self.output
+            .extend_from_slice(format!("\":{}:{{", properties.len()).as_bytes());
+        for (name, property) in properties {
+            self.write_value(
+                &Value::string(serialized_object_property_name(object, &name)),
+                depth + 1,
+            )?;
+            self.write_value(&property, depth + 1)?;
+        }
+        self.output.extend_from_slice(b"}");
         Ok(())
     }
 

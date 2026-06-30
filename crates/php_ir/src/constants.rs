@@ -18,6 +18,15 @@ pub enum IrConstant {
     String(String),
     /// PHP string bytes that cannot be represented losslessly as UTF-8.
     StringBytes(Vec<u8>),
+    /// Runtime-resolved global constant in a constant-expression initializer.
+    NamedConstant(String),
+    /// Runtime-resolved class constant in a constant-expression initializer.
+    ClassConstant {
+        /// Class-like name as resolved by the semantic frontend when possible.
+        class_name: String,
+        /// Constant name without the class qualifier.
+        constant_name: String,
+    },
     /// PHP array literal whose keys and values are constant-pool values.
     Array(Vec<IrConstantArrayEntry>),
 }

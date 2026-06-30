@@ -250,7 +250,9 @@ pub use resource::{
     FilesystemCapabilities, ResourceId, ResourceKind, ResourceRef, ResourceTable, Stream,
     StreamFlags, StreamMetadata, StreamOpenError, StreamOpenMode, StreamWrapperRegistry,
 };
-pub use serialization::{SerializationError, UnserializeOptions, serialize, unserialize};
+pub use serialization::{
+    SerializationError, UnserializeOptions, serialize, serialize_object_properties, unserialize,
+};
 pub use session::{PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState};
 pub use sqlite::{
     SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,

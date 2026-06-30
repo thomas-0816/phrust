@@ -3,7 +3,7 @@
 - Priority: 10
 - Selected manifest: `tests/phpt/manifests/modules/objects.classes.selected.jsonl`
 - Current corpus counts: 178 PASS, 33 SKIP, 1924 FAIL, 0 BORK from 2136 corpus candidates
-- Current selected run: 197 PASS, 0 SKIP, 3 FAIL, 0 BORK from 200 selected rows
+- Current selected run: 183 PASS, 0 SKIP, 63 FAIL, 0 BORK from 246 selected rows
 - Core close gate: `objects.core` is 16 PASS / 0 FAIL for reference and target
 
 ## Scope
@@ -104,10 +104,27 @@ legacy `Serializable` deprecation, `Serializable::serialize()` and
 `Serializable::unserialize()` hooks, the `C:<class>:{payload}` wire format,
 NULL serialization, and the catchable non-string return exception path.
 
+## Wave 4 Core Language Object Promotion
+
+On `phpt/wave4-core-language-object-promotion`, the selected manifest expanded
+from 200 to 246 upstream rows.
+
+- Promoted rows: 46 upstream `tests/classes/*.phpt` cases.
+- Current selected gate:
+  `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
+- Reference: 246 PASS, 0 non-green.
+- Target: 183 PASS, 63 FAIL.
+- Source integrity: 24475 php-src manifest entries checked, 0 skipped.
+
+The branch also made these already-selected upstream rows green:
+`constants_basic_006.phpt`, `constants_basic_003.phpt`,
+`static_properties_003.phpt`, `destructor_and_exceptions.phpt`, and
+`bug26737.phpt`.
+
 ## Branch 2 Advanced Integration Impact
 
 On `main`, after the completed object-core branch and the Branch 2 advanced
-object fixtures are integrated:
+object fixtures are integrated, the earlier selected gate snapshot was:
 
 - `nix develop -c just phpt-dev-module MODULE=objects.classes`
 - reference: 200 PASS

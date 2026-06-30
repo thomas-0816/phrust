@@ -282,6 +282,11 @@ fn format_constant(constant: &IrConstant) -> String {
         IrConstant::Float(value) => format!("float {value:?}"),
         IrConstant::String(value) => format!("string {value:?}"),
         IrConstant::StringBytes(value) => format!("string_bytes {value:?}"),
+        IrConstant::NamedConstant(name) => format!("const {name}"),
+        IrConstant::ClassConstant {
+            class_name,
+            constant_name,
+        } => format!("class_const {class_name}::{constant_name}"),
         IrConstant::Array(entries) => {
             let entries = entries
                 .iter()

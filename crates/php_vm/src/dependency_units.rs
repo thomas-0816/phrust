@@ -1209,6 +1209,15 @@ fn literal_label(constant: &IrConstant) -> String {
         IrConstant::Float(value) => format!("float:{value}"),
         IrConstant::String(value) => format!("string:{}", truncate(value, 40)),
         IrConstant::StringBytes(value) => format!("string_bytes:{}b", value.len()),
+        IrConstant::NamedConstant(name) => format!("const:{}", truncate(name, 40)),
+        IrConstant::ClassConstant {
+            class_name,
+            constant_name,
+        } => format!(
+            "class_const:{}::{}",
+            truncate(class_name, 30),
+            truncate(constant_name, 30)
+        ),
         IrConstant::Array(entries) => format!("array:{}entries", entries.len()),
     }
 }

@@ -2361,7 +2361,7 @@ impl LoweringContext<'_> {
         if let Some(value) = self.lower_const_expr_magic_constant(default, current_class_display) {
             return Some(value);
         }
-        self.lower_const_expr_value(
+        let value = self.lower_const_expr_value(
             default,
             |context| {
                 matches!(
@@ -2372,7 +2372,11 @@ impl LoweringContext<'_> {
             current_class,
             class_constants,
             class_parents,
-        )
+        );
+        match value {
+            Some(IrConstant::NamedConstant(_)) | Some(IrConstant::ClassConstant { .. }) => None,
+            other => other,
+        }
     }
 
     fn lower_deferred_property_default(
@@ -2522,13 +2526,17 @@ impl LoweringContext<'_> {
         {
             return Some(value);
         }
-        self.lower_const_expr_value(
+        let value = self.lower_const_expr_value(
             value,
             |context| matches!(context, ConstExprContext::ClassConstInitializer),
             Some(current_class),
             class_constants,
             class_parents,
-        )
+        );
+        match value {
+            Some(IrConstant::NamedConstant(_)) | Some(IrConstant::ClassConstant { .. }) => None,
+            other => other,
+        }
     }
 
     fn lower_const_expr_magic_constant(
@@ -2740,7 +2748,7 @@ impl LoweringContext<'_> {
         }
         let mut visiting = Vec::new();
         let named_constants = self.global_constant_initializer_map();
-        constant_from_expr_with_class_constants(
+        constant_from_expr_with_runtime_constants(
             module,
             const_expr.expr_id(),
             &named_constants,
@@ -12102,6 +12110,142 @@ fn constant_from_expr_with_class_constants(
     }
 }
 
+fn constant_from_expr_with_runtime_constants(
+    module: &HirModule,
+    expr_id: ExprId,
+    named_constants: &HashMap<String, IrConstant>,
+    current_class: Option<&str>,
+    class_constants: &ClassConstantInitializerMap,
+    class_parents: &ClassParentMap,
+    visiting_class_constants: &mut Vec<(String, String)>,
+) -> Option<IrConstant> {
+    let expr = module.expressions().get(expr_id)?;
+    match expr.kind() {
+        HirExprKind::Literal { text } => literal_constant(text),
+        HirExprKind::Name { resolution } => language_constant(resolution.source())
+            .or_else(|| named_constant_value(named_constants, resolution))
+            .or_else(|| runtime_named_constant_name(resolution).map(IrConstant::NamedConstant)),
+        HirExprKind::Unary { operator, expr } => {
+            let value = constant_from_expr_with_runtime_constants(
+                module,
+                (*expr)?,
+                named_constants,
+                current_class,
+                class_constants,
+                class_parents,
+                visiting_class_constants,
+            )?;
+            match operator.as_str() {
+                "parenthesized" | "+" => Some(value),
+                "-" => negate_ir_constant(value),
+                "~" => bitnot_ir_constant(value),
+                _ => None,
+            }
+        }
+        HirExprKind::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            let left = constant_from_expr_with_runtime_constants(
+                module,
+                (*left)?,
+                named_constants,
+                current_class,
+                class_constants,
+                class_parents,
+                visiting_class_constants,
+            )?;
+            let right = constant_from_expr_with_runtime_constants(
+                module,
+                (*right)?,
+                named_constants,
+                current_class,
+                class_constants,
+                class_parents,
+                visiting_class_constants,
+            )?;
+            binary_ir_constant(operator, left, right)
+        }
+        HirExprKind::Array { elements } => {
+            let mut entries = Vec::with_capacity(elements.len());
+            for element_id in elements {
+                let element = module.expressions().get(*element_id)?;
+                match element.kind() {
+                    HirExprKind::ArrayPair {
+                        key,
+                        value,
+                        unpack,
+                        by_ref,
+                    } => {
+                        if *unpack || *by_ref {
+                            return None;
+                        }
+                        entries.push(IrConstantArrayEntry {
+                            key: key.and_then(|key| {
+                                constant_from_expr_with_runtime_constants(
+                                    module,
+                                    key,
+                                    named_constants,
+                                    current_class,
+                                    class_constants,
+                                    class_parents,
+                                    visiting_class_constants,
+                                )
+                            }),
+                            value: constant_from_expr_with_runtime_constants(
+                                module,
+                                (*value)?,
+                                named_constants,
+                                current_class,
+                                class_constants,
+                                class_parents,
+                                visiting_class_constants,
+                            )?,
+                        });
+                    }
+                    _ => entries.push(IrConstantArrayEntry {
+                        key: None,
+                        value: constant_from_expr_with_runtime_constants(
+                            module,
+                            *element_id,
+                            named_constants,
+                            current_class,
+                            class_constants,
+                            class_parents,
+                            visiting_class_constants,
+                        )?,
+                    }),
+                }
+            }
+            Some(IrConstant::Array(entries))
+        }
+        HirExprKind::StaticAccess { target, member } => {
+            let target_class = class_constant_initializer_target_class(
+                module,
+                (*target)?,
+                current_class,
+                class_parents,
+            )?;
+            let member = class_constant_initializer_member_name(module, (*member)?)?;
+            resolve_class_constant_initializer(
+                module,
+                &target_class,
+                &member,
+                named_constants,
+                class_constants,
+                class_parents,
+                visiting_class_constants,
+            )
+            .or(Some(IrConstant::ClassConstant {
+                class_name: target_class,
+                constant_name: member,
+            }))
+        }
+        _ => None,
+    }
+}
+
 fn class_constant_initializer_target_class(
     module: &HirModule,
     expr_id: ExprId,
@@ -12149,6 +12293,19 @@ fn class_constant_initializer_target_display_class(
             .and_then(|class| class_parents.get(&class).cloned().flatten());
     }
     Some(source.trim_start_matches('\\').to_owned())
+}
+
+fn runtime_named_constant_name(resolution: &HirNameResolution) -> Option<String> {
+    [
+        resolution.resolved(),
+        resolution.fallback(),
+        Some(resolution.source()),
+        resolution.source().strip_prefix('\\'),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|name| !name.is_empty())
+    .map(ToOwned::to_owned)
 }
 
 fn class_constant_initializer_member_name(module: &HirModule, expr_id: ExprId) -> Option<String> {
