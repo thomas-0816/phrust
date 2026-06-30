@@ -43,13 +43,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Nix
+      - name: Setup Nix
         if: ${{ steps.sonar_secrets.outputs.skip != 'true' }}
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Enable Nix cache
-        if: ${{ steps.sonar_secrets.outputs.skip != 'true' }}
-        uses: DeterminateSystems/magic-nix-cache-action@v10
+        uses: ./.github/actions/setup-nix
 
       - name: Cache SonarQube scanner
         if: ${{ steps.sonar_secrets.outputs.skip != 'true' }}

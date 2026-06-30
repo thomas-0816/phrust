@@ -38,11 +38,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@v10
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Format
         run: nix develop -c just fmt
@@ -63,11 +60,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@v10
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Run fast quality gate
         run: nix develop -c just quality-fast
@@ -88,11 +82,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@v10
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Run gate
         run: nix develop -c just ${{ matrix.gate }}
@@ -117,11 +108,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@v10
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Test PHPT tooling
         run: nix develop -c just ci-phpt-smoke
@@ -155,11 +143,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@v10
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Run quality gates
         run: nix develop -c just quality
@@ -172,11 +157,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@v10
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Bootstrap pinned php-src
         run: nix develop -c just bootstrap-ref

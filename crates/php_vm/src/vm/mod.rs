@@ -56433,11 +56433,15 @@ var_dump(unserialize('O:1:"C":0:{}'));
             "<?php class C { public readonly int $x; public function set($x) { $this->x = $x; } } $c = new C(); $c->set(1); echo $c->x; $c->set(2);",
         );
         assert_eq!(readonly.status.exit_status(), ExitStatus::RuntimeError);
-        assert_eq!(
-            readonly.diagnostics[0].id(),
-            "E_PHP_VM_READONLY_PROPERTY_WRITE"
+        assert_eq!(readonly.diagnostics[0].id(), "E_PHP_VM_UNCAUGHT_EXCEPTION");
+        assert!(
+            readonly
+                .output
+                .to_string_lossy()
+                .contains("Uncaught Error: property c::$x is already initialized"),
+            "{}",
+            readonly.output.to_string_lossy()
         );
-        assert_eq!(readonly.output.as_bytes(), b"1");
 
         let static_property = execute_source(
             "<?php class C { public static int $count; public static $name = 'x'; } C::$count = 2; echo C::$count, '|', C::$name;",
