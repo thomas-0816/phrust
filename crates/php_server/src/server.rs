@@ -1435,7 +1435,7 @@ fn clear_cache_response(state: &AppState, peer: SocketAddr) -> Response<Response
     }
     state.engine.script_cache.clear();
     if let Err(error) = state.engine.include_cache.clear() {
-        eprintln!("failed to clear include cache: {error}");
+        warn!(%error, "failed to clear include cache");
         return response::text(
             StatusCode::INTERNAL_SERVER_ERROR,
             "include cache clear failed\n",
