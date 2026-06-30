@@ -42,6 +42,7 @@ CATEGORIES = (
     "errors",
     "destructors",
     "gc",
+    "includes",
     "include_eval_autoload",
     "globals",
     "superglobals",

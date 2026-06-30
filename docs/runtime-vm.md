@@ -114,21 +114,30 @@ Fixture proof: `fixtures/runtime/valid/exceptions/catch-exception.php`,
 
 ## Include Execution
 
-`Include` evaluates its path operand, resolves it relative to the currently
-executing file, and accepts only canonical files inside configured include
-roots. The included file is compiled through the same frontend-to-IR path and
-executed by the same VM. There is no second parser or ad hoc include evaluator.
+`Include` evaluates its path operand, resolves local paths with PHP-style
+include-path order for the covered filesystem matrix, and accepts only
+canonical files inside configured include roots. Bare relative paths search
+`include_path`, then runtime cwd, then the currently executing file's
+directory. `.` in `include_path` means runtime cwd. Explicit `./` and `../`
+paths use runtime cwd and do not search `include_path`. The included file is
+compiled through the same frontend-to-IR path and executed by the same VM.
+There is no second parser or ad hoc include evaluator.
 
-`include_once` and `require_once` are tracked by canonical path in VM state.
-Missing `include` emits a warning diagnostic and returns `false`; missing
-`require` is fatal. `include_path`, stream wrappers, resources, arbitrary cwd
-rules, and complete cross-file symbol redeclaration behavior are known gaps.
+`include_once` and `require_once` are tracked by canonical path in request-local
+VM state. Missing `include` emits a warning diagnostic and returns `false`;
+missing `require` is fatal. Shared include caches are keyed by canonical path,
+fingerprint, and optimization level; inline include-path caches validate file
+fingerprints before reuse. Minimal PHAR include loading is covered for archives
+inside configured filesystem roots. Broad stream wrappers/resources, exact PHP
+warning wording/channel parity, and complete cross-file symbol redeclaration
+behavior remain known gaps.
 
 Fixture proof: `fixtures/runtime/valid/includes/include-return.php`,
 `fixtures/runtime/valid/includes/share-variable.php`,
 `fixtures/runtime/valid/includes/include-once.php`,
-`fixtures/runtime/valid/includes/include-missing.php`, and
-`fixtures/runtime/invalid/includes/require-missing.php`.
+`fixtures/runtime/valid/includes/include-missing.php`,
+`fixtures/runtime/invalid/includes/require-missing.php`, and
+`fixtures/runtime_semantics/includes/*.php`.
 
 ## Trace and Debugging
 

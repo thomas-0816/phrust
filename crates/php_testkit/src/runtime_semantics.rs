@@ -26,6 +26,7 @@ pub const RUNTIME_SEMANTICS_FIXTURE_CATEGORIES: &[&str] = &[
     "errors",
     "destructors",
     "gc",
+    "includes",
     "include_eval_autoload",
     "globals",
     "superglobals",
@@ -67,11 +68,12 @@ mod tests {
 
     #[test]
     fn runtime_semantics_categories_match_coverage_matrix() {
-        assert_eq!(RUNTIME_SEMANTICS_FIXTURE_CATEGORIES.len(), 31);
+        assert_eq!(RUNTIME_SEMANTICS_FIXTURE_CATEGORIES.len(), 32);
         assert!(is_runtime_semantics_category("refs"));
         assert!(is_runtime_semantics_category("errors"));
         assert!(is_runtime_semantics_category("destructors"));
         assert!(is_runtime_semantics_category("gc"));
+        assert!(is_runtime_semantics_category("includes"));
         assert!(is_runtime_semantics_category("include_eval_autoload"));
         assert!(is_runtime_semantics_category("globals"));
         assert!(is_runtime_semantics_category("superglobals"));
