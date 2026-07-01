@@ -17,6 +17,17 @@ the existing runtime-semantics differential fixtures. If `REFERENCE_PHP` is not
 set, the harness reports the category as skipped instead of treating local Rust
 execution as reference proof.
 
+Autoload, feature-detection, callable, and builtin heatmap closure work is
+covered separately by:
+
+```bash
+nix develop -c env REFERENCE_PHP=/path/to/php-8.5.7/sapi/cli/php just wp-autoload-stdlib
+```
+
+That gate writes its runtime-diff report under
+`target/runtime-semantics/wp-autoload-stdlib/` and its generated builtin
+heatmap under `target/wordpress-bringup/`.
+
 Latest local verification on June 29, 2026 used:
 
 ```bash

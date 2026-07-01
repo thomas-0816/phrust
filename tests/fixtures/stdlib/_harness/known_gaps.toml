@@ -5,6 +5,5 @@ STDLIB-GAP-FPRINTF-STREAM-RESOURCE = "fprintf requires stream/resource values; t
 STDLIB-GAP-ARRAY-WALK-BY-REF-MUTATION = "array_walk invokes callbacks but does not yet pass array elements by reference for callback-side mutation."
 STDLIB-GAP-NATURAL-SORT-EDGE-CASES = "natsort and natcasesort implement deterministic natural ordering for common Composer-style names but not every Zend leading-zero and locale-sensitive edge case."
 STDLIB-GAP-MATH-FLOAT-EDGES = "Math numeric MVP covers common integer, float, numeric-string, NaN, INF, and formatting paths, but not every PHP_ROUND_* mode, negative-zero formatting, overflow, or architecture-sensitive float edge case."
-STDLIB-GAP-SYMBOL-TRAIT-INTROSPECTION = "trait_exists and get_declared_traits cannot observe user traits until trait declarations are preserved in the frontend/IR symbol tables."
 STDLIB-GAP-FORWARD-STATIC-CALL-EDGE-PARITY = "forward_static_call routes ordinary static callables through the VM callable path but does not yet model every Zend late-static-binding edge or diagnostic."
 STDLIB-GAP-CALL-USER-FUNC-ARRAY-BYREF = "call_user_func_array supports positional and named array arguments but does not yet promote array elements into by-reference callback slots."

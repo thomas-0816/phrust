@@ -15,7 +15,7 @@
 {"id":"references-local-alias","path":"fixtures/runtime/valid/references/local-alias.php","tags":["runtime","references"],"expect":{"exit":0,"stdout":"23\n"}}
 {"id":"constants-global","path":"fixtures/runtime/valid/constants/global.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"42|runtime\n"}}
 {"id":"constants-builtin","path":"fixtures/runtime/valid/constants/builtin.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"8.5.7|80507|8|5|7|8|/|:\n"}}
-{"id":"constants-define","path":"fixtures/runtime/valid/constants/define.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"bool(true)\nbool(true)\nok|ok|bool(false)\n"}}
+{"id":"constants-define","path":"fixtures/runtime/valid/constants/define.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"bool(true)\nbool(true)\nok|ok|\nWarning: Constant LOCAL_DYNAMIC already defined, this will be an error in PHP 9 in {repo}/fixtures/runtime/valid/constants/define.php on line 5\nbool(false)\n"}}
 {"id":"constants-magic-top","path":"fixtures/runtime/valid/constants/magic-top-level.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"{repo}/fixtures/runtime/valid/constants/magic-top-level.php\n{repo}/fixtures/runtime/valid/constants\n4||||\n"}}
 {"id":"constants-magic-function","path":"fixtures/runtime/valid/constants/magic-function.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"magic_function_fixture|3||magic_function_fixture|\n"}}
 {"id":"constants-magic-method","path":"fixtures/runtime/valid/constants/magic-method.php","tags":["runtime","constants"],"expect":{"exit":0,"stdout":"MagicMethodFixture|MagicMethodFixture::show\n"}}

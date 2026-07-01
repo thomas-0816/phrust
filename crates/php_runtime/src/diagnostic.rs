@@ -644,6 +644,70 @@ impl VmCompileDiagnostic {
 pub enum RuntimeDiagnosticPayload {
     /// VM compile diagnostic payload.
     VmCompile(VmCompileDiagnostic),
+    /// WordPress bring-up diagnostic classification payload.
+    WordPressBringup(WordPressDiagnosticContext),
+}
+
+impl RuntimeDiagnosticPayload {
+    /// Structured payload fields for shared diagnostic envelopes and compact JSON.
+    #[must_use]
+    pub fn envelope_context(&self) -> BTreeMap<String, String> {
+        match self {
+            Self::VmCompile(payload) => payload.envelope_context(),
+            Self::WordPressBringup(payload) => payload.envelope_context(),
+        }
+    }
+}
+
+/// Additive diagnostic metadata for WordPress bring-up closure reports.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressDiagnosticContext {
+    fields: BTreeMap<String, String>,
+}
+
+impl WordPressDiagnosticContext {
+    /// Creates a context with the required stable error class.
+    #[must_use]
+    pub fn new(error_class: impl Into<String>) -> Self {
+        let mut fields = BTreeMap::new();
+        fields.insert("wordpress_error_class".to_string(), error_class.into());
+        Self { fields }
+    }
+
+    /// Adds a field when the value is available.
+    #[must_use]
+    pub fn with_field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.fields.insert(key.into(), value.into());
+        self
+    }
+
+    /// Adds a field when the value is available.
+    #[must_use]
+    pub fn with_optional_field(
+        self,
+        key: impl Into<String>,
+        value: Option<impl Into<String>>,
+    ) -> Self {
+        match value {
+            Some(value) => self.with_field(key, value),
+            None => self,
+        }
+    }
+
+    /// Returns the deterministic context fields.
+    #[must_use]
+    pub const fn fields(&self) -> &BTreeMap<String, String> {
+        &self.fields
+    }
+
+    /// Structured payload fields for shared diagnostic envelopes.
+    #[must_use]
+    pub fn envelope_context(&self) -> BTreeMap<String, String> {
+        let mut context = BTreeMap::new();
+        context.insert("payload".to_string(), "wordpress_bringup".to_string());
+        context.extend(self.fields.clone());
+        context
+    }
 }
 
 /// One deterministic runtime stack frame.
@@ -791,6 +855,13 @@ impl RuntimeDiagnostic {
         self.payload.as_ref()
     }
 
+    /// Returns a copy of this diagnostic with additional typed payload.
+    #[must_use]
+    pub fn with_diagnostic_payload(mut self, payload: RuntimeDiagnosticPayload) -> Self {
+        self.payload = Some(payload);
+        self
+    }
+
     /// Stable compact JSON representation.
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -833,6 +904,20 @@ impl RuntimeDiagnostic {
             }
             None => out.push_str("null"),
         }
+        if let Some(payload) = &self.payload {
+            out.push_str(",\"context\":{");
+            for (index, (key, value)) in payload.envelope_context().iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push('"');
+                out.push_str(&escape_json(key));
+                out.push_str("\":\"");
+                out.push_str(&escape_json(value));
+                out.push('"');
+            }
+            out.push('}');
+        }
         out.push('}');
         out
     }
@@ -861,7 +946,7 @@ impl RuntimeDiagnostic {
                     .join(" > "),
             );
         }
-        if let Some(RuntimeDiagnosticPayload::VmCompile(payload)) = &self.payload {
+        if let Some(payload) = &self.payload {
             context.extend(payload.envelope_context());
         }
 
@@ -1062,14 +1147,22 @@ pub fn undefined_function(
     source_span: RuntimeSourceSpan,
     stack_trace: Vec<RuntimeStackFrame>,
 ) -> RuntimeDiagnostic {
+    let name = name.as_ref();
+    let payload = RuntimeDiagnosticPayload::WordPressBringup(
+        WordPressDiagnosticContext::new("stdlib_builtin")
+            .with_field("requested_name", name)
+            .with_field("normalized_name", name.to_ascii_lowercase())
+            .with_field("lookup_kind", "function"),
+    );
     RuntimeDiagnostic::new(
         "E_PHP_RUNTIME_UNDEFINED_FUNCTION",
         RuntimeSeverity::FatalError,
-        format!("undefined function {}", name.as_ref()),
+        format!("undefined function {name}"),
         source_span,
         stack_trace,
         Some(PhpReferenceClassification::Error),
     )
+    .with_diagnostic_payload(payload)
 }
 
 /// Unsupported feature helper.
@@ -1132,7 +1225,7 @@ mod tests {
         assert_eq!(diagnostic.severity(), RuntimeSeverity::FatalError);
         assert_eq!(
             diagnostic.to_json(),
-            "{\"id\":\"E_PHP_RUNTIME_UNDEFINED_FUNCTION\",\"severity\":\"fatal_error\",\"message\":\"undefined function missing\",\"span\":{\"file\":\"fixture.php\",\"start\":1,\"end\":8},\"stack\":[{\"function\":\"main\"}],\"php_reference\":\"error\"}"
+            "{\"id\":\"E_PHP_RUNTIME_UNDEFINED_FUNCTION\",\"severity\":\"fatal_error\",\"message\":\"undefined function missing\",\"span\":{\"file\":\"fixture.php\",\"start\":1,\"end\":8},\"stack\":[{\"function\":\"main\"}],\"php_reference\":\"error\",\"context\":{\"lookup_kind\":\"function\",\"normalized_name\":\"missing\",\"payload\":\"wordpress_bringup\",\"requested_name\":\"missing\",\"wordpress_error_class\":\"stdlib_builtin\"}}"
         );
     }
 
@@ -1161,6 +1254,10 @@ mod tests {
         assert_eq!(json["severity"], "fatal_error");
         assert_eq!(json["location"]["path"], "fixture.php");
         assert_eq!(json["context"]["php_reference"], "error");
+        assert_eq!(json["context"]["wordpress_error_class"], "stdlib_builtin");
+        assert_eq!(json["context"]["requested_name"], "missing");
+        assert_eq!(json["context"]["normalized_name"], "missing");
+        assert_eq!(json["context"]["lookup_kind"], "function");
         assert_eq!(json["context"]["stack"], "main > caller");
         assert_eq!(json["context"]["stack_depth"], "2");
         assert_eq!(json["php_visible"], true);

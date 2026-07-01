@@ -81,12 +81,13 @@ use php_runtime::{
     PhpArrayShapeLookup, PhpArrayShapeLookupFallback, PhpString, ProcessCapability, ReferenceCell,
     RuntimeContext, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeHttpResponseState,
     RuntimeSeverity, RuntimeSourceSpan, RuntimeStackFrame, RuntimeType, Slot, UnserializeOptions,
-    UploadRegistry, Value, VmCompileDiagnostic, array_to_string_warning, compare,
-    division_by_zero_mvp, emit_php_diagnostic, equal, error_reporting_allows_level, identical,
-    reset_float_string_precision, runtime_type_name, serialize as serialize_value,
-    set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
-    to_string, undefined_function, undefined_variable_warning, unserialize as unserialize_value,
-    unsupported_feature, value_matches_runtime_type, value_type_name,
+    UploadRegistry, Value, VmCompileDiagnostic, WordPressDiagnosticContext,
+    array_to_string_warning, compare, division_by_zero_mvp, emit_php_diagnostic, equal,
+    error_reporting_allows_level, identical, reset_float_string_precision, runtime_type_name,
+    serialize as serialize_value, set_float_string_precision, to_arithmetic_number, to_bool,
+    to_float, to_int, to_number, to_string, undefined_function, undefined_variable_warning,
+    unserialize as unserialize_value, unsupported_feature, value_matches_runtime_type,
+    value_type_name,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -12859,7 +12860,9 @@ impl Vm {
                                     RaiseOutcome::Done(result) => return *result,
                                 }
                             }
-                            let object = match reflection_new_object(compiled, class_name, values) {
+                            let object = match self.reflection_new_object(
+                                compiled, class_name, values, output, stack, state,
+                            ) {
                                 Ok(object) => object,
                                 Err(message) => {
                                     let result =
@@ -13569,30 +13572,30 @@ impl Vm {
                                             RaiseOutcome::Done(result) => return *result,
                                         }
                                     }
-                                    let object =
-                                        match reflection_new_object(compiled, class_name, values) {
-                                            Ok(object) => object,
-                                            Err(message) => {
-                                                let result = self.runtime_error(
-                                                    output, compiled, stack, message,
-                                                );
-                                                match self.route_throwable_result(
-                                                    compiled,
-                                                    output,
-                                                    stack,
-                                                    state,
-                                                    &mut exception_handlers,
-                                                    &mut pending_control,
-                                                    result,
-                                                ) {
-                                                    RaiseOutcome::Caught(target) => {
-                                                        block_id = target;
-                                                        continue 'dispatch;
-                                                    }
-                                                    RaiseOutcome::Done(result) => return *result,
+                                    let object = match self.reflection_new_object(
+                                        compiled, class_name, values, output, stack, state,
+                                    ) {
+                                        Ok(object) => object,
+                                        Err(message) => {
+                                            let result = self
+                                                .runtime_error(output, compiled, stack, message);
+                                            match self.route_throwable_result(
+                                                compiled,
+                                                output,
+                                                stack,
+                                                state,
+                                                &mut exception_handlers,
+                                                &mut pending_control,
+                                                result,
+                                            ) {
+                                                RaiseOutcome::Caught(target) => {
+                                                    block_id = target;
+                                                    continue 'dispatch;
                                                 }
+                                                RaiseOutcome::Done(result) => return *result,
                                             }
-                                        };
+                                        }
+                                    };
                                     if let Err(message) = stack
                                         .current_mut()
                                         .expect("frame was pushed")
@@ -13643,14 +13646,23 @@ impl Vm {
                                 {
                                     class
                                 } else {
-                                    return self.runtime_error(
-                                    output,
-                                    compiled,
-                                    stack,
-                                    format!(
-                                        "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
-                                    ),
-                                );
+                                    return self.runtime_error_with_bringup_context(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        state,
+                                        runtime_source_span(compiled, instruction.span),
+                                        format!(
+                                            "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
+                                        ),
+                                        BringupDiagnosticInput {
+                                            error_class: Some("autoload_lookup"),
+                                            requested_name: Some(class_name.to_owned()),
+                                            lookup_kind: Some("class"),
+                                            autoload_enabled: Some(true),
+                                            ..BringupDiagnosticInput::default()
+                                        },
+                                    );
                                 }
                             }
                         };
@@ -30035,13 +30047,30 @@ impl Vm {
                     Ok(name) => name.to_string_lossy(),
                     Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
-                if constant_name.is_empty()
-                    || matches!(
-                        global_constant_value(compiled, state, stack, &constant_name),
-                        Ok(Some(_)) | Err(_)
-                    )
-                {
+                if constant_name.is_empty() {
                     return VmResult::success(output.clone(), Some(Value::Bool(false)));
+                }
+                if matches!(
+                    global_constant_value(compiled, state, stack, &constant_name),
+                    Ok(Some(_)) | Err(_)
+                ) {
+                    let mut diagnostics = Vec::new();
+                    if let Err(result) = self.emit_define_duplicate_warning(
+                        compiled,
+                        call_span,
+                        output,
+                        stack,
+                        state,
+                        &mut diagnostics,
+                        &constant_name,
+                    ) {
+                        return result;
+                    }
+                    return VmResult::success_with_diagnostics(
+                        output.clone(),
+                        Some(Value::Bool(false)),
+                        diagnostics,
+                    );
                 }
                 state
                     .user_constants
@@ -30123,6 +30152,31 @@ impl Vm {
                             || php_std::introspection::function_exists(&registry, &function_name),
                     )),
                 )
+            }
+            "get_defined_functions" => {
+                if values.len() > 1 {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_SYMBOL_ARITY: get_defined_functions expects zero or one argument",
+                    );
+                }
+                self.call_get_defined_functions_builtin(compiled, output, state)
+            }
+            "get_defined_constants" => {
+                if values.len() > 1 {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_SYMBOL_ARITY: get_defined_constants expects zero or one argument",
+                    );
+                }
+                let categorize = values
+                    .first()
+                    .is_some_and(|value| to_bool(value).unwrap_or(false));
+                self.call_get_defined_constants_builtin(compiled, output, state, categorize)
             }
             "compact" => self.call_compact_builtin(compiled, values, output, stack),
             "class_exists" | "interface_exists" | "trait_exists" | "enum_exists" => {
@@ -30329,6 +30383,12 @@ impl Vm {
         let syntax_only = bound[1]
             .as_ref()
             .is_some_and(|arg| to_bool(&arg.value).unwrap_or(false));
+        if !syntax_only
+            && let Err(result) =
+                self.autoload_callable_class(compiled, &value, output, stack, state)
+        {
+            return result;
+        }
         let callable = value_is_callable(compiled, state, &value, syntax_only);
         if let Some(name_arg) = bound[2].as_ref() {
             match call_argument_reference_cell(compiled, name_arg, stack) {
@@ -30346,6 +30406,45 @@ impl Vm {
             }
         }
         VmResult::success(output.clone(), Some(Value::Bool(callable)))
+    }
+
+    fn autoload_callable_class(
+        &self,
+        compiled: &CompiledUnit,
+        value: &Value,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        match effective_value(value) {
+            Value::String(name) => {
+                let name = name.to_string_lossy();
+                if let Some((class_name, _)) = name.split_once("::")
+                    && lookup_class_in_state(compiled, state, class_name).is_none()
+                {
+                    self.autoload_class(compiled, class_name, output, stack, state, None)?;
+                }
+            }
+            Value::Array(array) => {
+                let Some(target) = array.get(&ArrayKey::Int(0)) else {
+                    return Ok(());
+                };
+                let Some(method) = array.get(&ArrayKey::Int(1)) else {
+                    return Ok(());
+                };
+                if to_string(method).is_err() {
+                    return Ok(());
+                }
+                if object_from_value(target).is_none()
+                    && let Ok(class_name) = to_string(target).map(|name| name.to_string_lossy())
+                    && lookup_class_in_state(compiled, state, &class_name).is_none()
+                {
+                    self.autoload_class(compiled, &class_name, output, stack, state, None)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn call_compact_builtin(
@@ -30777,9 +30876,12 @@ impl Vm {
                 compiled,
                 output,
                 stack,
+                state,
                 format!(
                     "{builtin}(): Argument #1 ($callback) must be a valid callback, class \"{class_name}\" not found"
                 ),
+                Some(class_name.to_owned()),
+                Some("class"),
             ));
         }
         let Some(resolved) =
@@ -30795,6 +30897,7 @@ impl Vm {
             builtin,
             output,
             stack,
+            state,
         )
     }
 
@@ -30821,6 +30924,7 @@ impl Vm {
             builtin,
             output,
             stack,
+            state,
         )
     }
 
@@ -30832,6 +30936,7 @@ impl Vm {
         builtin: &str,
         output: &mut OutputBuffer,
         stack: &CallStack,
+        state: &ExecutionState,
     ) -> Result<(), VmResult> {
         let visibility = if method.flags.is_private {
             Some("private")
@@ -30847,10 +30952,13 @@ impl Vm {
             compiled,
             output,
             stack,
+            state,
             format!(
                 "{builtin}(): Argument #1 ($callback) must be a valid callback, cannot access {visibility} method {}::{}()",
                 class.display_name, method.name
             ),
+            Some(format!("{}::{}", class.display_name, method.name)),
+            Some("function"),
         ))
     }
 
@@ -30859,13 +30967,25 @@ impl Vm {
         compiled: &CompiledUnit,
         output: &mut OutputBuffer,
         stack: &CallStack,
+        state: &ExecutionState,
         message: String,
+        requested_name: Option<String>,
+        lookup_kind: Option<&'static str>,
     ) -> VmResult {
-        self.runtime_error(
+        self.runtime_error_with_bringup_context(
             output,
             compiled,
             stack,
+            state,
+            RuntimeSourceSpan::default(),
             format!("E_PHP_RUNTIME_BUILTIN_TYPE: {message}"),
+            BringupDiagnosticInput {
+                error_class: Some("callable_resolution"),
+                requested_name,
+                lookup_kind: lookup_kind.or(Some("function")),
+                autoload_enabled: Some(true),
+                ..BringupDiagnosticInput::default()
+            },
         )
     }
 
@@ -31510,6 +31630,50 @@ impl Vm {
         Ok(())
     }
 
+    fn emit_define_duplicate_warning(
+        &self,
+        compiled: &CompiledUnit,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+        constant_name: &str,
+    ) -> Result<(), VmResult> {
+        let source_span = call_span
+            .or_else(|| stack.current().and_then(|frame| frame.call_span))
+            .map(|span| runtime_source_span(compiled, span))
+            .unwrap_or_default();
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_VM_DEFINE_CONSTANT_ALREADY_DEFINED",
+            RuntimeSeverity::Warning,
+            format!("Constant {constant_name} already defined, this will be an error in PHP 9"),
+            source_span,
+            stack_trace(compiled, stack),
+            None,
+        );
+        let handled = self.dispatch_error_handler(
+            compiled,
+            output,
+            stack,
+            state,
+            php_runtime::PHP_E_WARNING,
+            &diagnostic,
+        )?;
+        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+            emit_vm_diagnostic(
+                output,
+                state,
+                &diagnostic,
+                php_runtime::PhpDiagnosticChannel::Warning,
+                php_runtime::PHP_E_WARNING,
+            );
+            diagnostics.push(diagnostic);
+        }
+        Ok(())
+    }
+
     fn call_get_declared_builtin(
         &self,
         compiled: &CompiledUnit,
@@ -31531,6 +31695,86 @@ impl Vm {
             output.clone(),
             Some(Value::Array(PhpArray::from_packed(values))),
         )
+    }
+
+    fn call_get_defined_functions_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        state: &ExecutionState,
+    ) -> VmResult {
+        let mut user_functions = BTreeSet::new();
+        for entry in compiled.function_table() {
+            let function = compiled.unit().functions.get(entry.function.index());
+            if function.is_some_and(|function| function.flags.is_closure) {
+                continue;
+            }
+            user_functions.insert(entry.name.clone());
+        }
+        for entry in &state.dynamic_functions {
+            user_functions.insert(entry.name.clone());
+        }
+        let internal_functions = php_std::ExtensionRegistry::standard_library()
+            .enabled_php_functions()
+            .into_iter()
+            .map(|function| function.name().to_owned())
+            .collect::<BTreeSet<_>>();
+
+        let mut array = PhpArray::new();
+        array.insert(
+            string_key("internal"),
+            Value::Array(defined_symbol_names_array(&internal_functions)),
+        );
+        array.insert(
+            string_key("user"),
+            Value::Array(defined_symbol_names_array(&user_functions)),
+        );
+        VmResult::success(output.clone(), Some(Value::Array(array)))
+    }
+
+    fn call_get_defined_constants_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        state: &ExecutionState,
+        categorize: bool,
+    ) -> VmResult {
+        let mut standard = PhpArray::new();
+        for constant in php_std::ExtensionRegistry::standard_library().enabled_constants() {
+            if let Some(value) = predefined_constant_value(constant.name()) {
+                standard.insert(string_key(constant.name()), value);
+            }
+        }
+
+        let mut user = PhpArray::new();
+        for entry in compiled.constant_table() {
+            if let Ok(value) = constant_value(compiled.unit(), entry.value) {
+                user.insert(string_key(&entry.name), value);
+            }
+        }
+        for entry in &state.dynamic_constants {
+            if let Some(owner) = state.dynamic_units.get(entry.unit_index)
+                && let Ok(value) = constant_value(owner.unit(), entry.value)
+            {
+                user.insert(string_key(&entry.name), value);
+            }
+        }
+        for (name, value) in &state.user_constants {
+            user.insert(string_key(name), value.clone());
+        }
+
+        let value = if categorize {
+            let mut array = PhpArray::new();
+            array.insert(string_key("Core"), Value::Array(standard));
+            array.insert(string_key("user"), Value::Array(user));
+            Value::Array(array)
+        } else {
+            for (key, value) in user.iter() {
+                standard.insert(key.clone(), value.clone());
+            }
+            Value::Array(standard)
+        };
+        VmResult::success(output.clone(), Some(value))
     }
 
     fn class_like_exists_with_autoload_cache(
@@ -32238,6 +32482,19 @@ impl Vm {
                 )?;
             }
         }
+        for interface_name in &class.interfaces {
+            if lookup_class_in_state(compiled, state, interface_name).is_none()
+                && internal_runtime_class_entry(&normalize_class_name(interface_name)).is_none()
+            {
+                let display = class_dependency_display_name(compiled, class, interface_name);
+                self.autoload_class(compiled, &display, output, stack, state, None)?;
+            }
+            if let Some(interface) = lookup_class_in_state(compiled, state, interface_name) {
+                self.autoload_class_parents_if_missing_inner(
+                    compiled, &interface, output, stack, state, seen,
+                )?;
+            }
+        }
         seen.pop();
         Ok(())
     }
@@ -32419,6 +32676,50 @@ impl Vm {
         VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
     }
 
+    fn runtime_error_with_bringup_context(
+        &self,
+        output: &OutputBuffer,
+        compiled: &CompiledUnit,
+        stack: &CallStack,
+        state: &ExecutionState,
+        source_span: RuntimeSourceSpan,
+        message: impl Into<String>,
+        context: BringupDiagnosticInput,
+    ) -> VmResult {
+        let mut message = message.into();
+        let diagnostic_message = message.clone();
+        if stack.len() > 1 {
+            message.push_str("\ncall_stack:");
+            for frame in stack.frames().iter().rev() {
+                let name = compiled
+                    .unit()
+                    .functions
+                    .get(frame.function.index())
+                    .map(|function| function.name.as_str())
+                    .unwrap_or("<missing>");
+                message.push_str("\n  at ");
+                message.push_str(name);
+            }
+        }
+        let mut diagnostic = runtime_diagnostic_for_message_with_source_span(
+            &diagnostic_message,
+            compiled,
+            stack,
+            source_span,
+        );
+        if let Some(payload) = wordpress_bringup_payload(
+            &diagnostic_message,
+            diagnostic.id(),
+            compiled,
+            state,
+            stack,
+            context,
+        ) {
+            diagnostic = diagnostic.with_diagnostic_payload(payload);
+        }
+        VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
+    }
+
     fn execution_timeout(
         &self,
         output: &OutputBuffer,
@@ -32463,7 +32764,18 @@ impl Vm {
         span: php_ir::IrSpan,
         message: String,
     ) -> RaiseOutcome {
-        let result = self.runtime_error(output, compiled, stack, message);
+        let result = self.runtime_error_with_bringup_context(
+            output,
+            compiled,
+            stack,
+            state,
+            runtime_source_span(compiled, span),
+            message,
+            BringupDiagnosticInput {
+                autoload_enabled: Some(true),
+                ..BringupDiagnosticInput::default()
+            },
+        );
         if let Some(throwable) = runtime_error_throwable(&result) {
             tag_throwable_location(&throwable, compiled, span);
             state.pending_trace = Some(capture_backtrace_string(compiled, stack));
@@ -32706,6 +33018,241 @@ fn format_foreach_iterator_kind(iterator: &ForeachIterator) -> &'static str {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct BringupDiagnosticInput {
+    error_class: Option<&'static str>,
+    requested_name: Option<String>,
+    lookup_kind: Option<&'static str>,
+    autoload_enabled: Option<bool>,
+    builtin_owner: Option<String>,
+    argument_count: Option<usize>,
+    argument_types: Option<String>,
+}
+
+fn wordpress_bringup_payload(
+    message: &str,
+    id: &str,
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    stack: &CallStack,
+    input: BringupDiagnosticInput,
+) -> Option<RuntimeDiagnosticPayload> {
+    let error_class = input
+        .error_class
+        .or_else(|| infer_wordpress_error_class(id, message))?;
+    let lookup_kind = input
+        .lookup_kind
+        .or_else(|| infer_wordpress_lookup_kind(id, message));
+    let requested_name = input
+        .requested_name
+        .or_else(|| lookup_kind.and_then(|kind| requested_name_from_message(message, kind)));
+    let normalized_name = requested_name
+        .as_deref()
+        .zip(lookup_kind)
+        .map(|(name, kind)| normalized_bringup_name(name, kind));
+    let caller_file = current_source_path(compiled, stack)
+        .map(|path| path.to_string_lossy().into_owned())
+        .or_else(|| compiled.unit().files.first().map(|file| file.path.clone()));
+    let builtin_owner = input.builtin_owner.or_else(|| {
+        matches!(error_class, "stdlib_builtin")
+            .then(|| {
+                requested_name
+                    .as_deref()
+                    .and_then(infer_builtin_owner_for_name)
+            })
+            .flatten()
+            .map(str::to_owned)
+    });
+
+    let mut context = WordPressDiagnosticContext::new(error_class)
+        .with_optional_field("requested_name", requested_name.clone())
+        .with_optional_field("normalized_name", normalized_name)
+        .with_optional_field("lookup_kind", lookup_kind.map(str::to_owned))
+        .with_field(
+            "autoload_stack_size",
+            state.autoload_registry.callbacks().len().to_string(),
+        )
+        .with_field(
+            "autoload_recursion_depth",
+            state.autoload_stack.len().to_string(),
+        )
+        .with_field(
+            "include_path",
+            state.ini.get("include_path").unwrap_or(".").to_owned(),
+        )
+        .with_field("cwd", state.cwd.to_string_lossy())
+        .with_optional_field("caller_file", caller_file)
+        .with_field("class_table_epoch", state.class_table_epoch.to_string())
+        .with_field(
+            "autoload_stack_epoch",
+            state.autoload_stack_epoch.to_string(),
+        );
+    if let Some(enabled) = input.autoload_enabled {
+        context = context.with_field("autoload_enabled", enabled.to_string());
+    }
+    if let Some(owner) = builtin_owner {
+        context = context.with_field("builtin_owner", owner);
+    }
+    if let Some(count) = input.argument_count {
+        context = context.with_field("argument_count", count.to_string());
+    }
+    if let Some(types) = input.argument_types {
+        context = context.with_field("argument_types", types);
+    }
+    Some(RuntimeDiagnosticPayload::WordPressBringup(context))
+}
+
+fn infer_wordpress_error_class(id: &str, message: &str) -> Option<&'static str> {
+    let lower_message = message.to_ascii_lowercase();
+    if id.contains("CALLABLE") || lower_message.contains("callback") {
+        return Some("callable_resolution");
+    }
+    if id.contains("AUTOLOAD")
+        || id.contains("UNKNOWN_CLASS")
+        || id.contains("UNKNOWN_PARENT_CLASS")
+        || id.contains("REFLECTION_UNKNOWN_CLASS")
+    {
+        return Some("autoload_lookup");
+    }
+    if id.contains("BUILTIN")
+        || id.contains("FUNCTION")
+        || id.contains("CONSTANT")
+        || id.contains("EXTENSION")
+    {
+        return Some("stdlib_builtin");
+    }
+    None
+}
+
+fn infer_wordpress_lookup_kind(id: &str, message: &str) -> Option<&'static str> {
+    let lower_message = message.to_ascii_lowercase();
+    if id.contains("EXTENSION") || lower_message.contains("extension ") {
+        Some("extension")
+    } else if id.contains("CONSTANT") || lower_message.contains("constant ") {
+        Some("constant")
+    } else if id.contains("FUNCTION") || lower_message.contains("function ") {
+        Some("function")
+    } else if lower_message.contains("interface ") {
+        Some("interface")
+    } else if lower_message.contains("trait ") {
+        Some("trait")
+    } else if lower_message.contains("enum ") {
+        Some("enum")
+    } else if id.contains("CLASS") || lower_message.contains("class ") {
+        Some("class")
+    } else if id.contains("BUILTIN") {
+        Some("function")
+    } else {
+        None
+    }
+}
+
+fn requested_name_from_message(message: &str, lookup_kind: &str) -> Option<String> {
+    if let Some(quoted) = first_double_quoted(message) {
+        return Some(quoted);
+    }
+    match lookup_kind {
+        "function" => token_after_any(message, &["function ", "builtin "])
+            .map(trim_symbol_token)
+            .filter(|name| !name.is_empty()),
+        "class" => token_after_any(message, &["class ", "Class "])
+            .map(trim_symbol_token)
+            .filter(|name| !name.is_empty()),
+        "interface" => token_after_any(message, &["interface ", "Interface "])
+            .map(trim_symbol_token)
+            .filter(|name| !name.is_empty()),
+        "trait" => token_after_any(message, &["trait ", "Trait "])
+            .map(trim_symbol_token)
+            .filter(|name| !name.is_empty()),
+        "enum" => token_after_any(message, &["enum ", "Enum "])
+            .map(trim_symbol_token)
+            .filter(|name| !name.is_empty()),
+        "constant" => token_after_any(message, &["constant ", "Constant "])
+            .map(trim_symbol_token)
+            .filter(|name| !name.is_empty()),
+        "extension" => token_after_any(message, &["extension "])
+            .map(trim_symbol_token)
+            .filter(|name| !name.is_empty()),
+        _ => None,
+    }
+}
+
+fn first_double_quoted(message: &str) -> Option<String> {
+    let start = message.find('"')?;
+    let rest = &message[start + 1..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_owned())
+}
+
+fn token_after_any(message: &str, prefixes: &[&str]) -> Option<String> {
+    prefixes
+        .iter()
+        .find_map(|prefix| message.split_once(prefix).map(|(_, rest)| rest.to_owned()))
+}
+
+fn trim_symbol_token(token: String) -> String {
+    token
+        .split(|ch: char| {
+            ch.is_whitespace() || matches!(ch, '(' | ')' | ':' | ',' | '\'' | '"' | '|')
+        })
+        .next()
+        .unwrap_or_default()
+        .trim_matches('\\')
+        .to_owned()
+}
+
+fn normalized_bringup_name(name: &str, lookup_kind: &str) -> String {
+    match lookup_kind {
+        "class" | "interface" | "trait" | "enum" => normalize_class_name(name),
+        "function" => normalize_function_name(name),
+        "extension" => name.to_ascii_lowercase(),
+        _ => name.to_owned(),
+    }
+}
+
+fn infer_builtin_owner_for_name(name: &str) -> Option<&'static str> {
+    php_std::ExtensionRegistry::standard_library()
+        .enabled_php_function(name)
+        .map(|entry| entry.extension())
+        .or_else(|| {
+            php_std::ExtensionRegistry::standard_library()
+                .enabled_constant(name)
+                .map(|entry| entry.extension())
+        })
+        .or_else(|| {
+            php_std::ExtensionRegistry::standard_library()
+                .enabled_class(name)
+                .map(|entry| entry.extension())
+        })
+}
+
+fn wordpress_bringup_payload_without_state(
+    message: &str,
+    id: &str,
+) -> Option<RuntimeDiagnosticPayload> {
+    let error_class = infer_wordpress_error_class(id, message)?;
+    let lookup_kind = infer_wordpress_lookup_kind(id, message);
+    let requested_name = lookup_kind.and_then(|kind| requested_name_from_message(message, kind));
+    let normalized_name = requested_name
+        .as_deref()
+        .zip(lookup_kind)
+        .map(|(name, kind)| normalized_bringup_name(name, kind));
+    let builtin_owner = matches!(error_class, "stdlib_builtin")
+        .then(|| {
+            requested_name
+                .as_deref()
+                .and_then(infer_builtin_owner_for_name)
+        })
+        .flatten()
+        .map(str::to_owned);
+    let context = WordPressDiagnosticContext::new(error_class)
+        .with_optional_field("requested_name", requested_name)
+        .with_optional_field("normalized_name", normalized_name)
+        .with_optional_field("lookup_kind", lookup_kind.map(str::to_owned))
+        .with_optional_field("builtin_owner", builtin_owner);
+    Some(RuntimeDiagnosticPayload::WordPressBringup(context))
+}
+
 fn runtime_diagnostic_for_message(
     message: &str,
     compiled: &CompiledUnit,
@@ -32718,14 +33265,18 @@ fn runtime_diagnostic_for_message(
         .split_once(':')
         .and_then(|(id, _)| id.starts_with("E_").then_some(id))
         .unwrap_or("E_PHP_RUNTIME_ERROR");
-    RuntimeDiagnostic::new(
+    let diagnostic = RuntimeDiagnostic::new(
         id,
         RuntimeSeverity::FatalError,
         message.to_owned(),
         RuntimeSourceSpan::default(),
         stack_trace(compiled, stack),
         php_runtime::PhpReferenceClassification::from_diagnostic_id(id),
-    )
+    );
+    match wordpress_bringup_payload_without_state(message, id) {
+        Some(payload) => diagnostic.with_diagnostic_payload(payload),
+        None => diagnostic,
+    }
 }
 
 fn runtime_diagnostic_for_message_with_source_span(
@@ -32741,14 +33292,18 @@ fn runtime_diagnostic_for_message_with_source_span(
         .split_once(':')
         .and_then(|(id, _)| id.starts_with("E_").then_some(id))
         .unwrap_or("E_PHP_RUNTIME_ERROR");
-    RuntimeDiagnostic::new(
+    let diagnostic = RuntimeDiagnostic::new(
         id,
         RuntimeSeverity::FatalError,
         message.to_owned(),
         source_span,
         stack_trace(compiled, stack),
         None,
-    )
+    );
+    match wordpress_bringup_payload_without_state(message, id) {
+        Some(payload) => diagnostic.with_diagnostic_payload(payload),
+        None => diagnostic,
+    }
 }
 
 fn internal_throwable_display_name(class_name: &str) -> String {
@@ -33288,18 +33843,18 @@ fn uncaught_exception(
         ));
     }
     let full = format!("E_PHP_VM_UNCAUGHT_EXCEPTION: {heading}");
-    VmResult::runtime_error_with_diagnostic(
-        output.clone(),
+    let mut diagnostic = RuntimeDiagnostic::new(
+        "E_PHP_VM_UNCAUGHT_EXCEPTION",
+        RuntimeSeverity::FatalError,
         full.clone(),
-        RuntimeDiagnostic::new(
-            "E_PHP_VM_UNCAUGHT_EXCEPTION",
-            RuntimeSeverity::FatalError,
-            full,
-            RuntimeSourceSpan::default(),
-            diagnostic_stack,
-            None,
-        ),
-    )
+        RuntimeSourceSpan::default(),
+        diagnostic_stack,
+        None,
+    );
+    if let Some(payload) = wordpress_bringup_payload_without_state(&full, diagnostic.id()) {
+        diagnostic = diagnostic.with_diagnostic_payload(payload);
+    }
+    VmResult::runtime_error_with_diagnostic(output.clone(), full.clone(), diagnostic)
 }
 
 fn stack_trace_from_captured_trace(trace: &str) -> Option<Vec<RuntimeStackFrame>> {
@@ -33982,16 +34537,25 @@ fn reflection_namespace_name(name: &str) -> &str {
         .unwrap_or("")
 }
 
-fn reflection_class_object(compiled: &CompiledUnit, class_name: &str) -> Result<ObjectRef, String> {
-    let Some(target) = compiled.lookup_class(class_name) else {
+fn reflection_class_object(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class_name: &str,
+) -> Result<ObjectRef, String> {
+    if php_std::ExtensionRegistry::standard_library()
+        .enabled_class(class_name)
+        .is_some()
+    {
+        return reflection_internal_class_object(class_name);
+    }
+    let Some(target) = lookup_class_in_state(compiled, state, class_name) else {
         return reflection_internal_class_object(class_name);
     };
     let parent = target
         .parent
         .as_ref()
         .map(|parent| {
-            compiled
-                .lookup_class(parent)
+            lookup_class_in_state(compiled, state, parent)
                 .map(|entry| entry.display_name.clone())
                 .unwrap_or_else(|| parent.clone())
         })
@@ -34021,8 +34585,7 @@ fn reflection_class_object(compiled: &CompiledUnit, class_name: &str) -> Result<
             (
                 "interfaces",
                 reflection_string_array(target.interfaces.iter().map(|interface| {
-                    compiled
-                        .lookup_class(interface)
+                    lookup_class_in_state(compiled, state, interface)
                         .map(|entry| entry.display_name.clone())
                         .unwrap_or_else(|| interface.clone())
                 })),
@@ -34042,17 +34605,26 @@ fn reflection_class_object(compiled: &CompiledUnit, class_name: &str) -> Result<
     ))
 }
 
-fn reflection_new_object(
-    compiled: &CompiledUnit,
-    class_name: &str,
-    args: Vec<Value>,
-) -> Result<ObjectRef, String> {
-    match normalize_class_name(class_name).as_str() {
-        "reflectionclass" => {
-            let class = reflection_string_arg(&args, 0, "ReflectionClass::__construct")?;
-            reflection_class_object(compiled, &class)
-        }
-        "reflectionfunction" => {
+impl Vm {
+    fn reflection_new_object(
+        &self,
+        compiled: &CompiledUnit,
+        class_name: &str,
+        args: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<ObjectRef, String> {
+        match normalize_class_name(class_name).as_str() {
+            "reflectionclass" => {
+                let class = reflection_string_arg(&args, 0, "ReflectionClass::__construct")?;
+                if lookup_class_in_state(compiled, state, &class).is_none() {
+                    self.autoload_class(compiled, &class, output, stack, state, None)
+                        .map_err(|_| "E_PHP_VM_AUTOLOAD_FAILED".to_owned())?;
+                }
+                reflection_class_object(compiled, state, &class)
+            }
+            "reflectionfunction" => {
             let Some(target) = args.first() else {
                 return Err(
                     "E_PHP_VM_REFLECTION_ARITY: ReflectionFunction::__construct missing argument 0"
@@ -34110,31 +34682,31 @@ fn reflection_new_object(
                 }
             }
         }
-        "reflectionmethod" => {
+            "reflectionmethod" => {
             let class = reflection_string_arg(&args, 0, "ReflectionMethod::__construct")?;
             let method = reflection_string_arg(&args, 1, "ReflectionMethod::__construct")?;
             reflection_method_object(compiled, &class, &method)
         }
-        "reflectionproperty" => {
+            "reflectionproperty" => {
             let class = reflection_string_arg(&args, 0, "ReflectionProperty::__construct")?;
             let property = reflection_string_arg(&args, 1, "ReflectionProperty::__construct")?;
             reflection_property_object(compiled, &class, &property)
         }
-        "reflectionclassconstant" => {
+            "reflectionclassconstant" => {
             let class = reflection_string_arg(&args, 0, "ReflectionClassConstant::__construct")?;
             let constant = reflection_string_arg(&args, 1, "ReflectionClassConstant::__construct")?;
             reflection_class_constant_object(compiled, &class, &constant)
         }
-        "reflectionenum" => {
+            "reflectionenum" => {
             let class = reflection_string_arg(&args, 0, "ReflectionEnum::__construct")?;
             reflection_enum_object(compiled, &class)
         }
-        "reflectionenumunitcase" => {
+            "reflectionenumunitcase" => {
             let class = reflection_string_arg(&args, 0, "ReflectionEnumUnitCase::__construct")?;
             let case = reflection_string_arg(&args, 1, "ReflectionEnumUnitCase::__construct")?;
             reflection_enum_case_object(compiled, &class, &case)
         }
-        "reflectionenumbackedcase" => {
+            "reflectionenumbackedcase" => {
             let class = reflection_string_arg(&args, 0, "ReflectionEnumBackedCase::__construct")?;
             let case = reflection_string_arg(&args, 1, "ReflectionEnumBackedCase::__construct")?;
             let object = reflection_enum_case_object(compiled, &class, &case)?;
@@ -34145,25 +34717,26 @@ fn reflection_new_object(
             }
             Ok(object)
         }
-        "reflectionextension" => {
+            "reflectionextension" => {
             let extension = reflection_string_arg(&args, 0, "ReflectionExtension::__construct")?;
             reflection_extension_object(&extension)
         }
-        "reflectionattribute" => Err(
-            "E_PHP_VM_REFLECTION_ATTRIBUTE_CONSTRUCTION: ReflectionAttribute is created by getAttributes"
-                .to_owned(),
-        ),
-        "reflectionparameter" => Err(
-            "E_PHP_VM_REFLECTION_PARAMETER_CONSTRUCTION: ReflectionParameter direct construction is outside the method-runtime MVP"
-                .to_owned(),
-        ),
-        "reflectionnamedtype" => Err(
-            "E_PHP_VM_REFLECTION_NAMED_TYPE_CONSTRUCTION: ReflectionNamedType is created by metadata accessors"
-                .to_owned(),
-        ),
-        _ => Err(format!(
-            "E_PHP_VM_REFLECTION_UNKNOWN_CLASS: unsupported reflection class {class_name}"
-        )),
+            "reflectionattribute" => Err(
+                "E_PHP_VM_REFLECTION_ATTRIBUTE_CONSTRUCTION: ReflectionAttribute is created by getAttributes"
+                    .to_owned(),
+            ),
+            "reflectionparameter" => Err(
+                "E_PHP_VM_REFLECTION_PARAMETER_CONSTRUCTION: ReflectionParameter direct construction is outside the method-runtime MVP"
+                    .to_owned(),
+            ),
+            "reflectionnamedtype" => Err(
+                "E_PHP_VM_REFLECTION_NAMED_TYPE_CONSTRUCTION: ReflectionNamedType is created by metadata accessors"
+                    .to_owned(),
+            ),
+            _ => Err(format!(
+                "E_PHP_VM_REFLECTION_UNKNOWN_CLASS: unsupported reflection class {class_name}"
+            )),
+        }
     }
 }
 
@@ -34248,7 +34821,7 @@ fn reflection_method_value(
             "getparentclass" => match object.get_property("parent") {
                 Some(Value::String(parent)) => {
                     let parent = parent.to_string_lossy();
-                    Ok(Value::Object(reflection_class_object(compiled, &parent)?))
+                    Ok(Value::Object(reflection_class_object(compiled, state, &parent)?))
                 }
                 _ => Ok(Value::Bool(false)),
             },
@@ -34264,20 +34837,27 @@ fn reflection_method_value(
             "getextensionname" => Ok(object.get_property("extension").unwrap_or(Value::Bool(false))),
             "getmethods" => {
                 let class = reflection_object_string_property(object, "class")?;
-                Ok(reflection_class_methods_value(compiled, &class)?)
+                Ok(reflection_class_methods_value(compiled, state, &class)?)
+            }
+            "hasmethod" => {
+                let class = reflection_object_string_property(object, "class")?;
+                let method = reflection_string_arg(&args, 0, "ReflectionClass::hasMethod")?;
+                Ok(Value::Bool(
+                    lookup_method_in_state(compiled, state, &class, &method)?.is_some(),
+                ))
             }
             "getproperties" => {
                 let class = reflection_object_string_property(object, "class")?;
-                Ok(reflection_class_properties_value(compiled, &class)?)
+                Ok(reflection_class_properties_value(compiled, state, &class)?)
             }
             "getconstants" => {
                 let class = reflection_object_string_property(object, "class")?;
-                Ok(reflection_class_constants_value(compiled, &class)?)
+                Ok(reflection_class_constants_value(compiled, state, &class)?)
             }
             "getconstant" => {
                 let class = reflection_object_string_property(object, "class")?;
                 let constant = reflection_string_arg(&args, 0, "ReflectionClass::getConstant")?;
-                let constants = reflection_class_constants_value(compiled, &class)?;
+                let constants = reflection_class_constants_value(compiled, state, &class)?;
                 if let Value::Array(constants) = constants {
                     return Ok(constants
                         .get(&ArrayKey::String(PhpString::from_test_str(&constant)))
@@ -34288,7 +34868,7 @@ fn reflection_method_value(
             }
             "getreflectionconstants" => {
                 let class = reflection_object_string_property(object, "class")?;
-                Ok(reflection_class_reflection_constants_value(compiled, &class)?)
+                Ok(reflection_class_reflection_constants_value(compiled, state, &class)?)
             }
             "getmethod" => {
                 let class = reflection_object_string_property(object, "class")?;
@@ -34353,7 +34933,7 @@ fn reflection_method_value(
                 .unwrap_or(Value::Bool(false))),
             "getdeclaringclass" => {
                 let class = reflection_object_string_property(object, "class")?;
-                Ok(Value::Object(reflection_class_object(compiled, &class)?))
+                Ok(Value::Object(reflection_class_object(compiled, state, &class)?))
             }
             _ => Err(format!(
                 "E_PHP_VM_UNKNOWN_METHOD: method {}::{} is not defined",
@@ -34371,7 +34951,7 @@ fn reflection_method_value(
                     .unwrap_or_else(empty_array_value)),
                 "getdeclaringclass" => {
                     let class = reflection_object_string_property(object, "class")?;
-                    Ok(Value::Object(reflection_class_object(compiled, &class)?))
+                    Ok(Value::Object(reflection_class_object(compiled, state, &class)?))
                 }
                 "gettype" => Ok(object.get_property("type").unwrap_or(Value::Null)),
                 "hastype" => Ok(Value::Bool(!matches!(
@@ -35046,9 +35626,10 @@ fn reflection_extension_class_names_value(extension: &str) -> Result<Value, Stri
 
 fn reflection_class_methods_value(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     class_name: &str,
 ) -> Result<Value, String> {
-    let Some(class) = compiled.lookup_class(class_name) else {
+    let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
         let methods = internal_class_methods(class_name)
             .into_iter()
             .map(|method| reflection_internal_method_object(class_name, method.name))
@@ -35065,9 +35646,10 @@ fn reflection_class_methods_value(
 
 fn reflection_class_properties_value(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     class_name: &str,
 ) -> Result<Value, String> {
-    let Some(class) = compiled.lookup_class(class_name) else {
+    let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
         php_std::ExtensionRegistry::standard_library()
             .enabled_class(class_name)
             .ok_or_else(|| {
@@ -35085,9 +35667,10 @@ fn reflection_class_properties_value(
 
 fn reflection_class_constants_value(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     class_name: &str,
 ) -> Result<Value, String> {
-    let Some(class) = compiled.lookup_class(class_name) else {
+    let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
         php_std::ExtensionRegistry::standard_library()
             .enabled_class(class_name)
             .ok_or_else(|| {
@@ -35096,11 +35679,14 @@ fn reflection_class_constants_value(
         return Ok(empty_array_value());
     };
     let mut array = PhpArray::new();
-    for resolved in reflection_class_constants_in_hierarchy(compiled, class)? {
+    for resolved in reflection_class_constants_in_hierarchy(compiled, state, class)? {
         let constant = resolved.constant;
         let value = constant
             .value
-            .map(|constant| constant_value(compiled.unit(), constant))
+            .map(|constant| {
+                let owner = class_owner_in_state(compiled, state, &resolved.class.name);
+                constant_value(owner.unit(), constant)
+            })
             .transpose()?
             .unwrap_or(Value::Null);
         reflection_assoc_insert(&mut array, &constant.name, value);
@@ -35110,9 +35696,10 @@ fn reflection_class_constants_value(
 
 fn reflection_class_reflection_constants_value(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     class_name: &str,
 ) -> Result<Value, String> {
-    let Some(class) = compiled.lookup_class(class_name) else {
+    let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
         php_std::ExtensionRegistry::standard_library()
             .enabled_class(class_name)
             .ok_or_else(|| {
@@ -35120,7 +35707,7 @@ fn reflection_class_reflection_constants_value(
             })?;
         return Ok(empty_array_value());
     };
-    let constants = reflection_class_constants_in_hierarchy(compiled, class)?
+    let constants = reflection_class_constants_in_hierarchy(compiled, state, class)?
         .into_iter()
         .map(|constant| {
             reflection_class_constant_object(
@@ -35133,15 +35720,17 @@ fn reflection_class_reflection_constants_value(
     Ok(reflection_objects_array(constants))
 }
 
-fn reflection_class_constants_in_hierarchy<'a>(
-    compiled: &'a CompiledUnit,
-    class: &'a php_ir::module::ClassEntry,
-) -> Result<Vec<ResolvedConstant<'a>>, String> {
+fn reflection_class_constants_in_hierarchy(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class: php_ir::module::ClassEntry,
+) -> Result<Vec<ResolvedConstantOwned>, String> {
     let mut constants = Vec::new();
     let mut seen_classes = Vec::new();
     let mut seen_names = BTreeSet::new();
     collect_reflection_class_constants(
         compiled,
+        state,
         class,
         &mut seen_classes,
         &mut seen_names,
@@ -35150,12 +35739,13 @@ fn reflection_class_constants_in_hierarchy<'a>(
     Ok(constants)
 }
 
-fn collect_reflection_class_constants<'a>(
-    compiled: &'a CompiledUnit,
-    class: &'a php_ir::module::ClassEntry,
+fn collect_reflection_class_constants(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class: php_ir::module::ClassEntry,
     seen_classes: &mut Vec<String>,
     seen_names: &mut BTreeSet<String>,
-    constants: &mut Vec<ResolvedConstant<'a>>,
+    constants: &mut Vec<ResolvedConstantOwned>,
 ) -> Result<(), String> {
     let class_name = normalize_class_name(&class.name);
     if seen_classes.iter().any(|name| name == &class_name) {
@@ -35167,11 +35757,27 @@ fn collect_reflection_class_constants<'a>(
     seen_classes.push(class_name);
     for constant in &class.constants {
         if seen_names.insert(constant.name.clone()) {
-            constants.push(ResolvedConstant { class, constant });
+            constants.push(ResolvedConstantOwned {
+                class: class.clone(),
+                constant: constant.clone(),
+            });
         }
     }
-    if let Some(parent) = parent_class(compiled, class)? {
-        collect_reflection_class_constants(compiled, parent, seen_classes, seen_names, constants)?;
+    if let Some(parent_name) = class.parent.as_deref() {
+        let Some(parent) = lookup_class_in_state(compiled, state, parent_name) else {
+            return Err(format!(
+                "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
+                class.name, parent_name
+            ));
+        };
+        collect_reflection_class_constants(
+            compiled,
+            state,
+            parent,
+            seen_classes,
+            seen_names,
+            constants,
+        )?;
     }
     seen_classes.pop();
     Ok(())
@@ -35357,7 +35963,7 @@ fn reflection_closure_object(
     );
     let scope_class = bound_this
         .filter(|object| is_std_class_object(object))
-        .map(|_| reflection_class_object(compiled, "Closure").map(Value::Object))
+        .map(|_| reflection_internal_class_object("Closure").map(Value::Object))
         .transpose()?
         .unwrap_or(Value::Null);
     object.set_property("closure_scope_class", scope_class);
@@ -37090,6 +37696,11 @@ struct ResolvedPropertyOwned {
 struct ResolvedConstant<'a> {
     class: &'a php_ir::module::ClassEntry,
     constant: &'a php_ir::module::ClassConstantEntry,
+}
+
+struct ResolvedConstantOwned {
+    class: php_ir::module::ClassEntry,
+    constant: php_ir::module::ClassConstantEntry,
 }
 
 fn validate_method_callable(
@@ -46684,6 +47295,8 @@ fn is_symbol_introspection_builtin_name(name: &str) -> bool {
             | "get_declared_classes"
             | "get_declared_interfaces"
             | "get_declared_traits"
+            | "get_defined_functions"
+            | "get_defined_constants"
             | "get_loaded_extensions"
             | "phpversion"
             | "get_mangled_object_vars"
@@ -49674,6 +50287,10 @@ fn string_key(name: &str) -> ArrayKey {
     ArrayKey::String(PhpString::from_test_str(name))
 }
 
+fn defined_symbol_names_array(names: &BTreeSet<String>) -> PhpArray {
+    PhpArray::from_packed(names.iter().cloned().map(Value::string).collect())
+}
+
 fn frame_source_location(compiled: &CompiledUnit, frame: &Frame) -> (String, i64) {
     let function = compiled.unit().functions.get(frame.function.index());
     let display_span = frame
@@ -50938,6 +51555,14 @@ fn set_filter_input_arrays(context: &mut BuiltinContext<'_>, runtime_context: &R
 
 fn unknown_builtin_result(name: &str, output: &OutputBuffer) -> VmResult {
     let message = format!("E_PHP_VM_UNKNOWN_BUILTIN: builtin {name} is not implemented");
+    let payload = WordPressDiagnosticContext::new("stdlib_builtin")
+        .with_field("requested_name", name)
+        .with_field("normalized_name", normalize_function_name(name))
+        .with_field("lookup_kind", "function")
+        .with_optional_field(
+            "builtin_owner",
+            infer_builtin_owner_for_name(name).map(str::to_owned),
+        );
     VmResult::runtime_error_with_diagnostic(
         output.clone(),
         message.clone(),
@@ -50948,7 +51573,8 @@ fn unknown_builtin_result(name: &str, output: &OutputBuffer) -> VmResult {
             RuntimeSourceSpan::default(),
             Vec::new(),
             None,
-        ),
+        )
+        .with_diagnostic_payload(RuntimeDiagnosticPayload::WordPressBringup(payload)),
     )
 }
 
@@ -55439,10 +56065,14 @@ mod tests {
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(
-            result.output.to_string_lossy(),
-            "bool(true)\nbool(true)\nok|ok|bool(false)\n"
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.starts_with(
+                "bool(true)\nbool(true)\nok|ok|\nWarning: Constant LOCAL_DYNAMIC already defined, this will be an error in PHP 9"
+            ),
+            "{output}"
         );
+        assert!(output.ends_with("bool(false)\n"), "{output}");
     }
 
     #[test]
@@ -59074,12 +59704,78 @@ good"
 
         assert_eq!(unknown.status.exit_status(), ExitStatus::RuntimeError);
         assert_eq!(unknown.diagnostics[0].id(), "E_PHP_VM_UNKNOWN_CLASS");
+        let context = first_wordpress_bringup_payload(&unknown).fields();
+        assert_eq!(
+            context.get("wordpress_error_class").map(String::as_str),
+            Some("autoload_lookup")
+        );
+        assert_eq!(
+            context.get("requested_name").map(String::as_str),
+            Some("missingobject")
+        );
+        assert_eq!(
+            context.get("normalized_name").map(String::as_str),
+            Some("missingobject")
+        );
+        assert_eq!(
+            context.get("lookup_kind").map(String::as_str),
+            Some("class")
+        );
+        assert_eq!(
+            context.get("autoload_enabled").map(String::as_str),
+            Some("true")
+        );
+        assert!(context.contains_key("class_table_epoch"), "{context:?}");
+        assert!(context.contains_key("autoload_stack_epoch"), "{context:?}");
 
         let private = execute_source(
             "<?php class PrivateSlot { private $value; function set($value) { $this->value = $value; } function get() { return $this->value; } } $slot = new PrivateSlot(); $slot->set(4); echo $slot->get();",
         );
         assert!(private.status.is_success(), "{:?}", private.status);
         assert_eq!(private.output.as_bytes(), b"4");
+    }
+
+    #[test]
+    fn bringup_diagnostics_classify_callable_and_builtin_failures() {
+        let callable = execute_source("<?php array_map('missing_callback', [1]);");
+        assert_eq!(callable.status.exit_status(), ExitStatus::RuntimeError);
+        let callable_context = first_wordpress_bringup_payload(&callable).fields();
+        assert_eq!(
+            callable_context
+                .get("wordpress_error_class")
+                .map(String::as_str),
+            Some("callable_resolution")
+        );
+        assert_eq!(
+            callable_context.get("requested_name").map(String::as_str),
+            Some("missing_callback")
+        );
+        assert_eq!(
+            callable_context.get("lookup_kind").map(String::as_str),
+            Some("function")
+        );
+
+        let builtin = execute_source("<?php missing_wp_function();");
+        assert_eq!(builtin.status.exit_status(), ExitStatus::RuntimeError);
+        let builtin_context = first_wordpress_bringup_payload(&builtin).fields();
+        assert_eq!(
+            builtin_context
+                .get("wordpress_error_class")
+                .map(String::as_str),
+            Some("stdlib_builtin")
+        );
+        assert_eq!(
+            builtin_context.get("requested_name").map(String::as_str),
+            Some("missing_wp_function")
+        );
+        assert_eq!(
+            builtin_context.get("normalized_name").map(String::as_str),
+            Some("missing_wp_function")
+        );
+        assert_eq!(
+            builtin_context.get("lookup_kind").map(String::as_str),
+            Some("function")
+        );
     }
 
     #[test]
@@ -68787,8 +69483,27 @@ dense_property_write_typed_failure($typed, 'bad');
             .iter()
             .find_map(|diagnostic| match diagnostic.payload()? {
                 RuntimeDiagnosticPayload::VmCompile(payload) => Some(payload),
+                RuntimeDiagnosticPayload::WordPressBringup(_) => None,
             })
             .expect("compile error should carry VM compile payload")
+    }
+
+    fn first_wordpress_bringup_payload(
+        result: &VmResult,
+    ) -> &php_runtime::WordPressDiagnosticContext {
+        result
+            .diagnostics
+            .iter()
+            .find_map(|diagnostic| match diagnostic.payload()? {
+                RuntimeDiagnosticPayload::WordPressBringup(payload) => Some(payload),
+                RuntimeDiagnosticPayload::VmCompile(_) => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "diagnostic should carry WordPress bring-up payload: {:#?}",
+                    result.diagnostics
+                )
+            })
     }
 
     fn execute_source_with_options(source: &str, options: VmOptions) -> VmResult {

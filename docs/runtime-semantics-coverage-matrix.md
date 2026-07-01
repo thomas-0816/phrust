@@ -10,7 +10,7 @@ nix develop -c env REFERENCE_PHP=third_party/php-src/sapi/cli/php just runtime-s
 Result:
 
 ```text
-total=333 pass=273 fail=0 skip=0 known_gap=60
+total=366 pass=306 fail=0 skip=0 known_gap=60
 ```
 
 When `REFERENCE_PHP` is not set, `just runtime-semantics-diff` skips pass-candidate
@@ -56,6 +56,8 @@ provided and skip-explicit when the local reference binary is unavailable.
 | `variables` | 2 | 0 | 0 | 0 | `fixtures/runtime_semantics/variables/*.php` |
 | `void_cast` | 0 | 0 | 1 | 0 | `fixtures/runtime_semantics/void_cast/*.php` |
 | `wordpress_blockers` | 7 | 0 | 0 | 0 | `fixtures/runtime_semantics/wordpress_blockers/*.php` |
+| `wp_language_vm` | 17 | 0 | 0 | 0 | `fixtures/runtime_semantics/wp_language_vm/**/*.php` |
+| `wp_autoload_stdlib` | 16 | 0 | 0 | 0 | `fixtures/runtime_semantics/wp_autoload_stdlib/**/*.php` |
 
 ## Known-Gap Summary
 

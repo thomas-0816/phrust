@@ -15,8 +15,11 @@ Implemented functions:
 - `defined`
 - `constant`
 - `function_exists`
+- `extension_loaded`
+- `get_loaded_extensions`
 - `class_exists`
 - `interface_exists`
+- `trait_exists`
 - `enum_exists`
 - `method_exists`
 - `property_exists`
@@ -25,6 +28,9 @@ Implemented functions:
 - `get_parent_class`
 - `get_declared_classes`
 - `get_declared_interfaces`
+- `get_declared_traits`
+- `get_defined_functions`
+- `get_defined_constants`
 - `get_object_vars`
 - `get_mangled_object_vars`
 - `get_class_methods`
@@ -36,16 +42,13 @@ Implemented functions:
 - `func_num_args`
 - `func_get_arg`
 
-The optional autoload argument for `class_exists`, `interface_exists`, and
-`enum_exists` is respected. `false` performs a symbol-table-only lookup and does
-not invoke registered autoload callbacks; `true` or an omitted argument invokes
-autoload when the symbol is missing.
+The optional autoload argument for `class_exists`, `interface_exists`,
+`trait_exists`, and `enum_exists` is respected. `false` performs a
+symbol-table-only lookup and does not invoke registered autoload callbacks;
+`true` or an omitted argument invokes autoload when the symbol is missing.
 
-Known gap:
+Known gaps:
 
-- `STDLIB-GAP-SYMBOL-TRAIT-INTROSPECTION`: user trait declarations are still not
-  preserved in the frontend/IR symbol tables, so `trait_exists` and
-  `get_declared_traits` are registered but cannot match PHP for user traits yet.
 - `STDLIB-GAP-FORWARD-STATIC-CALL-EDGE-PARITY`: ordinary static callables are
   routed through the VM callable path, but complex late-static-binding edge
   cases and byte-perfect diagnostics are deferred.

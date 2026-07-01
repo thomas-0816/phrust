@@ -283,10 +283,16 @@ pub(crate) fn write_vm_compile_fatal_line<W: Write>(
     pipeline: &Pipeline,
     diagnostics: &[RuntimeDiagnostic],
 ) -> Result<bool, String> {
-    let Some((payload, span)) = diagnostics.iter().find_map(|diagnostic| {
-        let RuntimeDiagnosticPayload::VmCompile(payload) = diagnostic.payload()?;
-        Some((payload, diagnostic.source_span()))
-    }) else {
+    let Some((payload, span)) =
+        diagnostics
+            .iter()
+            .find_map(|diagnostic| match diagnostic.payload()? {
+                RuntimeDiagnosticPayload::VmCompile(payload) => {
+                    Some((payload, diagnostic.source_span()))
+                }
+                RuntimeDiagnosticPayload::WordPressBringup(_) => None,
+            })
+    else {
         return Ok(false);
     };
     if span.start == span.end {

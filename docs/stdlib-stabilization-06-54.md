@@ -12,6 +12,7 @@ than new subsystem work.
 | `STDLIB_ARRAY_FLIP_WARNING` | `STDLIB-GAP-ARRAY-FLIP-WARNING-TEXT` | `array_flip` now skips unsupported values with PHP-style display warnings and keeps the valid flipped entries. |
 | `STDLIB_ENCODING_INVALID_HEX` | `STDLIB-GAP-HEX2BIN-WARNING-TEXT` | `hex2bin` now distinguishes odd-length and non-hex input, returning `false` with PHP-style warnings. |
 | `STDLIB_UNSERIALIZE_MALFORMED_WARNING` | `STDLIB-GAP-UNSERIALIZE-WARNING-TEXT` | malformed `unserialize` input now returns `false` with a PHP-style offset warning. |
+| `STDLIB_SYMBOL_TRAIT_INTROSPECTION` | `STDLIB-GAP-SYMBOL-TRAIT-INTROSPECTION` | `trait_exists` and `get_declared_traits` now observe user traits through the VM symbol-introspection path. |
 
 ## Reviewed And Kept As Known Gaps
 
@@ -26,7 +27,6 @@ small standard-library stabilization slice.
 | `STDLIB_FORMATTING_FPRINTF` | `STDLIB-GAP-FPRINTF-STREAM-RESOURCE` | Requires formatted output to write through PHP stream resources. |
 | `STDLIB_MATH_NUMERIC_FLOAT_EDGES` | `STDLIB-GAP-MATH-FLOAT-EDGES` | Requires PHP rounding modes, negative-zero formatting, overflow, and architecture-sensitive float parity. |
 | `STDLIB_STRING_NUL_SOURCE_ESCAPE` | `STDLIB-GAP-SOURCE-NUL-ESCAPE` | Runtime strings are binary-safe, but PHP source `\0` escape decoding belongs to the parser/string-literal layer. |
-| `STDLIB_SYMBOL_TRAIT_INTROSPECTION` | `STDLIB-GAP-SYMBOL-TRAIT-INTROSPECTION` | Requires trait declarations to be preserved in frontend/IR symbol tables. |
 | `ext/standard/tests/general_functions/var_dump_bools.phpt` | `STDLIB-GAP-EXTENSION-PHPT-PROMOTION` | Exposes encapsed string interpolation lowering before the PHPT can be promoted to runnable. |
 | `ext/date/tests/date_default_timezone_set-1.phpt` | `STDLIB-GAP-EXTENSION-PHPT-PROMOTION` | Depends on PHPT INI and host-timezone behavior beyond the deterministic timezone MVP. |
 

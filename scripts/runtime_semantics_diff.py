@@ -53,6 +53,7 @@ CATEGORIES = (
     "real_world",
     "wordpress_blockers",
     "wp_language_vm",
+    "wp_autoload_stdlib",
     "regressions",
     "known_gaps",
 )

@@ -887,6 +887,11 @@ wp-language-vm:
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category wp_language_vm --out target/runtime-semantics/wp-language-vm
 
+wp-autoload-stdlib:
+    cargo build -p php_vm_cli
+    scripts/runtime_semantics_diff.py --category wp_autoload_stdlib --out target/runtime-semantics/wp-autoload-stdlib
+    scripts/wordpress_builtin_heatmap.py --input target/runtime-semantics/wp-autoload-stdlib/runtime-semantics-diff-report.json --out target/wordpress-bringup
+
 regression-fixtures:
     cargo build -p php_vm_cli
     scripts/runtime_semantics_diff.py --category regressions --out target/runtime-semantics/regressions
