@@ -6457,7 +6457,7 @@ impl LoweringContext<'_> {
         let mut current = site.block;
         let mut operands = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
-            let by_ref_local = (!arg.unpack)
+            let direct_by_ref_local = (!arg.unpack)
                 .then(|| self.variable_local(builder, site.function, arg.value))
                 .flatten();
             let dim_target = (!arg.unpack)
@@ -6471,36 +6471,88 @@ impl LoweringContext<'_> {
                 .then(|| self.property_dim_target(arg.value))
                 .flatten()
                 .filter(|target| !target.append && !target.dims.is_empty());
-            let (value, by_ref_dim, by_ref_property, by_ref_property_dim) = if by_ref_local
-                .is_some()
-                && use_null_placeholder(index, arg)
-            {
-                (
-                    Operand::Constant(builder.intern_constant(IrConstant::Null)),
-                    None,
-                    None,
-                    None,
-                )
-            } else if let Some(target) = dim_target {
-                let mut dims = Vec::with_capacity(target.dims.len());
-                for dim in &target.dims {
-                    let dim_value =
-                        self.lower_expr_to_register(builder, site.function, current, *dim)?;
-                    current = dim_value.block;
-                    dims.push(Operand::Register(dim_value.register));
-                }
-                let mut array = Operand::Local(target.local);
-                let mut last = None;
-                for dim in &dims {
+            let static_property_target = (!arg.unpack)
+                .then(|| self.static_property_target(arg.value))
+                .flatten();
+            let (value, by_ref_local, by_ref_dim, by_ref_property, by_ref_property_dim) =
+                if direct_by_ref_local.is_some() && use_null_placeholder(index, arg) {
+                    (
+                        Operand::Constant(builder.intern_constant(IrConstant::Null)),
+                        direct_by_ref_local,
+                        None,
+                        None,
+                        None,
+                    )
+                } else if let Some(target) = dim_target {
+                    let mut dims = Vec::with_capacity(target.dims.len());
+                    for dim in &target.dims {
+                        let dim_value =
+                            self.lower_expr_to_register(builder, site.function, current, *dim)?;
+                        current = dim_value.block;
+                        dims.push(Operand::Register(dim_value.register));
+                    }
+                    let mut array = Operand::Local(target.local);
+                    let mut last = None;
+                    for dim in &dims {
+                        let dst = builder.alloc_register(site.function);
+                        let instruction = builder.emit(
+                            site.function,
+                            current,
+                            InstructionKind::FetchDim {
+                                dst,
+                                array,
+                                key: *dim,
+                                quiet: false,
+                            },
+                            site.span,
+                        );
+                        self.add_expr_source_map(
+                            builder,
+                            site.function,
+                            current,
+                            instruction,
+                            arg.value,
+                            site.span,
+                        );
+                        array = Operand::Register(dst);
+                        last = Some(dst);
+                    }
+                    (
+                        Operand::Register(
+                            last.expect("dimension target has at least one dimension"),
+                        ),
+                        None,
+                        Some(IrCallDimTarget {
+                            local: target.local,
+                            dims,
+                        }),
+                        None,
+                        None,
+                    )
+                } else if let Some(target) = property_dim_target {
+                    let object = self.lower_expr_to_register(
+                        builder,
+                        site.function,
+                        current,
+                        target.receiver,
+                    )?;
+                    current = object.block;
+                    let object_operand = Operand::Register(object.register);
+                    let mut dims = Vec::with_capacity(target.dims.len());
+                    for dim in &target.dims {
+                        let dim_value =
+                            self.lower_expr_to_register(builder, site.function, current, *dim)?;
+                        current = dim_value.block;
+                        dims.push(Operand::Register(dim_value.register));
+                    }
                     let dst = builder.alloc_register(site.function);
                     let instruction = builder.emit(
                         site.function,
                         current,
-                        InstructionKind::FetchDim {
+                        InstructionKind::FetchProperty {
                             dst,
-                            array,
-                            key: *dim,
-                            quiet: false,
+                            object: object_operand,
+                            property: target.property.clone(),
                         },
                         site.span,
                     );
@@ -6512,61 +6564,61 @@ impl LoweringContext<'_> {
                         arg.value,
                         site.span,
                     );
-                    array = Operand::Register(dst);
-                    last = Some(dst);
-                }
-                (
-                    Operand::Register(last.expect("dimension target has at least one dimension")),
-                    Some(IrCallDimTarget {
-                        local: target.local,
-                        dims,
-                    }),
-                    None,
-                    None,
-                )
-            } else if let Some(target) = property_dim_target {
-                let object =
-                    self.lower_expr_to_register(builder, site.function, current, target.receiver)?;
-                current = object.block;
-                let object_operand = Operand::Register(object.register);
-                let mut dims = Vec::with_capacity(target.dims.len());
-                for dim in &target.dims {
-                    let dim_value =
-                        self.lower_expr_to_register(builder, site.function, current, *dim)?;
-                    current = dim_value.block;
-                    dims.push(Operand::Register(dim_value.register));
-                }
-                let dst = builder.alloc_register(site.function);
-                let instruction = builder.emit(
-                    site.function,
-                    current,
-                    InstructionKind::FetchProperty {
-                        dst,
-                        object: object_operand,
-                        property: target.property.clone(),
-                    },
-                    site.span,
-                );
-                self.add_expr_source_map(
-                    builder,
-                    site.function,
-                    current,
-                    instruction,
-                    arg.value,
-                    site.span,
-                );
-                let mut array = Operand::Register(dst);
-                let mut last = None;
-                for dim in &dims {
+                    let mut array = Operand::Register(dst);
+                    let mut last = None;
+                    for dim in &dims {
+                        let dst = builder.alloc_register(site.function);
+                        let instruction = builder.emit(
+                            site.function,
+                            current,
+                            InstructionKind::FetchDim {
+                                dst,
+                                array,
+                                key: *dim,
+                                quiet: false,
+                            },
+                            site.span,
+                        );
+                        self.add_expr_source_map(
+                            builder,
+                            site.function,
+                            current,
+                            instruction,
+                            arg.value,
+                            site.span,
+                        );
+                        array = Operand::Register(dst);
+                        last = Some(dst);
+                    }
+                    (
+                        Operand::Register(
+                            last.expect("property dimension target has at least one dimension"),
+                        ),
+                        None,
+                        None,
+                        None,
+                        Some(IrCallPropertyDimTarget {
+                            object: object_operand,
+                            property: target.property,
+                            dims,
+                        }),
+                    )
+                } else if let Some(target) = property_target {
+                    let object = self.lower_expr_to_register(
+                        builder,
+                        site.function,
+                        current,
+                        target.receiver,
+                    )?;
+                    current = object.block;
                     let dst = builder.alloc_register(site.function);
                     let instruction = builder.emit(
                         site.function,
                         current,
-                        InstructionKind::FetchDim {
+                        InstructionKind::FetchProperty {
                             dst,
-                            array,
-                            key: *dim,
-                            quiet: false,
+                            object: Operand::Register(object.register),
+                            property: target.property.clone(),
                         },
                         site.span,
                     );
@@ -6578,59 +6630,68 @@ impl LoweringContext<'_> {
                         arg.value,
                         site.span,
                     );
-                    array = Operand::Register(dst);
-                    last = Some(dst);
-                }
-                (
-                    Operand::Register(
-                        last.expect("property dimension target has at least one dimension"),
-                    ),
-                    None,
-                    None,
-                    Some(IrCallPropertyDimTarget {
-                        object: object_operand,
-                        property: target.property,
-                        dims,
-                    }),
-                )
-            } else if let Some(target) = property_target {
-                let object =
-                    self.lower_expr_to_register(builder, site.function, current, target.receiver)?;
-                current = object.block;
-                let dst = builder.alloc_register(site.function);
-                let instruction = builder.emit(
-                    site.function,
-                    current,
-                    InstructionKind::FetchProperty {
-                        dst,
-                        object: Operand::Register(object.register),
-                        property: target.property.clone(),
-                    },
-                    site.span,
-                );
-                self.add_expr_source_map(
-                    builder,
-                    site.function,
-                    current,
-                    instruction,
-                    arg.value,
-                    site.span,
-                );
-                (
-                    Operand::Register(dst),
-                    None,
-                    Some(IrCallPropertyTarget {
-                        object: Operand::Register(object.register),
-                        property: target.property,
-                    }),
-                    None,
-                )
-            } else {
-                let value =
-                    self.lower_expr_to_register(builder, site.function, current, arg.value)?;
-                current = value.block;
-                (Operand::Register(value.register), None, None, None)
-            };
+                    (
+                        Operand::Register(dst),
+                        None,
+                        None,
+                        Some(IrCallPropertyTarget {
+                            object: Operand::Register(object.register),
+                            property: target.property,
+                        }),
+                        None,
+                    )
+                } else if let Some(target) = static_property_target {
+                    let local = builder.intern_local(
+                        site.function,
+                        format!("__phrust:by-ref-static-property:{}", arg.value.raw()),
+                    );
+                    let bind = builder.emit(
+                        site.function,
+                        current,
+                        InstructionKind::BindReferenceFromStaticPropertyDim {
+                            target: local,
+                            class_name: target.class_name,
+                            property: target.property,
+                            dims: Vec::new(),
+                        },
+                        site.span,
+                    );
+                    self.add_expr_source_map(
+                        builder,
+                        site.function,
+                        current,
+                        bind,
+                        arg.value,
+                        site.span,
+                    );
+                    let dst = builder.alloc_register(site.function);
+                    let load = builder.emit(
+                        site.function,
+                        current,
+                        InstructionKind::LoadLocal { dst, local },
+                        site.span,
+                    );
+                    self.add_expr_source_map(
+                        builder,
+                        site.function,
+                        current,
+                        load,
+                        arg.value,
+                        site.span,
+                    );
+                    (Operand::Register(dst), Some(local), None, None, None)
+                } else {
+                    let value =
+                        self.lower_expr_to_register(builder, site.function, current, arg.value)?;
+                    current = value.block;
+                    (
+                        Operand::Register(value.register),
+                        direct_by_ref_local,
+                        None,
+                        None,
+                        None,
+                    )
+                };
             operands.push(IrCallArg {
                 name: arg.name.clone(),
                 value,

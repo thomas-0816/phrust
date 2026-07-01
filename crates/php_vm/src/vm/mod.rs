@@ -38531,6 +38531,11 @@ fn ensure_static_property_dim_reference_cell(
     dims: &[ArrayKey],
 ) -> Result<ReferenceCell, String> {
     let entry = static_properties.entry(key).or_insert(default);
+    if dims.is_empty() {
+        return Lvalue::value(entry, LvalueKind::StaticProperty)
+            .ensure_reference_cell()
+            .map_err(|error| error.to_string());
+    }
     if matches!(entry, Value::Uninitialized | Value::Null) {
         *entry = Value::Array(PhpArray::new());
     }
@@ -65618,6 +65623,26 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"7");
+    }
+
+    #[test]
+    fn static_property_by_ref_call_argument_updates_storage() {
+        let result = execute_source(
+            "<?php class C { public static $value = 1; } function bump(&$value) { $value++; } bump(C::$value); echo C::$value;",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"2");
+    }
+
+    #[test]
+    fn static_property_by_value_call_argument_does_not_update_storage() {
+        let result = execute_source(
+            "<?php class C { public static $value = 1; } function bump($value) { $value++; } bump(C::$value); echo C::$value;",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"1");
     }
 
     #[test]

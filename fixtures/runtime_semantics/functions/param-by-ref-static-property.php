@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: expect=known_gap known_gap=E_PHP_RUNTIME_UNSUPPORTED_REFERENCE_SEMANTICS
+// runtime-semantics: category=functions expect=pass
 class StaticRefBox {
     public static $value = 1;
 }
