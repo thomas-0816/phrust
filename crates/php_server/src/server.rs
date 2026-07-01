@@ -86,6 +86,7 @@ struct AppState {
     session_store: Arc<SessionStore>,
     session_lock: Arc<Mutex<()>>,
     local_addr: SocketAddr,
+    request_scheme: &'static str,
 }
 
 #[derive(Debug)]
@@ -574,6 +575,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         session_store,
         session_lock: Arc::new(Mutex::new(())),
         local_addr,
+        request_scheme: if startup_tls_enabled { "https" } else { "http" },
     });
     preload_script_cache(&state, script_cache_preload.as_deref(), strict_preload)?;
     serve_until_shutdown(listener, state, tls_acceptor).await;
@@ -867,21 +869,60 @@ async fn handle(
             .await;
             (response, route_kind, cache_hit)
         }
-        ResolvedRoute::NotFound => (
-            response::text(StatusCode::NOT_FOUND, "not found\n"),
-            "not-found",
-            None,
-        ),
-        ResolvedRoute::Forbidden => (
-            response::text(StatusCode::FORBIDDEN, "forbidden\n"),
-            "forbidden",
-            None,
-        ),
-        ResolvedRoute::BadRequest => (
-            response::text(StatusCode::BAD_REQUEST, "bad request\n"),
-            "bad-request",
-            None,
-        ),
+        ResolvedRoute::NotFound => {
+            emit_request_diagnostic(
+                &state,
+                &parts,
+                Some(&request_id),
+                "E_PHP_SERVER_SCRIPT_RESOLUTION_FAILED",
+                "routing",
+                "server could not resolve a PHP script for the request",
+                "resolve_route",
+                parts.uri.path(),
+                "",
+            );
+            (
+                response::text(StatusCode::NOT_FOUND, "not found\n"),
+                "not-found",
+                None,
+            )
+        }
+        ResolvedRoute::Forbidden => {
+            emit_request_diagnostic(
+                &state,
+                &parts,
+                Some(&request_id),
+                "E_PHP_SERVER_OUTSIDE_DOCUMENT_ROOT",
+                "routing",
+                "server rejected a path outside the document root",
+                "resolve_route",
+                parts.uri.path(),
+                "",
+            );
+            (
+                response::text(StatusCode::FORBIDDEN, "forbidden\n"),
+                "forbidden",
+                None,
+            )
+        }
+        ResolvedRoute::BadRequest => {
+            emit_request_diagnostic(
+                &state,
+                &parts,
+                Some(&request_id),
+                "E_PHP_SERVER_SCRIPT_RESOLUTION_FAILED",
+                "routing",
+                "server could not parse the request path for script resolution",
+                "resolve_route",
+                parts.uri.path(),
+                "",
+            );
+            (
+                response::text(StatusCode::BAD_REQUEST, "bad request\n"),
+                "bad-request",
+                None,
+            )
+        }
         ResolvedRoute::MethodNotAllowed => (method_not_allowed(), "method-not-allowed", None),
     };
     state.metrics.record_response(response.status());
@@ -958,6 +999,46 @@ fn header_debug_value(headers: &HeaderMap, name: HeaderName) -> String {
     } else {
         "absent".to_string()
     }
+}
+
+fn emit_request_diagnostic(
+    state: &AppState,
+    parts: &Parts,
+    request_id: Option<&str>,
+    code: &str,
+    phase: &str,
+    message: &str,
+    function_name: &str,
+    path_attempted: &str,
+    script_filename: &str,
+) {
+    let uri = parts.uri.path_and_query().map_or_else(
+        || parts.uri.path().to_string(),
+        |value| value.as_str().to_string(),
+    );
+    let document_root = state.route_config.docroot.display().to_string();
+    let allowed_roots = include_roots_for_docroot(&state.route_config.docroot)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    emit_server_debug(
+        state,
+        request_id,
+        code,
+        phase,
+        message,
+        BTreeMap::from([
+            ("method".to_string(), parts.method.to_string()),
+            ("uri".to_string(), uri),
+            ("script_filename".to_string(), script_filename.to_string()),
+            ("document_root".to_string(), document_root.clone()),
+            ("cwd".to_string(), document_root),
+            ("path_attempted".to_string(), path_attempted.to_string()),
+            ("allowed_roots".to_string(), allowed_roots),
+            ("function_name".to_string(), function_name.to_string()),
+        ]),
+    );
 }
 
 fn emit_server_debug(
@@ -1513,6 +1594,7 @@ async fn execute_php_request(
             );
         }
         Ok(Err(BodyReadError::Invalid)) => {
+            let script_filename = script_path.display().to_string();
             emit_server_debug(
                 &state,
                 Some(&request_id),
@@ -1520,6 +1602,17 @@ async fn execute_php_request(
                 "body_read",
                 "request body read failed",
                 BTreeMap::new(),
+            );
+            emit_request_diagnostic(
+                &state,
+                &parts,
+                Some(&request_id),
+                "E_PHP_REQUEST_BODY_PARSE_FAILED",
+                "body_read",
+                "server could not read the request body",
+                "read_limited_body",
+                parts.uri.path(),
+                &script_filename,
             );
             warn!(%peer, "failed to read request body");
             return (
@@ -1626,7 +1719,7 @@ async fn execute_php_request(
         Ok(boundary) => boundary,
         Err(error) => {
             return (
-                multipart_error_response(error, &state, peer),
+                multipart_error_response(error, &state, &parts, &request_id, &script_path, peer),
                 script_cache_hit,
             );
         }
@@ -1663,7 +1756,14 @@ async fn execute_php_request(
             }
             Err(error) => {
                 return (
-                    multipart_error_response(error, &state, peer),
+                    multipart_error_response(
+                        error,
+                        &state,
+                        &parts,
+                        &request_id,
+                        &script_path,
+                        peer,
+                    ),
                     script_cache_hit,
                 );
             }
@@ -1694,6 +1794,17 @@ async fn execute_php_request(
     let session_state = match seed_session_state(&request_context, &state) {
         Ok(session) => session,
         Err(error) => {
+            emit_request_diagnostic(
+                &state,
+                &parts,
+                Some(&request_id),
+                "E_PHP_SESSION_STORE_UNAVAILABLE",
+                "session",
+                "server session store failed while preparing request state",
+                "seed_session_state",
+                parts.uri.path(),
+                &script_path.display().to_string(),
+            );
             emit_server_debug(
                 &state,
                 Some(&request_id),
@@ -1790,6 +1901,17 @@ async fn execute_php_request(
             );
             output.upload_registry.cleanup_unmoved();
             if let Err(error) = finalize_session_state(&mut output, &state) {
+                emit_request_diagnostic(
+                    &state,
+                    &parts,
+                    Some(&request_id),
+                    "E_PHP_SESSION_STORE_UNAVAILABLE",
+                    "session",
+                    "server session store failed while finalizing request state",
+                    "finalize_session_state",
+                    parts.uri.path(),
+                    &script_log_path.display().to_string(),
+                );
                 emit_server_debug(
                     &state,
                     Some(&request_id),
@@ -1960,11 +2082,11 @@ fn seed_session_state(
         php_runtime::PhpArray::new()
     } else {
         state.session_store.load(incoming_id).map_err(|error| {
-            format!("E_PHRUST_SERVER_SESSION_LOAD: failed to load session `{incoming_id}`: {error}")
+            format!("E_PHP_SESSION_STORE_UNAVAILABLE: failed to load session: {error}")
         })?
     };
     let generated_id = generate_session_id().map_err(|error| {
-        format!("E_PHRUST_SERVER_SESSION_ID: failed to generate session id: {error}")
+        format!("E_PHP_SESSION_STORE_UNAVAILABLE: failed to generate session id: {error}")
     })?;
     Ok(SessionState::seeded(
         state.session_config.cookie_name.clone(),
@@ -1981,7 +2103,7 @@ fn finalize_session_state(output: &mut PhpExecutionOutput, state: &AppState) -> 
     if output.session.destroyed() {
         if let Some(id) = output.session.destroyed_id() {
             state.session_store.delete(id).map_err(|error| {
-                format!("E_PHRUST_SERVER_SESSION_DELETE: failed to delete session `{id}`: {error}")
+                format!("E_PHP_SESSION_STORE_UNAVAILABLE: failed to delete session: {error}")
             })?;
         }
         return Ok(());
@@ -1993,10 +2115,7 @@ fn finalize_session_state(output: &mut PhpExecutionOutput, state: &AppState) -> 
         .session_store
         .save(output.session.id(), &output.session.data())
         .map_err(|error| {
-            format!(
-                "E_PHRUST_SERVER_SESSION_SAVE: failed to save session `{}`: {error}",
-                output.session.id()
-            )
+            format!("E_PHP_SESSION_STORE_UNAVAILABLE: failed to save session: {error}")
         })?;
     if output.session.newly_created() {
         output
@@ -2019,8 +2138,22 @@ fn finalize_session_state(output: &mut PhpExecutionOutput, state: &AppState) -> 
 fn multipart_error_response(
     error: MultipartError,
     state: &AppState,
+    parts: &Parts,
+    request_id: &str,
+    script_path: &Path,
     peer: SocketAddr,
 ) -> Response<ResponseBody> {
+    emit_request_diagnostic(
+        state,
+        parts,
+        Some(request_id),
+        "E_PHP_REQUEST_BODY_PARSE_FAILED",
+        "multipart",
+        "server could not parse multipart request body",
+        "parse_multipart_into_context",
+        parts.uri.path(),
+        &script_path.display().to_string(),
+    );
     match error {
         MultipartError::Malformed => {
             state
@@ -2173,6 +2306,7 @@ fn http_runtime_context(
     );
     let host =
         header_value(&parts.headers, header::HOST).unwrap_or_else(|| "localhost".to_string());
+    let (request_time, request_time_float_micros) = request_time_pair();
     let mut context = RuntimeHttpRequestContext::new(
         parts.method.as_str(),
         host.clone(),
@@ -2181,13 +2315,17 @@ fn http_runtime_context(
         script_path.to_string_lossy().into_owned(),
         state.route_config.docroot.to_string_lossy().into_owned(),
     );
+    context.scheme = state.request_scheme.to_string();
     context.host = host;
+    context.server_name = server_name_from_host(&context.host);
     context.server_port = state.local_addr.port();
     context.server_protocol = format!("{:?}", parts.version);
+    context.https = state.request_scheme == "https";
     context.php_self = php_self_for(script_name, path_info.as_deref());
     context.path_info = path_info;
-    context.remote_addr = peer.to_string();
-    context.request_time = request_time();
+    context.remote_addr = peer.ip().to_string();
+    context.request_time = request_time;
+    context.request_time_float_micros = request_time_float_micros;
     context.headers = runtime_headers(&parts.headers);
     context.content_type = header_value(&parts.headers, header::CONTENT_TYPE);
     context.content_length = header_value(&parts.headers, header::CONTENT_LENGTH)
@@ -2274,10 +2412,32 @@ fn php_self_for(script_name: &str, path_info: Option<&str>) -> String {
     )
 }
 
+fn server_name_from_host(host: &str) -> String {
+    if let Some(rest) = host.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        return rest[..end].to_string();
+    }
+    host.rsplit_once(':')
+        .filter(|(_, port)| port.bytes().all(|byte| byte.is_ascii_digit()))
+        .map_or_else(|| host.to_string(), |(name, _)| name.to_string())
+}
+
 fn request_time() -> i64 {
-    SystemTime::now()
+    request_time_pair().0
+}
+
+fn request_time_pair() -> (i64, i64) {
+    let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64)
+        .unwrap_or_default();
+    (
+        duration.as_secs() as i64,
+        duration
+            .as_secs()
+            .saturating_mul(1_000_000)
+            .saturating_add(u64::from(duration.subsec_micros())) as i64,
+    )
 }
 
 fn method_not_allowed() -> Response<ResponseBody> {
@@ -2631,6 +2791,42 @@ mod tests {
     }
 
     #[test]
+    fn http_runtime_context_maps_server_name_https_and_remote_addr() {
+        let fixture = ServerCacheFixture::new();
+        let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        state.request_scheme = "https";
+        state.local_addr = "127.0.0.1:8443".parse().expect("local addr");
+        let script_path = fixture.write_named("index.php", "<?php echo 'ok';");
+        let (parts, _) = Request::builder()
+            .method("GET")
+            .uri("/index.php?name=phrust")
+            .header(header::HOST, "example.test:8443")
+            .body(())
+            .expect("request")
+            .into_parts();
+
+        let context = http_runtime_context(
+            &parts,
+            &state,
+            &script_path,
+            "/index.php",
+            None,
+            b"",
+            "192.0.2.44:50123".parse().expect("peer addr"),
+        );
+
+        assert_eq!(context.scheme, "https");
+        assert_eq!(context.host, "example.test:8443");
+        assert_eq!(context.server_name, "example.test");
+        assert_eq!(context.server_port, 8443);
+        assert!(context.https);
+        assert_eq!(context.remote_addr, "192.0.2.44");
+        assert_eq!(context.request_uri, "/index.php?name=phrust");
+        assert!(context.request_time > 0);
+        assert!(context.request_time_float_micros >= context.request_time * 1_000_000);
+    }
+
+    #[test]
     fn tls_fixture_cert_and_key_load() {
         let cert = tls_fixture("localhost.crt");
         let key = tls_fixture("localhost.key");
@@ -2687,6 +2883,7 @@ mod tests {
             session_store: Arc::new(SessionStore::new(fixture.root.join("sessions"))),
             session_lock: Arc::new(Mutex::new(())),
             local_addr: "127.0.0.1:8080".parse().expect("local addr"),
+            request_scheme: "http",
         }
     }
 

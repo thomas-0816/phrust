@@ -16,8 +16,9 @@
   temp directory and exposes upload metadata through `$_FILES`.
 - `php://input` exposes deterministic request body bytes through the existing
   stream wrapper registry.
-- Request-local sessions reuse incoming `PHPSESSID` cookies and emit
-  `Set-Cookie` when `session_start()` creates a new deterministic id.
+- Process-local web sessions reuse incoming `PHPSESSID` cookies, persist
+  `$_SESSION` across consecutive requests in one server process, and emit
+  `Set-Cookie` when `session_start()` creates a new id.
 - Read-only local `phar://` includes use the existing PHAR parser and include
   loader root policy.
 
@@ -38,8 +39,8 @@
 
 ## Remaining Gaps
 
-- Persistent session storage, custom session handlers, and full browser cookie
-  option parity remain future work.
+- Cross-process/file-backed session storage, custom session handlers, and full
+  browser cookie option parity remain future work.
 - Multipart parsing is an MVP for in-process development server requests, not a
   complete PHP SAPI upload implementation.
 - PHAR support remains read-only and limited to local uncompressed archive

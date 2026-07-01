@@ -478,6 +478,81 @@ fn server_debug_log_records_request_timeline_and_redacts_secrets() {
 }
 
 #[test]
+fn server_debug_log_contains_request_failure_diagnostics_without_secrets() {
+    let docroot = temp_docroot();
+    fs::write(docroot.join("index.php"), "<?php echo 'ok';").expect("write index");
+    let outside = docroot.with_extension("outside-diagnostic");
+    fs::write(&outside, "secret").expect("write outside file");
+    std::os::unix::fs::symlink(&outside, docroot.join("link.php")).expect("create symlink");
+    let debug_dir = temp_docroot();
+    let debug_log = debug_dir.join("server-debug.jsonl");
+    let debug_log_arg = debug_log.to_string_lossy().to_string();
+    let mut child = start_server(
+        &docroot,
+        &[
+            "--debug",
+            "--error-format",
+            "json",
+            "--debug-log",
+            &debug_log_arg,
+        ],
+    );
+
+    let address = read_listening_address(&mut child);
+    let missing = http_request_with_headers(
+        &address,
+        "GET",
+        "/missing.php?token=secret-token",
+        &[("Cookie", "PHPSESSID=session-secret")],
+        "",
+    );
+    let forbidden = http_request(&address, "GET", "/link.php");
+    let multipart = http_request_with_headers(
+        &address,
+        "POST",
+        "/index.php",
+        &[
+            ("Content-Type", "multipart/form-data"),
+            ("Content-Length", "24"),
+            ("Cookie", "PHPSESSID=session-secret"),
+        ],
+        "secret-body-never-log-it",
+    );
+
+    stop_child(child);
+    let log = fs::read_to_string(&debug_log).expect("read debug log");
+    fs::remove_dir_all(debug_dir).expect("remove debug temp dir");
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+    fs::remove_file(outside).expect("remove outside file");
+
+    assert!(missing.starts_with("HTTP/1.1 404 Not Found"), "{missing}");
+    assert!(
+        forbidden.starts_with("HTTP/1.1 403 Forbidden"),
+        "{forbidden}"
+    );
+    assert!(
+        multipart.starts_with("HTTP/1.1 400 Bad Request"),
+        "{multipart}"
+    );
+    assert!(
+        log.contains("E_PHP_SERVER_SCRIPT_RESOLUTION_FAILED"),
+        "{log}"
+    );
+    assert!(log.contains("E_PHP_SERVER_OUTSIDE_DOCUMENT_ROOT"), "{log}");
+    assert!(log.contains("E_PHP_REQUEST_BODY_PARSE_FAILED"), "{log}");
+    assert!(log.contains("\"method\":\"GET\""), "{log}");
+    assert!(
+        log.contains("\"uri\":\"/missing.php?token=secret-token\""),
+        "{log}"
+    );
+    assert!(log.contains("\"document_root\""), "{log}");
+    assert!(log.contains("\"allowed_roots\""), "{log}");
+    assert!(log.contains("\"function_name\":\"resolve_route\""), "{log}");
+    assert!(!log.contains("session-secret"), "{log}");
+    assert!(!log.contains("secret-body-never-log-it"), "{log}");
+}
+
+#[test]
 fn server_debug_off_does_not_emit_request_timeline() {
     let docroot = fixture_docroot("fixtures/server/php");
     let debug_dir = temp_docroot();
@@ -1029,6 +1104,135 @@ fn server_front_controller_app_fixture_dispatches_from_path_info() {
     );
     assert!(missing.starts_with("HTTP/1.1 404 Not Found"), "{missing}");
     assert_eq!(response_body(&missing), "front=missing|/missing\n");
+}
+
+#[test]
+fn server_wordpress_like_entrypoints_map_request_environment() {
+    let docroot = fixture_docroot("fixtures/server/apps/wordpress-like/public");
+    let mut child = start_server(&docroot, &["--front-controller", "index.php"]);
+
+    let address = read_listening_address(&mut child);
+    let home = http_request(&address, "GET", "/");
+    let index = http_request(&address, "GET", "/index.php?preview=1");
+    let install = http_request(&address, "GET", "/wp-admin/install.php?step=2");
+    let admin = http_request(&address, "GET", "/wp-admin/");
+    let pretty = http_request(&address, "GET", "/category/news?paged=2");
+    let encoded = http_request(&address, "GET", "/index.php/wp%20admin/setup?ok=1");
+
+    stop_child(child);
+
+    assert!(home.starts_with("HTTP/1.1 200 OK"), "{home}");
+    assert_eq!(
+        response_body(&home),
+        format!(
+            "home|GET|/|/|/index.php|/index.php||{}|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
+            "",
+            docroot.to_string_lossy(),
+            docroot.join("index.php").to_string_lossy()
+        )
+    );
+    assert!(index.starts_with("HTTP/1.1 200 OK"), "{index}");
+    assert_eq!(
+        response_body(&index),
+        format!(
+            "home|GET|/index.php?preview=1|/index.php|/index.php|/index.php||preview=1|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
+            docroot.to_string_lossy(),
+            docroot.join("index.php").to_string_lossy()
+        )
+    );
+    assert!(install.starts_with("HTTP/1.1 200 OK"), "{install}");
+    assert_eq!(
+        response_body(&install),
+        "install|/wp-admin/install.php?step=2|/wp-admin/install.php|/wp-admin/install.php|/wp-admin/install.php||step=2|docroot-include\n"
+    );
+    assert!(admin.starts_with("HTTP/1.1 200 OK"), "{admin}");
+    assert_eq!(
+        response_body(&admin),
+        "admin-index|/wp-admin/|/wp-admin/index.php|/wp-admin/index.php|\n"
+    );
+    assert!(pretty.starts_with("HTTP/1.1 200 OK"), "{pretty}");
+    assert_eq!(
+        response_body(&pretty),
+        format!(
+            "front|GET|/category/news?paged=2|/category/news|/index.php|/index.php/category/news|/category/news|paged=2|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
+            docroot.to_string_lossy(),
+            docroot.join("index.php").to_string_lossy()
+        )
+    );
+    assert!(encoded.starts_with("HTTP/1.1 200 OK"), "{encoded}");
+    assert_eq!(
+        response_body(&encoded),
+        format!(
+            "front|GET|/index.php/wp%20admin/setup?ok=1|/index.php/wp%20admin/setup|/index.php|/index.php/wp admin/setup|/wp admin/setup|ok=1|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
+            docroot.to_string_lossy(),
+            docroot.join("index.php").to_string_lossy()
+        )
+    );
+}
+
+#[test]
+fn server_synthetic_plugin_theme_fixture_runs() {
+    let docroot = fixture_docroot("fixtures/integration/wp_plugin_theme_synthetic/public");
+    let mut child = start_server(&docroot, &["--front-controller", "index.php"]);
+
+    let address = read_listening_address(&mut child);
+    let page = http_request(&address, "GET", "/?name=demo");
+    let redirect = http_request(&address, "GET", "/?redirect=1");
+    let upload_body = "--BOUNDARY\r\nContent-Disposition: form-data; name=\"package\"; filename=\"sample.txt\"\r\nContent-Type: text/plain\r\n\r\nsynthetic package payload\n\r\n--BOUNDARY--";
+    let upload = http_request_with_body(
+        &address,
+        "POST",
+        "/?upload=1",
+        "multipart/form-data; boundary=BOUNDARY",
+        upload_body,
+    );
+
+    stop_child(child);
+
+    assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
+    assert_response_contains_header(&page, "x-synthetic-fixture", "ok");
+    assert_response_contains_header(
+        &page,
+        "set-cookie",
+        "synthetic_demo=enabled; Path=/; SameSite=Lax",
+    );
+    assert_eq!(
+        response_body(&page),
+        "template=demo\nplugin=active\npackage_size=14\nupload=none\n"
+    );
+    assert!(redirect.starts_with("HTTP/1.1 302 Found"), "{redirect}");
+    assert_response_contains_header(&redirect, "location", "/activated");
+    assert_response_contains_header(
+        &redirect,
+        "set-cookie",
+        "synthetic_demo=redirect; Path=/; SameSite=Lax",
+    );
+    assert!(upload.starts_with("HTTP/1.1 200 OK"), "{upload}");
+    assert_eq!(
+        response_body(&upload),
+        "template=synthetic\nplugin=active\npackage_size=14\nupload=moved\nupload_size=26\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn server_rejects_symlink_escape_from_docroot() {
+    let docroot = temp_docroot();
+    fs::write(docroot.join("index.php"), "<?php echo 'ok';").expect("write index");
+    let outside = docroot.with_extension("outside");
+    fs::write(&outside, "secret").expect("write outside file");
+    std::os::unix::fs::symlink(&outside, docroot.join("link.php")).expect("create symlink");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/link.php");
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+    fs::remove_file(outside).expect("remove outside file");
+
+    assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
+    assert_eq!(response_body(&response), "forbidden\n");
 }
 
 #[test]

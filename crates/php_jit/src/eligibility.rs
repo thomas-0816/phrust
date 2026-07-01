@@ -1540,8 +1540,10 @@ fn check_instruction(
         | InstructionKind::BindReferencePropertyDim { .. }
         | InstructionKind::BindReferenceDimFromProperty { .. }
         | InstructionKind::BindReferenceFromDim { .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { .. }
         | InstructionKind::BindReferenceStaticProperty { .. }
-        | InstructionKind::BindReferenceFromCall { .. } => {
+        | InstructionKind::BindReferenceFromCall { .. }
+        | InstructionKind::BindReferenceFromMethodCall { .. } => {
             rejected.push(JitEligibilityReason::instruction(
                 "JIT_ELIGIBILITY_REJECT_REFERENCE_OPCODE",
                 "reference-producing opcodes are outside the JIT subset; alias_state=unknown_aliasing",
@@ -1634,6 +1636,9 @@ fn check_instruction(
         | InstructionKind::FetchStaticProperty { .. }
         | InstructionKind::IssetStaticProperty { .. }
         | InstructionKind::EmptyStaticProperty { .. }
+        | InstructionKind::IssetStaticPropertyDim { .. }
+        | InstructionKind::EmptyStaticPropertyDim { .. }
+        | InstructionKind::UnsetStaticPropertyDim { .. }
         | InstructionKind::FetchClassConstant { .. }
         | InstructionKind::FetchObjectClassName { .. }
         | InstructionKind::AssignProperty { .. }

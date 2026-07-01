@@ -406,7 +406,7 @@ Options:\n\
   --upload-temp-dir <path>     upload temp directory (default: OS temp/phrust-uploads)\n\
   --max-upload-files <n>       maximum uploaded files per request (default: 32)\n\
   --max-upload-file-bytes <n>  maximum bytes per uploaded file (default: max body bytes)\n\
-  --session-save-path <path>   session storage directory (default: OS temp/phrust-sessions)\n\
+  --session-save-path <path>   compatibility path for session config\n\
   --session-cookie-name <name> session cookie name (default: PHPSESSID)\n\
   --session-cookie-path <path> session cookie path (default: /)\n\
   --disable-sessions           disable persistent web sessions\n\

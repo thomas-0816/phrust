@@ -1,15 +1,26 @@
 use php_runtime::{PhpArray, PhpString, UnserializeOptions, Value, serialize, unserialize};
 use std::{
+    collections::HashMap,
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug)]
-pub struct SessionStore {
-    root: PathBuf,
-    temp_counter: AtomicU64,
+pub struct RuntimeSessionStore {
+    entries: Mutex<HashMap<String, SessionEntry>>,
+    max_entries: usize,
+    ttl: Option<Duration>,
+}
+
+pub type SessionStore = RuntimeSessionStore;
+
+#[derive(Clone, Debug)]
+struct SessionEntry {
+    payload: Vec<u8>,
+    last_access: Instant,
 }
 
 #[derive(Debug)]
@@ -18,6 +29,7 @@ pub enum SessionStoreError {
     InvalidId,
     Decode(String),
     Encode(String),
+    Unavailable,
 }
 
 impl std::fmt::Display for SessionStoreError {
@@ -27,6 +39,7 @@ impl std::fmt::Display for SessionStoreError {
             Self::InvalidId => f.write_str("invalid session id"),
             Self::Decode(message) => write!(f, "session decode failed: {message}"),
             Self::Encode(message) => write!(f, "session encode failed: {message}"),
+            Self::Unavailable => f.write_str("session store unavailable"),
         }
     }
 }
@@ -39,79 +52,127 @@ impl From<io::Error> for SessionStoreError {
     }
 }
 
-impl SessionStore {
+impl RuntimeSessionStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let _ = root.into();
         Self {
-            root: root.into(),
-            temp_counter: AtomicU64::new(0),
+            entries: Mutex::new(HashMap::new()),
+            max_entries: 4096,
+            ttl: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_limits(
+        root: impl Into<PathBuf>,
+        max_entries: usize,
+        ttl: Option<Duration>,
+    ) -> Self {
+        let _ = root.into();
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            max_entries: max_entries.max(1),
+            ttl,
         }
     }
 
     pub fn ensure_ready(&self) -> Result<(), SessionStoreError> {
-        fs::create_dir_all(&self.root)?;
         Ok(())
     }
 
     pub fn load(&self, id: &str) -> Result<PhpArray, SessionStoreError> {
-        let path = self.path_for_id(id)?;
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(PhpArray::new()),
-            Err(error) => return Err(SessionStoreError::Io(error)),
+        validate_id(id)?;
+        let now = Instant::now();
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| SessionStoreError::Unavailable)?;
+        self.prune_expired_locked(&mut entries, now);
+        let Some(entry) = entries.get_mut(id) else {
+            return Ok(PhpArray::new());
         };
-        let value = unserialize(
-            &PhpString::from_bytes(bytes),
-            UnserializeOptions {
-                max_bytes: 1_048_576,
-                ..UnserializeOptions::default()
-            },
-        )
-        .map_err(|error| SessionStoreError::Decode(error.message().to_string()))?;
-        match value {
-            Value::Array(array) => Ok(array),
-            _ => Err(SessionStoreError::Decode(
-                "session payload is not an array".to_string(),
-            )),
-        }
+        entry.last_access = now;
+        decode_session_payload(entry.payload.clone())
     }
 
     pub fn save(&self, id: &str, data: &PhpArray) -> Result<(), SessionStoreError> {
-        self.ensure_ready()?;
-        let path = self.path_for_id(id)?;
-        let bytes = serialize(&Value::Array(data.clone()))
-            .map_err(|error| SessionStoreError::Encode(error.message().to_string()))?
-            .into_bytes();
-        let temp = self.temp_path_for(id)?;
-        fs::write(&temp, bytes)?;
-        fs::rename(&temp, path)?;
+        validate_id(id)?;
+        let now = Instant::now();
+        let payload = encode_session_payload(data)?;
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| SessionStoreError::Unavailable)?;
+        self.prune_expired_locked(&mut entries, now);
+        if !entries.contains_key(id) && entries.len() >= self.max_entries {
+            evict_oldest(&mut entries);
+        }
+        entries.insert(
+            id.to_string(),
+            SessionEntry {
+                payload,
+                last_access: now,
+            },
+        );
         Ok(())
     }
 
     pub fn delete(&self, id: &str) -> Result<(), SessionStoreError> {
-        let path = self.path_for_id(id)?;
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(SessionStoreError::Io(error)),
-        }
+        validate_id(id)?;
+        self.entries
+            .lock()
+            .map_err(|_| SessionStoreError::Unavailable)?
+            .remove(id);
+        Ok(())
     }
 
-    fn path_for_id(&self, id: &str) -> Result<PathBuf, SessionStoreError> {
-        if !valid_session_id(id) {
-            return Err(SessionStoreError::InvalidId);
-        }
-        Ok(self.root.join(format!("sess_{id}")))
+    fn prune_expired_locked(&self, entries: &mut HashMap<String, SessionEntry>, now: Instant) {
+        let Some(ttl) = self.ttl else {
+            return;
+        };
+        entries.retain(|_, entry| now.duration_since(entry.last_access) <= ttl);
     }
+}
 
-    fn temp_path_for(&self, id: &str) -> Result<PathBuf, SessionStoreError> {
-        if !valid_session_id(id) {
-            return Err(SessionStoreError::InvalidId);
-        }
-        let counter = self.temp_counter.fetch_add(1, Ordering::Relaxed);
-        Ok(self
-            .root
-            .join(format!(".sess_{id}.{}.{}.tmp", std::process::id(), counter)))
+fn validate_id(id: &str) -> Result<(), SessionStoreError> {
+    if valid_session_id(id) {
+        Ok(())
+    } else {
+        Err(SessionStoreError::InvalidId)
     }
+}
+
+fn evict_oldest(entries: &mut HashMap<String, SessionEntry>) {
+    if let Some(oldest) = entries
+        .iter()
+        .min_by_key(|(_, entry)| entry.last_access)
+        .map(|(id, _)| id.clone())
+    {
+        entries.remove(&oldest);
+    }
+}
+
+fn decode_session_payload(bytes: Vec<u8>) -> Result<PhpArray, SessionStoreError> {
+    let value = unserialize(
+        &PhpString::from_bytes(bytes),
+        UnserializeOptions {
+            max_bytes: 1_048_576,
+            ..UnserializeOptions::default()
+        },
+    )
+    .map_err(|error| SessionStoreError::Decode(error.message().to_string()))?;
+    match value {
+        Value::Array(array) => Ok(array),
+        _ => Err(SessionStoreError::Decode(
+            "session payload is not an array".to_string(),
+        )),
+    }
+}
+
+fn encode_session_payload(data: &PhpArray) -> Result<Vec<u8>, SessionStoreError> {
+    serialize(&Value::Array(data.clone()))
+        .map_err(|error| SessionStoreError::Encode(error.message().to_string()))
+        .map(PhpString::into_bytes)
 }
 
 pub fn valid_session_id(id: &str) -> bool {
@@ -170,6 +231,48 @@ mod tests {
         assert!(store.load("abc123").expect("load missing").is_empty());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_store_is_process_local_and_does_not_create_files() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-session-store-memory-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = SessionStore::new(&root);
+        let mut data = PhpArray::new();
+        data.insert(
+            ArrayKey::String(PhpString::from_test_str("flag")),
+            Value::Bool(true),
+        );
+
+        store.ensure_ready().expect("session store ready");
+        store.save("abc123", &data).expect("save session");
+
+        assert!(!root.exists(), "memory session store must not create files");
+        assert_eq!(store.load("abc123").expect("load session"), data);
+    }
+
+    #[test]
+    fn session_store_evicts_old_entries_when_bounded() {
+        let store = SessionStore::with_limits("unused", 1, None);
+        let mut first = PhpArray::new();
+        first.insert(
+            ArrayKey::String(PhpString::from_test_str("n")),
+            Value::Int(1),
+        );
+        let mut second = PhpArray::new();
+        second.insert(
+            ArrayKey::String(PhpString::from_test_str("n")),
+            Value::Int(2),
+        );
+
+        store.save("first", &first).expect("save first");
+        store.save("second", &second).expect("save second");
+
+        assert!(store.load("first").expect("load first").is_empty());
+        assert_eq!(store.load("second").expect("load second"), second);
     }
 
     #[test]

@@ -302,7 +302,7 @@ impl StreamWrapperRegistry {
         let parsed_mode = StreamOpenMode::parse(mode)?;
         if is_remote_uri(uri) {
             return Err(StreamOpenError::new(
-                "E_PHP_RUNTIME_STREAM_REMOTE_DISABLED",
+                "E_PHP_STREAM_WRAPPER_UNSUPPORTED",
                 format!("remote stream wrapper is disabled for `{uri}`"),
             ));
         }
@@ -1053,7 +1053,7 @@ fn open_php_stream(
         "stdin" => {
             if !capabilities.allows_stdio() {
                 return Err(StreamOpenError::new(
-                    "E_PHP_RUNTIME_STREAM_STDIO_DISABLED",
+                    "E_PHP_FILESYSTEM_CAPABILITY_DENIED",
                     "php://stdin is disabled by runtime capabilities",
                 ));
             }
@@ -1069,7 +1069,7 @@ fn open_php_stream(
         "stdout" | "stderr" => {
             if !capabilities.allows_stdio() {
                 return Err(StreamOpenError::new(
-                    "E_PHP_RUNTIME_STREAM_STDIO_DISABLED",
+                    "E_PHP_FILESYSTEM_CAPABILITY_DENIED",
                     format!("php://{target} is disabled by runtime capabilities"),
                 ));
             }
@@ -1083,7 +1083,7 @@ fn open_php_stream(
             ))
         }
         _ => Err(StreamOpenError::new(
-            "E_PHP_RUNTIME_STREAM_WRAPPER_UNSUPPORTED",
+            "E_PHP_STREAM_WRAPPER_UNSUPPORTED",
             format!("unsupported php:// wrapper `{target}`"),
         )),
     }
@@ -1113,7 +1113,7 @@ fn open_file_stream(
     let normalized = normalize_path(&absolute);
     if !capabilities.allows_path(&normalized) {
         return Err(StreamOpenError::new(
-            "E_PHP_RUNTIME_STREAM_CAPABILITY",
+            "E_PHP_FILESYSTEM_CAPABILITY_DENIED",
             format!(
                 "local file stream `{}` is outside allowed filesystem roots",
                 normalized.display()
@@ -1436,7 +1436,7 @@ mod tests {
                 &[],
             )
             .expect_err("outside root is rejected");
-        assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_STREAM_CAPABILITY");
+        assert_eq!(error.diagnostic_id(), "E_PHP_FILESYSTEM_CAPABILITY_DENIED");
 
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_file(outside);
@@ -1459,10 +1459,7 @@ mod tests {
                 &[],
             )
             .expect_err("remote streams are disabled");
-        assert_eq!(
-            remote.diagnostic_id(),
-            "E_PHP_RUNTIME_STREAM_REMOTE_DISABLED"
-        );
+        assert_eq!(remote.diagnostic_id(), "E_PHP_STREAM_WRAPPER_UNSUPPORTED");
 
         let stdio = registry
             .open(
@@ -1474,7 +1471,7 @@ mod tests {
                 &[],
             )
             .expect_err("stdio is disabled without capability");
-        assert_eq!(stdio.diagnostic_id(), "E_PHP_RUNTIME_STREAM_STDIO_DISABLED");
+        assert_eq!(stdio.diagnostic_id(), "E_PHP_FILESYSTEM_CAPABILITY_DENIED");
 
         let stdout = registry
             .open(

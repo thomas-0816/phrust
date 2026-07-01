@@ -76,26 +76,31 @@ execution, response headers/status, `php://input`, stream output,
 request-local filesystem CWD behavior, a focused execution-deadline timeout
 check, and loopback cache invalidation.
 
+`fixtures/integration/wp_plugin_theme_synthetic/` provides a small
+WordPress-shaped fixture for plugin/theme activation smoke checks. It includes a
+hook-like callback registry, plugin and theme files, docroot-adjacent
+filesystem reads/writes, output-buffered template rendering, headers/cookies,
+redirects, and optional multipart package upload handling.
+
 ## Persistent Web Sessions
 
 The integrated server owns web session persistence. By default sessions are
-enabled with cookie name `PHPSESSID`, cookie path `/`, and save path
-`$TMPDIR/phrust-sessions`. Operators can override these with
-`--session-save-path`, `--session-cookie-name`, and `--session-cookie-path`, or
-disable the feature with `--disable-sessions`.
+enabled with cookie name `PHPSESSID` and cookie path `/`. Session data is held
+in a bounded in-memory store owned by the server process, keyed by validated
+session id, and serialized with the phrust-owned PHP-serialize-compatible
+encoding of the whole `$_SESSION` array. It is intentionally not PHP's
+historical `name|serialized-value` session module format.
 
-Session files are stored as `sess_<id>` under the configured save path. Session
-ids are validated as bounded ASCII path segments before any file access, so ids
-cannot contain directory separators or traversal components. Payloads are a
-phrust-owned PHP-serialize-compatible encoding of the whole `$_SESSION` array,
-not PHP's historical `name|serialized-value` session module format. Writes use
-a temporary file followed by rename so a completed write replaces the previous
-payload atomically.
+`--session-save-path` and the `session_save_path` config key are retained as
+compatibility knobs for existing launch scripts, but the development server no
+longer creates `sess_<id>` files there. Operators can override cookie behavior
+with `--session-cookie-name` and `--session-cookie-path`, or disable the feature
+with `--disable-sessions`.
 
 The server holds a process-local session mutex while loading, executing, and
 finalizing a request. This prevents in-process concurrent request corruption.
-It is not a cross-process lock, so multiple server processes sharing the same
-session save path are outside the current guarantee.
+It is not a cross-process store, so sessions do not persist across server
+restarts and are not shared between multiple server processes.
 
 ## PHP Execution Deadlines
 

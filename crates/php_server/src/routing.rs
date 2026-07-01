@@ -55,9 +55,10 @@ pub fn resolve_route(method: &str, path: &str, config: &RouteConfig) -> Resolved
             ResolvedRoute::MethodNotAllowed
         };
     }
-    let Some(relative_path) = decoded_relative_path(path) else {
+    let Some(relative_segments) = decoded_relative_segments(path) else {
         return ResolvedRoute::BadRequest;
     };
+    let relative_path = relative_path_from_segments(&relative_segments);
     if contains_forbidden_component(&relative_path) {
         return ResolvedRoute::Forbidden;
     }
@@ -65,6 +66,9 @@ pub fn resolve_route(method: &str, path: &str, config: &RouteConfig) -> Resolved
     let candidate = config.docroot.join(&relative_path);
     if candidate.exists() {
         return resolve_existing_path(method, &candidate, None, config);
+    }
+    if let Some(route) = resolve_path_info_script(method, &relative_segments, config) {
+        return route;
     }
 
     if let Some(front_controller) = &config.front_controller {
@@ -76,6 +80,31 @@ pub fn resolve_route(method: &str, path: &str, config: &RouteConfig) -> Resolved
     }
 
     ResolvedRoute::NotFound
+}
+
+fn resolve_path_info_script(
+    method: &str,
+    relative_segments: &[String],
+    config: &RouteConfig,
+) -> Option<ResolvedRoute> {
+    for split in 1..relative_segments.len() {
+        let script_relative = relative_path_from_segments(&relative_segments[..split]);
+        if !is_php_path(&script_relative) {
+            continue;
+        }
+        let script_path = config.docroot.join(&script_relative);
+        if !script_path.exists() {
+            continue;
+        }
+        let path_info = format!("/{}", relative_segments[split..].join("/"));
+        return Some(resolve_existing_path(
+            method,
+            &script_path,
+            Some(path_info),
+            config,
+        ));
+    }
+    None
 }
 
 fn resolve_existing_path(
@@ -118,7 +147,7 @@ fn resolve_existing_path(
     }
 }
 
-fn decoded_relative_path(path: &str) -> Option<PathBuf> {
+fn decoded_relative_segments(path: &str) -> Option<Vec<String>> {
     if !path.starts_with('/') {
         return None;
     }
@@ -131,14 +160,21 @@ fn decoded_relative_path(path: &str) -> Option<PathBuf> {
     if without_root.starts_with('/') {
         return None;
     }
+    Some(
+        without_root
+            .split('/')
+            .filter(|segment| !segment.is_empty() && *segment != ".")
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn relative_path_from_segments(segments: &[String]) -> PathBuf {
     let mut relative = PathBuf::new();
-    for segment in without_root.split('/') {
-        if segment.is_empty() || segment == "." {
-            continue;
-        }
+    for segment in segments {
         relative.push(segment);
     }
-    Some(relative)
+    relative
 }
 
 fn percent_decode(input: &[u8]) -> Option<Vec<u8>> {
@@ -355,6 +391,66 @@ mod tests {
         assert_eq!(path_info.as_deref(), Some("/users/1"));
     }
 
+    #[test]
+    fn maps_path_info_after_existing_php_script_before_front_controller() {
+        let fixture = Fixture::new();
+        fixture.write("index.php", "<?php echo \"index\";");
+        fixture.create_dir("wp-admin");
+        fixture.write("wp-admin/install.php", "<?php echo \"install\";");
+        let mut config = fixture.config("index.php");
+        config.front_controller = Some(PathBuf::from("index.php"));
+
+        let ResolvedRoute::PhpScript {
+            script_path,
+            path_info,
+        } = resolve_route("GET", "/index.php/pretty/path", &config)
+        else {
+            panic!("expected index.php script");
+        };
+        assert_eq!(
+            script_path,
+            fixture
+                .root
+                .join("index.php")
+                .canonicalize()
+                .expect("canonical index")
+        );
+        assert_eq!(path_info.as_deref(), Some("/pretty/path"));
+
+        let ResolvedRoute::PhpScript {
+            script_path,
+            path_info,
+        } = resolve_route("GET", "/wp-admin/install.php/step/1", &config)
+        else {
+            panic!("expected install.php script");
+        };
+        assert_eq!(
+            script_path,
+            fixture
+                .root
+                .join("wp-admin/install.php")
+                .canonicalize()
+                .expect("canonical install")
+        );
+        assert_eq!(path_info.as_deref(), Some("/step/1"));
+    }
+
+    #[test]
+    fn decodes_path_info_segments_for_existing_php_script() {
+        let fixture = Fixture::new();
+        fixture.write("index.php", "<?php echo \"index\";");
+
+        let ResolvedRoute::PhpScript { path_info, .. } = resolve_route(
+            "GET",
+            "/index.php/wp%20admin/step",
+            &fixture.config("index.php"),
+        ) else {
+            panic!("expected index.php script");
+        };
+
+        assert_eq!(path_info.as_deref(), Some("/wp admin/step"));
+    }
+
     struct Fixture {
         root: PathBuf,
     }
@@ -371,6 +467,10 @@ mod tests {
 
         fn write(&self, relative: &str, contents: &str) {
             fs::write(self.root.join(relative), contents).expect("write fixture file");
+        }
+
+        fn create_dir(&self, relative: &str) {
+            fs::create_dir_all(self.root.join(relative)).expect("create fixture dir");
         }
 
         fn config(&self, index: &str) -> RouteConfig {

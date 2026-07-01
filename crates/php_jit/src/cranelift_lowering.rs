@@ -4308,6 +4308,7 @@ mod tests {
                     by_ref_local: Some(local_s),
                     by_ref_dim: None,
                     by_ref_property: None,
+                    by_ref_property_dim: None,
                 }],
             },
             span,

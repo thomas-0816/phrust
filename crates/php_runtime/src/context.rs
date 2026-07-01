@@ -69,8 +69,10 @@ pub struct RuntimeHttpRequestContext {
     pub method: String,
     pub scheme: String,
     pub host: String,
+    pub server_name: String,
     pub server_port: u16,
     pub server_protocol: String,
+    pub https: bool,
     pub request_uri: String,
     pub path: String,
     pub query_string: String,
@@ -81,6 +83,7 @@ pub struct RuntimeHttpRequestContext {
     pub path_info: Option<String>,
     pub remote_addr: String,
     pub request_time: i64,
+    pub request_time_float_micros: i64,
     pub headers: Vec<(String, String)>,
     pub content_type: Option<String>,
     pub content_length: Option<u64>,
@@ -273,12 +276,15 @@ impl RuntimeHttpRequestContext {
             .split_once('?')
             .map_or(request_uri.as_str(), |(path, _)| path)
             .to_string();
+        let host = host.into();
         Self {
             method: method.into(),
             scheme: "http".to_string(),
-            host: host.into(),
+            server_name: server_name_from_host(&host),
+            host,
             server_port: 80,
             server_protocol: "HTTP/1.1".to_string(),
+            https: false,
             request_uri,
             path,
             query_string: query_string.clone(),
@@ -289,6 +295,7 @@ impl RuntimeHttpRequestContext {
             path_info: None,
             remote_addr: String::new(),
             request_time: 0,
+            request_time_float_micros: 0,
             headers: Vec::new(),
             content_type: None,
             content_length: None,
@@ -746,8 +753,14 @@ fn http_server_array(request: &RuntimeHttpRequestContext) -> PhpArray {
     insert_string(&mut array, "REQUEST_METHOD", &request.method);
     insert_string(&mut array, "REQUEST_SCHEME", &request.scheme);
     insert_string(&mut array, "HTTP_HOST", &request.host);
+    insert_string(&mut array, "SERVER_NAME", &request.server_name);
     insert_string(&mut array, "SERVER_PORT", &request.server_port.to_string());
     insert_string(&mut array, "SERVER_PROTOCOL", &request.server_protocol);
+    insert_string(
+        &mut array,
+        "HTTPS",
+        if request.https { "on" } else { "off" },
+    );
     insert_string(&mut array, "REQUEST_URI", &request.request_uri);
     insert_string(&mut array, "DOCUMENT_URI", &request.path);
     insert_string(&mut array, "SCRIPT_NAME", &request.script_name);
@@ -757,6 +770,10 @@ fn http_server_array(request: &RuntimeHttpRequestContext) -> PhpArray {
     insert_string(&mut array, "QUERY_STRING", &request.query_string);
     insert_string(&mut array, "REMOTE_ADDR", &request.remote_addr);
     array.insert(string_key("REQUEST_TIME"), Value::Int(request.request_time));
+    array.insert(
+        string_key("REQUEST_TIME_FLOAT"),
+        Value::float(request.request_time_float_micros as f64 / 1_000_000.0),
+    );
     if let Some(path_info) = &request.path_info {
         insert_string(&mut array, "PATH_INFO", path_info);
     }
@@ -774,7 +791,21 @@ fn http_server_array(request: &RuntimeHttpRequestContext) -> PhpArray {
     array
 }
 
+fn server_name_from_host(host: &str) -> String {
+    if let Some(rest) = host.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        return rest[..end].to_string();
+    }
+    host.rsplit_once(':')
+        .filter(|(_, port)| port.bytes().all(|byte| byte.is_ascii_digit()))
+        .map_or_else(|| host.to_string(), |(name, _)| name.to_string())
+}
+
 fn header_server_name(name: &str) -> Option<String> {
+    if name.eq_ignore_ascii_case("host") {
+        return None;
+    }
     if name.eq_ignore_ascii_case("content-type") {
         return Some("CONTENT_TYPE".to_string());
     }
@@ -1294,8 +1325,10 @@ mod tests {
         assert_string(&server, "REQUEST_METHOD", "POST");
         assert_string(&server, "REQUEST_SCHEME", "http");
         assert_string(&server, "HTTP_HOST", "example.test");
+        assert_string(&server, "SERVER_NAME", "example.test");
         assert_string(&server, "SERVER_PORT", "8080");
         assert_string(&server, "SERVER_PROTOCOL", "HTTP/1.1");
+        assert_string(&server, "HTTPS", "off");
         assert_string(&server, "REQUEST_URI", "/submit.php?name=phrust");
         assert_string(&server, "SCRIPT_NAME", "/submit.php");
         assert_string(&server, "PHP_SELF", "/submit.php/extra");
@@ -1311,6 +1344,35 @@ mod tests {
             server.get(&ArrayKey::String(PhpString::from_test_str("REQUEST_TIME"))),
             Some(&Value::Int(123))
         );
+        assert_float(&server, "REQUEST_TIME_FLOAT", 123.456789);
+    }
+
+    #[test]
+    fn server_name_strips_host_port_without_changing_http_host() {
+        let mut request = http_request();
+        request.host = "example.test:8443".to_string();
+        request.server_name = super::server_name_from_host(&request.host);
+        request.scheme = "https".to_string();
+        request.https = true;
+        request.server_port = 8443;
+        let context = RuntimeContext::controlled_http(request);
+
+        let server = global_array(&context, "_SERVER");
+        assert_string(&server, "HTTP_HOST", "example.test:8443");
+        assert_string(&server, "SERVER_NAME", "example.test");
+        assert_string(&server, "HTTPS", "on");
+    }
+
+    #[test]
+    fn server_name_handles_bracketed_ipv6_hosts() {
+        let mut request = http_request();
+        request.host = "[::1]:8080".to_string();
+        request.server_name = super::server_name_from_host(&request.host);
+        let context = RuntimeContext::controlled_http(request);
+
+        let server = global_array(&context, "_SERVER");
+        assert_string(&server, "HTTP_HOST", "[::1]:8080");
+        assert_string(&server, "SERVER_NAME", "::1");
     }
 
     #[test]
@@ -1544,6 +1606,7 @@ mod tests {
         request.php_self = "/submit.php/extra".to_string();
         request.remote_addr = "127.0.0.1".to_string();
         request.request_time = 123;
+        request.request_time_float_micros = 123_456_789;
         request.content_type = Some("application/x-www-form-urlencoded".to_string());
         request.content_length = Some(7);
         request.headers = vec![
@@ -1585,6 +1648,20 @@ mod tests {
             array.get(&ArrayKey::String(PhpString::from_test_str(key))),
             Some(&Value::string(expected.as_bytes().to_vec()))
         );
+    }
+
+    fn assert_float(array: &crate::PhpArray, key: &str, expected: f64) {
+        match array.get(&ArrayKey::String(PhpString::from_test_str(key))) {
+            Some(Value::Float(value)) => {
+                assert!(
+                    (value.to_f64() - expected).abs() < f64::EPSILON,
+                    "{} != {}",
+                    value.to_f64(),
+                    expected
+                );
+            }
+            value => panic!("expected float for {key}, got {value:?}"),
+        }
     }
 
     fn assert_path_string(array: &crate::PhpArray, path: &[ArrayKey], expected: &str) {

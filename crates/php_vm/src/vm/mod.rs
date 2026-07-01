@@ -52025,13 +52025,44 @@ fn param_type_mismatch_message(
         function.name,
         arg_index + 1,
         parameter_name,
-        runtime_type_name(runtime_type),
+        runtime_type_error_name(compiled, runtime_type),
         type_error_value_name(value),
     );
     if let Some((file, line)) = call_span.and_then(|span| source_span_file_line(compiled, span)) {
         message.push_str(&format!(", called in {file} on line {line}"));
     }
     message
+}
+
+fn runtime_type_error_name(compiled: &CompiledUnit, runtime_type: &RuntimeType) -> String {
+    match runtime_type {
+        RuntimeType::Class { name } => {
+            let normalized = normalize_class_name(name);
+            class_display_name(compiled, &normalized).unwrap_or_else(|| name.clone())
+        }
+        RuntimeType::Nullable { inner } => format!("?{}", runtime_type_error_name(compiled, inner)),
+        RuntimeType::Union { members } => members
+            .iter()
+            .map(|member| runtime_type_error_name(compiled, member))
+            .collect::<Vec<_>>()
+            .join("|"),
+        RuntimeType::Intersection { members } => members
+            .iter()
+            .map(|member| runtime_type_error_name(compiled, member))
+            .collect::<Vec<_>>()
+            .join("&"),
+        RuntimeType::Dnf { clauses } => clauses
+            .iter()
+            .map(|clause| match clause {
+                RuntimeType::Intersection { .. } => {
+                    format!("({})", runtime_type_error_name(compiled, clause))
+                }
+                _ => runtime_type_error_name(compiled, clause),
+            })
+            .collect::<Vec<_>>()
+            .join("|"),
+        other => runtime_type_name(other),
+    }
 }
 
 fn coerce_or_check_param_type(

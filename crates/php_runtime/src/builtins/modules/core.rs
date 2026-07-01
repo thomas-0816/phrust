@@ -1718,7 +1718,7 @@ pub(in crate::builtins::modules) fn read_file_value(
     let resolved = resolve_runtime_path(context, path);
     if !context.filesystem_capabilities().allows_path(&resolved) {
         context.php_warning(
-            "E_PHP_RUNTIME_STREAM_CAPABILITY",
+            "E_PHP_FILESYSTEM_CAPABILITY_DENIED",
             format!("{function}({path}): Failed to open stream: Operation not permitted"),
             span,
         );
