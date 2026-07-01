@@ -60,6 +60,8 @@ help:
       '  just wordpress-preflight  Classify local real WordPress smoke prerequisites' \
       '  just wordpress-real-smoke Run no-DB real WordPress frontpage smoke' \
       '  just wordpress-real-install-smoke Run DB-backed real WordPress install smoke' \
+      '  just mysqli-integration   Run explicit live MySQLi integration gate' \
+      '  just wordpress-smoke-report Generate web/db diagnostics report' \
       '' \
       'Server:' \
       '  just verify-server        Run integrated web server verification' \
@@ -919,6 +921,12 @@ wordpress-real-install-smoke:
 
 wordpress-real-extract-first-failure:
     scripts/wordpress/extract_failure.py --failure "${PHRUST_WORDPRESS_FIRST_FAILURE:-}"
+
+mysqli-integration:
+    scripts/mysqli_integration.py
+
+wordpress-smoke-report:
+    scripts/wordpress_smoke_report.py
 
 regression-fixtures:
     cargo build -p php_vm_cli

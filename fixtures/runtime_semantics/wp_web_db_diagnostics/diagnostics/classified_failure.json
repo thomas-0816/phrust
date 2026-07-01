@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "status": "fail",
+  "wordpress_error_class": "database_mysqli",
+  "owner_layer": "php_runtime::db::mysql",
+  "diagnostic_id": "E_PHP_RUNTIME_MYSQLI_QUERY",
+  "source_path": "fixtures/runtime_semantics/wp_web_db_diagnostics/mysqli/prepared_statement_sqlite.php",
+  "source_span": null,
+  "first_php_frame": {
+    "function": "mysqli_stmt_execute",
+    "file": "fixtures/runtime_semantics/wp_web_db_diagnostics/mysqli/prepared_statement_sqlite.php",
+    "line": 10
+  },
+  "runtime_stack": [],
+  "include_stack": [],
+  "autoload_stack": [],
+  "request_context_summary": null,
+  "database_context_summary": {
+    "operation": "mysqli_stmt_execute",
+    "connection_state": "open",
+    "errno": 1,
+    "sqlstate": "HY000",
+    "query_digest": "sha256:fixture"
+  },
+  "last_vm_instruction": null,
+  "counters": {},
+  "stdout_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb924",
+  "stderr_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb924",
+  "secondary_errors": [],
+  "suggested_reduced_fixture_path": "fixtures/runtime_semantics/wp_web_db_diagnostics/mysqli/prepared_statement_sqlite.php"
+}
