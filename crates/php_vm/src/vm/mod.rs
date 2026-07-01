@@ -20625,15 +20625,19 @@ impl Vm {
                             continue;
                         }
                         if is_mysqli_runtime_class(&object.class_name()) {
-                            let value =
-                                match call_mysqli_method(&object, method, values, &mut state.mysql)
-                                {
-                                    Ok(value) => value,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                };
+                            let value = match call_mysqli_method(
+                                &object,
+                                method,
+                                values,
+                                &mut state.mysql,
+                                compiled,
+                                stack,
+                            ) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                             if let Err(message) = stack
                                 .current_mut()
                                 .expect("caller frame is active")
@@ -40942,10 +40946,20 @@ fn new_mysqli_object(
             "E_PHP_VM_MYSQLI_RESULT_CONSTRUCT: mysqli_result objects are created by mysqli::query"
                 .to_owned(),
         ),
-        "mysqli_stmt" => Err(
-            "E_PHP_VM_MYSQLI_STMT_GAP: mysqli_stmt prepared statements are not implemented in the mysqli MVP"
-                .to_owned(),
-        ),
+        "mysqli_stmt" => {
+            let values = call_args_to_positional("mysqli_stmt::__construct", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::__construct", values.len(), 0, 1)?;
+            let Some(Value::Object(connection)) = values.first() else {
+                return Ok(mysqli_stmt_object(None));
+            };
+            let Some(connection_id) = mysqli_connection_id(connection) else {
+                return Ok(mysqli_stmt_object(None));
+            };
+            match mysql.stmt_init(connection_id) {
+                Ok(statement_id) => Ok(mysqli_stmt_object(Some(statement_id))),
+                Err(_) => Ok(mysqli_stmt_object(None)),
+            }
+        }
         "mysqli_driver" | "mysqli_warning" => Ok(mysqli_empty_object(class_name)),
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
@@ -40958,14 +40972,14 @@ fn call_mysqli_method(
     method: &str,
     args: Vec<CallArgument>,
     mysql: &mut php_runtime::MysqlState,
+    compiled: &CompiledUnit,
+    stack: &mut CallStack,
 ) -> Result<Value, String> {
     let method = normalize_method_name(method);
     match normalize_class_name(&object.class_name()).as_str() {
         "mysqli" => call_mysqli_connection_method(object, &method, args, mysql),
         "mysqli_result" => call_mysqli_result_method(object, &method, args, mysql),
-        "mysqli_stmt" => Err(format!(
-            "E_PHP_VM_MYSQLI_STMT_GAP: method mysqli_stmt::{method} is not implemented in the mysqli MVP"
-        )),
+        "mysqli_stmt" => call_mysqli_stmt_method(object, &method, args, mysql, compiled, stack),
         other => Err(format!(
             "E_PHP_VM_MYSQLI_METHOD_GAP: method {other}::{method} is not implemented in the mysqli MVP"
         )),
@@ -41061,10 +41075,20 @@ fn call_mysqli_connection_method(
             let charset = to_string(&values[0])?.to_string_lossy();
             Ok(Value::Bool(mysql.set_charset(id, &charset).is_ok()))
         }
-        "prepare" => Err(
-            "E_PHP_VM_MYSQLI_PREPARE_UNSUPPORTED: mysqli prepared statements are not implemented in the mysqli MVP"
-                .to_owned(),
-        ),
+        "prepare" => {
+            validate_mysqli_arg_count("mysqli::prepare", values.len(), 1, 1)?;
+            let Some(id) = mysqli_connection_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let sql = to_string(&values[0])?.to_string_lossy();
+            match mysql.prepare_statement(id, &sql) {
+                Ok(statement_id) => Ok(Value::Object(mysqli_stmt_object(Some(statement_id)))),
+                Err(_) => {
+                    sync_mysqli_error_properties(object, mysql);
+                    Ok(Value::Bool(false))
+                }
+            }
+        }
         other => Err(format!(
             "E_PHP_VM_MYSQLI_METHOD_GAP: method mysqli::{other} is not implemented in the mysqli MVP"
         )),
@@ -41106,6 +41130,168 @@ fn call_mysqli_result_method(
         }
         other => Err(format!(
             "E_PHP_VM_MYSQLI_RESULT_METHOD_GAP: method mysqli_result::{other} is not implemented in the mysqli MVP"
+        )),
+    }
+}
+
+fn call_mysqli_stmt_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+    mysql: &mut php_runtime::MysqlState,
+    compiled: &CompiledUnit,
+    stack: &mut CallStack,
+) -> Result<Value, String> {
+    match method {
+        "prepare" => {
+            let values = call_args_to_positional("mysqli_stmt::prepare", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::prepare", values.len(), 1, 1)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let sql = to_string(&values[0])?.to_string_lossy();
+            let ok = mysql.stmt_prepare(id, &sql).is_ok();
+            sync_mysqli_stmt_properties(object, mysql);
+            Ok(Value::Bool(ok))
+        }
+        "bindparam" | "bind_param" => {
+            validate_mysqli_arg_count("mysqli_stmt::bind_param", args.len(), 2, usize::MAX)?;
+            let values = call_args_to_positional("mysqli_stmt::bind_param", args.clone())?;
+            let types = to_string(&values[0])?.to_string_lossy();
+            if types.chars().count() != args.len().saturating_sub(1) {
+                return Ok(Value::Bool(false));
+            }
+            let refs = collect_mysqli_call_refs(compiled, &args[1..], stack)?;
+            set_mysqli_stmt_refs(object, "__mysqli_stmt_param_refs", refs);
+            object.set_property(
+                "__mysqli_stmt_param_types",
+                Value::String(PhpString::from(types.into_bytes())),
+            );
+            Ok(Value::Bool(true))
+        }
+        "execute" => {
+            let values = call_args_to_positional("mysqli_stmt::execute", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::execute", values.len(), 0, 1)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let params: Vec<Value> = if let Some(Value::Array(params)) = values.first() {
+                params.iter().map(|(_, value)| value.clone()).collect()
+            } else {
+                mysqli_stmt_refs(object, "__mysqli_stmt_param_refs")
+                    .into_iter()
+                    .map(|cell| cell.get())
+                    .collect()
+            };
+            let ok = mysql.stmt_execute(id, &params).is_ok();
+            sync_mysqli_stmt_properties(object, mysql);
+            Ok(Value::Bool(ok))
+        }
+        "getresult" | "get_result" => {
+            let values = call_args_to_positional("mysqli_stmt::get_result", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::get_result", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let Some(result_id) = mysql.stmt_result(id) else {
+                return Ok(Value::Bool(false));
+            };
+            let result = mysqli_result_object(result_id);
+            result.set_property("num_rows", Value::Int(mysql.num_rows(result_id)));
+            Ok(Value::Object(result))
+        }
+        "bindresult" | "bind_result" => {
+            validate_mysqli_arg_count("mysqli_stmt::bind_result", args.len(), 1, usize::MAX)?;
+            let refs = collect_mysqli_call_refs(compiled, &args, stack)?;
+            set_mysqli_stmt_refs(object, "__mysqli_stmt_result_refs", refs);
+            Ok(Value::Bool(true))
+        }
+        "fetch" => {
+            let values = call_args_to_positional("mysqli_stmt::fetch", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::fetch", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            let refs = mysqli_stmt_refs(object, "__mysqli_stmt_result_refs");
+            let Some(row) = mysql.stmt_fetch_row(id) else {
+                return Ok(Value::Bool(false));
+            };
+            for (cell, value) in refs.into_iter().zip(row) {
+                cell.set(value);
+            }
+            Ok(Value::Bool(true))
+        }
+        "numrows" | "num_rows" => {
+            let values = call_args_to_positional("mysqli_stmt::num_rows", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::num_rows", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Int(0));
+            };
+            Ok(Value::Int(mysql.stmt_num_rows(id)))
+        }
+        "affectedrows" | "affected_rows" => {
+            let values = call_args_to_positional("mysqli_stmt::affected_rows", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::affected_rows", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Int(-1));
+            };
+            Ok(Value::Int(mysql.stmt_affected_rows(id)))
+        }
+        "insertid" | "insert_id" => {
+            let values = call_args_to_positional("mysqli_stmt::insert_id", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::insert_id", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Int(0));
+            };
+            Ok(Value::Int(mysql.stmt_insert_id(id)))
+        }
+        "errno" => {
+            let values = call_args_to_positional("mysqli_stmt::errno", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::errno", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Int(1));
+            };
+            Ok(Value::Int(mysql.stmt_errno(id)))
+        }
+        "error" => {
+            let values = call_args_to_positional("mysqli_stmt::error", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::error", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::string("not an open mysqli_stmt"));
+            };
+            Ok(Value::String(PhpString::from(
+                mysql.stmt_error(id).into_bytes(),
+            )))
+        }
+        "sqlstate" => {
+            let values = call_args_to_positional("mysqli_stmt::sqlstate", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::sqlstate", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::string("HY000"));
+            };
+            Ok(Value::String(PhpString::from(
+                mysql.stmt_sqlstate(id).into_bytes(),
+            )))
+        }
+        "free_result" | "freeresult" => {
+            let values = call_args_to_positional("mysqli_stmt::free_result", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::free_result", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            Ok(Value::Bool(mysql.stmt_free_result(id)))
+        }
+        "close" => {
+            let values = call_args_to_positional("mysqli_stmt::close", args)?;
+            validate_mysqli_arg_count("mysqli_stmt::close", values.len(), 0, 0)?;
+            let Some(id) = mysqli_stmt_id(object) else {
+                return Ok(Value::Bool(false));
+            };
+            object.unset_property("__mysqli_stmt");
+            Ok(Value::Bool(mysql.stmt_close(id)))
+        }
+        other => Err(format!(
+            "E_PHP_VM_MYSQLI_STMT_METHOD_GAP: method mysqli_stmt::{other} is not implemented"
         )),
     }
 }
@@ -41172,6 +41358,21 @@ fn mysqli_result_object(result_id: i64) -> ObjectRef {
     object
 }
 
+fn mysqli_stmt_object(statement_id: Option<i64>) -> ObjectRef {
+    let object =
+        ObjectRef::new_with_display_name(&mysqli_runtime_class("mysqli_stmt"), "mysqli_stmt");
+    if let Some(id) = statement_id {
+        object.set_property("__mysqli_stmt", Value::Int(id));
+    }
+    object.set_property("affected_rows", Value::Int(0));
+    object.set_property("insert_id", Value::Int(0));
+    object.set_property("num_rows", Value::Int(0));
+    object.set_property("errno", Value::Int(0));
+    object.set_property("error", Value::string(""));
+    object.set_property("sqlstate", Value::string("00000"));
+    object
+}
+
 fn mysqli_runtime_class(name: &str) -> RuntimeClassEntry {
     RuntimeClassEntry {
         name: normalize_class_name(name),
@@ -41228,6 +41429,66 @@ fn mysqli_result_id(object: &ObjectRef) -> Option<i64> {
     match object.get_property("__mysqli_result") {
         Some(Value::Int(id)) => Some(id),
         _ => None,
+    }
+}
+
+fn mysqli_stmt_id(object: &ObjectRef) -> Option<i64> {
+    match object.get_property("__mysqli_stmt") {
+        Some(Value::Int(id)) => Some(id),
+        _ => None,
+    }
+}
+
+fn set_mysqli_stmt_refs(object: &ObjectRef, property: &str, refs: Vec<ReferenceCell>) {
+    let mut array = PhpArray::new();
+    for cell in refs {
+        array.append(Value::Reference(cell));
+    }
+    object.set_property(property, Value::Array(array));
+}
+
+fn mysqli_stmt_refs(object: &ObjectRef, property: &str) -> Vec<ReferenceCell> {
+    let Some(Value::Array(array)) = object.get_property(property) else {
+        return Vec::new();
+    };
+    array
+        .iter()
+        .filter_map(|(_, value)| match value {
+            Value::Reference(cell) => Some(cell.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_mysqli_call_refs(
+    compiled: &CompiledUnit,
+    args: &[CallArgument],
+    stack: &mut CallStack,
+) -> Result<Vec<ReferenceCell>, String> {
+    let mut refs = Vec::with_capacity(args.len());
+    for arg in args {
+        let Some(cell) = call_argument_reference_cell(compiled, arg, stack)? else {
+            return Err(
+                "E_PHP_VM_MYSQLI_REFERENCE: mysqli_stmt bind arguments must be variables"
+                    .to_owned(),
+            );
+        };
+        refs.push(cell);
+    }
+    Ok(refs)
+}
+
+fn sync_mysqli_stmt_properties(object: &ObjectRef, mysql: &php_runtime::MysqlState) {
+    if let Some(id) = mysqli_stmt_id(object) {
+        object.set_property("affected_rows", Value::Int(mysql.stmt_affected_rows(id)));
+        object.set_property("insert_id", Value::Int(mysql.stmt_insert_id(id)));
+        object.set_property("num_rows", Value::Int(mysql.stmt_num_rows(id)));
+        object.set_property("errno", Value::Int(mysql.stmt_errno(id)));
+        object.set_property("error", Value::string(mysql.stmt_error(id).into_bytes()));
+        object.set_property(
+            "sqlstate",
+            Value::string(mysql.stmt_sqlstate(id).into_bytes()),
+        );
     }
 }
 
@@ -53252,6 +53513,9 @@ fn direct_builtin_arg_requires_reference(
 fn internal_builtin_param_requires_reference(function: &str, index: usize) -> bool {
     (function == "str_replace" && index == 3)
         || (function == "parse_str" && index == 1)
+        || (function == "mysqli_stmt_bind_param" && index >= 2)
+        || (function == "mysqli_stmt_bind_result" && index >= 1)
+        || (function == "curl_multi_exec" && index == 1)
         || (matches!(function, "preg_match" | "preg_match_all") && index == 2)
         || (function == "preg_replace" && index == 4)
         || (function == "preg_replace_callback" && index == 4)

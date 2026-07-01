@@ -7,30 +7,45 @@
   connect/query, result fetch modes, row/field counts, errors, escaping,
   DB-backed charset/select-db updates, close/free, and object `mysqli` /
   `mysqli_result` flows used by `wpdb`, including `$result->num_rows`.
-- `mysqli` prepared statements: explicit gap. No selected WordPress-style
-  fixture requires `mysqli_stmt_*` yet, so `mysqli_prepare` and
-  `mysqli_stmt_init` report unsupported diagnostics instead of fake handles.
+- `mysqli` prepared statements: implemented the selected DSN-gated MVP for
+  prepare/init, bind-param, execute, get-result, bind-result/fetch, statement
+  status accessors, free-result, and close. Bound parameter references are read
+  at execute time for repeated executes.
 - `curl`: implemented an HTTP MVP with `curl_version`, `curl_init`,
-  `curl_setopt`, `curl_exec`, `curl_error`, `curl_errno`, `curl_getinfo`, and
-  `curl_close`. Network execution requires `PHRUST_NET_TESTS=1` and permits
-  loopback `http://` hosts only.
+  `curl_setopt`, `curl_setopt_array`, `curl_exec`, `curl_error`,
+  `curl_errno`, `curl_getinfo`, `curl_reset`, `curl_copy_handle`, and a
+  deterministic multi-handle compatibility shell. Network execution requires
+  `PHRUST_NET_TESTS=1` and permits loopback `http://` hosts only.
+- DB/network diagnostics: selected false-return paths record structured
+  `db_network` runtime diagnostics with stable MySQLi/cURL IDs, function and
+  operation names, capability state, DSN presence, safe endpoint metadata,
+  MySQL-style error code/state/message fields, and no DSNs or passwords.
 - `openssl`: implemented selected helpers:
   `openssl_random_pseudo_bytes`, `openssl_digest`,
-  `openssl_get_md_methods`, and `openssl_verify`. Digest/random/method helpers
-  are real; `openssl_verify` returns `-1` as the explicit key-verification gap.
+  `openssl_get_md_methods`, `openssl_pkey_get_public`,
+  `openssl_get_publickey`, `openssl_error_string`, and `openssl_verify`.
+  Digest/random/method helpers are real; public-key helpers fail coherently and
+  `openssl_verify` returns `-1` as the explicit key-verification gap.
 
 ## Fixtures
 
-The `wp.db-network` module selects ten fixtures:
+The `wp.db-network` module selects seventeen fixtures:
 
 - `mysqli-platform-mvp.phpt`
+- `feature-detection-env-gates.phpt`
 - `mysqli-default-off.phpt`
 - `mysqli-object-wpdb-mvp.phpt`
 - `mysqli-live-query-dsn.phpt`
 - `mysqli-object-live-wpdb-dsn.phpt`
+- `mysqli-prepared-basic-dsn.phpt`
+- `mysqli-prepared-reexecute-dsn.phpt`
+- `mysqli-prepared-bind-result-dsn.phpt`
+- `mysqli-prepared-error-dsn.phpt`
 - `curl-platform-mvp.phpt`
 - `curl-default-off.phpt`
 - `curl-local-http.phpt`
+- `curl-wordpress-http-options.phpt`
+- `curl-header-and-status.phpt`
 - `openssl-platform-mvp.phpt`
 - `openssl-helpers-mvp.phpt`
 
@@ -51,26 +66,30 @@ Rust cURL unit coverage uses an in-process loopback server.
 - MySQL live behavior depends on an explicitly configured local
   `PHRUST_MYSQL_TEST_DSN`; default runs prove capability gating, not database
   availability.
+- `mysqli_report()` stores request-local report flags and report-enabled mysqli
+  failures are classified as recoverable structured diagnostics. Throwing
+  `mysqli_sql_exception` remains limited by the current builtin/runtime
+  exception surface, so selected mysqli failures still return PHP-style `false`.
 
 ## Closeout Gates
 
 Required non-network closeout gates run on this branch:
 
 - `nix develop -c just fmt`: PASS
-- `nix develop -c cargo test -p php_runtime`: PASS, 229 tests
-- `nix develop -c cargo test -p php_vm`: PASS, 413 tests
+- `nix develop -c cargo test -p php_runtime`: PASS, 279 tests
+- `nix develop -c cargo test -p php_vm`: PASS, 605 tests
 - `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src nix develop -c just verify-stdlib`: PASS
-- `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src nix develop -c just verify-phpt`: PASS
+- `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src nix develop -c just phpt-dev-module MODULE=wp.db-network`: PASS, 17 reference tests and 17 target tests, 0 non-green
+- `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src nix develop -c just phpt-dev-module MODULE=mysqli`: PASS, 9 reference tests and 9 target tests, 0 non-green
+- `PHRUST_NET_TESTS=1 nix develop -c cargo test -p php_runtime curl`: PASS, 3 tests
 - `nix develop -c just quality-fast`: PASS
-- `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=wp.db-network`: PASS, 10 tests on reference and target
-- `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=mysqli`: PASS, 1 test on reference and target
-- `PHRUST_NET_TESTS=1 nix develop -c cargo test -p php_runtime curl`: PASS, 2 filtered cURL tests
 
 External-service gates skipped:
 
 - `PHRUST_MYSQL_TEST_DSN=... nix develop -c just phpt-dev-module MODULE=mysqli`:
-  skipped because `PHRUST_MYSQL_TEST_DSN` is not configured locally.
+  skipped because `PHRUST_MYSQL_TEST_DSN` is unset locally.
 - `PHRUST_MYSQL_TEST_DSN=... nix develop -c just phpt-dev-module MODULE=wp.db-network`:
-  skipped because `PHRUST_MYSQL_TEST_DSN` is not configured locally.
+  skipped because `PHRUST_MYSQL_TEST_DSN` is unset locally.
 - `PHRUST_NET_TESTS=1 PHRUST_CURL_TEST_URL=... nix develop -c just phpt-dev-module MODULE=wp.db-network`:
-  skipped because `PHRUST_CURL_TEST_URL` is not configured locally.
+  skipped because `PHRUST_NET_TESTS` and `PHRUST_CURL_TEST_URL` are unset
+  locally.

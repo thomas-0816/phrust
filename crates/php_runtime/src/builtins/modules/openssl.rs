@@ -37,6 +37,21 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "openssl_pkey_get_public",
+        builtin_openssl_pkey_get_public,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_get_publickey",
+        builtin_openssl_pkey_get_public,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_error_string",
+        builtin_openssl_error_string,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "openssl_verify",
         builtin_openssl_verify,
         BuiltinCompatibility::Php,
@@ -181,6 +196,27 @@ pub(in crate::builtins::modules) fn builtin_openssl_verify(
         }
     }
     Ok(Value::Int(-1))
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_pkey_get_public(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("openssl_pkey_get_public", &args, 1)?;
+    let _key = string_arg("openssl_pkey_get_public", &args[0])?;
+    Ok(Value::Bool(false))
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_error_string(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("openssl_error_string", &args, 0)?;
+    Ok(Value::string(
+        "OpenSSL public-key verification is not implemented by this runtime",
+    ))
 }
 
 fn digest_bytes(method: &str, data: &[u8]) -> Option<Vec<u8>> {

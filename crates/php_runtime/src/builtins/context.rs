@@ -475,6 +475,11 @@ impl<'a> BuiltinContext<'a> {
         self.diagnostics.push(diagnostic);
     }
 
+    /// Records a structured diagnostic without emitting PHP-visible output.
+    pub fn record_diagnostic(&mut self, diagnostic: RuntimeDiagnostic) {
+        self.diagnostics.push(diagnostic);
+    }
+
     /// Drains structured diagnostics emitted by builtins.
     pub fn take_diagnostics(&mut self) -> Vec<RuntimeDiagnostic> {
         std::mem::take(&mut self.diagnostics)

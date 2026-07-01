@@ -3,7 +3,8 @@
 - Strategy: WordPress database MVP
 - Classification: required-framework
 - Selected manifest: `tests/phpt/manifests/modules/mysqli.selected.jsonl`
-- Selected gate: 5 PASS with live MySQL access disabled by default.
+- Selected gate: selected generated mysqli fixtures with live MySQL access
+  disabled by default.
 
 ## Decision
 
@@ -38,10 +39,19 @@ protocol or SQL-dialect parity.
 4. mysqlnd client metadata probes:
    `mysqli_get_client_info`, `mysqli_get_client_version`,
    `MYSQLND_CLIENT_INFO`, and `MYSQLND_CLIENT_VERSION`.
-5. Prepared statements are documented as an explicit gap because the selected
-   WordPress-style fixtures do not require `mysqli_stmt_*`.
+5. Prepared statement MVP coverage:
+   `mysqli_prepare`, `mysqli_stmt_init`, `mysqli_stmt_prepare`,
+   `mysqli_stmt_bind_param`, `mysqli_stmt_execute`,
+   `mysqli_stmt_get_result`, `mysqli_stmt_bind_result`,
+   `mysqli_stmt_fetch`, statement status accessors, close, and free-result.
 6. SQLite compatibility coverage is selected only for phrust-owned generated
    fixtures and remains opt-in through `PHRUST_MYSQLI_SQLITE_COMPAT=1`.
+7. Structured first-cause diagnostics for selected connection, query, prepare,
+   bind, execute, select-db, and charset false-return paths. Payload fields use
+   the shared `db_network` WordPress diagnostic context and include
+   `diagnostic_id`, `function_name`, `operation`, `capability_state`,
+   `dsn_present_boolean`, `host`, `port`, `database_name_if_nonsecret`,
+   `mysql_error_code`, `mysql_sqlstate`, and `mysql_error_message`.
 
 ## Unsupported Area
 
@@ -50,11 +60,14 @@ protocol or SQL-dialect parity.
   APIs, `mysqli` classes, connection/query/result/statement behavior, errors,
   options, and mysqlnd integration.
 - Current phrust behavior: the WordPress DB/network runtime exposes a narrow
-  `mysqli` MVP for connection/query/result/error/escape/close/status behavior
-  behind `PHRUST_MYSQL_TEST_DSN`; selected phrust-owned fixtures can use
-  `PHRUST_MYSQLI_SQLITE_COMPAT=1` for deterministic in-memory query/fetch/status
-  coverage; prepared statements remain an explicit unsupported diagnostic
-  because the selected fixtures do not require them yet.
+  `mysqli` MVP for connection/query/result/error/escape/close/status and
+  selected prepared-statement behavior behind `PHRUST_MYSQL_TEST_DSN`; selected
+  phrust-owned fixtures can use `PHRUST_MYSQLI_SQLITE_COMPAT=1` for
+  deterministic in-memory query/fetch/status coverage; broad mysqlnd internals
+  and full corpus parity remain gaps. `mysqli_report()` stores request-local
+  flags and report-enabled failures are classified as recoverable structured
+  diagnostics; throwing `mysqli_sql_exception` remains limited by the current
+  builtin/runtime exception surface.
 - Fixture: `tests/phpt/generated/wp.db-network/mysqli-platform-mvp.phpt` and
   `tests/phpt/generated/mysqli/sqlite-compat-query.phpt`
 - Next owner layer: `crates/php_runtime/src/db/**` and

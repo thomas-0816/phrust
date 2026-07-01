@@ -1,9 +1,9 @@
 //! Capability-gated MySQL/MariaDB client layer.
 
-use crate::{ArrayKey, PhpArray, PhpString, Value};
-use mysql::{Conn, Opts, Row, Value as MysqlValue, prelude::Queryable};
-use rusqlite::types::ValueRef as SqliteValueRef;
-use rusqlite::{Connection as SqliteConnection, OpenFlags};
+use crate::{ArrayKey, PhpArray, PhpString, Value, convert};
+use mysql::{Conn, Opts, Params, Row, Value as MysqlValue, prelude::Queryable};
+use rusqlite::types::{Value as SqliteValue, ValueRef as SqliteValueRef};
+use rusqlite::{Connection as SqliteConnection, OpenFlags, params_from_iter};
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
@@ -19,6 +19,14 @@ pub const MYSQLI_ASSOC: i64 = 1;
 pub const MYSQLI_NUM: i64 = 2;
 /// `mysqli_fetch_array()` associative and numeric columns.
 pub const MYSQLI_BOTH: i64 = MYSQLI_ASSOC | MYSQLI_NUM;
+/// `mysqli_report()` silent mode.
+pub const MYSQLI_REPORT_OFF: i64 = 0;
+/// `mysqli_report()` error-reporting mode.
+pub const MYSQLI_REPORT_ERROR: i64 = 1;
+/// `mysqli_report()` strict exception-reporting mode.
+pub const MYSQLI_REPORT_STRICT: i64 = 2;
+/// `mysqli_report()` index-reporting mode.
+pub const MYSQLI_REPORT_INDEX: i64 = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MysqlBufferedResult {
@@ -32,6 +40,7 @@ struct MysqlRuntimeConnection {
     connection: MysqlConnectionBackend,
     last_errno: i64,
     last_error: String,
+    last_field_count: i64,
     affected_rows: i64,
     last_insert_id: i64,
 }
@@ -42,6 +51,33 @@ enum MysqlConnectionBackend {
     SqliteCompat(MysqliSqliteCompatConnection),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MysqlRuntimeStatement {
+    connection_id: i64,
+    sql: Option<String>,
+    last_result_id: Option<i64>,
+    last_errno: i64,
+    last_error: String,
+    sqlstate: String,
+    affected_rows: i64,
+    last_insert_id: i64,
+}
+
+impl MysqlRuntimeStatement {
+    fn new(connection_id: i64) -> Self {
+        Self {
+            connection_id,
+            sql: None,
+            last_result_id: None,
+            last_errno: 0,
+            last_error: String::new(),
+            sqlstate: "00000".to_owned(),
+            affected_rows: 0,
+            last_insert_id: 0,
+        }
+    }
+}
+
 /// Request-local MySQL/MariaDB connections and buffered result sets.
 #[derive(Default)]
 pub struct MysqlState {
@@ -49,8 +85,11 @@ pub struct MysqlState {
     connections: HashMap<i64, MysqlRuntimeConnection>,
     next_result_id: i64,
     results: HashMap<i64, MysqlBufferedResult>,
+    next_statement_id: i64,
+    statements: HashMap<i64, MysqlRuntimeStatement>,
     connect_errno: i64,
     connect_error: String,
+    report_flags: i64,
 }
 
 impl fmt::Debug for MysqlState {
@@ -61,13 +100,27 @@ impl fmt::Debug for MysqlState {
             .field("connections", &self.connections.keys().collect::<Vec<_>>())
             .field("next_result_id", &self.next_result_id)
             .field("results", &self.results.keys().collect::<Vec<_>>())
+            .field("next_statement_id", &self.next_statement_id)
+            .field("statements", &self.statements.keys().collect::<Vec<_>>())
             .field("connect_errno", &self.connect_errno)
             .field("connect_error", &self.connect_error)
+            .field("report_flags", &self.report_flags)
             .finish()
     }
 }
 
 impl MysqlState {
+    /// Updates request-local `mysqli_report()` policy flags.
+    pub fn set_report_flags(&mut self, flags: i64) {
+        self.report_flags = flags;
+    }
+
+    /// Returns request-local `mysqli_report()` policy flags.
+    #[must_use]
+    pub const fn report_flags(&self) -> i64 {
+        self.report_flags
+    }
+
     /// Records a deterministic connection failure without opening a socket.
     pub fn record_connect_error(&mut self, errno: i64, message: impl Into<String>) {
         self.connect_errno = errno;
@@ -112,7 +165,12 @@ impl MysqlState {
 
     /// Closes an open connection.
     pub fn close(&mut self, id: i64) -> bool {
-        self.connections.remove(&id).is_some()
+        let removed = self.connections.remove(&id).is_some();
+        if removed {
+            self.statements
+                .retain(|_, statement| statement.connection_id != id);
+        }
+        removed
     }
 
     /// Runs a simple text query. Row-returning results are buffered and return a
@@ -130,20 +188,11 @@ impl MysqlState {
                 connection.last_error.clear();
                 connection.affected_rows = result.affected_rows;
                 connection.last_insert_id = result.last_insert_id;
+                connection.last_field_count = result.columns.len().try_into().unwrap_or(i64::MAX);
                 if result.columns.is_empty() {
                     return Ok(None);
                 }
-                self.next_result_id = self.next_result_id.saturating_add(1).max(1);
-                let result_id = self.next_result_id;
-                self.results.insert(
-                    result_id,
-                    MysqlBufferedResult {
-                        columns: result.columns,
-                        rows: result.rows,
-                        offset: 0,
-                    },
-                );
-                Ok(Some(result_id))
+                Ok(Some(self.insert_result(result)))
             }
             Err(error) => {
                 connection.last_errno = error.mysql_errno();
@@ -151,6 +200,224 @@ impl MysqlState {
                 Err(error)
             }
         }
+    }
+
+    /// Creates an empty statement handle associated with a connection.
+    pub fn stmt_init(&mut self, connection_id: i64) -> Result<i64, MysqlError> {
+        if !self.connections.contains_key(&connection_id) {
+            return Err(MysqlError::new(
+                MysqlErrorKind::Client,
+                "not an open MySQL connection",
+            ));
+        }
+        self.next_statement_id = self.next_statement_id.saturating_add(1).max(1);
+        let id = self.next_statement_id;
+        self.statements
+            .insert(id, MysqlRuntimeStatement::new(connection_id));
+        Ok(id)
+    }
+
+    /// Creates and prepares a statement handle.
+    pub fn prepare_statement(&mut self, connection_id: i64, sql: &str) -> Result<i64, MysqlError> {
+        let statement_id = self.stmt_init(connection_id)?;
+        match self.stmt_prepare(statement_id, sql) {
+            Ok(()) => Ok(statement_id),
+            Err(error) => {
+                self.statements.remove(&statement_id);
+                Err(error)
+            }
+        }
+    }
+
+    /// Prepares SQL on an existing statement handle.
+    pub fn stmt_prepare(&mut self, statement_id: i64, sql: &str) -> Result<(), MysqlError> {
+        if sql.trim().is_empty() {
+            let error = MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            );
+            self.record_stmt_error(statement_id, &error);
+            return Err(error);
+        }
+        let connection_id = self
+            .statements
+            .get(&statement_id)
+            .map(|statement| statement.connection_id)
+            .ok_or_else(|| MysqlError::new(MysqlErrorKind::Client, "not an open mysqli_stmt"))?;
+        let Some(connection) = self.connections.get_mut(&connection_id) else {
+            let error = MysqlError::new(MysqlErrorKind::Client, "not an open MySQL connection");
+            self.record_stmt_error(statement_id, &error);
+            return Err(error);
+        };
+        match connection.connection.prepare(sql) {
+            Ok(()) => {
+                if let Some(statement) = self.statements.get_mut(&statement_id) {
+                    statement.sql = Some(sql.to_owned());
+                    statement.last_errno = 0;
+                    statement.last_error.clear();
+                    statement.sqlstate = "00000".to_owned();
+                }
+                connection.last_errno = 0;
+                connection.last_error.clear();
+                Ok(())
+            }
+            Err(error) => {
+                connection.last_errno = error.mysql_errno();
+                connection.last_error = error.message.clone();
+                self.record_stmt_error(statement_id, &error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Executes a prepared statement with positional PHP parameter values.
+    pub fn stmt_execute(
+        &mut self,
+        statement_id: i64,
+        params: &[Value],
+    ) -> Result<bool, MysqlError> {
+        let (connection_id, sql) = {
+            let statement = self.statements.get(&statement_id).ok_or_else(|| {
+                MysqlError::new(MysqlErrorKind::Client, "not an open mysqli_stmt")
+            })?;
+            let Some(sql) = &statement.sql else {
+                let error =
+                    MysqlError::new(MysqlErrorKind::InvalidQuery, "mysqli_stmt is not prepared");
+                self.record_stmt_error(statement_id, &error);
+                return Err(error);
+            };
+            (statement.connection_id, sql.clone())
+        };
+        let result = {
+            let Some(connection) = self.connections.get_mut(&connection_id) else {
+                let error = MysqlError::new(MysqlErrorKind::Client, "not an open MySQL connection");
+                self.record_stmt_error(statement_id, &error);
+                return Err(error);
+            };
+            match connection.connection.execute_prepared(&sql, params) {
+                Ok(result) => {
+                    connection.last_errno = 0;
+                    connection.last_error.clear();
+                    connection.affected_rows = result.affected_rows;
+                    connection.last_insert_id = result.last_insert_id;
+                    connection.last_field_count =
+                        result.columns.len().try_into().unwrap_or(i64::MAX);
+                    Ok(result)
+                }
+                Err(error) => {
+                    connection.last_errno = error.mysql_errno();
+                    connection.last_error = error.message.clone();
+                    Err(error)
+                }
+            }
+        };
+        match result {
+            Ok(result) => {
+                let affected_rows = result.affected_rows;
+                let last_insert_id = result.last_insert_id;
+                let result_id = if result.columns.is_empty() {
+                    None
+                } else {
+                    Some(self.insert_result(result))
+                };
+                if let Some(statement) = self.statements.get_mut(&statement_id) {
+                    statement.last_result_id = result_id;
+                    statement.last_errno = 0;
+                    statement.last_error.clear();
+                    statement.sqlstate = "00000".to_owned();
+                    statement.affected_rows = affected_rows;
+                    statement.last_insert_id = last_insert_id;
+                }
+                Ok(true)
+            }
+            Err(error) => {
+                self.record_stmt_error(statement_id, &error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Returns the buffered result handle from the most recent statement execute.
+    #[must_use]
+    pub fn stmt_result(&self, statement_id: i64) -> Option<i64> {
+        self.statements
+            .get(&statement_id)
+            .and_then(|statement| statement.last_result_id)
+    }
+
+    /// Fetches the next row from a statement result as scalar values.
+    pub fn stmt_fetch_row(&mut self, statement_id: i64) -> Option<Vec<Value>> {
+        let result_id = self.stmt_result(statement_id)?;
+        let result = self.results.get_mut(&result_id)?;
+        let row = result.rows.get(result.offset).cloned()?;
+        result.offset = result.offset.saturating_add(1);
+        Some(row.values.iter().map(cell_to_value).collect())
+    }
+
+    /// Returns one scalar property of a statement handle.
+    #[must_use]
+    pub fn stmt_num_rows(&self, statement_id: i64) -> i64 {
+        self.stmt_result(statement_id)
+            .map_or(0, |result_id| self.num_rows(result_id))
+    }
+
+    #[must_use]
+    pub fn stmt_affected_rows(&self, statement_id: i64) -> i64 {
+        self.statements
+            .get(&statement_id)
+            .map_or(-1, |statement| statement.affected_rows)
+    }
+
+    #[must_use]
+    pub fn stmt_insert_id(&self, statement_id: i64) -> i64 {
+        self.statements
+            .get(&statement_id)
+            .map_or(0, |statement| statement.last_insert_id)
+    }
+
+    #[must_use]
+    pub fn stmt_errno(&self, statement_id: i64) -> i64 {
+        self.statements
+            .get(&statement_id)
+            .map_or(1, |statement| statement.last_errno)
+    }
+
+    #[must_use]
+    pub fn stmt_error(&self, statement_id: i64) -> String {
+        self.statements.get(&statement_id).map_or_else(
+            || "not an open mysqli_stmt".to_owned(),
+            |statement| statement.last_error.clone(),
+        )
+    }
+
+    #[must_use]
+    pub fn stmt_sqlstate(&self, statement_id: i64) -> String {
+        self.statements.get(&statement_id).map_or_else(
+            || "HY000".to_owned(),
+            |statement| statement.sqlstate.clone(),
+        )
+    }
+
+    /// Frees the buffered statement result without closing the statement.
+    pub fn stmt_free_result(&mut self, statement_id: i64) -> bool {
+        let Some(statement) = self.statements.get_mut(&statement_id) else {
+            return false;
+        };
+        if let Some(result_id) = statement.last_result_id.take() {
+            self.results.remove(&result_id);
+        }
+        true
+    }
+
+    /// Closes a statement handle and any buffered result it owns.
+    pub fn stmt_close(&mut self, statement_id: i64) -> bool {
+        let Some(statement) = self.statements.remove(&statement_id) else {
+            return false;
+        };
+        if let Some(result_id) = statement.last_result_id {
+            self.results.remove(&result_id);
+        }
+        true
     }
 
     /// Changes the active database for an open connection.
@@ -191,6 +458,7 @@ impl MysqlState {
             Ok(result) => {
                 connection.last_errno = 0;
                 connection.last_error.clear();
+                connection.last_field_count = 0;
                 connection.affected_rows = result.affected_rows;
                 connection.last_insert_id = result.last_insert_id;
                 Ok(())
@@ -230,6 +498,14 @@ impl MysqlState {
             })
     }
 
+    /// Returns the number of columns in the most recent connection-level result.
+    #[must_use]
+    pub fn field_count(&self, id: i64) -> i64 {
+        self.connections
+            .get(&id)
+            .map_or(0, |connection| connection.last_field_count)
+    }
+
     /// Returns the last connect error code.
     #[must_use]
     pub const fn connect_errno(&self) -> i64 {
@@ -252,6 +528,26 @@ impl MysqlState {
         };
         result.offset = result.offset.saturating_add(1);
         row_to_array(&result.columns, &row, mode)
+    }
+
+    /// Resets the next row returned by a buffered result set.
+    pub fn data_seek(&mut self, id: i64, offset: usize) -> bool {
+        let Some(result) = self.results.get_mut(&id) else {
+            return false;
+        };
+        if offset > result.rows.len() {
+            return false;
+        }
+        result.offset = offset;
+        true
+    }
+
+    /// Returns field names for a buffered result set.
+    #[must_use]
+    pub fn field_names(&self, id: i64) -> Vec<String> {
+        self.results
+            .get(&id)
+            .map_or_else(Vec::new, |result| result.columns.clone())
     }
 
     /// Frees a buffered result set.
@@ -300,11 +596,34 @@ impl MysqlState {
                 connection,
                 last_errno: 0,
                 last_error: String::new(),
+                last_field_count: 0,
                 affected_rows: 0,
                 last_insert_id: 0,
             },
         );
         id
+    }
+
+    fn insert_result(&mut self, result: MysqlQueryResult) -> i64 {
+        self.next_result_id = self.next_result_id.saturating_add(1).max(1);
+        let result_id = self.next_result_id;
+        self.results.insert(
+            result_id,
+            MysqlBufferedResult {
+                columns: result.columns,
+                rows: result.rows,
+                offset: 0,
+            },
+        );
+        result_id
+    }
+
+    fn record_stmt_error(&mut self, statement_id: i64, error: &MysqlError) {
+        if let Some(statement) = self.statements.get_mut(&statement_id) {
+            statement.last_errno = error.mysql_errno();
+            statement.last_error = error.message.clone();
+            statement.sqlstate = "HY000".to_owned();
+        }
     }
 }
 
@@ -464,6 +783,60 @@ impl MysqlConnection {
             last_insert_id: self.conn.last_insert_id().try_into().unwrap_or(i64::MAX),
         })
     }
+
+    /// Validates a prepared statement without executing it.
+    pub fn prepare(&mut self, sql: &str) -> Result<(), MysqlError> {
+        if sql.trim().is_empty() {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            ));
+        }
+        let statement = self.conn.prep(sql).map_err(MysqlError::from_client)?;
+        self.conn.close(statement).map_err(MysqlError::from_client)
+    }
+
+    /// Executes a prepared statement and buffers all returned rows.
+    pub fn execute_prepared(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<MysqlQueryResult, MysqlError> {
+        if sql.trim().is_empty() {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            ));
+        }
+        let params = Params::Positional(params.iter().map(value_to_mysql_param).collect());
+        let statement = self.conn.prep(sql).map_err(MysqlError::from_client)?;
+        let (columns, rows) = {
+            let mut result = self
+                .conn
+                .exec_iter(&statement, params)
+                .map_err(MysqlError::from_client)?;
+            let columns = result
+                .columns()
+                .as_ref()
+                .iter()
+                .map(|column| column.name_str().into_owned())
+                .collect::<Vec<_>>();
+            let mut rows = Vec::new();
+            for row in result.by_ref() {
+                rows.push(convert_row(row.map_err(MysqlError::from_client)?));
+            }
+            (columns, rows)
+        };
+        self.conn
+            .close(statement)
+            .map_err(MysqlError::from_client)?;
+        Ok(MysqlQueryResult {
+            columns,
+            rows,
+            affected_rows: self.conn.affected_rows().try_into().unwrap_or(i64::MAX),
+            last_insert_id: self.conn.last_insert_id().try_into().unwrap_or(i64::MAX),
+        })
+    }
 }
 
 impl MysqlConnectionBackend {
@@ -485,6 +858,24 @@ impl MysqlConnectionBackend {
         match self {
             Self::Live(connection) => connection.execute(sql),
             Self::SqliteCompat(connection) => connection.execute(sql),
+        }
+    }
+
+    fn prepare(&mut self, sql: &str) -> Result<(), MysqlError> {
+        match self {
+            Self::Live(connection) => connection.prepare(sql),
+            Self::SqliteCompat(connection) => connection.prepare(sql),
+        }
+    }
+
+    fn execute_prepared(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<MysqlQueryResult, MysqlError> {
+        match self {
+            Self::Live(connection) => connection.execute_prepared(sql, params),
+            Self::SqliteCompat(connection) => connection.execute_prepared(sql, params),
         }
     }
 }
@@ -556,6 +947,65 @@ impl MysqliSqliteCompatConnection {
         })
     }
 
+    fn prepare(&mut self, sql: &str) -> Result<(), MysqlError> {
+        if sql.trim().is_empty() {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            ));
+        }
+        self.conn.prepare(sql).map(drop).map_err(Self::error)
+    }
+
+    fn execute_prepared(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<MysqlQueryResult, MysqlError> {
+        if sql.trim().is_empty() {
+            return Err(MysqlError::new(
+                MysqlErrorKind::InvalidQuery,
+                "MySQL query must not be empty",
+            ));
+        }
+        let sqlite_params = params.iter().map(value_to_sqlite_param).collect::<Vec<_>>();
+        let mut statement = self.conn.prepare(sql).map_err(Self::error)?;
+        let column_count = statement.column_count();
+        if column_count == 0 {
+            let affected_rows = statement
+                .execute(params_from_iter(sqlite_params.iter()))
+                .map_err(Self::error)?;
+            return Ok(MysqlQueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                affected_rows: affected_rows.try_into().unwrap_or(i64::MAX),
+                last_insert_id: self.conn.last_insert_rowid(),
+            });
+        }
+        let columns = statement
+            .column_names()
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        let mut query = statement
+            .query(params_from_iter(sqlite_params.iter()))
+            .map_err(Self::error)?;
+        while let Some(row) = query.next().map_err(Self::error)? {
+            let mut values = Vec::with_capacity(column_count);
+            for index in 0..column_count {
+                values.push(sqlite_cell(row.get_ref(index).map_err(Self::error)?));
+            }
+            rows.push(MysqlRow { values });
+        }
+        Ok(MysqlQueryResult {
+            columns,
+            rows,
+            affected_rows: 0,
+            last_insert_id: self.conn.last_insert_rowid(),
+        })
+    }
+
     fn error(error: rusqlite::Error) -> MysqlError {
         MysqlError::new(MysqlErrorKind::Client, error.to_string())
     }
@@ -619,12 +1069,25 @@ impl MysqlError {
         Self::new(MysqlErrorKind::Client, error.to_string())
     }
 
-    fn mysql_errno(&self) -> i64 {
+    /// Stable MySQL-style error number used by mysqli diagnostics.
+    #[must_use]
+    pub fn mysql_errno(&self) -> i64 {
         match self.kind {
             MysqlErrorKind::MissingDsn => 2002,
             MysqlErrorKind::InvalidDsn => 2005,
             MysqlErrorKind::InvalidQuery => 1065,
             MysqlErrorKind::Client => 1,
+        }
+    }
+
+    /// Stable SQLSTATE used by mysqli diagnostics.
+    #[must_use]
+    pub const fn mysql_sqlstate(&self) -> &'static str {
+        match self.kind {
+            MysqlErrorKind::MissingDsn
+            | MysqlErrorKind::InvalidDsn
+            | MysqlErrorKind::InvalidQuery
+            | MysqlErrorKind::Client => "HY000",
         }
     }
 }
@@ -673,6 +1136,36 @@ fn convert_value(value: MysqlValue) -> MysqlCell {
                 "{sign}{days} {hours:02}:{minutes:02}:{seconds:02}.{micros:06}"
             ))
         }
+    }
+}
+
+fn value_to_mysql_param(value: &Value) -> MysqlValue {
+    match value {
+        Value::Null => MysqlValue::NULL,
+        Value::Bool(value) => MysqlValue::Int(i64::from(*value)),
+        Value::Int(value) => MysqlValue::Int(*value),
+        Value::Float(value) => MysqlValue::Double(value.to_f64()),
+        Value::String(value) => MysqlValue::Bytes(value.as_bytes().to_vec()),
+        Value::Reference(cell) => value_to_mysql_param(&cell.get()),
+        other => MysqlValue::Bytes(
+            convert::to_string_php(other)
+                .map_or_else(|_| Vec::new(), |value| value.as_bytes().to_vec()),
+        ),
+    }
+}
+
+fn value_to_sqlite_param(value: &Value) -> SqliteValue {
+    match value {
+        Value::Null => SqliteValue::Null,
+        Value::Bool(value) => SqliteValue::Integer(i64::from(*value)),
+        Value::Int(value) => SqliteValue::Integer(*value),
+        Value::Float(value) => SqliteValue::Real(value.to_f64()),
+        Value::String(value) => SqliteValue::Blob(value.as_bytes().to_vec()),
+        Value::Reference(cell) => value_to_sqlite_param(&cell.get()),
+        other => convert::to_string_php(other).map_or_else(
+            |_| SqliteValue::Null,
+            |value| SqliteValue::Blob(value.as_bytes().to_vec()),
+        ),
     }
 }
 

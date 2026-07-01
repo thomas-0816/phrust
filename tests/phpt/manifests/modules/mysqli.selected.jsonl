@@ -1,5 +1,9 @@
 {"path":"tests/phpt/generated/mysqli/platform-checks.phpt"}
 {"path":"tests/phpt/generated/mysqli/sqlite-compat-query.phpt"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-prepared-basic-dsn.phpt"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-prepared-reexecute-dsn.phpt"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-prepared-bind-result-dsn.phpt"}
+{"path":"tests/phpt/generated/wp.db-network/mysqli-prepared-error-dsn.phpt"}
 {"path":"ext/mysqli/tests/mysqli_get_client_info.phpt"}
 {"path":"ext/mysqli/tests/functions/mysqli_get_client_info.phpt"}
 {"path":"ext/mysqli/tests/mysqli_get_client_version.phpt"}

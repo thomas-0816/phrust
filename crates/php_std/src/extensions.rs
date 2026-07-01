@@ -1451,6 +1451,46 @@ pub(super) fn standard_library_mysqli_extension() -> ExtensionDescriptor {
             ConstantValue::Int(0),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_REPORT_ERROR",
+            "mysqli",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_REPORT_STRICT",
+            "mysqli",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_REPORT_INDEX",
+            "mysqli",
+            ConstantValue::Int(4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_OPT_CONNECT_TIMEOUT",
+            "mysqli",
+            ConstantValue::Int(0),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_INIT_COMMAND",
+            "mysqli",
+            ConstantValue::Int(3),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_READ_DEFAULT_FILE",
+            "mysqli",
+            ConstantValue::Int(4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_READ_DEFAULT_GROUP",
+            "mysqli",
+            ConstantValue::Int(5),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MYSQLI_SET_CHARSET_NAME",
+            "mysqli",
+            ConstantValue::Int(7),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "MYSQLI_STORE_RESULT",
             "mysqli",
             ConstantValue::Int(0),
@@ -1461,16 +1501,26 @@ pub(super) fn standard_library_mysqli_extension() -> ExtensionDescriptor {
             ConstantValue::Int(1),
         ))
         .with_function(FunctionDescriptor::php("mysqli_close", "mysqli"))
+        .with_function(FunctionDescriptor::php(
+            "mysqli_character_set_name",
+            "mysqli",
+        ))
         .with_function(FunctionDescriptor::php("mysqli_connect", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_connect_errno", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_connect_error", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_data_seek", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_errno", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_error", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_fetch_fields", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_fetch_object", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_field_count", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_get_charset", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_get_client_info", "mysqli"))
         .with_function(FunctionDescriptor::php(
             "mysqli_get_client_version",
             "mysqli",
         ))
+        .with_function(FunctionDescriptor::php("mysqli_get_host_info", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_get_server_info", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_escape_string", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_fetch_array", "mysqli"))
@@ -1480,6 +1530,7 @@ pub(super) fn standard_library_mysqli_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("mysqli_init", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_num_fields", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_num_rows", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_options", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_prepare", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_query", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_real_connect", "mysqli"))
@@ -1490,7 +1541,24 @@ pub(super) fn standard_library_mysqli_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("mysqli_report", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_select_db", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_set_charset", "mysqli"))
+        .with_function(FunctionDescriptor::php(
+            "mysqli_stmt_affected_rows",
+            "mysqli",
+        ))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_bind_param", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_bind_result", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_close", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_errno", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_error", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_execute", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_fetch", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_free_result", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_get_result", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_stmt_init", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_insert_id", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_num_rows", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_prepare", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_stmt_sqlstate", "mysqli"))
         .with_class(ClassDescriptor::new("mysqli", "mysqli", ClassKind::Class))
         .with_class(ClassDescriptor::new(
             "mysqli_driver",
@@ -1557,6 +1625,51 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             ConstantValue::Int(42),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_NOBODY",
+            "curl",
+            ConstantValue::Int(44),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_USERAGENT",
+            "curl",
+            ConstantValue::Int(10018),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_REFERER",
+            "curl",
+            ConstantValue::Int(10016),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_ENCODING",
+            "curl",
+            ConstantValue::Int(10102),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_HTTP_VERSION",
+            "curl",
+            ConstantValue::Int(84),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_CONNECTTIMEOUT",
+            "curl",
+            ConstantValue::Int(78),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_CONNECTTIMEOUT_MS",
+            "curl",
+            ConstantValue::Int(156),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_MAXREDIRS",
+            "curl",
+            ConstantValue::Int(68),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_FAILONERROR",
+            "curl",
+            ConstantValue::Int(45),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "CURLOPT_HTTPHEADER",
             "curl",
             ConstantValue::Int(10023),
@@ -1612,17 +1725,29 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             ConstantValue::Int(3145731),
         ))
         .with_function(FunctionDescriptor::php("curl_close", "curl"))
+        .with_function(FunctionDescriptor::php("curl_copy_handle", "curl"))
         .with_function(FunctionDescriptor::php("curl_errno", "curl"))
         .with_function(FunctionDescriptor::php("curl_error", "curl"))
         .with_function(FunctionDescriptor::php("curl_escape", "curl"))
         .with_function(FunctionDescriptor::php("curl_exec", "curl"))
         .with_function(FunctionDescriptor::php("curl_getinfo", "curl"))
         .with_function(FunctionDescriptor::php("curl_init", "curl"))
+        .with_function(FunctionDescriptor::php("curl_multi_add_handle", "curl"))
+        .with_function(FunctionDescriptor::php("curl_multi_close", "curl"))
+        .with_function(FunctionDescriptor::php("curl_multi_exec", "curl"))
+        .with_function(FunctionDescriptor::php("curl_multi_init", "curl"))
         .with_function(FunctionDescriptor::php("curl_multi_strerror", "curl"))
+        .with_function(FunctionDescriptor::php("curl_reset", "curl"))
         .with_function(FunctionDescriptor::php("curl_setopt", "curl"))
+        .with_function(FunctionDescriptor::php("curl_setopt_array", "curl"))
         .with_function(FunctionDescriptor::php("curl_unescape", "curl"))
         .with_function(FunctionDescriptor::php("curl_version", "curl"))
         .with_class(ClassDescriptor::new("CurlHandle", "curl", ClassKind::Class))
+        .with_class(ClassDescriptor::new(
+            "CurlMultiHandle",
+            "curl",
+            ClassKind::Class,
+        ))
 }
 
 pub(super) fn standard_library_openssl_extension() -> ExtensionDescriptor {
@@ -1647,6 +1772,12 @@ pub(super) fn standard_library_openssl_extension() -> ExtensionDescriptor {
             "openssl",
         ))
         .with_function(FunctionDescriptor::php("openssl_get_md_methods", "openssl"))
+        .with_function(FunctionDescriptor::php(
+            "openssl_pkey_get_public",
+            "openssl",
+        ))
+        .with_function(FunctionDescriptor::php("openssl_get_publickey", "openssl"))
+        .with_function(FunctionDescriptor::php("openssl_error_string", "openssl"))
         .with_function(FunctionDescriptor::php(
             "openssl_random_pseudo_bytes",
             "openssl",

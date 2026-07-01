@@ -6,8 +6,9 @@ use crate::builtins::{
     RuntimeSourceSpan,
 };
 use crate::{
-    ArrayKey, ClassEntry, ClassFlags, FloatValue, ObjectRef, PhpArray, PhpString, Value,
-    normalize_class_name,
+    ArrayKey, ClassEntry, ClassFlags, FloatValue, ObjectRef, PhpArray, PhpString,
+    RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity, Value,
+    WordPressDiagnosticContext, normalize_class_name,
 };
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -17,6 +18,11 @@ use std::time::{Duration, Instant};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("curl_close", builtin_curl_close, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "curl_copy_handle",
+        builtin_curl_copy_handle,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("curl_errno", builtin_curl_errno, BuiltinCompatibility::Php),
     BuiltinEntry::new("curl_error", builtin_curl_error, BuiltinCompatibility::Php),
     BuiltinEntry::new(
@@ -37,10 +43,36 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "curl_setopt_array",
+        builtin_curl_setopt_array,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "curl_multi_strerror",
         builtin_curl_multi_strerror,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new(
+        "curl_multi_init",
+        builtin_curl_multi_init,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_multi_add_handle",
+        builtin_curl_multi_add_handle,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_multi_exec",
+        builtin_curl_multi_exec,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_multi_close",
+        builtin_curl_multi_close,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new("curl_reset", builtin_curl_reset, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "curl_unescape",
         builtin_curl_unescape,
@@ -62,6 +94,15 @@ const CURLOPT_TIMEOUT: i64 = 13;
 const CURLOPT_TIMEOUT_MS: i64 = 155;
 const CURLOPT_FOLLOWLOCATION: i64 = 52;
 const CURLOPT_HEADER: i64 = 42;
+const CURLOPT_NOBODY: i64 = 44;
+const CURLOPT_USERAGENT: i64 = 10018;
+const CURLOPT_REFERER: i64 = 10016;
+const CURLOPT_ENCODING: i64 = 10102;
+const CURLOPT_HTTP_VERSION: i64 = 84;
+const CURLOPT_CONNECTTIMEOUT: i64 = 78;
+const CURLOPT_CONNECTTIMEOUT_MS: i64 = 156;
+const CURLOPT_MAXREDIRS: i64 = 68;
+const CURLOPT_FAILONERROR: i64 = 45;
 const CURLOPT_HTTPHEADER: i64 = 10023;
 const CURLOPT_POST: i64 = 47;
 const CURLOPT_POSTFIELDS: i64 = 10015;
@@ -159,6 +200,53 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_strerror(
     Ok(Value::string(message))
 }
 
+pub(in crate::builtins::modules) fn builtin_curl_multi_init(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_multi_init", &args, 0)?;
+    Ok(Value::Object(ObjectRef::new_with_display_name(
+        &curl_runtime_class("CurlMultiHandle"),
+        "CurlMultiHandle",
+    )))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_multi_add_handle(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_multi_add_handle", &args, 2)?;
+    let _multi = curl_multi_handle_arg("curl_multi_add_handle", args.first())?;
+    let _handle = curl_handle_arg("curl_multi_add_handle", args.get(1))?;
+    Ok(Value::Int(CURLM_OK))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_multi_exec(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_multi_exec", &args, 2)?;
+    let _multi = curl_multi_handle_arg("curl_multi_exec", args.first())?;
+    if let Some(Value::Reference(cell)) = args.get(1) {
+        cell.set(Value::Int(0));
+    }
+    Ok(Value::Int(CURLM_OK))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_multi_close(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_multi_close", &args, 1)?;
+    let multi = curl_multi_handle_arg("curl_multi_close", args.first())?;
+    multi.set_property("__curl_multi_closed", Value::Bool(true));
+    Ok(Value::Null)
+}
+
 pub(in crate::builtins::modules) fn builtin_curl_init(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -179,9 +267,9 @@ pub(in crate::builtins::modules) fn builtin_curl_init(
 }
 
 pub(in crate::builtins::modules) fn builtin_curl_setopt(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_setopt", &args, 3)?;
     let handle = curl_handle_arg("curl_setopt", args.first())?;
@@ -198,6 +286,15 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
         CURLOPT_TIMEOUT_MS => "__curl_timeout_ms",
         CURLOPT_FOLLOWLOCATION => "__curl_followlocation",
         CURLOPT_HEADER => "__curl_header",
+        CURLOPT_NOBODY => "__curl_nobody",
+        CURLOPT_USERAGENT => "__curl_useragent",
+        CURLOPT_REFERER => "__curl_referer",
+        CURLOPT_ENCODING => "__curl_encoding",
+        CURLOPT_HTTP_VERSION => "__curl_http_version",
+        CURLOPT_CONNECTTIMEOUT => "__curl_connecttimeout",
+        CURLOPT_CONNECTTIMEOUT_MS => "__curl_connecttimeout_ms",
+        CURLOPT_MAXREDIRS => "__curl_maxredirs",
+        CURLOPT_FAILONERROR => "__curl_failonerror",
         CURLOPT_HTTPHEADER => "__curl_httpheader",
         CURLOPT_POST => "__curl_post",
         CURLOPT_POSTFIELDS => "__curl_postfields",
@@ -206,6 +303,17 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
         CURLOPT_SSL_VERIFYHOST => "__curl_ssl_verifyhost",
         _ => {
             set_curl_error(&handle, 48, "unsupported cURL option");
+            record_curl_diagnostic(
+                context,
+                "E_PHP_CURL_OPTION_UNSUPPORTED",
+                "curl_setopt",
+                "set_option",
+                "enabled",
+                &handle,
+                48,
+                "unsupported cURL option",
+                span.clone(),
+            );
             return Ok(Value::Bool(false));
         }
     };
@@ -213,10 +321,49 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
     Ok(Value::Bool(true))
 }
 
+pub(in crate::builtins::modules) fn builtin_curl_setopt_array(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_setopt_array", &args, 2)?;
+    let handle = curl_handle_arg("curl_setopt_array", args.first())?;
+    let Value::Array(options) = &args[1] else {
+        return Err(argument_type_error(
+            "curl_setopt_array",
+            "2",
+            "array",
+            &args[1],
+        ));
+    };
+    for (key, value) in options.iter() {
+        let option = match key {
+            ArrayKey::Int(option) => *option,
+            ArrayKey::String(option) => option.to_string_lossy().parse().unwrap_or(-1),
+        };
+        let ok = set_curl_option(&handle, option, value.clone())?;
+        if !matches!(ok, Value::Bool(true)) {
+            record_curl_diagnostic(
+                context,
+                "E_PHP_CURL_OPTION_UNSUPPORTED",
+                "curl_setopt_array",
+                "set_option",
+                "enabled",
+                &handle,
+                48,
+                "unsupported cURL option",
+                span,
+            );
+            return Ok(Value::Bool(false));
+        }
+    }
+    Ok(Value::Bool(true))
+}
+
 pub(in crate::builtins::modules) fn builtin_curl_exec(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_exec", &args, 1)?;
     let handle = curl_handle_arg("curl_exec", args.first())?;
@@ -226,12 +373,34 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
             1,
             format!("network cURL requests require {PHRUST_NET_TESTS_ENV}=1"),
         );
+        record_curl_diagnostic(
+            context,
+            "E_PHP_CURL_CAPABILITY_DISABLED",
+            "curl_exec",
+            "http_request",
+            "disabled",
+            &handle,
+            1,
+            format!("network cURL requests require {PHRUST_NET_TESTS_ENV}=1"),
+            span,
+        );
         return Ok(Value::Bool(false));
     }
     let request = match build_request(&handle) {
         Ok(request) => request,
         Err((code, message)) => {
-            set_curl_error(&handle, code, message);
+            set_curl_error(&handle, code, message.clone());
+            record_curl_diagnostic(
+                context,
+                "E_PHP_CURL_REQUEST_FAILED",
+                "curl_exec",
+                "build_request",
+                "enabled",
+                &handle,
+                code,
+                message,
+                span,
+            );
             return Ok(Value::Bool(false));
         }
     };
@@ -239,10 +408,36 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
     let response = match execute_http_request(&request) {
         Ok(response) => response,
         Err((code, message)) => {
-            set_curl_error(&handle, code, message);
+            set_curl_error(&handle, code, message.clone());
+            record_curl_diagnostic(
+                context,
+                "E_PHP_CURL_REQUEST_FAILED",
+                "curl_exec",
+                "execute_request",
+                "enabled",
+                &handle,
+                code,
+                message,
+                span,
+            );
             return Ok(Value::Bool(false));
         }
     };
+    if curl_bool_property(&handle, "__curl_failonerror") && response.status >= 400 {
+        set_curl_error(&handle, 22, "HTTP response code said error");
+        record_curl_diagnostic(
+            context,
+            "E_PHP_CURL_REQUEST_FAILED",
+            "curl_exec",
+            "http_status",
+            "enabled",
+            &handle,
+            22,
+            "HTTP response code said error",
+            span,
+        );
+        return Ok(Value::Bool(false));
+    }
     set_curl_error(&handle, 0, "");
     handle.set_property("__curl_http_code", Value::Int(i64::from(response.status)));
     handle.set_property(
@@ -357,6 +552,55 @@ pub(in crate::builtins::modules) fn builtin_curl_close(
     Ok(Value::Null)
 }
 
+pub(in crate::builtins::modules) fn builtin_curl_reset(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_reset", &args, 1)?;
+    let handle = curl_handle_arg("curl_reset", args.first())?;
+    reset_curl_handle(&handle);
+    Ok(Value::Null)
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_copy_handle(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_copy_handle", &args, 1)?;
+    let handle = curl_handle_arg("curl_copy_handle", args.first())?;
+    let copy = curl_handle_object();
+    for property in [
+        "__curl_url",
+        "__curl_returntransfer",
+        "__curl_timeout",
+        "__curl_timeout_ms",
+        "__curl_followlocation",
+        "__curl_header",
+        "__curl_nobody",
+        "__curl_useragent",
+        "__curl_referer",
+        "__curl_encoding",
+        "__curl_http_version",
+        "__curl_connecttimeout",
+        "__curl_connecttimeout_ms",
+        "__curl_maxredirs",
+        "__curl_failonerror",
+        "__curl_httpheader",
+        "__curl_post",
+        "__curl_postfields",
+        "__curl_customrequest",
+        "__curl_ssl_verifypeer",
+        "__curl_ssl_verifyhost",
+    ] {
+        if let Some(value) = handle.get_property(property) {
+            copy.set_property(property, value);
+        }
+    }
+    Ok(Value::Object(copy))
+}
+
 fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
     if handle.get_property("__curl_closed") == Some(Value::Bool(true)) {
         return Err((3, "cURL handle is closed".to_owned()));
@@ -376,10 +620,26 @@ fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
     let post = curl_bool_property(handle, "__curl_post") || !body.is_empty();
     let method = match handle.get_property("__curl_customrequest") {
         Some(Value::String(value)) if !value.is_empty() => value.to_string_lossy(),
+        _ if curl_bool_property(handle, "__curl_nobody") => "HEAD".to_owned(),
         _ if post => "POST".to_owned(),
         _ => "GET".to_owned(),
     };
     let mut headers = curl_header_lines(handle);
+    if let Some(Value::String(value)) = handle.get_property("__curl_useragent")
+        && !value.is_empty()
+    {
+        headers.push(format!("User-Agent: {}", value.to_string_lossy()));
+    }
+    if let Some(Value::String(value)) = handle.get_property("__curl_referer")
+        && !value.is_empty()
+    {
+        headers.push(format!("Referer: {}", value.to_string_lossy()));
+    }
+    if let Some(Value::String(value)) = handle.get_property("__curl_encoding")
+        && !value.is_empty()
+    {
+        headers.push(format!("Accept-Encoding: {}", value.to_string_lossy()));
+    }
     if let Some(content_type) = content_type
         && !headers
             .iter()
@@ -397,12 +657,13 @@ fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
         body,
         timeout: curl_timeout(handle),
         follow_redirects: curl_bool_property(handle, "__curl_followlocation"),
+        max_redirects: curl_int_setting(handle, "__curl_maxredirs", 5).clamp(0, 20) as usize,
     })
 }
 
 fn execute_http_request(request: &CurlRequest) -> Result<CurlResponse, (i64, String)> {
     let mut request = request.clone();
-    for _ in 0..5 {
+    for _ in 0..=request.max_redirects {
         let response = execute_single_http_request(&request)?;
         if request.follow_redirects
             && matches!(response.status, 301 | 302 | 303 | 307 | 308)
@@ -619,6 +880,12 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 fn curl_timeout(handle: &ObjectRef) -> Duration {
+    if let Some(Value::Int(ms)) = handle.get_property("__curl_connecttimeout_ms") {
+        return Duration::from_millis(ms.clamp(1, 30_000) as u64);
+    }
+    if let Some(Value::Int(seconds)) = handle.get_property("__curl_connecttimeout") {
+        return Duration::from_secs(seconds.clamp(1, 30) as u64);
+    }
     if let Some(Value::Int(ms)) = handle.get_property("__curl_timeout_ms") {
         return Duration::from_millis(ms.clamp(1, 30_000) as u64);
     }
@@ -630,6 +897,11 @@ fn curl_timeout(handle: &ObjectRef) -> Duration {
 
 fn curl_handle_object() -> ObjectRef {
     let object = ObjectRef::new_with_display_name(&curl_runtime_class("CurlHandle"), "CurlHandle");
+    reset_curl_handle(&object);
+    object
+}
+
+fn reset_curl_handle(object: &ObjectRef) {
     object.set_property("__curl_errno", Value::Int(0));
     object.set_property("__curl_error", Value::String(PhpString::from("")));
     object.set_property("__curl_returntransfer", Value::Bool(false));
@@ -637,7 +909,6 @@ fn curl_handle_object() -> ObjectRef {
     object.set_property("__curl_effective_url", Value::String(PhpString::from("")));
     object.set_property("__curl_header_size", Value::Int(0));
     object.set_property("__curl_total_time", Value::Float(FloatValue::from_f64(0.0)));
-    object
 }
 
 fn curl_runtime_class(name: &str) -> ClassEntry {
@@ -667,12 +938,120 @@ fn curl_handle_arg(name: &str, value: Option<&Value>) -> Result<ObjectRef, Built
     }
 }
 
+fn curl_multi_handle_arg(name: &str, value: Option<&Value>) -> Result<ObjectRef, BuiltinError> {
+    match value {
+        Some(Value::Object(object)) if object.class_name() == "curlmultihandle" => {
+            Ok(object.clone())
+        }
+        Some(value) => Err(argument_type_error(name, "1", "CurlMultiHandle", value)),
+        None => Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            format!("builtin {name} expects CurlMultiHandle argument"),
+        )),
+    }
+}
+
+fn set_curl_option(handle: &ObjectRef, option: i64, value: Value) -> BuiltinResult {
+    let property = match option {
+        CURLOPT_URL => {
+            let value = string_arg("curl_setopt", &value)?;
+            handle.set_property("__curl_url", Value::String(value));
+            return Ok(Value::Bool(true));
+        }
+        CURLOPT_RETURNTRANSFER => "__curl_returntransfer",
+        CURLOPT_TIMEOUT => "__curl_timeout",
+        CURLOPT_TIMEOUT_MS => "__curl_timeout_ms",
+        CURLOPT_FOLLOWLOCATION => "__curl_followlocation",
+        CURLOPT_HEADER => "__curl_header",
+        CURLOPT_NOBODY => "__curl_nobody",
+        CURLOPT_USERAGENT => "__curl_useragent",
+        CURLOPT_REFERER => "__curl_referer",
+        CURLOPT_ENCODING => "__curl_encoding",
+        CURLOPT_HTTP_VERSION => "__curl_http_version",
+        CURLOPT_CONNECTTIMEOUT => "__curl_connecttimeout",
+        CURLOPT_CONNECTTIMEOUT_MS => "__curl_connecttimeout_ms",
+        CURLOPT_MAXREDIRS => "__curl_maxredirs",
+        CURLOPT_FAILONERROR => "__curl_failonerror",
+        CURLOPT_HTTPHEADER => "__curl_httpheader",
+        CURLOPT_POST => "__curl_post",
+        CURLOPT_POSTFIELDS => "__curl_postfields",
+        CURLOPT_CUSTOMREQUEST => "__curl_customrequest",
+        CURLOPT_SSL_VERIFYPEER => "__curl_ssl_verifypeer",
+        CURLOPT_SSL_VERIFYHOST => "__curl_ssl_verifyhost",
+        _ => {
+            set_curl_error(handle, 48, "unsupported cURL option");
+            return Ok(Value::Bool(false));
+        }
+    };
+    handle.set_property(property, value);
+    Ok(Value::Bool(true))
+}
+
 fn set_curl_error(handle: &ObjectRef, errno: i64, error: impl Into<String>) {
     handle.set_property("__curl_errno", Value::Int(errno));
     handle.set_property(
         "__curl_error",
         Value::String(PhpString::from(error.into().into_bytes())),
     );
+}
+
+fn record_curl_diagnostic(
+    context: &mut BuiltinContext<'_>,
+    diagnostic_id: &'static str,
+    function_name: &'static str,
+    operation: &'static str,
+    capability_state: &'static str,
+    handle: &ObjectRef,
+    error_code: i64,
+    error_message: impl AsRef<str>,
+    span: RuntimeSourceSpan,
+) {
+    let (host, port) = curl_diagnostic_endpoint(handle);
+    let error_message = error_message.as_ref().chars().take(512).collect::<String>();
+    let payload = WordPressDiagnosticContext::new("db_network")
+        .with_field("diagnostic_id", diagnostic_id)
+        .with_field("function_name", function_name)
+        .with_field("operation", operation)
+        .with_field("capability_state", capability_state)
+        .with_field("dsn_present_boolean", "false")
+        .with_field("host", host)
+        .with_field(
+            "port",
+            port.map(|port| port.to_string()).unwrap_or_default(),
+        )
+        .with_field("database_name_if_nonsecret", "")
+        .with_field("mysql_error_code", error_code.to_string())
+        .with_field("mysql_sqlstate", "")
+        .with_field("mysql_error_message", error_message.clone())
+        .with_field("curl_error_code", error_code.to_string());
+    context.record_diagnostic(
+        RuntimeDiagnostic::new(
+            diagnostic_id,
+            RuntimeSeverity::Warning,
+            error_message,
+            span,
+            Vec::new(),
+            Some(crate::PhpReferenceClassification::Warning),
+        )
+        .with_diagnostic_payload(RuntimeDiagnosticPayload::WordPressBringup(payload)),
+    );
+}
+
+fn curl_diagnostic_endpoint(handle: &ObjectRef) -> (String, Option<u16>) {
+    let Some(Value::String(url)) = handle.get_property("__curl_url") else {
+        return (String::new(), None);
+    };
+    let url = url.to_string_lossy();
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(&url);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let (host, port) = authority
+        .rsplit_once(':')
+        .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, Some(port))))
+        .unwrap_or((authority, None));
+    (host.trim_matches(['[', ']']).to_owned(), port)
 }
 
 fn curl_bool_property(handle: &ObjectRef, name: &str) -> bool {
@@ -686,6 +1065,14 @@ fn curl_int_property(handle: &ObjectRef, name: &str) -> Value {
     match handle.get_property(name) {
         Some(Value::Int(value)) => Value::Int(value),
         _ => Value::Int(0),
+    }
+}
+
+fn curl_int_setting(handle: &ObjectRef, name: &str, default: i64) -> i64 {
+    match handle.get_property(name) {
+        Some(Value::Int(value)) => value,
+        Some(value) => crate::convert::to_int(&value).unwrap_or(default),
+        None => default,
     }
 }
 
@@ -720,6 +1107,7 @@ struct CurlRequest {
     body: Vec<u8>,
     timeout: Duration,
     follow_redirects: bool,
+    max_redirects: usize,
 }
 
 impl CurlRequest {
@@ -796,6 +1184,28 @@ mod tests {
             builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
                 .expect("errno"),
             Value::Int(1)
+        );
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].id(), "E_PHP_CURL_CAPABILITY_DISABLED");
+        let Some(RuntimeDiagnosticPayload::WordPressBringup(payload)) = diagnostics[0].payload()
+        else {
+            panic!("expected db/network diagnostic payload");
+        };
+        assert_eq!(
+            payload.fields().get("diagnostic_id").map(String::as_str),
+            Some("E_PHP_CURL_CAPABILITY_DISABLED")
+        );
+        assert_eq!(
+            payload.fields().get("capability_state").map(String::as_str),
+            Some("disabled")
+        );
+        assert_eq!(
+            payload
+                .fields()
+                .get("dsn_present_boolean")
+                .map(String::as_str),
+            Some("false")
         );
     }
 

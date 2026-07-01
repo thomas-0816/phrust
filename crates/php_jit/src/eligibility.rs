@@ -1635,8 +1635,8 @@ fn check_instruction(
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::FetchStaticProperty { .. }
         | InstructionKind::IssetStaticProperty { .. }
-        | InstructionKind::EmptyStaticProperty { .. }
         | InstructionKind::IssetStaticPropertyDim { .. }
+        | InstructionKind::EmptyStaticProperty { .. }
         | InstructionKind::EmptyStaticPropertyDim { .. }
         | InstructionKind::UnsetStaticPropertyDim { .. }
         | InstructionKind::FetchClassConstant { .. }
