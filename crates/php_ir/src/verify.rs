@@ -454,6 +454,16 @@ fn verify_instruction(
             verify_local(*target, function.local_count, errors);
             verify_call_args(args, function, unit, errors);
         }
+        InstructionKind::BindReferenceFromMethodCall {
+            target,
+            object,
+            args,
+            ..
+        } => {
+            verify_local(*target, function.local_count, errors);
+            verify_operand(object, function, unit, errors);
+            verify_call_args(args, function, unit, errors);
+        }
         InstructionKind::CallFunction { dst, args, .. } => {
             verify_register(*dst, function.register_count, errors);
             verify_call_args(args, function, unit, errors);
@@ -658,6 +668,19 @@ fn verify_instruction(
         | InstructionKind::EmptyStaticProperty { dst, .. }
         | InstructionKind::FetchClassConstant { dst, .. } => {
             verify_register(*dst, function.register_count, errors);
+        }
+        InstructionKind::IssetStaticPropertyDim { dst, dims, .. }
+        | InstructionKind::EmptyStaticPropertyDim { dst, dims, .. } => {
+            verify_register(*dst, function.register_count, errors);
+            for dim in dims {
+                verify_operand(dim, function, unit, errors);
+            }
+        }
+        InstructionKind::UnsetStaticPropertyDim { dims, .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { dims, .. } => {
+            for dim in dims {
+                verify_operand(dim, function, unit, errors);
+            }
         }
         InstructionKind::FetchObjectClassName { dst, object } => {
             verify_register(*dst, function.register_count, errors);
@@ -906,6 +929,19 @@ fn verify_call_args(
                 ));
             }
         }
+        if let Some(property_dim) = &arg.by_ref_property_dim {
+            verify_operand(&property_dim.object, function, unit, errors);
+            for operand in &property_dim.dims {
+                verify_operand(operand, function, unit, errors);
+            }
+            if arg.unpack {
+                errors.push(error(
+                    VerificationErrorCode::InvalidCallArgMetadata,
+                    "unpacked call argument cannot carry by-reference property dimension metadata"
+                        .to_owned(),
+                ));
+            }
+        }
     }
 }
 
@@ -921,28 +957,33 @@ fn verify_register_definitions(function: &IrFunction, errors: &mut Vec<Verificat
     let mut in_defs = vec![vec![true; register_count]; block_count];
     let mut out_defs = vec![vec![true; register_count]; block_count];
     in_defs[0] = vec![false; register_count];
-    out_defs[0] = apply_register_defs(&function.blocks[0], in_defs[0].clone());
+    out_defs[0] = in_defs[0].clone();
+    apply_register_defs_in_place(&function.blocks[0], &mut out_defs[0]);
 
     let mut changed = true;
+    let mut edge_scratch = vec![false; register_count];
     while changed {
         changed = false;
         for block_index in 0..block_count {
             if !reachable[block_index] {
                 continue;
             }
-            let next_in = if block_index == 0 || predecessors[block_index].is_empty() {
-                vec![false; register_count]
+            let mut next_in = vec![false; register_count];
+            if block_index == 0 || predecessors[block_index].is_empty() {
+                next_in.fill(false);
             } else {
-                intersect_predecessor_defs(
+                intersect_predecessor_defs_into(
                     function,
                     block_index,
                     &predecessors[block_index],
                     &reachable,
                     &out_defs,
-                    register_count,
-                )
+                    &mut next_in,
+                    &mut edge_scratch,
+                );
             };
-            let next_out = apply_register_defs(&function.blocks[block_index], next_in.clone());
+            let mut next_out = next_in.clone();
+            apply_register_defs_in_place(&function.blocks[block_index], &mut next_out);
             if next_in != in_defs[block_index] || next_out != out_defs[block_index] {
                 in_defs[block_index] = next_in;
                 out_defs[block_index] = next_out;
@@ -987,34 +1028,41 @@ fn block_predecessors(function: &IrFunction) -> Vec<Vec<usize>> {
     predecessors
 }
 
-fn intersect_predecessor_defs(
+fn intersect_predecessor_defs_into(
     function: &IrFunction,
     target_index: usize,
     predecessors: &[usize],
     reachable: &[bool],
     out_defs: &[Vec<bool>],
-    register_count: usize,
-) -> Vec<bool> {
-    let mut result = vec![true; register_count];
+    result: &mut [bool],
+    edge_scratch: &mut [bool],
+) {
+    result.fill(false);
     let mut saw_reachable_predecessor = false;
+    let mut first_reachable_predecessor = true;
     for predecessor in predecessors {
         if !reachable[*predecessor] {
             continue;
         }
         saw_reachable_predecessor = true;
-        let edge_defs = edge_register_defs(
+        apply_edge_register_defs_into(
             &function.blocks[*predecessor],
             BlockId::new(target_index as u32),
             &out_defs[*predecessor],
+            edge_scratch,
         );
-        for (index, defined) in edge_defs.iter().enumerate() {
-            result[index] &= *defined;
+        if first_reachable_predecessor {
+            result.copy_from_slice(edge_scratch);
+            first_reachable_predecessor = false;
+        } else {
+            for (index, defined) in edge_scratch.iter().enumerate() {
+                result[index] &= *defined;
+            }
         }
     }
     if !saw_reachable_predecessor {
-        return vec![false; register_count];
+        result.fill(false);
     }
-    result
 }
 
 fn reachable_blocks(function: &IrFunction) -> Vec<bool> {
@@ -1042,16 +1090,21 @@ fn reachable_blocks(function: &IrFunction) -> Vec<bool> {
     reachable
 }
 
-fn edge_register_defs(block: &BasicBlock, target: BlockId, out_defs: &[bool]) -> Vec<bool> {
-    let mut defs = out_defs.to_vec();
+fn apply_edge_register_defs_into(
+    block: &BasicBlock,
+    target: BlockId,
+    out_defs: &[bool],
+    defs: &mut [bool],
+) {
+    defs.copy_from_slice(out_defs);
     let Some(terminator) = &block.terminator else {
-        return defs;
+        return;
     };
     if !is_false_successor(&terminator.kind, target) {
-        return defs;
+        return;
     }
     let Some(last) = block.instructions.last() else {
-        return defs;
+        return;
     };
     match &last.kind {
         InstructionKind::ForeachNext { key, value, .. } => {
@@ -1073,7 +1126,6 @@ fn edge_register_defs(block: &BasicBlock, target: BlockId, out_defs: &[bool]) ->
         }
         _ => {}
     }
-    defs
 }
 
 fn is_false_successor(kind: &TerminatorKind, target: BlockId) -> bool {
@@ -1090,11 +1142,10 @@ fn is_false_successor(kind: &TerminatorKind, target: BlockId) -> bool {
     }
 }
 
-fn apply_register_defs(block: &BasicBlock, mut defined: Vec<bool>) -> Vec<bool> {
+fn apply_register_defs_in_place(block: &BasicBlock, defined: &mut [bool]) {
     for instruction in &block.instructions {
-        mark_instruction_defs(&instruction.kind, &mut defined);
+        mark_instruction_defs(&instruction.kind, defined);
     }
-    defined
 }
 
 fn report_undefined_registers(
@@ -1287,6 +1338,10 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         | InstructionKind::CallFunction { args, .. }
         | InstructionKind::CallStaticMethod { args, .. }
         | InstructionKind::NewObject { args, .. } => call_args_register_uses(args, uses),
+        InstructionKind::BindReferenceFromMethodCall { object, args, .. } => {
+            operand_register_uses(object, uses);
+            call_args_register_uses(args, uses);
+        }
         InstructionKind::DynamicNewObject {
             class_name, args, ..
         } => {
@@ -1352,6 +1407,14 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
             operand_register_uses(value, uses);
         }
         InstructionKind::AssignStaticProperty { value, .. } => operand_register_uses(value, uses),
+        InstructionKind::IssetStaticPropertyDim { dims, .. }
+        | InstructionKind::EmptyStaticPropertyDim { dims, .. }
+        | InstructionKind::UnsetStaticPropertyDim { dims, .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { dims, .. } => {
+            for dim in dims {
+                operand_register_uses(dim, uses);
+            }
+        }
         InstructionKind::BindReferenceStaticProperty { .. } => {}
         InstructionKind::ArrayInsert {
             array, key, value, ..
@@ -1437,6 +1500,8 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::FetchStaticProperty { dst, .. }
         | InstructionKind::IssetStaticProperty { dst, .. }
         | InstructionKind::EmptyStaticProperty { dst, .. }
+        | InstructionKind::IssetStaticPropertyDim { dst, .. }
+        | InstructionKind::EmptyStaticPropertyDim { dst, .. }
         | InstructionKind::FetchClassConstant { dst, .. }
         | InstructionKind::FetchObjectClassName { dst, .. }
         | InstructionKind::AssignProperty { dst, .. }
@@ -1486,6 +1551,7 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::BindReferenceFromDim { .. }
         | InstructionKind::BindReferenceStaticProperty { .. }
         | InstructionKind::BindReferenceFromCall { .. }
+        | InstructionKind::BindReferenceFromMethodCall { .. }
         | InstructionKind::InitStaticLocal { .. }
         | InstructionKind::Discard { .. }
         | InstructionKind::Echo { .. }
@@ -1496,6 +1562,8 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::UnsetProperty { .. }
         | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
+        | InstructionKind::UnsetStaticPropertyDim { .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { .. }
         | InstructionKind::ArrayInsert { .. }
         | InstructionKind::ArraySpread { .. }
         | InstructionKind::ForeachCleanup { .. }
@@ -1818,6 +1886,7 @@ mod tests {
                     by_ref_local: Some(LocalId::new(0)),
                     by_ref_dim: None,
                     by_ref_property: None,
+                    by_ref_property_dim: None,
                 }],
             },
         });

@@ -996,6 +996,8 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::FetchStaticProperty { dst, .. }
         | InstructionKind::IssetStaticProperty { dst, .. }
         | InstructionKind::EmptyStaticProperty { dst, .. }
+        | InstructionKind::IssetStaticPropertyDim { dst, .. }
+        | InstructionKind::EmptyStaticPropertyDim { dst, .. }
         | InstructionKind::FetchClassConstant { dst, .. }
         | InstructionKind::FetchObjectClassName { dst, .. }
         | InstructionKind::AssignProperty { dst, .. }
@@ -1052,8 +1054,10 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::BindReferencePropertyDim { .. }
         | InstructionKind::BindReferenceDimFromProperty { .. }
         | InstructionKind::BindReferenceFromDim { .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { .. }
         | InstructionKind::BindReferenceStaticProperty { .. }
         | InstructionKind::BindReferenceFromCall { .. }
+        | InstructionKind::BindReferenceFromMethodCall { .. }
         | InstructionKind::InitStaticLocal { .. }
         | InstructionKind::Discard { .. }
         | InstructionKind::Echo { .. }
@@ -1065,6 +1069,7 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::UnsetProperty { .. }
         | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
+        | InstructionKind::UnsetStaticPropertyDim { .. }
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
         | InstructionKind::ForeachCleanup { .. }
@@ -1168,6 +1173,10 @@ fn remap_call_args_constants(args: &mut [php_ir::instruction::IrCallArg], remap:
         if let Some(property) = &mut arg.by_ref_property {
             remap_operand_constants(&mut property.object, remap);
         }
+        if let Some(property_dim) = &mut arg.by_ref_property_dim {
+            remap_operand_constants(&mut property_dim.object, remap);
+            remap_operands_constants(&mut property_dim.dims, remap);
+        }
     }
 }
 
@@ -1268,6 +1277,10 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         | InstructionKind::BindReferenceFromCall { args, .. } => {
             remap_call_args_constants(args, remap);
         }
+        InstructionKind::BindReferenceFromMethodCall { object, args, .. } => {
+            remap_operand_constants(object, remap);
+            remap_call_args_constants(args, remap);
+        }
         InstructionKind::CallMethod { object, args, .. } => {
             remap_operand_constants(object, remap);
             remap_call_args_constants(args, remap);
@@ -1345,8 +1358,12 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
         InstructionKind::IssetDim { dims, .. }
         | InstructionKind::EmptyDim { dims, .. }
         | InstructionKind::UnsetDim { dims, .. }
+        | InstructionKind::IssetStaticPropertyDim { dims, .. }
+        | InstructionKind::EmptyStaticPropertyDim { dims, .. }
+        | InstructionKind::UnsetStaticPropertyDim { dims, .. }
         | InstructionKind::BindReferenceDim { dims, .. }
-        | InstructionKind::BindReferenceFromDim { dims, .. } => {
+        | InstructionKind::BindReferenceFromDim { dims, .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { dims, .. } => {
             remap_operands_constants(dims, remap);
         }
         InstructionKind::AssignStaticProperty { value, .. } => {
@@ -1458,6 +1475,10 @@ fn rewrite_call_args_registers(
         if let Some(property) = &mut arg.by_ref_property {
             rewrite_operand_registers(&mut property.object, aliases);
         }
+        if let Some(property_dim) = &mut arg.by_ref_property_dim {
+            rewrite_operand_registers(&mut property_dim.object, aliases);
+            rewrite_operands_registers(&mut property_dim.dims, aliases);
+        }
     }
 }
 
@@ -1560,6 +1581,10 @@ fn rewrite_instruction_register_operands(
         | InstructionKind::BindReferenceFromCall { args, .. } => {
             rewrite_call_args_registers(args, aliases);
         }
+        InstructionKind::BindReferenceFromMethodCall { object, args, .. } => {
+            rewrite_operand_registers(object, aliases);
+            rewrite_call_args_registers(args, aliases);
+        }
         InstructionKind::CallMethod { object, args, .. } => {
             rewrite_operand_registers(object, aliases);
             rewrite_call_args_registers(args, aliases);
@@ -1637,8 +1662,12 @@ fn rewrite_instruction_register_operands(
         InstructionKind::IssetDim { dims, .. }
         | InstructionKind::EmptyDim { dims, .. }
         | InstructionKind::UnsetDim { dims, .. }
+        | InstructionKind::IssetStaticPropertyDim { dims, .. }
+        | InstructionKind::EmptyStaticPropertyDim { dims, .. }
+        | InstructionKind::UnsetStaticPropertyDim { dims, .. }
         | InstructionKind::BindReferenceDim { dims, .. }
-        | InstructionKind::BindReferenceFromDim { dims, .. } => {
+        | InstructionKind::BindReferenceFromDim { dims, .. }
+        | InstructionKind::BindReferenceFromStaticPropertyDim { dims, .. } => {
             rewrite_operands_registers(dims, aliases);
         }
         InstructionKind::AssignStaticProperty { value, .. } => {
@@ -1863,22 +1892,25 @@ impl OptimizerPass for BranchSimplify {
     fn run(&self, unit: &mut IrUnit, _context: &PassContext) -> Result<PassReport, PassError> {
         let before_files = unit.files.clone();
         let before_source_map = unit.source_map.clone();
+        let before = unit.clone();
         let mut stats = BranchSimplifyStats::default();
 
         while let Some(simplification) = find_branch_simplification(unit) {
-            let before_transform = unit.clone();
             apply_branch_simplification(unit, simplification);
-            if let Err(errors) = verify_unit(unit) {
-                *unit = before_transform;
-                return Err(PassError::Verification {
-                    phase: self.phase(),
-                    errors,
-                });
-            }
             stats.record(simplification);
         }
 
         let total = stats.total_transformations();
+        if total > 0
+            && let Err(errors) = verify_unit(unit)
+        {
+            *unit = before;
+            return Err(PassError::Verification {
+                phase: self.phase(),
+                errors,
+            });
+        }
+
         Ok(PassReport {
             name: self.name(),
             phase: self.phase(),

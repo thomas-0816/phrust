@@ -2283,9 +2283,9 @@ pub fn inline_cache_kind_for_instruction(kind: &InstructionKind) -> Option<Inlin
         | InstructionKind::CallClosure { .. }
         | InstructionKind::CallCallable { .. }
         | InstructionKind::Pipe { .. } => Some(InlineCacheKind::FunctionCall),
-        InstructionKind::CallMethod { .. } | InstructionKind::CallStaticMethod { .. } => {
-            Some(InlineCacheKind::MethodCall)
-        }
+        InstructionKind::BindReferenceFromMethodCall { .. }
+        | InstructionKind::CallMethod { .. }
+        | InstructionKind::CallStaticMethod { .. } => Some(InlineCacheKind::MethodCall),
         InstructionKind::FetchProperty { .. } => Some(InlineCacheKind::PropertyFetch),
         InstructionKind::AssignProperty { .. } => Some(InlineCacheKind::PropertyAssign),
         InstructionKind::FetchStaticProperty { .. }

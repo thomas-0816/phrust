@@ -333,6 +333,43 @@ impl MysqlConnectOptions {
         Ok(Self { dsn })
     }
 
+    /// Builds a MySQL DSN from mysqli-style connection arguments.
+    pub fn from_parts(
+        host: &str,
+        user: &str,
+        password: &str,
+        database: Option<&str>,
+        port: Option<u16>,
+    ) -> Result<Self, MysqlError> {
+        let host = if host.trim().is_empty() {
+            "localhost"
+        } else {
+            host.trim()
+        };
+        let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        let mut dsn = format!(
+            "mysql://{}:{}@{}",
+            percent_encode_mysql_url_component(user),
+            percent_encode_mysql_url_component(password),
+            host
+        );
+        if let Some(port) = port {
+            dsn.push(':');
+            dsn.push_str(&port.to_string());
+        }
+        if let Some(database) = database
+            && !database.is_empty()
+        {
+            dsn.push('/');
+            dsn.push_str(&percent_encode_mysql_url_component(database));
+        }
+        Self::from_dsn(dsn)
+    }
+
     /// Reads `PHRUST_MYSQL_TEST_DSN`.
     #[must_use]
     pub fn from_test_env() -> Option<Result<Self, MysqlError>> {
@@ -350,6 +387,19 @@ impl MysqlConnectOptions {
             )
         })
     }
+}
+
+fn percent_encode_mysql_url_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// Live MySQL/MariaDB connection handle.
@@ -678,6 +728,23 @@ mod tests {
         let options = MysqlConnectOptions::from_dsn("mysql://user:pass@127.0.0.1:3306/db")
             .expect("valid DSN");
         assert_eq!(options.dsn, "mysql://user:pass@127.0.0.1:3306/db");
+    }
+
+    #[test]
+    fn builds_dsn_from_mysqli_connection_parts() {
+        let options = MysqlConnectOptions::from_parts(
+            "127.0.0.1",
+            "word press",
+            "secret/pass",
+            Some("wp db"),
+            Some(13306),
+        )
+        .expect("valid mysqli parts");
+
+        assert_eq!(
+            options.dsn,
+            "mysql://word%20press:secret%2Fpass@127.0.0.1:13306/wp%20db"
+        );
     }
 
     #[test]

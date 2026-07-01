@@ -429,9 +429,9 @@ impl VmCounters {
             | InstructionKind::AcquireCallable { .. }
             | InstructionKind::CallCallable { .. }
             | InstructionKind::Pipe { .. } => self.function_calls += 1,
-            InstructionKind::CallMethod { .. } | InstructionKind::CallStaticMethod { .. } => {
-                self.method_calls += 1;
-            }
+            InstructionKind::BindReferenceFromMethodCall { .. }
+            | InstructionKind::CallMethod { .. }
+            | InstructionKind::CallStaticMethod { .. } => self.method_calls += 1,
             InstructionKind::BindReferenceDim { .. }
             | InstructionKind::BindReferenceFromDim { .. }
             | InstructionKind::FetchDim { .. }
@@ -3937,7 +3937,11 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::BindReferencePropertyDim { .. } => "bind_reference_property_dim",
         InstructionKind::BindReferenceDimFromProperty { .. } => "bind_reference_dim_from_property",
         InstructionKind::BindReferenceFromDim { .. } => "bind_reference_from_dim",
+        InstructionKind::BindReferenceFromStaticPropertyDim { .. } => {
+            "bind_reference_from_static_property_dim"
+        }
         InstructionKind::BindReferenceFromCall { .. } => "bind_reference_from_call",
+        InstructionKind::BindReferenceFromMethodCall { .. } => "bind_reference_from_method_call",
         InstructionKind::InitStaticLocal { .. } => "init_static_local",
         InstructionKind::Binary {
             op: BinaryOp::Concat,
@@ -3990,6 +3994,9 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
         InstructionKind::FetchStaticProperty { .. } => "fetch_static_property",
         InstructionKind::IssetStaticProperty { .. } => "isset_static_property",
         InstructionKind::EmptyStaticProperty { .. } => "empty_static_property",
+        InstructionKind::IssetStaticPropertyDim { .. } => "isset_static_property_dim",
+        InstructionKind::EmptyStaticPropertyDim { .. } => "empty_static_property_dim",
+        InstructionKind::UnsetStaticPropertyDim { .. } => "unset_static_property_dim",
         InstructionKind::FetchClassConstant { .. } => "fetch_class_constant",
         InstructionKind::FetchObjectClassName { .. } => "fetch_object_class_name",
         InstructionKind::AssignProperty { .. } => "assign_property",

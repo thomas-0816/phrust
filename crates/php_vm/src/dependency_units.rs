@@ -819,6 +819,10 @@ impl<'a> Planner<'a> {
                 self.add_lookup_edge(owner, "method", &method);
                 self.add_call_arg_literals(owner, &args);
             }
+            InstructionKind::BindReferenceFromMethodCall { method, args, .. } => {
+                self.add_lookup_edge(owner, "method", &method);
+                self.add_call_arg_literals(owner, &args);
+            }
             InstructionKind::CallStaticMethod {
                 class_name,
                 method,
@@ -857,6 +861,9 @@ impl<'a> Planner<'a> {
             | InstructionKind::FetchStaticProperty { class_name, .. }
             | InstructionKind::IssetStaticProperty { class_name, .. }
             | InstructionKind::EmptyStaticProperty { class_name, .. }
+            | InstructionKind::IssetStaticPropertyDim { class_name, .. }
+            | InstructionKind::EmptyStaticPropertyDim { class_name, .. }
+            | InstructionKind::UnsetStaticPropertyDim { class_name, .. }
             | InstructionKind::BindReferenceStaticProperty { class_name, .. }
             | InstructionKind::AssignStaticProperty { class_name, .. } => {
                 self.add_lookup_edge(owner, "class", &class_name);
@@ -1550,6 +1557,7 @@ mod tests {
             name: "App\\Thing".to_owned(),
             display_name: "App\\Thing".to_owned(),
             parent: Some("App\\Base".to_owned()),
+            parent_display_name: Some("App\\Base".to_owned()),
             interfaces: vec!["App\\Contract".to_owned()],
             methods: vec![ClassMethodEntry {
                 name: "run".to_owned(),

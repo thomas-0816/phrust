@@ -352,6 +352,20 @@ fn format_call_arg(arg: &IrCallArg) -> String {
             property.property
         ));
     }
+    if let Some(property_dim) = &arg.by_ref_property_dim {
+        let dims = property_dim
+            .dims
+            .iter()
+            .map(format_operand)
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            " by_ref_property_dim={}->${}[{}]",
+            format_operand(&property_dim.object),
+            property_dim.property,
+            dims
+        ));
+    }
     out
 }
 
@@ -537,6 +551,18 @@ fn format_instruction(kind: &InstructionKind) -> String {
                 dims
             )
         }
+        InstructionKind::BindReferenceFromStaticPropertyDim {
+            target,
+            class_name,
+            property,
+            dims,
+        } => format!(
+            "bind_reference_from_static_property_dim local:{} {}::${} [{}]",
+            target.raw(),
+            class_name,
+            property,
+            format_operands(dims)
+        ),
         InstructionKind::BindReferenceStaticProperty {
             class_name,
             property,
@@ -553,6 +579,21 @@ fn format_instruction(kind: &InstructionKind) -> String {
                 "bind_reference_call local:{} {}({})",
                 target.raw(),
                 name,
+                args
+            )
+        }
+        InstructionKind::BindReferenceFromMethodCall {
+            target,
+            object,
+            method,
+            args,
+        } => {
+            let args = format_call_args(args);
+            format!(
+                "bind_reference_method_call local:{} {} {}({})",
+                target.raw(),
+                format_operand(object),
+                method,
                 args
             )
         }
@@ -972,6 +1013,40 @@ fn format_instruction(kind: &InstructionKind) -> String {
             dst.raw(),
             class_name,
             property
+        ),
+        InstructionKind::IssetStaticPropertyDim {
+            dst,
+            class_name,
+            property,
+            dims,
+        } => format!(
+            "isset_static_property_dim r{} {}::${} [{}]",
+            dst.raw(),
+            class_name,
+            property,
+            format_operands(dims)
+        ),
+        InstructionKind::EmptyStaticPropertyDim {
+            dst,
+            class_name,
+            property,
+            dims,
+        } => format!(
+            "empty_static_property_dim r{} {}::${} [{}]",
+            dst.raw(),
+            class_name,
+            property,
+            format_operands(dims)
+        ),
+        InstructionKind::UnsetStaticPropertyDim {
+            class_name,
+            property,
+            dims,
+        } => format!(
+            "unset_static_property_dim {}::${} [{}]",
+            class_name,
+            property,
+            format_operands(dims)
         ),
         InstructionKind::FetchClassConstant {
             dst,

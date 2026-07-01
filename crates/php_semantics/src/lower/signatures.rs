@@ -282,7 +282,12 @@ impl SignatureLowerer<'_> {
             raw_by_ref_return(&tokens),
             method.text_range(),
         )
-        .with_flags(flags);
+        .with_flags(flags)
+        .with_body(direct_method_body_statements(
+            self.database,
+            self.module_id,
+            method,
+        ));
         self.push_signature(signature);
 
         self.collect_children(method.syntax());
@@ -503,6 +508,25 @@ fn direct_function_body_statements(
     let Some(body) = function.body() else {
         return Vec::new();
     };
+    body_statement_ids(database, module_id, body)
+}
+
+fn direct_method_body_statements(
+    database: &FrontendDatabase,
+    module_id: ModuleId,
+    method: MethodDecl<'_>,
+) -> Vec<crate::hir::StmtId> {
+    let Some(body) = method.body() else {
+        return Vec::new();
+    };
+    body_statement_ids(database, module_id, body)
+}
+
+fn body_statement_ids(
+    database: &FrontendDatabase,
+    module_id: ModuleId,
+    body: BlockStmt<'_>,
+) -> Vec<crate::hir::StmtId> {
     let Some(module) = database.module(module_id) else {
         return Vec::new();
     };
@@ -968,6 +992,7 @@ mod tests {
     use crate::FrontendDatabase;
     use crate::diagnostics::{DiagnosticId, DiagnosticReporter};
     use crate::hir::HirModule;
+    use crate::lower::hir::collect_hir_in_node;
     use crate::lower::types::TypeLoweringScope;
     use php_ast::{AstNode, source_file};
     use php_syntax::parse_source_file;
@@ -1144,6 +1169,40 @@ mod tests {
                 && signature.flags().has_return_type_void()
                 && !signature.flags().this_available()
         }));
+        assert!(reporter.into_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn records_method_body_statement_ids() {
+        let parse = parse_source_file(
+            "<?php class Loader { public static function register() { spl_autoload_register([self::class, 'load'], true); } }",
+        );
+        let root = source_file(parse.root()).expect("source");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", 0));
+        let mut reporter = DiagnosticReporter::new();
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+        collect_signatures_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        let module = database.module(module_id).expect("module");
+        let signature = module
+            .signatures()
+            .iter()
+            .find(|signature| signature.name() == Some("register"))
+            .expect("register method signature");
+        assert_eq!(signature.body().len(), 1);
         assert!(reporter.into_diagnostics().is_empty());
     }
 

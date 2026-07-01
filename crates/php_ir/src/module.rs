@@ -41,6 +41,9 @@ pub struct ClassEntry {
     pub display_name: String,
     /// Resolved parent class name, when the class extends another class.
     pub parent: Option<String>,
+    /// Display parent class name preserving source or import spelling for autoload.
+    #[serde(default)]
+    pub parent_display_name: Option<String>,
     /// Resolved interface names implemented or extended by this class-like.
     pub interfaces: Vec<String>,
     /// Method entries in source order.

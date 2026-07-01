@@ -22,6 +22,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "array_change_key_case",
+        builtin_array_change_key_case,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "array_column",
         builtin_array_column,
         BuiltinCompatibility::Php,
@@ -43,6 +48,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("array_fill", builtin_array_fill, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "array_fill_keys",
+        builtin_array_fill_keys,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "array_intersect",
         builtin_array_intersect,
@@ -309,6 +319,41 @@ pub(in crate::builtins::modules) fn builtin_array_key_exists(
         return Err(type_error("array_key_exists", "array", &args[1]));
     };
     Ok(Value::Bool(array.get(&key).is_some()))
+}
+
+pub(in crate::builtins::modules) fn builtin_array_change_key_case(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(arity_error(
+            "array_change_key_case",
+            "one or two argument(s)",
+        ));
+    }
+    let Value::Array(array) = deref_value(&args[0]) else {
+        return Err(type_error("array_change_key_case", "array", &args[0]));
+    };
+    let case = args
+        .get(1)
+        .map(|value| int_arg("array_change_key_case", value))
+        .transpose()?
+        .unwrap_or(0);
+    let mut output = PhpArray::new();
+    for (key, value) in array.iter() {
+        let key = match key {
+            ArrayKey::Int(value) => ArrayKey::Int(*value),
+            ArrayKey::String(value) if case == 1 => ArrayKey::String(crate::PhpString::from_bytes(
+                value.to_string_lossy().to_uppercase().into_bytes(),
+            )),
+            ArrayKey::String(value) => ArrayKey::String(crate::PhpString::from_bytes(
+                value.to_string_lossy().to_lowercase().into_bytes(),
+            )),
+        };
+        output.insert(key, value.clone());
+    }
+    Ok(Value::Array(output))
 }
 
 pub(in crate::builtins::modules) fn builtin_array_keys(
@@ -610,6 +655,27 @@ pub(in crate::builtins::modules) fn builtin_array_fill(
             )
         })?;
         output.insert(ArrayKey::Int(key), args[2].clone());
+    }
+    Ok(Value::Array(output))
+}
+
+pub(in crate::builtins::modules) fn builtin_array_fill_keys(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("array_fill_keys", &args, 2)?;
+    let Value::Array(keys) = deref_value(&args[0]) else {
+        return Err(type_error("array_fill_keys", "array", &args[0]));
+    };
+    ensure_array_fill_size(keys.len())?;
+
+    let mut output = PhpArray::new();
+    for (_, key) in keys.iter() {
+        let key = crate::convert::to_string(key)
+            .map(ArrayKey::from_php_string)
+            .map_err(|message| conversion_error("array_fill_keys", message))?;
+        output.insert(key, args[1].clone());
     }
     Ok(Value::Array(output))
 }

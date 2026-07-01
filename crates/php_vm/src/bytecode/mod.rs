@@ -424,6 +424,8 @@ pub struct DenseCallArg {
     pub by_ref_dim: Option<DenseCallDimTarget>,
     /// Caller property when this argument can satisfy a by-reference parameter.
     pub by_ref_property: Option<DenseCallPropertyTarget>,
+    /// Caller property array dimension when this argument can satisfy a by-reference parameter.
+    pub by_ref_property_dim: Option<DenseCallPropertyDimTarget>,
 }
 
 /// Dense by-reference array-dimension call target.
@@ -442,6 +444,17 @@ pub struct DenseCallPropertyTarget {
     pub object: DenseOperand,
     /// Static property name side-table index.
     pub property: u32,
+}
+
+/// Dense by-reference property array-dimension call target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DenseCallPropertyDimTarget {
+    /// Evaluated object operand.
+    pub object: DenseOperand,
+    /// Static property name side-table index.
+    pub property: u32,
+    /// Evaluated dimension operands.
+    pub dims: Vec<DenseOperand>,
 }
 
 /// One dense instruction.
@@ -1909,6 +1922,13 @@ fn lower_call_args(
                     object: lower_operand(target.object),
                     property: push_name(names, &target.property).index() as u32,
                 }),
+            by_ref_property_dim: arg.by_ref_property_dim.as_ref().map(|target| {
+                DenseCallPropertyDimTarget {
+                    object: lower_operand(target.object),
+                    property: push_name(names, &target.property).index() as u32,
+                    dims: target.dims.iter().copied().map(lower_operand).collect(),
+                }
+            }),
         });
     }
     Ok(lowered)
@@ -2408,6 +2428,13 @@ fn verify_call_arg(
         verify_operand(target.object, unit, function, errors);
         verify_name(target.property, unit, errors);
     }
+    if let Some(target) = &arg.by_ref_property_dim {
+        verify_operand(target.object, unit, function, errors);
+        verify_name(target.property, unit, errors);
+        for dim in &target.dims {
+            verify_operand(*dim, unit, function, errors);
+        }
+    }
 }
 
 fn verify_register(index: u32, function: &DenseFunction, errors: &mut Vec<DenseVerifyError>) {
@@ -2748,6 +2775,9 @@ fn render_call_arg(arg: &DenseCallArg) -> String {
     }
     if let Some(target) = &arg.by_ref_property {
         out.push_str(&format!(" by_ref_prop=n{}", target.property));
+    }
+    if let Some(target) = &arg.by_ref_property_dim {
+        out.push_str(&format!(" by_ref_prop_dim=n{}", target.property));
     }
     out
 }

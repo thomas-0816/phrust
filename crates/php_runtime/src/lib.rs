@@ -98,7 +98,7 @@ pub mod api {
         error_reporting_allows_level, format_php_diagnostic_line,
     };
     pub use crate::fiber::{FiberRef, FiberState};
-    pub use crate::generator::{GeneratorRef, GeneratorState};
+    pub use crate::generator::{GeneratorCallContext, GeneratorRef, GeneratorState};
     pub use crate::globals::GlobalSymbolTable;
     pub use crate::ini::{IniEntrySnapshot, IniRegistry};
     pub use crate::object::{
@@ -235,7 +235,7 @@ pub use gc::{
     GcCollectResult, GcCollectedEntity, GcCycleCandidate, GcEntityId, GcEntityKind, GcNode, GcRoot,
     GcRootKind, GcSnapshot, GcTrackedHeap, scan_roots,
 };
-pub use generator::{GeneratorRef, GeneratorState};
+pub use generator::{GeneratorCallContext, GeneratorRef, GeneratorState};
 pub use globals::GlobalSymbolTable;
 pub use ini::{IniEntrySnapshot, IniRegistry};
 pub use jit_array::{

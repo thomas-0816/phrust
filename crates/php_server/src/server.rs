@@ -1922,7 +1922,7 @@ fn log_php_execution_failure(script_path: &Path, output: &PhpExecutionOutput) {
         .runtime_diagnostics
         .iter()
         .take(5)
-        .map(|diagnostic| format!("{}: {}", diagnostic.id(), diagnostic.message()))
+        .map(|diagnostic| diagnostic.to_json())
         .collect::<Vec<_>>()
         .join(" | ");
     let diagnostic_summary = if diagnostics.is_empty() {

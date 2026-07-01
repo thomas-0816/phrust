@@ -11148,6 +11148,37 @@ mod tests {
             ),
             Value::Array(expected_fill)
         );
+        let mut expected_fill_keys = PhpArray::new();
+        expected_fill_keys.insert(
+            ArrayKey::String(PhpString::from_test_str("name")),
+            Value::Bool(true),
+        );
+        expected_fill_keys.insert(ArrayKey::Int(2), Value::Bool(true));
+        expected_fill_keys.insert(
+            ArrayKey::String(PhpString::from_test_str("1.5")),
+            Value::Bool(true),
+        );
+        expected_fill_keys.insert(
+            ArrayKey::String(PhpString::from_test_str("")),
+            Value::Bool(true),
+        );
+        assert_eq!(
+            call(
+                "array_fill_keys",
+                vec![
+                    Value::packed_array(vec![
+                        Value::string("name"),
+                        Value::string("2"),
+                        Value::float(1.5),
+                        Value::Bool(false),
+                        Value::Null,
+                    ]),
+                    Value::Bool(true),
+                ],
+                &mut output
+            ),
+            Value::Array(expected_fill_keys)
+        );
         assert_eq!(
             call_error(
                 "array_fill",

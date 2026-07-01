@@ -159,6 +159,7 @@ fn bind_arguments(
                 by_ref_local: arg.by_ref_local,
                 by_ref_dim: arg.by_ref_dim,
                 by_ref_property: arg.by_ref_property,
+                by_ref_property_dim: arg.by_ref_property_dim,
             });
             supplied_count += 1;
             continue;
@@ -214,6 +215,7 @@ fn bind_arguments(
             by_ref_local: arg.by_ref_local,
             by_ref_dim: arg.by_ref_dim,
             by_ref_property: arg.by_ref_property,
+            by_ref_property_dim: arg.by_ref_property_dim,
         });
         positional_index += 1;
         supplied_count += 1;

@@ -132,6 +132,8 @@ pub struct IrCallArg {
     pub by_ref_dim: Option<IrCallDimTarget>,
     /// Caller property when this argument can satisfy a by-reference parameter.
     pub by_ref_property: Option<IrCallPropertyTarget>,
+    /// Caller property array dimension when this argument can satisfy a by-reference parameter.
+    pub by_ref_property_dim: Option<IrCallPropertyDimTarget>,
 }
 
 /// Source value class for a lowered PHP call argument.
@@ -160,6 +162,17 @@ pub struct IrCallPropertyTarget {
     pub object: Operand,
     /// Static property name.
     pub property: String,
+}
+
+/// Property array-dimension lvalue metadata for a call argument.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct IrCallPropertyDimTarget {
+    /// Evaluated object operand.
+    pub object: Operand,
+    /// Static property name.
+    pub property: String,
+    /// Evaluated dimension operands.
+    pub dims: Vec<Operand>,
 }
 
 /// Callable kind encoded in IR before VM resolution/execution.
@@ -263,6 +276,13 @@ pub enum InstructionKind {
         local: LocalId,
         dims: Vec<Operand>,
     },
+    /// `target =& class::$property[dims...]`.
+    BindReferenceFromStaticPropertyDim {
+        target: LocalId,
+        class_name: String,
+        property: String,
+        dims: Vec<Operand>,
+    },
     /// `class::$property =& source` for static property references.
     BindReferenceStaticProperty {
         class_name: String,
@@ -273,6 +293,13 @@ pub enum InstructionKind {
     BindReferenceFromCall {
         target: LocalId,
         name: String,
+        args: Vec<IrCallArg>,
+    },
+    /// `target =& object->method(args...)` for by-reference method returns.
+    BindReferenceFromMethodCall {
+        target: LocalId,
+        object: Operand,
+        method: String,
         args: Vec<IrCallArg>,
     },
     /// Binds a local to persistent function-local static storage.
@@ -528,6 +555,26 @@ pub enum InstructionKind {
         dst: RegId,
         class_name: String,
         property: String,
+    },
+    /// Tests whether a static property array dimension exists and is not null.
+    IssetStaticPropertyDim {
+        dst: RegId,
+        class_name: String,
+        property: String,
+        dims: Vec<Operand>,
+    },
+    /// Tests PHP empty() for a static property array dimension.
+    EmptyStaticPropertyDim {
+        dst: RegId,
+        class_name: String,
+        property: String,
+        dims: Vec<Operand>,
+    },
+    /// Unsets a static property array dimension.
+    UnsetStaticPropertyDim {
+        class_name: String,
+        property: String,
+        dims: Vec<Operand>,
     },
     /// Fetches a class constant by class and constant name.
     FetchClassConstant {

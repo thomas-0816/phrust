@@ -158,7 +158,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_connect(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_connect", args.len(), 0, 6)?;
-    connect_from_test_dsn(context)
+    connect_from_mysqli_args(context, &args)
 }
 
 pub(in crate::builtins::modules) fn builtin_mysqli_init(
@@ -195,14 +195,23 @@ pub(in crate::builtins::modules) fn builtin_mysqli_real_connect(
 ) -> BuiltinResult {
     expect_mysqli_arity("mysqli_real_connect", args.len(), 1, 8)?;
     let object = mysqli_object_arg("mysqli_real_connect", args.first())?;
-    let connection = connect_from_test_dsn(context)?;
+    let connection = connect_from_mysqli_args(context, &args[1..])?;
     let Value::Object(connected) = connection else {
+        if let Some(state) = context.mysql_state() {
+            sync_mysqli_status_properties(&object, state);
+        }
         return Ok(Value::Bool(false));
     };
     if let Some(id) = mysqli_connection_id(&connected) {
         set_mysqli_connection_id(&object, id);
+        if let Some(state) = context.mysql_state() {
+            sync_mysqli_status_properties(&object, state);
+        }
         Ok(Value::Bool(true))
     } else {
+        if let Some(state) = context.mysql_state() {
+            sync_mysqli_status_properties(&object, state);
+        }
         Ok(Value::Bool(false))
     }
 }
@@ -511,7 +520,7 @@ pub(in crate::builtins::modules) fn builtin_mysqli_prepare(
     ))
 }
 
-fn connect_from_test_dsn(context: &mut BuiltinContext<'_>) -> BuiltinResult {
+fn connect_from_mysqli_args(context: &mut BuiltinContext<'_>, args: &[Value]) -> BuiltinResult {
     let Some(state) = context.mysql_state() else {
         return Ok(Value::Bool(false));
     };
@@ -521,14 +530,19 @@ fn connect_from_test_dsn(context: &mut BuiltinContext<'_>) -> BuiltinResult {
             Err(_) => Ok(Value::Bool(false)),
         };
     }
-    let Some(options) = MysqlConnectOptions::from_test_env() else {
-        state.record_connect_error(
-            2002,
-            format!(
-                "live mysqli connections require {MYSQL_TEST_DSN_ENV}; selected SQLite compatibility fixtures require {MYSQLI_SQLITE_COMPAT_ENV}=1"
-            ),
-        );
-        return Ok(Value::Bool(false));
+    let options = if args.is_empty() {
+        let Some(options) = MysqlConnectOptions::from_test_env() else {
+            state.record_connect_error(
+                2002,
+                format!(
+                    "live mysqli connections require {MYSQL_TEST_DSN_ENV} or mysqli connection arguments; selected SQLite compatibility fixtures require {MYSQLI_SQLITE_COMPAT_ENV}=1"
+                ),
+            );
+            return Ok(Value::Bool(false));
+        };
+        options
+    } else {
+        mysqli_options_from_args(args)?
     };
     match options {
         Ok(options) => match state.connect(&options) {
@@ -540,6 +554,57 @@ fn connect_from_test_dsn(context: &mut BuiltinContext<'_>) -> BuiltinResult {
             Ok(Value::Bool(false))
         }
     }
+}
+
+fn mysqli_options_from_args(
+    args: &[Value],
+) -> Result<Result<MysqlConnectOptions, crate::MysqlError>, BuiltinError> {
+    let host = args
+        .first()
+        .map(|value| string_arg("mysqli_real_connect", value).map(|value| value.to_string_lossy()))
+        .transpose()?
+        .unwrap_or_else(|| "localhost".to_owned());
+    let user = args
+        .get(1)
+        .map(|value| string_arg("mysqli_real_connect", value).map(|value| value.to_string_lossy()))
+        .transpose()?
+        .unwrap_or_default();
+    let password = args
+        .get(2)
+        .map(|value| string_arg("mysqli_real_connect", value).map(|value| value.to_string_lossy()))
+        .transpose()?
+        .unwrap_or_default();
+    let database = args
+        .get(3)
+        .and_then(|value| {
+            if matches!(value, Value::Null) {
+                None
+            } else {
+                Some(value)
+            }
+        })
+        .map(|value| string_arg("mysqli_real_connect", value).map(|value| value.to_string_lossy()))
+        .transpose()?;
+    let port = args
+        .get(4)
+        .and_then(|value| {
+            if matches!(value, Value::Null) {
+                None
+            } else {
+                Some(value)
+            }
+        })
+        .map(|value| int_arg("mysqli_real_connect", value))
+        .transpose()?
+        .and_then(|port| u16::try_from(port).ok());
+
+    Ok(MysqlConnectOptions::from_parts(
+        &host,
+        &user,
+        &password,
+        database.as_deref(),
+        port,
+    ))
 }
 
 fn mysqli_sqlite_compat_enabled() -> bool {
@@ -661,6 +726,11 @@ fn mysql_escape_string(value: &[u8]) -> Vec<u8> {
 }
 
 fn sync_mysqli_status_properties(object: &ObjectRef, state: &crate::MysqlState) {
+    object.set_property("connect_errno", Value::Int(state.connect_errno()));
+    object.set_property(
+        "connect_error",
+        Value::String(PhpString::from(state.connect_error().into_bytes())),
+    );
     if let Some(id) = mysqli_connection_id(object) {
         object.set_property("errno", Value::Int(state.errno(id)));
         object.set_property(

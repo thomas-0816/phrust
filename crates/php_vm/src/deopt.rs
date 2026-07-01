@@ -1218,6 +1218,7 @@ fn rejection_for_ir_instruction(kind: &InstructionKind) -> Option<VmDeoptReason>
         | InstructionKind::BindReferenceDim { .. }
         | InstructionKind::BindReferenceFromDim { .. }
         | InstructionKind::BindReferenceFromCall { .. }
+        | InstructionKind::BindReferenceFromMethodCall { .. }
         | InstructionKind::ForeachInitRef { .. }
         | InstructionKind::ForeachNextRef { .. } => Some(VmDeoptReason::ReferenceCowIdentity),
         InstructionKind::CallFunction { args, .. }
@@ -1249,7 +1250,10 @@ fn rejection_for_ir_instruction(kind: &InstructionKind) -> Option<VmDeoptReason>
 }
 
 fn argument_needs_reference_metadata(arg: &IrCallArg) -> bool {
-    arg.by_ref_local.is_some() || arg.by_ref_dim.is_some() || arg.by_ref_property.is_some()
+    arg.by_ref_local.is_some()
+        || arg.by_ref_dim.is_some()
+        || arg.by_ref_property.is_some()
+        || arg.by_ref_property_dim.is_some()
 }
 
 fn verify_snapshot(

@@ -1,6 +1,6 @@
 //! Internal generator runtime state for runtime-semantics.
 
-use crate::Value;
+use crate::{ObjectRef, Value};
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -27,10 +27,21 @@ pub enum GeneratorState {
 struct GeneratorStorage {
     function: u32,
     args: Vec<Value>,
+    call_context: GeneratorCallContext,
     state: GeneratorState,
     current_key: Option<Value>,
     current_value: Option<Value>,
     return_value: Option<Value>,
+}
+
+/// Activation context captured when a generator object is created.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GeneratorCallContext {
+    pub this_value: Option<ObjectRef>,
+    pub scope_class: Option<String>,
+    pub called_class: Option<String>,
+    pub declaring_class: Option<String>,
+    pub call_site_strict_types: Option<bool>,
 }
 
 /// Internal reference to generator state.
@@ -44,11 +55,22 @@ impl GeneratorRef {
     /// Creates a generator in the `Created` state.
     #[must_use]
     pub fn new(function: u32, args: Vec<Value>) -> Self {
+        Self::new_with_context(function, args, GeneratorCallContext::default())
+    }
+
+    /// Creates a generator with its activation context captured.
+    #[must_use]
+    pub fn new_with_context(
+        function: u32,
+        args: Vec<Value>,
+        call_context: GeneratorCallContext,
+    ) -> Self {
         Self {
             id: NEXT_GENERATOR_ID.fetch_add(1, Ordering::Relaxed),
             storage: Rc::new(RefCell::new(GeneratorStorage {
                 function,
                 args,
+                call_context,
                 state: GeneratorState::Created,
                 current_key: None,
                 current_value: None,
@@ -73,6 +95,12 @@ impl GeneratorRef {
     #[must_use]
     pub fn args(&self) -> Vec<Value> {
         self.storage.borrow().args.clone()
+    }
+
+    /// Captured activation context for the first generator resume.
+    #[must_use]
+    pub fn call_context(&self) -> GeneratorCallContext {
+        self.storage.borrow().call_context.clone()
     }
 
     /// Current lifecycle state.
