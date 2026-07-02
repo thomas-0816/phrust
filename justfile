@@ -95,6 +95,8 @@ help:
       '  just bolt-benchmark-smoke Run optional Linux BOLT performance smoke' \
       '  just fastest-engine-matrix Generate baseline/release/reference comparison matrix' \
       '  just fastest-hotpath-report Generate fastest-engine hotpath report' \
+      '  just perf-decision-baseline Generate startup/compile/execute decision baseline' \
+      '  just startup-matrix      Run debug/release startup attribution matrix' \
       '  just perf-report          Generate performance report' \
       '' \
       'PHPT:' \
@@ -959,8 +961,11 @@ performance-tests:
     scripts/performance/compare_perf_json.py --self-test
     scripts/performance/hotpath_inventory.py --self-test
     scripts/performance/fastest_hotpath_report.py --self-test
+    scripts/performance/bench_matrix.py --self-test
     scripts/performance/perf_report.py --self-test
     scripts/performance/app_flow_matrix.py --self-test
+    scripts/performance/decision_baseline.py --self-test
+    scripts/performance/startup_matrix.py --self-test
 
 performance-regression:
     scripts/performance_regression_smoke.sh
@@ -1210,3 +1215,11 @@ safety-audit-smoke:
 
 perf-report:
     scripts/performance/perf_report.py
+
+perf-decision-baseline:
+    scripts/performance/decision_baseline.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --smoke
+
+startup-matrix:
+    cargo build -p php_vm_cli --bin php-vm
+    cargo build --release -p php_vm_cli --bin php-vm
+    scripts/performance/startup_matrix.py --debug-engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --release-engine "${CARGO_TARGET_DIR:-target}/release/php-vm"

@@ -115,6 +115,7 @@ impl EngineProfile {
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
                 vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
+                vm_options.adaptive_tiny_unit_setup_threshold = Some(8);
                 OptimizationLevel::O2
             }
             EngineProfileName::ExperimentalJit => {
@@ -127,6 +128,7 @@ impl EngineProfile {
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
                 vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
+                vm_options.adaptive_tiny_unit_setup_threshold = Some(8);
                 OptimizationLevel::O2
             }
         };

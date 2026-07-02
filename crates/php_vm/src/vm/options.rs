@@ -60,6 +60,9 @@ pub struct VmOptions {
     pub typecheck_fast_paths: bool,
     /// Cache request-local internal builtin dispatch metadata.
     pub internal_function_dispatch_cache: bool,
+    /// Skip adaptive quickening/tiering setup for tiny units with at most this
+    /// many IR instructions. `None` keeps adaptive setup always enabled.
+    pub adaptive_tiny_unit_setup_threshold: Option<u32>,
 }
 
 impl Default for VmOptions {
@@ -88,6 +91,7 @@ impl Default for VmOptions {
             tiering: TieringOptions::default(),
             typecheck_fast_paths: true,
             internal_function_dispatch_cache: true,
+            adaptive_tiny_unit_setup_threshold: None,
         }
     }
 }

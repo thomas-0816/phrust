@@ -4,12 +4,16 @@ pub(super) struct CompileOptions<'a> {
     pub(super) path: &'a str,
     pub(super) json: bool,
     pub(super) opt_level: OptimizationLevel,
+    pub(super) timings_json: Option<String>,
 }
 
 pub(super) fn parse_compile_args(args: &[String]) -> Result<CompileOptions<'_>, String> {
     let mut path = None;
     let mut json = false;
     let mut opt_level = OptimizationLevel::O0;
+    let mut timings_json = std::env::var("PHRUST_TIMINGS_JSON")
+        .ok()
+        .filter(|value| !value.is_empty());
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -24,6 +28,16 @@ pub(super) fn parse_compile_args(args: &[String]) -> Result<CompileOptions<'_>, 
             arg if let Some(value) = arg.strip_prefix("--opt-level=") => {
                 opt_level = parse_optimization_level(value)?;
             }
+            "--timings-json" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("compile --timings-json requires <path>".to_string());
+                };
+                timings_json = Some(value.clone());
+            }
+            arg if let Some(value) = arg.strip_prefix("--timings-json=") => {
+                timings_json = Some(value.to_owned());
+            }
             arg if path.is_none() => path = Some(arg),
             arg => return Err(format!("unexpected compile argument `{arg}`")),
         }
@@ -36,6 +50,7 @@ pub(super) fn parse_compile_args(args: &[String]) -> Result<CompileOptions<'_>, 
         path,
         json,
         opt_level,
+        timings_json,
     })
 }
 
@@ -171,6 +186,7 @@ pub(super) struct RunOptions<'a> {
     pub(super) trace_runtime: bool,
     pub(super) trace_includes: bool,
     pub(super) counters_json: Option<String>,
+    pub(super) timings_json: Option<String>,
     pub(super) region_profile_json: Option<String>,
     pub(super) bytecode_cache: BytecodeCacheOptions,
     pub(super) opt_level: OptimizationLevel,
@@ -187,6 +203,7 @@ pub(super) struct RunOptions<'a> {
     pub(super) jit_dump_clif: Option<String>,
     pub(super) jit_stats: JitStatsMode,
     pub(super) tiering: TieringOptions,
+    pub(super) adaptive_tiny_unit_setup_threshold: Option<u32>,
     pub(super) tiering_stats_json: Option<String>,
     pub(super) persistent_feedback: PersistentFeedbackOptions,
 }
@@ -452,6 +469,9 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
     let mut trace = false;
     let mut trace_runtime = false;
     let mut counters_json = None;
+    let mut timings_json = std::env::var("PHRUST_TIMINGS_JSON")
+        .ok()
+        .filter(|value| !value.is_empty());
     let mut region_profile_json = None;
     let mut bytecode_cache = BytecodeCacheOptions::default();
     let mut opt_level = default_options.optimization_level;
@@ -468,6 +488,9 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
     let mut jit_dump_clif = None;
     let mut jit_stats = JitStatsMode::Off;
     let mut tiering = default_options.vm_options.tiering;
+    let mut adaptive_tiny_unit_setup_threshold = default_options
+        .vm_options
+        .adaptive_tiny_unit_setup_threshold;
     let mut tiering_stats_json = None;
     let mut persistent_feedback = PersistentFeedbackOptions::default();
     let mut tiering_function_threshold_explicit = false;
@@ -516,6 +539,9 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 jit = profile_options.vm_options.jit;
                 jit_blacklist = profile_options.vm_options.jit_blacklist;
                 tiering = profile_options.vm_options.tiering;
+                adaptive_tiny_unit_setup_threshold = profile_options
+                    .vm_options
+                    .adaptive_tiny_unit_setup_threshold;
                 jit_threshold = profile_options.vm_options.jit_threshold;
                 tiering_function_threshold_explicit = false;
             }
@@ -531,6 +557,9 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 jit = profile_options.vm_options.jit;
                 jit_blacklist = profile_options.vm_options.jit_blacklist;
                 tiering = profile_options.vm_options.tiering;
+                adaptive_tiny_unit_setup_threshold = profile_options
+                    .vm_options
+                    .adaptive_tiny_unit_setup_threshold;
                 jit_threshold = profile_options.vm_options.jit_threshold;
                 tiering_function_threshold_explicit = false;
             }
@@ -817,6 +846,16 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
             arg if let Some(value) = arg.strip_prefix("--counters-json=") => {
                 counters_json = Some(value.to_owned());
             }
+            "--timings-json" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("run --timings-json requires <path>".to_string());
+                };
+                timings_json = Some(value.clone());
+            }
+            arg if let Some(value) = arg.strip_prefix("--timings-json=") => {
+                timings_json = Some(value.to_owned());
+            }
             "--region-profile-json" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -853,6 +892,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                     trace_runtime,
                     trace_includes,
                     counters_json,
+                    timings_json,
                     region_profile_json,
                     bytecode_cache,
                     opt_level,
@@ -869,6 +909,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                     jit_dump_clif,
                     jit_stats,
                     tiering,
+                    adaptive_tiny_unit_setup_threshold,
                     tiering_stats_json,
                     persistent_feedback,
                 });
@@ -897,6 +938,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
         trace_runtime,
         trace_includes,
         counters_json,
+        timings_json,
         region_profile_json,
         bytecode_cache,
         opt_level,
@@ -913,6 +955,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
         jit_dump_clif,
         jit_stats,
         tiering,
+        adaptive_tiny_unit_setup_threshold,
         tiering_stats_json,
         persistent_feedback,
     })

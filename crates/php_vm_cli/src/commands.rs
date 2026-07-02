@@ -16,6 +16,7 @@ use php_ir::{
     lower_frontend_result, module::IrUnit, verify_unit,
 };
 use php_optimizer::{OptimizationLevel, OptimizationReport, PassContext, PassPipeline};
+use php_perf::PhaseTimingReport;
 use php_runtime::api::{
     ExitStatus, FilesystemCapabilities, RuntimeContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
 };
@@ -38,6 +39,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_COMPILE_ERROR: i32 = 2;
@@ -45,6 +47,44 @@ const EXIT_RUNTIME_ERROR: i32 = 3;
 const EXIT_UNSUPPORTED: i32 = 4;
 const EXIT_USAGE: i32 = 5;
 const EXIT_PHP_FATAL_ERROR: i32 = 255;
+
+#[derive(Debug)]
+struct PhaseTimingCollector {
+    report: PhaseTimingReport,
+    started: Instant,
+}
+
+impl PhaseTimingCollector {
+    fn new(command: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            report: PhaseTimingReport::new(command, path),
+            started: Instant::now(),
+        }
+    }
+
+    fn record_phase(&mut self, name: impl Into<String>, started: Instant) {
+        self.report
+            .phases
+            .insert(name.into(), started.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    fn add_phase_ms(&mut self, name: impl Into<String>, elapsed_ms: f64) {
+        self.report.phases.insert(name.into(), elapsed_ms);
+    }
+
+    fn count(&mut self, name: impl Into<String>, value: u64) {
+        self.report.counts.insert(name.into(), value);
+    }
+
+    fn flag(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.report.flags.insert(name.into(), value.into());
+    }
+
+    fn finish(mut self) -> PhaseTimingReport {
+        self.report.total_internal_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+        self.report
+    }
+}
 
 pub(crate) fn main_entry() {
     let code = run(env::args().skip(1), &mut io::stdout(), &mut io::stderr());
@@ -176,10 +216,26 @@ where
     E: Write,
 {
     let options = parse_compile_args(args)?;
-    let pipeline = match compile_pipeline_with_optimization(options.path, options.opt_level) {
+    let mut timings = options
+        .timings_json
+        .as_ref()
+        .map(|_| PhaseTimingCollector::new("compile", options.path));
+    if let Some(timings) = timings.as_mut() {
+        timings.add_phase_ms("cli_parse_ms", 0.0);
+        timings.flag("opt_level", options.opt_level.as_str());
+        timings.flag("json", options.json.to_string());
+    }
+    let pipeline = match compile_pipeline_with_optimization_timed(
+        options.path,
+        options.opt_level,
+        timings.as_mut(),
+    ) {
         Ok(pipeline) => pipeline,
         Err(error) => {
             writeln!(stderr, "{error}").map_err(|io| io.to_string())?;
+            if let (Some(path), Some(timings)) = (options.timings_json, timings) {
+                finish_and_write_timings(path, timings)?;
+            }
             return Ok(EXIT_COMPILE_ERROR);
         }
     };
@@ -196,13 +252,15 @@ where
         .map_err(|error| error.to_string())?;
     } else {
         write_frontend_diagnostics(stderr, &pipeline)?;
+        if let (Some(path), Some(timings)) = (options.timings_json, timings) {
+            finish_and_write_timings(path, timings)?;
+        }
         return Ok(EXIT_COMPILE_ERROR);
     }
-    Ok(if pipeline.ok() {
-        EXIT_SUCCESS
-    } else {
-        EXIT_COMPILE_ERROR
-    })
+    if let (Some(path), Some(timings)) = (options.timings_json, timings) {
+        finish_and_write_timings(path, timings)?;
+    }
+    Ok(EXIT_SUCCESS)
 }
 
 fn dump_ir_command<W, E>(args: &[String], stdout: &mut W, stderr: &mut E) -> Result<i32, String>
@@ -661,6 +719,19 @@ where
     if run_options.region_profile_json.is_none() {
         run_options.region_profile_json = region_profile_json_from_env();
     }
+    let mut timings = run_options
+        .timings_json
+        .as_ref()
+        .map(|_| PhaseTimingCollector::new("run", run_options.path));
+    if let Some(timings) = timings.as_mut() {
+        timings.add_phase_ms("cli_parse_ms", 0.0);
+        timings.flag("opt_level", run_options.opt_level.as_str());
+        timings.flag("execution_format", run_options.execution_format.as_str());
+        timings.flag("bytecode_cache", run_options.bytecode_cache.mode.as_str());
+        timings.flag("quickening", on_off(run_options.quickening.enabled()));
+        timings.flag("inline_caches", on_off(run_options.inline_caches.enabled()));
+        timings.flag("jit", run_options.jit.as_str());
+    }
     if run_options.jit_explicit
         && run_options.jit.requires_cranelift()
         && !cfg!(feature = "jit-cranelift")
@@ -674,17 +745,29 @@ where
     }
     let path = run_options.path;
     let mut cache_stats = BytecodeCacheStats::new(run_options.bytecode_cache.mode);
+    let started = Instant::now();
     let cache_context = prepare_bytecode_cache(path, &run_options, &mut cache_stats)?;
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("cache_prepare_ms", started);
+    }
     if run_options.bytecode_cache.mode == BytecodeCacheMode::Off {
-        return run_command_with_executor(path, &run_options, cache_stats, stdout, stderr);
+        return run_command_with_executor(path, &run_options, cache_stats, timings, stdout, stderr);
     }
     // Bytecode-cache read/write still owns a CLI-local serialized IR artifact.
     // Keep that adapter here until the cache format can store executor artifacts.
+    let started = Instant::now();
     let cached = try_load_bytecode_cache(&run_options, cache_context.as_ref(), &mut cache_stats);
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("cache_load_ms", started);
+    }
     let (unit, compiled_pipeline) = if let Some(CachedIrArtifact { unit, .. }) = cached {
         (unit, None)
     } else {
-        let pipeline = match compile_pipeline_with_optimization(path, run_options.opt_level) {
+        let pipeline = match compile_pipeline_with_optimization_timed(
+            path,
+            run_options.opt_level,
+            timings.as_mut(),
+        ) {
             Ok(pipeline) => pipeline,
             Err(error) => {
                 cache_stats.compile_error = true;
@@ -692,6 +775,12 @@ where
                     write_cache_stats_json(stderr, &cache_stats)?;
                 }
                 writeln!(stderr, "{error}").map_err(|io| io.to_string())?;
+                if let Some(timings) = timings.as_mut() {
+                    record_cache_counts(timings, &cache_stats);
+                }
+                if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
+                    finish_and_write_timings(path, timings)?;
+                }
                 return Ok(EXIT_COMPILE_ERROR);
             }
         };
@@ -701,6 +790,12 @@ where
                 write_cache_stats_json(stderr, &cache_stats)?;
             }
             write_frontend_diagnostics_formatted(stderr, &pipeline, run_options.error_format)?;
+            if let Some(timings) = timings.as_mut() {
+                record_cache_counts(timings, &cache_stats);
+            }
+            if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
+                finish_and_write_timings(path, timings)?;
+            }
             return Ok(EXIT_COMPILE_ERROR);
         }
         emit_debug_event(
@@ -729,7 +824,11 @@ where
         if let Some(context) = cache_context.as_ref()
             && run_options.bytecode_cache.mode.can_write()
         {
+            let started = Instant::now();
             store_bytecode_cache(context, &pipeline, &mut cache_stats);
+            if let Some(timings) = timings.as_mut() {
+                timings.record_phase("cache_store_ms", started);
+            }
         }
         let _optimizer_pass_count = pipeline.optimizer_pass_count();
         (pipeline.lowering.unit.clone(), Some(pipeline))
@@ -744,6 +843,7 @@ where
     let jit_eligibility_json = build_jit_eligibility_json(&unit, run_options.jit);
     let persistent_feedback = load_persistent_feedback(&run_options, path, &unit)?;
     let bytecode_layout_profile = load_bytecode_layout_profile(&run_options)?;
+    let started = Instant::now();
     let vm = Vm::with_options(VmOptions {
         include_loader,
         runtime_context,
@@ -753,7 +853,8 @@ where
         trace_includes: run_options.trace_includes,
         collect_counters: run_options.counters_json.is_some()
             || run_options.jit_stats.is_json()
-            || run_options.region_profile_json.is_some(),
+            || run_options.region_profile_json.is_some()
+            || run_options.timings_json.is_some(),
         execution_format: run_options.execution_format,
         superinstructions: run_options.superinstructions,
         bytecode_layout: run_options.bytecode_layout,
@@ -765,8 +866,12 @@ where
         jit_blacklist: run_options.jit_blacklist,
         jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
         tiering: run_options.tiering.clone(),
+        adaptive_tiny_unit_setup_threshold: run_options.adaptive_tiny_unit_setup_threshold,
         ..VmOptions::default()
     });
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("vm_construct_ms", started);
+    }
     let region_profile_unit = run_options
         .region_profile_json
         .as_ref()
@@ -779,7 +884,15 @@ where
         "VM execution started",
         BTreeMap::from([("path".to_string(), path.to_string())]),
     )?;
+    let started = Instant::now();
     let result = vm.execute(unit);
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("execute_ms", started);
+        timings.count("runtime_diagnostic_count", result.diagnostics.len() as u64);
+        if let Some(counters) = result.counters.as_ref() {
+            record_vm_timing_counts(timings, counters);
+        }
+    }
     emit_debug_event(
         stderr,
         &run_options,
@@ -805,7 +918,11 @@ where
         let Some(counters) = &result.counters else {
             return Err("counters were requested but not collected".to_string());
         };
+        let started = Instant::now();
         write_counters_json(path.clone(), counters)?;
+        if let Some(timings) = timings.as_mut() {
+            timings.record_phase("counters_write_ms", started);
+        }
     }
     if let Some(path) = &run_options.region_profile_json {
         let Some(counters) = &result.counters else {
@@ -836,6 +953,12 @@ where
     if run_options.bytecode_cache.stats {
         write_cache_stats_json(stderr, &cache_stats)?;
     }
+    if let Some(timings) = timings.as_mut() {
+        record_cache_counts(timings, &cache_stats);
+    }
+    if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
+        finish_and_write_timings(path, timings)?;
+    }
     match result.status.exit_status() {
         ExitStatus::Success => Ok(EXIT_SUCCESS),
         ExitStatus::CompileError => {
@@ -865,6 +988,7 @@ fn run_command_with_executor<W, E>(
     path: &str,
     run_options: &RunOptions<'_>,
     cache_stats: BytecodeCacheStats,
+    mut timings: Option<PhaseTimingCollector>,
     stdout: &mut W,
     stderr: &mut E,
 ) -> Result<i32, String>
@@ -874,7 +998,8 @@ where
 {
     let collect_counters = run_options.counters_json.is_some()
         || run_options.jit_stats.is_json()
-        || run_options.region_profile_json.is_some();
+        || run_options.region_profile_json.is_some()
+        || run_options.timings_json.is_some();
     let bytecode_layout_profile = load_bytecode_layout_profile(run_options)?;
     emit_debug_event(
         stderr,
@@ -884,7 +1009,12 @@ where
         "source read started",
         BTreeMap::from([("path".to_string(), path.to_string())]),
     )?;
+    let started = Instant::now();
     let (source, real_path, source_path) = php_executor::read_script(Path::new(path))?;
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("source_read_ms", started);
+        timings.count("source_bytes", source.len() as u64);
+    }
     emit_debug_event(
         stderr,
         run_options,
@@ -896,6 +1026,7 @@ where
             ("bytes".to_string(), source.len().to_string()),
         ]),
     )?;
+    let started = Instant::now();
     let executor = PhpExecutor::with_options(PhpExecutorOptions {
         optimization_level: run_options.opt_level,
         vm_options: VmOptions {
@@ -915,9 +1046,13 @@ where
             jit_blacklist: run_options.jit_blacklist,
             jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
             tiering: run_options.tiering.clone(),
+            adaptive_tiny_unit_setup_threshold: run_options.adaptive_tiny_unit_setup_threshold,
             ..VmOptions::default()
         },
     });
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("vm_construct_ms", started);
+    }
     emit_debug_event(
         stderr,
         run_options,
@@ -926,7 +1061,7 @@ where
         "frontend analysis started",
         BTreeMap::from([("path".to_string(), source_path.clone())]),
     )?;
-    let compiled = match executor.compile_source(PhpCompileInput {
+    let (compiled, compile_timings) = match executor.compile_source_with_timings(PhpCompileInput {
         source,
         source_path,
         optimization_level: Some(run_options.opt_level),
@@ -937,10 +1072,28 @@ where
                 write_cache_stats_json(stderr, &cache_stats)?;
             }
             write_execution_output_diagnostics(stderr, path, &output, run_options.error_format)?;
+            if let Some(timings) = timings.as_mut() {
+                record_cache_counts(timings, &cache_stats);
+            }
+            if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
+                finish_and_write_timings(path, timings)?;
+            }
             return Ok(EXIT_COMPILE_ERROR);
         }
         Err(PhpExecutionError::Engine(error)) => return Err(error),
     };
+    if let Some(timings) = timings.as_mut() {
+        for (phase, elapsed_ms) in compile_timings.phases() {
+            timings.add_phase_ms(phase.clone(), *elapsed_ms);
+        }
+        timings.count("functions", compiled.ir_unit().functions.len() as u64);
+        timings.count("classes", compiled.ir_unit().classes.len() as u64);
+        timings.count("constants", compiled.ir_unit().constants.len() as u64);
+        timings.count(
+            "instructions_or_ir_ops",
+            ir_instruction_count(compiled.ir_unit()),
+        );
+    }
     emit_debug_event(
         stderr,
         run_options,
@@ -972,6 +1125,7 @@ where
         "VM execution started",
         BTreeMap::from([("path".to_string(), path.to_string())]),
     )?;
+    let started = Instant::now();
     let output = executor.execute_compiled(
         &compiled,
         PhpRequestExecutionInput {
@@ -982,6 +1136,16 @@ where
             collect_counters,
         },
     );
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("execute_ms", started);
+        timings.count(
+            "runtime_diagnostic_count",
+            output.runtime_diagnostics.len() as u64,
+        );
+        if let Some(counters) = output.counters.as_ref() {
+            record_vm_timing_counts(timings, counters);
+        }
+    }
     emit_debug_event(
         stderr,
         run_options,
@@ -1021,7 +1185,11 @@ where
         let Some(counters) = &output.counters else {
             return Err("counters were requested but not collected".to_string());
         };
+        let started = Instant::now();
         write_counters_json(path.clone(), counters)?;
+        if let Some(timings) = timings.as_mut() {
+            timings.record_phase("counters_write_ms", started);
+        }
     }
     if let Some(path) = &run_options.region_profile_json {
         let Some(counters) = &output.counters else {
@@ -1047,6 +1215,12 @@ where
     }
     if run_options.bytecode_cache.stats {
         write_cache_stats_json(stderr, &cache_stats)?;
+    }
+    if let Some(timings) = timings.as_mut() {
+        record_cache_counts(timings, &cache_stats);
+    }
+    if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
+        finish_and_write_timings(path, timings)?;
     }
     Ok(match output.status {
         PhpExecutionStatus::Success => EXIT_SUCCESS,
@@ -1305,11 +1479,29 @@ fn compile_pipeline_with_optimization(
     path: &str,
     opt_level: OptimizationLevel,
 ) -> Result<Pipeline, String> {
+    compile_pipeline_with_optimization_timed(path, opt_level, None)
+}
+
+fn compile_pipeline_with_optimization_timed(
+    path: &str,
+    opt_level: OptimizationLevel,
+    mut timings: Option<&mut PhaseTimingCollector>,
+) -> Result<Pipeline, String> {
+    let started = Instant::now();
     let source = read_source_to_string(path)?;
+    if let Some(timings) = timings.as_deref_mut() {
+        timings.record_phase("source_read_ms", started);
+        timings.count("source_bytes", source.len() as u64);
+    }
+    let started = Instant::now();
     let frontend = analyze_source(&source);
+    if let Some(timings) = timings.as_deref_mut() {
+        timings.record_phase("frontend_analyze_ms", started);
+    }
     let source_path = fs::canonicalize(path)
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.to_string());
+    let started = Instant::now();
     let mut lowering = lower_frontend_result(
         &frontend,
         LoweringOptions {
@@ -1318,24 +1510,41 @@ fn compile_pipeline_with_optimization(
             ..LoweringOptions::default()
         },
     );
+    if let Some(timings) = timings.as_deref_mut() {
+        timings.record_phase("ir_lower_ms", started);
+        timings.count("functions", lowering.unit.functions.len() as u64);
+        timings.count("classes", lowering.unit.classes.len() as u64);
+        timings.count("constants", lowering.unit.constants.len() as u64);
+        timings.count(
+            "instructions_or_ir_ops",
+            ir_instruction_count(&lowering.unit),
+        );
+    }
     let optimizer = if opt_level.runs_pipeline()
         && !frontend.has_errors()
         && lowering.diagnostics.is_empty()
         && lowering.verification.is_ok()
     {
+        let started = Instant::now();
         let report = PassPipeline::performance()
             .run(&mut lowering.unit, &PassContext::new(opt_level))
             .map_err(|error| format!("{path}: optimizer failed: {error}"))?;
+        if let Some(timings) = timings.as_deref_mut() {
+            timings.record_phase("optimizer_ms", started);
+        }
+        let started = Instant::now();
         lowering.verification = verify_unit(&lowering.unit);
+        if let Some(timings) = timings.as_deref_mut() {
+            timings.record_phase("ir_verify_ms", started);
+            timings.count(
+                "instructions_or_ir_ops",
+                ir_instruction_count(&lowering.unit),
+            );
+        }
         Some(report)
     } else {
         None
     };
-    if !frontend.has_errors() && lowering.verification.is_ok() {
-        verify_unit(&lowering.unit).map_err(|errors| {
-            format!("{path}: IR verification failed: {} error(s)", errors.len())
-        })?;
-    }
     Ok(Pipeline {
         path: path.to_string(),
         source,
@@ -1347,6 +1556,14 @@ fn compile_pipeline_with_optimization(
 
 fn compile_pipeline(path: &str) -> Result<Pipeline, String> {
     compile_pipeline_with_optimization(path, OptimizationLevel::O0)
+}
+
+fn ir_instruction_count(unit: &IrUnit) -> u64 {
+    unit.functions
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .map(|block| block.instructions.len() as u64 + u64::from(block.terminator.is_some()))
+        .sum()
 }
 
 fn read_source_to_string(path: &str) -> Result<String, String> {
@@ -2058,6 +2275,28 @@ fn on_off(enabled: bool) -> &'static str {
     if enabled { "on" } else { "off" }
 }
 
+fn record_cache_counts(timings: &mut PhaseTimingCollector, stats: &BytecodeCacheStats) {
+    timings.count("cache_hit", u64::from(stats.hit));
+    timings.count("cache_miss", u64::from(stats.miss));
+    timings.count("cache_wrote", u64::from(stats.wrote));
+}
+
+fn record_vm_timing_counts(timings: &mut PhaseTimingCollector, counters: &VmCounters) {
+    timings.count("includes", counters.includes);
+    timings.count("include_resolution_hits", counters.include_resolution_hits);
+    timings.count(
+        "include_resolution_misses",
+        counters.include_resolution_misses,
+    );
+    timings.count("include_compile_hits", counters.include_compile_hits);
+    timings.count("include_compile_misses", counters.include_compile_misses);
+    timings.count("include_once_skips", counters.include_once_skips);
+    timings.count(
+        "adaptive_tiny_unit_setup_skips",
+        counters.adaptive_tiny_unit_setup_skips,
+    );
+}
+
 fn try_load_bytecode_cache(
     run_options: &RunOptions<'_>,
     context: Option<&BytecodeCacheContext>,
@@ -2231,6 +2470,29 @@ fn write_counters_json(path: String, counters: &VmCounters) -> Result<(), String
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     fs::write(path, counters.to_json()).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn write_timings_json(path: String, report: &PhaseTimingReport) -> Result<(), String> {
+    let path = Path::new(&path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    let json = report.to_stable_json().map_err(|error| error.to_string())?;
+    fs::write(path, json).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn finish_and_write_timings(path: String, timings: PhaseTimingCollector) -> Result<(), String> {
+    let mut report = timings.finish();
+    report.phases.insert("timings_write_ms".to_string(), 0.0);
+    let started = Instant::now();
+    write_timings_json(path.clone(), &report)?;
+    report.phases.insert(
+        "timings_write_ms".to_string(),
+        started.elapsed().as_secs_f64() * 1000.0,
+    );
+    write_timings_json(path, &report)
 }
 
 fn write_region_profile_json(path: String, profile: &RegionProfile) -> Result<(), String> {
@@ -2570,7 +2832,7 @@ fn region_profile_json_from_env() -> Option<String> {
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-stats-json <path> --counters-json <path> --region-profile-json <path>"
+        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
     )
     .map_err(|error| error.to_string())
 }
@@ -3893,7 +4155,7 @@ mod tests {
     use super::{
         BytecodeCacheMode, EXIT_COMPILE_ERROR, EXIT_PHP_FATAL_ERROR, EXIT_RUNTIME_ERROR,
         EXIT_SUCCESS, EXIT_USAGE, JitStatsMode, OptimizationLevel, PersistentFeedbackOptions,
-        QuickeningMode, cache_file_for, compile_pipeline_with_optimization,
+        QuickeningMode, cache_file_for, compile_pipeline_with_optimization, parse_compile_args,
         parse_dump_dependency_units_args, parse_dump_rule_selection_args, parse_run_args, run,
     };
     use php_bytecode_cache::{CacheFingerprint, CacheFingerprintInput};
@@ -4403,6 +4665,111 @@ mod tests {
     }
 
     #[test]
+    fn compile_args_accept_timings_json_flag_forms_and_env() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous = env::var("PHRUST_TIMINGS_JSON").ok();
+        unsafe {
+            env::set_var("PHRUST_TIMINGS_JSON", "target/performance/timings/env.json");
+        }
+
+        let env_args = vec!["fixtures/runtime/valid/hello.php".to_string()];
+        let env_options = parse_compile_args(&env_args).expect("compile args should parse");
+        assert_eq!(
+            env_options.timings_json.as_deref(),
+            Some("target/performance/timings/env.json")
+        );
+
+        let separate_args = vec![
+            "--timings-json".to_string(),
+            "target/performance/timings/flag.json".to_string(),
+            "fixtures/runtime/valid/hello.php".to_string(),
+        ];
+        let separate = parse_compile_args(&separate_args).expect("separate flag should parse");
+        assert_eq!(
+            separate.timings_json.as_deref(),
+            Some("target/performance/timings/flag.json")
+        );
+
+        let equals_args = vec![
+            "--timings-json=target/performance/timings/equals.json".to_string(),
+            "fixtures/runtime/valid/hello.php".to_string(),
+        ];
+        let equals = parse_compile_args(&equals_args).expect("equals flag should parse");
+        assert_eq!(
+            equals.timings_json.as_deref(),
+            Some("target/performance/timings/equals.json")
+        );
+
+        restore_env("PHRUST_TIMINGS_JSON", previous);
+    }
+
+    #[test]
+    fn run_args_timings_json_flag_overrides_env_and_requires_path() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous = env::var("PHRUST_TIMINGS_JSON").ok();
+        unsafe {
+            env::set_var("PHRUST_TIMINGS_JSON", "target/performance/timings/env.json");
+        }
+
+        let env_args = vec!["fixtures/runtime/valid/hello.php".to_string()];
+        let env_options = parse_run_args(&env_args).expect("run args should parse");
+        assert_eq!(
+            env_options.timings_json.as_deref(),
+            Some("target/performance/timings/env.json")
+        );
+
+        let flag_args = vec![
+            "--timings-json=target/performance/timings/flag.json".to_string(),
+            "fixtures/runtime/valid/hello.php".to_string(),
+        ];
+        let flag_options = parse_run_args(&flag_args).expect("run args should parse");
+        assert_eq!(
+            flag_options.timings_json.as_deref(),
+            Some("target/performance/timings/flag.json")
+        );
+
+        let missing_args = vec!["--timings-json".to_string()];
+        let error = match parse_run_args(&missing_args) {
+            Ok(_) => panic!("missing timings path should fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("run --timings-json requires <path>"));
+
+        restore_env("PHRUST_TIMINGS_JSON", previous);
+    }
+
+    #[test]
+    fn run_writes_timings_sidecar_without_changing_stdout() {
+        let path =
+            PathBuf::from("target/performance/timings/tests/run-writes-timings-sidecar.json");
+        let _ = fs::remove_file(&path);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            [
+                "run".to_string(),
+                "--timings-json".to_string(),
+                path.to_string_lossy().into_owned(),
+                fixture("fixtures/runtime/valid/hello.php"),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(stdout, b"hello runtime\n");
+        assert!(path.is_file());
+        let report = parse_json_text(&fs::read_to_string(&path).expect("read timing report"));
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["command"], "run");
+        assert!(report["total_internal_ms"].as_f64().unwrap() >= 0.0);
+        assert!(report["phases"]["source_read_ms"].as_f64().unwrap() >= 0.0);
+        assert!(report["phases"]["execute_ms"].as_f64().unwrap() >= 0.0);
+        assert!(report["phases"]["timings_write_ms"].as_f64().unwrap() >= 0.0);
+        assert_eq!(report["counts"]["runtime_diagnostic_count"], 0);
+    }
+
+    #[test]
     fn run_args_default_to_shared_default_engine_profile() {
         let args = vec!["fixtures/runtime/valid/hello.php".to_string()];
 
@@ -4419,6 +4786,7 @@ mod tests {
         assert_eq!(options.jit, JitMode::Cranelift);
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
+        assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
         assert_eq!(
             options.jit_threshold,
             options.tiering.function_entry_threshold
@@ -4440,6 +4808,7 @@ mod tests {
         assert_eq!(options.inline_caches, InlineCacheMode::On);
         assert_eq!(options.jit, JitMode::Cranelift);
         assert!(options.tiering.enabled);
+        assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
     }
 
     #[test]
@@ -4457,6 +4826,7 @@ mod tests {
         assert_eq!(options.inline_caches, InlineCacheMode::Off);
         assert_eq!(options.jit, JitMode::Off);
         assert!(!options.tiering.enabled);
+        assert_eq!(options.adaptive_tiny_unit_setup_threshold, None);
     }
 
     #[test]
@@ -4479,6 +4849,7 @@ mod tests {
         assert_eq!(options.jit, JitMode::Cranelift);
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
+        assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
         assert_eq!(
             options.jit_threshold,
             options.tiering.function_entry_threshold

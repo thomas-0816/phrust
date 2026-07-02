@@ -91,7 +91,7 @@ use php_runtime::{
     unserialize as unserialize_value, unsupported_feature, value_matches_runtime_type,
     value_type_name,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
@@ -355,6 +355,14 @@ fn output_preallocation_hint(unit: &IrUnit) -> usize {
             IrConstant::StringBytes(value) => Some(value.len()),
             _ => None,
         })
+        .sum()
+}
+
+fn ir_unit_instruction_count(unit: &IrUnit) -> u32 {
+    unit.functions
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .map(|block| block.instructions.len() as u32 + u32::from(block.terminator.is_some()))
         .sum()
 }
 
@@ -1918,6 +1926,7 @@ pub struct Vm {
     jit: RefCell<JitRuntimeState>,
     tiering: RefCell<TieringState>,
     internal_function_dispatch_cache: RefCell<InternalFunctionDispatchCache>,
+    adaptive_tiny_unit_setup_skipped: Cell<bool>,
 }
 
 impl Vm {
@@ -1941,6 +1950,7 @@ impl Vm {
             jit: RefCell::new(JitRuntimeState::default()),
             tiering: RefCell::new(tiering),
             internal_function_dispatch_cache: RefCell::new(InternalFunctionDispatchCache::default()),
+            adaptive_tiny_unit_setup_skipped: Cell::new(false),
         }
     }
 
@@ -1948,6 +1958,9 @@ impl Vm {
     #[must_use]
     pub fn execute(&self, unit: impl Into<CompiledUnit>) -> VmResult {
         let unit = unit.into();
+        let skip_adaptive_tiny_unit_setup = self.should_skip_adaptive_tiny_unit_setup(unit.unit());
+        self.adaptive_tiny_unit_setup_skipped
+            .set(skip_adaptive_tiny_unit_setup);
         let mut output = OutputBuffer::with_capacity(output_preallocation_hint(unit.unit()));
         self.trace.borrow_mut().clear();
         *self.literal_pool.borrow_mut() = LiteralPool::default();
@@ -1959,6 +1972,9 @@ impl Vm {
         *self.counters.borrow_mut() = self.options.collect_counters.then(|| {
             let mut counters = VmCounters::default();
             counters.set_jit_config(self.options.jit.as_str(), self.options.jit_threshold);
+            if skip_adaptive_tiny_unit_setup {
+                counters.record_adaptive_tiny_unit_setup_skip();
+            }
             counters
         });
         if self.options.collect_counters {
@@ -2155,6 +2171,16 @@ impl Vm {
             result.tiering_stats = Some(self.tiering.borrow().stats());
         }
         result
+    }
+
+    fn should_skip_adaptive_tiny_unit_setup(&self, unit: &IrUnit) -> bool {
+        let Some(threshold) = self.options.adaptive_tiny_unit_setup_threshold else {
+            return false;
+        };
+        if !self.options.tiering.enabled || !self.options.quickening.enabled() {
+            return false;
+        }
+        ir_unit_instruction_count(unit) <= threshold
     }
 
     fn record_counter_instruction(&self, kind: &InstructionKind) {
@@ -3880,7 +3906,10 @@ impl Vm {
         block_id: BlockId,
         instruction_id: php_ir::ids::InstrId,
     ) {
-        if !self.options.tiering.enabled || !self.options.quickening.enabled() {
+        if !self.options.tiering.enabled
+            || !self.options.quickening.enabled()
+            || self.adaptive_tiny_unit_setup_skipped.get()
+        {
             return;
         }
         let observation =
@@ -3897,7 +3926,10 @@ impl Vm {
         instruction_id: php_ir::ids::InstrId,
         hit: bool,
     ) {
-        if !self.options.tiering.enabled || !self.options.quickening.enabled() {
+        if !self.options.tiering.enabled
+            || !self.options.quickening.enabled()
+            || self.adaptive_tiny_unit_setup_skipped.get()
+        {
             return;
         }
         let observation = self.quickening.borrow_mut().record_specialized_guard(
@@ -3915,7 +3947,10 @@ impl Vm {
         function_id: FunctionId,
         instruction_index: u32,
     ) {
-        if !self.options.tiering.enabled || !self.options.quickening.enabled() {
+        if !self.options.tiering.enabled
+            || !self.options.quickening.enabled()
+            || self.adaptive_tiny_unit_setup_skipped.get()
+        {
             return;
         }
         let observation =
@@ -3932,7 +3967,10 @@ impl Vm {
         instruction_index: u32,
         hit: bool,
     ) {
-        if !self.options.tiering.enabled || !self.options.quickening.enabled() {
+        if !self.options.tiering.enabled
+            || !self.options.quickening.enabled()
+            || self.adaptive_tiny_unit_setup_skipped.get()
+        {
             return;
         }
         let observation = self.quickening.borrow_mut().record_dense_specialized_guard(
@@ -64984,6 +65022,48 @@ var_dump(unserialize('O:1:"C":0:{}'));
         assert!(stats.tiering_disabled_entries > 0, "{stats:?}");
         assert_eq!(stats.tier1_quickened_entries, 0, "{stats:?}");
         assert_eq!(stats.tier2_jit_candidates, 0, "{stats:?}");
+    }
+
+    #[test]
+    fn adaptive_tiny_unit_setup_skip_suppresses_quickening_observations() {
+        let result = execute_source_with_options(
+            "<?php echo \"tiny\\n\";",
+            VmOptions {
+                collect_counters: true,
+                quickening: QuickeningMode::On,
+                tiering: TieringOptions::default(),
+                adaptive_tiny_unit_setup_threshold: Some(32),
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"tiny\n");
+        let counters = result.counters.expect("counters");
+        assert_eq!(counters.adaptive_tiny_unit_setup_skips, 1, "{counters:?}");
+        assert_eq!(counters.quickening_attempts, 0, "{counters:?}");
+    }
+
+    #[test]
+    fn adaptive_tiny_unit_setup_keeps_larger_units_fast() {
+        let source =
+            "<?php $sum = 0; for ($i = 0; $i < 12; $i++) { $sum = $sum + $i; } echo $sum, \"\\n\";";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                quickening: QuickeningMode::On,
+                tiering: TieringOptions::default(),
+                adaptive_tiny_unit_setup_threshold: Some(1),
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"66\n");
+        let counters = result.counters.expect("counters");
+        assert_eq!(counters.adaptive_tiny_unit_setup_skips, 0, "{counters:?}");
+        assert!(counters.quickening_attempts > 0, "{counters:?}");
     }
 
     #[cfg(not(feature = "jit-cranelift"))]

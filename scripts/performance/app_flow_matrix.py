@@ -57,6 +57,8 @@ class RunSample:
     stderr: str
     command: list[str]
     counters: dict[str, Any]
+    timings: dict[str, Any]
+    timing_warning: str | None = None
     timed_out: bool = False
 
 
@@ -252,8 +254,10 @@ def run_once(
     run_dir.mkdir(parents=True, exist_ok=True)
     command = [*row.command_prefix]
     counters_path = run_dir / f"iter-{iteration}.counters.json"
+    timings_path = run_dir / f"iter-{iteration}.timings.json"
     if row.kind == "phrust":
         command.extend(["--env", f"PHRUST_APP_FLOW_SCALE={scale}"])
+        command.extend(["--timings-json", str(timings_path)])
     if row.counters:
         command.extend(["--counters-json", str(counters_path)])
     command.append(rel(scenario.fixture))
@@ -298,6 +302,21 @@ def run_once(
         counters = json.loads(counters_path.read_text(encoding="utf-8"))
     if not isinstance(counters, dict):
         raise SystemExit(f"{rel(counters_path)}: counters root is not an object")
+    timings: dict[str, Any] = {}
+    timing_warning = None
+    if row.kind == "phrust":
+        if not timings_path.is_file():
+            timing_warning = f"timings missing: {rel(timings_path)}"
+        else:
+            try:
+                raw_timings = json.loads(timings_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raw_timings = {}
+                timing_warning = f"timings malformed: {rel(timings_path)}: {error}"
+            if isinstance(raw_timings, dict):
+                timings = raw_timings
+            else:
+                timing_warning = f"timings malformed: {rel(timings_path)}: root is not an object"
     return RunSample(
         elapsed_ms=elapsed_ms,
         returncode=returncode,
@@ -305,6 +324,8 @@ def run_once(
         stderr=stderr,
         command=command,
         counters=counters,
+        timings=timings,
+        timing_warning=timing_warning,
         timed_out=timed_out,
     )
 
@@ -365,6 +386,58 @@ def counter_focus(counters: dict[str, Any]) -> dict[str, int]:
         key: value
         for key in keys
         if isinstance((value := counters.get(key)), int) and value != 0
+    }
+
+
+def phase_ms(timings: dict[str, Any], name: str) -> float:
+    phases = timings.get("phases")
+    if not isinstance(phases, dict):
+        return 0.0
+    value = phases.get(name)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def compile_total_ms(timings: dict[str, Any]) -> float:
+    return sum(
+        phase_ms(timings, name)
+        for name in (
+            "cache_prepare_ms",
+            "cache_load_ms",
+            "cache_store_ms",
+            "source_read_ms",
+            "frontend_analyze_ms",
+            "ir_lower_ms",
+            "ir_verify_ms",
+            "optimizer_ms",
+            "bytecode_lower_ms",
+            "bytecode_layout_ms",
+            "superinstruction_select_ms",
+            "vm_construct_ms",
+            "diagnostics_ms",
+            "counters_write_ms",
+            "timings_write_ms",
+        )
+    )
+
+
+def phase_summary(samples: list[RunSample]) -> dict[str, float]:
+    timing_samples = [sample for sample in samples if sample.timings]
+    if not timing_samples:
+        return {}
+    external = statistics.median(sample.elapsed_ms for sample in timing_samples)
+    internal = statistics.median(
+        float(sample.timings.get("total_internal_ms", 0.0)) for sample in timing_samples
+    )
+    compile_total = statistics.median(compile_total_ms(sample.timings) for sample in timing_samples)
+    execute = statistics.median(phase_ms(sample.timings, "execute_ms") for sample in timing_samples)
+    return {
+        "external_wall_ms": external,
+        "internal_total_ms": internal,
+        "startup_external_ms": max(external - internal, 0.0),
+        "compile_total_ms": compile_total,
+        "execute_ms": execute,
+        "compile_share_percent": (compile_total / internal * 100.0) if internal > 0 else 0.0,
+        "execute_share_percent": (execute / internal * 100.0) if internal > 0 else 0.0,
     }
 
 
@@ -490,23 +563,35 @@ def render_markdown(summary: dict[str, Any]) -> str:
         "",
         "## Matrix",
         "",
-        "| Scenario | Row | Correctness | Median ms | Ratio vs ref | Counter highlights | Skip/failure reason |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Scenario | Row | Correctness | Median ms | Ratio vs ref | Compile ms | Execute ms | Counter highlights | Skip/failure reason |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in summary["rows"]:
         if row["status"] == "skip":
             lines.append(
-                f"| `{row['scenario']}` | `{row['row']}` | skip | n/a | n/a | n/a | {row['reason']} |"
+                f"| `{row['scenario']}` | `{row['row']}` | skip | n/a | n/a | n/a | n/a | n/a | {row['reason']} |"
             )
             continue
         counters = row.get("counter_highlights", {})
         focus = ", ".join(f"{key}={value}" for key, value in counters.items())
         ratio = row["ratio_vs_reference"]
         ratio_text = "n/a" if ratio is None else f"{ratio:.3f}"
+        phases = row.get("phase_summary", {})
+        compile_text = (
+            f"{phases['compile_total_ms']:.3f}"
+            if isinstance(phases, dict) and "compile_total_ms" in phases
+            else "n/a"
+        )
+        execute_text = (
+            f"{phases['execute_ms']:.3f}"
+            if isinstance(phases, dict) and "execute_ms" in phases
+            else "n/a"
+        )
         reason = row.get("reason", "")
         lines.append(
             f"| `{row['scenario']}` | `{row['row']}` | `{row['correctness']}` | "
-            f"{row['median_ms']:.3f} | {ratio_text} | {focus or 'n/a'} | {reason or 'n/a'} |"
+            f"{row['median_ms']:.3f} | {ratio_text} | {compile_text} | {execute_text} | "
+            f"{focus or 'n/a'} | {reason or 'n/a'} |"
         )
     if summary["failures"]:
         lines.extend(["", "## Failures", ""])
@@ -654,10 +739,17 @@ def run_matrix(args: argparse.Namespace) -> int:
                             "stdout": item.stdout,
                             "stderr": item.stderr,
                             "timed_out": item.timed_out,
+                            "phase_timings": item.timings,
+                            "timing_warning": item.timing_warning,
                         }
                         for item in samples
                     ],
                     "counters": samples[-1].counters,
+                    "phase_timings": samples[-1].timings,
+                    "phase_summary": phase_summary(samples),
+                    "timing_warnings": [
+                        item.timing_warning for item in samples if item.timing_warning
+                    ],
                     "counter_highlights": counter_focus(samples[-1].counters),
                 }
             )
@@ -724,6 +816,7 @@ def self_test() -> int:
                 "max_ms": 1.0,
                 "ratio_vs_reference": None,
                 "counter_highlights": {"instructions_executed": 1},
+                "phase_summary": {"compile_total_ms": 1.0, "execute_ms": 2.0},
             }
         ],
         skipped_rows=0,
@@ -739,6 +832,8 @@ def self_test() -> int:
     rendered = render_markdown(sample_summary)
     if "Application-Flow Performance Results" not in rendered:
         raise SystemExit("self-test markdown render failed")
+    if "Compile ms" not in rendered or "Execute ms" not in rendered:
+        raise SystemExit("self-test phase summary render failed")
     print(f"[pass] app-flow matrix self-test validated {len(scenarios)} scenarios")
     return 0
 

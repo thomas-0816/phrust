@@ -225,6 +225,8 @@ performance JSON. The crate does not execute benchmarks. It defines:
 - `PerfMeasurement`: scenario, iterations, metrics, optional wall time, and
   optional VM counters.
 - `PerfReport`: schema version, run id, environment, and measurements.
+- `PhaseTimingReport`: stable phase-timing sidecar for `php-vm run` and
+  `php-vm compile`.
 
 Reports use serde JSON with normalized pretty output and a trailing newline via
 `PerfReport::to_stable_json()`. Maps use sorted `BTreeMap` storage so feature
@@ -252,6 +254,54 @@ Validation:
 nix develop -c cargo test -p php_perf
 ```
 
+## Phase Timing Sidecars
+
+`php-vm run` and `php-vm compile` accept an out-of-band timing sink:
+
+```bash
+nix develop -c target/debug/php-vm run --timings-json target/performance/timings/run.json path/to/file.php
+nix develop -c target/debug/php-vm compile --timings-json target/performance/timings/compile.json path/to/file.php
+```
+
+`PHRUST_TIMINGS_JSON` provides the same sink for both commands. The explicit
+`--timings-json` flag wins over the environment variable. Timing JSON is never
+written to PHP stdout.
+
+The sidecar schema is:
+
+```json
+{
+  "schema_version": 1,
+  "command": "run",
+  "path": "path/to/file.php",
+  "total_internal_ms": 1.0,
+  "phases": {
+    "source_read_ms": 0.1,
+    "frontend_analyze_ms": 0.2,
+    "ir_lower_ms": 0.3,
+    "execute_ms": 0.4
+  },
+  "counts": {
+    "source_bytes": 123,
+    "instructions_or_ir_ops": 45
+  },
+  "flags": {
+    "opt_level": "0"
+  }
+}
+```
+
+The CLI emits sorted, pretty JSON with a trailing newline. Phase names are
+stable, but unreached phases are omitted instead of reported as fake zeroes. For
+example, cache load/store phases only appear when the bytecode cache path is
+used, `optimizer_ms` appears only when optimization is requested, and
+`bytecode_lower_ms`, `bytecode_layout_ms`, and `superinstruction_select_ms`
+appear only on bytecode paths that expose those sub-steps. `ir_lower_ms`
+includes the lowering-owned verification performed by the IR layer;
+`ir_verify_ms` is reserved for the explicit post-optimization verification pass.
+`timings_write_ms` is measured by writing the sidecar once, recording the write
+cost, and rewriting the final report.
+
 ## Benchmark Runner
 
 Work item adds `scripts/performance/bench_matrix.py`. The runner discovers only
@@ -277,6 +327,13 @@ metadata and does not fail the smoke.
 Wall-clock values in these reports are advisory smoke measurements only. A run
 fails if an engine exits non-zero or if the last measured output differs from
 the fixture's expected output.
+
+Rust VM benchmark rows also write timing sidecars under
+`target/performance/timings/bench/` and embed the latest parsed sidecar as
+`phase_timings`. Derived metrics include `external_wall_ms`,
+`internal_total_ms`, `startup_external_ms`, `compile_total_ms`, `execute_ms`,
+`compile_share_percent`, and `execute_share_percent`. Missing or malformed
+sidecars are preserved as `timing_warnings`.
 
 ## VM/Runtime Counters
 
@@ -305,6 +362,40 @@ Validation:
 nix develop -c just benchmark-smoke
 nix develop -c jq . target/performance/*.json
 ```
+
+## Decision Baseline
+
+`just perf-decision-baseline` builds the VM, runs a local benchmark smoke and
+app-flow smoke, and writes:
+
+```text
+target/performance/decision/benchmark-summary.json
+target/performance/decision/app-flow-summary.json
+target/performance/decision/app-flows/matrix.json
+target/performance/decision/startup-summary.json
+target/performance/decision/summary.json
+target/performance/decision/summary.md
+```
+
+The decision summary ranks startup, compile, and execute costs using the phase
+timing sidecars. It is prioritization evidence only; correctness still comes
+from the benchmark/app-flow pass status and the broader performance gates.
+The default local knobs are `PHRUST_PERF_DECISION_ITERATIONS=10`,
+`PHRUST_PERF_DECISION_WARMUPS=3`, `PHRUST_PERF_DECISION_SCALE=2`, and
+`PHRUST_PERF_DECISION_TIMEOUT=${PHRUST_APP_FLOW_TIMEOUT:-30.0}`.
+
+`just startup-matrix` runs the focused startup attribution workflow. It measures
+debug and release `php-vm --help`, plus baseline and fast empty-script runs,
+after building the binaries outside the measured loop. The report includes
+`external_wall_ms`, `internal_total_ms` where a timing sidecar exists,
+`startup_external_ms`, `binary_size_bytes`, and `profile=debug|release`.
+
+The managed fast profile also skips request-local quickening/tiering setup for
+tiny IR units with eight or fewer IR instructions. This is a fixed-cost
+execution startup optimization for scripts that are too small to amortize
+adaptive metadata. The VM records `adaptive_tiny_unit_setup_skips` when the
+policy fires. Baseline mode is unchanged, and larger fast-profile units keep
+quickening, inline-cache, and tiering coverage active.
 
 ## Optional Local Profiling
 

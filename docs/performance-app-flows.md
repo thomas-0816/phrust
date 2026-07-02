@@ -80,9 +80,9 @@ Committed summary output is:
 docs/performance-app-flow-results.md
 ```
 
-Raw stdout, stderr, status, command lines, and counters for each scenario and
-row are local-only under `target/performance/app-flows/runs/` and must not be
-committed.
+Raw stdout, stderr, status, command lines, counters, and phase timing sidecars
+for each scenario and row are local-only under
+`target/performance/app-flows/runs/` and must not be committed.
 
 ## Reading Results
 
@@ -92,9 +92,18 @@ Each row reports:
 - `median_ms`, `min_ms`, and `max_ms`: advisory host-local wall-clock samples;
 - `ratio_vs_reference`: row median divided by `reference-php-cli` median when
   reference PHP is available;
+- `phase_summary`: derived Phrust timing metrics from `--timings-json`,
+  including `external_wall_ms`, `internal_total_ms`, `startup_external_ms`,
+  `compile_total_ms`, `execute_ms`, `compile_share_percent`, and
+  `execute_share_percent`;
 - counter highlights: selected non-zero Phrust counters such as quickening,
   inline-cache, output, array, and dispatch-cache counters;
 - skip/failure reason for optional or failed rows.
+
+The Markdown matrix includes compile and execute phase columns when timing
+sidecars are available. Missing or malformed sidecars are retained in
+`timing_warnings` so a local run can distinguish a tooling problem from a real
+PHP behavior mismatch.
 
 No strict speed thresholds are enforced. The suite fails on manifest/schema
 breakage, fixture divergence, Phrust/reference mismatch when reference is

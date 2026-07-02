@@ -5,7 +5,10 @@ use crate::input::{
     PhpCompileInput, PhpExecutionError, PhpExecutionInput, PhpExecutionOutput, PhpExecutionStatus,
     PhpExecutorOptions, PhpRequestExecutionInput,
 };
-use crate::pipeline::{Pipeline, apply_optimization, compile_source};
+use crate::pipeline::{
+    CompilePhaseTimings, Pipeline, apply_optimization, apply_optimization_with_timings,
+    compile_source, compile_source_with_timings,
+};
 use crate::request::include_loader_for_request;
 use php_runtime::api::{FilesystemCapabilities, RuntimeHttpResponseState};
 use php_vm::api::{Vm, VmOptions};
@@ -61,6 +64,47 @@ impl PhpExecutor {
             })));
         }
         Ok(CompiledPhpScript { pipeline })
+    }
+
+    /// Compiles source into a reusable artifact and returns internal phase timings.
+    pub fn compile_source_with_timings(
+        &self,
+        input: PhpCompileInput,
+    ) -> Result<(CompiledPhpScript, CompilePhaseTimings), PhpExecutionError> {
+        let (mut pipeline, mut timings) =
+            compile_source_with_timings(&input.source, &input.source_path)
+                .map_err(PhpExecutionError::Engine)?;
+        let optimization_timings = apply_optimization_with_timings(
+            &mut pipeline,
+            input
+                .optimization_level
+                .unwrap_or(self.options.optimization_level),
+        )
+        .map_err(PhpExecutionError::Engine)?;
+        timings.phases.extend(
+            optimization_timings
+                .phases()
+                .iter()
+                .map(|(key, value)| (key.clone(), *value)),
+        );
+        if !pipeline.ok() {
+            let diagnostics_text =
+                render_frontend_diagnostics(&pipeline).map_err(PhpExecutionError::Engine)?;
+            return Err(PhpExecutionError::Compile(Box::new(PhpExecutionOutput {
+                stdout: Vec::new(),
+                diagnostics_text,
+                diagnostics: frontend_diagnostic_envelopes(&pipeline),
+                status: PhpExecutionStatus::CompileError,
+                runtime_diagnostics: Vec::new(),
+                http_response: RuntimeHttpResponseState::default(),
+                upload_registry: Default::default(),
+                session: Default::default(),
+                trace: Vec::new(),
+                counters: None,
+                tiering_stats: None,
+            })));
+        }
+        Ok((CompiledPhpScript { pipeline }, timings))
     }
 
     /// Executes a previously compiled script with per-request runtime context.

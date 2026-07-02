@@ -31,4 +31,5 @@ pub use input::{
 };
 pub use php_optimizer::OptimizationLevel;
 pub use php_vm::api::{IncludeCache, IncludeCacheStats, VmOptions};
+pub use pipeline::CompilePhaseTimings;
 pub use profile::{EngineProfile, EngineProfileName, ParseEngineProfileError};

@@ -242,6 +242,40 @@ def measurement_counters(measurement: dict[str, Any]) -> dict[str, int]:
     return parsed
 
 
+def phase_timings(measurement: dict[str, Any]) -> dict[str, float]:
+    timings = measurement.get("phase_timings")
+    if not isinstance(timings, dict):
+        return {}
+    phases = timings.get("phases")
+    if not isinstance(phases, dict):
+        return {}
+    parsed: dict[str, float] = {}
+    for key, value in phases.items():
+        if isinstance(key, str) and isinstance(value, (int, float)):
+            parsed[key] = float(value)
+    return parsed
+
+
+def aggregate_phase_timings(measurements: list[dict[str, Any]]) -> Counter[str]:
+    totals: Counter[str] = Counter()
+    for measurement in measurements:
+        totals.update(phase_timings(measurement))
+    return totals
+
+
+def metric_float(measurement: dict[str, Any], name: str) -> float | None:
+    metrics = measurement.get("metrics", [])
+    if not isinstance(metrics, list):
+        return None
+    for metric in metrics:
+        if not isinstance(metric, dict) or metric.get("name") != name:
+            continue
+        value = metric.get("value")
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
 def aggregate_counters(measurements: list[dict[str, Any]]) -> Counter[str]:
     totals: Counter[str] = Counter()
     for measurement in measurements:
@@ -282,6 +316,7 @@ def summarize_report(
         item for item in measurements if item.get("engine") == "rust-vm"
     ]
     counter_totals = aggregate_counters(rust_measurements)
+    phase_totals = aggregate_phase_timings(rust_measurements)
     failed = [
         measurement_scenario(item).get("id", "<unknown>")
         for item in measurements
@@ -307,6 +342,41 @@ def summarize_report(
         "rust_measurement_count": len(rust_measurements),
         "failed_scenarios": failed,
         "counter_hotspots": counter_totals.most_common(15),
+        "phase_hotspots": phase_totals.most_common(15),
+        "timing_warnings": [
+            warning
+            for measurement in rust_measurements
+            for warning in measurement.get("timing_warnings", [])
+            if isinstance(warning, str)
+        ],
+        "compile_heavy": sorted(
+            (
+                {
+                    "scenario": measurement_scenario(item).get("id", "<unknown>"),
+                    "compile_total_ms": metric_float(item, "compile_total_ms"),
+                    "execute_ms": metric_float(item, "execute_ms"),
+                    "compile_share_percent": metric_float(item, "compile_share_percent"),
+                }
+                for item in rust_measurements
+                if metric_float(item, "compile_total_ms") is not None
+            ),
+            key=lambda item: float(item.get("compile_total_ms") or 0.0),
+            reverse=True,
+        )[:10],
+        "execute_heavy": sorted(
+            (
+                {
+                    "scenario": measurement_scenario(item).get("id", "<unknown>"),
+                    "compile_total_ms": metric_float(item, "compile_total_ms"),
+                    "execute_ms": metric_float(item, "execute_ms"),
+                    "execute_share_percent": metric_float(item, "execute_share_percent"),
+                }
+                for item in rust_measurements
+                if metric_float(item, "execute_ms") is not None
+            ),
+            key=lambda item: float(item.get("execute_ms") or 0.0),
+            reverse=True,
+        )[:10],
         "cache_counters": {key: counter_totals.get(key, 0) for key in CACHE_COUNTERS},
         "quickening_counters": {
             key: counter_totals.get(key, 0) for key in QUICKENING_COUNTERS
@@ -509,6 +579,66 @@ def render_markdown(summary: dict[str, Any]) -> str:
         lines.append("No Rust VM counters were available.")
     lines.append("")
 
+    lines.extend(["## Phase Timing Hotspots", ""])
+    if summary["phase_hotspots"]:
+        lines.extend(
+            md_table(
+                ["Phase", "Total ms"],
+                [[f"`{key}`", f"{value:.3f}"] for key, value in summary["phase_hotspots"]],
+            )
+        )
+    else:
+        lines.append("No Rust VM phase timings were available.")
+    lines.append("")
+
+    lines.extend(["## Compile-Heavy Rows", ""])
+    if summary["compile_heavy"]:
+        lines.extend(
+            md_table(
+                ["Scenario", "Compile ms", "Execute ms", "Compile share"],
+                [
+                    [
+                        f"`{row['scenario']}`",
+                        f"{float(row.get('compile_total_ms') or 0.0):.3f}",
+                        f"{float(row.get('execute_ms') or 0.0):.3f}",
+                        f"{float(row.get('compile_share_percent') or 0.0):.1f}%",
+                    ]
+                    for row in summary["compile_heavy"]
+                ],
+            )
+        )
+    else:
+        lines.append("No compile phase metrics were available.")
+    lines.append("")
+
+    lines.extend(["## Execute-Heavy Rows", ""])
+    if summary["execute_heavy"]:
+        lines.extend(
+            md_table(
+                ["Scenario", "Execute ms", "Compile ms", "Execute share"],
+                [
+                    [
+                        f"`{row['scenario']}`",
+                        f"{float(row.get('execute_ms') or 0.0):.3f}",
+                        f"{float(row.get('compile_total_ms') or 0.0):.3f}",
+                        f"{float(row.get('execute_share_percent') or 0.0):.1f}%",
+                    ]
+                    for row in summary["execute_heavy"]
+                ],
+            )
+        )
+    else:
+        lines.append("No execute phase metrics were available.")
+    lines.append("")
+
+    lines.extend(["## Timing Warnings", ""])
+    if summary["timing_warnings"]:
+        for warning in summary["timing_warnings"]:
+            lines.append(f"- {warning}")
+    else:
+        lines.append("No missing or malformed timing sidecars were reported.")
+    lines.append("")
+
     lines.extend(render_counter_table("Cache Hits and Misses", summary["cache_counters"]))
     lines.extend(render_counter_table("Quickening Counters", summary["quickening_counters"]))
     lines.extend(
@@ -672,8 +802,35 @@ def run_self_test() -> int:
                         "unit": "ms",
                         "value": 1.25,
                         "lower_is_better": True,
+                    },
+                    {
+                        "name": "compile_total_ms",
+                        "unit": "ms",
+                        "value": 0.75,
+                        "lower_is_better": True,
+                    },
+                    {
+                        "name": "execute_ms",
+                        "unit": "ms",
+                        "value": 0.25,
+                        "lower_is_better": True,
+                    },
+                    {
+                        "name": "compile_share_percent",
+                        "unit": "percent",
+                        "value": 75.0,
+                        "lower_is_better": True,
+                    },
+                    {
+                        "name": "execute_share_percent",
+                        "unit": "percent",
+                        "value": 25.0,
+                        "lower_is_better": True,
                     }
                 ],
+                "phase_timings": {
+                    "phases": {"frontend_analyze_ms": 0.5, "execute_ms": 0.25}
+                },
                 "vm_counters": {
                     "instructions_executed": 10,
                     "cache_hits": 2,
@@ -706,6 +863,9 @@ def run_self_test() -> int:
     assert "performance Performance Report" in markdown
     assert "performance.perf_smoke.rust-vm.loop" in markdown
     assert "Cache Hits and Misses" in markdown
+    assert "Phase Timing Hotspots" in markdown
+    assert summary["phase_hotspots"][0][0] == "frontend_analyze_ms"
+    assert summary["compile_heavy"][0]["compile_total_ms"] == 0.75
     assert "Array Shape Fast Paths" in markdown
     assert summary["array_shape_observed_by_kind"]["shape_stable_record_like"] == 2
     assert summary["array_shape_counters"]["record_shape_hits"] == 5

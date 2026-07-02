@@ -281,6 +281,7 @@ pub struct VmCounters {
     pub quickening_dequickened_by_reason: BTreeMap<String, u64>,
     pub quickening_megamorphic: u64,
     pub quickening_disabled: u64,
+    pub adaptive_tiny_unit_setup_skips: u64,
     pub native_candidates: u64,
     pub native_compiled_regions: u64,
     pub native_executions: u64,
@@ -1322,6 +1323,10 @@ impl VmCounters {
         if observation.disabled {
             self.quickening_disabled += 1;
         }
+    }
+
+    pub(crate) fn record_adaptive_tiny_unit_setup_skip(&mut self) {
+        self.adaptive_tiny_unit_setup_skips += 1;
     }
 
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
@@ -2802,6 +2807,12 @@ impl VmCounters {
             self.quickening_disabled,
             true,
         );
+        push_field(
+            &mut json,
+            "adaptive_tiny_unit_setup_skips",
+            self.adaptive_tiny_unit_setup_skips,
+            true,
+        );
         push_field(&mut json, "native_candidates", self.native_candidates, true);
         push_field(
             &mut json,
@@ -4233,6 +4244,7 @@ mod tests {
             megamorphic: true,
             disabled: true,
         });
+        counters.record_adaptive_tiny_unit_setup_skip();
         counters.record_native_candidate();
         counters.record_native_platform_unavailable();
         counters.record_native_eligibility_rejection("reference_arg");
@@ -4598,6 +4610,7 @@ mod tests {
         );
         assert_eq!(counters.quickening_megamorphic, 1);
         assert_eq!(counters.quickening_disabled, 1);
+        assert_eq!(counters.adaptive_tiny_unit_setup_skips, 1);
         assert_eq!(counters.native_candidates, 1);
         assert_eq!(counters.native_platform_unavailable, 1);
         assert_eq!(
@@ -4956,6 +4969,7 @@ mod tests {
         assert!(json.contains("\"quickening_dequickened_by_reason\": {}"));
         assert!(json.contains("\"quickening_megamorphic\": 0"));
         assert!(json.contains("\"quickening_disabled\": 0"));
+        assert!(json.contains("\"adaptive_tiny_unit_setup_skips\": 0"));
         assert!(json.contains("\"native_candidates\": 0"));
         assert!(json.contains("\"native_compiled_regions\": 0"));
         assert!(json.contains("\"native_executions\": 0"));

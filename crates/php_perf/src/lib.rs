@@ -13,6 +13,51 @@ pub const PERF_REPORT_SCHEMA_VERSION: u32 = 1;
 /// Stable schema version for Cranelift big-win JIT reports.
 pub const CRANELIFT_JIT_REPORT_SCHEMA_VERSION: u32 = 1;
 
+/// Stable schema version for PHP VM internal phase timing sidecars.
+pub const PHASE_TIMING_REPORT_SCHEMA_VERSION: u32 = 1;
+
+/// Internal phase timing sidecar for one `php-vm` command invocation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhaseTimingReport {
+    /// Report schema version.
+    pub schema_version: u32,
+    /// Command name, for example `run` or `compile`.
+    pub command: String,
+    /// Input path exactly as normalized by the caller.
+    pub path: String,
+    /// Total measured internal command time in milliseconds.
+    pub total_internal_ms: f64,
+    /// Per-phase milliseconds sorted by phase key.
+    pub phases: BTreeMap<String, f64>,
+    /// Cheap counts available from already-built structures.
+    pub counts: BTreeMap<String, u64>,
+    /// Stable command/runtime flags that affect the measured path.
+    pub flags: BTreeMap<String, String>,
+}
+
+impl PhaseTimingReport {
+    /// Creates an empty timing report for a command and input path.
+    #[must_use]
+    pub fn new(command: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            schema_version: PHASE_TIMING_REPORT_SCHEMA_VERSION,
+            command: command.into(),
+            path: path.into(),
+            total_internal_ms: 0.0,
+            phases: BTreeMap::new(),
+            counts: BTreeMap::new(),
+            flags: BTreeMap::new(),
+        }
+    }
+
+    /// Serializes this report to normalized pretty JSON with a trailing newline.
+    pub fn to_stable_json(&self) -> serde_json::Result<String> {
+        let mut json = serde_json::to_string_pretty(self)?;
+        json.push('\n');
+        Ok(json)
+    }
+}
+
 /// Stable identifier for one benchmark/report run.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -558,8 +603,26 @@ mod tests {
     use super::{
         CraneliftJitReport, CraneliftJitReportRow, JitCorrectnessStatus, JitCounterSnapshot,
         JitExecutionStatus, PerfEnvironment, PerfMeasurement, PerfMetric, PerfReport, PerfRunId,
-        PerfScenario,
+        PerfScenario, PhaseTimingReport,
     };
+
+    #[test]
+    fn phase_timing_report_serializes_stable_pretty_json() {
+        let mut report = PhaseTimingReport::new("run", "fixtures/runtime/valid/hello.php");
+        report.total_internal_ms = 1.25;
+        report.phases.insert("execute_ms".to_string(), 0.75);
+        report.counts.insert("source_bytes".to_string(), 42);
+        report
+            .flags
+            .insert("bytecode_cache".to_string(), "off".to_string());
+
+        let json = report.to_stable_json().expect("serialize report");
+
+        assert!(json.ends_with('\n'));
+        assert!(json.contains("\"schema_version\": 1"));
+        assert!(json.contains("\"execute_ms\": 0.75"));
+        assert!(json.contains("\"source_bytes\": 42"));
+    }
 
     #[test]
     fn perf_report_json_is_stable_and_sorted() {

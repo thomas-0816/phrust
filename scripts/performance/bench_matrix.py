@@ -41,6 +41,8 @@ class ProcessSample:
     stdout: str
     stderr: str
     counters: dict[str, Any] | None
+    timings: dict[str, Any] | None
+    timing_warning: str | None = None
 
 
 def positive_int(value: str) -> int:
@@ -100,6 +102,7 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Reference PHP CLI flag to pass before the fixture.",
     )
+    parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 
 
@@ -169,16 +172,25 @@ def normalized_env(tmp_dir: Path) -> dict[str, str]:
     return env
 
 
-def command_for(engine: Engine, fixture: Path, counters_path: Path | None = None) -> list[str]:
+def command_for(
+    engine: Engine,
+    fixture: Path,
+    counters_path: Path | None = None,
+    timings_path: Path | None = None,
+) -> list[str]:
     if engine.key == "rust-vm":
         counters_args = []
         if counters_path is not None:
             counters_args = ["--counters-json", str(counters_path)]
+        timings_args = []
+        if timings_path is not None:
+            timings_args = ["--timings-json", str(timings_path)]
         return [
             str(engine.path),
             "run",
             *engine.args_before_fixture,
             *counters_args,
+            *timings_args,
             rel(fixture),
         ]
     return [str(engine.path), *engine.args_before_fixture, rel(fixture)]
@@ -188,19 +200,116 @@ def display_command_for(
     engine: Engine,
     fixture: Path,
     counters_path: Path | None = None,
+    timings_path: Path | None = None,
 ) -> list[str]:
     if engine.key == "rust-vm":
         counters_args = []
         if counters_path is not None:
             counters_args = ["--counters-json", rel(counters_path)]
+        timings_args = []
+        if timings_path is not None:
+            timings_args = ["--timings-json", rel(timings_path)]
         return [
             rel(engine.path),
             "run",
             *engine.args_before_fixture,
             *counters_args,
+            *timings_args,
             rel(fixture),
         ]
     return [rel(engine.path), *engine.args_before_fixture, rel(fixture)]
+
+
+def load_json_object(path: Path, label: str) -> tuple[dict[str, Any] | None, str | None]:
+    if not path.is_file():
+        return None, f"{label} missing: {rel(path)}"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return None, f"{label} malformed: {rel(path)}: {error}"
+    if not isinstance(data, dict):
+        return None, f"{label} malformed: {rel(path)}: root is not an object"
+    return data, None
+
+
+def phase_ms(timings: dict[str, Any], name: str) -> float:
+    phases = timings.get("phases")
+    if not isinstance(phases, dict):
+        return 0.0
+    value = phases.get(name)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def compile_total_ms(timings: dict[str, Any]) -> float:
+    return sum(
+        phase_ms(timings, name)
+        for name in (
+            "cache_prepare_ms",
+            "cache_load_ms",
+            "cache_store_ms",
+            "source_read_ms",
+            "frontend_analyze_ms",
+            "ir_lower_ms",
+            "ir_verify_ms",
+            "optimizer_ms",
+            "bytecode_lower_ms",
+            "bytecode_layout_ms",
+            "superinstruction_select_ms",
+            "vm_construct_ms",
+            "diagnostics_ms",
+            "counters_write_ms",
+            "timings_write_ms",
+        )
+    )
+
+
+def derived_timing_metrics(samples: list[ProcessSample]) -> list[dict[str, Any]]:
+    timing_samples = [sample for sample in samples if sample.timings is not None]
+    if not timing_samples:
+        return []
+    external = statistics.median(sample.elapsed_ms for sample in timing_samples)
+    internal = statistics.median(
+        float(sample.timings.get("total_internal_ms", 0.0))
+        for sample in timing_samples
+        if sample.timings is not None
+    )
+    compile_total = statistics.median(
+        compile_total_ms(sample.timings)
+        for sample in timing_samples
+        if sample.timings is not None
+    )
+    execute = statistics.median(
+        phase_ms(sample.timings, "execute_ms")
+        for sample in timing_samples
+        if sample.timings is not None
+    )
+    startup_external = max(external - internal, 0.0)
+    compile_share = (compile_total / internal * 100.0) if internal > 0 else 0.0
+    execute_share = (execute / internal * 100.0) if internal > 0 else 0.0
+    return [
+        {"name": "external_wall_ms", "unit": "ms", "value": external, "lower_is_better": True},
+        {"name": "internal_total_ms", "unit": "ms", "value": internal, "lower_is_better": True},
+        {
+            "name": "startup_external_ms",
+            "unit": "ms",
+            "value": startup_external,
+            "lower_is_better": True,
+        },
+        {"name": "compile_total_ms", "unit": "ms", "value": compile_total, "lower_is_better": True},
+        {"name": "execute_ms", "unit": "ms", "value": execute, "lower_is_better": True},
+        {
+            "name": "compile_share_percent",
+            "unit": "percent",
+            "value": compile_share,
+            "lower_is_better": True,
+        },
+        {
+            "name": "execute_share_percent",
+            "unit": "percent",
+            "value": execute_share,
+            "lower_is_better": True,
+        },
+    ]
 
 
 def run_process(
@@ -209,14 +318,18 @@ def run_process(
     tmp_dir: Path,
     timeout: float,
     counters_path: Path | None,
+    timings_path: Path | None,
 ) -> ProcessSample:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     if counters_path is not None:
         counters_path.parent.mkdir(parents=True, exist_ok=True)
         counters_path.unlink(missing_ok=True)
+    if timings_path is not None:
+        timings_path.parent.mkdir(parents=True, exist_ok=True)
+        timings_path.unlink(missing_ok=True)
     started = time.perf_counter_ns()
     completed = subprocess.run(
-        command_for(engine, fixture, counters_path),
+        command_for(engine, fixture, counters_path, timings_path),
         cwd=ROOT,
         env=normalized_env(tmp_dir),
         text=True,
@@ -229,12 +342,18 @@ def run_process(
     counters = None
     if counters_path is not None and counters_path.is_file():
         counters = json.loads(counters_path.read_text(encoding="utf-8"))
+    timings = None
+    timing_warning = None
+    if timings_path is not None:
+        timings, timing_warning = load_json_object(timings_path, "timings")
     return ProcessSample(
         elapsed_ms=elapsed_ms,
         returncode=completed.returncode,
         stdout=completed.stdout.replace("\r\n", "\n").replace("\r", "\n"),
         stderr=normalize(completed.stderr),
         counters=counters,
+        timings=timings,
+        timing_warning=timing_warning,
     )
 
 
@@ -298,7 +417,12 @@ def measure_fixture(
     scenario_key = fixture.stem.replace(".", "_").replace("-", "_")
     tmp_base = ROOT / "target/performance/tmp" / engine.key / scenario_key
     for index in range(warmups):
-        run_process(engine, fixture, tmp_base / f"warmup-{index}", timeout, None)
+        timings_path = None
+        if engine.key == "rust-vm":
+            timings_path = (
+                ROOT / "target/performance/timings/bench" / scenario_key / engine.key / f"warmup-{index}.json"
+            )
+        run_process(engine, fixture, tmp_base / f"warmup-{index}", timeout, None, timings_path)
 
     samples = []
     for index in range(max(repetitions, 1)):
@@ -307,8 +431,20 @@ def measure_fixture(
             counters_path = (
                 ROOT / "target/performance/counters" / scenario_key / f"repeat-{index}.json"
             )
+        timings_path = None
+        if engine.key == "rust-vm":
+            timings_path = (
+                ROOT / "target/performance/timings/bench" / scenario_key / engine.key / f"repeat-{index}.json"
+            )
         samples.append(
-            run_process(engine, fixture, tmp_base / f"repeat-{index}", timeout, counters_path)
+            run_process(
+                engine,
+                fixture,
+                tmp_base / f"repeat-{index}",
+                timeout,
+                counters_path,
+                timings_path,
+            )
         )
     last = samples[-1]
     output_matches = last.stdout == expected_stdout
@@ -316,6 +452,11 @@ def measure_fixture(
     display_counters_path = None
     if collect_counters and engine.key == "rust-vm":
         display_counters_path = ROOT / "target/performance/counters" / scenario_key / "repeat-N.json"
+    display_timings_path = None
+    if engine.key == "rust-vm":
+        display_timings_path = (
+            ROOT / "target/performance/timings/bench" / scenario_key / engine.key / "repeat-N.json"
+        )
     measurement = {
         "scenario": {
             "id": f"performance.perf_smoke.{engine.key}.{scenario_key}",
@@ -325,10 +466,10 @@ def measure_fixture(
         },
         "engine": engine.key,
         "engine_path": rel(engine.path),
-        "command": display_command_for(engine, fixture, display_counters_path),
+        "command": display_command_for(engine, fixture, display_counters_path, display_timings_path),
         "iterations": max(repetitions, 1),
         "warmups": warmups,
-        "metrics": sample_metrics(samples),
+        "metrics": [*sample_metrics(samples), *derived_timing_metrics(samples)],
         "wall_time_ms": statistics.median(sample.elapsed_ms for sample in samples),
         "status": status,
         "stdout_sha256": hashlib.sha256(last.stdout.encode()).hexdigest(),
@@ -337,7 +478,36 @@ def measure_fixture(
     }
     if last.counters is not None:
         measurement["vm_counters"] = last.counters
+    if last.timings is not None:
+        measurement["phase_timings"] = last.timings
+    timing_warnings = [sample.timing_warning for sample in samples if sample.timing_warning]
+    if timing_warnings:
+        measurement["timing_warnings"] = timing_warnings
     return measurement, status == "pass"
+
+
+def run_self_test() -> int:
+    report = {
+        "total_internal_ms": 8.0,
+        "phases": {
+            "source_read_ms": 1.0,
+            "frontend_analyze_ms": 2.0,
+            "ir_lower_ms": 1.0,
+            "execute_ms": 3.0,
+            "timings_write_ms": 1.0,
+        },
+    }
+    sample = ProcessSample(10.0, 0, "ok\n", "", {}, report)
+    metrics = {item["name"]: item["value"] for item in derived_timing_metrics([sample])}
+    assert metrics["external_wall_ms"] == 10.0
+    assert metrics["internal_total_ms"] == 8.0
+    assert metrics["startup_external_ms"] == 2.0
+    assert metrics["compile_total_ms"] == 5.0
+    assert metrics["execute_ms"] == 3.0
+    assert metrics["compile_share_percent"] == 62.5
+    assert metrics["execute_share_percent"] == 37.5
+    print("[pass] bench_matrix self-test")
+    return 0
 
 
 def git_commit() -> str | None:
@@ -382,6 +552,8 @@ def report_environment(args: argparse.Namespace, reference_skip: str | None) -> 
 
 def main() -> int:
     args = parse_args()
+    if args.self_test:
+        return run_self_test()
     if not args.engine.is_file() or not os.access(args.engine, os.X_OK):
         raise SystemExit(f"Rust engine is not executable: {args.engine}")
     if args.timeout <= 0:

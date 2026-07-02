@@ -24,6 +24,7 @@ php_executor = { path = "../php_executor", version = "0.0.0" }
 php_ir = { path = "../php_ir", version = "0.0.0" }
 php_jit = { path = "../php_jit", version = "0.0.0", optional = true }
 php_optimizer = { path = "../php_optimizer", version = "0.0.0" }
+php_perf = { path = "../php_perf", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0" }
 php_semantics = { path = "../php_semantics", version = "0.1.0" }
 php_source = { path = "../php_source", version = "0.0.0" }
