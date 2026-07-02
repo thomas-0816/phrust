@@ -48,6 +48,14 @@ PHASES = (
     "post-install-frontpage",
 )
 
+WEB_PHASES = {
+    "web-frontpage",
+    "web-install-page",
+    "db-install",
+    "admin-login-page",
+    "post-install-frontpage",
+}
+
 
 def main() -> int:
     args = parse_args()
@@ -112,13 +120,30 @@ def run_smoke(args: argparse.Namespace, out_dir: Path) -> tuple[dict[str, Any], 
 
     results: list[dict[str, Any]] = []
     first_failure: dict[str, Any] | None = None
-    for phase in phases:
-        result = run_phase(phase, args, out_dir, transcript_path, server_log)
-        results.append(result)
-        if result["status"] == "fail" and first_failure is None:
-            first_failure = result["first_failure"]
-            if args.stop_on_fail:
-                break
+    shared_server: dict[str, Any] | None = None
+    try:
+        for phase in phases:
+            if phase in WEB_PHASES and shared_server is None:
+                shared_server = start_server(args, server_log)
+            result = run_phase(phase, args, out_dir, transcript_path, server_log, shared_server)
+            results.append(result)
+            if result["status"] == "fail" and first_failure is None:
+                first_failure = result["first_failure"]
+                if args.stop_on_fail:
+                    break
+    except TimeoutError as error:
+        phase = next((phase for phase in phases if phase in WEB_PHASES), phases[0])
+        first_failure = command_failure(phase, None, None, None, "", str(error), [], timed_out=True)
+        results.append({"phase": phase, "status": "fail", "first_failure": first_failure})
+    except (OSError, URLError) as error:
+        phase = next((phase for phase in phases if phase in WEB_PHASES), phases[0])
+        first_failure = command_failure(phase, None, None, None, "", str(error), [])
+        first_failure["first_failure_class"] = "web"
+        first_failure["candidate_owner_layer"] = "php_server"
+        results.append({"phase": phase, "status": "fail", "first_failure": first_failure})
+    finally:
+        if shared_server is not None:
+            stop_server(shared_server["process"])
 
     if first_failure is None:
         report = base_report("pass", phases[-1], None, preflight, results, None, out_dir)
@@ -168,12 +193,14 @@ def run_phase(
     out_dir: Path,
     transcript_path: Path,
     server_log: Path,
+    shared_server: dict[str, Any] | None,
 ) -> dict[str, Any]:
     if phase == "syntax-scan":
         return run_syntax_scan(args, out_dir)
     if phase == "cli-bootstrap":
         return run_cli_bootstrap(args, out_dir)
-    return run_web_phase(phase, args, transcript_path, server_log)
+    assert shared_server is not None
+    return run_web_phase(phase, args, transcript_path, server_log, shared_server)
 
 
 def run_syntax_scan(args: argparse.Namespace, out_dir: Path) -> dict[str, Any]:
@@ -253,8 +280,8 @@ def run_web_phase(
     args: argparse.Namespace,
     transcript_path: Path,
     server_log: Path,
+    server: dict[str, Any],
 ) -> dict[str, Any]:
-    server = start_server(args, server_log)
     try:
         request = request_for_phase(phase)
         response = perform_request(server["base_url"], request, args.timeout_seconds)
@@ -281,8 +308,6 @@ def run_web_phase(
         first_failure["first_failure_class"] = "web"
         first_failure["candidate_owner_layer"] = "php_server"
         return {"phase": phase, "status": "fail", "first_failure": first_failure}
-    finally:
-        stop_server(server["process"])
 
 
 def start_server(args: argparse.Namespace, server_log: Path) -> dict[str, Any]:
@@ -290,12 +315,15 @@ def start_server(args: argparse.Namespace, server_log: Path) -> dict[str, Any]:
     docroot = repo_path(args.docroot) or repo_path(args.wordpress_dir)
     assert phrust_server is not None
     assert docroot is not None
+    log_start = server_log.stat().st_size if server_log.exists() else 0
     command = [
         str(phrust_server),
         "--docroot",
         str(docroot),
         "--listen",
         "127.0.0.1:0",
+        "--front-controller",
+        "index.php",
         "--debug",
         "--error-format",
         "json",
@@ -311,17 +339,24 @@ def start_server(args: argparse.Namespace, server_log: Path) -> dict[str, Any]:
         stderr=subprocess.STDOUT,
         env=runtime_env(args),
     )
-    base_url = wait_for_server_address(server_log, process, args.timeout_seconds)
+    base_url = wait_for_server_address(server_log, process, args.timeout_seconds, log_start)
     log_handle.close()
     return {"process": process, "base_url": base_url}
 
 
-def wait_for_server_address(server_log: Path, process: subprocess.Popen[str], timeout_seconds: int) -> str:
+def wait_for_server_address(
+    server_log: Path,
+    process: subprocess.Popen[str],
+    timeout_seconds: int,
+    log_start: int = 0,
+) -> str:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if process.poll() is not None:
             raise OSError(f"phrust-server exited before listening with status {process.returncode}")
-        text = server_log.read_text(encoding="utf-8", errors="replace")
+        with server_log.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(log_start)
+            text = handle.read()
         for line in text.splitlines():
             if line.startswith("listening http://"):
                 return line.removeprefix("listening ").strip()
@@ -431,6 +466,7 @@ def runtime_env(args: argparse.Namespace) -> dict[str, str]:
     if dsn:
         env[args.db_dsn_env] = dsn
     env.setdefault("PHRUST_ERROR_FORMAT", "json")
+    env.setdefault("PHRUST_NET_TESTS", "1")
     return env
 
 

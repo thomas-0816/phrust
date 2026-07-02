@@ -10,7 +10,7 @@ use crate::{
     RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity, Value,
     WordPressDiagnosticContext, normalize_class_name,
 };
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(test)]
 use std::sync::Mutex;
@@ -104,6 +104,19 @@ const CURLOPT_CONNECTTIMEOUT_MS: i64 = 156;
 const CURLOPT_MAXREDIRS: i64 = 68;
 const CURLOPT_FAILONERROR: i64 = 45;
 const CURLOPT_HTTPHEADER: i64 = 10023;
+const CURLOPT_HEADERFUNCTION: i64 = 20079;
+const CURLOPT_WRITEFUNCTION: i64 = 20011;
+const CURLOPT_BUFFERSIZE: i64 = 98;
+const CURLOPT_CAINFO: i64 = 10065;
+const CURLOPT_HTTPAUTH: i64 = 107;
+const CURLOPT_PROTOCOLS: i64 = 181;
+const CURLOPT_PROXY: i64 = 10004;
+const CURLOPT_PROXYAUTH: i64 = 111;
+const CURLOPT_PROXYPORT: i64 = 59;
+const CURLOPT_PROXYTYPE: i64 = 101;
+const CURLOPT_PROXYUSERPWD: i64 = 10006;
+const CURLOPT_REDIR_PROTOCOLS: i64 = 182;
+const CURLOPT_USERPWD: i64 = 10005;
 const CURLOPT_POST: i64 = 47;
 const CURLOPT_POSTFIELDS: i64 = 10015;
 const CURLOPT_CUSTOMREQUEST: i64 = 10036;
@@ -296,6 +309,19 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
         CURLOPT_MAXREDIRS => "__curl_maxredirs",
         CURLOPT_FAILONERROR => "__curl_failonerror",
         CURLOPT_HTTPHEADER => "__curl_httpheader",
+        CURLOPT_HEADERFUNCTION => "__curl_headerfunction",
+        CURLOPT_WRITEFUNCTION => "__curl_writefunction",
+        CURLOPT_BUFFERSIZE => "__curl_buffersize",
+        CURLOPT_CAINFO => "__curl_cainfo",
+        CURLOPT_HTTPAUTH => "__curl_httpauth",
+        CURLOPT_PROTOCOLS => "__curl_protocols",
+        CURLOPT_PROXY => "__curl_proxy",
+        CURLOPT_PROXYAUTH => "__curl_proxyauth",
+        CURLOPT_PROXYPORT => "__curl_proxyport",
+        CURLOPT_PROXYTYPE => "__curl_proxytype",
+        CURLOPT_PROXYUSERPWD => "__curl_proxyuserpwd",
+        CURLOPT_REDIR_PROTOCOLS => "__curl_redir_protocols",
+        CURLOPT_USERPWD => "__curl_userpwd",
         CURLOPT_POST => "__curl_post",
         CURLOPT_POSTFIELDS => "__curl_postfields",
         CURLOPT_CUSTOMREQUEST => "__curl_customrequest",
@@ -464,12 +490,24 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
         "__curl_total_time",
         Value::Float(FloatValue::from_f64(start.elapsed().as_secs_f64())),
     );
+    let response_headers = response.headers;
+    let response_body = response.body;
+    handle.set_property(
+        "__curl_last_response_headers",
+        Value::String(PhpString::from(response_headers.clone())),
+    );
+    handle.set_property(
+        "__curl_last_response_body",
+        Value::String(PhpString::from(response_body.clone())),
+    );
+    curl_apply_response_callbacks(&handle, &response_headers, &response_body);
+
     let body = if curl_bool_property(&handle, "__curl_header") {
-        let mut bytes = response.headers;
-        bytes.extend_from_slice(&response.body);
+        let mut bytes = response_headers;
+        bytes.extend_from_slice(&response_body);
         bytes
     } else {
-        response.body
+        response_body
     };
     if curl_bool_property(&handle, "__curl_returntransfer") {
         Ok(Value::string(body))
@@ -600,6 +638,19 @@ pub(in crate::builtins::modules) fn builtin_curl_copy_handle(
         "__curl_maxredirs",
         "__curl_failonerror",
         "__curl_httpheader",
+        "__curl_headerfunction",
+        "__curl_writefunction",
+        "__curl_buffersize",
+        "__curl_cainfo",
+        "__curl_httpauth",
+        "__curl_protocols",
+        "__curl_proxy",
+        "__curl_proxyauth",
+        "__curl_proxyport",
+        "__curl_proxytype",
+        "__curl_proxyuserpwd",
+        "__curl_redir_protocols",
+        "__curl_userpwd",
         "__curl_post",
         "__curl_postfields",
         "__curl_customrequest",
@@ -667,7 +718,8 @@ fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
         method,
         headers,
         body,
-        timeout: curl_timeout(handle),
+        connect_timeout: curl_connect_timeout(handle),
+        timeout: curl_timeout(handle).max(Duration::from_secs(120)),
         follow_redirects: curl_bool_property(handle, "__curl_followlocation"),
         max_redirects: curl_int_setting(handle, "__curl_maxredirs", 5).clamp(0, 20) as usize,
     })
@@ -696,10 +748,10 @@ fn execute_single_http_request(request: &CurlRequest) -> Result<CurlResponse, (i
     let Some(addr) = addrs.next() else {
         return Err((7, "failed to resolve local cURL host".to_owned()));
     };
-    let mut stream = TcpStream::connect_timeout(&addr, request.timeout)
+    let mut stream = TcpStream::connect_timeout(&addr, request.connect_timeout)
         .map_err(|error| (7, format!("failed to connect local cURL host: {error}")))?;
     stream
-        .set_read_timeout(Some(request.timeout))
+        .set_read_timeout(Some(curl_read_poll_timeout(request.timeout)))
         .map_err(|error| (28, format!("failed to set cURL read timeout: {error}")))?;
     stream
         .set_write_timeout(Some(request.timeout))
@@ -708,7 +760,9 @@ fn execute_single_http_request(request: &CurlRequest) -> Result<CurlResponse, (i
     write!(
         payload,
         "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
-        request.method, request.path, request.host
+        request.method,
+        request.path,
+        request_host_header(&request.host, request.port)
     )
     .expect("write to vec");
     for header in &request.headers {
@@ -723,28 +777,71 @@ fn execute_single_http_request(request: &CurlRequest) -> Result<CurlResponse, (i
     stream
         .write_all(&payload)
         .map_err(|error| (55, format!("failed to write cURL request: {error}")))?;
-    let mut bytes = Vec::new();
-    stream
-        .read_to_end(&mut bytes)
-        .map_err(|error| (56, format!("failed to read cURL response: {error}")))?;
+    let bytes = read_http_response(&mut stream, &request.method, request.timeout)?;
     let mut response = parse_http_response(&bytes)?;
     response.effective_url = request.url.clone();
     Ok(response)
 }
 
+fn read_http_response(
+    stream: &mut TcpStream,
+    method: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, (i64, String)> {
+    let start = Instant::now();
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(bytes),
+            Ok(read) => {
+                bytes.extend_from_slice(&buffer[..read]);
+                if http_response_complete(&bytes, method)? {
+                    return Ok(bytes);
+                }
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if http_response_complete(&bytes, method)? {
+                    return Ok(bytes);
+                }
+                if start.elapsed() >= timeout {
+                    return Err((28, "cURL operation timed out".to_owned()));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err((56, format!("failed to read cURL response: {error}"))),
+        }
+    }
+}
+
+fn http_response_complete(bytes: &[u8], method: &str) -> Result<bool, (i64, String)> {
+    let Some(header_end) = response_header_end(bytes) else {
+        return Ok(false);
+    };
+    let header = String::from_utf8_lossy(&bytes[..header_end]);
+    let status = response_status(&header)?;
+    if method.eq_ignore_ascii_case("HEAD") || matches!(status, 100..=199 | 204 | 304) {
+        return Ok(true);
+    }
+    if header_has_chunked_transfer_encoding(&header) {
+        return Ok(chunked_response_complete(&bytes[header_end + 4..]));
+    }
+    let Some(content_length) = response_content_length(&header) else {
+        return Ok(false);
+    };
+    Ok(bytes.len() >= header_end + 4 + content_length)
+}
+
+fn response_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
 fn parse_http_response(bytes: &[u8]) -> Result<CurlResponse, (i64, String)> {
-    let header_end = bytes
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| (56, "invalid HTTP response".to_owned()))?;
+    let header_end =
+        response_header_end(bytes).ok_or_else(|| (56, "invalid HTTP response".to_owned()))?;
     let headers = bytes[..header_end + 4].to_vec();
     let header = String::from_utf8_lossy(&bytes[..header_end]);
-    let status = header
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| (56, "invalid HTTP status line".to_owned()))?;
+    let status = response_status(&header)?;
     let location = header.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("location")
@@ -758,6 +855,83 @@ fn parse_http_response(bytes: &[u8]) -> Result<CurlResponse, (i64, String)> {
         body: bytes[header_end + 4..].to_vec(),
         location,
     })
+}
+
+fn request_host_header(host: &str, port: u16) -> String {
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    if port == 80 {
+        host
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn response_status(header: &str) -> Result<u16, (i64, String)> {
+    header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| (56, "invalid HTTP status line".to_owned()))
+}
+
+fn response_content_length(header: &str) -> Option<usize> {
+    header.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    })
+}
+
+fn header_has_chunked_transfer_encoding(header: &str) -> bool {
+    header.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+    })
+}
+
+fn chunked_response_complete(body: &[u8]) -> bool {
+    let mut offset = 0;
+    loop {
+        let Some(line_end) = find_crlf(&body[offset..]) else {
+            return false;
+        };
+        let size_line = &body[offset..offset + line_end];
+        let size_text = String::from_utf8_lossy(size_line);
+        let Some(size) = size_text
+            .split(';')
+            .next()
+            .and_then(|value| usize::from_str_radix(value.trim(), 16).ok())
+        else {
+            return false;
+        };
+        offset += line_end + 2;
+        if size == 0 {
+            return body[offset..]
+                .windows(4)
+                .any(|window| window == b"\r\n\r\n")
+                || body.get(offset..offset + 2) == Some(b"\r\n");
+        }
+        let next_offset = offset.saturating_add(size).saturating_add(2);
+        if body.len() < next_offset || body.get(offset + size..next_offset) != Some(b"\r\n") {
+            return false;
+        }
+        offset = next_offset;
+    }
+}
+
+fn find_crlf(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(2).position(|window| window == b"\r\n")
 }
 
 fn parse_http_url(url: &str) -> Result<ParsedUrl, (i64, String)> {
@@ -815,6 +989,53 @@ fn curl_post_body(handle: &ObjectRef) -> Result<CurlPostBody, CurlTransportError
             .map_err(|error| (43, error.message().to_owned())),
         None => Ok((Vec::new(), None)),
     }
+}
+
+fn curl_apply_response_callbacks(handle: &ObjectRef, headers: &[u8], body: &[u8]) {
+    if let Some(target) = curl_callback_target(handle, "__curl_headerfunction", "stream_headers") {
+        target.set_property("headers", Value::String(PhpString::from(headers.to_vec())));
+        target.set_property("done_headers", Value::Bool(true));
+    }
+
+    if let Some(target) = curl_callback_target(handle, "__curl_writefunction", "stream_body") {
+        let previous = match target.get_property("response_data") {
+            Some(Value::String(value)) => value.as_bytes().to_vec(),
+            _ => Vec::new(),
+        };
+        let existing_bytes = match target.get_property("response_bytes") {
+            Some(Value::Int(value)) if value > 0 => value as usize,
+            _ => 0,
+        };
+        let limit = match target.get_property("response_byte_limit") {
+            Some(Value::Int(value)) if value >= 0 => Some(value as usize),
+            _ => None,
+        };
+        let allowed = limit.map_or(body.len(), |limit| limit.saturating_sub(existing_bytes));
+        let kept = body.len().min(allowed);
+        let mut response = previous;
+        response.extend_from_slice(&body[..kept]);
+        target.set_property("response_data", Value::String(PhpString::from(response)));
+        target.set_property(
+            "response_bytes",
+            Value::Int(existing_bytes.saturating_add(kept) as i64),
+        );
+    }
+}
+
+fn curl_callback_target(handle: &ObjectRef, property: &str, method: &str) -> Option<ObjectRef> {
+    let Value::Array(callback) = handle.get_property(property)? else {
+        return None;
+    };
+    let Some(Value::Object(target)) = callback.get(&ArrayKey::Int(0)) else {
+        return None;
+    };
+    let Some(Value::String(callback_method)) = callback.get(&ArrayKey::Int(1)) else {
+        return None;
+    };
+    callback_method
+        .to_string_lossy()
+        .eq_ignore_ascii_case(method)
+        .then_some(target.clone())
 }
 
 fn form_encode_array(array: &PhpArray) -> String {
@@ -891,20 +1112,56 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+fn curl_connect_timeout(handle: &ObjectRef) -> Duration {
+    if let Some(ms) = curl_duration_millis_setting(handle, "__curl_connecttimeout_ms") {
+        return clamp_duration_millis(ms, 1, 30_000);
+    }
+    if let Some(seconds) = curl_duration_seconds_setting(handle, "__curl_connecttimeout") {
+        return clamp_duration_millis(seconds * 1000.0, 1, 30_000);
+    }
+    Duration::from_secs(10)
+}
+
 fn curl_timeout(handle: &ObjectRef) -> Duration {
-    if let Some(Value::Int(ms)) = handle.get_property("__curl_connecttimeout_ms") {
-        return Duration::from_millis(ms.clamp(1, 30_000) as u64);
+    if let Some(ms) = curl_duration_millis_setting(handle, "__curl_timeout_ms") {
+        return clamp_duration_millis(ms, 1, 300_000);
     }
-    if let Some(Value::Int(seconds)) = handle.get_property("__curl_connecttimeout") {
-        return Duration::from_secs(seconds.clamp(1, 30) as u64);
+    if let Some(seconds) = curl_duration_seconds_setting(handle, "__curl_timeout") {
+        return clamp_duration_millis(seconds * 1000.0, 1, 300_000);
     }
-    if let Some(Value::Int(ms)) = handle.get_property("__curl_timeout_ms") {
-        return Duration::from_millis(ms.clamp(1, 30_000) as u64);
+    Duration::from_secs(60)
+}
+
+fn curl_read_poll_timeout(timeout: Duration) -> Duration {
+    timeout
+        .min(Duration::from_millis(250))
+        .max(Duration::from_millis(1))
+}
+
+fn curl_duration_seconds_setting(handle: &ObjectRef, name: &str) -> Option<f64> {
+    curl_duration_numeric_setting(handle, name)
+}
+
+fn curl_duration_millis_setting(handle: &ObjectRef, name: &str) -> Option<f64> {
+    curl_duration_numeric_setting(handle, name)
+}
+
+fn curl_duration_numeric_setting(handle: &ObjectRef, name: &str) -> Option<f64> {
+    let value = handle.get_property(name)?;
+    match value {
+        Value::Int(value) => Some(value as f64),
+        Value::Float(value) => Some(value.to_f64()),
+        value => crate::convert::to_float(&value).ok(),
     }
-    if let Some(Value::Int(seconds)) = handle.get_property("__curl_timeout") {
-        return Duration::from_secs(seconds.clamp(1, 30) as u64);
-    }
-    Duration::from_secs(5)
+}
+
+fn clamp_duration_millis(value: f64, min: u64, max: u64) -> Duration {
+    let millis = if value.is_finite() {
+        value.ceil() as i128
+    } else {
+        i128::from(max)
+    };
+    Duration::from_millis(millis.clamp(i128::from(min), i128::from(max)) as u64)
 }
 
 fn curl_handle_object() -> ObjectRef {
@@ -921,6 +1178,14 @@ fn reset_curl_handle(object: &ObjectRef) {
     object.set_property("__curl_effective_url", Value::String(PhpString::from("")));
     object.set_property("__curl_header_size", Value::Int(0));
     object.set_property("__curl_total_time", Value::Float(FloatValue::from_f64(0.0)));
+    object.set_property(
+        "__curl_last_response_headers",
+        Value::String(PhpString::from("")),
+    );
+    object.set_property(
+        "__curl_last_response_body",
+        Value::String(PhpString::from("")),
+    );
 }
 
 fn curl_runtime_class(name: &str) -> ClassEntry {
@@ -985,6 +1250,19 @@ fn set_curl_option(handle: &ObjectRef, option: i64, value: Value) -> BuiltinResu
         CURLOPT_MAXREDIRS => "__curl_maxredirs",
         CURLOPT_FAILONERROR => "__curl_failonerror",
         CURLOPT_HTTPHEADER => "__curl_httpheader",
+        CURLOPT_HEADERFUNCTION => "__curl_headerfunction",
+        CURLOPT_WRITEFUNCTION => "__curl_writefunction",
+        CURLOPT_BUFFERSIZE => "__curl_buffersize",
+        CURLOPT_CAINFO => "__curl_cainfo",
+        CURLOPT_HTTPAUTH => "__curl_httpauth",
+        CURLOPT_PROTOCOLS => "__curl_protocols",
+        CURLOPT_PROXY => "__curl_proxy",
+        CURLOPT_PROXYAUTH => "__curl_proxyauth",
+        CURLOPT_PROXYPORT => "__curl_proxyport",
+        CURLOPT_PROXYTYPE => "__curl_proxytype",
+        CURLOPT_PROXYUSERPWD => "__curl_proxyuserpwd",
+        CURLOPT_REDIR_PROTOCOLS => "__curl_redir_protocols",
+        CURLOPT_USERPWD => "__curl_userpwd",
         CURLOPT_POST => "__curl_post",
         CURLOPT_POSTFIELDS => "__curl_postfields",
         CURLOPT_CUSTOMREQUEST => "__curl_customrequest",
@@ -1145,6 +1423,7 @@ struct CurlRequest {
     method: String,
     headers: Vec<String>,
     body: Vec<u8>,
+    connect_timeout: Duration,
     timeout: Duration,
     follow_redirects: bool,
     max_redirects: usize,
@@ -1259,7 +1538,9 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut request = [0_u8; 1024];
             let read = stream.read(&mut request).expect("read request");
-            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /wp-json"));
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /wp-json"));
+            assert!(request.contains(&format!("Host: 127.0.0.1:{port}\r\n")));
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
                 .expect("write response");
@@ -1302,6 +1583,197 @@ mod tests {
             .expect("info"),
             Value::Int(200)
         );
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_exec_stops_after_complete_content_length_response() {
+        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
+        let _override = NetTestsOverride::set(true);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /keepalive"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .expect("write response");
+            thread::sleep(Duration::from_millis(500));
+        });
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string(format!("http://127.0.0.1:{port}/keepalive"))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        for (option, value) in [
+            (CURLOPT_RETURNTRANSFER, Value::Bool(true)),
+            (CURLOPT_TIMEOUT_MS, Value::Int(100)),
+        ] {
+            builtin_curl_setopt(
+                &mut context,
+                vec![handle.clone(), Value::Int(option), value],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("setopt");
+        }
+
+        assert_eq!(
+            builtin_curl_exec(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("exec"),
+            Value::string("OK")
+        );
+        assert_eq!(
+            builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
+                .expect("errno"),
+            Value::Int(0)
+        );
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_exec_uses_request_timeout_for_delayed_response_reads() {
+        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
+        let _override = NetTestsOverride::set(true);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /delayed"));
+            thread::sleep(Duration::from_millis(150));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nLATE")
+                .expect("write response");
+        });
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string(format!("http://127.0.0.1:{port}/delayed"))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        for (option, value) in [
+            (CURLOPT_RETURNTRANSFER, Value::Bool(true)),
+            (CURLOPT_CONNECTTIMEOUT_MS, Value::Int(50)),
+            (CURLOPT_TIMEOUT_MS, Value::Int(1_000)),
+        ] {
+            builtin_curl_setopt(
+                &mut context,
+                vec![handle.clone(), Value::Int(option), value],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("setopt");
+        }
+
+        assert_eq!(
+            builtin_curl_exec(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("exec"),
+            Value::string("LATE")
+        );
+        assert_eq!(
+            builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
+                .expect("errno"),
+            Value::Int(0)
+        );
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_exec_populates_requests_transport_callback_fields() {
+        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
+        let _override = NetTestsOverride::set(true);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /callbacks"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .expect("write response");
+        });
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string(format!("http://127.0.0.1:{port}/callbacks"))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        let transport = ObjectRef::new_with_display_name(
+            &curl_runtime_class("WpOrg\\Requests\\Transport\\Curl"),
+            "WpOrg\\Requests\\Transport\\Curl",
+        );
+        transport.set_property("headers", Value::string(""));
+        transport.set_property("response_data", Value::string(""));
+        transport.set_property("response_bytes", Value::Int(0));
+        transport.set_property("response_byte_limit", Value::Bool(false));
+
+        for (option, value) in [
+            (CURLOPT_RETURNTRANSFER, Value::Bool(true)),
+            (
+                CURLOPT_HEADERFUNCTION,
+                Value::packed_array(vec![
+                    Value::Object(transport.clone()),
+                    Value::string("stream_headers"),
+                ]),
+            ),
+            (
+                CURLOPT_WRITEFUNCTION,
+                Value::packed_array(vec![
+                    Value::Object(transport.clone()),
+                    Value::string("stream_body"),
+                ]),
+            ),
+        ] {
+            builtin_curl_setopt(
+                &mut context,
+                vec![handle.clone(), Value::Int(option), value],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("setopt");
+        }
+
+        assert_eq!(
+            builtin_curl_exec(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("exec"),
+            Value::string("OK")
+        );
+        assert_eq!(
+            transport.get_property("response_data"),
+            Some(Value::string("OK"))
+        );
+        assert_eq!(
+            transport.get_property("response_bytes"),
+            Some(Value::Int(2))
+        );
+        let Some(Value::String(headers)) = transport.get_property("headers") else {
+            panic!("headers should be populated");
+        };
+        assert!(headers.to_string_lossy().starts_with("HTTP/1.1 200 OK"));
         server.join().expect("server");
     }
 
@@ -1351,6 +1823,11 @@ mod tests {
                 CURLOPT_HTTPHEADER,
                 Value::packed_array(vec![Value::string("X-Test: yes")]),
             ),
+            (CURLOPT_HEADERFUNCTION, Value::Null),
+            (CURLOPT_WRITEFUNCTION, Value::Null),
+            (CURLOPT_BUFFERSIZE, Value::Int(16_384)),
+            (CURLOPT_PROTOCOLS, Value::Int(3)),
+            (CURLOPT_REDIR_PROTOCOLS, Value::Int(3)),
         ] {
             builtin_curl_setopt(
                 &mut context,

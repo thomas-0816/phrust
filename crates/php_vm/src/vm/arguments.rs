@@ -281,8 +281,18 @@ fn bind_arguments(
             break;
         }
         if let Some(arg) = bound[index].take() {
+            let value_reference = match &arg.value {
+                Value::Reference(cell) => Some(cell.clone()),
+                _ => None,
+            };
+            let value = value_reference
+                .as_ref()
+                .map(ReferenceCell::get)
+                .unwrap_or_else(|| arg.value.clone());
             let reference = if param.by_ref {
-                if let Some(reference) = call_argument_reference_cell(compiled, &arg, stack)
+                if let Some(reference) = value_reference {
+                    Some(reference)
+                } else if let Some(reference) = call_argument_reference_cell(compiled, &arg, stack)
                     .map_err(|message| {
                         VmError::fatal("E_PHP_VM_BY_REF_BINDING", "arguments", message)
                             .with_context("function", &function.name)
@@ -308,15 +318,12 @@ fn bind_arguments(
             };
             trace_args.push(FrameTraceArgument {
                 name: None,
-                value: trace_value_for_param(&arg.value, param_is_sensitive(param)),
+                value: trace_value_for_param(&value, param_is_sensitive(param)),
             });
             if highest_frame_param_index.is_some_and(|highest| index <= highest) {
-                frame_args.push(arg.value.clone());
+                frame_args.push(value.clone());
             }
-            prepared.push(PreparedArg {
-                value: arg.value,
-                reference,
-            });
+            prepared.push(PreparedArg { value, reference });
         } else if let Some(default) = &param.default {
             let value = inline_constant_value(default);
             trace_args.push(FrameTraceArgument {

@@ -1,11 +1,11 @@
 //! Spl builtin registry slice.
 
 use super::core::*;
-use crate::Value;
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
+use crate::{CallableValue, Value};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
@@ -76,10 +76,12 @@ pub(in crate::builtins::modules) fn builtin_spl_object_id(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("spl_object_id", &args, 1)?;
-    let Value::Object(object) = deref_value(&args[0]) else {
-        return Err(type_error("spl_object_id", "object", &args[0]));
+    let id = match deref_value(&args[0]) {
+        Value::Object(object) => object.id(),
+        Value::Callable(CallableValue::Closure(payload)) => payload.id,
+        _ => return Err(type_error("spl_object_id", "object", &args[0])),
     };
-    Ok(Value::Int(object.id() as i64))
+    Ok(Value::Int(id as i64))
 }
 pub(in crate::builtins::modules) fn builtin_spl_object_hash(
     _context: &mut BuiltinContext<'_>,
@@ -87,8 +89,10 @@ pub(in crate::builtins::modules) fn builtin_spl_object_hash(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("spl_object_hash", &args, 1)?;
-    let Value::Object(object) = deref_value(&args[0]) else {
-        return Err(type_error("spl_object_hash", "object", &args[0]));
+    let id = match deref_value(&args[0]) {
+        Value::Object(object) => object.id(),
+        Value::Callable(CallableValue::Closure(payload)) => payload.id,
+        _ => return Err(type_error("spl_object_hash", "object", &args[0])),
     };
-    Ok(Value::string(format!("{:032x}", object.id())))
+    Ok(Value::string(format!("{id:032x}")))
 }

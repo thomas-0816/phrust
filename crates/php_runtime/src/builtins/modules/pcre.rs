@@ -6,6 +6,7 @@ use crate::builtins::{
     BuiltinResult, RuntimeSourceSpan,
 };
 use crate::{CallableValue, PhpArray, Value, pcre, to_string};
+use std::sync::Arc;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("preg_grep", builtin_preg_grep, BuiltinCompatibility::Php),
@@ -138,7 +139,7 @@ pub(in crate::builtins::modules) fn builtin_preg_match_all(
     let output = if flags & pcre::PREG_SET_ORDER != 0 {
         Value::packed_array(all)
     } else {
-        pattern_order_matches(all)
+        pattern_order_matches(all, compiled.capture_names().len())
     };
     assign_reference_arg(args.get(2), output);
     context.clear_preg_last_error();
@@ -152,30 +153,81 @@ pub(in crate::builtins::modules) fn builtin_preg_replace(
     if args.len() < 3 || args.len() > 5 {
         return Err(arity_error("preg_replace", "three to five argument(s)"));
     }
-    let pattern = string_arg("preg_replace", &args[0])?;
-    let replacement = string_arg("preg_replace", &args[1])?;
     let limit = args
         .get(3)
         .map(|value| int_arg("preg_replace", value))
         .transpose()?
         .unwrap_or(-1);
-    let Some(compiled) = compile_preg_pattern(context, pattern) else {
+    let Some(specs) = preg_replace_specs(context, &args[0], &args[1])? else {
         return Ok(Value::Bool(false));
     };
     let mut count = 0;
-    let result = match preg_replace_subject(
-        &compiled,
-        replacement.as_bytes(),
-        &args[2],
-        limit,
-        &mut count,
-    ) {
+    let result = match preg_replace_subject_with_specs(&specs, &args[2], limit, &mut count) {
         Ok(result) => result,
         Err(error) => return preg_failure(context, error),
     };
     assign_reference_arg(args.get(4), Value::Int(count));
     context.clear_preg_last_error();
     Ok(result)
+}
+
+fn preg_replace_specs(
+    context: &mut BuiltinContext<'_>,
+    pattern: &Value,
+    replacement: &Value,
+) -> Result<Option<Vec<(Arc<pcre::CompiledPattern>, Vec<u8>)>>, BuiltinError> {
+    let replacement_array = match deref_value(replacement) {
+        Value::Array(array) => Some(array),
+        _ => None,
+    };
+
+    let patterns = match deref_value(pattern) {
+        Value::Array(array) => {
+            let mut patterns = Vec::new();
+            for (_, value) in array.iter() {
+                patterns.push(string_arg("preg_replace", value)?);
+            }
+            patterns
+        }
+        _ if replacement_array.is_some() => {
+            return Err(type_error("preg_replace", "array", pattern));
+        }
+        _ => vec![string_arg("preg_replace", pattern)?],
+    };
+
+    let replacements = if let Some(array) = replacement_array {
+        let mut replacements = Vec::new();
+        for (_, value) in array.iter() {
+            replacements.push(string_arg("preg_replace", value)?.into_bytes());
+        }
+        PregReplaceReplacements::Array(replacements)
+    } else {
+        PregReplaceReplacements::Scalar(string_arg("preg_replace", replacement)?.into_bytes())
+    };
+
+    let mut specs = Vec::new();
+    for (index, pattern) in patterns.into_iter().enumerate() {
+        let Some(compiled) = compile_preg_pattern(context, pattern) else {
+            return Ok(None);
+        };
+        let replacement = replacements.get(index).to_vec();
+        specs.push((compiled, replacement));
+    }
+    Ok(Some(specs))
+}
+
+enum PregReplaceReplacements {
+    Scalar(Vec<u8>),
+    Array(Vec<Vec<u8>>),
+}
+
+impl PregReplaceReplacements {
+    fn get(&self, index: usize) -> &[u8] {
+        match self {
+            Self::Scalar(value) => value,
+            Self::Array(values) => values.get(index).map_or(b"".as_slice(), Vec::as_slice),
+        }
+    }
 }
 pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
     context: &mut BuiltinContext<'_>,

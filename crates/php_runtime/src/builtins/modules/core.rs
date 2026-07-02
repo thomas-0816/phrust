@@ -61,7 +61,17 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "ignore_user_abort",
+        builtin_config_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "error_reporting",
+        builtin_error_handling_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "error_log",
         builtin_error_handling_requires_vm,
         BuiltinCompatibility::Php,
     ),
@@ -192,6 +202,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_memory_get_usage,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("mail", builtin_mail, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "ob_end_clean",
         builtin_output_buffering_requires_vm,
@@ -518,6 +529,31 @@ pub(in crate::builtins::modules) fn builtin_set_time_limit(
             "set_time_limit",
             "Argument #1 ($seconds) must be greater than or equal to 0",
         ));
+    }
+    Ok(Value::Bool(true))
+}
+
+pub(in crate::builtins::modules) fn builtin_mail(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(3..=5).contains(&args.len()) {
+        return Err(arity_error("mail", "3 to 5 argument(s)"));
+    }
+    string_arg("mail", &args[0])?;
+    string_arg("mail", &args[1])?;
+    string_arg("mail", &args[2])?;
+    if let Some(headers) = args.get(3) {
+        match deref_value(headers) {
+            Value::Array(_) => {}
+            _ => {
+                string_arg("mail", headers)?;
+            }
+        }
+    }
+    if let Some(params) = args.get(4) {
+        string_arg("mail", params)?;
     }
     Ok(Value::Bool(true))
 }
@@ -2145,8 +2181,13 @@ pub(in crate::builtins::modules) fn assign_reference_arg(argument: Option<&Value
     }
 }
 
-pub(in crate::builtins::modules) fn pattern_order_matches(matches: Vec<Value>) -> Value {
-    let mut grouped: Vec<PhpArray> = Vec::new();
+pub(in crate::builtins::modules) fn pattern_order_matches(
+    matches: Vec<Value>,
+    capture_count: usize,
+) -> Value {
+    let mut grouped: Vec<PhpArray> = std::iter::repeat_with(PhpArray::new)
+        .take(capture_count)
+        .collect();
     for match_value in matches {
         let Value::Array(captures) = match_value else {
             continue;
@@ -2165,9 +2206,8 @@ pub(in crate::builtins::modules) fn pattern_order_matches(matches: Vec<Value>) -
     Value::packed_array(grouped.into_iter().map(Value::Array).collect())
 }
 
-pub(in crate::builtins::modules) fn preg_replace_subject(
-    compiled: &pcre::CompiledPattern,
-    replacement: &[u8],
+pub(in crate::builtins::modules) fn preg_replace_subject_with_specs(
+    specs: &[(std::sync::Arc<pcre::CompiledPattern>, Vec<u8>)],
     subject: &Value,
     limit: i64,
     count: &mut i64,
@@ -2179,8 +2219,7 @@ pub(in crate::builtins::modules) fn preg_replace_subject(
                 let text = to_string(value).map_err(|message| {
                     pcre::PcreFailure::new(pcre::PREG_INTERNAL_ERROR, message)
                 })?;
-                let replaced =
-                    preg_replace_bytes(compiled, replacement, text.as_bytes(), limit, count)?;
+                let replaced = preg_replace_bytes_with_specs(specs, text.as_bytes(), limit, count)?;
                 output.insert(key.clone(), Value::string(replaced));
             }
             Ok(Value::Array(output))
@@ -2188,10 +2227,22 @@ pub(in crate::builtins::modules) fn preg_replace_subject(
         value => {
             let text = to_string(&value)
                 .map_err(|message| pcre::PcreFailure::new(pcre::PREG_INTERNAL_ERROR, message))?;
-            preg_replace_bytes(compiled, replacement, text.as_bytes(), limit, count)
-                .map(Value::string)
+            preg_replace_bytes_with_specs(specs, text.as_bytes(), limit, count).map(Value::string)
         }
     }
+}
+
+fn preg_replace_bytes_with_specs(
+    specs: &[(std::sync::Arc<pcre::CompiledPattern>, Vec<u8>)],
+    subject: &[u8],
+    limit: i64,
+    count: &mut i64,
+) -> Result<Vec<u8>, pcre::PcreFailure> {
+    let mut output = subject.to_vec();
+    for (compiled, replacement) in specs {
+        output = preg_replace_bytes(compiled, replacement, &output, limit, count)?;
+    }
+    Ok(output)
 }
 
 pub(in crate::builtins::modules) fn preg_replace_bytes(
@@ -2203,17 +2254,19 @@ pub(in crate::builtins::modules) fn preg_replace_bytes(
 ) -> Result<Vec<u8>, pcre::PcreFailure> {
     let mut output = Vec::new();
     let mut last_end = 0usize;
+    let mut local_count = 0i64;
     for captures in compiled.captures_iter(subject) {
         let captures = captures.map_err(pcre::PcreFailure::from)?;
         let Some(full) = captures.get(0) else {
             continue;
         };
-        if limit >= 0 && *count >= limit {
+        if limit >= 0 && local_count >= limit {
             break;
         }
         output.extend_from_slice(&subject[last_end..full.start()]);
         output.extend_from_slice(&expand_preg_replacement(replacement, &captures));
         last_end = full.end();
+        local_count += 1;
         *count += 1;
     }
     output.extend_from_slice(&subject[last_end..]);
@@ -2276,6 +2329,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
 ) -> Result<Vec<u8>, BuiltinError> {
     let mut output = Vec::new();
     let mut last_end = 0usize;
+    let mut local_count = 0i64;
     for captures in compiled.captures_iter(subject) {
         let captures = captures.map_err(|error| {
             let error = pcre::PcreFailure::from(error);
@@ -2284,7 +2338,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
         let Some(full) = captures.get(0) else {
             continue;
         };
-        if limit >= 0 && *count >= limit {
+        if limit >= 0 && local_count >= limit {
             break;
         }
         output.extend_from_slice(&subject[last_end..full.start()]);
@@ -2302,6 +2356,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
             .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
         output.extend_from_slice(callback_text.as_bytes());
         last_end = full.end();
+        local_count += 1;
         *count += 1;
     }
     output.extend_from_slice(&subject[last_end..]);
@@ -5556,9 +5611,10 @@ mod tests {
         JSON_THROW_ON_ERROR,
     };
     use crate::{
-        ArrayKey, BuiltinRegistry, ClassEntry, ClassFlags, FilesystemCapabilities, ObjectRef,
-        OutputBuffer, PhpArray, PhpString, ReferenceCell, ResourceTable, RuntimeHttpResponseState,
-        StreamFlags, StreamMetadata, StrtokState, Value, datetime, normalize_class_name, pcre,
+        ArrayKey, BuiltinRegistry, CallableValue, ClassEntry, ClassFlags, ClosurePayload,
+        FilesystemCapabilities, ObjectRef, OutputBuffer, PhpArray, PhpString, ReferenceCell,
+        ResourceTable, RuntimeHttpResponseState, StreamFlags, StreamMetadata, StrtokState, Value,
+        datetime, normalize_class_name, pcre,
     };
     use std::path::PathBuf;
 
@@ -5603,6 +5659,38 @@ mod tests {
         assert_eq!(
             call("is_numeric", vec![Value::Bool(true)], &mut output),
             Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn mail_accepts_wordpress_phpmailer_argument_shapes() {
+        let mut output = OutputBuffer::new();
+        assert_eq!(
+            call(
+                "mail",
+                vec![
+                    Value::string("admin@example.test"),
+                    Value::string("Subject"),
+                    Value::string("Body"),
+                    Value::string("Header: value"),
+                    Value::string("-fwordpress@example.test"),
+                ],
+                &mut output
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call(
+                "mail",
+                vec![
+                    Value::string("admin@example.test"),
+                    Value::string("Subject"),
+                    Value::string("Body"),
+                    Value::packed_array(vec![Value::string("Header: value")]),
+                ],
+                &mut output
+            ),
+            Value::Bool(true)
         );
     }
 
@@ -6582,6 +6670,54 @@ mod tests {
     }
 
     #[test]
+    fn file_get_contents_accepts_offset_and_length_arguments() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-stdlib-file-get-contents-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create temp root");
+        std::fs::write(root.join("fixture.txt"), b"abcdef").expect("write fixture");
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+        let mut output = OutputBuffer::new();
+
+        assert_eq!(
+            call_with_fs(
+                "file_get_contents",
+                vec![
+                    Value::string("fixture.txt"),
+                    Value::Bool(false),
+                    Value::Null,
+                    Value::Int(0),
+                    Value::Int(3),
+                ],
+                &mut output,
+                root.clone(),
+                capabilities.clone()
+            ),
+            Value::string("abc")
+        );
+        assert_eq!(
+            call_with_fs(
+                "file_get_contents",
+                vec![
+                    Value::string("fixture.txt"),
+                    Value::Bool(false),
+                    Value::Null,
+                    Value::Int(1),
+                    Value::Int(3),
+                ],
+                &mut output,
+                root.clone(),
+                capabilities
+            ),
+            Value::string("bcd")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn file_handle_builtins_cover_read_write_seek_and_modes() {
         let root =
             std::env::temp_dir().join(format!("phrust-stdlib-fileio-{}", std::process::id()));
@@ -7528,6 +7664,27 @@ mod tests {
             panic!("expected match rows");
         };
         assert_eq!(rows.len(), 2);
+        let no_matches = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match_all",
+                vec![
+                    Value::string(r#"/%.+?%/"#),
+                    Value::string("/"),
+                    Value::Reference(no_matches.clone()),
+                ],
+            ),
+            Value::Int(0)
+        );
+        let Value::Array(pattern_order) = no_matches.get() else {
+            panic!("expected pattern-order no-match array");
+        };
+        assert_eq!(pattern_order.len(), 1);
+        assert_eq!(
+            pattern_order.get(&ArrayKey::Int(0)),
+            Some(&Value::packed_array(Vec::new()))
+        );
         assert_eq!(
             call_in_context(&mut context, "preg_last_error", Vec::new()),
             Value::Int(pcre::PREG_NO_ERROR)
@@ -7555,6 +7712,75 @@ mod tests {
             Value::string("a:1 b:22")
         );
         assert_eq!(count.get(), Value::Int(2));
+
+        let array_pattern_count = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_replace",
+                vec![
+                    Value::packed_array(vec![Value::string("/a/"), Value::string("/b/")]),
+                    Value::packed_array(vec![Value::string("A"), Value::string("B")]),
+                    Value::string("abc"),
+                    Value::Int(-1),
+                    Value::Reference(array_pattern_count.clone()),
+                ],
+            ),
+            Value::string("ABc")
+        );
+        assert_eq!(array_pattern_count.get(), Value::Int(2));
+
+        let short_replacement_count = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_replace",
+                vec![
+                    Value::packed_array(vec![
+                        Value::string("/a/"),
+                        Value::string("/b/"),
+                        Value::string("/c/"),
+                    ]),
+                    Value::packed_array(vec![Value::string("A")]),
+                    Value::string("abc"),
+                    Value::Int(-1),
+                    Value::Reference(short_replacement_count.clone()),
+                ],
+            ),
+            Value::string("A")
+        );
+        assert_eq!(short_replacement_count.get(), Value::Int(3));
+
+        let mut keyed_subject = PhpArray::new();
+        keyed_subject.insert(
+            ArrayKey::String(PhpString::from_test_str("first")),
+            Value::string("aa"),
+        );
+        keyed_subject.insert(ArrayKey::Int(5), Value::string("aa"));
+        let keyed_subject_count = ReferenceCell::new(Value::Null);
+        let keyed_subject_result = call_in_context(
+            &mut context,
+            "preg_replace",
+            vec![
+                Value::string("/a/"),
+                Value::string("A"),
+                Value::Array(keyed_subject),
+                Value::Int(1),
+                Value::Reference(keyed_subject_count.clone()),
+            ],
+        );
+        let Value::Array(keyed_subject_result) = keyed_subject_result else {
+            panic!("expected keyed preg_replace subject array");
+        };
+        assert_eq!(
+            keyed_subject_result.get(&ArrayKey::String(PhpString::from_test_str("first"))),
+            Some(&Value::string("Aa"))
+        );
+        assert_eq!(
+            keyed_subject_result.get(&ArrayKey::Int(5)),
+            Some(&Value::string("Aa"))
+        );
+        assert_eq!(keyed_subject_count.get(), Value::Int(2));
 
         assert_eq!(
             call_in_context(
@@ -7649,13 +7875,25 @@ mod tests {
             call_in_context(
                 &mut context,
                 "date_default_timezone_set",
+                vec![Value::string("+0000")],
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "date_default_timezone_get", Vec::new()),
+            Value::string("+00:00")
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "date_default_timezone_set",
                 vec![Value::string("Mars/Base")],
             ),
             Value::Bool(false)
         );
         assert_eq!(
             call_in_context(&mut context, "date_default_timezone_get", Vec::new()),
-            Value::string("Europe/Berlin")
+            Value::string("+00:00")
         );
 
         let identifiers = array_strings(call_in_context(
@@ -7761,6 +7999,17 @@ mod tests {
         assert_eq!(
             call("spl_object_hash", vec![object], &mut output),
             Value::string(format!("{id:032x}"))
+        );
+
+        let closure = Value::Callable(CallableValue::Closure(ClosurePayload::new(1, Vec::new())));
+        let Value::Int(closure_id) = call("spl_object_id", vec![closure.clone()], &mut output)
+        else {
+            panic!("expected closure object id int");
+        };
+        assert!(closure_id > 0);
+        assert_eq!(
+            call("spl_object_hash", vec![closure], &mut output),
+            Value::string(format!("{closure_id:032x}"))
         );
     }
 
@@ -9016,6 +9265,33 @@ mod tests {
         );
         assert_eq!(
             call(
+                "addcslashes",
+                vec![Value::string(b"100%_a\\b".to_vec()), Value::string("_%\\")],
+                &mut output
+            ),
+            Value::string(b"100\\%\\_a\\\\b".to_vec())
+        );
+        assert_eq!(
+            call(
+                "addcslashes",
+                vec![Value::string("Ab-1"), Value::string("A..Za..z")],
+                &mut output
+            ),
+            Value::string("\\A\\b-1")
+        );
+        assert_eq!(
+            call(
+                "addcslashes",
+                vec![
+                    Value::string(b"A\0\n\t\x7f".to_vec()),
+                    Value::string(b"A\0\n\t\x7f".to_vec())
+                ],
+                &mut output
+            ),
+            Value::string(b"\\A\\000\\n\\t\\177".to_vec())
+        );
+        assert_eq!(
+            call(
                 "stripslashes",
                 vec![Value::string(b"a\\0b\\\"c\\\\d".to_vec())],
                 &mut output
@@ -9465,6 +9741,18 @@ mod tests {
             call(
                 "htmlspecialchars_decode",
                 vec![Value::string("&lt;a&amp;&quot;&#039;&gt;")],
+                &mut output
+            ),
+            Value::string("<a&\"'>")
+        );
+        assert_eq!(
+            call(
+                "html_entity_decode",
+                vec![
+                    Value::string("&lt;a&amp;&quot;&#039;&gt;"),
+                    Value::Int(3),
+                    Value::string("UTF-8")
+                ],
                 &mut output
             ),
             Value::string("<a&\"'>")
@@ -10618,6 +10906,27 @@ mod tests {
             Value::Array(expected_assoc)
         );
 
+        let mut key_second = PhpArray::new();
+        key_second.insert(ArrayKey::Int(1), Value::string("different"));
+        key_second.insert(
+            ArrayKey::String(PhpString::from_test_str("two")),
+            Value::Bool(false),
+        );
+        let mut expected_key = PhpArray::new();
+        expected_key.insert(ArrayKey::Int(1), Value::Int(1));
+        expected_key.insert(
+            ArrayKey::String(PhpString::from_test_str("two")),
+            Value::string("2"),
+        );
+        assert_eq!(
+            call(
+                "array_intersect_key",
+                vec![Value::Array(first.clone()), Value::Array(key_second)],
+                &mut output
+            ),
+            Value::Array(expected_key)
+        );
+
         let diff_second = Value::packed_array(vec![Value::string("1")]);
         let mut expected_diff = PhpArray::new();
         expected_diff.insert(ArrayKey::Int(0), Value::Int(0));
@@ -10649,6 +10958,23 @@ mod tests {
                 &mut output
             ),
             Value::Array(expected_diff_assoc)
+        );
+
+        let mut key_diff_second = PhpArray::new();
+        key_diff_second.insert(ArrayKey::Int(0), Value::string("different"));
+        let mut expected_diff_key = PhpArray::new();
+        expected_diff_key.insert(ArrayKey::Int(1), Value::Int(1));
+        expected_diff_key.insert(
+            ArrayKey::String(PhpString::from_test_str("two")),
+            Value::string("2"),
+        );
+        assert_eq!(
+            call(
+                "array_diff_key",
+                vec![Value::Array(first.clone()), Value::Array(key_diff_second)],
+                &mut output
+            ),
+            Value::Array(expected_diff_key)
         );
 
         let empty = Value::packed_array(Vec::new());

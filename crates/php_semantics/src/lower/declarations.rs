@@ -1019,29 +1019,35 @@ fn report_duplicate_declaration(
 
 fn collect_resolved_names(node: &SyntaxNode, block: &HirNamespaceBlock) -> Vec<ResolvedNameRecord> {
     let resolver = NameResolver::new(block.name(), block.imports());
+    let significant_tokens: Vec<_> = descendant_tokens::<TokenView<'_>>(node)
+        .filter(|token| !token.kind().is_trivia())
+        .collect();
     descendant_nodes::<Name<'_>>(node)
         .map(|name| {
             let source = crate::hir::QualifiedName::from_ast_name(name);
-            let context = infer_resolve_context(node, name);
+            let context = infer_resolve_context(&significant_tokens, name.text_range());
             let result = resolver.resolve(&source, context);
             ResolvedNameRecord::new(source, context, result, name.text_range())
         })
         .collect()
 }
 
-fn infer_resolve_context(root: &SyntaxNode, name: Name<'_>) -> ResolveContext {
-    match next_significant_token_text(root, name.text_range()) {
+fn infer_resolve_context(significant_tokens: &[TokenView<'_>], range: TextRange) -> ResolveContext {
+    match next_significant_token_text(significant_tokens, range) {
         Some("(") => ResolveContext::FunctionCall,
         Some("::") => ResolveContext::ClassLike,
         _ => ResolveContext::ConstantFetch,
     }
 }
 
-fn next_significant_token_text(root: &SyntaxNode, range: TextRange) -> Option<&str> {
-    descendant_tokens::<TokenView<'_>>(root)
-        .filter(|token| !token.kind().is_trivia())
-        .find(|token| token.text_range().start().to_usize() >= range.end().to_usize())
-        .map(|token| token.text())
+fn next_significant_token_text<'tree>(
+    significant_tokens: &'tree [TokenView<'tree>],
+    range: TextRange,
+) -> Option<&'tree str> {
+    let end = range.end().to_usize();
+    let index =
+        significant_tokens.partition_point(|token| token.text_range().start().to_usize() < end);
+    significant_tokens.get(index).map(|token| token.text())
 }
 
 fn top_level_item(node: &SyntaxNode) -> Option<TopLevelItem> {
@@ -1078,6 +1084,7 @@ mod tests {
     use crate::diagnostics::DiagnosticId;
     use crate::hir::{HirModule, NamespaceForm, TopLevelItemKind};
     use crate::scopes::{CaptureMode, ScopeKind};
+    use crate::symbols::resolution::ResolveContext;
     use php_ast::source_file;
     use php_syntax::parse_source_file;
 
@@ -1127,6 +1134,31 @@ mod tests {
                 .any(|item| item.kind() == TopLevelItemKind::Class)
         );
         assert!(namespaces[2].name().is_none());
+    }
+
+    #[test]
+    fn collects_resolved_name_contexts_with_indexed_token_lookup() {
+        let parse = parse_source_file("<?php Foo(); Foo::bar(); echo Foo;");
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", 0));
+        let diagnostics = collect_module_declarations(root, &mut database, module_id);
+        let module = database.module(module_id).expect("module");
+        let namespace = module
+            .namespaces()
+            .values()
+            .find(|namespace| namespace.name().is_none())
+            .expect("global namespace");
+        let contexts: Vec<_> = namespace
+            .resolved_names()
+            .iter()
+            .map(|record| (record.source().original().to_owned(), record.context()))
+            .collect();
+
+        assert!(diagnostics.is_empty());
+        assert!(contexts.contains(&("Foo".to_string(), ResolveContext::FunctionCall)));
+        assert!(contexts.contains(&("Foo".to_string(), ResolveContext::ClassLike)));
+        assert!(contexts.contains(&("Foo".to_string(), ResolveContext::ConstantFetch)));
     }
 
     #[test]

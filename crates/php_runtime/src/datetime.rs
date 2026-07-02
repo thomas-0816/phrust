@@ -22,7 +22,16 @@ pub const DEFAULT_TIMEZONE: &str = "UTC";
 /// Returns true when the identifier is in the deterministic standard-library registry.
 #[must_use]
 pub fn is_valid_timezone(identifier: &str) -> bool {
-    TIMEZONE_IDENTIFIERS.contains(&identifier)
+    normalize_timezone_identifier(identifier).is_some()
+}
+
+/// Returns PHP's canonical display name for a supported timezone identifier.
+#[must_use]
+pub fn normalize_timezone_identifier(identifier: &str) -> Option<String> {
+    if TIMEZONE_IDENTIFIERS.contains(&identifier) {
+        return Some(identifier.to_owned());
+    }
+    fixed_timezone_offset_seconds(identifier).map(timezone_offset_text)
 }
 
 /// Creates a `DateTime` runtime object.
@@ -58,9 +67,7 @@ pub fn dateinterval_object(seconds: i64) -> Value {
 /// Creates a `DateTimeZone` runtime object for a supported identifier.
 #[must_use]
 pub fn datetimezone_object(timezone: &str) -> Option<Value> {
-    if !is_valid_timezone(timezone) {
-        return None;
-    }
+    let timezone = normalize_timezone_identifier(timezone)?;
     let object =
         ObjectRef::new_with_display_name(&date_class("DateTimeZone", false), "DateTimeZone");
     object.set_property("timezone", Value::string(timezone));
@@ -246,8 +253,8 @@ pub fn format_timestamp(timestamp: i64, timezone: &str, format: &str) -> String 
                 timezone_offset_text(offset)
             )),
             'O' => output.push_str(&timezone_offset_text(offset).replace(':', "")),
-            'P' => output.push_str(timezone_offset_text(offset)),
-            'T' => output.push_str(timezone_abbreviation(timezone)),
+            'P' => output.push_str(&timezone_offset_text(offset)),
+            'T' => output.push_str(&timezone_abbreviation(timezone)),
             _ => output.push(marker),
         }
     }
@@ -321,14 +328,12 @@ pub fn with_timestamp(object: &ObjectRef, timestamp: i64, immutable: bool) -> Va
 /// Returns a DateTime-like object with a changed timezone.
 #[must_use]
 pub fn with_timezone(object: &ObjectRef, timezone: &str, immutable: bool) -> Option<Value> {
-    if !is_valid_timezone(timezone) {
-        return None;
-    }
+    let timezone = normalize_timezone_identifier(timezone)?;
     if immutable {
         Some(date_object(
             &object.display_name(),
             object_timestamp(object).unwrap_or(0),
-            timezone,
+            &timezone,
         ))
     } else {
         object.set_property("timezone", Value::string(timezone));
@@ -363,11 +368,8 @@ pub fn diff_objects(left: &ObjectRef, right: &ObjectRef) -> Value {
 }
 
 fn date_object(class_name: &str, timestamp: i64, timezone: &str) -> Value {
-    let timezone = if is_valid_timezone(timezone) {
-        timezone
-    } else {
-        DEFAULT_TIMEZONE
-    };
+    let timezone =
+        normalize_timezone_identifier(timezone).unwrap_or_else(|| DEFAULT_TIMEZONE.to_owned());
     let object = ObjectRef::new_with_display_name(
         &date_class(class_name, false),
         display_class_name(class_name),
@@ -541,6 +543,9 @@ fn object_timezone_or_utc(object: &ObjectRef) -> String {
 }
 
 fn timezone_offset_seconds(timezone: &str) -> i64 {
+    if let Some(offset) = fixed_timezone_offset_seconds(timezone) {
+        return offset;
+    }
     match timezone {
         "Europe/Berlin" => 3_600,
         "Europe/London" | "UTC" | "GMT" => 0,
@@ -554,32 +559,73 @@ fn timezone_offset_seconds(timezone: &str) -> i64 {
     }
 }
 
-fn timezone_offset_text(offset: i64) -> &'static str {
-    match offset {
-        3_600 => "+01:00",
-        7_200 => "+02:00",
-        -18_000 => "-05:00",
-        -21_600 => "-06:00",
-        -28_800 => "-08:00",
-        32_400 => "+09:00",
-        36_000 => "+10:00",
-        _ => "+00:00",
+fn timezone_offset_text(offset: i64) -> String {
+    let sign = if offset < 0 { '-' } else { '+' };
+    let absolute = offset.abs();
+    let hours = absolute / 3_600;
+    let minutes = (absolute % 3_600) / 60;
+    format!("{sign}{hours:02}:{minutes:02}")
+}
+
+fn timezone_abbreviation(timezone: &str) -> String {
+    if let Some(offset) = fixed_timezone_offset_seconds(timezone) {
+        return format!("GMT{}", timezone_offset_text(offset).replace(':', ""));
+    }
+    match timezone {
+        "Europe/Berlin" => "CET".to_owned(),
+        "GMT" => "GMT".to_owned(),
+        "Europe/London" | "UTC" => "UTC".to_owned(),
+        "Africa/Johannesburg" => "SAST".to_owned(),
+        "America/New_York" => "EST".to_owned(),
+        "America/Chicago" => "CST".to_owned(),
+        "America/Los_Angeles" => "PST".to_owned(),
+        "Asia/Tokyo" => "JST".to_owned(),
+        "Australia/Sydney" => "AEST".to_owned(),
+        _ => "UTC".to_owned(),
     }
 }
 
-fn timezone_abbreviation(timezone: &str) -> &'static str {
-    match timezone {
-        "Europe/Berlin" => "CET",
-        "GMT" => "GMT",
-        "Europe/London" | "UTC" => "UTC",
-        "Africa/Johannesburg" => "SAST",
-        "America/New_York" => "EST",
-        "America/Chicago" => "CST",
-        "America/Los_Angeles" => "PST",
-        "Asia/Tokyo" => "JST",
-        "Australia/Sydney" => "AEST",
-        _ => "UTC",
+fn fixed_timezone_offset_seconds(identifier: &str) -> Option<i64> {
+    let identifier = identifier.trim();
+    let mut chars = identifier.chars();
+    let sign = match chars.next()? {
+        '+' => 1_i64,
+        '-' => -1_i64,
+        _ => return None,
+    };
+    let rest = chars.as_str();
+    let (hours, minutes) = if let Some((hours, minutes)) = rest.split_once(':') {
+        if hours.is_empty()
+            || hours.len() > 2
+            || minutes.len() != 2
+            || !hours.bytes().all(|byte| byte.is_ascii_digit())
+            || !minutes.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        (hours.parse::<i64>().ok()?, minutes.parse::<i64>().ok()?)
+    } else {
+        if rest.is_empty() || rest.len() > 4 || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let (hours, minutes) = match rest.len() {
+            1 | 2 => (rest.parse::<i64>().ok()?, 0),
+            3 => (
+                rest[..1].parse::<i64>().ok()?,
+                rest[1..].parse::<i64>().ok()?,
+            ),
+            4 => (
+                rest[..2].parse::<i64>().ok()?,
+                rest[2..].parse::<i64>().ok()?,
+            ),
+            _ => return None,
+        };
+        (hours, minutes)
+    };
+    if hours > 99 || minutes > 59 {
+        return None;
     }
+    Some(sign * (hours * 3_600 + minutes * 60))
 }
 
 #[derive(Clone, Copy)]

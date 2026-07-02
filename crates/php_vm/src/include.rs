@@ -118,7 +118,8 @@ impl IncludeCache {
         optimization_level: OptimizationLevel,
     ) -> Result<Arc<CompiledUnit>, VmError> {
         loop {
-            let key = CompiledIncludeKey::new(resolved, optimization_level);
+            let loaded = loader.load_resolved(resolved.canonical_path.clone())?;
+            let key = CompiledIncludeKey::new(resolved, optimization_level, &loaded.source);
             let shard_index = self.compile_shard_index(&key);
             {
                 let mut shard = self.compile_shards[shard_index]
@@ -152,7 +153,7 @@ impl IncludeCache {
             }
 
             self.stats.compile_misses.fetch_add(1, Ordering::Relaxed);
-            let compiled = match compile_include(loader, resolved, optimization_level) {
+            let compiled = match compile_loaded_include(loaded, optimization_level) {
                 Ok(compiled) => {
                     let compiled = Arc::new(compiled);
                     let mut shard = self.compile_shards[shard_index]
@@ -698,18 +699,32 @@ struct CompiledIncludeKey {
     len: u64,
     modified_unix_nanos: Option<u128>,
     readonly: bool,
+    local_dependencies: Vec<CompiledIncludeDependencyKey>,
     compiler_version: &'static str,
     debug_assertions: bool,
     optimization_level: &'static str,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CompiledIncludeDependencyKey {
+    canonical_path: PathBuf,
+    len: u64,
+    modified_unix_nanos: Option<u128>,
+    readonly: bool,
+}
+
 impl CompiledIncludeKey {
-    fn new(resolved: &ResolvedIncludePath, optimization_level: OptimizationLevel) -> Self {
+    fn new(
+        resolved: &ResolvedIncludePath,
+        optimization_level: OptimizationLevel,
+        source: &str,
+    ) -> Self {
         Self {
             canonical_path: resolved.canonical_path.clone(),
             len: resolved.fingerprint.len,
             modified_unix_nanos: resolved.fingerprint.modified_unix_nanos,
             readonly: resolved.fingerprint.readonly,
+            local_dependencies: local_psr_source_dependencies(source, &resolved.canonical_path),
             compiler_version: env!("CARGO_PKG_VERSION"),
             debug_assertions: cfg!(debug_assertions),
             optimization_level: optimization_level.as_str(),
@@ -726,46 +741,89 @@ fn remove_stale_compiled_include_entries(
     before.saturating_sub(shard.len())
 }
 
-fn compile_include(
-    loader: &IncludeLoader,
-    resolved: &ResolvedIncludePath,
-    optimization_level: OptimizationLevel,
-) -> Result<CompiledUnit, VmError> {
-    let loaded = loader.load_resolved(resolved.canonical_path.clone())?;
-    compile_loaded_include(loaded, optimization_level)
-}
-
-fn compile_loaded_include(
+pub(crate) fn compile_loaded_include(
     loaded: LoadedInclude,
     optimization_level: OptimizationLevel,
 ) -> Result<CompiledUnit, VmError> {
-    let frontend = php_semantics::analyze_source(&loaded.source);
-    if frontend.has_errors() {
-        return Err(include_error(
-            "E_PHP_VM_INCLUDE_COMPILE_ERROR",
-            format!(
-                "{} failed frontend analysis",
-                loaded.canonical_path.display()
-            ),
-        )
-        .with_context("path", loaded.canonical_path.display())
-        .with_context("stage", "frontend"));
-    }
-    let mut lowering = php_ir::lower_frontend_result(
-        &frontend,
-        php_ir::LoweringOptions {
-            source_path: loaded.canonical_path.to_string_lossy().into_owned(),
-            source_text: Some(loaded.source),
-            ..php_ir::LoweringOptions::default()
-        },
-    );
+    let mut source = loaded.source.clone();
+    let mut appended_traits = Vec::new();
+    let mut last_missing_traits = Vec::new();
+
+    let mut lowering = loop {
+        let frontend = php_semantics::analyze_source(&source);
+        if frontend.has_errors() {
+            return Err(include_error(
+                "E_PHP_VM_INCLUDE_COMPILE_ERROR",
+                format!(
+                    "{} failed frontend analysis",
+                    loaded.canonical_path.display()
+                ),
+            )
+            .with_context("path", loaded.canonical_path.display())
+            .with_context("stage", "frontend"));
+        }
+        let lowering = php_ir::lower_frontend_result(
+            &frontend,
+            php_ir::LoweringOptions {
+                source_path: loaded.canonical_path.to_string_lossy().into_owned(),
+                source_text: Some(source.clone()),
+                ..php_ir::LoweringOptions::default()
+            },
+        );
+        if lowering.diagnostics.is_empty() && lowering.verification.is_ok() {
+            break lowering;
+        }
+
+        let missing_traits = missing_local_trait_diagnostics(&lowering);
+        if missing_traits.is_empty() || missing_traits == last_missing_traits {
+            break lowering;
+        }
+        last_missing_traits = missing_traits.clone();
+
+        let Some(local_map) = LocalPsrSourceMap::infer(&loaded.source, &loaded.canonical_path)
+        else {
+            break lowering;
+        };
+        let mut added_any = false;
+        for missing_trait in missing_traits {
+            let Some(path) = local_map.resolve_imported_name(&missing_trait) else {
+                continue;
+            };
+            if appended_traits.contains(&path) {
+                continue;
+            }
+            let trait_source = fs::read_to_string(&path).map_err(|error| {
+                include_error(
+                    "E_PHP_VM_INCLUDE_READ",
+                    format!("{}: {error}", path.display()),
+                )
+                .with_context("canonical_path", path.display())
+            })?;
+            source.push('\n');
+            source.push_str(&strip_php_opening_tag_and_strict_declare(&trait_source));
+            appended_traits.push(path);
+            added_any = true;
+        }
+        if !added_any || appended_traits.len() >= 16 {
+            break lowering;
+        }
+    };
+
     if !lowering.diagnostics.is_empty() || lowering.verification.is_err() {
         return Err(include_error(
             "E_PHP_VM_INCLUDE_COMPILE_ERROR",
             format!("{} failed IR lowering", loaded.canonical_path.display()),
         )
         .with_context("path", loaded.canonical_path.display())
-        .with_context("stage", "ir_lowering"));
+        .with_context("stage", "ir_lowering")
+        .with_context(
+            "local_trait_files",
+            appended_traits
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(":"),
+        ));
     }
     if optimization_level.runs_pipeline() {
         PassPipeline::performance()
@@ -783,6 +841,299 @@ fn compile_loaded_include(
             })?;
     }
     Ok(CompiledUnit::new(lowering.unit))
+}
+
+fn missing_local_trait_diagnostics(lowering: &php_ir::LoweringResult) -> Vec<String> {
+    let mut traits = Vec::new();
+    for diagnostic in &lowering.diagnostics {
+        let Some(rest) = diagnostic
+            .message
+            .strip_prefix("E_PHP_IR_TRAIT_NOT_FOUND: trait ")
+        else {
+            continue;
+        };
+        let Some((trait_name, _)) = rest.split_once(" used by ") else {
+            continue;
+        };
+        let trait_name = trait_name.trim();
+        if !trait_name.is_empty() && !traits.iter().any(|existing| existing == trait_name) {
+            traits.push(trait_name.to_owned());
+        }
+    }
+    traits
+}
+
+fn local_psr_source_dependencies(
+    source: &str,
+    canonical_path: &Path,
+) -> Vec<CompiledIncludeDependencyKey> {
+    let Some(map) = LocalPsrSourceMap::infer(source, canonical_path) else {
+        return Vec::new();
+    };
+    let mut dependencies = Vec::new();
+    for import in &map.imports {
+        let Some(path) = map.path_for_name(import) else {
+            continue;
+        };
+        let Ok(fingerprint) = include_path_file_fingerprint(&path) else {
+            continue;
+        };
+        let dependency = CompiledIncludeDependencyKey {
+            canonical_path: path,
+            len: fingerprint.len,
+            modified_unix_nanos: fingerprint.modified_unix_nanos,
+            readonly: fingerprint.readonly,
+        };
+        if !dependencies.iter().any(|existing| existing == &dependency) {
+            dependencies.push(dependency);
+        }
+    }
+    dependencies
+}
+
+#[derive(Clone, Debug)]
+struct LocalPsrSourceMap {
+    root: PathBuf,
+    prefix: Vec<String>,
+    imports: Vec<String>,
+}
+
+impl LocalPsrSourceMap {
+    fn infer(source: &str, canonical_path: &Path) -> Option<Self> {
+        let namespace = declared_namespace_parts(source);
+        let class_like = first_class_like_name(source)?;
+        let mut fqn = namespace;
+        fqn.push(class_like);
+        let (root, prefix) = infer_psr_root_and_prefix(canonical_path, &fqn)?;
+        Some(Self {
+            root,
+            prefix,
+            imports: imported_class_like_names(source),
+        })
+    }
+
+    fn resolve_imported_name(&self, normalized_name: &str) -> Option<PathBuf> {
+        let import = self.imports.iter().find(|import| {
+            normalize_php_class_name(import).eq_ignore_ascii_case(normalized_name)
+        })?;
+        self.path_for_name(import)
+    }
+
+    fn path_for_name(&self, name: &str) -> Option<PathBuf> {
+        let parts = php_name_parts(name);
+        if parts.len() <= self.prefix.len() {
+            return None;
+        }
+        if !parts
+            .iter()
+            .zip(&self.prefix)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+        {
+            return None;
+        }
+        let relative = &parts[self.prefix.len()..];
+        let mut path = self.root.clone();
+        for part in &relative[..relative.len().saturating_sub(1)] {
+            path.push(part);
+        }
+        let file_name = format!("{}.php", relative.last()?);
+        path.push(file_name);
+        if path.is_file() {
+            return fs::canonicalize(path).ok();
+        }
+        case_insensitive_existing_path(&path)
+    }
+}
+
+fn declared_namespace_parts(source: &str) -> Vec<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if is_php_comment_line(trimmed) {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("namespace ") else {
+            continue;
+        };
+        let name = rest
+            .split([';', '{'])
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+        return php_name_parts(name);
+    }
+    Vec::new()
+}
+
+fn first_class_like_name(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if is_php_comment_line(trimmed) {
+            continue;
+        }
+        for keyword in ["class", "trait", "interface", "enum"] {
+            if let Some(name) = identifier_after_keyword(trimmed, keyword) {
+                return Some(name.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn imported_class_like_names(source: &str) -> Vec<String> {
+    let mut imports = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if is_php_comment_line(trimmed) {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("use ") else {
+            continue;
+        };
+        if !trimmed.ends_with(';')
+            || rest.starts_with("function ")
+            || rest.starts_with("const ")
+            || rest.contains('{')
+        {
+            continue;
+        }
+        for raw_import in rest.trim_end_matches(';').split(',') {
+            let import = strip_use_alias(raw_import.trim()).trim_start_matches('\\');
+            if import.contains('\\') && !imports.iter().any(|existing| existing == import) {
+                imports.push(import.to_owned());
+            }
+        }
+    }
+    imports
+}
+
+fn infer_psr_root_and_prefix(
+    canonical_path: &Path,
+    fqn: &[String],
+) -> Option<(PathBuf, Vec<String>)> {
+    if fqn.is_empty() {
+        return None;
+    }
+    let path_parts = canonical_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    for suffix_len in (1..=fqn.len()).rev() {
+        let suffix_start = fqn.len() - suffix_len;
+        let mut expected = fqn[suffix_start..fqn.len().saturating_sub(1)].to_vec();
+        expected.push(format!("{}.php", fqn.last()?));
+        if expected.len() > path_parts.len() {
+            continue;
+        }
+        let actual = &path_parts[path_parts.len() - expected.len()..];
+        if !actual
+            .iter()
+            .zip(&expected)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+        {
+            continue;
+        }
+        let mut root = canonical_path.to_path_buf();
+        for _ in 0..expected.len() {
+            root.pop();
+        }
+        return Some((root, fqn[..suffix_start].to_vec()));
+    }
+    None
+}
+
+fn case_insensitive_existing_path(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    let file_name = path.file_name()?.to_string_lossy();
+    let parent = if parent.is_dir() {
+        parent.to_path_buf()
+    } else {
+        case_insensitive_existing_path(parent)?
+    };
+    for entry in fs::read_dir(parent).ok()? {
+        let entry = entry.ok()?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&file_name)
+        {
+            let path = entry.path();
+            return path
+                .is_file()
+                .then(|| fs::canonicalize(path).ok())
+                .flatten();
+        }
+    }
+    None
+}
+
+fn strip_php_opening_tag_and_strict_declare(source: &str) -> String {
+    let without_bom = source.trim_start_matches('\u{feff}');
+    let without_opening_tag = without_bom
+        .trim_start()
+        .strip_prefix("<?php")
+        .or_else(|| without_bom.trim_start().strip_prefix("<?"))
+        .unwrap_or(without_bom);
+    without_opening_tag
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !(trimmed.starts_with("declare")
+                && trimmed.contains("strict_types")
+                && trimmed.ends_with(';'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_use_alias(import: &str) -> &str {
+    let lower = import.to_ascii_lowercase();
+    match lower.find(" as ") {
+        Some(index) => &import[..index],
+        None => import,
+    }
+}
+
+fn identifier_after_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
+    let index = line.find(keyword)?;
+    let before = line[..index].chars().last();
+    if before.is_some_and(is_php_identifier_char) {
+        return None;
+    }
+    let rest = &line[index + keyword.len()..];
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let end = rest
+        .char_indices()
+        .find_map(|(index, ch)| (!is_php_identifier_char(ch)).then_some(index))
+        .unwrap_or(rest.len());
+    (end > 0).then_some(&rest[..end])
+}
+
+fn normalize_php_class_name(name: &str) -> String {
+    php_name_parts(name).join("\\").to_ascii_lowercase()
+}
+
+fn php_name_parts(name: &str) -> Vec<String> {
+    name.trim()
+        .trim_start_matches('\\')
+        .split('\\')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn is_php_comment_line(line: &str) -> bool {
+    line.starts_with("//")
+        || line.starts_with('#')
+        || line.starts_with("/*")
+        || line.starts_with('*')
+}
+
+fn is_php_identifier_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric() || !ch.is_ascii()
 }
 
 fn default_include_cache_shards() -> usize {
@@ -862,6 +1213,101 @@ mod tests {
         assert_eq!(stats.compile_hits, 0);
         assert!(binary_add_count(&baseline) > 0);
         assert_eq!(binary_add_count(&optimized), 0);
+    }
+
+    #[test]
+    fn compiled_include_resolves_local_psr_trait_dependency() {
+        let fixture = IncludeCacheFixture::new("local-psr-trait");
+        fixture.write(
+            "src/Providers/ProviderRegistry.php",
+            "<?php\nnamespace Demo\\Providers;\nuse Demo\\Providers\\Http\\Traits\\WithHttpTransporterTrait;\nclass ProviderRegistry {\n    use WithHttpTransporterTrait { setHttpTransporter as setHttpTransporterOriginal; }\n}\n",
+        );
+        fixture.write(
+            "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
+            "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait {\n    private $httpTransporter = null;\n    public function setHttpTransporter($value): void { $this->httpTransporter = $value; }\n}\n",
+        );
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = loader
+            .resolve_with_include_path(
+                None,
+                "src/Providers/ProviderRegistry.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect("resolve include");
+
+        let compiled = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("compile provider registry");
+        let class = compiled
+            .unit()
+            .classes
+            .iter()
+            .find(|class| class.name == "demo\\providers\\providerregistry")
+            .expect("provider registry class");
+
+        assert!(
+            class
+                .properties
+                .iter()
+                .any(|property| property.name == "httpTransporter")
+        );
+        assert!(
+            class
+                .methods
+                .iter()
+                .any(|method| method.name == "sethttptransporteroriginal")
+        );
+    }
+
+    #[test]
+    fn compiled_include_cache_invalidates_after_local_psr_trait_edit() {
+        let fixture = IncludeCacheFixture::new("local-psr-trait-stale");
+        fixture.write(
+            "src/Providers/ProviderRegistry.php",
+            "<?php\nnamespace Demo\\Providers;\nuse Demo\\Providers\\Http\\Traits\\WithHttpTransporterTrait;\nclass ProviderRegistry { use WithHttpTransporterTrait; }\n",
+        );
+        fixture.write(
+            "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
+            "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait { private $first = null; }\n",
+        );
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = loader
+            .resolve_with_include_path(
+                None,
+                "src/Providers/ProviderRegistry.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect("resolve include");
+        let first = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("first compile");
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fixture.write(
+            "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
+            "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait { private $second = null; }\n",
+        );
+        let second = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("second compile");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        let class = second
+            .unit()
+            .classes
+            .iter()
+            .find(|class| class.name == "demo\\providers\\providerregistry")
+            .expect("provider registry class");
+        assert!(
+            class
+                .properties
+                .iter()
+                .any(|property| property.name == "second")
+        );
     }
 
     #[test]
@@ -1239,7 +1685,11 @@ mod tests {
         }
 
         fn write(&self, name: &str, source: &str) {
-            fs::write(self.root.join(name), source).expect("write include cache fixture file");
+            let path = self.root.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create include cache fixture directory");
+            }
+            fs::write(path, source).expect("write include cache fixture file");
         }
     }
 

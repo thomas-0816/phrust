@@ -38,6 +38,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "array_diff_key",
+        builtin_array_diff_key,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "array_filter",
         builtin_array_callback_requires_vm,
         BuiltinCompatibility::Php,
@@ -61,6 +66,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "array_intersect_assoc",
         builtin_array_intersect_assoc,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "array_intersect_key",
+        builtin_array_intersect_key,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -616,6 +626,25 @@ pub(in crate::builtins::modules) fn builtin_array_diff_assoc(
     Ok(Value::Array(array_diff_by_key_and_value(&first, &others)?))
 }
 
+pub(in crate::builtins::modules) fn builtin_array_diff_key(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() < 2 {
+        return Err(arity_error("array_diff_key", "at least two argument(s)"));
+    }
+    let first = array_value_arg("array_diff_key", &args[0])?;
+    let others = array_list_arg("array_diff_key", &args[1..])?;
+    let mut output = PhpArray::new();
+    for (key, value) in first.iter() {
+        if others.iter().all(|array| array.get(key).is_none()) {
+            output.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(Value::Array(output))
+}
+
 pub(in crate::builtins::modules) fn builtin_array_fill(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -709,6 +738,28 @@ pub(in crate::builtins::modules) fn builtin_array_intersect_assoc(
     Ok(Value::Array(array_intersect_by_key_and_value(
         &first, &others,
     )?))
+}
+
+pub(in crate::builtins::modules) fn builtin_array_intersect_key(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() < 2 {
+        return Err(arity_error(
+            "array_intersect_key",
+            "at least two argument(s)",
+        ));
+    }
+    let first = array_value_arg("array_intersect_key", &args[0])?;
+    let others = array_list_arg("array_intersect_key", &args[1..])?;
+    let mut output = PhpArray::new();
+    for (key, value) in first.iter() {
+        if others.iter().all(|array| array.get(key).is_some()) {
+            output.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(Value::Array(output))
 }
 
 pub(in crate::builtins::modules) fn builtin_array_intersect_ukey(

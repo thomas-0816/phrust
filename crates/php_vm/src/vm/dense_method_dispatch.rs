@@ -333,8 +333,13 @@ impl Vm {
             self.record_counter_dense_call_ic_miss();
         }
 
-        let resolved = match lookup_method_in_hierarchy(compiled, &class, method, scope.as_deref())
-        {
+        let resolved = match lookup_resolved_method_in_state(
+            compiled,
+            state,
+            &class.name,
+            method,
+            scope.as_deref(),
+        ) {
             Ok(Some(method)) => method,
             Ok(None) => {
                 self.record_counter_dense_call_fallback("magic_static_call");
@@ -365,8 +370,8 @@ impl Vm {
             }
             Err(message) => return self.runtime_error(output, compiled, stack, message),
         };
-        let method_entry = resolved.method;
-        let declaring_class = resolved.class;
+        let method_entry = &resolved.method;
+        let declaring_class = &resolved.class;
         if !method_entry.flags.is_static {
             return self.runtime_error(
                 output,
@@ -378,7 +383,10 @@ impl Vm {
                 ),
             );
         }
-        if method_entry.flags.is_private || method_entry.flags.is_protected {
+        if (method_entry.flags.is_private || method_entry.flags.is_protected)
+            && let Err(inaccessible) =
+                validate_method_callable(compiled, stack, declaring_class, method_entry)
+        {
             self.record_counter_dense_call_fallback("visibility");
             return match self.call_magic_static_method(
                 compiled,
@@ -393,22 +401,14 @@ impl Vm {
                 state,
             ) {
                 Ok(Some(result)) => result,
-                Ok(None) => {
-                    if let Err(message) =
-                        validate_method_callable(compiled, stack, declaring_class, method_entry)
-                    {
-                        self.runtime_error_at_optional_span(
-                            compiled, output, stack, state, call_span, message,
-                        )
-                    } else {
-                        self.runtime_error(
-                            output,
-                            compiled,
-                            stack,
-                            "E_PHP_VM_METHOD_VISIBILITY: inaccessible static method passed validation",
-                        )
-                    }
-                }
+                Ok(None) => self.runtime_error_at_optional_span(
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    call_span,
+                    inaccessible,
+                ),
                 Err(result) => result,
             };
         }

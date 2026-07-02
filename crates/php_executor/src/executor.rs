@@ -155,7 +155,7 @@ mod tests {
         );
         assert_eq!(
             executor.options.vm_options.include_optimization_level,
-            OptimizationLevel::O2
+            expected.vm_options.include_optimization_level
         );
         assert_eq!(
             executor.options.vm_options.execution_format,

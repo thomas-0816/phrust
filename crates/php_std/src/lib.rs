@@ -727,7 +727,7 @@ mod tests {
     fn optional_hash_and_random_extensions_track_stdlib_symbols() {
         let registry = ExtensionRegistry::standard_library();
 
-        for name in ["hash", "hash_hmac"] {
+        for name in ["hash", "hash_hmac", "hash_hmac_algos"] {
             assert!(
                 registry.enabled_php_function(name).is_some(),
                 "{name} should be registered as a hash function"
@@ -747,7 +747,14 @@ mod tests {
     fn standard_registry_tracks_stdlib_formatting_functions() {
         let registry = ExtensionRegistry::standard_library();
 
-        for name in ["fprintf", "printf", "sprintf", "vprintf", "vsprintf"] {
+        for name in [
+            "addcslashes",
+            "fprintf",
+            "printf",
+            "sprintf",
+            "vprintf",
+            "vsprintf",
+        ] {
             assert!(
                 registry.enabled_php_function(name).is_some(),
                 "{name} should be registered as a standard function"
@@ -764,6 +771,7 @@ mod tests {
             "array_any",
             "array_chunk",
             "array_column",
+            "array_diff_key",
             "array_filter",
             "array_fill",
             "array_find",
@@ -830,6 +838,7 @@ mod tests {
             "is_finite",
             "is_infinite",
             "is_nan",
+            "ignore_user_abort",
             "max",
             "min",
             "number_format",
@@ -962,6 +971,7 @@ mod tests {
         let registry = ExtensionRegistry::standard_library();
 
         for name in [
+            "error_log",
             "error_reporting",
             "set_error_handler",
             "restore_error_handler",
@@ -1129,6 +1139,14 @@ mod tests {
                 "PHP_MAXPATHLEN",
                 ConstantValue::Int(constants::PHP_MAXPATHLEN),
             ),
+            (
+                "DEBUG_BACKTRACE_PROVIDE_OBJECT",
+                ConstantValue::Int(constants::DEBUG_BACKTRACE_PROVIDE_OBJECT),
+            ),
+            (
+                "DEBUG_BACKTRACE_IGNORE_ARGS",
+                ConstantValue::Int(constants::DEBUG_BACKTRACE_IGNORE_ARGS),
+            ),
             ("FILE_APPEND", ConstantValue::Int(constants::FILE_APPEND)),
             ("LOCK_EX", ConstantValue::Int(constants::LOCK_EX)),
             ("ENT_QUOTES", ConstantValue::Int(constants::ENT_QUOTES)),
@@ -1137,6 +1155,10 @@ mod tests {
                 ConstantValue::Int(constants::HTML_SPECIALCHARS),
             ),
             ("DATE_ATOM", ConstantValue::String(constants::DATE_ATOM)),
+            (
+                "DATE_RFC2822",
+                ConstantValue::String(constants::DATE_RFC2822),
+            ),
         ] {
             assert_eq!(
                 registry
@@ -1437,6 +1459,27 @@ mod tests {
                 .map(ClassDescriptor::kind),
             Some(ClassKind::Interface)
         ));
+        for name in [
+            "DATE_ATOM",
+            "DATE_COOKIE",
+            "DATE_ISO8601",
+            "DATE_ISO8601_EXPANDED",
+            "DATE_RFC1036",
+            "DATE_RFC1123",
+            "DATE_RFC2822",
+            "DATE_RFC3339",
+            "DATE_RFC3339_EXTENDED",
+            "DATE_RFC7231",
+            "DATE_RFC822",
+            "DATE_RFC850",
+            "DATE_RSS",
+            "DATE_W3C",
+        ] {
+            assert!(
+                registry.enabled_constant(name).is_some(),
+                "{name} should be registered as a date constant"
+            );
+        }
     }
 
     #[test]

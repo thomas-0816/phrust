@@ -2,14 +2,25 @@
 
 use super::core::*;
 use crate::builtins::{
-    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
+    RuntimeSourceSpan,
 };
-use crate::{Value, datetime, to_bool};
+use crate::{Value, datetime, normalize_class_name, to_bool};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("checkdate", builtin_checkdate, BuiltinCompatibility::Php),
     BuiltinEntry::new("date", builtin_date, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "date_create",
+        builtin_date_create,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "date_create_immutable_from_format",
+        builtin_date_create_immutable_from_format,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "date_format",
         builtin_date_format,
@@ -132,6 +143,56 @@ pub(in crate::builtins::modules) fn builtin_gmdate(
         timestamp, "GMT", &format,
     )))
 }
+pub(in crate::builtins::modules) fn builtin_date_create(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 2 {
+        return Err(arity_error("date_create", "zero, one, or two argument(s)"));
+    }
+    let text = args
+        .first()
+        .map(nullable_string_arg)
+        .transpose()?
+        .unwrap_or_else(|| "now".to_owned());
+    let timezone = match args.get(1) {
+        Some(value) if !matches!(deref_value(value), Value::Null) => {
+            date_create_timezone_name("date_create", value)?
+        }
+        _ => context.default_timezone().to_owned(),
+    };
+    let timestamp =
+        datetime::parse_datetime_text_in_timezone(&text, datetime::current_timestamp(), &timezone);
+    Ok(timestamp.map_or(Value::Bool(false), |timestamp| {
+        datetime::datetime_object(timestamp, &timezone)
+    }))
+}
+
+pub(in crate::builtins::modules) fn builtin_date_create_immutable_from_format(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(arity_error(
+            "date_create_immutable_from_format",
+            "two or three argument(s)",
+        ));
+    }
+    let format = string_arg("date_create_immutable_from_format", &args[0])?.to_string_lossy();
+    let text = string_arg("date_create_immutable_from_format", &args[1])?.to_string_lossy();
+    let timezone = match args.get(2) {
+        Some(value) if !matches!(deref_value(value), Value::Null) => {
+            date_create_timezone_name("date_create_immutable_from_format", value)?
+        }
+        _ => context.default_timezone().to_owned(),
+    };
+    Ok(parse_datetime_from_format(&format, &text, &timezone)
+        .map_or(Value::Bool(false), |timestamp| {
+            datetime::datetime_immutable_object(timestamp, &timezone)
+        }))
+}
 pub(in crate::builtins::modules) fn builtin_time(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -213,6 +274,43 @@ pub(in crate::builtins::modules) fn builtin_strtotime(
         .transpose()?
         .unwrap_or_else(datetime::current_timestamp);
     Ok(datetime::parse_datetime_text(&text, base).map_or(Value::Bool(false), Value::Int))
+}
+
+fn nullable_string_arg(value: &Value) -> Result<String, BuiltinError> {
+    if matches!(deref_value(value), Value::Null) {
+        return Ok("now".to_owned());
+    }
+    Ok(string_arg("date_create", value)?.to_string_lossy())
+}
+
+fn date_create_timezone_name(function: &str, value: &Value) -> Result<String, BuiltinError> {
+    let Value::Object(object) = deref_value(value) else {
+        return Err(type_error(function, "?DateTimeZone", value));
+    };
+    if normalize_class_name(&object.class_name()) != "datetimezone" {
+        return Err(type_error(function, "?DateTimeZone", value));
+    }
+    datetime::object_timezone(&object)
+        .ok_or_else(|| value_error(function, "DateTimeZone object has no timezone name"))
+}
+
+fn parse_datetime_from_format(format: &str, text: &str, timezone: &str) -> Option<i64> {
+    let format = format.strip_prefix('!').unwrap_or(format);
+    match format {
+        "Y-m-d H:i:s" => datetime::parse_datetime_text_in_timezone(text, 0, timezone),
+        "Y-m-d" => {
+            let text = format!("{text} 00:00:00");
+            datetime::parse_datetime_text_in_timezone(&text, 0, timezone)
+        }
+        "U" => text.trim().parse::<i64>().ok(),
+        "U.u" => text
+            .trim()
+            .split_once('.')
+            .map_or(text.trim(), |(seconds, _)| seconds)
+            .parse::<i64>()
+            .ok(),
+        _ => None,
+    }
 }
 pub(in crate::builtins::modules) fn builtin_date_format(
     _context: &mut BuiltinContext<'_>,
@@ -305,9 +403,9 @@ pub(in crate::builtins::modules) fn builtin_date_default_timezone_set(
 ) -> BuiltinResult {
     expect_arity("date_default_timezone_set", &args, 1)?;
     let identifier = string_arg("date_default_timezone_set", &args[0])?.to_string_lossy();
-    if !datetime::is_valid_timezone(&identifier) {
+    let Some(identifier) = datetime::normalize_timezone_identifier(&identifier) else {
         return Ok(Value::Bool(false));
-    }
+    };
     context.set_default_timezone(identifier);
     Ok(Value::Bool(true))
 }
@@ -332,8 +430,64 @@ pub(in crate::builtins::modules) fn builtin_timezone_identifiers_list(
 
 #[cfg(test)]
 mod tests {
-    use super::{BuiltinContext, RuntimeSourceSpan, builtin_date_diff};
+    use super::{
+        BuiltinContext, RuntimeSourceSpan, builtin_date_create,
+        builtin_date_create_immutable_from_format, builtin_date_diff,
+    };
     use crate::{OutputBuffer, Value, datetime};
+
+    #[test]
+    fn date_create_returns_datetime_object_with_explicit_timezone() {
+        let timezone = datetime::datetimezone_object("Europe/Berlin").expect("timezone object");
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let result = builtin_date_create(
+            &mut context,
+            vec![Value::string("2024-02-03 04:05:06"), timezone],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("date_create succeeds");
+        let Value::Object(datetime) = result else {
+            panic!("expected DateTime object");
+        };
+
+        assert_eq!(datetime.display_name(), "DateTime");
+        assert_eq!(
+            crate::datetime::object_timezone(&datetime),
+            Some("Europe/Berlin".to_owned())
+        );
+        assert!(crate::datetime::object_timestamp(&datetime).is_some());
+    }
+
+    #[test]
+    fn date_create_immutable_from_format_returns_datetimeimmutable_for_wp_datetime() {
+        let timezone = datetime::datetimezone_object("UTC").expect("timezone object");
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let result = builtin_date_create_immutable_from_format(
+            &mut context,
+            vec![
+                Value::string("Y-m-d H:i:s"),
+                Value::string("2024-02-03 04:05:06"),
+                timezone,
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("date_create_immutable_from_format succeeds");
+        let Value::Object(datetime) = result else {
+            panic!("expected DateTimeImmutable object");
+        };
+
+        assert_eq!(datetime.display_name(), "DateTimeImmutable");
+        assert_eq!(
+            crate::datetime::object_timezone(&datetime),
+            Some("UTC".to_owned())
+        );
+        assert_eq!(
+            crate::datetime::object_timestamp(&datetime),
+            Some(1_706_933_106)
+        );
+    }
 
     #[test]
     fn date_diff_returns_datetimeinterval_for_datetimeinterface_objects() {

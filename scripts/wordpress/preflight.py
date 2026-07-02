@@ -30,6 +30,46 @@ from common import (  # noqa: E402
 )
 
 
+PHP_VM_BINARY_SOURCE_ROOTS = (
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/php_ast",
+    "crates/php_bytecode_cache",
+    "crates/php_diagnostics",
+    "crates/php_executor",
+    "crates/php_ir",
+    "crates/php_jit",
+    "crates/php_lexer",
+    "crates/php_optimizer",
+    "crates/php_runtime",
+    "crates/php_semantics",
+    "crates/php_source",
+    "crates/php_std",
+    "crates/php_syntax",
+    "crates/php_vm",
+    "crates/php_vm_cli",
+)
+
+PHRUST_SERVER_BINARY_SOURCE_ROOTS = (
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/php_ast",
+    "crates/php_bytecode_cache",
+    "crates/php_diagnostics",
+    "crates/php_executor",
+    "crates/php_ir",
+    "crates/php_lexer",
+    "crates/php_optimizer",
+    "crates/php_runtime",
+    "crates/php_semantics",
+    "crates/php_server",
+    "crates/php_source",
+    "crates/php_std",
+    "crates/php_syntax",
+    "crates/php_vm",
+)
+
+
 def main() -> int:
     args = parse_args()
     report = build_report(args)
@@ -95,9 +135,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             if version is None:
                 blockers.append("invalid_reference_php")
 
-    if not executable(phrust_binary) or binary_is_stale(phrust_binary):
+    if not executable(phrust_binary) or binary_is_stale(phrust_binary, PHP_VM_BINARY_SOURCE_ROOTS):
         blockers.append("missing_php_vm_binary_or_stale_binary")
-    if not executable(phrust_server):
+    if not executable(phrust_server) or binary_is_stale(
+        phrust_server, PHRUST_SERVER_BINARY_SOURCE_ROOTS
+    ):
         blockers.append("phrust_server_unavailable")
 
     host, port = parse_listen(args.listen)
@@ -106,15 +148,20 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 
     dsn = os.environ.get(args.db_dsn_env, "")
     if args.db_enabled:
+        docker_ok = docker_available()
         if not dsn:
             blockers.append("missing_mysql_dsn")
-        if not docker_available():
-            blockers.append("docker_unavailable")
+            if not docker_ok:
+                blockers.append("docker_unavailable")
         if dsn:
             mysql = parse_mysql_dsn(dsn)
             if not tcp_reachable(mysql["host"], mysql["port"]):
                 blockers.append("mariadb_unavailable")
+                if not docker_ok:
+                    blockers.append("docker_unavailable")
             else:
+                if not docker_ok:
+                    warnings.append("docker_unavailable_dsn_tcp_reachable")
                 credentials_valid = mysql_credentials_valid(dsn)
                 if credentials_valid is False:
                     blockers.append("mariadb_credentials_invalid")

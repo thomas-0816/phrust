@@ -24,6 +24,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new("bin2hex", builtin_bin2hex, BuiltinCompatibility::Php),
     BuiltinEntry::new("chr", builtin_chr, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "addcslashes",
+        builtin_addcslashes,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("addslashes", builtin_addslashes, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "convert_uudecode",
@@ -41,6 +46,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "highlight_string",
         builtin_highlight_string,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "html_entity_decode",
+        builtin_html_entity_decode,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -1121,6 +1131,22 @@ pub(in crate::builtins::modules) fn builtin_htmlentities(
     builtin_htmlspecialchars(context, args, span)
 }
 
+pub(in crate::builtins::modules) fn builtin_html_entity_decode(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=3).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin html_entity_decode expects one to three argument(s)",
+        ));
+    }
+    Ok(Value::string(html_decode(
+        &string_arg("html_entity_decode", &args[0])?.to_string_lossy(),
+    )))
+}
+
 pub(in crate::builtins::modules) fn builtin_htmlspecialchars_decode(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -1673,6 +1699,107 @@ pub(in crate::builtins::modules) fn builtin_addslashes(
         }
     }
     Ok(Value::string(output))
+}
+
+pub(in crate::builtins::modules) fn builtin_addcslashes(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("addcslashes", &args, 2)?;
+    let input = string_arg("addcslashes", &args[0])?;
+    let charlist = string_arg("addcslashes", &args[1])?;
+    let escaped = addcslashes_charlist(charlist.as_bytes());
+    let mut output = Vec::with_capacity(input.len());
+    for byte in input.as_bytes() {
+        if escaped[usize::from(*byte)] {
+            push_addcslashes_escape(&mut output, *byte);
+        } else {
+            output.push(*byte);
+        }
+    }
+    Ok(Value::string(output))
+}
+
+fn addcslashes_charlist(charlist: &[u8]) -> [bool; 256] {
+    let mut escaped = [false; 256];
+    let mut index = 0;
+    while index < charlist.len() {
+        let Some((start, consumed)) = addcslashes_charlist_atom(&charlist[index..]) else {
+            break;
+        };
+        let after_start = index + consumed;
+        if charlist.get(after_start) == Some(&b'.')
+            && charlist.get(after_start + 1) == Some(&b'.')
+            && let Some((end, end_consumed)) =
+                addcslashes_charlist_atom(&charlist[after_start + 2..])
+        {
+            if start <= end {
+                for byte in start..=end {
+                    escaped[usize::from(byte)] = true;
+                }
+            } else {
+                escaped[usize::from(start)] = true;
+                escaped[usize::from(end)] = true;
+            }
+            index = after_start + 2 + end_consumed;
+        } else {
+            escaped[usize::from(start)] = true;
+            index = after_start;
+        }
+    }
+    escaped
+}
+
+fn addcslashes_charlist_atom(input: &[u8]) -> Option<(u8, usize)> {
+    let first = *input.first()?;
+    if first != b'\\' {
+        return Some((first, 1));
+    }
+    let Some(next) = input.get(1).copied() else {
+        return Some((b'\\', 1));
+    };
+    match next {
+        b'n' => Some((b'\n', 2)),
+        b'r' => Some((b'\r', 2)),
+        b't' => Some((b'\t', 2)),
+        b'v' => Some((0x0b, 2)),
+        b'f' => Some((0x0c, 2)),
+        b'a' => Some((0x07, 2)),
+        b'b' => Some((0x08, 2)),
+        b'\\' | b'\'' | b'"' => Some((next, 2)),
+        b'x' | b'X' => {
+            let (decoded, consumed) = decode_c_hex_escape(&input[2..]);
+            (consumed > 0).then_some((decoded, consumed + 2))
+        }
+        b'0'..=b'7' => {
+            let (decoded, consumed) = decode_c_octal_escape(&input[1..]);
+            Some((decoded, consumed + 1))
+        }
+        _ => Some((b'\\', 1)),
+    }
+}
+
+fn push_addcslashes_escape(output: &mut Vec<u8>, byte: u8) {
+    match byte {
+        b'\n' => output.extend_from_slice(b"\\n"),
+        b'\r' => output.extend_from_slice(b"\\r"),
+        b'\t' => output.extend_from_slice(b"\\t"),
+        0x0b => output.extend_from_slice(b"\\v"),
+        0x0c => output.extend_from_slice(b"\\f"),
+        0x07 => output.extend_from_slice(b"\\a"),
+        0x08 => output.extend_from_slice(b"\\b"),
+        0x20..=0x7e => {
+            output.push(b'\\');
+            output.push(byte);
+        }
+        byte => {
+            output.push(b'\\');
+            output.push(b'0' + ((byte >> 6) & 0x07));
+            output.push(b'0' + ((byte >> 3) & 0x07));
+            output.push(b'0' + (byte & 0x07));
+        }
+    }
 }
 
 pub(in crate::builtins::modules) fn builtin_stripslashes(

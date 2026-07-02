@@ -135,6 +135,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "mysqli_more_results",
+        builtin_mysqli_more_results,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "mysqli_num_fields",
         builtin_mysqli_num_fields,
         BuiltinCompatibility::Php,
@@ -677,6 +682,16 @@ pub(in crate::builtins::modules) fn builtin_mysqli_insert_id(
             .mysql_state()
             .map_or(0, |state| state.last_insert_id(id)),
     ))
+}
+
+pub(in crate::builtins::modules) fn builtin_mysqli_more_results(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mysqli_more_results", &args, 1)?;
+    let _object = mysqli_object_arg("mysqli_more_results", args.first())?;
+    Ok(Value::Bool(false))
 }
 
 pub(in crate::builtins::modules) fn builtin_mysqli_connect_errno(
@@ -1967,5 +1982,19 @@ mod tests {
         .expect("mysqli_get_server_info should be available");
 
         assert!(matches!(result, Value::String(_)));
+    }
+
+    #[test]
+    fn mysqli_more_results_reports_no_pending_multi_result_set() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let result = builtin_mysqli_more_results(
+            &mut context,
+            vec![Value::Object(mysqli_object(None))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mysqli_more_results should be available for wpdb flush");
+
+        assert_eq!(result, Value::Bool(false));
     }
 }

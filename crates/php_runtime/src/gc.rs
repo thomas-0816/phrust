@@ -12,7 +12,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Refcounted runtime entity kind known to the runtime-semantics GC skeleton.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum GcEntityKind {
     /// Ordered PHP array storage.
     Array,
@@ -32,7 +32,7 @@ pub enum GcEntityKind {
 }
 
 /// Stable debug identity for one GC graph entity.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct GcEntityId {
     /// Entity kind.
     pub kind: GcEntityKind,

@@ -3,7 +3,7 @@ use php_server::{config::ServerConfig, server};
 use std::str::FromStr;
 use tracing_subscriber::{EnvFilter, fmt};
 
-const TOKIO_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
+const TOKIO_WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 fn main() {
     let error_format = env_error_format();

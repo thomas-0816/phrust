@@ -1,6 +1,6 @@
 //! Runtime type matching helpers.
 
-use crate::{RuntimeType, Value};
+use crate::{CallableValue, RuntimeType, Value};
 
 /// Returns true when a runtime value satisfies a declared runtime type.
 #[must_use]
@@ -25,7 +25,10 @@ pub fn value_matches_runtime_type(value: &Value, runtime_type: &RuntimeType) -> 
         RuntimeType::Object => {
             matches!(
                 value,
-                Value::Object(_) | Value::Fiber(_) | Value::Generator(_)
+                Value::Object(_)
+                    | Value::Fiber(_)
+                    | Value::Generator(_)
+                    | Value::Callable(CallableValue::Closure(_))
             )
         }
         RuntimeType::Never => false,
@@ -115,7 +118,10 @@ pub fn value_type_name(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Uninitialized => "uninitialized",
         Value::Array(_) => "array",
-        Value::Object(_) | Value::Fiber(_) | Value::Generator(_) => "object",
+        Value::Object(_)
+        | Value::Fiber(_)
+        | Value::Generator(_)
+        | Value::Callable(CallableValue::Closure(_)) => "object",
         Value::Resource(_) => "resource",
         Value::Callable(_) => "callable",
         Value::Reference(_) => unreachable!("references are handled before matching"),
@@ -125,7 +131,7 @@ pub fn value_type_name(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClassEntry, ClassFlags, ObjectRef};
+    use crate::{ClassEntry, ClassFlags, ClosurePayload, ObjectRef};
 
     #[test]
     fn type_matcher_covers_scalars_nullable_union_and_dnf() {
@@ -192,6 +198,21 @@ mod tests {
                     }
                 ]
             }
+        ));
+    }
+
+    #[test]
+    fn type_matcher_treats_closure_callables_as_objects() {
+        let closure = Value::Callable(CallableValue::Closure(ClosurePayload::new(11, Vec::new())));
+        let plain_callable = Value::Callable(CallableValue::UserFunction {
+            name: "strlen".into(),
+        });
+
+        assert!(value_matches_runtime_type(&closure, &RuntimeType::Object));
+        assert_eq!(value_type_name(&closure), "object");
+        assert!(!value_matches_runtime_type(
+            &plain_callable,
+            &RuntimeType::Object
         ));
     }
 

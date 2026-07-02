@@ -16,11 +16,18 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("hash_hmac", builtin_hash_hmac, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "hash_hmac_algos",
+        builtin_hash_hmac_algos,
+        BuiltinCompatibility::Php,
+    ),
 ];
 
 const HASH_ALGOS: &[&str] = &[
     "md5", "sha1", "sha256", "sha384", "sha512", "crc32", "crc32b",
 ];
+
+const HASH_HMAC_ALGOS: &[&str] = &["md5", "sha1", "sha256", "sha384", "sha512"];
 
 fn builtin_hash_algos(
     _context: &mut BuiltinContext<'_>,
@@ -30,6 +37,17 @@ fn builtin_hash_algos(
     expect_arity("hash_algos", &args, 0)?;
     Ok(Value::packed_array(
         HASH_ALGOS.iter().copied().map(Value::string).collect(),
+    ))
+}
+
+fn builtin_hash_hmac_algos(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("hash_hmac_algos", &args, 0)?;
+    Ok(Value::packed_array(
+        HASH_HMAC_ALGOS.iter().copied().map(Value::string).collect(),
     ))
 }
 
@@ -79,6 +97,23 @@ mod tests {
             .map(|(_, value)| value.to_string())
             .collect::<Vec<_>>();
         assert!(values.iter().any(|value| value.contains("sha256")));
+        assert!(values.iter().any(|value| value.contains("crc32")));
+
+        let Value::Array(hmac_algos) = call("hash_hmac_algos", vec![]) else {
+            panic!("expected HMAC algorithm array");
+        };
+        let hmac_values = hmac_algos
+            .iter()
+            .map(|(_, value)| value.to_string())
+            .collect::<Vec<_>>();
+        for algorithm in ["md5", "sha1", "sha256", "sha384", "sha512"] {
+            assert!(
+                hmac_values.iter().any(|value| value.contains(algorithm)),
+                "missing HMAC algorithm {algorithm}"
+            );
+        }
+        assert!(!hmac_values.iter().any(|value| value.contains("crc32")));
+
         assert_eq!(
             call(
                 "hash_equals",

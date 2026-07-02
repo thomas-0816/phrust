@@ -61,6 +61,7 @@ pub fn binary_operator(kind: SyntaxKind) -> Option<BinaryOperator> {
         kind if kind == symbol(b'^') => BinaryOperator::left(kind, 66),
         kind if is_bitwise_and_operator(kind) => BinaryOperator::left(kind, 67),
         kind if is_equality_operator(kind) => BinaryOperator::left(kind, 70),
+        kind if kind == named(TokenName::Instanceof) => BinaryOperator::left(kind, 126),
         kind if is_comparison_operator(kind) => BinaryOperator::left(kind, 80),
         kind if kind == named(TokenName::Sl) || kind == named(TokenName::Sr) => {
             BinaryOperator::left(kind, 90)
@@ -120,7 +121,6 @@ fn is_comparison_operator(kind: SyntaxKind) -> bool {
         kind,
         kind if kind == symbol(b'<')
             || kind == symbol(b'>')
-            || kind == named(TokenName::Instanceof)
             || kind == named(TokenName::IsSmallerOrEqual)
             || kind == named(TokenName::IsGreaterOrEqual)
             || kind == named(TokenName::Spaceship)
@@ -138,8 +138,8 @@ pub const PRINT_RIGHT_BP: u8 = 31;
 
 #[cfg(test)]
 mod tests {
-    use super::{Associativity, binary_operator};
-    use crate::grammar::named;
+    use super::{Associativity, PREFIX_RIGHT_BP, binary_operator};
+    use crate::grammar::{named, symbol};
     use php_lexer::TokenName;
 
     #[test]
@@ -156,5 +156,14 @@ mod tests {
 
         assert_eq!(op.associativity, Associativity::Right);
         assert_eq!(op.left_bp, op.right_bp);
+    }
+
+    #[test]
+    fn instanceof_binds_tighter_than_logical_not() {
+        let instanceof = binary_operator(named(TokenName::Instanceof)).expect("instanceof");
+        let less_than = binary_operator(symbol(b'<')).expect("less-than");
+
+        assert!(instanceof.left_bp >= PREFIX_RIGHT_BP);
+        assert!(less_than.left_bp < PREFIX_RIGHT_BP);
     }
 }

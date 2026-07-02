@@ -4713,7 +4713,9 @@ impl LoweringContext<'_> {
                     );
                     register
                 }
-                InterpolatedPart::Property { receiver, property } => {
+                InterpolatedPart::Property {
+                    receiver, property, ..
+                } => {
                     let object_register = builder.alloc_register(site.function);
                     let local = builder.intern_local(site.function, receiver);
                     let instruction = builder.emit(

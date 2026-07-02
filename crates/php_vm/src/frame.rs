@@ -77,6 +77,15 @@ impl LocalFile {
             .map_err(|error| lvalue_error(error, "write"))
     }
 
+    /// Replaces a local slot without dereferencing reference storage.
+    pub fn set_slot(&mut self, id: LocalId, value: Slot) -> Result<(), VmError> {
+        let Some(slot) = self.locals.get_mut(id.index()) else {
+            return Err(invalid_local_error(id, "write_slot"));
+        };
+        *slot = value;
+        Ok(())
+    }
+
     /// Writes a local and attaches source context to any VM access error.
     pub fn set_with_span(
         &mut self,

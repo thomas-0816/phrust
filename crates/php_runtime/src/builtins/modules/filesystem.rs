@@ -478,11 +478,50 @@ pub(in crate::builtins::modules) fn builtin_file_get_contents(
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("file_get_contents", "one or two argument(s)"));
+    if args.is_empty() || args.len() > 5 {
+        return Err(arity_error("file_get_contents", "one to five argument(s)"));
     }
     let path = string_arg("file_get_contents", &args[0])?.to_string_lossy();
-    read_file_value(context, "file_get_contents", &path, span)
+    let offset = args
+        .get(3)
+        .filter(|value| !matches!(deref_value(value), Value::Null))
+        .map(|value| int_arg("file_get_contents", value))
+        .transpose()?
+        .unwrap_or(0);
+    let length = args
+        .get(4)
+        .filter(|value| !matches!(deref_value(value), Value::Null))
+        .map(|value| int_arg("file_get_contents", value))
+        .transpose()?;
+    if matches!(length, Some(length) if length < 0) {
+        return Err(argument_value_error(
+            "file_get_contents",
+            "#5 ($length)",
+            "must be greater than or equal to 0",
+        ));
+    }
+
+    match read_file_value(context, "file_get_contents", &path, span)? {
+        Value::String(contents) if offset != 0 || length.is_some() => Ok(Value::string(
+            file_get_contents_slice(contents.as_bytes(), offset, length),
+        )),
+        value => Ok(value),
+    }
+}
+
+fn file_get_contents_slice(bytes: &[u8], offset: i64, length: Option<i64>) -> Vec<u8> {
+    let byte_len = bytes.len() as i128;
+    let offset = offset as i128;
+    let start = if offset >= 0 {
+        offset.min(byte_len)
+    } else {
+        (byte_len + offset).max(0)
+    };
+    let end = match length {
+        Some(length) => (start + i128::from(length)).min(byte_len),
+        None => byte_len,
+    };
+    bytes[start as usize..end as usize].to_vec()
 }
 
 pub(in crate::builtins::modules) fn builtin_file_put_contents(

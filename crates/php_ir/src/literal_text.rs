@@ -83,6 +83,7 @@ pub(crate) enum InterpolatedPart {
     Property {
         receiver: String,
         property: String,
+        dim: Option<InterpolatedDim>,
     },
 }
 
@@ -112,6 +113,7 @@ struct ParsedInterpolatedMethodCall {
 struct ParsedInterpolatedProperty {
     receiver: String,
     property: String,
+    dim: Option<InterpolatedDim>,
     end: usize,
 }
 
@@ -174,6 +176,7 @@ fn parse_interpolated_double_quoted_body(
             parts.push(InterpolatedPart::Property {
                 receiver: parsed.receiver,
                 property: parsed.property,
+                dim: parsed.dim,
             });
             index = parsed.end;
             chunk_start = parsed.end;
@@ -191,6 +194,7 @@ fn parse_interpolated_double_quoted_body(
             parts.push(InterpolatedPart::Property {
                 receiver: parsed.receiver,
                 property: parsed.property,
+                dim: parsed.dim,
             });
             index = parsed.end;
             chunk_start = parsed.end;
@@ -372,12 +376,17 @@ fn parse_simple_interpolated_property(
     {
         index += 1;
     }
+    let property = std::str::from_utf8(&bytes[property_start..index])
+        .ok()?
+        .to_string();
+    let (dim, end) = parse_interpolated_dim(bytes, index)
+        .map(|(dim, end)| (Some(dim), end))
+        .unwrap_or((None, index));
     Some(ParsedInterpolatedProperty {
         receiver,
-        property: std::str::from_utf8(&bytes[property_start..index])
-            .ok()?
-            .to_string(),
-        end: index,
+        property,
+        dim,
+        end,
     })
 }
 

@@ -100,6 +100,16 @@ pub(super) fn standard_library_core_extension() -> ExtensionDescriptor {
             ConstantValue::Int(constants::PHP_MAXPATHLEN),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "DEBUG_BACKTRACE_PROVIDE_OBJECT",
+            "core",
+            ConstantValue::Int(constants::DEBUG_BACKTRACE_PROVIDE_OBJECT),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DEBUG_BACKTRACE_IGNORE_ARGS",
+            "core",
+            ConstantValue::Int(constants::DEBUG_BACKTRACE_IGNORE_ARGS),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "E_ERROR",
             "core",
             ConstantValue::Int(constants::E_ERROR),
@@ -651,10 +661,12 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("abs", "standard"))
         .with_function(FunctionDescriptor::php("acos", "standard"))
         .with_function(FunctionDescriptor::php("acosh", "standard"))
+        .with_function(FunctionDescriptor::php("addcslashes", "standard"))
         .with_function(FunctionDescriptor::php("array_all", "standard"))
         .with_function(FunctionDescriptor::php("array_any", "standard"))
         .with_function(FunctionDescriptor::php("array_chunk", "standard"))
         .with_function(FunctionDescriptor::php("array_column", "standard"))
+        .with_function(FunctionDescriptor::php("array_diff_key", "standard"))
         .with_function(FunctionDescriptor::php("array_filter", "standard"))
         .with_function(FunctionDescriptor::php("array_fill", "standard"))
         .with_function(FunctionDescriptor::php("array_find", "standard"))
@@ -729,6 +741,7 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("disk_free_space", "standard"))
         .with_function(FunctionDescriptor::php("disk_total_space", "standard"))
         .with_function(FunctionDescriptor::php("enum_exists", "standard"))
+        .with_function(FunctionDescriptor::php("error_log", "standard"))
         .with_function(FunctionDescriptor::php("error_reporting", "standard"))
         .with_function(FunctionDescriptor::php("exec", "standard"))
         .with_function(FunctionDescriptor::php("exp", "standard"))
@@ -920,6 +933,7 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("setcookie", "standard"))
         .with_function(FunctionDescriptor::php("setrawcookie", "standard"))
         .with_function(FunctionDescriptor::php("set_time_limit", "standard"))
+        .with_function(FunctionDescriptor::php("ignore_user_abort", "standard"))
         .with_function(FunctionDescriptor::php("sha1", "standard"))
         .with_function(FunctionDescriptor::php("shell_exec", "standard"))
         .with_function(FunctionDescriptor::php("sin", "standard"))
@@ -1528,6 +1542,7 @@ pub(super) fn standard_library_mysqli_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("mysqli_fetch_row", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_free_result", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_init", "mysqli"))
+        .with_function(FunctionDescriptor::php("mysqli_more_results", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_num_fields", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_num_rows", "mysqli"))
         .with_function(FunctionDescriptor::php("mysqli_options", "mysqli"))
@@ -1593,6 +1608,66 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             "CURLM_BAD_HANDLE",
             "curl",
             ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLM_CALL_MULTI_PERFORM",
+            "curl",
+            ConstantValue::Int(-1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLE_OK",
+            "curl",
+            ConstantValue::Int(0),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLE_WRITE_ERROR",
+            "curl",
+            ConstantValue::Int(23),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLE_BAD_CONTENT_ENCODING",
+            "curl",
+            ConstantValue::Int(61),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURL_VERSION_SSL",
+            "curl",
+            ConstantValue::Int(4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURL_HTTP_VERSION_1_0",
+            "curl",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURL_HTTP_VERSION_1_1",
+            "curl",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLAUTH_BASIC",
+            "curl",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLAUTH_ANY",
+            "curl",
+            ConstantValue::Int(-17),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLPROTO_HTTP",
+            "curl",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLPROTO_HTTPS",
+            "curl",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLPROXY_HTTP",
+            "curl",
+            ConstantValue::Int(0),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "CURLOPT_URL",
@@ -1673,6 +1748,71 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             "CURLOPT_HTTPHEADER",
             "curl",
             ConstantValue::Int(10023),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_HEADERFUNCTION",
+            "curl",
+            ConstantValue::Int(20079),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_WRITEFUNCTION",
+            "curl",
+            ConstantValue::Int(20011),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_BUFFERSIZE",
+            "curl",
+            ConstantValue::Int(98),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_CAINFO",
+            "curl",
+            ConstantValue::Int(10065),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_HTTPAUTH",
+            "curl",
+            ConstantValue::Int(107),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_PROTOCOLS",
+            "curl",
+            ConstantValue::Int(181),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_PROXY",
+            "curl",
+            ConstantValue::Int(10004),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_PROXYAUTH",
+            "curl",
+            ConstantValue::Int(111),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_PROXYPORT",
+            "curl",
+            ConstantValue::Int(59),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_PROXYTYPE",
+            "curl",
+            ConstantValue::Int(101),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_PROXYUSERPWD",
+            "curl",
+            ConstantValue::Int(10006),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_REDIR_PROTOCOLS",
+            "curl",
+            ConstantValue::Int(182),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_USERPWD",
+            "curl",
+            ConstantValue::Int(10005),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "CURLOPT_POST",
@@ -2009,6 +2149,7 @@ pub(super) fn standard_library_hash_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("hash_algos", "hash"))
         .with_function(FunctionDescriptor::php("hash_equals", "hash"))
         .with_function(FunctionDescriptor::php("hash_hmac", "hash"))
+        .with_function(FunctionDescriptor::php("hash_hmac_algos", "hash"))
 }
 
 pub(super) fn standard_library_ctype_extension() -> ExtensionDescriptor {
@@ -2431,6 +2572,71 @@ pub(super) fn standard_library_date_extension() -> ExtensionDescriptor {
             "DATE_ATOM",
             "date",
             ConstantValue::String(constants::DATE_ATOM),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_COOKIE",
+            "date",
+            ConstantValue::String(constants::DATE_COOKIE),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_ISO8601",
+            "date",
+            ConstantValue::String(constants::DATE_ISO8601),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_ISO8601_EXPANDED",
+            "date",
+            ConstantValue::String(constants::DATE_ISO8601_EXPANDED),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC1036",
+            "date",
+            ConstantValue::String(constants::DATE_RFC1036),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC1123",
+            "date",
+            ConstantValue::String(constants::DATE_RFC1123),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC2822",
+            "date",
+            ConstantValue::String(constants::DATE_RFC2822),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC3339",
+            "date",
+            ConstantValue::String(constants::DATE_RFC3339),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC3339_EXTENDED",
+            "date",
+            ConstantValue::String(constants::DATE_RFC3339_EXTENDED),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC7231",
+            "date",
+            ConstantValue::String(constants::DATE_RFC7231),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC822",
+            "date",
+            ConstantValue::String(constants::DATE_RFC822),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RFC850",
+            "date",
+            ConstantValue::String(constants::DATE_RFC850),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_RSS",
+            "date",
+            ConstantValue::String(constants::DATE_RSS),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DATE_W3C",
+            "date",
+            ConstantValue::String(constants::DATE_W3C),
         ))
         .with_function(FunctionDescriptor::php("checkdate", "date"))
         .with_function(FunctionDescriptor::php("date", "date"))

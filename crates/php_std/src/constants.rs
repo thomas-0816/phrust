@@ -91,6 +91,10 @@ pub const PHP_BINARY: &str = "phrust-php";
 pub const DEFAULT_INCLUDE_PATH: &str = ".";
 /// Maximum path length used by the compatibility surface.
 pub const PHP_MAXPATHLEN: i64 = 1024;
+/// Include object metadata in debug backtraces.
+pub const DEBUG_BACKTRACE_PROVIDE_OBJECT: i64 = 1;
+/// Omit argument values from debug backtraces.
+pub const DEBUG_BACKTRACE_IGNORE_ARGS: i64 = 2;
 
 /// PHP OS string for the current build target.
 #[cfg(target_os = "macos")]
@@ -317,6 +321,32 @@ pub const ARRAY_FILTER_USE_KEY: i64 = 2;
 
 /// DateTimeInterface::ATOM date format.
 pub const DATE_ATOM: &str = "Y-m-d\\TH:i:sP";
+/// Cookie date format.
+pub const DATE_COOKIE: &str = "l, d-M-Y H:i:s T";
+/// ISO-8601 date format.
+pub const DATE_ISO8601: &str = "Y-m-d\\TH:i:sO";
+/// Expanded ISO-8601 date format.
+pub const DATE_ISO8601_EXPANDED: &str = "X-m-d\\TH:i:sP";
+/// RFC 1036 date format.
+pub const DATE_RFC1036: &str = "D, d M y H:i:s O";
+/// RFC 1123 date format.
+pub const DATE_RFC1123: &str = "D, d M Y H:i:s O";
+/// RFC 2822 date format.
+pub const DATE_RFC2822: &str = "D, d M Y H:i:s O";
+/// RFC 3339 date format.
+pub const DATE_RFC3339: &str = "Y-m-d\\TH:i:sP";
+/// RFC 3339 extended date format.
+pub const DATE_RFC3339_EXTENDED: &str = "Y-m-d\\TH:i:s.vP";
+/// RFC 7231 date format.
+pub const DATE_RFC7231: &str = "D, d M Y H:i:s \\G\\M\\T";
+/// RFC 822 date format.
+pub const DATE_RFC822: &str = "D, d M y H:i:s O";
+/// RFC 850 date format.
+pub const DATE_RFC850: &str = "l, d-M-y H:i:s T";
+/// RSS date format.
+pub const DATE_RSS: &str = DATE_RFC1123;
+/// W3C date format.
+pub const DATE_W3C: &str = DATE_RFC3339;
 
 /// `str_pad()` left padding selector.
 pub const STR_PAD_LEFT: i64 = 0;

@@ -139,6 +139,7 @@ mod tests {
         assert!(function_exists(&registry, "STRLEN"));
         assert!(function_exists(&registry, "curl_exec"));
         assert!(function_exists(&registry, "mb_strlen"));
+        assert!(function_exists(&registry, "mysqli_more_results"));
         assert!(function_exists(&registry, "mysqli_query"));
         assert!(function_exists(&registry, "openssl_digest"));
         assert!(function_exists(&registry, "pdo_drivers"));

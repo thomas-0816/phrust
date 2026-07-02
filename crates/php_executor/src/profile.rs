@@ -130,7 +130,10 @@ impl EngineProfile {
                 OptimizationLevel::O2
             }
         };
-        vm_options.include_optimization_level = optimization_level;
+        vm_options.include_optimization_level = match name {
+            EngineProfileName::Default => OptimizationLevel::O0,
+            EngineProfileName::Baseline | EngineProfileName::ExperimentalJit => optimization_level,
+        };
         Self {
             name,
             optimization_level,
@@ -202,7 +205,7 @@ mod tests {
         assert_eq!(options.optimization_level, OptimizationLevel::O2);
         assert_eq!(
             options.vm_options.include_optimization_level,
-            OptimizationLevel::O2
+            OptimizationLevel::O0
         );
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Auto);
         assert_eq!(
@@ -247,6 +250,10 @@ mod tests {
         let options = PhpExecutorOptions::for_profile(EngineProfileName::ExperimentalJit);
 
         assert_eq!(options.optimization_level, OptimizationLevel::O2);
+        assert_eq!(
+            options.vm_options.include_optimization_level,
+            OptimizationLevel::O2
+        );
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Auto);
         assert_eq!(
             options.vm_options.superinstructions,

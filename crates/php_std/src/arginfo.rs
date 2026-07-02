@@ -2,12 +2,10 @@
 
 use crate::generated::arginfo as generated_arginfo;
 use php_runtime::api::{
-    PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value, to_bool, to_float,
-    to_int, to_string,
+    CallableValue, PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
+    to_bool, to_float, to_int, to_string,
 };
-use php_runtime::experimental::numeric_string::{
-    NumericStringKind, NumericStringValue, classify_php_string,
-};
+use php_runtime::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 
 /// PHP builtin coercion mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -610,7 +608,10 @@ fn match_exact(atom: ArgType, value: &Value) -> Option<Value> {
         (ArgType::Float, Value::Float(_)) => Some(value.clone()),
         (ArgType::String, Value::String(_)) => Some(value.clone()),
         (ArgType::Array, Value::Array(_)) => Some(value.clone()),
-        (ArgType::Object, Value::Object(_)) => Some(value.clone()),
+        (ArgType::Object, Value::Object(_))
+        | (ArgType::Object, Value::Fiber(_))
+        | (ArgType::Object, Value::Generator(_))
+        | (ArgType::Object, Value::Callable(CallableValue::Closure(_))) => Some(value.clone()),
         (ArgType::Callable, Value::Callable(_)) => Some(value.clone()),
         _ => None,
     }
@@ -670,6 +671,7 @@ fn value_type(value: &Value) -> String {
         Value::Resource(_) => "resource".to_owned(),
         Value::Fiber(_) => "Fiber".to_owned(),
         Value::Generator(_) => "Generator".to_owned(),
+        Value::Callable(CallableValue::Closure(_)) => "Closure".to_owned(),
         Value::Callable(_) => "callable".to_owned(),
         Value::Reference(_) => "reference".to_owned(),
     }
@@ -679,7 +681,8 @@ fn value_type(value: &Value) -> String {
 mod tests {
     use super::*;
     use php_runtime::api::{
-        ClassEntry, ClassFlags, ObjectRef, ResourceTable, StreamFlags, StreamMetadata,
+        ClassEntry, ClassFlags, ClosurePayload, ObjectRef, ResourceTable, StreamFlags,
+        StreamMetadata,
     };
 
     fn span() -> RuntimeSourceSpan {
@@ -827,6 +830,25 @@ mod tests {
             error.diagnostic().message(),
             "stdlib_sample(): Argument #1 ($value) must be of type string, stdClass given"
         );
+    }
+
+    #[test]
+    fn validates_closure_callable_as_object_argument() {
+        let info = FunctionArgInfo::new(
+            "object_sample",
+            vec![ParameterInfo::required(
+                "value",
+                TypeSpec::one(ArgType::Object),
+            )],
+            TypeSpec::one(ArgType::Mixed),
+        );
+        let closure = Value::Callable(CallableValue::Closure(ClosurePayload::new(7, Vec::new())));
+
+        let validated = ArgumentValidator::new(CoercionMode::Strict)
+            .validate(&info, &[closure.clone()], span())
+            .expect("closure object validates");
+
+        assert_eq!(validated.values(), &[closure]);
     }
 
     #[test]
