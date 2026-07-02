@@ -1580,6 +1580,9 @@ fn destructuring_patterns(
     let mut patterns = Vec::new();
     for (index, element) in elements.into_iter().enumerate() {
         let element_expression = module.expressions().get(element)?;
+        if matches!(element_expression.kind(), HirExprKind::Missing) {
+            continue;
+        }
         let (key, value) = match element_expression.kind().clone() {
             HirExprKind::ArrayPair {
                 key,
@@ -2627,9 +2630,46 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_static_method_call_lowers_class_variable_callable_pair() {
+        let frontend = analyze_source(
+            "<?php class DynamicStaticProbe { public static function test($value) { return $value === 'ok'; } } $class = DynamicStaticProbe::class; $result = $class::test('ok'); var_dump($result);",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("call_callable r"), "{snapshot}");
+        assert!(snapshot.contains("local:0"), "{snapshot}");
+        assert!(snapshot.contains("\"test\""), "{snapshot}");
+        assert!(snapshot.contains("store_local local:1"), "{snapshot}");
+    }
+
+    #[test]
     fn class_constant_uses_import_display_name_for_autoload() {
         let frontend = analyze_source(
             "<?php namespace WpOrg\\Requests; use WpOrg\\Requests\\Capability; final class Requests { public static function request() { return [Capability::SSL => true]; } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(
+            snapshot.contains("WpOrg\\Requests\\Capability::SSL"),
+            "{snapshot}"
+        );
+        assert!(!snapshot.contains(" Capability::SSL"), "{snapshot}");
+        assert!(
+            !snapshot.contains("wporg\\requests\\capability::SSL"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn isset_class_constant_dim_uses_import_display_name_for_autoload() {
+        let frontend = analyze_source(
+            "<?php namespace WpOrg\\Requests; use WpOrg\\Requests\\Capability; final class Requests { public static function test($values) { return isset($values[Capability::SSL]); } }",
         );
         let result = lower_frontend_result(&frontend, LoweringOptions::default());
 
@@ -3661,6 +3701,32 @@ mod tests {
                 receiver, property, ..
             }
                 if receiver == "this" && property == "counter"
+        ));
+    }
+
+    #[test]
+    fn property_dim_interpolation_lowers_fetch_dim() {
+        let frontend = analyze_source(
+            "<?php class D { private $rewrite = ['slug' => 'category']; function f() { echo \"{$this->rewrite['slug']}\"; } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("fetch_property r"), "{snapshot}");
+        assert!(snapshot.contains("fetch_dim r"), "{snapshot}");
+        assert!(snapshot.contains("$rewrite"), "{snapshot}");
+        assert!(snapshot.contains("string \"slug\""), "{snapshot}");
+
+        let parts = interpolated_literal_parts("\"{$this->rewrite['slug']}\"").expect("parts");
+        assert!(matches!(
+            &parts[1],
+            InterpolatedPart::Property {
+                receiver,
+                property,
+                dim: Some(InterpolatedDim::String(dim)),
+            } if receiver == "this" && property == "rewrite" && dim == "slug"
         ));
     }
 

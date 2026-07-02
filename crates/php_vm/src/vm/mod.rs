@@ -70369,6 +70369,16 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
     }
 
     #[test]
+    fn braced_property_dim_interpolation_reads_dimension() {
+        let result = execute_source(
+            "<?php class A { public $rewrite = ['slug' => 'category']; function render() { echo \"{$this->rewrite['slug']}\"; } } (new A())->render();",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"category");
+    }
+
+    #[test]
     fn runtime_types_check_returns_void_and_properties() {
         let success = execute_source(
             "<?php class Box { public int $value; } function text(): string { return 'ok'; } function done(): void { return; } $box = new Box(); $box->value = 7; echo text(), '|', done(), '|', $box->value;",

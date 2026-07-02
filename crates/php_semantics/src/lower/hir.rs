@@ -554,12 +554,13 @@ impl HirLowerer<'_> {
                     .or_else(|| self.static_member_literal(node)),
             },
             Some(ExprNode::Array(_)) => {
-                let elements = self.expr_children(node);
                 if first_significant_token_text(node)
                     .is_some_and(|text| text.eq_ignore_ascii_case("list"))
                 {
+                    let elements = self.list_expr_children_preserving_holes(node);
                     HirExprKind::List { elements }
                 } else {
+                    let elements = self.expr_children(node);
                     HirExprKind::Array { elements }
                 }
             }
@@ -2200,6 +2201,37 @@ impl HirLowerer<'_> {
             .filter(|child| ExprNode::cast(child).is_some())
             .map(|child| self.lower_expr(child, ResolveContext::ConstantFetch))
             .collect()
+    }
+
+    fn list_expr_children_preserving_holes(&mut self, node: &SyntaxNode) -> Vec<ExprId> {
+        let mut elements = Vec::new();
+        let mut expecting_element = false;
+        let mut saw_open = false;
+
+        for child in node.children() {
+            match child {
+                SyntaxElement::Token(token) if token.kind().is_trivia() => {}
+                SyntaxElement::Token(token) if token.text() == "(" => {
+                    saw_open = true;
+                    expecting_element = true;
+                }
+                SyntaxElement::Token(token) if token.text() == "," => {
+                    if saw_open && expecting_element {
+                        elements.push(self.placeholder_expr(node));
+                    }
+                    expecting_element = true;
+                }
+                SyntaxElement::Token(token) if token.text() == ")" => break,
+                SyntaxElement::Token(_) => {}
+                SyntaxElement::Node(child) if ExprNode::cast(child).is_some() => {
+                    elements.push(self.lower_expr(child, ResolveContext::ConstantFetch));
+                    expecting_element = false;
+                }
+                SyntaxElement::Node(_) => {}
+            }
+        }
+
+        elements
     }
 
     fn call_args(&mut self, node: &SyntaxNode) -> Vec<HirCallArg> {

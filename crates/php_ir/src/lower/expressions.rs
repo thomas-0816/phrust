@@ -114,6 +114,7 @@ pub(super) struct StaticPropertyDimTarget {
 #[derive(Clone, Debug)]
 pub(super) struct ClassConstantDimTarget {
     pub(super) class_name: String,
+    pub(super) display_class_name: Option<String>,
     pub(super) constant: String,
     pub(super) dims: Vec<ExprId>,
     pub(super) append: bool,
@@ -1875,20 +1876,15 @@ impl LoweringContext<'_> {
                 });
             }
             let dst = builder.alloc_register(site.function);
-            let class_name = if matches!(
-                normalize_class_name(&target.class_name).as_str(),
-                "self" | "static" | "parent"
-            ) {
-                target.class_name
-            } else {
-                target.display_class_name.unwrap_or(target.class_name)
-            };
             let instruction = builder.emit(
                 site.function,
                 site.block,
                 InstructionKind::FetchClassConstant {
                     dst,
-                    class_name,
+                    class_name: class_constant_fetch_class_name(
+                        target.class_name,
+                        target.display_class_name,
+                    ),
                     constant: target.constant,
                 },
                 site.span,
@@ -2617,8 +2613,10 @@ impl LoweringContext<'_> {
                 return self
                     .lower_dynamic_static_method_call_to_register(builder, site, callee, args);
             }
-            let target = self.static_method_call_target(callee)?;
-            return self.lower_static_method_call_to_register(builder, site, target, args);
+            if let Some(target) = self.static_method_call_target(callee) {
+                return self.lower_static_method_call_to_register(builder, site, target, args);
+            }
+            return self.lower_dynamic_static_method_call_to_register(builder, site, callee, args);
         }
         let dst = builder.alloc_register(site.function);
         let (kind, current) =
@@ -3071,19 +3069,33 @@ impl LoweringContext<'_> {
         let HirExprKind::StaticAccess { target, member } = expression.kind() else {
             return None;
         };
-        let class_name = self.static_class_name((*target)?)?;
+        let target = (*target)?;
         let method = (*member)?;
-        let method_value =
-            self.lower_expr_to_register(builder, site.function, site.block, method)?;
-        let class_const = builder.intern_constant(IrConstant::String(class_name));
+        let (class_operand, block) = if let Some(class_name) = self.static_class_name(target) {
+            (
+                Operand::Constant(builder.intern_constant(IrConstant::String(class_name))),
+                site.block,
+            )
+        } else {
+            let class_value =
+                self.lower_expr_to_register(builder, site.function, site.block, target)?;
+            (Operand::Register(class_value.register), class_value.block)
+        };
+        let (method_operand, block) = if let Some(method_name) = self.static_property_name(method) {
+            (
+                Operand::Constant(builder.intern_constant(IrConstant::String(method_name))),
+                block,
+            )
+        } else {
+            let method_value =
+                self.lower_expr_to_register(builder, site.function, block, method)?;
+            (Operand::Register(method_value.register), method_value.block)
+        };
         self.lower_callable_pair_call_to_register(
             builder,
-            LowerSite {
-                block: method_value.block,
-                ..site
-            },
-            Operand::Constant(class_const),
-            Operand::Register(method_value.register),
+            LowerSite { block, ..site },
+            class_operand,
+            method_operand,
             args,
         )
     }
@@ -3759,7 +3771,10 @@ impl LoweringContext<'_> {
                 current,
                 InstructionKind::FetchClassConstant {
                     dst: value,
-                    class_name: target.class_name,
+                    class_name: class_constant_fetch_class_name(
+                        target.class_name,
+                        target.display_class_name,
+                    ),
                     constant: target.constant,
                 },
                 site.span,
@@ -4819,7 +4834,9 @@ impl LoweringContext<'_> {
                     register
                 }
                 InterpolatedPart::Property {
-                    receiver, property, ..
+                    receiver,
+                    property,
+                    dim,
                 } => {
                     let object_register = builder.alloc_register(site.function);
                     let local = builder.intern_local(site.function, receiver);
@@ -4859,7 +4876,75 @@ impl LoweringContext<'_> {
                         site.expr,
                         site.span,
                     );
-                    register
+                    if let Some(dim) = dim {
+                        let key_register = builder.alloc_register(site.function);
+                        let key_constant = match dim {
+                            InterpolatedDim::Variable(name) => {
+                                let local = builder.intern_local(site.function, name);
+                                let instruction = builder.emit(
+                                    site.function,
+                                    current,
+                                    InstructionKind::LoadLocal {
+                                        dst: key_register,
+                                        local,
+                                    },
+                                    site.span,
+                                );
+                                self.add_expr_source_map(
+                                    builder,
+                                    site.function,
+                                    current,
+                                    instruction,
+                                    site.expr,
+                                    site.span,
+                                );
+                                None
+                            }
+                            InterpolatedDim::Int(value) => Some(IrConstant::Int(value)),
+                            InterpolatedDim::String(value) => Some(IrConstant::String(value)),
+                        };
+                        if let Some(constant) = key_constant {
+                            let constant = builder.intern_constant(constant);
+                            let instruction = builder.emit_load_const(
+                                site.function,
+                                current,
+                                key_register,
+                                constant,
+                                site.span,
+                            );
+                            self.add_expr_source_map(
+                                builder,
+                                site.function,
+                                current,
+                                instruction,
+                                site.expr,
+                                site.span,
+                            );
+                        }
+                        let dim_register = builder.alloc_register(site.function);
+                        let instruction = builder.emit(
+                            site.function,
+                            current,
+                            InstructionKind::FetchDim {
+                                dst: dim_register,
+                                array: Operand::Register(register),
+                                key: Operand::Register(key_register),
+                                quiet: false,
+                            },
+                            site.span,
+                        );
+                        self.add_expr_source_map(
+                            builder,
+                            site.function,
+                            current,
+                            instruction,
+                            site.expr,
+                            site.span,
+                        );
+                        dim_register
+                    } else {
+                        register
+                    }
                 }
             };
 
@@ -8909,11 +8994,13 @@ impl LoweringContext<'_> {
                 if matches!(normalized_source.as_str(), "self" | "static" | "parent") {
                     return Some(normalized_source);
                 }
-                resolution
-                    .resolved()
-                    .or_else(|| resolution.fallback())
-                    .or_else(|| Some(resolution.source()))
-                    .map(ToOwned::to_owned)
+                self.class_name_constant_value(expr).or_else(|| {
+                    resolution
+                        .resolved()
+                        .or_else(|| resolution.fallback())
+                        .or_else(|| Some(resolution.source()))
+                        .map(ToOwned::to_owned)
+                })
             }
             _ => None,
         }
@@ -8996,6 +9083,7 @@ impl LoweringContext<'_> {
         match expression.kind() {
             HirExprKind::Name { resolution } => self
                 .imported_class_display_name(module, resolution)
+                .or_else(|| self.class_name_constant_value(expr))
                 .or_else(|| {
                     self.declared_class_display_name(
                         resolution
@@ -9186,6 +9274,7 @@ impl LoweringContext<'_> {
                 let mut target = if let Some(constant) = self.class_constant_target(receiver) {
                     ClassConstantDimTarget {
                         class_name: constant.class_name,
+                        display_class_name: constant.display_class_name,
                         constant: constant.constant,
                         dims: Vec::new(),
                         append: false,
@@ -9779,5 +9868,19 @@ impl LoweringContext<'_> {
             }
             _ => None,
         }
+    }
+}
+
+fn class_constant_fetch_class_name(
+    class_name: String,
+    display_class_name: Option<String>,
+) -> String {
+    if matches!(
+        normalize_class_name(&class_name).as_str(),
+        "self" | "static" | "parent"
+    ) {
+        class_name
+    } else {
+        display_class_name.unwrap_or(class_name)
     }
 }
