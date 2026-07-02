@@ -8727,6 +8727,88 @@ impl LoweringContext<'_> {
                 block: current,
             });
         }
+        if let Some(target) = self.property_dim_target(inner)
+            && !target.append
+            && !target.dims.is_empty()
+        {
+            let old = self.lower_expr_to_register(builder, site.function, site.block, inner)?;
+            let one = builder.intern_constant(IrConstant::Int(1));
+            let one_reg = builder.alloc_register(site.function);
+            let load_one =
+                builder.emit_load_const(site.function, old.block, one_reg, one, site.span);
+            self.add_expr_source_map(
+                builder,
+                site.function,
+                old.block,
+                load_one,
+                site.expr,
+                site.span,
+            );
+            let new = builder.alloc_register(site.function);
+            let op = if operator == "++" {
+                BinaryOp::Add
+            } else {
+                BinaryOp::Sub
+            };
+            let arithmetic = builder.emit(
+                site.function,
+                old.block,
+                InstructionKind::Binary {
+                    dst: new,
+                    op,
+                    lhs: Operand::Register(old.register),
+                    rhs: Operand::Register(one_reg),
+                },
+                site.span,
+            );
+            self.add_expr_source_map(
+                builder,
+                site.function,
+                old.block,
+                arithmetic,
+                site.expr,
+                site.span,
+            );
+
+            let object =
+                self.lower_expr_to_register(builder, site.function, old.block, target.receiver)?;
+            let mut current = object.block;
+            let mut dims = Vec::with_capacity(target.dims.len());
+            for dim in target.dims {
+                let dim = self.lower_expr_to_register(builder, site.function, current, dim)?;
+                current = dim.block;
+                dims.push(Operand::Register(dim.register));
+            }
+            let assign_result = builder.alloc_register(site.function);
+            let assign = builder.emit(
+                site.function,
+                current,
+                InstructionKind::AssignPropertyDim {
+                    dst: assign_result,
+                    object: Operand::Register(object.register),
+                    property: target.property,
+                    dims,
+                    value: Operand::Register(new),
+                    append: false,
+                },
+                site.span,
+            );
+            self.add_expr_source_map(
+                builder,
+                site.function,
+                current,
+                assign,
+                site.expr,
+                site.span,
+            );
+
+            let inner_range = self.span_for(SourceMappedId::from(inner));
+            let is_prefix = inner_range.end() == site.range.end();
+            return Some(LoweredExpr {
+                register: if is_prefix { new } else { old.register },
+                block: current,
+            });
+        }
         if let Some(target) = self.property_assignment_target(inner) {
             let object =
                 self.lower_expr_to_register(builder, site.function, site.block, target.receiver)?;

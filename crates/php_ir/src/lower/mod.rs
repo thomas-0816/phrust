@@ -3175,6 +3175,24 @@ mod tests {
     }
 
     #[test]
+    fn property_dimension_increment_lowers_through_assign_property_dim() {
+        let frontend =
+            analyze_source("<?php class C {} $c = new C; ++$c->p['n']; $c->p['n']--;");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert_eq!(snapshot.matches("fetch_dim r").count(), 2, "{snapshot}");
+        assert_eq!(
+            snapshot.matches("assign_property_dim r").count(),
+            2,
+            "{snapshot}"
+        );
+        assert!(snapshot.contains("binary r"), "{snapshot}");
+    }
+
+    #[test]
     fn property_compound_assign_lowers_through_fetch_binary_and_assign_property() {
         let frontend =
             analyze_source("<?php class C { public $s = ''; } $c = new C; $c->s .= 'x';");

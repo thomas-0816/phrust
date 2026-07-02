@@ -906,12 +906,17 @@ pub(crate) fn compile_loaded_include(
     };
 
     if !lowering.diagnostics.is_empty() || lowering.verification.is_err() {
+        let detail = ir_lowering_failure_detail(&lowering);
         return Err(include_error(
             "E_PHP_VM_INCLUDE_COMPILE_ERROR",
-            format!("{} failed IR lowering", loaded.canonical_path.display()),
+            format!(
+                "{} failed IR lowering: {detail}",
+                loaded.canonical_path.display()
+            ),
         )
         .with_context("path", loaded.canonical_path.display())
         .with_context("stage", "ir_lowering")
+        .with_context("detail", detail)
         .with_context(
             "local_trait_files",
             appended_traits
@@ -937,6 +942,16 @@ pub(crate) fn compile_loaded_include(
             })?;
     }
     Ok(CompiledUnit::new(lowering.unit))
+}
+
+fn ir_lowering_failure_detail(lowering: &php_ir::LoweringResult) -> String {
+    if let Some(diagnostic) = lowering.diagnostics.first() {
+        return format!("{}: {}", diagnostic.id, diagnostic.message);
+    }
+    if let Err(error) = &lowering.verification {
+        return format!("IR verification failed: {error:?}");
+    }
+    "unknown IR lowering failure".to_string()
 }
 
 fn missing_local_trait_diagnostics(lowering: &php_ir::LoweringResult) -> Vec<String> {

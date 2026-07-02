@@ -397,7 +397,7 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
 ) -> BuiltinResult {
     expect_arity("curl_exec", &args, 1)?;
     let handle = curl_handle_arg("curl_exec", args.first())?;
-    if !curl_network_requests_enabled(context) {
+    if !curl_network_requests_enabled(context) && !curl_handle_targets_loopback(&handle) {
         set_curl_error(
             &handle,
             1,
@@ -677,7 +677,7 @@ fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
         _ => return Err((3, "cURL URL is empty".to_owned())),
     };
     let parsed = parse_http_url(&url)?;
-    if !matches!(parsed.host.as_str(), "127.0.0.1" | "localhost" | "::1") {
+    if !curl_host_is_loopback(&parsed.host) {
         return Err((
             7,
             "cURL MVP only permits local loopback hosts when network tests are enabled".to_owned(),
@@ -727,6 +727,19 @@ fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
         follow_redirects: curl_bool_property(handle, "__curl_followlocation"),
         max_redirects: curl_int_setting(handle, "__curl_maxredirs", 5).clamp(0, 20) as usize,
     })
+}
+
+fn curl_handle_targets_loopback(handle: &ObjectRef) -> bool {
+    let Some(Value::String(url)) = handle.get_property("__curl_url") else {
+        return false;
+    };
+    parse_http_url(&url.to_string_lossy())
+        .map(|parsed| curl_host_is_loopback(&parsed.host))
+        .unwrap_or(false)
+}
+
+fn curl_host_is_loopback(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 fn execute_http_request(request: &CurlRequest) -> Result<CurlResponse, (i64, String)> {
@@ -1489,7 +1502,7 @@ mod tests {
         let mut context = BuiltinContext::new(&mut output);
         let handle = builtin_curl_init(
             &mut context,
-            vec![Value::string("http://127.0.0.1:1/")],
+            vec![Value::string("http://example.com/")],
             RuntimeSourceSpan::default(),
         )
         .expect("init");
@@ -1530,6 +1543,61 @@ mod tests {
                 .map(String::as_str),
             Some("false")
         );
+    }
+
+    #[test]
+    fn curl_exec_allows_loopback_when_network_is_disabled() {
+        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
+        let _override = NetTestsOverride::set(false);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /site-health"));
+            assert!(request.contains(&format!("Host: 127.0.0.1:{port}\r\n")));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                .expect("write response");
+        });
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string(format!("http://127.0.0.1:{port}/site-health"))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        builtin_curl_setopt(
+            &mut context,
+            vec![
+                handle.clone(),
+                Value::Int(CURLOPT_RETURNTRANSFER),
+                Value::Bool(true),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("set return transfer");
+
+        assert_eq!(
+            builtin_curl_exec(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("exec"),
+            Value::string("OK")
+        );
+        assert_eq!(
+            builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
+                .expect("errno"),
+            Value::Int(0)
+        );
+        assert!(context.take_diagnostics().is_empty());
+        server.join().expect("server");
     }
 
     #[test]
