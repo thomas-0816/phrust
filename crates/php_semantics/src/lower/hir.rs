@@ -902,13 +902,37 @@ impl HirLowerer<'_> {
                         "T_STRING" | "T_NAME_FULLY_QUALIFIED" | "T_NAME_QUALIFIED"
                     )
             })
-            .map(|token| token.text().to_owned())
+            .map(|token| self.resolve_source_name(token.text(), ResolveContext::ClassLike))
             .collect();
         HirCatchClause {
             types,
             variable,
             body: self.stmt_children(node),
         }
+    }
+
+    fn resolve_source_name(&self, source: &str, context: ResolveContext) -> HirNameResolution {
+        let qualified = QualifiedName::parse(source);
+        let result = self.scope.resolver().resolve(&qualified, context);
+        let name_kind = crate::symbols::resolution::NameResolver::name_kind(context);
+        let (resolved, fallback) = match &result {
+            ResolvedName::FullyQualified(name) => (Some(name.canonical(name_kind)), None),
+            ResolvedName::MaybeRuntimeFallback {
+                namespaced,
+                fallback,
+            } => (
+                Some(namespaced.canonical(name_kind)),
+                Some(fallback.canonical(name_kind)),
+            ),
+            ResolvedName::Dynamic | ResolvedName::Unresolved => (None, None),
+        };
+        HirNameResolution::new(
+            source,
+            context.as_str(),
+            result.classification(),
+            resolved,
+            fallback,
+        )
     }
 
     fn match_arms(&mut self, node: &SyntaxNode) -> Vec<HirMatchArm> {

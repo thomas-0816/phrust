@@ -35938,7 +35938,7 @@ fn handle_throw(
 ) -> Option<BlockId> {
     while let Some(handler) = handlers.pop() {
         if let Some(catch) = handler.catch
-            && catch_matches(compiled, &value, &handler.catch_types).unwrap_or(false)
+            && catch_matches(compiled, state, &value, &handler.catch_types).unwrap_or(false)
         {
             if let Some(local) = handler.exception_local {
                 let previous = stack
@@ -35962,6 +35962,7 @@ fn handle_throw(
 
 fn catch_matches(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     value: &Value,
     catch_types: &[String],
 ) -> Result<bool, String> {
@@ -35969,7 +35970,7 @@ fn catch_matches(
         return Ok(true);
     }
     for catch_type in catch_types {
-        if object_instanceof(compiled, value, catch_type)? {
+        if object_instanceof_in_state(compiled, state, value, catch_type)? {
             return Ok(true);
         }
     }
@@ -67798,6 +67799,15 @@ echo perf_jit_unstable_types_debug(4), "\n";
     }
 
     #[test]
+    fn function_calls_fallback_to_global_gc_enabled_builtin_from_namespace() {
+        let result =
+            execute_source("<?php namespace SimplePie; echo gc_enabled() ? 'gc-on' : 'gc-off';");
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"gc-on");
+    }
+
+    #[test]
     fn is_callable_named_out_parameter_does_not_warn_for_undefined_local() {
         let result = execute_source(
             "<?php function callable_name_helper() {} is_callable(callable_name_helper(...), callable_name: $name); var_dump($name);",
@@ -72533,6 +72543,66 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"caught:boom");
+    }
+
+    #[test]
+    fn exceptions_catch_autoloaded_userland_exception_subclass() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-autoload-catch-exception-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        let http_dir = root.join("SimplePie/HTTP");
+        std::fs::create_dir_all(&http_dir).expect("autoload fixture dirs should be created");
+        std::fs::write(
+            root.join("SimplePie/Exception.php"),
+            "<?php namespace SimplePie; class Exception extends \\Exception {}",
+        )
+        .expect("base exception should be written");
+        std::fs::write(
+            http_dir.join("ClientException.php"),
+            "<?php namespace SimplePie\\HTTP; use SimplePie\\Exception as SimplePieException; final class ClientException extends SimplePieException {}",
+        )
+        .expect("client exception should be written");
+        std::fs::write(
+            http_dir.join("FileClient.php"),
+            "<?php namespace SimplePie\\HTTP; final class FileClient { public function request(): void { throw new ClientException('feed failed'); } }",
+        )
+        .expect("file client should be written");
+        let source = r#"<?php
+            use SimplePie\HTTP\ClientException;
+            spl_autoload_register(function ($class) {
+                if ($class === 'SimplePie\HTTP\FileClient') {
+                    require __DIR__ . '/SimplePie/HTTP/FileClient.php';
+                } elseif ($class === 'SimplePie\HTTP\ClientException') {
+                    require __DIR__ . '/SimplePie/HTTP/ClientException.php';
+                } elseif ($class === 'SimplePie\Exception') {
+                    require __DIR__ . '/SimplePie/Exception.php';
+                }
+            });
+            try {
+                (new SimplePie\HTTP\FileClient())->request();
+            } catch (ClientException $e) {
+                echo 'caught:', $e->getMessage();
+            }
+        "#;
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"caught:");
     }
 
     #[test]

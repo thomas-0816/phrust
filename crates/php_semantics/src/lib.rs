@@ -1355,7 +1355,7 @@ fn push_statement_kind_json(out: &mut String, kind: &hir::HirStmtKind) {
                         out.push(',');
                     }
                     out.push('"');
-                    out.push_str(&escape_json(ty));
+                    out.push_str(&escape_json(ty.source()));
                     out.push('"');
                 }
                 out.push_str("],\"variable\":");

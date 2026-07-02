@@ -1,6 +1,6 @@
 //! HIR statement records.
 
-use crate::hir::{ExprId, StmtId};
+use crate::hir::{ExprId, HirNameResolution, StmtId};
 
 /// Statement record stored in the module statement arena.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,7 +134,7 @@ pub struct HirSwitchCase {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HirCatchClause {
     /// Static catch type names in source order.
-    pub types: Vec<String>,
+    pub types: Vec<HirNameResolution>,
     /// Optional caught-exception variable name without `$`.
     pub variable: Option<String>,
     /// Catch body.

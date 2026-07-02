@@ -155,6 +155,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_gc_collect_cycles,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("gc_enabled", builtin_gc_enabled, BuiltinCompatibility::Php),
     BuiltinEntry::new("gettype", builtin_gettype, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "ini_get",
@@ -505,6 +506,15 @@ pub(in crate::builtins::modules) fn builtin_gc_collect_cycles(
 ) -> BuiltinResult {
     expect_arity("gc_collect_cycles", &args, 0)?;
     Ok(Value::Int(0))
+}
+
+pub(in crate::builtins::modules) fn builtin_gc_enabled(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("gc_enabled", &args, 0)?;
+    Ok(Value::Bool(true))
 }
 
 pub(in crate::builtins::modules) fn builtin_usleep(

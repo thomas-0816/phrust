@@ -1549,7 +1549,13 @@ impl LoweringContext<'_> {
             let catch_types = catch
                 .types
                 .iter()
-                .map(|ty| normalize_class_name(ty))
+                .map(|ty| {
+                    normalize_class_name(
+                        ty.resolved()
+                            .or_else(|| ty.fallback())
+                            .unwrap_or_else(|| ty.source()),
+                    )
+                })
                 .collect::<Vec<_>>();
             builder.emit(
                 function,
