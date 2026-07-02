@@ -73,13 +73,17 @@ phrust_server_static_streamed_bytes_total {}\n\
 phrust_server_static_not_modified_total {}\n\
 phrust_server_static_partial_responses_total {}\n\
 phrust_server_static_precompressed_hits_total {}\n\
+phrust_server_script_cache_lookups_total {}\n\
 phrust_server_script_cache_hits_total {}\n\
 phrust_server_script_cache_misses_total {}\n\
+phrust_server_script_cache_source_reads_total {}\n\
+phrust_server_script_cache_metadata_stats_total {}\n\
 phrust_server_script_cache_stale_invalidations_total {}\n\
 phrust_server_script_cache_compile_errors_total {}\n\
 phrust_server_script_cache_entries {}\n\
 phrust_server_script_cache_evictions_total {}\n\
 phrust_server_script_cache_compile_in_progress {}\n\
+phrust_server_script_cache_compiles_avoided_total {}\n\
 {}\
 phrust_server_script_cache_preload_successes_total {}\n\
 phrust_server_script_cache_preload_failures_total {}\n\
@@ -87,7 +91,10 @@ phrust_server_include_resolution_hits_total {}\n\
 phrust_server_include_resolution_misses_total {}\n\
 phrust_server_include_compile_hits_total {}\n\
 phrust_server_include_compile_misses_total {}\n\
+phrust_server_include_source_reads_total {}\n\
+phrust_server_include_dependency_metadata_validations_total {}\n\
 phrust_server_include_stale_invalidations_total {}\n\
+phrust_server_include_stale_dependency_invalidations_total {}\n\
 phrust_server_include_compile_errors_total {}\n\
 phrust_server_persistent_engine_policy_reuses_total {}\n\
 phrust_server_persistent_engine_immutable_metadata_reuses_total {}\n\
@@ -112,13 +119,17 @@ phrust_server_persistent_engine_rejected_persistence_total{{reason=\"request_loc
             self.static_not_modified.load(Ordering::Relaxed),
             self.static_partial_responses.load(Ordering::Relaxed),
             self.static_precompressed_hits.load(Ordering::Relaxed),
+            cache.lookups,
             cache.hits,
             cache.misses,
+            cache.source_reads,
+            cache.metadata_stats,
             cache.stale_invalidations,
             cache.compile_errors,
             cache.entries,
             cache.evictions,
             cache.compile_in_progress,
+            cache.compiles_avoided,
             shard_entries,
             self.script_cache_preload_successes.load(Ordering::Relaxed),
             self.script_cache_preload_failures.load(Ordering::Relaxed),
@@ -126,7 +137,10 @@ phrust_server_persistent_engine_rejected_persistence_total{{reason=\"request_loc
             include_cache.resolution_misses,
             include_cache.compile_hits,
             include_cache.compile_misses,
+            include_cache.source_reads,
+            include_cache.dependency_metadata_validations,
             include_cache.stale_invalidations,
+            include_cache.stale_dependency_invalidations,
             include_cache.compile_errors,
             self.persistent_engine_policy_reuses.load(Ordering::Relaxed),
             self.persistent_engine_immutable_metadata_reuses

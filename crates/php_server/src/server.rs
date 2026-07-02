@@ -241,7 +241,7 @@ mod tests {
         http::{HeaderMap, HeaderValue},
     };
     use php_diagnostics::DiagnosticOutputFormat;
-    use php_executor::{EngineProfileName, PhpExecutionStatus};
+    use php_executor::{EngineProfileName, IncludeLoader, PhpExecutionStatus};
     use php_runtime::api::{RuntimeContext, RuntimeHttpRequestContext, SessionState};
     use std::{
         path::PathBuf,
@@ -479,6 +479,9 @@ mod tests {
 
         let stats = cache.cache_stats();
         assert_eq!(stats.entries, 2);
+        let include_stats = state.engine.include_cache.cache_stats();
+        assert_eq!(include_stats.compile_misses, 2);
+        assert_eq!(include_stats.source_reads, 2);
         assert_eq!(
             state
                 .metrics
@@ -495,6 +498,24 @@ mod tests {
         );
         assert!(state.compile_script(&first).expect("first cached").hit);
         assert!(state.compile_script(&second).expect("second cached").hit);
+
+        let loader = IncludeLoader::for_root(&fixture.root).expect("include loader");
+        let resolved = state
+            .engine
+            .include_cache
+            .resolve_with_include_path(&loader, None, "first.php", &[], Some(&fixture.root))
+            .expect("resolve preloaded include");
+        state
+            .engine
+            .include_cache
+            .get_or_compile_include(&loader, &resolved, state.engine.compile_optimization_level)
+            .expect("preloaded include cache hit");
+        let include_stats_after_hit = state.engine.include_cache.cache_stats();
+        assert_eq!(include_stats_after_hit.compile_hits, 1);
+        assert_eq!(
+            include_stats_after_hit.source_reads,
+            include_stats.source_reads
+        );
     }
 
     #[test]

@@ -50,26 +50,68 @@ entry-script compile time:
 - executor crate version;
 - debug assertion mode.
 
+Entry-script validation is metadata-first. A warm request canonicalizes the
+path, stats the file, and reuses a cached `CompiledPhpScript` when the path,
+metadata, optimization level, executor version, and debug assertion mode still
+match. It does not reread source or recompute the source hash on that hit. A
+miss or stale metadata path reads source, computes the source hash, and either
+compiles or finds an exact entry populated by another request. This policy
+prefers stale misses over unsafe reuse, but it intentionally trusts filesystem
+metadata for the hot request path rather than claiming OPcache-equivalent
+dependency safety.
+
+`CompiledPhpScript` also stores a VM-facing `CompiledUnit` handle created at
+compile time. Request execution clones only that cheap handle; it does not
+clone the lowered `IrUnit` to enter the VM.
+
 When the same canonical path is requested with changed source metadata, changed
-source hash, or a changed optimization level, old entries for that path are
-removed and counted as stale invalidations. Compile failures are counted but are
-not inserted, so a later successful edit can compile and cache normally.
+source hash on the compile path, or a changed optimization level, old entries
+for that path are removed and counted as stale invalidations. Compile failures
+are counted but are not inserted, so a later successful edit can compile and
+cache normally.
 
 The integrated server exposes these counters on `/__phrust/metrics`:
+`phrust_server_script_cache_lookups_total`,
 `phrust_server_script_cache_hits_total`,
 `phrust_server_script_cache_misses_total`,
+`phrust_server_script_cache_source_reads_total`,
+`phrust_server_script_cache_metadata_stats_total`,
 `phrust_server_script_cache_stale_invalidations_total`,
-`phrust_server_script_cache_compile_errors_total`, and
+`phrust_server_script_cache_compile_errors_total`,
+`phrust_server_script_cache_compiles_avoided_total`, and
 `phrust_server_script_cache_entries`.
+
+## Server Include Cache
+
+The server also owns a process-local include cache used by request VMs. Include
+path resolution entries are keyed by the including directory, requested path,
+include path entries, cwd, and allowed-root fingerprint. Compiled include
+entries are keyed by canonical path, file metadata, optimization level,
+compiler/runtime fingerprint, and local dependency fingerprints discovered
+during compile.
+
+A warm compiled-include hit validates the resolved include metadata and
+recorded local dependency metadata before returning the cached `CompiledUnit`.
+It does not call the source-read path and it does not rerun local dependency
+source scanning. If the include file or a recorded local dependency changes,
+the entry is removed and the request falls back to source read and compile.
+
+`include_once` and `require_once` remain request-local VM state. The shared
+include cache only reuses resolution metadata and compiled units; it never
+decides whether an include should execute for a request.
+
+Include cache metrics include resolution hits/misses, compiled include
+hits/misses, include source reads, dependency metadata validations, stale
+invalidations, stale dependency invalidations, and compile errors.
 
 ## Why The Key Logic Is Not Shared
 
 The two caches have different lifetimes and trust boundaries. The bytecode cache
 loads untrusted local disk data and must validate a portable artifact against a
 format version, target label, PHP target, feature set, and runtime config. The
-server cache stores `Arc<CompiledPhpScript>` values created by the current
-process and never deserializes them from disk, so its key can be smaller and
-focused on entry-script staleness.
+server cache stores `Arc<CompiledPhpScript>` and `Arc<CompiledUnit>` values
+created by the current process and never deserializes them from disk, so its key
+can be smaller and focused on process-local staleness.
 
 Moving both implementations behind one shared key builder would currently add
 indirection without removing meaningful duplication. The shared invariant is
@@ -79,9 +121,11 @@ unsafe reuse.
 
 ## Known Boundaries
 
-The server cache invalidates the requested entry script. Dynamic include,
-autoload, and dependency graph invalidation remain runtime and future dependency
-metadata work; they are not treated as an OPcache replacement.
+The server entry cache invalidates the requested entry script. The compiled
+include cache records local source dependencies discovered during compile, but
+dynamic include graphs, autoload registration order, symlink-sensitive graphs,
+and cross-process invalidation remain known boundaries. These caches are not
+treated as an OPcache replacement.
 
 The CLI bytecode cache remains an optional local optimization. Programs must run
 correctly when the cache is disabled, empty, corrupt, or stale.

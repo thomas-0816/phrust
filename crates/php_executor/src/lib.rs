@@ -30,6 +30,6 @@ pub use input::{
     PhpExecutorOptions, PhpRequestExecutionInput,
 };
 pub use php_optimizer::OptimizationLevel;
-pub use php_vm::api::{IncludeCache, IncludeCacheStats, VmOptions};
+pub use php_vm::api::{IncludeCache, IncludeCacheStats, IncludeLoader, VmOptions};
 pub use pipeline::CompilePhaseTimings;
 pub use profile::{EngineProfile, EngineProfileName, ParseEngineProfileError};

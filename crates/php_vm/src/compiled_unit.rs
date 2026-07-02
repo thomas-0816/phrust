@@ -111,6 +111,12 @@ impl CompiledUnit {
         &self.inner.unit
     }
 
+    /// Returns true when two handles point at the same compiled unit allocation.
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Finds a user function by normalized name.
     #[must_use]
     pub fn lookup_function(&self, name: &str) -> Option<FunctionId> {

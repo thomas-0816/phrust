@@ -2,7 +2,7 @@ use crate::{access_log::AccessLogger, metrics::ServerMetrics, server::ServerErro
 use crate::{multipart::MultipartConfig, routing::RouteConfig, session_store::SessionStore};
 use php_diagnostics::DiagnosticOutputFormat;
 use php_executor::{
-    CompiledScriptCache, CompiledScriptCacheLookup, EngineProfileName, IncludeCache,
+    CompiledScriptCache, CompiledScriptCacheLookup, EngineProfileName, IncludeCache, IncludeLoader,
     OptimizationLevel, PhpExecutionError, PhpExecutor, PhpExecutorOptions, PhpScriptCacheInput,
 };
 use std::{
@@ -165,8 +165,11 @@ pub(crate) fn preload_script_cache(
         } else {
             state.route_config.docroot.join(raw_path)
         };
-        match state.compile_script(&script_path) {
-            Ok(_) => {
+        match state
+            .compile_script(&script_path)
+            .and_then(|_| preload_include_cache_entry(state, &script_path))
+        {
+            Ok(()) => {
                 state
                     .metrics
                     .script_cache_preload_successes
@@ -190,5 +193,30 @@ pub(crate) fn preload_script_cache(
             }
         }
     }
+    Ok(())
+}
+
+fn preload_include_cache_entry(
+    state: &AppState,
+    script_path: &Path,
+) -> Result<(), PhpExecutionError> {
+    let loader = IncludeLoader::for_root(&state.route_config.docroot)
+        .map_err(|error| PhpExecutionError::Engine(format!("{error:?}")))?;
+    let resolved = state
+        .engine
+        .include_cache
+        .resolve_with_include_path(
+            &loader,
+            None,
+            &script_path.to_string_lossy(),
+            &[],
+            Some(&state.route_config.docroot),
+        )
+        .map_err(|error| PhpExecutionError::Engine(format!("{error:?}")))?;
+    state
+        .engine
+        .include_cache
+        .get_or_compile_include(&loader, &resolved, state.engine.compile_optimization_level)
+        .map_err(|error| PhpExecutionError::Engine(format!("{error:?}")))?;
     Ok(())
 }

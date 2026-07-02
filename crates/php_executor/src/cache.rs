@@ -88,9 +88,10 @@ impl CompiledScriptCache {
             String,
         ) -> Result<CompiledPhpScript, PhpExecutionError>,
     {
+        self.stats.lookups.fetch_add(1, Ordering::Relaxed);
         if !self.enabled {
             self.stats.misses.fetch_add(1, Ordering::Relaxed);
-            let source = read_script_source(&input.path)?;
+            let source = self.read_script_source(&input.path)?;
             return compile(self, executor, input, source).map(|compiled| {
                 CompiledScriptCacheLookup {
                     compiled: Arc::new(compiled),
@@ -107,6 +108,14 @@ impl CompiledScriptCache {
         })?;
 
         loop {
+            let metadata = self.read_script_metadata(&input.path)?;
+            if let Some(compiled) = self.lookup_by_metadata(&canonical_path, &input, &metadata) {
+                return Ok(CompiledScriptCacheLookup {
+                    compiled,
+                    hit: true,
+                });
+            }
+
             if let Some(compiled) = self.lookup_fresh_by_path(&canonical_path) {
                 return Ok(CompiledScriptCacheLookup {
                     compiled,
@@ -114,8 +123,7 @@ impl CompiledScriptCache {
                 });
             }
 
-            let source = read_script_source(&input.path)?;
-            let metadata = read_script_metadata(&input.path)?;
+            let source = self.read_script_source(&input.path)?;
             let key = CompiledScriptCacheKey::new_with_canonical_path(
                 canonical_path.clone(),
                 &input,
@@ -172,7 +180,47 @@ impl CompiledScriptCache {
             key.path == canonical_path && now.duration_since(entry.checked_at) < self.check_interval
         })?;
         self.stats.hits.fetch_add(1, Ordering::Relaxed);
+        self.stats.compiles_avoided.fetch_add(1, Ordering::Relaxed);
         entry.access_tick = self.next_access_tick();
+        Some(Arc::clone(&entry.compiled))
+    }
+
+    fn lookup_by_metadata(
+        &self,
+        canonical_path: &Path,
+        input: &PhpScriptCacheInput,
+        metadata: &fs::Metadata,
+    ) -> Option<Arc<CompiledPhpScript>> {
+        let shard_index = self.shard_index_for_path(canonical_path);
+        let mut shard = self.shards[shard_index]
+            .lock()
+            .expect("compiled script cache shard mutex poisoned");
+        let before = shard.len();
+        shard.retain(|key, _| {
+            key.path != canonical_path
+                || !key.same_runtime_fingerprint(input)
+                || key.matches_metadata(metadata)
+        });
+        let stale = before.saturating_sub(shard.len());
+        if stale > 0 {
+            self.stats
+                .stale_invalidations
+                .fetch_add(stale as u64, Ordering::Relaxed);
+            self.stats
+                .entries
+                .fetch_sub(stale as u64, Ordering::Relaxed);
+        }
+
+        let entry = shard.iter_mut().find_map(|(key, entry)| {
+            (key.path == canonical_path
+                && key.same_runtime_fingerprint(input)
+                && key.matches_metadata(metadata))
+            .then_some(entry)
+        })?;
+        self.stats.hits.fetch_add(1, Ordering::Relaxed);
+        self.stats.compiles_avoided.fetch_add(1, Ordering::Relaxed);
+        entry.access_tick = self.next_access_tick();
+        entry.checked_at = Instant::now();
         Some(Arc::clone(&entry.compiled))
     }
 
@@ -192,6 +240,7 @@ impl CompiledScriptCache {
         }
         let entry = shard.get_mut(key)?;
         self.stats.hits.fetch_add(1, Ordering::Relaxed);
+        self.stats.compiles_avoided.fetch_add(1, Ordering::Relaxed);
         entry.access_tick = self.next_access_tick();
         entry.checked_at = Instant::now();
         Some(Arc::clone(&entry.compiled))
@@ -245,11 +294,15 @@ impl CompiledScriptCache {
             .collect();
         CompiledScriptCacheStats {
             hits: self.stats.hits.load(Ordering::Relaxed),
+            lookups: self.stats.lookups.load(Ordering::Relaxed),
             misses: self.stats.misses.load(Ordering::Relaxed),
+            source_reads: self.stats.source_reads.load(Ordering::Relaxed),
+            metadata_stats: self.stats.metadata_stats.load(Ordering::Relaxed),
             stale_invalidations: self.stats.stale_invalidations.load(Ordering::Relaxed),
             compile_errors: self.stats.compile_errors.load(Ordering::Relaxed),
             evictions: self.stats.evictions.load(Ordering::Relaxed),
             compile_in_progress: self.stats.compile_in_progress.load(Ordering::Relaxed),
+            compiles_avoided: self.stats.compiles_avoided.load(Ordering::Relaxed),
             entries: self.stats.entries.load(Ordering::Relaxed),
             entries_by_shard,
         }
@@ -327,6 +380,16 @@ impl CompiledScriptCache {
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1)
     }
+
+    fn read_script_source(&self, path: &Path) -> Result<String, PhpExecutionError> {
+        self.stats.source_reads.fetch_add(1, Ordering::Relaxed);
+        read_script_source(path)
+    }
+
+    fn read_script_metadata(&self, path: &Path) -> Result<fs::Metadata, PhpExecutionError> {
+        self.stats.metadata_stats.fetch_add(1, Ordering::Relaxed);
+        read_script_metadata(path)
+    }
 }
 
 impl Default for CompiledScriptCache {
@@ -353,24 +416,32 @@ pub struct CompiledScriptCacheLookup {
 /// Snapshot of cache counters.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompiledScriptCacheStats {
+    pub lookups: u64,
     pub hits: u64,
     pub misses: u64,
+    pub source_reads: u64,
+    pub metadata_stats: u64,
     pub stale_invalidations: u64,
     pub compile_errors: u64,
     pub evictions: u64,
     pub compile_in_progress: u64,
+    pub compiles_avoided: u64,
     pub entries: u64,
     pub entries_by_shard: Vec<usize>,
 }
 
 #[derive(Debug, Default)]
 struct CompiledScriptCacheCounters {
+    lookups: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
+    source_reads: AtomicU64,
+    metadata_stats: AtomicU64,
     stale_invalidations: AtomicU64,
     compile_errors: AtomicU64,
     evictions: AtomicU64,
     compile_in_progress: AtomicU64,
+    compiles_avoided: AtomicU64,
     entries: AtomicU64,
 }
 
@@ -441,6 +512,21 @@ impl CompiledScriptCacheKey {
             debug_assertions: cfg!(debug_assertions),
         }
     }
+
+    fn matches_metadata(&self, metadata: &fs::Metadata) -> bool {
+        let modified_nanos = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |duration| duration.as_nanos());
+        self.len == metadata.len() && self.modified_nanos == modified_nanos
+    }
+
+    fn same_runtime_fingerprint(&self, input: &PhpScriptCacheInput) -> bool {
+        self.optimization_level == input.optimization_level.as_str()
+            && self.executor_version == env!("CARGO_PKG_VERSION")
+            && self.debug_assertions == cfg!(debug_assertions)
+    }
 }
 
 fn remove_stale_path_entries(
@@ -508,8 +594,12 @@ mod tests {
         assert!(!first.hit);
         assert!(second.hit);
         let stats = cache.cache_stats();
+        assert_eq!(stats.lookups, 2);
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 1);
+        assert_eq!(stats.source_reads, 1);
+        assert_eq!(stats.metadata_stats, 2);
+        assert_eq!(stats.compiles_avoided, 1);
         assert_eq!(stats.stale_invalidations, 0);
         assert_eq!(stats.compile_errors, 0);
         assert_eq!(stats.evictions, 0);
@@ -620,6 +710,7 @@ mod tests {
         assert!(!second.hit);
         assert_eq!(cache.cache_stats().stale_invalidations, 1);
         assert_eq!(cache.cache_stats().entries, 1);
+        assert_eq!(cache.cache_stats().source_reads, 2);
         let output = execute_cached_for_test(&executor, &second.compiled);
         assert_eq!(output.stdout, b"two");
     }
@@ -663,8 +754,11 @@ mod tests {
 
         assert!(!first.hit);
         assert!(!second.hit);
+        assert_eq!(cache.cache_stats().lookups, 2);
         assert_eq!(cache.cache_stats().hits, 0);
         assert_eq!(cache.cache_stats().misses, 2);
+        assert_eq!(cache.cache_stats().source_reads, 2);
+        assert_eq!(cache.cache_stats().metadata_stats, 0);
         assert_eq!(cache.cache_stats().entries, 0);
     }
 

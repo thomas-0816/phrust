@@ -11,7 +11,7 @@ use crate::pipeline::{
 };
 use crate::request::include_loader_for_request;
 use php_runtime::api::{FilesystemCapabilities, RuntimeHttpResponseState};
-use php_vm::api::{Vm, VmOptions};
+use php_vm::api::{CompiledUnit, Vm, VmOptions};
 
 /// Transport-independent PHP executor.
 #[derive(Clone, Debug, Default)]
@@ -63,7 +63,7 @@ impl PhpExecutor {
                 tiering_stats: None,
             })));
         }
-        Ok(CompiledPhpScript { pipeline })
+        Ok(CompiledPhpScript::new(pipeline))
     }
 
     /// Compiles source into a reusable artifact and returns internal phase timings.
@@ -104,7 +104,7 @@ impl PhpExecutor {
                 tiering_stats: None,
             })));
         }
-        Ok((CompiledPhpScript { pipeline }, timings))
+        Ok((CompiledPhpScript::new(pipeline), timings))
     }
 
     /// Executes a previously compiled script with per-request runtime context.
@@ -132,7 +132,7 @@ impl PhpExecutor {
             collect_counters: input.collect_counters,
             ..self.options.vm_options.clone()
         });
-        let result = vm.execute(compiled.pipeline.lowering.unit.clone());
+        let result = vm.execute(compiled.executable_unit());
         execution_output_from_vm(&compiled.pipeline, result)
     }
 
@@ -167,13 +167,28 @@ impl PhpExecutor {
 #[derive(Clone, Debug)]
 pub struct CompiledPhpScript {
     pub(crate) pipeline: Pipeline,
+    executable: CompiledUnit,
 }
 
 impl CompiledPhpScript {
+    fn new(pipeline: Pipeline) -> Self {
+        let executable = CompiledUnit::new(pipeline.lowering.unit.clone());
+        Self {
+            pipeline,
+            executable,
+        }
+    }
+
     /// Returns the lowered IR unit for CLI/reporting adapters that need metadata.
     #[must_use]
     pub fn ir_unit(&self) -> &php_ir::module::IrUnit {
         &self.pipeline.lowering.unit
+    }
+
+    /// Returns the reusable VM-facing executable unit.
+    #[must_use]
+    pub fn executable_unit(&self) -> CompiledUnit {
+        self.executable.clone()
     }
 }
 
@@ -218,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_source_default_uses_fast_path_counters_with_native_tier() {
+    fn execute_source_default_uses_managed_fast_path_counters() {
         let executor = PhpExecutor::new();
         let output = executor.execute_source(PhpExecutionInput {
             source: managed_fast_counter_source().to_string(),
@@ -275,6 +290,47 @@ mod tests {
                 .contains_key("load_const_echo"),
             "{counters:?}"
         );
+    }
+
+    #[test]
+    fn execute_compiled_reuses_vm_executable_handle() {
+        let executor = PhpExecutor::new();
+        let compiled = executor
+            .compile_source(PhpCompileInput {
+                source: "<?php echo 1 + 2;".to_string(),
+                source_path: "compiled-handle.php".to_string(),
+                optimization_level: Some(OptimizationLevel::O0),
+            })
+            .expect("compile reusable script");
+        let before = compiled.executable_unit();
+
+        let first = executor.execute_compiled(
+            &compiled,
+            PhpRequestExecutionInput {
+                real_path: None,
+                cwd: std::env::current_dir().expect("current directory"),
+                include_roots: Vec::new(),
+                runtime_context: RuntimeContext::controlled_cli("compiled-handle.php", Vec::new()),
+                collect_counters: false,
+            },
+        );
+        let second = executor.execute_compiled(
+            &compiled,
+            PhpRequestExecutionInput {
+                real_path: None,
+                cwd: std::env::current_dir().expect("current directory"),
+                include_roots: Vec::new(),
+                runtime_context: RuntimeContext::controlled_cli("compiled-handle.php", Vec::new()),
+                collect_counters: false,
+            },
+        );
+        let after = compiled.executable_unit();
+
+        assert_eq!(first.status, PhpExecutionStatus::Success);
+        assert_eq!(second.status, PhpExecutionStatus::Success);
+        assert_eq!(first.stdout, b"3");
+        assert_eq!(second.stdout, b"3");
+        assert!(before.ptr_eq(&after));
     }
 
     fn managed_fast_counter_source() -> &'static str {

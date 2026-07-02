@@ -130,12 +130,16 @@ VM through `php_executor`. The cache has two independent shard sets: one for
 include path resolution and one for compiled include units. Resolution entries
 are keyed by the including directory, requested path, include path entries, cwd,
 and allowed-root fingerprint. Compiled include entries are keyed by canonical
-path plus file metadata and compiler fingerprint. File metadata changes remove
-stale entries before reuse.
+path plus file metadata, optimization level, compiler/runtime fingerprint, and
+local dependency fingerprints discovered at compile time. Warm compiled-include
+hits validate metadata and dependency metadata before returning the cached
+compiled unit, so unchanged include hits do not read source or rescan dependency
+source. File or dependency metadata changes remove stale entries before reuse.
 
 `include_once` and `require_once` tracking stays request-local in VM state; the
 shared cache only reuses resolved paths and compiled units. The server exposes
-include resolution hits/misses, include compile hits/misses, stale
+include resolution hits/misses, include compile hits/misses, include source
+reads, dependency metadata validations, stale invalidations, stale dependency
 invalidations, and include compile errors under `/__phrust/metrics`.
 
 Web requests allow includes under the public docroot and its parent app root so
@@ -149,11 +153,14 @@ scripts. It is configured with `--script-cache-shards` and
 `--script-cache-max-entries`; entries are distributed across shards and each
 shard evicts approximately least-recently-used entries when it exceeds its
 share of the configured limit. The cache key includes the canonical path,
-source fingerprint, source hash, source path, optimization level, and compiler
-fingerprint.
+source fingerprint, source hash on compile paths, source path, optimization
+level, and compiler fingerprint. Cached scripts keep a reusable VM-facing
+compiled-unit handle, so request execution does not clone the lowered IR unit.
 
 By default the cache checks file metadata on every lookup so local development
-sees edits immediately. Operators can set
+sees edits immediately. A metadata-fresh hit does not reread source; source is
+read only for misses, stale metadata, or exact compile-path key construction.
+Operators can set
 `--script-cache-check-interval-ms <n>` to skip repeated stat checks for hot
 entries during that interval. Concurrent requests for the same missing script
 share a per-path compile guard so only one request compiles the miss while the
@@ -161,18 +168,21 @@ others wait for the populated entry.
 
 `--script-cache-preload <file>` reads a newline-delimited list of absolute
 paths or docroot-relative paths at startup and compiles those scripts through
-the same cache path as requests. Blank lines and `#` comments are ignored.
-Preload failures warn and continue by default; `--strict-preload` turns preload
-read or compile failures into startup failures.
+the same cache path as requests. Each listed file is also compiled into the
+shared include cache, which allows a trace-generated manifest of include targets
+to warm application graphs without executing application code. Blank lines and
+`#` comments are ignored. Preload failures warn and continue by default;
+`--strict-preload` turns preload read or compile failures into startup failures.
 
 Local cache invalidation is disabled by default. When explicitly enabled with
 `--enable-cache-clear-endpoint`, `POST /__phrust/cache/clear` clears process
 local entry-script and include caches, and the handler still rejects
 non-loopback peers. There is no remote or cross-process invalidation protocol.
 
-Metrics expose script cache hits, misses, entries, entries by shard, stale
-invalidations, compile errors, evictions, in-progress compiles, and preload
-success/failure totals under `/__phrust/metrics`.
+Metrics expose script cache lookups, hits, misses, source reads, metadata stats,
+compiles avoided, entries, entries by shard, stale invalidations, compile
+errors, evictions, in-progress compiles, and preload success/failure totals
+under `/__phrust/metrics`.
 
 ## Static File Responses
 

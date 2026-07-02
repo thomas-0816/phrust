@@ -118,23 +118,8 @@ impl IncludeCache {
         optimization_level: OptimizationLevel,
     ) -> Result<Arc<CompiledUnit>, VmError> {
         loop {
-            let loaded = loader.load_resolved(resolved.canonical_path.clone())?;
-            let key = CompiledIncludeKey::new(resolved, optimization_level, &loaded.source);
-            let shard_index = self.compile_shard_index(&key);
-            {
-                let mut shard = self.compile_shards[shard_index]
-                    .lock()
-                    .map_err(|_| include_cache_lock_error("compiled", "lookup"))?;
-                let stale = remove_stale_compiled_include_entries(&mut shard, &key);
-                if stale > 0 {
-                    self.stats
-                        .stale_invalidations
-                        .fetch_add(stale as u64, Ordering::Relaxed);
-                }
-                if let Some(compiled) = shard.get(&key) {
-                    self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
-                    return Ok(Arc::clone(compiled));
-                }
+            if let Some(compiled) = self.lookup_compiled_include(resolved, optimization_level)? {
+                return Ok(compiled);
             }
 
             let Some(_permit) = self.try_begin_compile(&resolved.canonical_path)? else {
@@ -142,16 +127,14 @@ impl IncludeCache {
                 continue;
             };
 
-            {
-                let shard = self.compile_shards[shard_index]
-                    .lock()
-                    .map_err(|_| include_cache_lock_error("compiled", "lookup-after-wait"))?;
-                if let Some(compiled) = shard.get(&key) {
-                    self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
-                    return Ok(Arc::clone(compiled));
-                }
+            if let Some(compiled) = self.lookup_compiled_include(resolved, optimization_level)? {
+                return Ok(compiled);
             }
 
+            self.stats.source_reads.fetch_add(1, Ordering::Relaxed);
+            let loaded = loader.load_resolved(resolved.canonical_path.clone())?;
+            let key = CompiledIncludeKey::new(resolved, optimization_level, &loaded.source);
+            let shard_index = self.compile_shard_index(&key);
             self.stats.compile_misses.fetch_add(1, Ordering::Relaxed);
             let compiled = match compile_loaded_include(loaded, optimization_level) {
                 Ok(compiled) => {
@@ -168,6 +151,89 @@ impl IncludeCache {
             }?;
             return Ok(compiled);
         }
+    }
+
+    fn lookup_compiled_include(
+        &self,
+        resolved: &ResolvedIncludePath,
+        optimization_level: OptimizationLevel,
+    ) -> Result<Option<Arc<CompiledUnit>>, VmError> {
+        let shard_index = self.compile_shard_index_for_path(&resolved.canonical_path);
+        let mut shard = self.compile_shards[shard_index]
+            .lock()
+            .map_err(|_| include_cache_lock_error("compiled", "lookup"))?;
+        let mut stale_path_entries = 0_u64;
+        let mut stale_dependency_entries = 0_u64;
+        let mut hit_key = None;
+
+        for key in shard.keys() {
+            if key.canonical_path != resolved.canonical_path
+                || !key.same_runtime_fingerprint(optimization_level)
+            {
+                continue;
+            }
+            if !key.matches_resolved_fingerprint(resolved) {
+                stale_path_entries += 1;
+                continue;
+            }
+            match self.dependencies_are_fresh(key) {
+                Ok(true) => {
+                    hit_key = Some(key.clone());
+                    break;
+                }
+                Ok(false) => {
+                    stale_dependency_entries += 1;
+                }
+                Err(_) => {
+                    stale_dependency_entries += 1;
+                }
+            }
+        }
+
+        if stale_path_entries > 0 || stale_dependency_entries > 0 {
+            let before = shard.len();
+            shard.retain(|key, _| {
+                if key.canonical_path != resolved.canonical_path
+                    || !key.same_runtime_fingerprint(optimization_level)
+                {
+                    return true;
+                }
+                key.matches_resolved_fingerprint(resolved)
+                    && self.dependencies_are_fresh(key).unwrap_or(false)
+            });
+            let removed = before.saturating_sub(shard.len()) as u64;
+            if removed > 0 {
+                self.stats
+                    .stale_invalidations
+                    .fetch_add(removed, Ordering::Relaxed);
+            }
+            if stale_dependency_entries > 0 {
+                self.stats
+                    .stale_dependency_invalidations
+                    .fetch_add(stale_dependency_entries, Ordering::Relaxed);
+            }
+        }
+
+        if let Some(key) = hit_key
+            && let Some(compiled) = shard.get(&key)
+        {
+            self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
+            return Ok(Some(Arc::clone(compiled)));
+        }
+        Ok(None)
+    }
+
+    fn dependencies_are_fresh(&self, key: &CompiledIncludeKey) -> Result<bool, VmError> {
+        for dependency in &key.local_dependencies {
+            self.stats
+                .dependency_metadata_validations
+                .fetch_add(1, Ordering::Relaxed);
+            let current = include_path_file_fingerprint(&dependency.canonical_path)?;
+            if !dependency.matches_fingerprint(&current) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Clears cached include resolutions and compiled include units.
@@ -195,7 +261,16 @@ impl IncludeCache {
             resolution_misses: self.stats.resolution_misses.load(Ordering::Relaxed),
             compile_hits: self.stats.compile_hits.load(Ordering::Relaxed),
             compile_misses: self.stats.compile_misses.load(Ordering::Relaxed),
+            source_reads: self.stats.source_reads.load(Ordering::Relaxed),
+            dependency_metadata_validations: self
+                .stats
+                .dependency_metadata_validations
+                .load(Ordering::Relaxed),
             stale_invalidations: self.stats.stale_invalidations.load(Ordering::Relaxed),
+            stale_dependency_invalidations: self
+                .stats
+                .stale_dependency_invalidations
+                .load(Ordering::Relaxed),
             compile_errors: self.stats.compile_errors.load(Ordering::Relaxed),
         }
     }
@@ -207,8 +282,12 @@ impl IncludeCache {
     }
 
     fn compile_shard_index(&self, key: &CompiledIncludeKey) -> usize {
+        self.compile_shard_index_for_path(&key.canonical_path)
+    }
+
+    fn compile_shard_index_for_path(&self, path: &Path) -> usize {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
+        path.hash(&mut hasher);
         (hasher.finish() as usize) % self.compile_shards.len()
     }
 
@@ -262,7 +341,10 @@ pub struct IncludeCacheStats {
     pub resolution_misses: u64,
     pub compile_hits: u64,
     pub compile_misses: u64,
+    pub source_reads: u64,
+    pub dependency_metadata_validations: u64,
     pub stale_invalidations: u64,
+    pub stale_dependency_invalidations: u64,
     pub compile_errors: u64,
 }
 
@@ -272,7 +354,10 @@ struct IncludeCacheCounters {
     resolution_misses: AtomicU64,
     compile_hits: AtomicU64,
     compile_misses: AtomicU64,
+    source_reads: AtomicU64,
+    dependency_metadata_validations: AtomicU64,
     stale_invalidations: AtomicU64,
+    stale_dependency_invalidations: AtomicU64,
     compile_errors: AtomicU64,
 }
 
@@ -730,15 +815,26 @@ impl CompiledIncludeKey {
             optimization_level: optimization_level.as_str(),
         }
     }
+
+    fn matches_resolved_fingerprint(&self, resolved: &ResolvedIncludePath) -> bool {
+        self.len == resolved.fingerprint.len
+            && self.modified_unix_nanos == resolved.fingerprint.modified_unix_nanos
+            && self.readonly == resolved.fingerprint.readonly
+    }
+
+    fn same_runtime_fingerprint(&self, optimization_level: OptimizationLevel) -> bool {
+        self.compiler_version == env!("CARGO_PKG_VERSION")
+            && self.debug_assertions == cfg!(debug_assertions)
+            && self.optimization_level == optimization_level.as_str()
+    }
 }
 
-fn remove_stale_compiled_include_entries(
-    shard: &mut HashMap<CompiledIncludeKey, Arc<CompiledUnit>>,
-    key: &CompiledIncludeKey,
-) -> usize {
-    let before = shard.len();
-    shard.retain(|existing, _| existing.canonical_path != key.canonical_path || existing == key);
-    before.saturating_sub(shard.len())
+impl CompiledIncludeDependencyKey {
+    fn matches_fingerprint(&self, fingerprint: &IncludePathFileFingerprint) -> bool {
+        self.len == fingerprint.len
+            && self.modified_unix_nanos == fingerprint.modified_unix_nanos
+            && self.readonly == fingerprint.readonly
+    }
 }
 
 pub(crate) fn compile_loaded_include(
@@ -1216,6 +1312,32 @@ mod tests {
     }
 
     #[test]
+    fn compiled_include_cache_hit_does_not_read_source() {
+        let fixture = IncludeCacheFixture::new("compiled-hit-no-read");
+        fixture.write("lib.php", "<?php echo 'cached';\n");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+
+        let first = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("first compile");
+        let source_reads_after_first = cache.cache_stats().source_reads;
+        let second = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("second lookup");
+        let stats = cache.cache_stats();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(source_reads_after_first, 1);
+        assert_eq!(stats.source_reads, source_reads_after_first);
+        assert_eq!(stats.compile_misses, 1);
+        assert_eq!(stats.compile_hits, 1);
+    }
+
+    #[test]
     fn compiled_include_resolves_local_psr_trait_dependency() {
         let fixture = IncludeCacheFixture::new("local-psr-trait");
         fixture.write(
@@ -1296,6 +1418,10 @@ mod tests {
             .expect("second compile");
 
         assert!(!Arc::ptr_eq(&first, &second));
+        let stats = cache.cache_stats();
+        assert_eq!(stats.source_reads, 2);
+        assert!(stats.dependency_metadata_validations > 0);
+        assert!(stats.stale_dependency_invalidations > 0);
         let class = second
             .unit()
             .classes
