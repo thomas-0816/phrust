@@ -265,12 +265,12 @@ impl LoweringContext<'_> {
                 .as_str()
                 .get(default.span().start().to_usize()..default.span().end().to_usize())
                 .and_then(|source| {
-                    named_constant_from_default_source(source, &named_constants).or_else(|| {
+                    named_constant_from_default_source(source, named_constants).or_else(|| {
                         class_constant_from_default_source(
                             module,
                             source,
                             current_class,
-                            &named_constants,
+                            named_constants,
                             class_constants,
                             class_parents,
                         )
@@ -310,7 +310,7 @@ impl LoweringContext<'_> {
                 constant_from_expr_with_runtime_constants(
                     module,
                     const_expr.expr_id(),
-                    &named_constants,
+                    named_constants,
                     current_class,
                     class_constants,
                     class_parents,
@@ -322,7 +322,7 @@ impl LoweringContext<'_> {
                     self.frontend,
                     module,
                     default,
-                    &named_constants,
+                    named_constants,
                     current_class,
                     class_constants,
                     class_parents,
@@ -333,19 +333,19 @@ impl LoweringContext<'_> {
                     .as_str()
                     .get(default.span().start().to_usize()..default.span().end().to_usize())
                     .and_then(|source| {
-                        named_constant_from_default_source(source, &named_constants)
+                        named_constant_from_default_source(source, named_constants)
                             .or_else(|| {
                                 class_constant_from_default_source(
                                     module,
                                     source,
                                     current_class,
-                                    &named_constants,
+                                    named_constants,
                                     class_constants,
                                     class_parents,
                                 )
                             })
                             .or_else(|| {
-                                source_constant_from_default_source(source, &named_constants)
+                                source_constant_from_default_source(source, named_constants)
                             })
                     })
             })
@@ -414,7 +414,7 @@ impl LoweringContext<'_> {
         let mut visiting_class_constants = Vec::new();
         let mut input = DeferredConstExprLoweringInput {
             module,
-            named_constants: &named_constants,
+            named_constants,
             current_class,
             class_constants,
             class_parents,
@@ -566,13 +566,11 @@ impl LoweringContext<'_> {
             return None;
         }
         let named_constants = self.global_constant_initializer_map();
-        constant_from_expr_with_names(module, const_expr.expr_id(), &named_constants).or_else(
-            || {
-                const_expr
-                    .folded_value()
-                    .and_then(ir_constant_from_const_value)
-            },
-        )
+        constant_from_expr_with_names(module, const_expr.expr_id(), named_constants).or_else(|| {
+            const_expr
+                .folded_value()
+                .and_then(ir_constant_from_const_value)
+        })
     }
 
     pub(super) fn lower_enum_backing_type(
@@ -639,7 +637,7 @@ impl LoweringContext<'_> {
                 return None;
             }
             let named_constants = self.global_constant_initializer_map();
-            if let Some(value) = constant_from_expr_with_names(module, expr_id, &named_constants) {
+            if let Some(value) = constant_from_expr_with_names(module, expr_id, named_constants) {
                 return Some(value);
             }
             if let Some(value) = const_expr.folded_value() {
@@ -674,7 +672,7 @@ impl LoweringContext<'_> {
         constant_from_expr_with_runtime_constants(
             module,
             const_expr.expr_id(),
-            &named_constants,
+            named_constants,
             current_class,
             class_constants,
             class_parents,

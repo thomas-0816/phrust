@@ -1,13 +1,15 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use crate::builder::IrBuilder;
+use crate::constants::IrConstant;
 use crate::ids::{BlockId, FileId, FunctionId, UnitId};
 use crate::instruction::{InstructionKind, IrDiagnosticSeverity};
 use crate::module::IrUnit;
 use crate::source_map::{IrSourceMapTarget, IrSpan};
 use crate::verify::VerificationError;
-use php_semantics::FrontendResult;
-use php_semantics::hir::ExprId;
+use php_semantics::hir::{ExprId, HirExprKind};
+use php_semantics::{FrontendResult, SourceMappedId};
 use php_source::{SourceText, TextRange};
 
 use super::control_flow::LoopTargets;
@@ -53,6 +55,8 @@ pub struct LoweringContext<'a> {
     pub(super) conditional_function_declarations: Vec<(TextRange, String, FunctionId)>,
     pub(super) class_names: HashMap<FunctionId, String>,
     pub(super) method_names: HashMap<FunctionId, String>,
+    pub(super) variable_spans: HashMap<String, Vec<TextRange>>,
+    pub(super) global_constant_initializers: OnceCell<HashMap<String, IrConstant>>,
     pub(super) source_text: SourceText,
     pub(super) early_diagnostics: HashMap<FunctionId, Vec<EarlyDiagnostic>>,
 }
@@ -62,6 +66,7 @@ impl<'a> LoweringContext<'a> {
     #[must_use]
     pub fn new(frontend: &'a FrontendResult, options: LoweringOptions, file: FileId) -> Self {
         let source_text = SourceText::new(options.source_text.clone().unwrap_or_default());
+        let variable_spans = collect_variable_spans(frontend);
         Self {
             frontend,
             options,
@@ -75,6 +80,8 @@ impl<'a> LoweringContext<'a> {
             conditional_function_declarations: Vec::new(),
             class_names: HashMap::new(),
             method_names: HashMap::new(),
+            variable_spans,
+            global_constant_initializers: OnceCell::new(),
             source_text,
             early_diagnostics: HashMap::new(),
         }
@@ -174,6 +181,27 @@ impl<'a> LoweringContext<'a> {
             );
         }
     }
+}
+
+fn collect_variable_spans(frontend: &FrontendResult) -> HashMap<String, Vec<TextRange>> {
+    let mut variable_spans: HashMap<String, Vec<TextRange>> = HashMap::new();
+    let Some(module) = frontend.database().module(frontend.module().module_id()) else {
+        return variable_spans;
+    };
+    let source_map = frontend.database().source_map();
+    for (expr_id, expr) in module.expressions().iter() {
+        let HirExprKind::Variable { name } = expr.kind() else {
+            continue;
+        };
+        let Some(span) = source_map.span(SourceMappedId::from(expr_id)) else {
+            continue;
+        };
+        variable_spans.entry(name.clone()).or_default().push(span);
+    }
+    for spans in variable_spans.values_mut() {
+        spans.sort_by_key(|span| (span.start().to_usize(), span.end().to_usize()));
+    }
+    variable_spans
 }
 
 /// Result of lowering one frontend file.

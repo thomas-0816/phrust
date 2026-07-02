@@ -6,9 +6,10 @@ use crate::diagnostics::{
     SemanticDiagnostic,
 };
 use crate::hir::{
-    FullyQualifiedName, HirDecl, HirDeclKind, HirNamespaceBlock, ModuleId, NamePart, NamespaceForm,
-    NamespaceId, NamespaceName, ScopeId, SymbolId, TopLevelItem, TopLevelItemKind,
+    ExprId, FullyQualifiedName, HirDecl, HirDeclKind, HirNamespaceBlock, ModuleId, NamePart,
+    NamespaceForm, NamespaceId, NamespaceName, ScopeId, SymbolId, TopLevelItem, TopLevelItemKind,
 };
+use crate::lower::const_expr::ConstExprSpanIndex;
 use crate::lower::context::LoweringContext;
 use crate::lower::types::TypeLoweringScope;
 use crate::scopes::{
@@ -61,6 +62,8 @@ struct ModuleDeclarationCollector<'db> {
     namespace_style: Option<NamespaceForm>,
     current_unbraced: Option<usize>,
     file_scope: Option<ScopeId>,
+    const_expr_spans: ConstExprSpanIndex,
+    const_expr_indexed_exprs: usize,
     saw_explicit_namespace: bool,
     saw_non_declare_php_before_namespace: bool,
 }
@@ -75,6 +78,8 @@ impl<'db> ModuleDeclarationCollector<'db> {
             namespace_style: None,
             current_unbraced: None,
             file_scope: None,
+            const_expr_spans: ConstExprSpanIndex::new(),
+            const_expr_indexed_exprs: 0,
             saw_explicit_namespace: false,
             saw_non_declare_php_before_namespace: false,
         }
@@ -358,12 +363,30 @@ impl<'db> ModuleDeclarationCollector<'db> {
     }
 
     fn collect_const_expr_in_node(&mut self, node: &SyntaxNode) {
+        self.refresh_const_expr_span_index();
         crate::lower::const_expr::collect_const_expr_in_node(
             node,
             &mut *self.database,
             self.module_id,
             self.context.reporter_mut(),
+            &self.const_expr_spans,
         );
+    }
+
+    fn refresh_const_expr_span_index(&mut self) {
+        let Some(module) = self.database.module(self.module_id) else {
+            return;
+        };
+        let current_len = module.expressions().len();
+        for index in self.const_expr_indexed_exprs..current_len {
+            let id = ExprId::from_raw(index);
+            if let Some(span) = self.database.source_map().span(id) {
+                self.const_expr_spans
+                    .entry((span.start().to_usize(), span.end().to_usize()))
+                    .or_insert(id);
+            }
+        }
+        self.const_expr_indexed_exprs = current_len;
     }
 
     fn collect_attributes_in_node(&mut self, node: &SyntaxNode, block: &HirNamespaceBlock) {

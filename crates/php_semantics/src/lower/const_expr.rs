@@ -1,5 +1,7 @@
 //! Constant-expression candidate collection and structural validation.
 
+use std::collections::HashMap;
+
 use crate::FrontendDatabase;
 use crate::diagnostics::{
     DiagnosticId, DiagnosticPhase, DiagnosticReporter, DiagnosticSeverity, SemanticDiagnostic,
@@ -14,6 +16,8 @@ use php_ast::{
 };
 use php_source::TextRange;
 use php_syntax::SyntaxNode;
+
+pub(crate) type ConstExprSpanIndex = HashMap<(usize, usize), ExprId>;
 
 /// Lowers one HIR expression as a constant-expression candidate.
 pub fn lower_const_expr_candidate(
@@ -270,11 +274,13 @@ pub fn collect_const_expr_in_node(
     database: &mut FrontendDatabase,
     module_id: ModuleId,
     reporter: &mut DiagnosticReporter,
+    expr_spans: &ConstExprSpanIndex,
 ) {
     let mut collector = ConstExprCollector {
         database,
         module_id,
         reporter,
+        expr_spans,
     };
     collector.collect_node(node);
 }
@@ -283,6 +289,7 @@ struct ConstExprCollector<'a> {
     database: &'a mut FrontendDatabase,
     module_id: ModuleId,
     reporter: &'a mut DiagnosticReporter,
+    expr_spans: &'a ConstExprSpanIndex,
 }
 
 impl ConstExprCollector<'_> {
@@ -366,14 +373,9 @@ impl ConstExprCollector<'_> {
     }
 
     fn expr_id_for_span(&self, span: TextRange) -> Option<ExprId> {
-        let module = self
-            .database
-            .module(self.module_id)
-            .expect("module allocated before const-expression lowering");
-        module
-            .expressions()
-            .iter()
-            .find_map(|(id, _)| (self.database.source_map().span(id) == Some(span)).then_some(id))
+        self.expr_spans
+            .get(&(span.start().to_usize(), span.end().to_usize()))
+            .copied()
     }
 }
 

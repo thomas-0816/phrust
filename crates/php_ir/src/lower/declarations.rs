@@ -1371,7 +1371,12 @@ impl LoweringContext<'_> {
             .collect()
     }
 
-    pub(super) fn global_constant_initializer_map(&self) -> HashMap<String, IrConstant> {
+    pub(super) fn global_constant_initializer_map(&self) -> &HashMap<String, IrConstant> {
+        self.global_constant_initializers
+            .get_or_init(|| self.build_global_constant_initializer_map())
+    }
+
+    fn build_global_constant_initializer_map(&self) -> HashMap<String, IrConstant> {
         let Some(module) = self
             .frontend
             .database()
@@ -1885,17 +1890,10 @@ impl LoweringContext<'_> {
     }
 
     pub(super) fn function_like_uses_variable(&self, span: TextRange, variable_name: &str) -> bool {
-        let Some(module) = self
-            .frontend
-            .database()
-            .module(self.frontend.module().module_id())
-        else {
-            return false;
-        };
-        module.expressions().iter().any(|(expr_id, expr)| {
-            let expr_span = self.span_for(SourceMappedId::from(expr_id));
-            range_contains(span, expr_span)
-                && matches!(expr.kind(), HirExprKind::Variable { name } if name == variable_name)
+        self.variable_spans.get(variable_name).is_some_and(|spans| {
+            spans
+                .iter()
+                .any(|expr_span| range_contains(span, *expr_span))
         })
     }
 

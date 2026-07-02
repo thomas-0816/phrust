@@ -191,6 +191,7 @@ pub(super) struct RunOptions<'a> {
     pub(super) region_profile_json: Option<String>,
     pub(super) bytecode_cache: BytecodeCacheOptions,
     pub(super) opt_level: OptimizationLevel,
+    pub(super) include_opt_level: OptimizationLevel,
     pub(super) execution_format: ExecutionFormat,
     pub(super) superinstructions: SuperinstructionMode,
     pub(super) bytecode_layout: BytecodeLayoutMode,
@@ -476,6 +477,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
     let mut region_profile_json = None;
     let mut bytecode_cache = BytecodeCacheOptions::default();
     let mut opt_level = default_options.optimization_level;
+    let mut include_opt_level = default_options.vm_options.include_optimization_level;
     let mut execution_format = default_options.vm_options.execution_format;
     let mut superinstructions = default_options.vm_options.superinstructions;
     let mut bytecode_layout = default_options.vm_options.bytecode_layout;
@@ -532,6 +534,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 let profile_options = PhpExecutorOptions::for_profile(parse_engine_preset(value)?);
                 bytecode_cache.mode = BytecodeCacheMode::Off;
                 opt_level = profile_options.optimization_level;
+                include_opt_level = profile_options.vm_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
                 superinstructions = profile_options.vm_options.superinstructions;
                 bytecode_layout = profile_options.vm_options.bytecode_layout;
@@ -550,6 +553,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 let profile_options = PhpExecutorOptions::for_profile(parse_engine_preset(value)?);
                 bytecode_cache.mode = BytecodeCacheMode::Off;
                 opt_level = profile_options.optimization_level;
+                include_opt_level = profile_options.vm_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
                 superinstructions = profile_options.vm_options.superinstructions;
                 bytecode_layout = profile_options.vm_options.bytecode_layout;
@@ -898,6 +902,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                     region_profile_json,
                     bytecode_cache,
                     opt_level,
+                    include_opt_level,
                     execution_format,
                     superinstructions,
                     bytecode_layout,
@@ -945,6 +950,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
         region_profile_json,
         bytecode_cache,
         opt_level,
+        include_opt_level,
         execution_format,
         superinstructions,
         bytecode_layout,

@@ -2594,6 +2594,21 @@ mod tests {
     }
 
     #[test]
+    fn function_auto_global_binding_uses_cached_variable_spans() {
+        let frontend = analyze_source(
+            "<?php function uses_server() { return $_SERVER['REQUEST_METHOD']; } function plain($value) { return $value; }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert_eq!(snapshot.matches("bind_global").count(), 1, "{snapshot}");
+        assert!(snapshot.contains("bind_global"), "{snapshot}");
+        assert!(snapshot.contains("\"_SERVER\""), "{snapshot}");
+    }
+
+    #[test]
     fn construct_empty_method_call_lowers_to_unary_not() {
         let frontend = analyze_source(
             "<?php class C { function get($name) { return $name; } } $c = new C(); var_dump(empty($c->get('RequiresWP')));",

@@ -894,7 +894,7 @@ where
     let vm = Vm::with_options(VmOptions {
         include_loader,
         runtime_context,
-        include_optimization_level: run_options.opt_level,
+        include_optimization_level: run_options.include_opt_level,
         trace: run_options.trace,
         trace_runtime: run_options.trace_runtime,
         trace_includes: run_options.trace_includes,
@@ -1081,7 +1081,7 @@ where
             trace_runtime: run_options.trace_runtime,
             trace_includes: run_options.trace_includes,
             collect_counters,
-            include_optimization_level: run_options.opt_level,
+            include_optimization_level: run_options.include_opt_level,
             execution_format: run_options.execution_format,
             superinstructions: run_options.superinstructions,
             bytecode_layout: run_options.bytecode_layout,
@@ -4840,6 +4840,7 @@ mod tests {
 
         assert_eq!(options.bytecode_cache.mode, BytecodeCacheMode::Off);
         assert_eq!(options.opt_level, OptimizationLevel::O2);
+        assert_eq!(options.include_opt_level, OptimizationLevel::O0);
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
         assert_eq!(options.superinstructions, SuperinstructionMode::On);
         assert_eq!(options.bytecode_layout, BytecodeLayoutMode::Source);
@@ -4866,6 +4867,7 @@ mod tests {
         let options = parse_run_args(&args).expect("run args should parse");
 
         assert_eq!(options.opt_level, OptimizationLevel::O2);
+        assert_eq!(options.include_opt_level, OptimizationLevel::O0);
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
@@ -4884,6 +4886,7 @@ mod tests {
         let options = parse_run_args(&args).expect("run args should parse");
 
         assert_eq!(options.opt_level, OptimizationLevel::O0);
+        assert_eq!(options.include_opt_level, OptimizationLevel::O0);
         assert_eq!(options.execution_format, ExecutionFormat::Ir);
         assert_eq!(options.quickening, QuickeningMode::Off);
         assert_eq!(options.inline_caches, InlineCacheMode::Off);
@@ -4903,6 +4906,7 @@ mod tests {
 
         assert_eq!(options.bytecode_cache.mode, BytecodeCacheMode::Off);
         assert_eq!(options.opt_level, OptimizationLevel::O2);
+        assert_eq!(options.include_opt_level, OptimizationLevel::O0);
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
         assert_eq!(options.superinstructions, SuperinstructionMode::On);
         assert_eq!(options.bytecode_layout, BytecodeLayoutMode::Source);
@@ -4932,6 +4936,7 @@ mod tests {
         let options = parse_run_args(&args).expect("run args should parse");
 
         assert_eq!(options.opt_level, OptimizationLevel::O1);
+        assert_eq!(options.include_opt_level, OptimizationLevel::O0);
         assert_eq!(options.inline_caches, InlineCacheMode::Off);
         assert_eq!(options.bytecode_cache.mode, BytecodeCacheMode::Read);
         assert_eq!(options.quickening, QuickeningMode::On);
@@ -4950,6 +4955,7 @@ mod tests {
         let options = parse_run_args(&args).expect("run args should parse");
 
         assert_eq!(options.opt_level, OptimizationLevel::O2);
+        assert_eq!(options.include_opt_level, OptimizationLevel::O2);
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
         assert_eq!(options.bytecode_layout, BytecodeLayoutMode::Source);
         assert_eq!(options.quickening, QuickeningMode::On);

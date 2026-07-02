@@ -36,6 +36,9 @@ pub fn collect_hir_in_node(
         scope,
         exprs: HashMap::new(),
         stmts: HashMap::new(),
+        expr_child_lists: HashMap::new(),
+        stmt_child_lists: HashMap::new(),
+        stmt_expr_child_lists: HashMap::new(),
     };
     lowerer.collect_node(node);
 }
@@ -73,6 +76,9 @@ struct HirLowerer<'a> {
     scope: TypeLoweringScope,
     exprs: HashMap<NodeKey, ExprId>,
     stmts: HashMap<NodeKey, StmtId>,
+    expr_child_lists: HashMap<NodeKey, Vec<ExprId>>,
+    stmt_child_lists: HashMap<NodeKey, Vec<StmtId>>,
+    stmt_expr_child_lists: HashMap<NodeKey, Vec<ExprId>>,
 }
 
 impl HirLowerer<'_> {
@@ -710,10 +716,16 @@ impl HirLowerer<'_> {
     }
 
     fn stmt_children(&mut self, node: &SyntaxNode) -> Vec<StmtId> {
-        syntax_child_nodes(node)
+        let key = NodeKey::new(node);
+        if let Some(statements) = self.stmt_child_lists.get(&key) {
+            return statements.clone();
+        }
+        let statements = syntax_child_nodes(node)
             .filter(|child| is_statement_list_item(child))
             .map(|child| self.lower_stmt(child))
-            .collect()
+            .collect::<Vec<_>>();
+        self.stmt_child_lists.insert(key, statements.clone());
+        statements
     }
 
     fn lower_if_stmt(&mut self, node: &SyntaxNode) -> HirStmtKind {
@@ -1011,6 +1023,10 @@ impl HirLowerer<'_> {
     }
 
     fn stmt_expr_children(&mut self, node: &SyntaxNode) -> Vec<ExprId> {
+        let key = NodeKey::new(node);
+        if let Some(expressions) = self.stmt_expr_child_lists.get(&key) {
+            return expressions.clone();
+        }
         let mut expressions = Vec::new();
         for child in syntax_child_nodes(node) {
             if Stmt::cast(child).is_some() {
@@ -1018,6 +1034,7 @@ impl HirLowerer<'_> {
             }
             self.collect_expr_descendants(child, &mut expressions);
         }
+        self.stmt_expr_child_lists.insert(key, expressions.clone());
         expressions
     }
 
@@ -2197,10 +2214,16 @@ impl HirLowerer<'_> {
     }
 
     fn expr_children(&mut self, node: &SyntaxNode) -> Vec<ExprId> {
-        syntax_child_nodes(node)
+        let key = NodeKey::expr(node, ResolveContext::ConstantFetch);
+        if let Some(expressions) = self.expr_child_lists.get(&key) {
+            return expressions.clone();
+        }
+        let expressions = syntax_child_nodes(node)
             .filter(|child| ExprNode::cast(child).is_some())
             .map(|child| self.lower_expr(child, ResolveContext::ConstantFetch))
-            .collect()
+            .collect::<Vec<_>>();
+        self.expr_child_lists.insert(key, expressions.clone());
+        expressions
     }
 
     fn list_expr_children_preserving_holes(&mut self, node: &SyntaxNode) -> Vec<ExprId> {

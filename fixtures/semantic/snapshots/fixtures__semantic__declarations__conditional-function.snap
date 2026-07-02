@@ -7,7 +7,7 @@ symbols:
   - conditional_function conditional_helper
   - conditional_class_like ConditionalService
 hir_summary:
-  statements: 2
+  statements: 4
   expressions: 1
   types: 1
   const_exprs: 0
