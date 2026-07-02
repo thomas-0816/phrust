@@ -2038,7 +2038,7 @@ mod tests {
         assert!(result.unit.constant_table.is_empty());
         let snapshot = result.unit.to_snapshot_text();
         assert!(
-            snapshot.contains("fetch_class_constant r0 sodium\\compat::KEYBYTES"),
+            snapshot.contains("fetch_class_constant r0 Sodium\\Compat::KEYBYTES"),
             "{snapshot}"
         );
         assert!(
@@ -2058,7 +2058,7 @@ mod tests {
         assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
         let snapshot = result.unit.to_snapshot_text();
         assert!(
-            snapshot.contains("fetch_class_constant r0 paragonie_sodium_compat::KEYBYTES"),
+            snapshot.contains("fetch_class_constant r0 ParagonIE_Sodium_Compat::KEYBYTES"),
             "{snapshot}"
         );
         assert!(

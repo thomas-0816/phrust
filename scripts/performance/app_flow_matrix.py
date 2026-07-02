@@ -16,6 +16,15 @@ from pathlib import Path
 from typing import Any
 
 from normalize_perf_output import normalize
+from ratchet_schema import (
+    counter_highlights as ratchet_counter_highlights,
+    make_report,
+    phase_metric_map,
+    render_report_markdown,
+    timing_metrics,
+    validate_report,
+    write_json,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,6 +105,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--allow-missing-reference", action="store_true")
+    parser.add_argument("--ratchet-out", type=Path)
+    parser.add_argument("--ratchet-markdown-out", type=Path)
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 
@@ -600,6 +611,95 @@ def render_markdown(summary: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def ratchet_from_summary(summary: dict[str, Any], run_id: str) -> dict[str, Any]:
+    scenarios: list[dict[str, Any]] = []
+    baseline_by_scenario = {
+        row["scenario"]: row
+        for row in summary.get("rows", [])
+        if isinstance(row, dict)
+        and row.get("row") == "phrust-baseline-ir"
+        and isinstance(row.get("median_ms"), (int, float))
+    }
+    for row in summary.get("rows", []):
+        if not isinstance(row, dict) or row.get("status") == "skip":
+            if isinstance(row, dict):
+                scenarios.append(
+                    {
+                        "id": f"app-flow.{row.get('scenario', 'unknown')}.{row.get('row', 'unknown')}",
+                        "group": "app-flow",
+                        "kind": "execute",
+                        "correctness": "skip",
+                        "metrics": {},
+                        "phase_metrics": {},
+                        "counter_highlights": {},
+                        "artifacts": {"reason": row.get("reason", "")},
+                    }
+                )
+            continue
+        samples = row.get("samples") if isinstance(row.get("samples"), list) else []
+        external = [
+            float(sample["elapsed_ms"])
+            for sample in samples
+            if isinstance(sample, dict) and isinstance(sample.get("elapsed_ms"), (int, float))
+        ]
+        timings = [
+            sample["phase_timings"]
+            for sample in samples
+            if isinstance(sample, dict) and isinstance(sample.get("phase_timings"), dict)
+        ]
+        metrics = timing_metrics(external or [float(row.get("median_ms", 0.0))], timings)
+        phase_summary_value = row.get("phase_summary")
+        if isinstance(phase_summary_value, dict):
+            for key in ("compile_total_ms", "execute_ms", "internal_total_ms", "startup_external_ms"):
+                value = phase_summary_value.get(key)
+                if isinstance(value, (int, float)):
+                    metrics.setdefault(f"{key}.p50", float(value))
+        ratio = row.get("ratio_vs_reference")
+        if isinstance(ratio, (int, float)):
+            metrics["ratio_vs_reference.external_wall_ms.p50"] = float(ratio)
+        baseline = baseline_by_scenario.get(row.get("scenario"))
+        if baseline is not None and baseline is not row and isinstance(baseline.get("median_ms"), (int, float)):
+            baseline_wall = float(baseline["median_ms"])
+            if baseline_wall > 0:
+                metrics["ratio_vs_baseline.external_wall_ms.p50"] = float(row.get("median_ms", 0.0)) / baseline_wall
+            baseline_phase = baseline.get("phase_summary") if isinstance(baseline.get("phase_summary"), dict) else {}
+            phase_summary_value = row.get("phase_summary") if isinstance(row.get("phase_summary"), dict) else {}
+            for metric_name in ("compile_total_ms", "execute_ms"):
+                before = baseline_phase.get(metric_name)
+                after = phase_summary_value.get(metric_name)
+                if isinstance(before, (int, float)) and before > 0 and isinstance(after, (int, float)):
+                    metrics[f"ratio_vs_baseline.{metric_name}.p50"] = float(after) / float(before)
+        counters = row.get("counters") if isinstance(row.get("counters"), dict) else {}
+        scenarios.append(
+            {
+                "id": f"app-flow.{row.get('scenario')}.{row.get('row')}",
+                "group": "app-flow",
+                "kind": "execute",
+                "correctness": "fail" if row.get("status") == "fail" else "pass",
+                "metrics": metrics,
+                "phase_metrics": phase_metric_map(timings),
+                "counter_highlights": {
+                    **ratchet_counter_highlights(counters),
+                    **{
+                        key: value
+                        for key, value in row.get("counter_highlights", {}).items()
+                        if isinstance(key, str) and isinstance(value, int)
+                    },
+                },
+                "artifacts": {
+                    "scenario": str(row.get("scenario", "")),
+                    "row": str(row.get("row", "")),
+                },
+            }
+        )
+    return make_report(
+        run_id=run_id,
+        created_by="app_flow_matrix.py",
+        scenarios=scenarios,
+        failures=[str(item) for item in summary.get("failures", [])],
+    )
+
+
 def run_matrix(args: argparse.Namespace) -> int:
     if args.timeout <= 0:
         raise SystemExit("--timeout must be positive")
@@ -784,6 +884,22 @@ def run_matrix(args: argparse.Namespace) -> int:
     json_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     markdown_path.write_text(rendered, encoding="utf-8")
     SUMMARY_DOC.write_text(rendered, encoding="utf-8")
+    if args.ratchet_out is not None:
+        ratchet_path = args.ratchet_out if args.ratchet_out.is_absolute() else ROOT / args.ratchet_out
+        ratchet = ratchet_from_summary(summary, "app-flow-ratchet-smoke" if args.smoke else "app-flow-ratchet")
+        validation_failures = validate_report(ratchet)
+        if validation_failures:
+            raise SystemExit("; ".join(validation_failures))
+        write_json(ratchet_path, ratchet)
+        markdown_target = args.ratchet_markdown_out
+        if markdown_target is None:
+            markdown_target = ratchet_path.with_suffix(".md")
+        markdown_path_target = markdown_target if markdown_target.is_absolute() else ROOT / markdown_target
+        markdown_path_target.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path_target.write_text(
+            render_report_markdown(ratchet, "Application-Flow Ratchet"),
+            encoding="utf-8",
+        )
     if failures:
         print(f"[fail] app-flow matrix wrote {rel(json_path)} with {len(failures)} failure(s)")
         for failure in failures:

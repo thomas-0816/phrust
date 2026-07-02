@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "default_policy": {
+    "min_samples_for_wall_clock_hard_fail": 5,
+    "wall_clock_regression_percent_warn": 15.0,
+    "wall_clock_regression_percent_fail": 35.0,
+    "counter_regression_percent_fail": 25.0
+  },
+  "metrics": {
+    "external_wall_ms.p50": {"lower_is_better": true, "severity": "warn"},
+    "compile_total_ms.p50": {"lower_is_better": true, "severity": "warn"},
+    "execute_ms.p50": {"lower_is_better": true, "severity": "warn"},
+    "request_total_ms.p95": {"lower_is_better": true, "severity": "warn"},
+    "ttfb_ms.p95": {"lower_is_better": true, "severity": "warn"},
+    "instructions_executed": {"lower_is_better": true, "severity": "fail_when_strict"},
+    "counter.instructions_executed": {"lower_is_better": true, "severity": "fail_when_strict"}
+  }
+}

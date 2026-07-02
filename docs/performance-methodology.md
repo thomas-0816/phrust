@@ -129,6 +129,25 @@ The required CI path must not depend on secrets, network access from tests,
 native JIT support, or optional profiling tools. JIT and profiling paths must
 skip or fall back with explicit reasons when unsupported.
 
+## Performance Ratchet
+
+`docs/performance-ratchet.md` describes the ratchet workflow for local
+before/after decisions:
+
+```bash
+nix develop -c just perf-ratchet-smoke
+nix develop -c just perf-ratchet-baseline
+nix develop -c just perf-ratchet-current
+nix develop -c just perf-ratchet-compare
+nix develop -c just perf-ratchet-next-prompt
+```
+
+The ratchet separates smoke, full, and strict modes. Smoke mode validates the
+artifact schema and correctness cheaply. Full mode collects local decision data.
+Strict mode may promote deterministic counter and repeated large wall-clock
+regressions to failures. Raw ratchet artifacts remain under
+`target/performance/ratchet/`.
+
 ## Optional Callgrind Smoke
 
 Work item adds `just callgrind-smoke` for instruction-count

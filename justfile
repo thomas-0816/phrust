@@ -1055,6 +1055,73 @@ app-flow-matrix:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/app_flow_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --iterations "${PHRUST_APP_FLOW_ITERATIONS:-5}" --warmups "${PHRUST_APP_FLOW_WARMUPS:-1}" --scale "${PHRUST_APP_FLOW_SCALE:-2}" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}"
 
+perf-ratchet-prereq:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/ratchet_prereq.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm"
+
+cli-speed-ratchet-smoke:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/cli_speed_suite.py --smoke --out target/performance/ratchet/cli/smoke.json --markdown-out target/performance/ratchet/cli/smoke.md
+
+cli-speed-ratchet:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/cli_speed_suite.py --out target/performance/ratchet/cli/current.json --markdown-out target/performance/ratchet/cli/current.md
+
+app-flow-ratchet-smoke:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/app_flow_matrix.py --smoke --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}" --ratchet-out target/performance/ratchet/app-flow/smoke.json --ratchet-markdown-out target/performance/ratchet/app-flow/smoke.md
+
+app-flow-ratchet:
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/app_flow_matrix.py --engine "${CARGO_TARGET_DIR:-target}/debug/php-vm" --iterations "${PHRUST_RATCHET_ITERATIONS:-10}" --warmups "${PHRUST_RATCHET_WARMUPS:-3}" --scale "${PHRUST_RATCHET_SCALE:-2}" --timeout "${PHRUST_APP_FLOW_TIMEOUT:-30.0}" --allow-missing-reference --ratchet-out target/performance/ratchet/app-flow/current.json --ratchet-markdown-out target/performance/ratchet/app-flow/current.md
+
+server-responsiveness-ratchet-smoke:
+    cargo build -p php_server --bin phrust-server
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/server_responsiveness.py --smoke --server "${CARGO_TARGET_DIR:-target}/debug/phrust-server" --out target/performance/ratchet/server/smoke.json --markdown-out target/performance/ratchet/server/smoke.md
+
+server-responsiveness-ratchet:
+    cargo build --release -p php_server --bin phrust-server
+    cargo build -p php_vm_cli --bin php-vm
+    scripts/performance/server_responsiveness.py --server "${CARGO_TARGET_DIR:-target}/release/phrust-server" --out target/performance/ratchet/server/current.json --markdown-out target/performance/ratchet/server/current.md
+
+counter-ratchet:
+    scripts/performance/counter_ratchet.py --benchmark target/performance/benchmark-smoke.json --app-flow target/performance/ratchet/app-flow/current.json --server target/performance/ratchet/server/current.json --out target/performance/ratchet/counters/current.json --markdown-out target/performance/ratchet/counters/current.md
+
+perf-ratchet-smoke:
+    @just perf-ratchet-prereq
+    @just cli-speed-ratchet-smoke
+    @just app-flow-ratchet-smoke
+    @just server-responsiveness-ratchet-smoke
+    scripts/performance/counter_ratchet.py --benchmark target/performance/benchmark-smoke.json --app-flow target/performance/ratchet/app-flow/smoke.json --server target/performance/ratchet/server/smoke.json --out target/performance/ratchet/counters/smoke.json --markdown-out target/performance/ratchet/counters/smoke.md
+    scripts/performance/ratchet_schema.py --validate target/performance/ratchet/cli/smoke.json target/performance/ratchet/app-flow/smoke.json target/performance/ratchet/server/smoke.json target/performance/ratchet/counters/smoke.json
+
+perf-ratchet-current:
+    @just cli-speed-ratchet
+    @just app-flow-ratchet
+    @just server-responsiveness-ratchet
+    @just counter-ratchet
+    scripts/performance/perf_ratchet.py combine --run-id perf-ratchet-current --out target/performance/ratchet/current.json --markdown-out target/performance/ratchet/current.md
+
+perf-ratchet-baseline:
+    @just cli-speed-ratchet
+    @just app-flow-ratchet
+    @just server-responsiveness-ratchet
+    @just counter-ratchet
+    scripts/performance/perf_ratchet.py combine --run-id perf-ratchet-baseline --out target/performance/ratchet/baseline.json --markdown-out target/performance/ratchet/baseline.md
+
+perf-ratchet-compare:
+    scripts/performance/ratchet_compare.py target/performance/ratchet/baseline.json target/performance/ratchet/current.json --out target/performance/ratchet/compare.md --json-out target/performance/ratchet/compare.json
+
+perf-ratchet-report:
+    scripts/performance/perf_ratchet.py report --run-id perf-ratchet-report --out target/performance/ratchet/report.json --markdown-out target/performance/ratchet/report.md
+
+perf-ratchet-next-prompt:
+    scripts/performance/ratchet_next_prompt.py --ratchet target/performance/ratchet/cli/current.json --ratchet target/performance/ratchet/app-flow/current.json --ratchet target/performance/ratchet/server/current.json --compare target/performance/ratchet/compare.json --out target/performance/ratchet/next-performance-prompt.md
+
+perf-ratchet-accept-local:
+    scripts/performance/perf_ratchet.py accept-local
+
 acceleration-matrix:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/acceleration_matrix.py

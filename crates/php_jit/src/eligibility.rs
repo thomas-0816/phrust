@@ -1539,6 +1539,7 @@ fn check_instruction(
         | InstructionKind::BindReferenceProperty { .. }
         | InstructionKind::BindReferencePropertyDim { .. }
         | InstructionKind::BindReferenceDimFromProperty { .. }
+        | InstructionKind::BindReferenceFromProperty { .. }
         | InstructionKind::BindReferenceFromDim { .. }
         | InstructionKind::BindReferenceFromStaticPropertyDim { .. }
         | InstructionKind::BindReferenceStaticProperty { .. }
@@ -1634,6 +1635,7 @@ fn check_instruction(
         | InstructionKind::UnsetPropertyDim { .. }
         | InstructionKind::UnsetDynamicProperty { .. }
         | InstructionKind::FetchStaticProperty { .. }
+        | InstructionKind::FetchDynamicStaticProperty { .. }
         | InstructionKind::IssetStaticProperty { .. }
         | InstructionKind::IssetStaticPropertyDim { .. }
         | InstructionKind::EmptyStaticProperty { .. }
@@ -1644,7 +1646,8 @@ fn check_instruction(
         | InstructionKind::AssignProperty { .. }
         | InstructionKind::AssignPropertyDim { .. }
         | InstructionKind::AssignDynamicProperty { .. }
-        | InstructionKind::AssignStaticProperty { .. } => {
+        | InstructionKind::AssignStaticProperty { .. }
+        | InstructionKind::AssignDynamicStaticProperty { .. } => {
             rejected.push(JitEligibilityReason::instruction(
                 "JIT_ELIGIBILITY_REJECT_OBJECT_OPCODE",
                 "objects, properties, classes, and destructors are outside the JIT subset",

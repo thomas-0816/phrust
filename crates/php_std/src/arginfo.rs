@@ -5,7 +5,9 @@ use php_runtime::api::{
     CallableValue, PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
     to_bool, to_float, to_int, to_string,
 };
-use php_runtime::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
+use php_runtime::experimental::numeric_string::{
+    NumericStringKind, NumericStringValue, classify_php_string,
+};
 
 /// PHP builtin coercion mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
