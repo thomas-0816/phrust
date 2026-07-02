@@ -1,9 +1,14 @@
 # phrust
 
-`phrust` is a Rust workspace for a PHP 8.5-compatible engine. It currently
-contains the lexer, lossless parser/CST, typed AST views, semantic frontend,
-HIR, IR, runtime, VM, developer CLI, PHPT tooling, and validation gates used to
-compare behavior against a pinned PHP reference.
+`phrust` is an experiment in recreating an existing program, PHP, by extracting
+specifications from the original implementation and then implementing those
+specifications with enough initial structure, validation gates, and feedback
+loops to steadily close the remaining gaps.
+
+The workspace targets a PHP 8.5-compatible engine. It currently contains the
+lexer, lossless parser/CST, typed AST views, semantic frontend, HIR, IR,
+runtime, VM, developer CLI, PHPT tooling, and validation gates used to compare
+behavior against a pinned PHP reference.
 
 The project is not a Zend ABI implementation and does not provide a production
 SAPI, extension ABI, Opcache replacement, or production JIT.
