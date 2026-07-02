@@ -238,6 +238,7 @@ impl LoweringContext<'_> {
                 class_resolution_display_name(
                     module,
                     name,
+                    class_range,
                     &class_likes_snapshot,
                     &self.options.source_path,
                 )

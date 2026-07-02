@@ -213,12 +213,17 @@ fn interface_resolution_name(name: &HirNameResolution) -> String {
 fn class_resolution_display_name(
     module: &HirModule,
     resolution: &HirNameResolution,
+    class_range: TextRange,
     class_likes: &[(ClassLikeId, HirClassLike)],
     source_path: &str,
 ) -> String {
     source_imported_class_resolution_display_name(module, resolution)
         .or_else(|| imported_class_resolution_display_name(module, resolution))
         .or_else(|| declared_class_resolution_display_name(class_likes, source_path, resolution))
+        .or_else(|| source_qualified_class_resolution_display_name(resolution))
+        .or_else(|| {
+            source_namespaced_class_resolution_display_name(module, resolution, class_range)
+        })
         .or_else(|| {
             resolution
                 .resolved()
@@ -226,6 +231,41 @@ fn class_resolution_display_name(
                 .map(display_class_name)
         })
         .unwrap_or_else(|| display_class_name(resolution.source()))
+}
+
+fn source_qualified_class_resolution_display_name(
+    resolution: &HirNameResolution,
+) -> Option<String> {
+    let source = resolution.source().trim_start_matches('\\');
+    if !source.contains('\\') {
+        return None;
+    }
+    let resolved = resolution.resolved().or_else(|| resolution.fallback())?;
+    (normalize_class_name(source) == normalize_class_name(resolved))
+        .then(|| display_class_name(resolution.source()))
+}
+
+fn source_namespaced_class_resolution_display_name(
+    module: &HirModule,
+    resolution: &HirNameResolution,
+    class_range: TextRange,
+) -> Option<String> {
+    let source = resolution.source().trim_start_matches('\\');
+    if source.is_empty() || source.contains('\\') {
+        return None;
+    }
+    let resolved = resolution.resolved().or_else(|| resolution.fallback())?;
+    module.namespaces().values().find_map(|namespace| {
+        if !range_contains(namespace.span(), class_range) {
+            return None;
+        }
+        let namespace_name = namespace.name()?.text();
+        if namespace_name.is_empty() {
+            return None;
+        }
+        let display = format!("{namespace_name}\\{source}");
+        (normalize_class_name(&display) == normalize_class_name(resolved)).then_some(display)
+    })
 }
 
 fn source_imported_class_resolution_display_name(
@@ -3964,6 +4004,53 @@ mod tests {
         assert_eq!(
             class.parent_display_name.as_deref(),
             Some("SimplePie\\Exception")
+        );
+    }
+
+    #[test]
+    fn qualified_parent_declaration_preserves_source_display_name_for_autoload() {
+        let frontend =
+            analyze_source("<?php class WP_HTTP_Requests_Hooks extends WpOrg\\Requests\\Hooks {}");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        let class = result
+            .unit
+            .classes
+            .iter()
+            .find(|class| class.name == "wp_http_requests_hooks")
+            .expect("requests hook bridge class should be lowered");
+        assert_eq!(class.parent.as_deref(), Some("wporg\\requests\\hooks"));
+        assert_eq!(
+            class.parent_display_name.as_deref(),
+            Some("WpOrg\\Requests\\Hooks")
+        );
+    }
+
+    #[test]
+    fn namespaced_parent_declaration_preserves_namespace_display_name_for_autoload() {
+        let frontend = analyze_source(
+            "<?php namespace WordPress\\AiClientDependencies\\Http\\Discovery; final class Psr18ClientDiscovery extends ClassDiscovery {}",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        let class = result
+            .unit
+            .classes
+            .iter()
+            .find(|class| {
+                class.name
+                    == "wordpress\\aiclientdependencies\\http\\discovery\\psr18clientdiscovery"
+            })
+            .expect("PSR-18 discovery class should be lowered");
+        assert_eq!(
+            class.parent.as_deref(),
+            Some("wordpress\\aiclientdependencies\\http\\discovery\\classdiscovery")
+        );
+        assert_eq!(
+            class.parent_display_name.as_deref(),
+            Some("WordPress\\AiClientDependencies\\Http\\Discovery\\ClassDiscovery")
         );
     }
 

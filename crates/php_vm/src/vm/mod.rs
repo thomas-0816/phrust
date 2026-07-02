@@ -61527,6 +61527,121 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
     }
 
     #[test]
+    fn qualified_parent_declaration_preserves_display_name_for_autoload() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-parent-qualified-autoload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::create_dir_all(root.join("Requests")).expect("requests dir should be created");
+        std::fs::write(
+            root.join("Requests/Hooks.php"),
+            "<?php
+            namespace WpOrg\\Requests;
+            class Hooks {}
+            ",
+        )
+        .expect("parent class target should be written");
+        let source = r#"<?php
+            spl_autoload_register(function ($class) {
+                echo "autoload:$class|";
+                if ($class === 'WpOrg\Requests\Hooks') {
+                    require __DIR__ . '/Requests/Hooks.php';
+                }
+            });
+            class WP_HTTP_Requests_Hooks extends WpOrg\Requests\Hooks {}
+            echo 'ok';
+        "#;
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.contains("autoload:WpOrg\\Requests\\Hooks|"),
+            "{output}"
+        );
+        assert!(output.contains("ok"), "{output}");
+        assert!(
+            !output.contains("autoload:wporg\\requests\\hooks|"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn namespaced_parent_declaration_preserves_display_name_for_autoload() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-parent-namespaced-autoload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        let discovery_dir = root.join("Http/Discovery");
+        std::fs::create_dir_all(&discovery_dir).expect("discovery dir should be created");
+        std::fs::write(
+            discovery_dir.join("ClassDiscovery.php"),
+            "<?php
+            namespace WordPress\\AiClientDependencies\\Http\\Discovery;
+            class ClassDiscovery {}
+            ",
+        )
+        .expect("parent class target should be written");
+        let source = r#"<?php
+            namespace WordPress\AiClientDependencies\Http\Discovery;
+            spl_autoload_register(function ($class) {
+                echo "autoload:$class|";
+                if ($class === 'WordPress\AiClientDependencies\Http\Discovery\ClassDiscovery') {
+                    require __DIR__ . '/Http/Discovery/ClassDiscovery.php';
+                }
+            });
+            final class Psr18ClientDiscovery extends ClassDiscovery {}
+            echo 'ok';
+        "#;
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.contains(
+                "autoload:WordPress\\AiClientDependencies\\Http\\Discovery\\ClassDiscovery|"
+            ),
+            "{output}"
+        );
+        assert!(output.contains("ok"), "{output}");
+        assert!(
+            !output.contains(
+                "autoload:wordpress\\aiclientdependencies\\http\\discovery\\classdiscovery|"
+            ),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn spl_autoload_extensions_and_class_parents_are_request_local_builtins() {
         let result = execute_source(
             r#"<?php
