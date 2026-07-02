@@ -11,6 +11,7 @@ pub mod config;
 mod diagnostics;
 mod metrics;
 mod multipart;
+mod perf_trace;
 mod php_request;
 pub mod response;
 pub mod routing;

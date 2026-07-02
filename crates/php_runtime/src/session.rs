@@ -22,6 +22,8 @@ pub struct SessionState {
     save_path: String,
     next_id: u64,
     pending_generated_id: Option<String>,
+    lazy_load_enabled: bool,
+    data_loaded: bool,
     started: bool,
     destroyed: bool,
     newly_created: bool,
@@ -41,6 +43,8 @@ impl Default for SessionState {
             save_path: String::new(),
             next_id: 1,
             pending_generated_id: None,
+            lazy_load_enabled: false,
+            data_loaded: true,
             started: false,
             destroyed: false,
             newly_created: false,
@@ -75,7 +79,13 @@ impl SessionState {
 
     /// Replaces the session id and returns the previous value.
     pub fn replace_id(&mut self, id: impl Into<String>) -> String {
-        std::mem::replace(&mut self.id, id.into())
+        let previous = std::mem::replace(&mut self.id, id.into());
+        if self.lazy_load_enabled && self.status != PHP_SESSION_ACTIVE {
+            self.data = PhpArray::new();
+            self.data_loaded = self.id.is_empty();
+            self.newly_created = false;
+        }
+        previous
     }
 
     /// Returns the current cache expiry in minutes.
@@ -139,6 +149,37 @@ impl SessionState {
         }
     }
 
+    /// Seeds web-session state whose backing store should be loaded only when
+    /// PHP activates the session.
+    #[must_use]
+    pub fn seeded_lazy(
+        name: impl Into<String>,
+        id: impl Into<String>,
+        pending_generated_id: Option<String>,
+    ) -> Self {
+        let id = id.into();
+        Self {
+            name: name.into(),
+            data_loaded: id.is_empty(),
+            lazy_load_enabled: true,
+            id,
+            pending_generated_id,
+            ..Self::default()
+        }
+    }
+
+    /// Returns true when an existing web session id has not loaded its data yet.
+    #[must_use]
+    pub const fn needs_lazy_load(&self) -> bool {
+        self.lazy_load_enabled && !self.data_loaded && !self.id.is_empty()
+    }
+
+    /// Installs session data loaded from the transport session store.
+    pub fn load_data(&mut self, data: PhpArray) {
+        self.data = data;
+        self.data_loaded = true;
+    }
+
     /// Returns true when session_start() was called in this request.
     #[must_use]
     pub const fn started(&self) -> bool {
@@ -176,6 +217,7 @@ impl SessionState {
                 id
             });
             self.newly_created = true;
+            self.data_loaded = true;
         }
         self.status = PHP_SESSION_ACTIVE;
         self.started = true;
@@ -193,6 +235,7 @@ impl SessionState {
         self.status = PHP_SESSION_NONE;
         self.id.clear();
         self.data = PhpArray::new();
+        self.data_loaded = true;
         self.destroyed = true;
         true
     }

@@ -68,6 +68,7 @@ help:
       '  just wordpress-preflight  Classify local real WordPress smoke prerequisites' \
       '  just wordpress-real-smoke Run no-DB real WordPress frontpage smoke' \
       '  just wordpress-real-install-smoke Run DB-backed real WordPress install smoke' \
+      '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
       '  just mysqli-integration   Run explicit live MySQLi integration gate' \
       '  just wordpress-smoke-report Generate web/db diagnostics report' \
       '' \
@@ -105,6 +106,7 @@ help:
       '  just inline-cache-smoke   Run inline-cache smoke gate' \
       '  just jit-smoke            Run default-off JIT smoke gate' \
       '  just framework-smoke      Run offline framework-like performance smoke' \
+      '  just wordpress-like-hotpath-smoke Run deterministic server hotpath smoke' \
       '  just app-flow-smoke      Run CI-safe app-flow engine comparison smoke' \
       '  just app-flow-matrix     Run full application-flow Phrust/reference matrix' \
       '  just release-benchmark-smoke Run production release performance smoke' \
@@ -999,6 +1001,10 @@ wordpress-real-install-smoke:
     cargo build -p php_vm_cli -p php_server
     scripts/wordpress/smoke.py --phase db-install --phase admin-login-page --phase post-install-frontpage --wordpress-dir "${PHRUST_WORDPRESS_DIR:-}" --docroot "${PHRUST_WORDPRESS_DOCROOT:-${PHRUST_WORDPRESS_DIR:-}}" --reference-php "${REFERENCE_PHP:-}" --phrust-binary "${PHP_VM_CLI:-target/debug/php-vm}" --phrust-server "${PHRUST_SERVER:-target/debug/phrust-server}" --stop-on-fail
 
+wordpress-real-perf-report:
+    cargo build -p php_server --bin phrust-server
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/real_perf_report.py
+
 wordpress-real-extract-first-failure:
     scripts/wordpress/extract_failure.py --failure "${PHRUST_WORDPRESS_FIRST_FAILURE:-}"
 
@@ -1042,6 +1048,7 @@ performance-tests:
     scripts/performance/bench_matrix.py --self-test
     scripts/performance/perf_report.py --self-test
     scripts/performance/app_flow_matrix.py --self-test
+    scripts/performance/wordpress_like_hotpath_smoke.py --self-test
     scripts/performance/decision_baseline.py --self-test
     scripts/performance/startup_matrix.py --self-test
 
@@ -1124,6 +1131,10 @@ bolt-benchmark-smoke:
 framework-smoke:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/framework_micro_smoke.py
+
+wordpress-like-hotpath-smoke:
+    cargo build -p php_server --bin phrust-server
+    scripts/performance/wordpress_like_hotpath_smoke.py --server "${CARGO_TARGET_DIR:-target}/debug/phrust-server" --out target/performance/wordpress-like/report.json
 
 app-flow-smoke:
     cargo build -p php_vm_cli --bin php-vm

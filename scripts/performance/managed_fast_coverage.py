@@ -279,8 +279,13 @@ CASES = (
             "array_packed_read_fast_path_hits": 1,
             "array_sequential_foreach_fast_path_hits": 1,
         },
-        nested_floors={"array_fast_path_hits_by_family": {"record_shape_fetch": 1}},
         predicates=("array_fast_paths_specific",),
+    ),
+    Case(
+        "record-shape-fast-path",
+        source='<?php $row = ["id" => 1, "name" => "a"]; echo isset($row["id"]) ? $row["name"] : "missing";',
+        floors={"record_shape_hits": 1},
+        nested_floors={"array_fast_path_hits_by_family": {"record_shape_fetch": 1}},
     ),
     Case(
         "builtin-intrinsics",

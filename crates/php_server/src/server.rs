@@ -130,6 +130,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let startup_metrics_endpoint_enabled = config.metrics_endpoint_enabled;
     let startup_metrics_token_enabled = config.metrics_token.is_some();
     let startup_access_log = config.access_log.clone();
+    let startup_perf_trace = config.perf_trace.clone();
     let startup_tls_enabled = config.tls_cert.is_some();
     let engine_profile = config.engine_preset;
     let tls_acceptor = build_tls_acceptor(config.tls_cert.as_deref(), config.tls_key.as_deref())?;
@@ -137,6 +138,11 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         .access_log
         .as_deref()
         .map(AccessLogger::open)
+        .transpose()?
+        .map(Arc::new);
+    let perf_trace = config
+        .perf_trace
+        .map(crate::perf_trace::PerfTraceWriter::open)
         .transpose()?
         .map(Arc::new);
     let session_store = Arc::new(SessionStore::new(config.session_save_path));
@@ -148,7 +154,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let startup_scheme = if startup_tls_enabled { "https" } else { "http" };
     println!("listening {startup_scheme}://{local_addr}");
     eprintln!(
-        "startup docroot={} front_controller={} engine_preset={} script_cache={} script_cache_shards={} script_cache_max_entries={} upload_temp_dir={} session_save_path={} metrics_endpoint={} metrics_token={} access_log={} tls={} tls_alpn={}",
+        "startup docroot={} front_controller={} engine_preset={} script_cache={} script_cache_shards={} script_cache_max_entries={} upload_temp_dir={} session_save_path={} metrics_endpoint={} metrics_token={} access_log={} perf_trace={} tls={} tls_alpn={}",
         docroot.display(),
         startup_front_controller
             .as_ref()
@@ -162,6 +168,9 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         startup_metrics_endpoint_enabled,
         startup_metrics_token_enabled,
         startup_access_log.as_deref().unwrap_or("-"),
+        startup_perf_trace
+            .as_ref()
+            .map_or("-", |path| path.to_str().unwrap_or("<non-utf8>")),
         startup_tls_enabled,
         if startup_tls_enabled { "http/1.1" } else { "-" },
     );
@@ -205,6 +214,8 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         engine,
         metrics_token: config.metrics_token,
         access_log,
+        perf_trace,
+        env_snapshot: Arc::new(std::env::vars().collect()),
         debug: config.debug,
         error_format: config.error_format,
         debug_log: config.debug_log,
@@ -567,7 +578,7 @@ mod tests {
             &state,
             request_context,
             SessionState::default(),
-            b"request-body".to_vec(),
+            Arc::from(&b"request-body"[..]),
             vec![
                 (
                     "PHRUST_MYSQL_TEST_DSN".to_string(),
@@ -585,7 +596,7 @@ mod tests {
                 .map(|(_, value)| value.as_str()),
             Some("mysql://wordpress:secret@mariadb:3306/wordpress")
         );
-        assert_eq!(context.stdin, b"request-body");
+        assert_eq!(context.stdin.as_ref(), b"request-body");
     }
 
     #[test]
@@ -609,7 +620,7 @@ mod tests {
             &script_path,
             "/index.php",
             None,
-            b"",
+            Arc::from(&b""[..]),
             "192.0.2.44:50123".parse().expect("peer addr"),
         );
 
@@ -669,6 +680,8 @@ mod tests {
             )),
             metrics_token: None,
             access_log: None,
+            perf_trace: None,
+            env_snapshot: Arc::new(Vec::new()),
             debug: false,
             error_format: DiagnosticOutputFormat::Text,
             debug_log: None,

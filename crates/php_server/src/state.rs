@@ -1,4 +1,7 @@
-use crate::{access_log::AccessLogger, metrics::ServerMetrics, server::ServerError};
+use crate::{
+    access_log::AccessLogger, metrics::ServerMetrics, perf_trace::PerfTraceWriter,
+    server::ServerError,
+};
 use crate::{multipart::MultipartConfig, routing::RouteConfig, session_store::SessionStore};
 use php_diagnostics::DiagnosticOutputFormat;
 use php_executor::{
@@ -30,6 +33,8 @@ pub(crate) struct AppState {
     pub(crate) engine: Arc<ServerEngineState>,
     pub(crate) metrics_token: Option<String>,
     pub(crate) access_log: Option<Arc<AccessLogger>>,
+    pub(crate) perf_trace: Option<Arc<PerfTraceWriter>>,
+    pub(crate) env_snapshot: Arc<Vec<(String, String)>>,
     pub(crate) debug: bool,
     pub(crate) error_format: DiagnosticOutputFormat,
     pub(crate) debug_log: Option<PathBuf>,

@@ -5,6 +5,7 @@ use crate::{
 };
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Minimal ini-like runtime options carried by the VM.
@@ -91,7 +92,7 @@ pub struct RuntimeHttpRequestContext {
     pub parsed_post: Vec<(String, String)>,
     pub parsed_cookie: Vec<(String, String)>,
     pub uploaded_files: Vec<RuntimeUploadedFile>,
-    pub raw_body: Vec<u8>,
+    pub raw_body: Arc<[u8]>,
 }
 
 /// One uploaded file accepted by the integrated HTTP server.
@@ -303,7 +304,7 @@ impl RuntimeHttpRequestContext {
             parsed_post: Vec::new(),
             parsed_cookie: Vec::new(),
             uploaded_files: Vec::new(),
-            raw_body: Vec::new(),
+            raw_body: Arc::from([]),
         }
     }
 
@@ -382,6 +383,39 @@ pub enum ProcessCapability {
     },
 }
 
+/// Optional transport callback for loading web-session data on `session_start()`.
+#[derive(Clone)]
+pub struct SessionLoadCallback(
+    Arc<dyn Fn(&str) -> Result<PhpArray, String> + Send + Sync + 'static>,
+);
+
+impl SessionLoadCallback {
+    #[must_use]
+    pub fn new(
+        callback: impl Fn(&str) -> Result<PhpArray, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(callback))
+    }
+
+    pub fn load(&self, id: &str) -> Result<PhpArray, String> {
+        (self.0)(id)
+    }
+}
+
+impl std::fmt::Debug for SessionLoadCallback {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SessionLoadCallback")
+    }
+}
+
+impl PartialEq for SessionLoadCallback {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SessionLoadCallback {}
+
 /// Owned deterministic runtime context.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeContext {
@@ -392,7 +426,7 @@ pub struct RuntimeContext {
     /// Controlled environment entries. Host env is never imported implicitly.
     pub env: Vec<(String, String)>,
     /// Deterministic bytes exposed through CLI stdin resources.
-    pub stdin: Vec<u8>,
+    pub stdin: Arc<[u8]>,
     /// Minimal include path placeholder.
     pub include_path: Vec<PathBuf>,
     /// Minimal ini-like options.
@@ -410,6 +444,8 @@ pub struct RuntimeContext {
     pub request_mode: RuntimeRequestMode,
     /// Request-local session state seed.
     pub session: SessionState,
+    /// Optional transport session loader used only when PHP starts a session.
+    pub session_loader: Option<SessionLoadCallback>,
     /// Optional cooperative PHP execution budget for the VM.
     pub execution_time_limit: Option<Duration>,
 }
@@ -420,7 +456,7 @@ impl Default for RuntimeContext {
             cwd: PathBuf::from("."),
             argv: Vec::new(),
             env: Vec::new(),
-            stdin: Vec::new(),
+            stdin: Arc::from([]),
             include_path: vec![PathBuf::from(".")],
             ini: RuntimeIniOptions::default(),
             ini_overrides: Vec::new(),
@@ -429,6 +465,7 @@ impl Default for RuntimeContext {
             process: ProcessCapability::Disabled,
             request_mode: RuntimeRequestMode::Cli,
             session: SessionState::default(),
+            session_loader: None,
             execution_time_limit: None,
         }
     }
@@ -514,8 +551,8 @@ impl RuntimeContext {
 
     /// Sets deterministic stdin bytes for CLI-style execution.
     #[must_use]
-    pub fn with_stdin(mut self, stdin: Vec<u8>) -> Self {
-        self.stdin = stdin;
+    pub fn with_stdin(mut self, stdin: impl Into<Arc<[u8]>>) -> Self {
+        self.stdin = stdin.into();
         self
     }
 
@@ -540,6 +577,13 @@ impl RuntimeContext {
     #[must_use]
     pub fn with_session_state(mut self, session: SessionState) -> Self {
         self.session = session;
+        self
+    }
+
+    /// Sets a transport callback for loading session data when PHP activates it.
+    #[must_use]
+    pub fn with_session_loader(mut self, loader: SessionLoadCallback) -> Self {
+        self.session_loader = Some(loader);
         self
     }
 
@@ -1631,7 +1675,7 @@ mod tests {
             ("X-Test-Header".to_string(), "yes".to_string()),
             ("Bad Header".to_string(), "ignored".to_string()),
         ];
-        request.raw_body = b"posted=yes".to_vec();
+        request.raw_body = b"posted=yes".to_vec().into();
         request.parsed_post = parse_form_urlencoded_body(&request.raw_body);
         request.parsed_cookie = parse_cookie_header("sid=abc; theme=dark");
         request

@@ -158,7 +158,13 @@ pub(crate) async fn handle(
             return response;
         }
     };
+    let route_started = Instant::now();
     let route = resolve_route(method.as_str(), parts.uri.path(), &state.route_config);
+    let route_resolution = route_started.elapsed();
+    state.metrics.record_phase(
+        super::metrics::RequestPhase::RouteResolution,
+        route_resolution.as_nanos(),
+    );
     emit_server_debug(
         &state,
         Some(&request_id),
@@ -210,6 +216,7 @@ pub(crate) async fn handle(
                 path_info,
                 peer,
                 request_id.clone(),
+                route_resolution,
             )
             .await;
             (response, route_kind, cache_hit)

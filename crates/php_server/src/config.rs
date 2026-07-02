@@ -58,6 +58,7 @@ pub struct ServerConfig {
     pub strict_preload: bool,
     pub cache_clear_endpoint_enabled: bool,
     pub access_log: Option<String>,
+    pub perf_trace: Option<PathBuf>,
     pub help: bool,
 }
 
@@ -197,6 +198,9 @@ impl ServerConfig {
             .bool("cache_clear_endpoint_enabled")?
             .unwrap_or(false);
         let mut access_log = file_config.string("access_log");
+        let mut perf_trace = file_config
+            .path("perf_trace")
+            .or_else(|| env_perf_trace_path(&env_value));
         let mut debug = env_bool(&env_value, "PHRUST_SERVER_DEBUG");
         let mut error_format = env_output_format(&env_value, "PHRUST_SERVER_ERROR_FORMAT")?;
         let mut debug_log = env_value("PHRUST_SERVER_DEBUG_LOG")
@@ -290,6 +294,9 @@ impl ServerConfig {
                 "--strict-preload" => strict_preload = true,
                 "--enable-cache-clear-endpoint" => cache_clear_endpoint_enabled = true,
                 "--access-log" => access_log = Some(required_value(&arg, &mut args)?),
+                "--perf-trace" => {
+                    perf_trace = Some(PathBuf::from(required_value(&arg, &mut args)?))
+                }
                 "--debug" => debug = true,
                 "--error-format" => {
                     error_format = parse_output_format(&required_value(&arg, &mut args)?)?;
@@ -350,6 +357,7 @@ impl ServerConfig {
                 strict_preload,
                 cache_clear_endpoint_enabled,
                 access_log,
+                perf_trace,
                 help,
             });
         }
@@ -390,6 +398,7 @@ impl ServerConfig {
             strict_preload,
             cache_clear_endpoint_enabled,
             access_log,
+            perf_trace,
             help,
         })
     }
@@ -421,6 +430,7 @@ Options:\n\
   --tls-cert <path>            PEM certificate chain for HTTPS\n\
   --tls-key <path>             PEM private key for HTTPS\n\
   --access-log <path|->        write compact access logs to file or stdout\n\
+  --perf-trace <path>          append per-PHP-request performance trace JSONL\n\
   --debug                      emit structured server debug events to stderr\n\
   --error-format <text|json>   render server diagnostics/debug events as text or JSON\n\
   --debug-log <path>           append server debug events to a file instead of stderr\n\
@@ -606,6 +616,18 @@ fn parse_listen(value: &str) -> Result<SocketAddr, ConfigError> {
 fn env_bool(env_value: &impl Fn(&str) -> Option<String>, name: &str) -> bool {
     env_value(name)
         .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+}
+
+fn env_perf_trace_path(env_value: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let value = env_value("PHRUST_PERF_TRACE")?;
+    let value = value.trim();
+    if value.is_empty() || matches!(value, "0" | "false" | "FALSE" | "off") {
+        None
+    } else if matches!(value, "1" | "true" | "TRUE" | "yes" | "on") {
+        Some(PathBuf::from("target/performance/server/perf-trace.jsonl"))
+    } else {
+        Some(PathBuf::from(value))
+    }
 }
 
 fn env_output_format(

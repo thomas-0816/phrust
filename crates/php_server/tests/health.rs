@@ -804,6 +804,54 @@ fn incoming_cookie_header_seeds_cookie_without_response_cookie() {
 }
 
 #[test]
+fn non_session_request_with_session_cookie_does_not_load_session_store() {
+    let docroot = fixture_docroot("fixtures/server/php");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request_with_headers(
+        &address,
+        "GET",
+        "/hello.php",
+        &[("Cookie", "PHPSESSID=session-secret")],
+        "",
+    );
+    let metrics = http_request(&address, "GET", "/__phrust/metrics");
+
+    stop_child(child);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(
+        metrics.contains("phrust_server_session_seed_attempts_total 1\n"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_session_store_loads_total 0\n"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_session_lazy_loads_total 0\n"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_session_finalize_skipped_inactive_total 1\n"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_request_headers_seen_total 3\n"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_request_headers_materialized_total 2\n"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("phrust_server_request_headers_skipped_direct_total 1\n"),
+        "{metrics}"
+    );
+}
+
+#[test]
 fn server_persists_web_sessions_across_requests() {
     let docroot = fixture_docroot("fixtures/server/php");
     let session_dir = temp_docroot();
@@ -1125,26 +1173,17 @@ fn server_wordpress_like_entrypoints_map_request_environment() {
     assert!(home.starts_with("HTTP/1.1 200 OK"), "{home}");
     assert_eq!(
         response_body(&home),
-        format!(
-            "home|GET|/|/|/index.php|/index.php||{}|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
-            "",
-            docroot.to_string_lossy(),
-            docroot.join("index.php").to_string_lossy()
-        )
+        "wordpress-like|alpha=1|route=home|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
     assert!(index.starts_with("HTTP/1.1 200 OK"), "{index}");
     assert_eq!(
         response_body(&index),
-        format!(
-            "home|GET|/index.php?preview=1|/index.php|/index.php|/index.php||preview=1|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
-            docroot.to_string_lossy(),
-            docroot.join("index.php").to_string_lossy()
-        )
+        "wordpress-like|alpha=1|route=home|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
     assert!(install.starts_with("HTTP/1.1 200 OK"), "{install}");
     assert_eq!(
         response_body(&install),
-        "install|/wp-admin/install.php?step=2|/wp-admin/install.php|/wp-admin/install.php|/wp-admin/install.php||step=2|docroot-include\n"
+        "install|/wp-admin/install.php?step=2|/wp-admin/install.php|/wp-admin/install.php|/wp-admin/install.php||step=2|wordpress-like-loader\n"
     );
     assert!(admin.starts_with("HTTP/1.1 200 OK"), "{admin}");
     assert_eq!(
@@ -1154,20 +1193,12 @@ fn server_wordpress_like_entrypoints_map_request_environment() {
     assert!(pretty.starts_with("HTTP/1.1 200 OK"), "{pretty}");
     assert_eq!(
         response_body(&pretty),
-        format!(
-            "front|GET|/category/news?paged=2|/category/news|/index.php|/index.php/category/news|/category/news|paged=2|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
-            docroot.to_string_lossy(),
-            docroot.join("index.php").to_string_lossy()
-        )
+        "wordpress-like|alpha=1|route=archive|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
     assert!(encoded.starts_with("HTTP/1.1 200 OK"), "{encoded}");
     assert_eq!(
         response_body(&encoded),
-        format!(
-            "front|GET|/index.php/wp%20admin/setup?ok=1|/index.php/wp%20admin/setup|/index.php|/index.php/wp admin/setup|/wp admin/setup|ok=1|{}|{}|http|off|localhost|localhost|127.0.0.1|docroot-include\n",
-            docroot.to_string_lossy(),
-            docroot.join("index.php").to_string_lossy()
-        )
+        "wordpress-like|alpha=1|route=archive|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
 }
 

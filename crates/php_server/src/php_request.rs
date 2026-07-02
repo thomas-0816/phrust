@@ -1,5 +1,7 @@
 use super::{
     diagnostics::{RequestDiagnostic, emit_request_diagnostic, emit_server_debug},
+    metrics::RequestPhase,
+    perf_trace::PerfTraceEvent,
     sessions::{finalize_session_state, seed_session_state},
     state::AppState,
 };
@@ -22,15 +24,15 @@ use php_executor::{
     PhpExecutor, PhpRequestExecutionInput,
 };
 use php_runtime::api::{
-    RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionState,
-    parse_cookie_header, parse_form_urlencoded_body,
+    RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionLoadCallback,
+    SessionState, parse_cookie_header, parse_form_urlencoded_body,
 };
 use std::{
     collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{task, time::timeout};
 use tracing::{debug, warn};
@@ -47,8 +49,20 @@ pub(crate) async fn execute_php_request(
     path_info: Option<String>,
     peer: SocketAddr,
     request_id: String,
+    route_resolution: Duration,
 ) -> (Response<ResponseBody>, Option<bool>) {
     let PartsAndBody { parts, body } = request;
+    let mut trace = PerfTraceEvent {
+        request_id: request_id.clone(),
+        method: parts.method.to_string(),
+        path: parts
+            .uri
+            .path_and_query()
+            .map_or_else(|| parts.uri.path().to_string(), |value| value.to_string()),
+        script_path: script_path.display().to_string(),
+        phases: vec![("route_resolution", route_resolution.as_nanos())],
+        ..PerfTraceEvent::default()
+    };
     emit_server_debug(
         &state,
         Some(&request_id),
@@ -60,6 +74,7 @@ pub(crate) async fn execute_php_request(
             state.max_body_bytes.to_string(),
         )]),
     );
+    let body_started = Instant::now();
     let body = match timeout(
         state.request_timeout,
         read_limited_body(body, state.max_body_bytes),
@@ -78,10 +93,15 @@ pub(crate) async fn execute_php_request(
                     state.request_timeout.as_millis().to_string(),
                 )]),
             );
-            return (
-                response::text(StatusCode::REQUEST_TIMEOUT, "request timeout\n"),
-                None,
+            record_phase(
+                &state,
+                &mut trace,
+                RequestPhase::BodyRead,
+                "body_read",
+                body_started.elapsed(),
             );
+            let response = response::text(StatusCode::REQUEST_TIMEOUT, "request timeout\n");
+            return finish_php_request(&state, trace, response, None, Some("body_read"));
         }
         Ok(Ok(body)) => body,
         Ok(Err(BodyReadError::TooLarge)) => {
@@ -98,10 +118,15 @@ pub(crate) async fn execute_php_request(
                 )]),
             );
             debug!(%peer, max_body_bytes=state.max_body_bytes, "request body too large");
-            return (
-                response::text(StatusCode::PAYLOAD_TOO_LARGE, "payload too large\n"),
-                None,
+            record_phase(
+                &state,
+                &mut trace,
+                RequestPhase::BodyRead,
+                "body_read",
+                body_started.elapsed(),
             );
+            let response = response::text(StatusCode::PAYLOAD_TOO_LARGE, "payload too large\n");
+            return finish_php_request(&state, trace, response, None, Some("body_read"));
         }
         Ok(Err(BodyReadError::Invalid)) => {
             let script_filename = script_path.display().to_string();
@@ -127,12 +152,25 @@ pub(crate) async fn execute_php_request(
                 ),
             );
             warn!(%peer, "failed to read request body");
-            return (
-                response::text(StatusCode::BAD_REQUEST, "bad request\n"),
-                None,
+            record_phase(
+                &state,
+                &mut trace,
+                RequestPhase::BodyRead,
+                "body_read",
+                body_started.elapsed(),
             );
+            let response = response::text(StatusCode::BAD_REQUEST, "bad request\n");
+            return finish_php_request(&state, trace, response, None, Some("body_read"));
         }
     };
+    record_phase(
+        &state,
+        &mut trace,
+        RequestPhase::BodyRead,
+        "body_read",
+        body_started.elapsed(),
+    );
+    trace.body_bytes = body.len() as u64;
     emit_server_debug(
         &state,
         Some(&request_id),
@@ -163,6 +201,8 @@ pub(crate) async fn execute_php_request(
         "script cache lookup started",
         BTreeMap::from([("script_path".to_string(), script_path.display().to_string())]),
     );
+    let script_cache_before = state.engine.script_cache.cache_stats();
+    let script_cache_started = Instant::now();
     let lookup = match state.compile_script(&script_path) {
         Ok(lookup) => {
             emit_server_debug(
@@ -195,10 +235,8 @@ pub(crate) async fn execute_php_request(
                     ),
                 ]),
             );
-            return (
-                php_output_response(*output, parts.method == Method::HEAD),
-                None,
-            );
+            let response = php_output_response(*output, parts.method == Method::HEAD);
+            return finish_php_request(&state, trace, response, None, Some("script_cache"));
         }
         Err(PhpExecutionError::Engine(_)) => {
             emit_server_debug(
@@ -210,29 +248,62 @@ pub(crate) async fn execute_php_request(
                 BTreeMap::from([("script_path".to_string(), script_path.display().to_string())]),
             );
             warn!(script=%script_path.display(), "php execution engine error");
-            return (
-                response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n"),
-                None,
-            );
+            let response =
+                response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n");
+            return finish_php_request(&state, trace, response, None, Some("script_cache"));
         }
     };
+    record_phase(
+        &state,
+        &mut trace,
+        RequestPhase::ScriptCache,
+        "script_cache_lookup",
+        script_cache_started.elapsed(),
+    );
+    let script_cache_after = state.engine.script_cache.cache_stats();
+    trace.counters.extend([
+        (
+            "entry_script_cache_hits",
+            script_cache_after
+                .hits
+                .saturating_sub(script_cache_before.hits),
+        ),
+        (
+            "entry_script_cache_misses",
+            script_cache_after
+                .misses
+                .saturating_sub(script_cache_before.misses),
+        ),
+        (
+            "entry_script_source_reads",
+            script_cache_after
+                .source_reads
+                .saturating_sub(script_cache_before.source_reads),
+        ),
+    ]);
     let script_cache_hit = Some(lookup.hit);
     let script_name = script_name_for(&state.route_config.docroot, &script_path);
+    let request_context_started = Instant::now();
     let mut request_context = http_runtime_context(
         &parts,
         &state,
         &script_path,
         &script_name,
         path_info,
-        &body,
+        Arc::clone(&body),
         peer,
     );
     if let Some(boundary) = match multipart_boundary(request_context.content_type.as_deref()) {
         Ok(boundary) => boundary,
         Err(error) => {
-            return (
-                multipart_error_response(error, &state, &parts, &request_id, &script_path, peer),
+            let response =
+                multipart_error_response(error, &state, &parts, &request_id, &script_path, peer);
+            return finish_php_request(
+                &state,
+                trace,
+                response,
                 script_cache_hit,
+                Some("request_context"),
             );
         }
     } {
@@ -267,20 +338,31 @@ pub(crate) async fn execute_php_request(
                     .fetch_add(stats.upload_bytes_accepted, Ordering::Relaxed);
             }
             Err(error) => {
-                return (
-                    multipart_error_response(
-                        error,
-                        &state,
-                        &parts,
-                        &request_id,
-                        &script_path,
-                        peer,
-                    ),
+                let response = multipart_error_response(
+                    error,
+                    &state,
+                    &parts,
+                    &request_id,
+                    &script_path,
+                    peer,
+                );
+                return finish_php_request(
+                    &state,
+                    trace,
+                    response,
                     script_cache_hit,
+                    Some("request_context"),
                 );
             }
         }
     }
+    record_phase(
+        &state,
+        &mut trace,
+        RequestPhase::RequestContext,
+        "request_context",
+        request_context_started.elapsed(),
+    );
     let upload_cleanup = request_context.uploaded_files.clone();
     emit_server_debug(
         &state,
@@ -293,6 +375,7 @@ pub(crate) async fn execute_php_request(
             state.session_config.enabled.to_string(),
         )]),
     );
+    let session_seed_started = Instant::now();
     let session_state = match seed_session_state(&request_context, &state) {
         Ok(session) => session,
         Err(error) => {
@@ -318,15 +401,26 @@ pub(crate) async fn execute_php_request(
                 BTreeMap::from([("error".to_string(), error.clone())]),
             );
             warn!(%peer, error=%error, "session state preparation failed");
-            return (
-                response::text(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "session storage failed\n",
-                ),
+            let response = response::text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session storage failed\n",
+            );
+            return finish_php_request(
+                &state,
+                trace,
+                response,
                 script_cache_hit,
+                Some("session_seed"),
             );
         }
     };
+    record_phase(
+        &state,
+        &mut trace,
+        RequestPhase::SessionSeed,
+        "session_seed",
+        session_seed_started.elapsed(),
+    );
     emit_server_debug(
         &state,
         Some(&request_id),
@@ -342,8 +436,8 @@ pub(crate) async fn execute_php_request(
         &state,
         request_context,
         session_state,
-        body.clone(),
-        std::env::vars().collect(),
+        Arc::clone(&body),
+        state.env_snapshot.as_ref().clone(),
     );
     if state.execution_time_limit.is_none() {
         state
@@ -365,12 +459,53 @@ pub(crate) async fn execute_php_request(
             script_log_path.display().to_string(),
         )]),
     );
+    let include_cache_before = state.engine.include_cache.cache_stats();
     let result = execute_compiled_php_in_blocking_region(
         Arc::clone(&state),
         lookup,
         script_path,
         runtime_context,
     );
+    record_phase(
+        &state,
+        &mut trace,
+        RequestPhase::VmExecution,
+        "php_vm_execution",
+        execution_started.elapsed(),
+    );
+    let include_cache_after = state.engine.include_cache.cache_stats();
+    trace.counters.extend([
+        (
+            "include_resolution_hits",
+            include_cache_after
+                .resolution_hits
+                .saturating_sub(include_cache_before.resolution_hits),
+        ),
+        (
+            "include_resolution_misses",
+            include_cache_after
+                .resolution_misses
+                .saturating_sub(include_cache_before.resolution_misses),
+        ),
+        (
+            "include_compile_hits",
+            include_cache_after
+                .compile_hits
+                .saturating_sub(include_cache_before.compile_hits),
+        ),
+        (
+            "include_compile_misses",
+            include_cache_after
+                .compile_misses
+                .saturating_sub(include_cache_before.compile_misses),
+        ),
+        (
+            "include_source_reads",
+            include_cache_after
+                .source_reads
+                .saturating_sub(include_cache_before.source_reads),
+        ),
+    ]);
     match result {
         Ok(mut output) => {
             let mut execute_end_context = BTreeMap::from([
@@ -404,6 +539,7 @@ pub(crate) async fn execute_php_request(
                 execute_end_context,
             );
             output.upload_registry.cleanup_unmoved();
+            let session_finalize_started = Instant::now();
             if let Err(error) = finalize_session_state(&mut output, &state) {
                 emit_request_diagnostic(
                     &state,
@@ -427,26 +563,55 @@ pub(crate) async fn execute_php_request(
                     BTreeMap::from([("error".to_string(), error.clone())]),
                 );
                 warn!(%peer, error=%error, "session state finalization failed");
-                return (
-                    response::text(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "session storage failed\n",
-                    ),
+                let response = response::text(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "session storage failed\n",
+                );
+                return finish_php_request(
+                    &state,
+                    trace,
+                    response,
                     script_cache_hit,
+                    Some("session_finalize"),
                 );
             }
+            record_phase(
+                &state,
+                &mut trace,
+                RequestPhase::SessionFinalize,
+                "session_finalize",
+                session_finalize_started.elapsed(),
+            );
+            trace.runtime_diagnostics = output.runtime_diagnostics.len() as u64;
+            state
+                .metrics
+                .runtime_diagnostics
+                .fetch_add(trace.runtime_diagnostics, Ordering::Relaxed);
             if php_execution_timed_out(&output) {
                 state
                     .metrics
                     .execution_timeouts
                     .fetch_add(1, Ordering::Relaxed);
-                return (
-                    php_timeout_response(is_head, &output.http_response),
+                let response = php_timeout_response(is_head, &output.http_response);
+                return finish_php_request(
+                    &state,
+                    trace,
+                    response,
                     script_cache_hit,
+                    Some("php_vm_execution"),
                 );
             }
             log_php_execution_failure(&script_log_path, &output);
-            (php_output_response(output, is_head), script_cache_hit)
+            let response_started = Instant::now();
+            let response = php_output_response(output, is_head);
+            record_phase(
+                &state,
+                &mut trace,
+                RequestPhase::ResponseBuild,
+                "response_build",
+                response_started.elapsed(),
+            );
+            finish_php_request(&state, trace, response, script_cache_hit, None)
         }
         Err(PhpExecutionError::Compile(output)) => {
             cleanup_uploaded_files(&upload_cleanup);
@@ -469,7 +634,14 @@ pub(crate) async fn execute_php_request(
                     ),
                 ]),
             );
-            (php_output_response(*output, is_head), script_cache_hit)
+            let response = php_output_response(*output, is_head);
+            finish_php_request(
+                &state,
+                trace,
+                response,
+                script_cache_hit,
+                Some("php_vm_execution"),
+            )
         }
         Err(PhpExecutionError::Engine(error)) => {
             cleanup_uploaded_files(&upload_cleanup);
@@ -489,9 +661,14 @@ pub(crate) async fn execute_php_request(
                 ]),
             );
             warn!(script=%script_log_path.display(), %error, "php execution engine error");
-            (
-                response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n"),
+            let response =
+                response::text(StatusCode::INTERNAL_SERVER_ERROR, "php execution failed\n");
+            finish_php_request(
+                &state,
+                trace,
+                response,
                 script_cache_hit,
+                Some("php_vm_execution"),
             )
         }
     }
@@ -714,7 +891,7 @@ pub(crate) enum BodyReadError {
 pub(crate) async fn read_limited_body(
     mut body: Incoming,
     max_body_bytes: usize,
-) -> Result<Vec<u8>, BodyReadError> {
+) -> Result<Arc<[u8]>, BodyReadError> {
     let mut bytes = Vec::new();
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|_| BodyReadError::Invalid)?;
@@ -726,7 +903,7 @@ pub(crate) async fn read_limited_body(
         }
         bytes.extend_from_slice(&data);
     }
-    Ok(bytes)
+    Ok(Arc::from(bytes))
 }
 
 pub(crate) fn http_runtime_context(
@@ -735,7 +912,7 @@ pub(crate) fn http_runtime_context(
     script_path: &Path,
     script_name: &str,
     path_info: Option<String>,
-    body: &[u8],
+    body: Arc<[u8]>,
     peer: SocketAddr,
 ) -> RuntimeHttpRequestContext {
     let request_uri = parts.uri.path_and_query().map_or_else(
@@ -764,17 +941,30 @@ pub(crate) fn http_runtime_context(
     context.remote_addr = peer.ip().to_string();
     context.request_time = request_time;
     context.request_time_float_micros = request_time_float_micros;
-    context.headers = runtime_headers(&parts.headers);
+    let header_snapshot = runtime_headers(&parts.headers);
+    state
+        .metrics
+        .request_headers_seen
+        .fetch_add(header_snapshot.seen, Ordering::Relaxed);
+    state
+        .metrics
+        .request_headers_materialized
+        .fetch_add(header_snapshot.entries.len() as u64, Ordering::Relaxed);
+    state
+        .metrics
+        .request_headers_skipped_direct
+        .fetch_add(header_snapshot.skipped_direct, Ordering::Relaxed);
+    context.headers = header_snapshot.entries;
     context.content_type = header_value(&parts.headers, header::CONTENT_TYPE);
     context.content_length = header_value(&parts.headers, header::CONTENT_LENGTH)
         .and_then(|value| value.parse::<u64>().ok());
-    context.raw_body = body.to_vec();
+    context.raw_body = Arc::clone(&body);
     if context
         .content_type
         .as_deref()
         .is_some_and(is_form_urlencoded_content_type)
     {
-        context.parsed_post = parse_form_urlencoded_body(body);
+        context.parsed_post = parse_form_urlencoded_body(&body);
     }
     if let Some(cookie) = header_value(&parts.headers, header::COOKIE) {
         context.parsed_cookie = parse_cookie_header(&cookie);
@@ -786,16 +976,69 @@ pub(crate) fn php_runtime_context_for_http(
     state: &AppState,
     request_context: RuntimeHttpRequestContext,
     session_state: SessionState,
-    body: Vec<u8>,
+    body: Arc<[u8]>,
     env: Vec<(String, String)>,
 ) -> RuntimeContext {
     RuntimeContext::controlled_http(request_context)
         .with_cwd(state.route_config.docroot.clone())
         .with_include_path(vec![state.route_config.docroot.clone()])
         .with_session_state(session_state)
+        .with_session_loader(session_load_callback(state))
         .with_execution_time_limit(state.execution_time_limit)
         .with_env(env)
         .with_stdin(body)
+}
+
+fn session_load_callback(state: &AppState) -> SessionLoadCallback {
+    let metrics = Arc::clone(&state.metrics);
+    let store = Arc::clone(&state.session_store);
+    SessionLoadCallback::new(move |id| {
+        metrics.session_lazy_loads.fetch_add(1, Ordering::Relaxed);
+        metrics.session_store_loads.fetch_add(1, Ordering::Relaxed);
+        store.load(id).map_err(|error| {
+            format!("E_PHP_SESSION_STORE_UNAVAILABLE: failed to load session: {error}")
+        })
+    })
+}
+
+fn record_phase(
+    state: &AppState,
+    trace: &mut PerfTraceEvent,
+    phase: RequestPhase,
+    name: &'static str,
+    duration: Duration,
+) {
+    let nanos = duration.as_nanos();
+    state.metrics.record_phase(phase, nanos);
+    trace.phases.push((name, nanos));
+}
+
+fn finish_php_request(
+    state: &AppState,
+    mut trace: PerfTraceEvent,
+    response: Response<ResponseBody>,
+    cache_hit: Option<bool>,
+    failure_phase: Option<&'static str>,
+) -> (Response<ResponseBody>, Option<bool>) {
+    trace.status = response.status().as_u16();
+    trace.cache_hit = cache_hit;
+    trace.failure_phase = failure_phase;
+    trace.response_bytes = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    state
+        .metrics
+        .response_output_bytes
+        .fetch_add(trace.response_bytes, Ordering::Relaxed);
+    if let Some(writer) = &state.perf_trace
+        && let Err(error) = writer.write(&trace)
+    {
+        warn!(%error, path=%writer.path().display(), "perf trace write failed");
+    }
+    (response, cache_hit)
 }
 
 pub(crate) fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
@@ -805,13 +1048,31 @@ pub(crate) fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Opt
         .map(str::to_string)
 }
 
-pub(crate) fn runtime_headers(headers: &HeaderMap) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
-        })
-        .collect()
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct RuntimeHeaderSnapshot {
+    pub(crate) entries: Vec<(String, String)>,
+    pub(crate) seen: u64,
+    pub(crate) skipped_direct: u64,
+}
+
+pub(crate) fn runtime_headers(headers: &HeaderMap) -> RuntimeHeaderSnapshot {
+    let mut snapshot = RuntimeHeaderSnapshot {
+        seen: headers.len() as u64,
+        ..RuntimeHeaderSnapshot::default()
+    };
+    for (name, value) in headers {
+        if matches!(name.as_str(), "host" | "content-type" | "content-length") {
+            snapshot.skipped_direct = snapshot.skipped_direct.saturating_add(1);
+            continue;
+        }
+        let Some(value) = value.to_str().ok() else {
+            continue;
+        };
+        snapshot
+            .entries
+            .push((name.as_str().to_string(), value.to_string()));
+    }
+    snapshot
 }
 
 pub(crate) fn is_form_urlencoded_content_type(value: &str) -> bool {

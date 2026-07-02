@@ -215,6 +215,17 @@ pub(in crate::builtins::modules) fn builtin_session_start(
     {
         return Err(type_error("session_start", "array", options));
     }
+    let needs_lazy_load = {
+        let Some(state) = context.session_state() else {
+            return Err(session_context_error("session_start"));
+        };
+        state.needs_lazy_load()
+    };
+    if needs_lazy_load {
+        context
+            .load_pending_session_data()
+            .map_err(|message| session_store_error("session_start", message))?;
+    }
     {
         let Some(state) = context.session_state() else {
             return Err(session_context_error("session_start"));
@@ -258,10 +269,20 @@ fn session_context_error(function: &str) -> BuiltinError {
     )
 }
 
+fn session_store_error(function: &str, message: String) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_SESSION_STORE_UNAVAILABLE",
+        format!("{function}() could not load session data: {message}"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ArrayKey, OutputBuffer, PhpArray, PhpString, ReferenceCell, SessionState};
+    use crate::{
+        ArrayKey, OutputBuffer, PhpArray, PhpString, ReferenceCell, SessionLoadCallback,
+        SessionState,
+    };
 
     fn context_with_session<'a>(
         output: &'a mut OutputBuffer,
@@ -378,6 +399,40 @@ mod tests {
         assert_eq!(
             builtin_session_id(&mut context, Vec::new(), RuntimeSourceSpan::default()).expect("id"),
             Value::string("incoming123")
+        );
+        assert_eq!(
+            global.get(),
+            Value::Array({
+                let mut array = PhpArray::new();
+                array.insert(ArrayKey::String(PhpString::from("n")), Value::Int(7));
+                array
+            })
+        );
+        assert!(!state.newly_created());
+    }
+
+    #[test]
+    fn session_start_loads_lazy_seeded_web_state() {
+        let mut output = OutputBuffer::new();
+        let mut state = SessionState::seeded_lazy(
+            "APPSESSID".to_string(),
+            "incoming123".to_string(),
+            Some("generated456".to_string()),
+        );
+        let global = ReferenceCell::new(Value::Array(PhpArray::new()));
+        let loader = SessionLoadCallback::new(|id| {
+            assert_eq!(id, "incoming123");
+            let mut data = PhpArray::new();
+            data.insert(ArrayKey::String(PhpString::from("n")), Value::Int(7));
+            Ok(data)
+        });
+        let mut context = context_with_session(&mut output, &mut state, global.clone());
+        context.set_session_loader(Some(&loader));
+
+        assert_eq!(
+            builtin_session_start(&mut context, Vec::new(), RuntimeSourceSpan::default())
+                .expect("start"),
+            Value::Bool(true)
         );
         assert_eq!(
             global.get(),

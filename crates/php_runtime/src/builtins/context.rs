@@ -3,8 +3,8 @@
 use crate::{
     FilesystemCapabilities, IniRegistry, MysqlState, OutputBuffer, PHP_E_DEPRECATED, PHP_E_WARNING,
     PcreCache, PhpArray, PhpDiagnosticChannel, PhpDiagnosticDisplayOptions, ReferenceCell,
-    ResourceTable, RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity, SessionState,
-    UploadRegistry, Value, datetime, emit_php_diagnostic, pcre,
+    ResourceTable, RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity,
+    SessionLoadCallback, SessionState, UploadRegistry, Value, datetime, emit_php_diagnostic, pcre,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -385,6 +385,7 @@ impl<'a> Default for BuiltinExtensionState<'a> {
 pub(in crate::builtins) struct BuiltinSessionContext<'a> {
     session_state: Option<&'a mut SessionState>,
     session_global: Option<ReferenceCell>,
+    session_loader: Option<&'a SessionLoadCallback>,
 }
 
 /// Mutable runtime services available to internal builtins.
@@ -727,9 +728,31 @@ impl<'a> BuiltinContext<'a> {
         self.sessions.session_global = Some(session_global);
     }
 
+    /// Sets the request-local transport callback for lazy session data loading.
+    pub fn set_session_loader(&mut self, loader: Option<&'a SessionLoadCallback>) {
+        self.sessions.session_loader = loader;
+    }
+
     /// Request-local session state.
     pub fn session_state(&mut self) -> Option<&mut SessionState> {
         self.sessions.session_state.as_deref_mut()
+    }
+
+    /// Loads pending session data from the transport layer when needed.
+    pub fn load_pending_session_data(&mut self) -> Result<(), String> {
+        let Some(state) = self.sessions.session_state.as_deref_mut() else {
+            return Ok(());
+        };
+        if !state.needs_lazy_load() {
+            return Ok(());
+        }
+        let id = state.id().to_owned();
+        let Some(loader) = self.sessions.session_loader else {
+            return Err("session loader is unavailable".to_string());
+        };
+        let data = loader.load(&id)?;
+        state.load_data(data);
+        Ok(())
     }
 
     /// Sets request-local MySQL/MariaDB extension state.
