@@ -61440,6 +61440,29 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
     }
 
     #[test]
+    fn namespaced_new_object_preserves_display_name_for_autoload() {
+        let result = execute_source(
+            r#"<?php
+            namespace SimplePie;
+            spl_autoload_register(function ($class) {
+                echo "autoload:$class|";
+                if ($class === 'SimplePie\Exception') {
+                    class Exception extends \Exception {}
+                }
+            });
+            new Exception('x');
+            echo 'ok';
+            "#,
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "autoload:SimplePie\\Exception|ok"
+        );
+    }
+
+    #[test]
     fn spl_autoload_extensions_and_class_parents_are_request_local_builtins() {
         let result = execute_source(
             r#"<?php

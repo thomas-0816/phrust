@@ -40,6 +40,7 @@ use serialization::{
     builtin_serialize, builtin_setlocale, builtin_unserialize, builtin_var_export,
 };
 use std::fs::{self, Metadata};
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -115,6 +116,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "getenv",
         builtin_environment_requires_vm,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "gethostbyname",
+        builtin_gethostbyname,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("header", builtin_header, BuiltinCompatibility::Php),
@@ -532,6 +538,46 @@ pub(in crate::builtins::modules) fn builtin_set_time_limit(
         ));
     }
     Ok(Value::Bool(true))
+}
+
+pub(in crate::builtins::modules) fn builtin_gethostbyname(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("gethostbyname", &args, 1)?;
+    let hostname = string_arg("gethostbyname", &args[0])?;
+    let hostname_text = hostname.to_string_lossy();
+    if hostname_text.len() > 255 {
+        context.php_warning(
+            "E_PHP_RUNTIME_DNS_WARNING",
+            "gethostbyname(): Host name cannot be longer than 255 characters",
+            span,
+        );
+        return Ok(Value::String(hostname));
+    }
+
+    let resolved = (hostname_text.as_ref(), 0)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| {
+            addrs.find_map(|addr| match addr.ip() {
+                IpAddr::V4(ip) => Some(ip.to_string()),
+                IpAddr::V6(_) => None,
+            })
+        });
+
+    match resolved {
+        Some(ip) => Ok(Value::string(ip)),
+        None => {
+            context.php_warning(
+                "E_PHP_RUNTIME_DNS_WARNING",
+                format!("gethostbyname(): Host name to ip failed {hostname_text}"),
+                span,
+            );
+            Ok(Value::String(hostname))
+        }
+    }
 }
 
 pub(in crate::builtins::modules) fn builtin_mail(
@@ -5711,6 +5757,20 @@ mod tests {
                 &mut output
             ),
             Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn gethostbyname_returns_original_host_for_overlong_names() {
+        let mut output = OutputBuffer::new();
+        let hostname = "a".repeat(256);
+        assert_eq!(
+            call(
+                "gethostbyname",
+                vec![Value::string(hostname.clone())],
+                &mut output
+            ),
+            Value::string(hostname)
         );
     }
 

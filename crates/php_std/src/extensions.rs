@@ -810,6 +810,7 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         ))
         .with_function(FunctionDescriptor::php("getcwd", "standard"))
         .with_function(FunctionDescriptor::php("getenv", "standard"))
+        .with_function(FunctionDescriptor::php("gethostbyname", "standard"))
         .with_function(FunctionDescriptor::php("gettype", "standard"))
         .with_function(FunctionDescriptor::php("glob", "standard"))
         .with_function(FunctionDescriptor::php("header", "standard"))

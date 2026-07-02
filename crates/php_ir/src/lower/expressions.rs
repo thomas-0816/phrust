@@ -9280,6 +9280,12 @@ impl LoweringContext<'_> {
                             .unwrap_or_else(|| resolution.source()),
                     )
                 })
+                .or_else(|| {
+                    resolution
+                        .resolved()
+                        .or_else(|| resolution.fallback())
+                        .map(display_class_name)
+                })
                 .or_else(|| Some(display_class_name(resolution.source()))),
             _ => None,
         }

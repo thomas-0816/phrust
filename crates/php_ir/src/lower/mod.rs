@@ -3897,6 +3897,19 @@ mod tests {
     }
 
     #[test]
+    fn namespaced_new_object_preserves_fully_qualified_display_name_for_autoload() {
+        let frontend = analyze_source("<?php namespace SimplePie; new Exception;");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(
+            snapshot.contains(r#""simplepie\\exception" display="SimplePie\\Exception""#),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
     fn new_self_lowers_to_declaring_class_name() {
         let frontend = analyze_source(
             "<?php class C { private static $instance = null; public static function get_instance() { if ( null === self::$instance ) { self::$instance = new self(); } return self::$instance; } }",
