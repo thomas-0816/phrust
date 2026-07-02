@@ -13,6 +13,7 @@ pub mod introspection;
 mod extensions;
 
 use extensions::*;
+use php_runtime::api::FloatValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
@@ -228,7 +229,7 @@ pub enum ConstantValue {
     /// PHP int constant.
     Int(i64),
     /// PHP float constant.
-    Float(php_runtime::FloatValue),
+    Float(FloatValue),
     /// PHP string constant.
     String(&'static str),
     /// PHP packed array constant.
@@ -525,7 +526,7 @@ pub enum RegistryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use php_runtime::{BuiltinCompatibility, BuiltinRegistry};
+    use php_runtime::api::{BuiltinCompatibility, BuiltinEntry, BuiltinRegistry};
 
     #[test]
     fn registry_iteration_is_deterministic() {
@@ -1656,7 +1657,7 @@ mod tests {
             .copied()
             .filter(|entry| entry.compatibility() == BuiltinCompatibility::Php)
             .filter(|entry| generated::arginfo::function_metadata(entry.name()).is_none())
-            .map(php_runtime::BuiltinEntry::name)
+            .map(BuiltinEntry::name)
             .collect::<Vec<_>>();
 
         assert_eq!(

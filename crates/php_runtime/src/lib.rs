@@ -69,7 +69,8 @@ pub mod api {
     pub use crate::context::{
         ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
         RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeRequestMode,
-        StrictTypesInfo, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
+        RuntimeUploadedFile, StrictTypesInfo, UploadRegistry, UploadRegistryEntry,
+        parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
     };
     pub use crate::convert::{
         ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, identical,

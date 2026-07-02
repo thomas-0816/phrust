@@ -1,10 +1,12 @@
 //! Arginfo, parameter validation, and builtin coercion support.
 
 use crate::generated::arginfo as generated_arginfo;
-use php_runtime::{
-    PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
-    numeric_string::{NumericStringKind, NumericStringValue, classify_php_string},
-    to_bool, to_float, to_int, to_string,
+use php_runtime::api::{
+    PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value, to_bool, to_float,
+    to_int, to_string,
+};
+use php_runtime::experimental::numeric_string::{
+    NumericStringKind, NumericStringValue, classify_php_string,
 };
 
 /// PHP builtin coercion mode.
@@ -676,7 +678,9 @@ fn value_type(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use php_runtime::{ClassEntry, ClassFlags, ObjectRef};
+    use php_runtime::api::{
+        ClassEntry, ClassFlags, ObjectRef, ResourceTable, StreamFlags, StreamMetadata,
+    };
 
     fn span() -> RuntimeSourceSpan {
         RuntimeSourceSpan {
@@ -839,11 +843,10 @@ mod tests {
 
     #[test]
     fn weak_string_coercion_rejects_resources() {
-        let mut resources = php_runtime::ResourceTable::new();
-        let resource = resources.register_stream(
-            php_runtime::StreamFlags::new(true, false, true),
-            php_runtime::StreamMetadata::new("plainfile", "stream", "r", "/tmp/example.php"),
-        );
+        let mut resources = ResourceTable::new();
+        let resource = resources.register_stream(StreamFlags::new(true, false, true), {
+            StreamMetadata::new("plainfile", "stream", "r", "/tmp/example.php")
+        });
 
         let error = ArgumentValidator::new(CoercionMode::Weak)
             .validate(&sample_info(), &[Value::Resource(resource)], span())

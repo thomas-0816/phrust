@@ -1,6 +1,6 @@
 //! Extension and symbol introspection helpers.
 
-use php_runtime::{PhpArray, PhpString, Value};
+use php_runtime::api::{PhpArray, PhpString, Value};
 
 use crate::ExtensionRegistry;
 

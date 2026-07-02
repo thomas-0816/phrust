@@ -1,66 +1,36 @@
 # API Facades
 
-`php_runtime` and `php_vm` expose explicit facades so downstream crates do not
-accidentally depend on implementation internals.
+`php_runtime` and `php_vm` expose explicit facade modules for workspace and
+downstream consumers. New imports should use these modules instead of relying on
+crate-root compatibility re-exports.
 
 ## Runtime
 
-Use `php_runtime::api` for stable execution-facing types:
-
-- values, arrays, strings, references, objects, resources, output, status, and
-  runtime context;
-- runtime and compile diagnostic payloads;
-- builtin registry and compatibility types used by `php_std` and the VM.
-
-Use `php_runtime::experimental` only for local instrumentation or experiments:
-
-- debug GC snapshots and tracked-heap helpers;
-- JIT array ABI helpers;
-- numeric-string and layout-stat measurement modules.
-
-Use `php_runtime::debug` when tests or VM diagnostics need weak handles,
-`GcRoot`, `GcSnapshot`, `scan_roots()`, or `GcTrackedHeap`. These APIs inspect
-runtime graph shape; they are not PHP-visible `gc_*` semantics.
-
-The crate root still re-exports the historical broad surface as a compatibility
-alias. New imports should not use the root when a facade path exists.
+- `php_runtime::api` is the stable surface for runtime values, request/response
+  context, diagnostics, output buffers, resources, sessions, database state, and
+  builtin registry types.
+- `php_runtime::debug` is for tests and GC/debug tooling that intentionally
+  inspects weak handles or internal reference/object state.
+- `php_runtime::experimental` is for instrumentation and native/JIT integration
+  helpers such as layout stats, numeric-string cache telemetry, and JIT array
+  ABI helpers.
 
 ## VM
 
-Use `php_vm::api` for stable execution-facing types:
+- `php_vm::api` is the stable surface for VM execution consumers: `Vm`,
+  `VmOptions`, `VmResult`, execution modes, include loading, counters, and tiering
+  options.
+- `php_vm::experimental` is for performance tooling, bytecode layout tooling,
+  JIT planning, region profiling, persistent feedback, deoptimization, and
+  low-level VM counters.
 
-- `Vm`, `VmOptions`, `VmResult`;
-- execution option enums, counters, and result metadata exposed through
-  `VmOptions` and `VmResult`;
-- `CompiledUnit` and include-loader types needed by the executor and cache
-  integration.
+## Compatibility Re-exports
 
-Use `php_vm::experimental` for performance and VM-internal instrumentation:
+Crate-root re-exports remain for compatibility during the migration, but they are
+not the intended import style. `nix develop -c just source-integrity` runs a
+facade import check that rejects new root `php_vm::...` or `php_runtime::...`
+usage unless it is documented in `scripts/verify/api_facade_allowlist.txt`.
 
-- dense bytecode views, counters, quickening, inline caches, tiering, fallback
-  policy, persistent feedback, and deopt metadata;
-- frame/register internals and alias-state helpers.
-
-The root re-exports remain for compatibility with older local code. Prompted
-refactors should migrate public boundary crates to the facades before reducing
-root exports.
-
-VM implementation ownership is split by behavior, not by prompt history:
-
-| Behavior | Owner |
-| --- | --- |
-| Stable compile/execute API | `php_vm::api` |
-| Optimization and instrumentation experiments | `php_vm::experimental` |
-| VM options and result construction | `crates/php_vm/src/vm/options.rs`, `crates/php_vm/src/vm/result.rs` |
-| Dispatch loop, control flow, exceptions, and finally unwinding | `crates/php_vm/src/vm/mod.rs` |
-| Calls and argument binding | `crates/php_vm/src/vm/arguments.rs` |
-| Object and method fast dispatch | `crates/php_vm/src/vm/dense_method_dispatch.rs` |
-| Include, require, eval, and autoload cache boundaries | `crates/php_vm/src/include.rs` plus the VM include/eval call sites |
-| Generators and fibers | `crates/php_vm/src/vm/generator_fiber.rs` |
-| Tracing, counters, tiering, quickening, and inline caches | `crates/php_vm/src/counters.rs`, `tiering.rs`, `quickening.rs`, and `inline_cache.rs` |
-| Dense bytecode lowering and fallback metadata | `crates/php_vm/src/bytecode/mod.rs` |
-
-New public execution features should first decide whether they belong in the
-stable `api` facade or the `experimental` facade. VM implementation changes
-should stay inside the owning module above, and broad root imports should not be
-introduced in downstream crates when a facade path exists.
+The current allowlist is limited to legacy `php_vm` implementation files that
+still consume runtime internals directly. Downstream crates should not add new
+entries; move imports to `api`, `debug`, or `experimental` instead.

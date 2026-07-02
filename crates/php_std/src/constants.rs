@@ -1,6 +1,6 @@
 //! PHP 8.5.7 core and platform constants for standard-library.
 
-use php_runtime::{FloatValue, PhpString, Value};
+use php_runtime::api::{FloatValue, PhpString, Value};
 
 use crate::ConstantValue;
 
@@ -448,7 +448,7 @@ mod tests {
             ConstantValue::Null,
             ConstantValue::Bool(true),
             ConstantValue::Int(42),
-            ConstantValue::Float(php_runtime::FloatValue::from_f64(1.5)),
+            ConstantValue::Float(FloatValue::from_f64(1.5)),
             ConstantValue::String("x"),
         ];
 
@@ -462,10 +462,7 @@ mod tests {
         assert_eq!(elements[0], &Value::Null);
         assert_eq!(elements[1], &Value::Bool(true));
         assert_eq!(elements[2], &Value::Int(42));
-        assert_eq!(
-            elements[3],
-            &Value::Float(php_runtime::FloatValue::from_f64(1.5))
-        );
+        assert_eq!(elements[3], &Value::Float(FloatValue::from_f64(1.5)));
         assert_eq!(elements[4], &Value::String(PhpString::from("x")));
     }
 

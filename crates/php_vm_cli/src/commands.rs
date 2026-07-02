@@ -21,18 +21,15 @@ use php_runtime::api::{
 };
 use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::DiagnosticId};
 use php_source::{SourceText, TextRange};
-use php_vm::{
-    api::{
-        BytecodeLayoutMode, ExecutionFormat, IncludeLoader, InlineCacheMode, JitBlacklistMode,
-        JitMode, QuickeningMode, SuperinstructionMode, TieringOptions, TieringStats, Vm, VmOptions,
-        VmResult,
-    },
-    experimental::{
-        BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, JitCompileDescriptor,
-        PersistentFeedbackContext, PersistentFeedbackEpochs, PersistentFeedbackLoadReport,
-        PersistentFeedbackStats, PersistentFeedbackStore, RegionProfile, VmCounters,
-        plan_dependency_units,
-    },
+use php_vm::api::{
+    BytecodeLayoutMode, ExecutionFormat, IncludeLoader, InlineCacheMode, JitBlacklistMode, JitMode,
+    QuickeningMode, SuperinstructionMode, TieringOptions, TieringStats, Vm, VmOptions, VmResult,
+};
+use php_vm::experimental::{
+    BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, JitCompileDescriptor,
+    PersistentFeedbackContext, PersistentFeedbackEpochs, PersistentFeedbackLoadReport,
+    PersistentFeedbackStats, PersistentFeedbackStore, RegionProfile, VmCounters,
+    plan_dependency_units,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;

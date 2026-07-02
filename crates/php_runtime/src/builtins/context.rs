@@ -291,20 +291,63 @@ pub struct RuntimeSourceSpan {
     pub end: u32,
 }
 
-/// Mutable runtime services available to internal builtins.
-pub struct BuiltinContext<'a> {
+pub(in crate::builtins) struct BuiltinIoContext<'a> {
     output: &'a mut OutputBuffer,
+    php_input: Vec<u8>,
+    diagnostic_display: PhpDiagnosticDisplayOptions,
+    diagnostics: Vec<RuntimeDiagnostic>,
+}
+
+impl<'a> BuiltinIoContext<'a> {
+    fn new(output: &'a mut OutputBuffer) -> Self {
+        Self {
+            output,
+            php_input: Vec::new(),
+            diagnostic_display: PhpDiagnosticDisplayOptions::default(),
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
+pub(in crate::builtins) struct BuiltinFilesystemContext<'a> {
     cwd: PathBuf,
     include_path: Vec<PathBuf>,
-    ini: IniRegistry,
-    default_timezone: String,
     filesystem: FilesystemCapabilities,
-    php_input: Vec<u8>,
     resources: Option<&'a mut ResourceTable>,
+    filesystem_state: FilesystemRuntimeState,
+    filesystem_state_slot: Option<&'a mut FilesystemRuntimeState>,
+    stream_context_state: StreamContextState,
+    stream_context_state_slot: Option<&'a mut StreamContextState>,
+}
+
+impl<'a> BuiltinFilesystemContext<'a> {
+    fn new(
+        cwd: impl Into<PathBuf>,
+        filesystem: FilesystemCapabilities,
+        resources: Option<&'a mut ResourceTable>,
+    ) -> Self {
+        Self {
+            cwd: cwd.into(),
+            include_path: vec![PathBuf::from(".")],
+            filesystem,
+            resources,
+            filesystem_state: FilesystemRuntimeState::default(),
+            filesystem_state_slot: None,
+            stream_context_state: StreamContextState::default(),
+            stream_context_state_slot: None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(in crate::builtins) struct BuiltinHttpContext<'a> {
     http_response: RuntimeHttpResponseState,
     http_response_state: Option<&'a mut RuntimeHttpResponseState>,
     filter_inputs: BTreeMap<i64, crate::PhpArray>,
     upload_registry: Option<&'a mut UploadRegistry>,
+}
+
+pub(in crate::builtins) struct BuiltinExtensionState<'a> {
     pcre_cache: PcreCache,
     preg_last_error: pcre::PcreLastErrorState,
     preg_last_error_state: Option<&'a mut pcre::PcreLastErrorState>,
@@ -315,35 +358,13 @@ pub struct BuiltinContext<'a> {
     iconv_state_slot: Option<&'a mut IconvEncodingState>,
     apcu_state: ApcuState,
     apcu_state_slot: Option<&'a mut ApcuState>,
-    filesystem_state: FilesystemRuntimeState,
-    filesystem_state_slot: Option<&'a mut FilesystemRuntimeState>,
-    stream_context_state: StreamContextState,
-    stream_context_state_slot: Option<&'a mut StreamContextState>,
     mb_internal_encoding: String,
-    session_state: Option<&'a mut SessionState>,
-    session_global: Option<ReferenceCell>,
     mysql_state: Option<&'a mut MysqlState>,
-    diagnostic_display: PhpDiagnosticDisplayOptions,
-    diagnostics: Vec<RuntimeDiagnostic>,
 }
 
-impl<'a> BuiltinContext<'a> {
-    /// Creates a runtime context backed by the VM output buffer.
-    #[must_use]
-    pub fn new(output: &'a mut OutputBuffer) -> Self {
+impl<'a> Default for BuiltinExtensionState<'a> {
+    fn default() -> Self {
         Self {
-            output,
-            cwd: PathBuf::from("."),
-            include_path: vec![PathBuf::from(".")],
-            ini: IniRegistry::default(),
-            default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
-            filesystem: FilesystemCapabilities::none(),
-            php_input: Vec::new(),
-            resources: None,
-            http_response: RuntimeHttpResponseState::default(),
-            http_response_state: None,
-            filter_inputs: BTreeMap::new(),
-            upload_registry: None,
             pcre_cache: PcreCache::default(),
             preg_last_error: pcre::PcreLastErrorState::default(),
             preg_last_error_state: None,
@@ -354,16 +375,45 @@ impl<'a> BuiltinContext<'a> {
             iconv_state_slot: None,
             apcu_state: ApcuState::default(),
             apcu_state_slot: None,
-            filesystem_state: FilesystemRuntimeState::default(),
-            filesystem_state_slot: None,
-            stream_context_state: StreamContextState::default(),
-            stream_context_state_slot: None,
             mb_internal_encoding: "UTF-8".to_owned(),
-            session_state: None,
-            session_global: None,
             mysql_state: None,
-            diagnostic_display: PhpDiagnosticDisplayOptions::default(),
-            diagnostics: Vec::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(in crate::builtins) struct BuiltinSessionContext<'a> {
+    session_state: Option<&'a mut SessionState>,
+    session_global: Option<ReferenceCell>,
+}
+
+/// Mutable runtime services available to internal builtins.
+pub struct BuiltinContext<'a> {
+    io: BuiltinIoContext<'a>,
+    filesystem: BuiltinFilesystemContext<'a>,
+    http: BuiltinHttpContext<'a>,
+    extensions: BuiltinExtensionState<'a>,
+    sessions: BuiltinSessionContext<'a>,
+    ini: IniRegistry,
+    default_timezone: String,
+}
+
+impl<'a> BuiltinContext<'a> {
+    /// Creates a runtime context backed by the VM output buffer.
+    #[must_use]
+    pub fn new(output: &'a mut OutputBuffer) -> Self {
+        Self {
+            io: BuiltinIoContext::new(output),
+            filesystem: BuiltinFilesystemContext::new(
+                PathBuf::from("."),
+                FilesystemCapabilities::none(),
+                None,
+            ),
+            http: BuiltinHttpContext::default(),
+            extensions: BuiltinExtensionState::default(),
+            sessions: BuiltinSessionContext::default(),
+            ini: IniRegistry::default(),
+            default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
         }
     }
 
@@ -376,49 +426,24 @@ impl<'a> BuiltinContext<'a> {
         resources: Option<&'a mut ResourceTable>,
     ) -> Self {
         Self {
-            output,
-            cwd: cwd.into(),
-            include_path: vec![PathBuf::from(".")],
+            io: BuiltinIoContext::new(output),
+            filesystem: BuiltinFilesystemContext::new(cwd, filesystem, resources),
+            http: BuiltinHttpContext::default(),
+            extensions: BuiltinExtensionState::default(),
+            sessions: BuiltinSessionContext::default(),
             ini: IniRegistry::default(),
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
-            filesystem,
-            php_input: Vec::new(),
-            resources,
-            http_response: RuntimeHttpResponseState::default(),
-            http_response_state: None,
-            filter_inputs: BTreeMap::new(),
-            upload_registry: None,
-            pcre_cache: PcreCache::default(),
-            preg_last_error: pcre::PcreLastErrorState::default(),
-            preg_last_error_state: None,
-            json_last_error: JSON_ERROR_NONE,
-            json_last_error_msg: json_error_message(JSON_ERROR_NONE).to_string(),
-            strtok_state: None,
-            iconv_state: IconvEncodingState::default(),
-            iconv_state_slot: None,
-            apcu_state: ApcuState::default(),
-            apcu_state_slot: None,
-            filesystem_state: FilesystemRuntimeState::default(),
-            filesystem_state_slot: None,
-            stream_context_state: StreamContextState::default(),
-            stream_context_state_slot: None,
-            mb_internal_encoding: "UTF-8".to_owned(),
-            session_state: None,
-            session_global: None,
-            mysql_state: None,
-            diagnostic_display: PhpDiagnosticDisplayOptions::default(),
-            diagnostics: Vec::new(),
         }
     }
 
     /// Returns the output buffer.
     pub fn output(&mut self) -> &mut OutputBuffer {
-        self.output
+        self.io.output
     }
 
     /// Sets request-local warning/error output controls.
     pub fn set_diagnostic_display(&mut self, options: PhpDiagnosticDisplayOptions) {
-        self.diagnostic_display = options;
+        self.io.diagnostic_display = options;
     }
 
     /// Emits a PHP display_errors-style warning into stdout and records a
@@ -439,13 +464,13 @@ impl<'a> BuiltinContext<'a> {
             Some(crate::PhpReferenceClassification::Warning),
         );
         emit_php_diagnostic(
-            self.output,
+            self.io.output,
             &diagnostic,
             PhpDiagnosticChannel::Warning,
             PHP_E_WARNING,
-            self.diagnostic_display,
+            self.io.diagnostic_display,
         );
-        self.diagnostics.push(diagnostic);
+        self.io.diagnostics.push(diagnostic);
     }
 
     /// Emits a PHP display_errors-style deprecation into stdout and records a
@@ -466,45 +491,45 @@ impl<'a> BuiltinContext<'a> {
             Some(crate::PhpReferenceClassification::Deprecation),
         );
         emit_php_diagnostic(
-            self.output,
+            self.io.output,
             &diagnostic,
             PhpDiagnosticChannel::Deprecated,
             PHP_E_DEPRECATED,
-            self.diagnostic_display,
+            self.io.diagnostic_display,
         );
-        self.diagnostics.push(diagnostic);
+        self.io.diagnostics.push(diagnostic);
     }
 
     /// Records a structured diagnostic without emitting PHP-visible output.
     pub fn record_diagnostic(&mut self, diagnostic: RuntimeDiagnostic) {
-        self.diagnostics.push(diagnostic);
+        self.io.diagnostics.push(diagnostic);
     }
 
     /// Drains structured diagnostics emitted by builtins.
     pub fn take_diagnostics(&mut self) -> Vec<RuntimeDiagnostic> {
-        std::mem::take(&mut self.diagnostics)
+        std::mem::take(&mut self.io.diagnostics)
     }
 
     /// Current working directory for path and filesystem builtins.
     #[must_use]
     pub fn cwd(&self) -> &Path {
-        &self.cwd
+        &self.filesystem.cwd
     }
 
     /// Updates the request-local current working directory for filesystem builtins.
     pub fn set_cwd(&mut self, cwd: impl Into<PathBuf>) {
-        self.cwd = cwd.into();
+        self.filesystem.cwd = cwd.into();
     }
 
     /// Include path entries used by stream include-path resolution.
     #[must_use]
     pub fn include_path(&self) -> &[PathBuf] {
-        &self.include_path
+        &self.filesystem.include_path
     }
 
     /// Sets request-local include path entries.
     pub fn set_include_path(&mut self, include_path: Vec<PathBuf>) {
-        self.include_path = include_path;
+        self.filesystem.include_path = include_path;
     }
 
     /// Reads a request-local INI option visible to standard-library builtins.
@@ -531,56 +556,57 @@ impl<'a> BuiltinContext<'a> {
 
     /// Filesystem capabilities for path and filesystem builtins.
     #[must_use]
-    pub const fn filesystem_capabilities(&self) -> &FilesystemCapabilities {
-        &self.filesystem
+    pub fn filesystem_capabilities(&self) -> &FilesystemCapabilities {
+        &self.filesystem.filesystem
     }
 
     /// Sets deterministic bytes exposed through `php://input`.
     pub fn set_php_input(&mut self, input: Vec<u8>) {
-        self.php_input = input;
+        self.io.php_input = input;
     }
 
     /// Deterministic bytes exposed through `php://input`.
     #[must_use]
     pub fn php_input(&self) -> &[u8] {
-        &self.php_input
+        &self.io.php_input
     }
 
     /// Request-local resource table for stream builtins.
     pub fn resources(&mut self) -> Option<&mut ResourceTable> {
-        self.resources.as_deref_mut()
+        self.filesystem.resources.as_deref_mut()
     }
 
     /// Sets request-local HTTP response state.
     pub fn set_http_response_state(&mut self, state: &'a mut RuntimeHttpResponseState) {
-        self.http_response_state = Some(state);
+        self.http.http_response_state = Some(state);
     }
 
     /// Current request-local HTTP response state.
     #[must_use]
     pub fn http_response(&self) -> &RuntimeHttpResponseState {
-        self.http_response_state
+        self.http
+            .http_response_state
             .as_deref()
-            .unwrap_or(&self.http_response)
+            .unwrap_or(&self.http.http_response)
     }
 
     /// Mutable request-local HTTP response state.
     pub fn http_response_mut(&mut self) -> &mut RuntimeHttpResponseState {
-        match self.http_response_state.as_deref_mut() {
+        match self.http.http_response_state.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.http_response,
+            None => &mut self.http.http_response,
         }
     }
 
     /// Sets a deterministic request-input array for `filter_input`.
     pub fn set_filter_input_array(&mut self, source: i64, array: crate::PhpArray) {
-        self.filter_inputs.insert(source, array);
+        self.http.filter_inputs.insert(source, array);
     }
 
     /// Looks up a top-level request-input value for `filter_input`.
     #[must_use]
     pub fn filter_input_value(&self, source: i64, name: &str) -> Option<Value> {
-        self.filter_inputs.get(&source).and_then(|array| {
+        self.http.filter_inputs.get(&source).and_then(|array| {
             array
                 .get(&crate::ArrayKey::String(crate::PhpString::from_test_str(
                     name,
@@ -591,90 +617,90 @@ impl<'a> BuiltinContext<'a> {
 
     /// Sets request-local upload registry state.
     pub fn set_upload_registry(&mut self, registry: &'a mut UploadRegistry) {
-        self.upload_registry = Some(registry);
+        self.http.upload_registry = Some(registry);
     }
 
     /// Current request-local upload registry state.
     pub fn upload_registry(&self) -> Option<&UploadRegistry> {
-        self.upload_registry.as_deref()
+        self.http.upload_registry.as_deref()
     }
 
     /// Mutable request-local upload registry state.
     pub fn upload_registry_mut(&mut self) -> Option<&mut UploadRegistry> {
-        self.upload_registry.as_deref_mut()
+        self.http.upload_registry.as_deref_mut()
     }
 
     /// Sets request-local `strtok` state.
     pub fn set_strtok_state(&mut self, state: &'a mut StrtokState) {
-        self.strtok_state = Some(state);
+        self.extensions.strtok_state = Some(state);
     }
 
     /// Returns request-local `strtok` state.
     pub fn strtok_state(&mut self) -> Option<&mut StrtokState> {
-        self.strtok_state.as_deref_mut()
+        self.extensions.strtok_state.as_deref_mut()
     }
 
     /// Sets request-local iconv encoding state.
     pub fn set_iconv_state(&mut self, state: &'a mut IconvEncodingState) {
-        self.iconv_state_slot = Some(state);
+        self.extensions.iconv_state_slot = Some(state);
     }
 
     /// Mutable request-local iconv encoding state.
     pub fn iconv_state(&mut self) -> &mut IconvEncodingState {
-        match self.iconv_state_slot.as_deref_mut() {
+        match self.extensions.iconv_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.iconv_state,
+            None => &mut self.extensions.iconv_state,
         }
     }
 
     /// Sets request-local APCu state.
     pub fn set_apcu_state(&mut self, state: &'a mut ApcuState) {
-        self.apcu_state_slot = Some(state);
+        self.extensions.apcu_state_slot = Some(state);
     }
 
     /// Mutable request-local APCu state.
     pub fn apcu_state(&mut self) -> &mut ApcuState {
-        match self.apcu_state_slot.as_deref_mut() {
+        match self.extensions.apcu_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.apcu_state,
+            None => &mut self.extensions.apcu_state,
         }
     }
 
     /// Sets request-local filesystem builtin state.
     pub fn set_filesystem_state(&mut self, state: &'a mut FilesystemRuntimeState) {
-        self.filesystem_state_slot = Some(state);
+        self.filesystem.filesystem_state_slot = Some(state);
     }
 
     /// Mutable request-local filesystem builtin state.
     pub fn filesystem_state(&mut self) -> &mut FilesystemRuntimeState {
-        match self.filesystem_state_slot.as_deref_mut() {
+        match self.filesystem.filesystem_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.filesystem_state,
+            None => &mut self.filesystem.filesystem_state,
         }
     }
 
     /// Sets request-local stream context default state.
     pub fn set_stream_context_state(&mut self, state: &'a mut StreamContextState) {
-        self.stream_context_state_slot = Some(state);
+        self.filesystem.stream_context_state_slot = Some(state);
     }
 
     /// Mutable request-local stream context default state.
     pub fn stream_context_state(&mut self) -> &mut StreamContextState {
-        match self.stream_context_state_slot.as_deref_mut() {
+        match self.filesystem.stream_context_state_slot.as_deref_mut() {
             Some(state) => state,
-            None => &mut self.stream_context_state,
+            None => &mut self.filesystem.stream_context_state,
         }
     }
 
     /// Current request-local mbstring internal encoding.
     #[must_use]
     pub fn mb_internal_encoding(&self) -> &str {
-        &self.mb_internal_encoding
+        &self.extensions.mb_internal_encoding
     }
 
     /// Updates the request-local mbstring internal encoding.
     pub fn set_mb_internal_encoding(&mut self, encoding: impl Into<String>) {
-        self.mb_internal_encoding = encoding.into();
+        self.extensions.mb_internal_encoding = encoding.into();
     }
 
     /// Sets request-local session state and the live `$_SESSION` global slot.
@@ -683,71 +709,76 @@ impl<'a> BuiltinContext<'a> {
         state: &'a mut SessionState,
         session_global: ReferenceCell,
     ) {
-        self.session_state = Some(state);
-        self.session_global = Some(session_global);
+        self.sessions.session_state = Some(state);
+        self.sessions.session_global = Some(session_global);
     }
 
     /// Request-local session state.
     pub fn session_state(&mut self) -> Option<&mut SessionState> {
-        self.session_state.as_deref_mut()
+        self.sessions.session_state.as_deref_mut()
     }
 
     /// Sets request-local MySQL/MariaDB extension state.
     pub fn set_mysql_state(&mut self, state: &'a mut MysqlState) {
-        self.mysql_state = Some(state);
+        self.extensions.mysql_state = Some(state);
     }
 
     /// Returns request-local MySQL/MariaDB extension state.
     pub fn mysql_state(&mut self) -> Option<&mut MysqlState> {
-        self.mysql_state.as_deref_mut()
+        self.extensions.mysql_state.as_deref_mut()
     }
 
     /// Writes the current session data into the live `$_SESSION` global.
     pub fn sync_session_global_from_state(&mut self) {
-        let Some(data) = self.session_state.as_ref().map(|state| state.data_value()) else {
+        let Some(data) = self
+            .sessions
+            .session_state
+            .as_ref()
+            .map(|state| state.data_value())
+        else {
             return;
         };
-        if let Some(global) = &self.session_global {
+        if let Some(global) = &self.sessions.session_global {
             global.set(data);
         }
     }
 
     /// Captures the live `$_SESSION` global back into request-local session state.
     pub fn sync_session_state_from_global(&mut self) {
-        let Some(global) = &self.session_global else {
+        let Some(global) = &self.sessions.session_global else {
             return;
         };
         let Value::Array(array) = global.get() else {
             return;
         };
-        if let Some(state) = self.session_state.as_deref_mut() {
+        if let Some(state) = self.sessions.session_state.as_deref_mut() {
             state.set_data(array);
         }
     }
 
     /// Request-local PCRE pattern cache.
     pub fn pcre_cache(&mut self) -> &mut PcreCache {
-        &mut self.pcre_cache
+        &mut self.extensions.pcre_cache
     }
 
     /// Sets request-local `preg_last_error` state storage.
     pub fn set_preg_last_error_state(&mut self, state: &'a mut pcre::PcreLastErrorState) {
-        self.preg_last_error_state = Some(state);
+        self.extensions.preg_last_error_state = Some(state);
     }
 
     /// Updates request-local PCRE last-error state.
     pub fn set_preg_last_error(&mut self, code: i64, message: impl Into<String>) {
-        match self.preg_last_error_state.as_deref_mut() {
+        match self.extensions.preg_last_error_state.as_deref_mut() {
             Some(state) => state.set(code, message),
-            None => self.preg_last_error.set(code, message),
+            None => self.extensions.preg_last_error.set(code, message),
         }
     }
 
     /// Clears request-local PCRE last-error state.
     pub fn clear_preg_last_error(&mut self) {
-        match self.preg_last_error_state.as_deref_mut() {
+        match self.extensions.preg_last_error_state.as_deref_mut() {
             Some(state) => state.clear(),
-            None => self.preg_last_error.clear(),
+            None => self.extensions.preg_last_error.clear(),
         }
     }
 
@@ -755,22 +786,26 @@ impl<'a> BuiltinContext<'a> {
     #[must_use]
     pub fn preg_last_error(&self) -> (i64, &str) {
         let state = self
+            .extensions
             .preg_last_error_state
             .as_deref()
-            .unwrap_or(&self.preg_last_error);
+            .unwrap_or(&self.extensions.preg_last_error);
         (state.code(), state.message())
     }
 
     /// Updates request-local JSON last-error state.
     pub fn set_json_last_error(&mut self, code: i64) {
-        self.json_last_error = code;
-        self.json_last_error_msg = json_error_message(code).to_string();
+        self.extensions.json_last_error = code;
+        self.extensions.json_last_error_msg = json_error_message(code).to_string();
     }
 
     /// Returns request-local JSON last-error code and message.
     #[must_use]
     pub fn json_last_error(&self) -> (i64, &str) {
-        (self.json_last_error, &self.json_last_error_msg)
+        (
+            self.extensions.json_last_error,
+            &self.extensions.json_last_error_msg,
+        )
     }
 }
 
@@ -789,7 +824,145 @@ pub(in crate::builtins) const fn json_error_message(code: i64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::StrtokState;
+    use super::{
+        BuiltinContext, JSON_ERROR_NONE, JSON_ERROR_SYNTAX, StrtokState, json_error_message,
+    };
+    use crate::{
+        ArrayKey, OutputBuffer, PhpArray, PhpString, ReferenceCell, RuntimeHttpResponseState,
+        SessionState, Value, pcre,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn json_last_error_state_updates_and_reads_from_extension_state() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        context.set_json_last_error(JSON_ERROR_SYNTAX);
+        assert_eq!(
+            context.json_last_error(),
+            (JSON_ERROR_SYNTAX, json_error_message(JSON_ERROR_SYNTAX))
+        );
+
+        context.set_json_last_error(JSON_ERROR_NONE);
+        assert_eq!(
+            context.json_last_error(),
+            (JSON_ERROR_NONE, json_error_message(JSON_ERROR_NONE))
+        );
+    }
+
+    #[test]
+    fn pcre_last_error_state_updates_and_reads_from_extension_state() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        context.set_preg_last_error(2, "backtrack limit exhausted");
+        assert_eq!(context.preg_last_error(), (2, "backtrack limit exhausted"));
+
+        context.clear_preg_last_error();
+        assert_eq!(
+            context.preg_last_error(),
+            (
+                pcre::PREG_NO_ERROR,
+                pcre::preg_error_message(pcre::PREG_NO_ERROR)
+            )
+        );
+    }
+
+    #[test]
+    fn pcre_last_error_can_write_through_external_state() {
+        let mut output = OutputBuffer::new();
+        let mut external = pcre::PcreLastErrorState::default();
+
+        {
+            let mut context = BuiltinContext::new(&mut output);
+            context.set_preg_last_error_state(&mut external);
+            context.set_preg_last_error(3, "recursive limit exhausted");
+            assert_eq!(context.preg_last_error(), (3, "recursive limit exhausted"));
+        }
+
+        assert_eq!(external.code(), 3);
+        assert_eq!(external.message(), "recursive limit exhausted");
+    }
+
+    #[test]
+    fn session_sync_helpers_roundtrip_the_live_session_global() {
+        let mut output = OutputBuffer::new();
+        let mut state = SessionState::default();
+        let global = ReferenceCell::new(Value::Array(PhpArray::new()));
+        let mut seeded = PhpArray::new();
+        seeded.insert(ArrayKey::String(PhpString::from("n")), Value::Int(7));
+        state.set_data(seeded);
+
+        {
+            let mut context = BuiltinContext::new(&mut output);
+            context.set_session_state(&mut state, global.clone());
+            context.sync_session_global_from_state();
+        }
+
+        let Value::Array(array) = global.get() else {
+            panic!("session global should contain an array");
+        };
+        assert_eq!(
+            array.get(&ArrayKey::String(PhpString::from("n"))),
+            Some(&Value::Int(7))
+        );
+
+        let mut edited = PhpArray::new();
+        edited.insert(ArrayKey::String(PhpString::from("m")), Value::Int(11));
+        global.set(Value::Array(edited));
+
+        {
+            let mut context = BuiltinContext::new(&mut output);
+            context.set_session_state(&mut state, global);
+            context.sync_session_state_from_global();
+        }
+
+        assert_eq!(
+            state.data().get(&ArrayKey::String(PhpString::from("m"))),
+            Some(&Value::Int(11))
+        );
+    }
+
+    #[test]
+    fn http_response_mutation_writes_to_live_response_state() {
+        let mut output = OutputBuffer::new();
+        let mut response = RuntimeHttpResponseState::default();
+
+        {
+            let mut context = BuiltinContext::new(&mut output);
+            context.set_http_response_state(&mut response);
+            assert!(context.http_response_mut().set_status_code(404));
+            context
+                .http_response_mut()
+                .add_header_line("X-Test: yes", true, None)
+                .expect("valid test header should be accepted");
+        }
+
+        assert_eq!(response.status_code, 404);
+        assert_eq!(response.headers_list(), vec!["X-Test: yes"]);
+    }
+
+    #[test]
+    fn filesystem_cwd_and_include_path_are_isolated_per_context() {
+        let mut first_output = OutputBuffer::new();
+        let mut second_output = OutputBuffer::new();
+        let mut first = BuiltinContext::new(&mut first_output);
+        let mut second = BuiltinContext::new(&mut second_output);
+
+        first.set_cwd("/tmp/first");
+        first.set_include_path(vec![PathBuf::from("/tmp/first/include")]);
+        second.set_cwd("/tmp/second");
+        second.set_include_path(vec![PathBuf::from("/tmp/second/include")]);
+
+        assert_eq!(first.cwd(), PathBuf::from("/tmp/first").as_path());
+        assert_eq!(first.include_path(), &[PathBuf::from("/tmp/first/include")]);
+        assert_eq!(second.cwd(), PathBuf::from("/tmp/second").as_path());
+        assert_eq!(
+            second.include_path(),
+            &[PathBuf::from("/tmp/second/include")]
+        );
+    }
 
     #[test]
     fn strtok_consumes_terminating_delimiter_across_delimiter_sets() {

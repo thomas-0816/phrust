@@ -6,9 +6,18 @@
 //! does not call FPM, FastCGI, CGI, Apache module hooks, `mod_php`, external
 //! `php`, or `php-vm` subprocesses.
 
+mod access_log;
 pub mod config;
+mod diagnostics;
+mod metrics;
 mod multipart;
+mod php_request;
 pub mod response;
 pub mod routing;
+mod serve;
 pub mod server;
 pub mod session_store;
+mod sessions;
+mod state;
+mod static_files;
+mod tls;

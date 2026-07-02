@@ -1,6 +1,6 @@
 //! Safe Rust ABI used by the VM to call standard-library standard-library builtins.
 
-use php_runtime::{
+use php_runtime::api::{
     OutputBuffer, ProcessCapability, ReferenceCell, RuntimeContext, RuntimeDiagnostic,
     RuntimeRequestMode, RuntimeSeverity, RuntimeSourceSpan, Value,
 };
@@ -363,7 +363,7 @@ pub fn call_builtin(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use php_runtime::PhpString;
+    use php_runtime::api::PhpString;
 
     fn test_builtin_echo_like(context: &mut CallContext<'_>) -> BuiltinResult {
         for arg in context.args().to_vec() {

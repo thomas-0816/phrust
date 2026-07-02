@@ -11,8 +11,8 @@ IDs present in the manifest.
 ## Summary
 
 - Total runtime gap rows: 97
-- Open rows: 79
-- Implemented rows retained for historical coverage: 18
+- Open rows: 78
+- Implemented rows retained for historical coverage: 19
 - Machine-readable report: `target/runtime-gap-report/runtime-gap-report.json`
 
 ## Required Risk Classes
@@ -20,7 +20,7 @@ IDs present in the manifest.
 | Class | Total | Open | Implemented |
 | --- | ---: | ---: | ---: |
 | references and Copy-on-Write | 3 | 3 | 0 |
-| arrays and array-key conversion | 19 | 15 | 4 |
+| arrays and array-key conversion | 19 | 14 | 5 |
 | foreach mutation/reference behavior | 7 | 5 | 2 |
 | warning channel and exact warning continuation | 14 | 13 | 1 |
 | Throwable/Error hierarchy and stack traces | 12 | 10 | 2 |

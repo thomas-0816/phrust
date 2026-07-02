@@ -753,87 +753,9 @@ fn native_leaf_rejection_reason(
     "unsupported_leaf_shape"
 }
 
-#[cfg(feature = "jit-cranelift")]
-fn execute_jit_int_leaf(
-    unit: &IrUnit,
-    function: &IrFunction,
-    args: &[PreparedArg],
-) -> Result<Value, ()> {
-    if function.blocks.len() != 1 || function.params.len() != args.len() {
-        return Err(());
-    }
-    let mut locals = vec![None; function.local_count as usize];
-    let mut registers = vec![None; function.register_count as usize];
-    for (param, arg) in function.params.iter().zip(args) {
-        locals[param.local.index()] = Some(value_as_jit_int(&arg.value)?);
-    }
-
-    let block = &function.blocks[0];
-    for instruction in &block.instructions {
-        match &instruction.kind {
-            InstructionKind::Nop => {}
-            InstructionKind::LoadConst { dst, constant } => {
-                registers[dst.index()] = Some(constant_as_jit_int(unit, *constant)?);
-            }
-            InstructionKind::Move { dst, src } => {
-                registers[dst.index()] = Some(operand_as_jit_int(unit, &registers, &locals, src)?);
-            }
-            InstructionKind::LoadLocal { dst, local } => {
-                registers[dst.index()] =
-                    Some(locals.get(local.index()).copied().flatten().ok_or(())?);
-            }
-            InstructionKind::StoreLocal { local, src } => {
-                locals[local.index()] = Some(operand_as_jit_int(unit, &registers, &locals, src)?);
-            }
-            InstructionKind::Binary { dst, op, lhs, rhs } => {
-                let lhs = operand_as_jit_int(unit, &registers, &locals, lhs)?;
-                let rhs = operand_as_jit_int(unit, &registers, &locals, rhs)?;
-                let value = match op {
-                    BinaryOp::Add => lhs.checked_add(rhs).ok_or(())?,
-                    BinaryOp::Sub => lhs.checked_sub(rhs).ok_or(())?,
-                    BinaryOp::Mul => lhs.checked_mul(rhs).ok_or(())?,
-                    _ => return Err(()),
-                };
-                registers[dst.index()] = Some(value);
-            }
-            _ => return Err(()),
-        }
-    }
-
-    match &block.terminator {
-        Some(terminator) => match &terminator.kind {
-            TerminatorKind::Return {
-                value: Some(value),
-                by_ref_local: None,
-            } => Ok(Value::Int(operand_as_jit_int(
-                unit, &registers, &locals, value,
-            )?)),
-            _ => Err(()),
-        },
-        None => Err(()),
-    }
-}
-
-#[cfg(feature = "jit-cranelift")]
-fn operand_as_jit_int(
-    unit: &IrUnit,
-    registers: &[Option<i64>],
-    locals: &[Option<i64>],
-    operand: &Operand,
-) -> Result<i64, ()> {
-    match operand {
-        Operand::Register(register) => registers.get(register.index()).copied().flatten().ok_or(()),
-        Operand::Local(local) => locals.get(local.index()).copied().flatten().ok_or(()),
-        Operand::Constant(constant) => constant_as_jit_int(unit, *constant),
-    }
-}
-
-#[cfg(feature = "jit-cranelift")]
-fn constant_as_jit_int(unit: &IrUnit, constant: ConstId) -> Result<i64, ()> {
-    match unit.constants.get(constant.index()) {
-        Some(IrConstant::Int(value)) => Ok(*value),
-        _ => Err(()),
-    }
+enum PropertyFetchCacheRead {
+    Value(Value),
+    Fallback,
 }
 
 #[cfg(feature = "jit-cranelift")]
@@ -842,11 +764,6 @@ fn value_as_jit_int(value: &Value) -> Result<i64, ()> {
         Value::Int(value) => Ok(*value),
         _ => Err(()),
     }
-}
-
-enum PropertyFetchCacheRead {
-    Value(Value),
-    Fallback,
 }
 
 enum PropertyAssignCacheWrite {
@@ -60700,14 +60617,22 @@ class DebugInfoBox {
         return ["visible" => 1, 0 => "zero"];
     }
 }
-var_dump(new DebugInfoBox());
+$box = new DebugInfoBox();
+echo spl_object_id($box), "\n";
+var_dump($box);
 "#,
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        let (object_id, dump) = output
+            .split_once('\n')
+            .expect("spl_object_id line should precede var_dump output");
         assert_eq!(
-            result.output.to_string_lossy(),
-            "object(DebugInfoBox)#1 (2) {\n  [\"visible\"]=>\n  int(1)\n  [0]=>\n  string(4) \"zero\"\n}\n"
+            dump,
+            format!(
+                "object(DebugInfoBox)#{object_id} (2) {{\n  [\"visible\"]=>\n  int(1)\n  [0]=>\n  string(4) \"zero\"\n}}\n"
+            )
         );
     }
 

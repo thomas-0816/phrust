@@ -2685,7 +2685,7 @@ pub(super) fn tokenizer_extension() -> ExtensionDescriptor {
         .with_constant(ConstantDescriptor::with_value(
             "TOKEN_PARSE",
             "tokenizer",
-            ConstantValue::Int(php_runtime::tokenizer::TOKEN_PARSE),
+            ConstantValue::Int(php_runtime::api::tokenizer::TOKEN_PARSE),
         ));
     for (index, token_name) in php_lexer::TOKENIZER_TOKEN_NAMES.iter().enumerate() {
         extension = extension.with_constant(ConstantDescriptor::with_value(

@@ -1,8 +1,8 @@
 use php_diagnostics::DiagnosticEnvelope;
 use php_optimizer::OptimizationLevel;
-use php_runtime::UploadRegistry;
 use php_runtime::api::{
     ExitStatus, RuntimeContext, RuntimeDiagnostic, RuntimeHttpResponseState, SessionState,
+    UploadRegistry,
 };
 use php_vm::api::{TieringStats, VmCounters, VmOptions};
 use std::path::PathBuf;

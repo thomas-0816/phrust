@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -30,7 +31,12 @@ REQUIRED_FILES = [
     "crates/php_std/src/generated/mod.rs",
     "crates/php_std/src/generated/arginfo.rs",
     "scripts/stdlib/generate_arginfo.py",
+    "scripts/verify/api_facade_allowlist.txt",
 ]
+
+API_FACADE_ROOT_RE = re.compile(
+    r"\bphp_(?:vm|runtime)::(?!(?:api|debug|experimental)\b)(?:\{|[A-Za-z_])"
+)
 
 VM_MOD_REQUIRED_SNIPPETS = [
     "mod arguments;",
@@ -111,6 +117,13 @@ PHP_STD_CONSUMED_SYMBOLS = [
     "generated::arginfo::class_metadata",
     "generated::arginfo::GENERATED_CLASSES",
 ]
+
+
+@dataclass(frozen=True)
+class ApiFacadeAllowlistEntry:
+    kind: str
+    pattern: str
+    reason: str
 
 
 class IntegrityError(Exception):
@@ -219,6 +232,66 @@ def check_php_std_consumers() -> None:
     require_snippets("php_std generated-arginfo consumers", combined, PHP_STD_CONSUMED_SYMBOLS)
 
 
+def read_api_facade_allowlist() -> list[ApiFacadeAllowlistEntry]:
+    entries: list[ApiFacadeAllowlistEntry] = []
+    text = read_required("scripts/verify/api_facade_allowlist.txt")
+    for index, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split("|", 2)
+        if len(parts) != 3:
+            raise IntegrityError(
+                "api facade allowlist entries must use "
+                f"`kind|pattern|reason`: line {index}"
+            )
+        kind, pattern, reason = (part.strip() for part in parts)
+        if kind not in {"path", "path-prefix"}:
+            raise IntegrityError(
+                f"api facade allowlist line {index} has unsupported kind: {kind}"
+            )
+        if not pattern or not reason:
+            raise IntegrityError(
+                f"api facade allowlist line {index} needs a pattern and reason"
+            )
+        entries.append(ApiFacadeAllowlistEntry(kind, pattern, reason))
+    return entries
+
+
+def api_facade_root_import_allowed(
+    relative: str, entries: list[ApiFacadeAllowlistEntry]
+) -> bool:
+    for entry in entries:
+        if entry.kind == "path" and relative == entry.pattern:
+            return True
+        if entry.kind == "path-prefix" and relative.startswith(entry.pattern):
+            return True
+    return False
+
+
+def check_api_facade_imports() -> None:
+    entries = read_api_facade_allowlist()
+    violations: list[str] = []
+    for path in sorted((ROOT / "crates").glob("*/src/**/*.rs")):
+        relative = rel(path)
+        if api_facade_root_import_allowed(relative, entries):
+            continue
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("//"):
+                continue
+            if API_FACADE_ROOT_RE.search(line):
+                violations.append(f"{relative}:{line_number}: {stripped}")
+    if violations:
+        joined = "\n  - ".join(violations[:50])
+        extra = "" if len(violations) <= 50 else f"\n  ... {len(violations) - 50} more"
+        raise IntegrityError(
+            "root php_vm/php_runtime imports must use api/debug/experimental facades "
+            "or be documented in scripts/verify/api_facade_allowlist.txt:\n"
+            f"  - {joined}{extra}"
+        )
+
+
 def main() -> int:
     checks = [
         check_required_files,
@@ -226,6 +299,7 @@ def main() -> int:
         check_vm_module_wiring,
         check_generated_arginfo,
         check_php_std_consumers,
+        check_api_facade_imports,
     ]
     try:
         for check in checks:

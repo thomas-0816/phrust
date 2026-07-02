@@ -1,4 +1,4 @@
-use php_runtime::{PhpArray, PhpString, UnserializeOptions, Value, serialize, unserialize};
+use php_runtime::api::{PhpArray, PhpString, UnserializeOptions, Value, serialize, unserialize};
 use std::{
     collections::HashMap,
     fs,
@@ -202,7 +202,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{SessionStore, generate_session_id, valid_session_id};
-    use php_runtime::{ArrayKey, PhpArray, PhpString, Value};
+    use php_runtime::api::{ArrayKey, PhpArray, PhpString, Value};
 
     #[test]
     fn session_ids_are_strict_path_segments() {
