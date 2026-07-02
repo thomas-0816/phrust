@@ -14568,13 +14568,18 @@ impl Vm {
                                     );
                                 }
                             };
+                        let class_owner = class_owner_in_state(compiled, state, &class.name);
                         let runtime_class = match runtime_class_entry(
-                            compiled,
+                            &class_owner,
                             state,
                             &class,
-                            &|value| self.constant_value(compiled.unit(), value),
-                            &|reference| class_constant_reference_value(compiled, state, reference),
-                            &|reference| named_constant_reference_value(compiled, state, reference),
+                            &|value| self.constant_value(class_owner.unit(), value),
+                            &|reference| {
+                                class_constant_reference_value(&class_owner, state, reference)
+                            },
+                            &|reference| {
+                                named_constant_reference_value(&class_owner, state, reference)
+                            },
                         ) {
                             Ok(class) => class,
                             Err(message) => {
@@ -30000,11 +30005,12 @@ impl Vm {
         state: &mut ExecutionState,
     ) -> Result<ObjectRef, VmResult> {
         let copy = object.clone_shallow();
-        let resolved = match lookup_method_in_hierarchy(compiled, class, "__clone", None) {
-            Ok(Some(method)) => method,
-            Ok(None) => return Ok(copy),
-            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
-        };
+        let resolved =
+            match lookup_resolved_method_in_state(compiled, state, &class.name, "__clone", None) {
+                Ok(Some(method)) => method,
+                Ok(None) => return Ok(copy),
+                Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+            };
         if resolved.method.flags.is_static {
             return Err(self.runtime_error(
                 output,
@@ -30020,13 +30026,14 @@ impl Vm {
             compiled,
             state,
             current_scope_class(compiled, stack).as_deref(),
-            resolved.class,
-            resolved.method,
+            &resolved.class,
+            &resolved.method,
         ) {
             return Err(self.runtime_error(output, compiled, stack, message));
         }
+        let method_owner = class_owner_in_state(compiled, state, &resolved.class.name);
         let result = self.execute_function(
-            compiled,
+            &method_owner,
             resolved.method.function,
             FunctionCall::new(Vec::new(), Vec::new())
                 .with_this(copy.clone())
@@ -65017,6 +65024,52 @@ good"
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"WP_Post|4");
+    }
+
+    #[test]
+    fn clone_of_included_child_resolves_parent_from_dynamic_state() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-included-child-clone-parent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        let parent_path = root.join("parent.php");
+        std::fs::write(
+            &parent_path,
+            "<?php class CloneParentProbe { public $parent = 'parent'; }",
+        )
+        .expect("parent source should be writable");
+        let child_path = root.join("child.php");
+        std::fs::write(
+            &child_path,
+            "<?php require_once __DIR__ . '/parent.php'; class CloneChildProbe extends CloneParentProbe { public $child = 'child'; }",
+        )
+        .expect("child source should be writable");
+        let main_path = root.join("main.php");
+        let source = "<?php require_once __DIR__ . '/child.php'; $object = new CloneChildProbe(); $copy = clone $object; echo $copy->parent, '|', $copy->child;";
+        std::fs::write(&main_path, source).expect("main source should be writable");
+        let loader = IncludeLoader::for_root(root.clone()).expect("include loader");
+
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                include_loader: Some(loader),
+                ..VmOptions::default()
+            },
+            main_path.to_string_lossy().into_owned(),
+        );
+
+        let _ = std::fs::remove_file(parent_path);
+        let _ = std::fs::remove_file(child_path);
+        let _ = std::fs::remove_file(main_path);
+        let _ = std::fs::remove_dir(root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"parent|child");
     }
 
     #[test]
