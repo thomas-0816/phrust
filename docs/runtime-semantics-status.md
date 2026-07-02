@@ -214,13 +214,13 @@ Runtime decisions are captured in these ADRs:
 | Direct user functions | yes | yes | yes | yes | green curated fixtures | none |
 | Defaults, variadics, returns | yes | yes | yes | partial | PHP type/coercion wording differs | `E_PHP_RUNTIME_WEAK_STRICT_TYPES_COERCION` |
 | Closures and arrow functions | yes | yes | yes | partial | by-value/by-reference captures, static closure locals, and arrow by-value captures execute; full Closure binding remains deferred | `E_PHP_RUNTIME_UNSUPPORTED_CLOSURE_BINDING` |
-| Dynamic function/callable forms | yes | yes | yes | partial | dynamic strings, array callables, invokable objects, and first-class callables pass curated fixtures | `E_PHP_VM_UNRESOLVED_CALLABLE` |
+| Dynamic function/callable forms | yes | yes | yes | partial | dynamic strings including namespaced strings, array callables, invokable objects, and first-class callables pass curated fixtures | `E_PHP_RUNTIME_UNSUPPORTED_CLOSURE_BINDING` |
 | PHP 8.5 pipe operator | yes | yes | yes | partial | callable dispatch and non-callable RHS errors pass curated fixtures | none |
 | Selected builtins | yes | yes | yes | partial | strict supported subset only | `E_PHP_RUNTIME_UNSUPPORTED_STDLIB` |
 | Arrays | yes | yes | yes | partial | key/COW/reference edges differ | `E_PHP_RUNTIME_ARRAY_REFERENCE_COW` |
 | Foreach over arrays and Traversable sources | yes | yes | yes | partial | arrays, public-property objects, Iterator, IteratorAggregate, generator sources, and invalid-source warnings pass curated fixtures | `E_PHP_RUNTIME_FOREACH_MUTATION_COMPAT` |
 | References | yes | partial | partial | partial | simple local alias only | `E_PHP_RUNTIME_UNSUPPORTED_REFERENCE_SEMANTICS` |
-| Global and magic constants | yes | partial | partial | partial | fixture-covered predefined and user-defined constants pass; full constant-expression matrix remains | `E_PHP_RUNTIME_CONST_EXPR_MATRIX` |
+| Global and magic constants | yes | partial | partial | partial | fixture-covered predefined, user-defined, and scalar cast default constants pass; full constant-expression matrix remains | `E_PHP_RUNTIME_CONST_EXPR_MATRIX` |
 | Include/require | yes | yes | yes | partial | root-constrained local model | `E_PHP_RUNTIME_INCLUDE_SCOPE_MATRIX` |
 | Concrete classes and `new` | yes | yes | yes | partial | public concrete class subset | `E_PHP_IR_UNSUPPORTED_CLASSLIKE_OBJECT` |
 | Public properties and methods | yes | yes | yes | partial | visibility/inheritance missing | `E_PHP_IR_UNSUPPORTED_OBJECT_PROPERTY_MODIFIER` |
@@ -274,11 +274,11 @@ Runtime decisions are captured in these ADRs:
     state and `$GLOBALS` aliasing are not complete. IDs:
     `E_PHP_RUNTIME_SUPERGLOBALS_FULL_MATRIX`,
     `E_PHP_RUNTIME_GLOBALS_ALIAS_MATRIX`.
-12. Dynamic calls and callable resolution: dynamic string calls, method
-    callables, array callables, invokable objects, and first-class callables are
-    executable for covered fixtures; namespace/import fallback, invalid-callable
-    edge cases, and closure binding remain incomplete. IDs:
-    `E_PHP_VM_UNRESOLVED_CALLABLE`,
+12. Dynamic calls and callable resolution: dynamic string calls including
+    namespaced strings, method callables, array callables, invokable objects,
+    and first-class callables are executable for covered fixtures;
+    imported/function-alias callable edges, invalid-callable edge cases, and
+    closure binding remain incomplete. IDs:
     `E_PHP_VM_INVALID_CALLABLE_ARRAY`,
     `E_PHP_RUNTIME_UNSUPPORTED_CLOSURE_BINDING`.
 13. Generators and `yield from`: classified at lowering, not executable.

@@ -209,10 +209,11 @@ Work item keeps the PHP 8.5 runtime surface explicit:
 - Clone-with remains the Work item/24 public-property MVP. Private/protected,
   readonly, static, property-hook-complete, and reference-property replacement
   rules stay specific known gaps.
-- PHP 8.5 constant-expression callables, closures, casts, and `new` forms are
-  recorded by the semantic frontend. Runtime semantics does not materialize their runtime
-  default values unless folded scalar metadata already exists; unsupported forms
-  stay under `E_PHP_RUNTIME_CONST_EXPR_MATRIX`.
+- PHP 8.5 scalar cast parameter defaults are folded into IR constants for
+  fixture-covered scalar values. Constant-expression callables, closures, and
+  `new` forms are recorded by the semantic frontend, but Runtime semantics does
+  not materialize their runtime default values yet; unsupported forms stay
+  under `E_PHP_RUNTIME_CONST_EXPR_MATRIX`.
 
 ## Fiber MVP
 
@@ -298,11 +299,11 @@ are available to later runtime lookups, can participate in simple inheritance
 relationships, and remain visible to the autoload lookup that triggered
 eval-generated declarations. Duplicate eval-declared functions and classes are
 rejected deterministically before they can silently override earlier
-declarations. Conditional function declaration bodies remain
-`E_PHP_VM_CONDITIONAL_FUNCTION_DECLARATION_GAP`, duplicate global `const`
-warning compatibility remains
-`E_PHP_RUNTIME_CONSTANT_REDECLARATION_WARNING_COMPAT`, and exact `ParseError`
-object parity plus wider eval scope interactions remain later work.
+declarations. Conditional function declarations from include/eval units are
+execution-time side effects for the covered fixtures and are not pre-registered
+statically. Duplicate global `const` declarations emit PHP 8.5-compatible
+warnings, preserve the first value, and continue for the covered fixtures. Exact
+`ParseError` object parity plus wider eval scope interactions remain later work.
 
 ## Autoload MVP
 

@@ -79,13 +79,8 @@ Every known-gap fixture in the reference-backed report declares a stable
 
 ## Unsupported ID Cleanup
 
-The final audit replaced newly discovered generic pass-fixture mismatches with
-specific IDs:
-
-- `E_PHP_RUNTIME_NUMERIC_STRING_WARNING_CHANNEL`
-- `E_PHP_RUNTIME_TYPEERROR_TEXT_COMPAT`
-- `E_PHP_RUNTIME_UNINITIALIZED_PROPERTY_TEXT_COMPAT`
-- `E_PHP_RUNTIME_UNION_TYPEERROR_TEXT_COMPAT`
+The final audit replaced remaining generic pass-fixture mismatches with
+specific open diagnostic IDs.
 
 Remaining broad IDs in `docs/runtime-semantics-known-gaps.md` are intentionally reserved
 for whole Standard library+ capability areas that Runtime semantics does not execute, such as

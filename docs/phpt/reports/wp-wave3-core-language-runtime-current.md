@@ -76,12 +76,12 @@ Result: reference 19 PASS, target 19 PASS, 0 non-green outcomes.
 gate. Reference passed 200/200; target passed 128/200 with 72 non-green
 outcomes. The failures cluster in broader class-runtime surfaces outside this
 slice, including fatal output formatting, static-property reference gaps,
-catch-type gaps, conditional dynamic function declarations, and
+catch-type gaps, duplicate dynamic declaration compatibility, and
 autoload/reflection edges.
 Representative stable gap IDs in the run include
 `E_PHP_IR_UNSUPPORTED_PROPERTY_REFERENCE`,
 `E_PHP_IR_UNSUPPORTED_CATCH_TYPE`,
-`E_PHP_VM_CONDITIONAL_FUNCTION_DECLARATION_GAP`, and `E_PHP_VM_UNKNOWN_CLASS`.
+`E_PHP_RUNTIME_INCLUDE_SCOPE_MATRIX`, and `E_PHP_VM_UNKNOWN_CLASS`.
 
 ## Remaining Scope
 

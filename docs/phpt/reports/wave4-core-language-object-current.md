@@ -148,9 +148,9 @@ Implemented in Prompt 1.2:
 
 - `eval()` now registers named function, class, and constant declarations into
   request-local dynamic runtime tables instead of raising
-  `E_PHP_VM_CONDITIONAL_FUNCTION_DECLARATION_GAP` and
-  `E_PHP_RUNTIME_CONSTANT_REDECLARATION_WARNING_COMPAT` where those narrower
-  IDs match the reproduced behavior.
+  conditional-function declaration diagnostics where those narrower IDs match
+  the reproduced behavior. PHP 8.5 duplicate global `const` warnings are
+  covered for the selected include/eval redeclaration fixtures.
 - Eval redeclaration checks now reject duplicate functions, classes, and
   constants before merging the dynamic unit.
 - Runtime class, class-constant, and static-property hierarchy lookup can see

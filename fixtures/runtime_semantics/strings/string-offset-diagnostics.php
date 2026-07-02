@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: expect=known_gap known_gap=E_PHP_RUNTIME_WARNING_CHANNEL_COMPAT
+// runtime-semantics: expect=pass
 $s = "abc";
 $s[-5] = "Q";
 echo $s, "\n";

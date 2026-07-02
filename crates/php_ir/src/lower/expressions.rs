@@ -538,9 +538,10 @@ impl LoweringContext<'_> {
             "__CLASS__" => Some(IrConstant::String(
                 current_class_display.unwrap_or_default().to_owned(),
             )),
-            "__METHOD__" | "__FUNCTION__" | "__NAMESPACE__" => {
-                Some(IrConstant::String(String::new()))
-            }
+            "__METHOD__" | "__FUNCTION__" => Some(IrConstant::String(String::new())),
+            "__NAMESPACE__" => Some(IrConstant::String(
+                namespace_name_for_span(module, span).unwrap_or_default(),
+            )),
             _ => None,
         }
     }
@@ -2917,7 +2918,14 @@ impl LoweringContext<'_> {
     ) -> Option<LoweredExpr> {
         let (operands, current) = self.lower_call_args(builder, site, &args)?;
         let dst = builder.alloc_register(site.function);
-        let class_name = target.display_class_name.unwrap_or(target.class_name);
+        let class_name = if matches!(
+            normalize_class_name(&target.class_name).as_str(),
+            "self" | "static" | "parent"
+        ) {
+            target.class_name
+        } else {
+            target.display_class_name.unwrap_or(target.class_name)
+        };
         let instruction = builder.emit(
             site.function,
             current,
@@ -4864,7 +4872,12 @@ impl LoweringContext<'_> {
                     .cloned()
                     .unwrap_or_default(),
             )),
-            "__NAMESPACE__" => Some(IrConstant::String(String::new())),
+            "__NAMESPACE__" => Some(IrConstant::String(
+                self.namespace_names
+                    .get(&site.function)
+                    .cloned()
+                    .unwrap_or_default(),
+            )),
             "__METHOD__" => Some(IrConstant::String(
                 self.function_names
                     .get(&site.function)

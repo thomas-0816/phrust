@@ -349,8 +349,9 @@ local slots in this MVP.
 `use (&$x)` is preserved in IR capture metadata and captures the source local's
 reference cell at execution. Closure, dynamic string, array method, static
 method, invokable-object, and first-class callable values execute through the
-unified callable path for covered fixtures. `Closure::bind`, complete
-namespace/import fallback, and invalid-callable edge cases remain known gaps.
+unified callable path for covered fixtures. `Closure::bind`,
+imported/function-alias callable edges, and invalid-callable edge cases remain
+known gaps.
 
 ## Callable And Pipe MVP
 
@@ -367,10 +368,11 @@ callables, and invokable objects in the covered fixture matrix.
 The PHP 8.5 pipe operator evaluates the LHS first, evaluates or resolves the
 RHS callable second, and then calls that callable with exactly one argument.
 The supported RHS forms include simple user functions, selected builtins,
-closures, dynamic string callables, and invokable objects. Non-callable RHS
-values fail with `E_PHP_VM_PIPE_RHS_NOT_CALLABLE`. Unresolved callable names
-fail with `E_PHP_VM_UNRESOLVED_CALLABLE`. Complete namespace/import fallback
-and wider callable edge cases remain known gaps.
+closures, dynamic string callables including namespaced strings, and invokable
+objects. Non-callable RHS values fail with `E_PHP_VM_PIPE_RHS_NOT_CALLABLE`.
+Unresolved callable names produce deterministic runtime diagnostics. Complete
+closure rebinding, extension-function coverage, and wider callable edge cases
+remain known gaps.
 
 ## Builtins I MVP
 

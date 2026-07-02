@@ -7,8 +7,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::function::{FunctionFlags, IrCapture, IrParam, IrReturnType};
 use crate::ids::{BlockId, FileId, FunctionId, LocalId, RegId};
 use crate::instruction::{
-    CallableKind, ClosureCaptureArg, CompareOp, InstructionKind, IrCallArg, IrCallArgValueKind,
-    IrCallDimTarget, IrCallPropertyDimTarget, IrCallPropertyTarget, IrDiagnosticSeverity,
+    CallableKind, CastKind, ClosureCaptureArg, CompareOp, InstructionKind, IrCallArg,
+    IrCallArgValueKind, IrCallDimTarget, IrCallPropertyDimTarget, IrCallPropertyTarget,
+    IrDiagnosticSeverity,
 };
 use crate::literal_text::{
     InterpolatedDim, InterpolatedPart, heredoc_literal_body, interpolated_literal_parts,
@@ -48,6 +49,7 @@ mod statements;
 
 pub use context::{LoweringContext, LoweringOptions, LoweringResult};
 pub use diagnostics::{LoweringDiagnostic, LoweringDiagnosticContext, UnsupportedFeature};
+use expressions::cast_kind;
 
 const AUTO_GLOBAL_NAMES: &[&str] = &[
     "argc", "argv", "_SERVER", "_ENV", "_GET", "_POST", "_COOKIE", "_FILES", "_REQUEST", "_SESSION",
@@ -106,6 +108,7 @@ pub fn lower_frontend_result(
 
     let mut context = LoweringContext::new(frontend, options, file);
     context.function_names.insert(function, String::new());
+    context.namespace_names.insert(function, String::new());
     let block = context.lower_global_constant_declarations(&mut builder, function, block);
     context.lower_function_declarations(&mut builder, function);
     context.lower_class_declarations(&mut builder, function);
@@ -288,6 +291,22 @@ fn normalize_function_name(name: &str) -> String {
 
 fn normalized_function_basename(name: &str) -> &str {
     name.rsplit('\\').next().unwrap_or(name)
+}
+
+fn namespace_prefix(name: &str) -> String {
+    name.trim_start_matches('\\')
+        .rsplit_once('\\')
+        .map_or_else(String::new, |(namespace, _)| namespace.to_owned())
+}
+
+fn namespace_name_for_span(module: &HirModule, span: TextRange) -> Option<String> {
+    module.namespaces().values().find_map(|namespace| {
+        range_contains(namespace.span(), span).then(|| {
+            namespace
+                .name()
+                .map_or_else(String::new, |name| name.text().to_owned())
+        })
+    })
 }
 
 fn qualified_function_name(
@@ -904,8 +923,20 @@ fn constant_from_expr_with_class_constants(
                 "parenthesized" | "+" => Some(value),
                 "-" => negate_ir_constant(value),
                 "~" => bitnot_ir_constant(value),
-                _ => None,
+                _ => cast_kind(operator).and_then(|kind| ir_constant_cast(kind, value)),
             }
+        }
+        HirExprKind::Cast { kind, expr } => {
+            let value = constant_from_expr_with_class_constants(
+                module,
+                (*expr)?,
+                named_constants,
+                current_class,
+                class_constants,
+                class_parents,
+                visiting_class_constants,
+            )?;
+            ir_constant_cast(cast_kind(kind)?, value)
         }
         HirExprKind::Binary {
             operator,
@@ -1105,8 +1136,20 @@ fn constant_from_expr_with_runtime_constants(
                 "parenthesized" | "+" => Some(value),
                 "-" => negate_ir_constant(value),
                 "~" => bitnot_ir_constant(value),
-                _ => None,
+                _ => cast_kind(operator).and_then(|kind| ir_constant_cast(kind, value)),
             }
+        }
+        HirExprKind::Cast { kind, expr } => {
+            let value = constant_from_expr_with_runtime_constants(
+                module,
+                (*expr)?,
+                named_constants,
+                current_class,
+                class_constants,
+                class_parents,
+                visiting_class_constants,
+            )?;
+            ir_constant_cast(cast_kind(kind)?, value)
         }
         HirExprKind::Binary {
             operator,
@@ -1615,6 +1658,100 @@ fn ir_constant_truthy(value: &IrConstant) -> Option<bool> {
         IrConstant::StringBytes(value) => Some(!value.is_empty() && value.as_slice() != b"0"),
         IrConstant::Array(entries) => Some(!entries.is_empty()),
         IrConstant::NamedConstant(_) | IrConstant::ClassConstant { .. } => None,
+    }
+}
+
+fn ir_constant_cast(kind: CastKind, value: IrConstant) -> Option<IrConstant> {
+    match kind {
+        CastKind::Bool => ir_constant_truthy(&value).map(IrConstant::Bool),
+        CastKind::Int => ir_constant_to_int(&value).map(IrConstant::Int),
+        CastKind::Float => ir_constant_to_float(&value).map(IrConstant::Float),
+        CastKind::String => ir_constant_to_string(&value).map(IrConstant::String),
+        CastKind::Array | CastKind::Object | CastKind::Void => None,
+    }
+}
+
+fn ir_constant_to_int(value: &IrConstant) -> Option<i64> {
+    match value {
+        IrConstant::Null => Some(0),
+        IrConstant::Bool(value) => Some(i64::from(*value)),
+        IrConstant::Int(value) => Some(*value),
+        IrConstant::Float(value) => Some(*value as i64),
+        IrConstant::String(value) => Some(ir_constant_bytes_to_int(value.as_bytes())),
+        IrConstant::StringBytes(value) => Some(ir_constant_bytes_to_int(value)),
+        IrConstant::Array(entries) => Some(i64::from(!entries.is_empty())),
+        IrConstant::NamedConstant(_) | IrConstant::ClassConstant { .. } => None,
+    }
+}
+
+fn ir_constant_to_float(value: &IrConstant) -> Option<f64> {
+    match value {
+        IrConstant::Null => Some(0.0),
+        IrConstant::Bool(value) => Some(if *value { 1.0 } else { 0.0 }),
+        IrConstant::Int(value) => Some(*value as f64),
+        IrConstant::Float(value) => Some(*value),
+        IrConstant::String(value) => value.trim_start().parse::<f64>().ok().or(Some(0.0)),
+        IrConstant::StringBytes(value) => String::from_utf8_lossy(value)
+            .trim_start()
+            .parse::<f64>()
+            .ok()
+            .or(Some(0.0)),
+        IrConstant::Array(entries) => Some(if entries.is_empty() { 0.0 } else { 1.0 }),
+        IrConstant::NamedConstant(_) | IrConstant::ClassConstant { .. } => None,
+    }
+}
+
+fn ir_constant_to_string(value: &IrConstant) -> Option<String> {
+    match value {
+        IrConstant::Null => Some(String::new()),
+        IrConstant::Bool(value) => Some(if *value { "1" } else { "" }.to_owned()),
+        IrConstant::Int(value) => Some(value.to_string()),
+        IrConstant::Float(value) => Some(value.to_string()),
+        IrConstant::String(value) => Some(value.clone()),
+        IrConstant::StringBytes(value) => Some(String::from_utf8_lossy(value).into_owned()),
+        IrConstant::Array(_) | IrConstant::NamedConstant(_) | IrConstant::ClassConstant { .. } => {
+            None
+        }
+    }
+}
+
+fn ir_constant_bytes_to_int(bytes: &[u8]) -> i64 {
+    let mut index = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let negative = match bytes.get(index) {
+        Some(b'-') => {
+            index += 1;
+            true
+        }
+        Some(b'+') => {
+            index += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut value = 0_i64;
+    let mut saw_digit = false;
+    while let Some(byte) = bytes.get(index).filter(|byte| byte.is_ascii_digit()) {
+        saw_digit = true;
+        let digit = i64::from(byte - b'0');
+        let Some(next) = value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(digit))
+        else {
+            return if negative { i64::MIN } else { i64::MAX };
+        };
+        value = next;
+        index += 1;
+    }
+    if !saw_digit {
+        return 0;
+    }
+    if negative {
+        value.checked_neg().unwrap_or(i64::MIN)
+    } else {
+        value
     }
 }
 
@@ -2181,7 +2318,7 @@ mod tests {
     #[test]
     fn parameter_default_expression_matrix_lowers_to_ir_constants() {
         let frontend = analyze_source(
-            "<?php const LABEL = 'B'; class Source { const FIRST = 'A'; } function f($items = ['left' => Source::FIRST, 'right' => LABEL], $selected = ['x', 'y'][1], $fallback = null ?? 'fallback', $conditional = true ? 'yes' : 'no') {}",
+            "<?php const LABEL = 'B'; class Source { const FIRST = 'A'; } function f($items = ['left' => Source::FIRST, 'right' => LABEL], $selected = ['x', 'y'][1], $fallback = null ?? 'fallback', $conditional = true ? 'yes' : 'no', $casted = (int) '42') {}",
         );
         let result = lower_frontend_result(&frontend, LoweringOptions::default());
 
@@ -2219,6 +2356,7 @@ mod tests {
             function.params[3].default,
             Some(IrConstant::String("yes".to_owned()))
         );
+        assert_eq!(function.params[4].default, Some(IrConstant::Int(42)));
     }
 
     #[test]
@@ -3851,6 +3989,26 @@ mod tests {
         let snapshot = result.unit.to_snapshot_text();
         assert!(snapshot.contains("function_name \"performanceic\\\\hot\" => function:1"));
         assert!(snapshot.contains("\"performanceic\\\\hot\""));
+    }
+
+    #[test]
+    fn namespaced_magic_constant_lowers_for_top_level_and_functions() {
+        let frontend = analyze_source(
+            "<?php namespace Demo\\Calls; function ns() { return __NAMESPACE__; } echo __NAMESPACE__, \"|\", ns();",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(
+            snapshot.contains("const:1 string \"Demo\\\\Calls\""),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.matches("load_const r0 const:1").count() >= 2,
+            "{snapshot}"
+        );
     }
 
     #[test]

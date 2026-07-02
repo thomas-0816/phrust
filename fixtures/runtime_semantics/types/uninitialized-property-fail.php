@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: category=types expect=known_gap known_gap=E_PHP_RUNTIME_UNINITIALIZED_PROPERTY_TEXT_COMPAT
+// runtime-semantics: category=types expect=pass
 class Box {
     public string|null $name;
 }

@@ -753,9 +753,7 @@ runtime-known-gaps:
       grep -q "$diagnostic" "$tmp_dir/$name.err"; \
     done; \
     for fixture_id in \
-      "fixtures/runtime/known_gaps/autoload/spl-autoload-register.php:E_PHP_VM_UNKNOWN_CLASS:autoload" \
-      "fixtures/runtime/known_gaps/objects/clone-with-private.php:E_PHP_VM_UNCAUGHT_EXCEPTION:clone-with-private" \
-      "fixtures/runtime/known_gaps/objects/clone-with-readonly.php:E_PHP_VM_UNCAUGHT_EXCEPTION:clone-with-readonly"; do \
+      "fixtures/runtime/known_gaps/autoload/spl-autoload-register.php:E_PHP_VM_UNKNOWN_CLASS:autoload"; do \
       IFS=':' read -r fixture diagnostic name <<< "$fixture_id"; \
       set +e; \
       ${CARGO_TARGET_DIR:-target}/debug/php-vm run "$fixture" > "$tmp_dir/$name.out" 2> "$tmp_dir/$name.err"; \
@@ -763,6 +761,19 @@ runtime-known-gaps:
       set -e; \
       test "$code" -eq 3; \
       grep -q "$diagnostic" "$tmp_dir/$name.err"; \
+    done; \
+    for fixture_id in \
+      "fixtures/runtime/known_gaps/objects/clone-with-private.php:Cannot access private property:clone-with-private" \
+      "fixtures/runtime/known_gaps/objects/clone-with-readonly.php:Cannot modify protected(set) readonly property:clone-with-readonly"; do \
+      IFS=':' read -r fixture diagnostic name <<< "$fixture_id"; \
+      set +e; \
+      ${CARGO_TARGET_DIR:-target}/debug/php-vm run "$fixture" > "$tmp_dir/$name.out" 2> "$tmp_dir/$name.err"; \
+      code=$?; \
+      set -e; \
+      test "$code" -eq 255; \
+      grep -q 'Fatal error:' "$tmp_dir/$name.out"; \
+      grep -q "$diagnostic" "$tmp_dir/$name.out"; \
+      test ! -s "$tmp_dir/$name.err"; \
     done; \
     printf '%s\n' '[ok] runtime known-gap catalog and reference fixtures passed.'
 

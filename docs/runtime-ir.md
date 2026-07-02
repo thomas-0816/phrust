@@ -343,18 +343,19 @@ when the VM enters the closure frame.
 `use (&$x)` is detected and preserved as `by_ref=true` in the IR and snapshot
 format. Runtime execution captures the source local's reference cell so later
 mutations and writes through the closure observe the same storage. Full
-`Closure::bind`, namespace/import fallback, and wider invalid-callable edge
-cases remain outside this Work item MVP.
+`Closure::bind`, imported/function-alias callable edges, and wider
+invalid-callable edge cases remain outside this Work item MVP.
 
 Work item supports first-class callable names in the actual Semantic frontend
 HIR shape for pipe RHS (`HirExprKind::FirstClassCallable { callee: Name }`),
 closure values stored in variables, dynamic string calls, array method
 callables, static method callables, and invokable objects. Simple unqualified
 names resolve in the VM to user functions first, then
-`php_runtime::BuiltinRegistry` entries. Non-callable RHS values reach runtime
-and fail with `E_PHP_VM_PIPE_RHS_NOT_CALLABLE`, preserving left-to-right
-evaluation. Unresolved namespace/import fallback cases are represented as known
-gaps, not silently executed.
+`php_runtime::BuiltinRegistry` entries; namespaced string callables use the same
+path. Non-callable RHS values reach runtime and fail with
+`E_PHP_VM_PIPE_RHS_NOT_CALLABLE`, preserving left-to-right evaluation.
+Unresolved callable names are represented as deterministic runtime diagnostics,
+not silently executed.
 
 Unsupported-feature diagnostic IDs are stable strings such as:
 

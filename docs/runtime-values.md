@@ -129,10 +129,10 @@ selected internal builtins, method placeholders, and unresolved dynamic
 callables. The VM resolves simple user functions before builtins. The PHP 8.5
 pipe MVP calls one resolved callable with the LHS value as its only argument.
 
-Dynamic string functions, array callables, invokable objects, method callables,
-and first-class callable values execute for covered fixtures. Complete
-namespace/import fallback and wider dynamic callable resolution remain known
-gaps.
+Dynamic string functions including namespaced strings, array callables,
+invokable objects, method callables, and first-class callable values execute
+for covered fixtures. Imported/function-alias callable edges, closure binding,
+and wider dynamic callable resolution remain known gaps.
 
 Fixture proof: `fixtures/runtime/valid/functions/closure-use.php`,
 `fixtures/runtime/valid/php85/pipe-user-function.php`,

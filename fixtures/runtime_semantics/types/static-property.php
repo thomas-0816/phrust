@@ -1,5 +1,5 @@
 <?php
-// runtime-semantics: category=types expect=pass
+// runtime-semantics: expect=pass
 class Counter {
     public static int $value = 1;
 }

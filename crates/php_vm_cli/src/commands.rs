@@ -44,6 +44,7 @@ const EXIT_COMPILE_ERROR: i32 = 2;
 const EXIT_RUNTIME_ERROR: i32 = 3;
 const EXIT_UNSUPPORTED: i32 = 4;
 const EXIT_USAGE: i32 = 5;
+const EXIT_PHP_FATAL_ERROR: i32 = 255;
 
 pub(crate) fn main_entry() {
     let code = run(env::args().skip(1), &mut io::stdout(), &mut io::stderr());
@@ -847,6 +848,9 @@ where
             Ok(EXIT_COMPILE_ERROR)
         }
         ExitStatus::RuntimeError | ExitStatus::Fatal => {
+            if php_fatal_output_was_rendered(&result) {
+                return Ok(EXIT_PHP_FATAL_ERROR);
+            }
             write_status(stderr, path, &result.status)?;
             Ok(EXIT_RUNTIME_ERROR)
         }
@@ -995,6 +999,7 @@ where
     stdout
         .write_all(&output.stdout)
         .map_err(|error| error.to_string())?;
+    let php_fatal_rendered = php_execution_fatal_output_was_rendered(&output);
     if output.status == PhpExecutionStatus::Success {
         write_executor_success_runtime_diagnostics(
             stderr,
@@ -1002,9 +1007,10 @@ where
             &output,
             run_options.error_format,
         )?;
-    } else if !output.diagnostics_text.is_empty()
-        || !output.diagnostics.is_empty()
-        || !output.runtime_diagnostics.is_empty()
+    } else if !php_fatal_rendered
+        && (!output.diagnostics_text.is_empty()
+            || !output.diagnostics.is_empty()
+            || !output.runtime_diagnostics.is_empty())
     {
         write_execution_output_diagnostics(stderr, path, &output, run_options.error_format)?;
     }
@@ -1045,9 +1051,19 @@ where
     Ok(match output.status {
         PhpExecutionStatus::Success => EXIT_SUCCESS,
         PhpExecutionStatus::CompileError => EXIT_COMPILE_ERROR,
-        PhpExecutionStatus::RuntimeError | PhpExecutionStatus::Fatal => EXIT_RUNTIME_ERROR,
+        PhpExecutionStatus::RuntimeError | PhpExecutionStatus::Fatal => {
+            if php_fatal_rendered {
+                EXIT_PHP_FATAL_ERROR
+            } else {
+                EXIT_RUNTIME_ERROR
+            }
+        }
         PhpExecutionStatus::Unsupported => EXIT_UNSUPPORTED,
     })
+}
+
+fn php_execution_fatal_output_was_rendered(output: &PhpExecutionOutput) -> bool {
+    String::from_utf8_lossy(&output.stdout).contains("Fatal error:")
 }
 
 fn write_executor_success_runtime_diagnostics<W: Write>(
@@ -1058,7 +1074,7 @@ fn write_executor_success_runtime_diagnostics<W: Write>(
 ) -> Result<(), String> {
     let php_output = String::from_utf8_lossy(&output.stdout);
     for diagnostic in &output.runtime_diagnostics {
-        if php_output.contains(diagnostic.message()) {
+        if runtime_diagnostic_was_rendered(diagnostic, &php_output) {
             continue;
         }
         match format {
@@ -1555,7 +1571,7 @@ fn write_runtime_diagnostics<W: Write>(
 ) -> Result<(), String> {
     let php_output = result.output.to_string_lossy();
     for diagnostic in &result.diagnostics {
-        if result.status.is_success() && php_output.contains(diagnostic.message()) {
+        if runtime_diagnostic_was_rendered(diagnostic, &php_output) {
             continue;
         }
         match format {
@@ -1573,6 +1589,39 @@ fn write_runtime_diagnostics<W: Write>(
         }
     }
     Ok(())
+}
+
+fn php_fatal_output_was_rendered(result: &VmResult) -> bool {
+    let php_output = result.output.to_string_lossy();
+    php_output.contains("Fatal error:")
+}
+
+fn runtime_diagnostic_was_rendered(diagnostic: &RuntimeDiagnostic, php_output: &str) -> bool {
+    if php_output.contains(diagnostic.message()) {
+        return true;
+    }
+    if let Some(rendered_message) = diagnostic
+        .message()
+        .split_once(": ")
+        .map(|(_, message)| message)
+        && php_output.contains(rendered_message)
+    {
+        return true;
+    }
+    if matches!(
+        diagnostic.id(),
+        "E_PHP_VM_INCLUDE_MISSING" | "E_PHP_VM_INCLUDE_READ"
+    ) {
+        if let Some(target) = include_diagnostic_target(diagnostic.message()) {
+            return php_output.contains(target) && php_output.contains("Failed to open stream");
+        }
+    }
+    false
+}
+
+fn include_diagnostic_target(message: &str) -> Option<&str> {
+    let payload = message.split_once(": ")?.1;
+    payload.rsplit_once(": ").map(|(target, _)| target)
 }
 
 fn write_trace<W: Write>(
@@ -3842,10 +3891,10 @@ fn workspace_relative_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        BytecodeCacheMode, EXIT_COMPILE_ERROR, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE,
-        JitStatsMode, OptimizationLevel, PersistentFeedbackOptions, QuickeningMode, cache_file_for,
-        compile_pipeline_with_optimization, parse_dump_dependency_units_args,
-        parse_dump_rule_selection_args, parse_run_args, run,
+        BytecodeCacheMode, EXIT_COMPILE_ERROR, EXIT_PHP_FATAL_ERROR, EXIT_RUNTIME_ERROR,
+        EXIT_SUCCESS, EXIT_USAGE, JitStatsMode, OptimizationLevel, PersistentFeedbackOptions,
+        QuickeningMode, cache_file_for, compile_pipeline_with_optimization,
+        parse_dump_dependency_units_args, parse_dump_rule_selection_args, parse_run_args, run,
     };
     use php_bytecode_cache::{CacheFingerprint, CacheFingerprintInput};
     use php_runtime::api::RuntimeContext;
@@ -5423,6 +5472,31 @@ mod tests {
             stderr.contains("\"stack\":[{\"function\":\"main\"}]"),
             "{stderr}"
         );
+    }
+
+    #[test]
+    fn run_php_visible_fatal_uses_php_exit_code_without_structured_stderr() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            [
+                "run".to_string(),
+                fixture("fixtures/runtime_semantics/types/param-strict-rejects-string.php"),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, EXIT_PHP_FATAL_ERROR);
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        let stdout = String::from_utf8(stdout).unwrap();
+        assert!(
+            stdout.contains(
+                "Fatal error: Uncaught TypeError: add_one(): Argument #1 ($value) must be of type int, string given"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("runtime-diagnostic:"), "{stdout}");
     }
 
     #[test]

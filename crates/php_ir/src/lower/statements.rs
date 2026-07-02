@@ -68,8 +68,16 @@ impl LoweringContext<'_> {
             return block;
         };
 
-        let mut statements = Vec::new();
+        let previous_namespace = self.namespace_names.get(&function).cloned();
+        let mut current = block;
         for namespace in module.namespaces().values() {
+            self.namespace_names.insert(
+                function,
+                namespace
+                    .name()
+                    .map_or_else(String::new, |name| name.text().to_owned()),
+            );
+            let mut statements = Vec::new();
             for item in namespace.items() {
                 if item.kind() != TopLevelItemKind::Statement
                     && item.kind() != TopLevelItemKind::InlineHtml
@@ -80,9 +88,19 @@ impl LoweringContext<'_> {
                     statements.push(stmt_id);
                 }
             }
+            current = self.lower_stmt_list(builder, function, current, statements);
         }
 
-        self.lower_stmt_list(builder, function, block, statements)
+        match previous_namespace {
+            Some(name) => {
+                self.namespace_names.insert(function, name);
+            }
+            None => {
+                self.namespace_names.remove(&function);
+            }
+        }
+
+        current
     }
 
     pub(super) fn lower_stmt(

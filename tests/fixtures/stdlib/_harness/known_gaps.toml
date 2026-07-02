@@ -1,6 +1,5 @@
 [known_gaps]
 STDLIB_HARNESS_EXAMPLE_GAP = "Example known-gap entry used to validate explicit test-ID based gap handling."
-STDLIB-GAP-SOURCE-NUL-ESCAPE = "The parser/source string layer does not yet decode PHP double-quoted \\0 escapes; runtime string functions are binary-safe for actual NUL bytes in unit tests."
 STDLIB-GAP-FPRINTF-STREAM-RESOURCE = "fprintf requires stream/resource values; the standard-library stream layer has not introduced those values yet."
 STDLIB-GAP-ARRAY-WALK-BY-REF-MUTATION = "array_walk invokes callbacks but does not yet pass array elements by reference for callback-side mutation."
 STDLIB-GAP-NATURAL-SORT-EDGE-CASES = "natsort and natcasesort implement deterministic natural ordering for common Composer-style names but not every Zend leading-zero and locale-sensitive edge case."

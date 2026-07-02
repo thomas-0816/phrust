@@ -714,6 +714,8 @@ impl LoweringContext<'_> {
                 input.display_class_name, input.display_method_name
             ),
         );
+        self.namespace_names
+            .insert(function, namespace_prefix(input.display_class_name));
         builder.set_return_type(
             function,
             self.lower_return_type(input.signature.return_type()),
@@ -938,6 +940,8 @@ impl LoweringContext<'_> {
                     hook.kind()
                 ),
             );
+            self.namespace_names
+                .insert(function, namespace_prefix(display_class_name));
             builder.intern_local(function, "this");
             if hook.kind() == "set" {
                 let local = builder.intern_local(function, "value");
@@ -1363,11 +1367,12 @@ impl LoweringContext<'_> {
                 continue;
             };
             let source_name = name.to_string();
+            let display_registered_name = qualified_function_name(module, &signature, name);
             let declaration_metadata = function_declaration_metadata(module, &signature);
             let registered_name = declaration_metadata
                 .as_ref()
                 .map(|(name, _)| name.clone())
-                .unwrap_or_else(|| qualified_function_name(module, &signature, name));
+                .unwrap_or_else(|| display_registered_name.clone());
             let span = span_from_range(self.file, signature.span());
             let function = builder.start_function(
                 name,
@@ -1384,6 +1389,8 @@ impl LoweringContext<'_> {
             );
             builder.set_function_attributes(function, attributes);
             self.function_names.insert(function, source_name.clone());
+            self.namespace_names
+                .insert(function, namespace_prefix(&display_registered_name));
             let normalized_name = normalize_function_name(&registered_name);
             let declaration_kind = declaration_metadata.map(|(_, kind)| kind);
             if declaration_kind == Some(DeclarationKind::ConditionalFunction) {
