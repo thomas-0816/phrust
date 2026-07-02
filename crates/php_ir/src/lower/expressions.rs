@@ -3081,16 +3081,18 @@ impl LoweringContext<'_> {
                 self.lower_expr_to_register(builder, site.function, site.block, target)?;
             (Operand::Register(class_value.register), class_value.block)
         };
-        let (method_operand, block) = if let Some(method_name) = self.static_property_name(method) {
-            (
-                Operand::Constant(builder.intern_constant(IrConstant::String(method_name))),
-                block,
-            )
-        } else {
-            let method_value =
-                self.lower_expr_to_register(builder, site.function, block, method)?;
-            (Operand::Register(method_value.register), method_value.block)
-        };
+        let dynamic_member = self.static_access_uses_dynamic_member(callee);
+        let (method_operand, block) =
+            if !dynamic_member && let Some(method_name) = self.static_property_name(method) {
+                (
+                    Operand::Constant(builder.intern_constant(IrConstant::String(method_name))),
+                    block,
+                )
+            } else {
+                let method_value =
+                    self.lower_expr_to_register(builder, site.function, block, method)?;
+                (Operand::Register(method_value.register), method_value.block)
+            };
         self.lower_callable_pair_call_to_register(
             builder,
             LowerSite { block, ..site },
@@ -8989,6 +8991,11 @@ impl LoweringContext<'_> {
         let expression = module.expressions().get(expr)?;
         match expression.kind() {
             HirExprKind::Name { resolution } => {
+                if let Some(display_name) =
+                    self.imported_function_display_name(module, expr, resolution)
+                {
+                    return Some(display_name);
+                }
                 let source = display_class_name(resolution.source());
                 let normalized_source = normalize_class_name(&source);
                 if matches!(normalized_source.as_str(), "self" | "static" | "parent") {
@@ -9004,6 +9011,47 @@ impl LoweringContext<'_> {
             }
             _ => None,
         }
+    }
+
+    pub(super) fn imported_function_display_name(
+        &self,
+        module: &HirModule,
+        expr: ExprId,
+        resolution: &HirNameResolution,
+    ) -> Option<String> {
+        if resolution.source().starts_with('\\') {
+            return None;
+        }
+        let source = resolution.source().trim_start_matches('\\');
+        let range = self.span_for(SourceMappedId::from(expr));
+        let namespace = module
+            .namespaces()
+            .values()
+            .filter(|namespace| range_contains(namespace.span(), range))
+            .min_by_key(|namespace| {
+                namespace
+                    .span()
+                    .end()
+                    .to_usize()
+                    .saturating_sub(namespace.span().start().to_usize())
+            });
+        let first_part = source.split('\\').next().unwrap_or_default();
+        let import = namespace
+            .and_then(|namespace| namespace.imports().lookup(ImportKind::Function, first_part))?;
+        let mut parts = import
+            .name()
+            .parts()
+            .iter()
+            .map(|part| part.original().to_owned())
+            .collect::<Vec<_>>();
+        parts.extend(
+            source
+                .split('\\')
+                .skip(1)
+                .filter(|part| !part.is_empty())
+                .map(ToOwned::to_owned),
+        );
+        Some(parts.join("\\"))
     }
 
     pub(super) fn direct_function_call_parts(

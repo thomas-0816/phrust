@@ -36,6 +36,7 @@ pub const RUNTIME_SEMANTICS_FIXTURE_CATEGORIES: &[&str] = &[
     "wordpress_blockers",
     "wp_language_vm",
     "wp_autoload_stdlib",
+    "oracle_generated",
     "regressions",
     "known_gaps",
 ];
@@ -70,7 +71,7 @@ mod tests {
 
     #[test]
     fn runtime_semantics_categories_match_coverage_matrix() {
-        assert_eq!(RUNTIME_SEMANTICS_FIXTURE_CATEGORIES.len(), 34);
+        assert_eq!(RUNTIME_SEMANTICS_FIXTURE_CATEGORIES.len(), 35);
         assert!(is_runtime_semantics_category("refs"));
         assert!(is_runtime_semantics_category("errors"));
         assert!(is_runtime_semantics_category("destructors"));
@@ -85,6 +86,7 @@ mod tests {
         assert!(is_runtime_semantics_category("wordpress_blockers"));
         assert!(is_runtime_semantics_category("wp_language_vm"));
         assert!(is_runtime_semantics_category("wp_autoload_stdlib"));
+        assert!(is_runtime_semantics_category("oracle_generated"));
         assert!(is_runtime_semantics_category("regressions"));
         assert!(is_runtime_semantics_category("known_gaps"));
         assert!(!is_runtime_semantics_category("syntax"));

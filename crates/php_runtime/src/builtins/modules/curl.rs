@@ -397,7 +397,7 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
 ) -> BuiltinResult {
     expect_arity("curl_exec", &args, 1)?;
     let handle = curl_handle_arg("curl_exec", args.first())?;
-    if !curl_network_requests_enabled() {
+    if !curl_network_requests_enabled(context) {
         set_curl_error(
             &handle,
             1,
@@ -517,7 +517,11 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
     }
 }
 
-fn curl_network_requests_enabled() -> bool {
+fn curl_network_requests_enabled(context: &BuiltinContext<'_>) -> bool {
+    if context.network_requests_enabled() {
+        return true;
+    }
+
     #[cfg(test)]
     if let Some(enabled) = *NET_TESTS_OVERRIDE
         .lock()

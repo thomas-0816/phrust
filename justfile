@@ -15,6 +15,14 @@ help:
       '  just known-gaps           Validate checked known-gap manifests' \
       '  just source-integrity      Check module wiring and generated metadata' \
       '  just verify-generated-arginfo Strict php-src arginfo drift check' \
+      '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
+      '  just oracle-api-summary  Print the latest API oracle summary' \
+      '  just oracle-probe-generate Generate bounded oracle runtime probes' \
+      '  just oracle-probe-smoke Run smoke oracle probes through runtime diff' \
+      '  just oracle-gap-report  Generate prioritized oracle gap queue' \
+      '  just oracle-next-gap-prompt Emit prompt for highest-priority gap family' \
+      '  just oracle-smoke       Run cheap oracle API/probe/gap gate' \
+      '  just verify-oracle      Run strict oracle verification when configured' \
       '  just fmt                  Check Rust formatting' \
       '  just lint                 Run Rust linting' \
       '  just test                 Run Rust workspace tests' \
@@ -73,6 +81,15 @@ help:
       'Standard library and compatibility:' \
       '  just generate-arginfo     Regenerate stdlib arginfo from php-src stubs' \
       '  just verify-generated-arginfo Regenerate and diff committed arginfo' \
+      '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
+      '  just oracle-api-summary  Print the latest API oracle summary' \
+      '  just oracle-probe-generate Generate bounded oracle runtime probes' \
+      '  just oracle-probe-smoke Run smoke oracle probes through runtime diff' \
+      '  just oracle-probe-full  Run full generated oracle probe set' \
+      '  just oracle-gap-report  Generate prioritized oracle gap queue' \
+      '  just oracle-next-gap-prompt Emit prompt for highest-priority gap family' \
+      '  just oracle-smoke       Run cheap oracle API/probe/gap gate' \
+      '  just verify-oracle      Run strict oracle verification when configured' \
       '  just diff-stdlib          Run standard-library differential gate' \
       '  just diff-streams         Run streams differential gate' \
       '  just diff-json-pcre-date  Run JSON/PCRE/Date differential gate' \
@@ -566,6 +583,67 @@ generate-arginfo php_src="third_party/php-src" out="crates/php_std/src/generated
 
 verify-generated-arginfo:
     scripts/stdlib/verify_generated_arginfo.sh
+
+oracle-api-index:
+    cargo build -q -p php_std --bin dump_stdlib_registry
+    scripts/oracle/api_index.py --self-test
+
+oracle-api-summary:
+    @if [[ ! -f target/oracle/api/php-source-api-summary.md ]]; then \
+      just oracle-api-index >/dev/null; \
+    fi
+    scripts/oracle/api_index.py --summary-only
+
+oracle-probe-generate:
+    @if [[ ! -f target/oracle/api/php-source-api-symbols.jsonl ]]; then \
+      just oracle-api-index >/dev/null; \
+    fi
+    scripts/oracle/generate_probes.py --self-test
+
+oracle-probe-smoke:
+    @just oracle-probe-generate
+    cargo build -q -p php_vm_cli --bin php-vm
+    scripts/runtime_semantics_diff.py --dir fixtures/runtime_semantics/oracle_generated/smoke --out target/oracle/probes/smoke --rust-vm ${CARGO_TARGET_DIR:-target}/debug/php-vm
+
+oracle-probe-full:
+    @just oracle-probe-generate
+    cargo build -q -p php_vm_cli --bin php-vm
+    scripts/runtime_semantics_diff.py --dir fixtures/runtime_semantics/oracle_generated --out target/oracle/probes/full --rust-vm ${CARGO_TARGET_DIR:-target}/debug/php-vm
+
+oracle-gap-report *args:
+    scripts/oracle/gap_report.py --self-test {{args}}
+
+oracle-next-gap-prompt *args:
+    @if [[ ! -f target/oracle/gap-report.json ]]; then \
+      just oracle-gap-report --check >/dev/null; \
+    fi
+    scripts/oracle/next_gap_prompt.py --self-test {{args}}
+
+oracle-smoke:
+    @just oracle-api-index
+    @reference="${REFERENCE_PHP:-}"; \
+    if [[ -z "${reference}" && -x third_party/php-src/sapi/cli/php ]]; then \
+      reference="third_party/php-src/sapi/cli/php"; \
+    fi; \
+    if [[ -n "${reference}" ]]; then \
+      REFERENCE_PHP="${reference}" just oracle-probe-smoke; \
+    else \
+      printf '%s\n' '[skip] REFERENCE_PHP unavailable; oracle probe smoke requires a reference PHP binary.'; \
+    fi
+    scripts/oracle/gap_report.py --cheap --check --fail-on-unclassified
+
+verify-oracle:
+    @just oracle-api-index
+    @reference="${REFERENCE_PHP:-}"; \
+    if [[ -z "${reference}" && -x third_party/php-src/sapi/cli/php ]]; then \
+      reference="third_party/php-src/sapi/cli/php"; \
+    fi; \
+    if [[ -n "${reference}" ]]; then \
+      REFERENCE_PHP="${reference}" just oracle-probe-full; \
+    else \
+      printf '%s\n' '[skip] REFERENCE_PHP unavailable; strict oracle probes require a reference PHP binary.'; \
+    fi
+    scripts/oracle/gap_report.py --cheap --check --fail-on-unclassified
 
 diff-stdlib:
     cargo build -q -p php_vm_cli --bin php-vm

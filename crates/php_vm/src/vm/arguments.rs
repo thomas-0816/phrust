@@ -305,6 +305,7 @@ fn bind_arguments(
                         compiled,
                         function,
                         stack,
+                        call_span,
                         index + 1,
                         &param.name,
                         by_ref_warning_callable_name,

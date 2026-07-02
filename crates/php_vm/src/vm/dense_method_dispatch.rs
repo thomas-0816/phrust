@@ -271,7 +271,7 @@ impl Vm {
         {
             self.record_counter_dense_call_fallback("runtime_static_method_receiver");
             return self.call_static_method_callable(
-                compiled, class_name, method, args, call_span, output, stack, state,
+                compiled, class_name, method, args, call_span, output, stack, state, false, None,
             );
         }
 

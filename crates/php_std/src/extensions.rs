@@ -2856,27 +2856,7 @@ pub(super) fn standard_library_test_extension() -> ExtensionDescriptor {
 }
 
 pub(super) fn reflection_extension() -> ExtensionDescriptor {
-    let mut extension = ExtensionDescriptor::new("reflection");
-    for class in generated::arginfo::GENERATED_CLASSES
-        .iter()
-        .filter(|class| class.extension == "reflection")
-    {
-        extension = extension.with_class(ClassDescriptor::new(
-            class.name,
-            "reflection",
-            generated_class_kind(class.kind),
-        ));
-    }
-    extension
-}
-
-fn generated_class_kind(kind: &str) -> ClassKind {
-    match kind {
-        "interface" => ClassKind::Interface,
-        "trait" => ClassKind::Trait,
-        "enum" => ClassKind::Enum,
-        _ => ClassKind::Class,
-    }
+    ExtensionDescriptor::new("reflection")
 }
 
 pub(super) fn tokenizer_extension() -> ExtensionDescriptor {

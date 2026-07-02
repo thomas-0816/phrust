@@ -1146,9 +1146,32 @@ impl LoweringContext<'_> {
                 .frontend
                 .database()
                 .module(self.frontend.module().module_id())?;
-            destructuring_patterns(module, value_target)?
+            destructuring_patterns(module, value_target, &|parent, fallback, element| {
+                self.destructuring_source_index(parent, fallback, element)
+            })?
         };
         self.destructuring_targets_from_patterns(builder, function, patterns)
+    }
+
+    fn destructuring_source_index(
+        &self,
+        parent: ExprId,
+        fallback: usize,
+        element: ExprId,
+    ) -> Option<usize> {
+        let parent_range = self.span_for(SourceMappedId::from(parent));
+        let element_range = self.span_for(SourceMappedId::from(element));
+        if element_range.start() <= parent_range.start()
+            || element_range.start() > parent_range.end()
+        {
+            return Some(fallback);
+        }
+        let source = self.source_text.slice(php_source::TextRange::new(
+            parent_range.start().to_usize(),
+            element_range.start().to_usize(),
+        ))?;
+        let index = source.bytes().filter(|byte| *byte == b',').count();
+        Some(index)
     }
 
     pub(super) fn destructuring_targets_from_patterns(

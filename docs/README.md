@@ -32,6 +32,8 @@ documentation.
   aggregate gate for a change.
 - [Work with PHPT](how-to/work-with-phpt.md): run module batches, debug
   failures, and keep php-src tests read-only.
+- [Oracle workflow](oracle/README.md): turn php-src and reference PHP behavior
+  into a prioritized API and runtime gap queue.
 - [PHPT reference](phpt/README.md): details of the PHPT runner, manifests,
   generated tests, and full-regression workflow.
 
@@ -49,6 +51,7 @@ Use these documents when you need exact contracts or current status.
 - [Performance known gaps](performance-known-gaps.md)
 - [PHPT known gaps](phpt/known-gaps.md)
 - [PHP source callables reference](php-src-callables-reference.md)
+- [PHP source oracle gap closure](php-source-oracle-gap-closure.md)
 
 ## Internals
 

@@ -8,6 +8,8 @@ use crate::builtins::{
 use crate::{CallableValue, PhpArray, Value, pcre, to_string};
 use std::sync::Arc;
 
+type PregReplaceSpec = (Arc<pcre::CompiledPattern>, Vec<u8>);
+
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("preg_grep", builtin_preg_grep, BuiltinCompatibility::Php),
     BuiltinEntry::new(
@@ -175,7 +177,7 @@ fn preg_replace_specs(
     context: &mut BuiltinContext<'_>,
     pattern: &Value,
     replacement: &Value,
-) -> Result<Option<Vec<(Arc<pcre::CompiledPattern>, Vec<u8>)>>, BuiltinError> {
+) -> Result<Option<Vec<PregReplaceSpec>>, BuiltinError> {
     let replacement_array = match deref_value(replacement) {
         Value::Array(array) => Some(array),
         _ => None,

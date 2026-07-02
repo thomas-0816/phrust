@@ -103,6 +103,40 @@ impl ExtensionDescriptor {
         self.constants.sort_by_key(ConstantDescriptor::name);
         self.classes.sort_by_key(ClassDescriptor::name);
     }
+
+    fn add_generated_arginfo_classes(&mut self) {
+        if self.name == "test" || self.name == "zend_test" {
+            return;
+        }
+
+        for class in generated::arginfo::GENERATED_CLASSES
+            .iter()
+            .filter(|class| class.extension == self.name)
+        {
+            if self
+                .classes
+                .iter()
+                .any(|existing| existing.name.eq_ignore_ascii_case(class.name))
+            {
+                continue;
+            }
+
+            self.classes.push(ClassDescriptor::new(
+                class.name,
+                self.name,
+                generated_class_kind(class.kind),
+            ));
+        }
+    }
+}
+
+fn generated_class_kind(kind: &str) -> ClassKind {
+    match kind {
+        "interface" => ClassKind::Interface,
+        "trait" => ClassKind::Trait,
+        "enum" => ClassKind::Enum,
+        _ => ClassKind::Class,
+    }
 }
 
 /// Descriptor for an internal function symbol.
@@ -319,6 +353,7 @@ impl ExtensionRegistry {
         let mut map = BTreeMap::new();
         let mut enabled = BTreeSet::new();
         for mut extension in extensions {
+            extension.add_generated_arginfo_classes();
             extension.sort_symbols();
             if extension.is_enabled_by_default() {
                 enabled.insert(extension.name());
@@ -1646,6 +1681,35 @@ mod tests {
                 .map(ClassDescriptor::kind),
             Some(ClassKind::Interface)
         ));
+    }
+
+    #[test]
+    fn registered_extensions_import_generated_arginfo_classlikes() {
+        let registry = ExtensionRegistry::standard_library();
+
+        for (name, kind) in [
+            ("ArgumentCountError", ClassKind::Class),
+            ("ErrorException", ClassKind::Class),
+            ("RecursiveRegexIterator", ClassKind::Class),
+            ("SplPriorityQueue", ClassKind::Class),
+            ("SplSubject", ClassKind::Interface),
+            ("Transliterator", ClassKind::Class),
+            ("Random\\Engine\\Mt19937", ClassKind::Class),
+        ] {
+            let class = registry
+                .enabled_class(name)
+                .unwrap_or_else(|| panic!("{name} should be registered from generated arginfo"));
+            assert_eq!(class.kind(), kind, "{name} should use generated kind");
+            assert!(
+                class.source_metadata().is_some(),
+                "{name} should keep php-src stub provenance"
+            );
+        }
+
+        assert!(
+            registry.enabled_class("_ZendTestClass").is_none(),
+            "php-src test fixtures must not be enabled by default"
+        );
     }
 
     #[test]

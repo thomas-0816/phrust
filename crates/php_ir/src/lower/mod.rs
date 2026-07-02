@@ -1557,9 +1557,16 @@ fn ir_constant_from_std_value(value: php_std::ConstantValue) -> Option<IrConstan
     }
 }
 
-fn destructuring_key(module: &HirModule, index: usize, key: Option<ExprId>) -> Option<IrConstant> {
+fn destructuring_key(
+    module: &HirModule,
+    index: usize,
+    source_index: Option<usize>,
+    key: Option<ExprId>,
+) -> Option<IrConstant> {
     let Some(key) = key else {
-        return Some(IrConstant::Int(index.try_into().ok()?));
+        return Some(IrConstant::Int(
+            source_index.unwrap_or(index).try_into().ok()?,
+        ));
     };
     let expression = module.expressions().get(key)?;
     match expression.kind() {
@@ -1571,6 +1578,7 @@ fn destructuring_key(module: &HirModule, index: usize, key: Option<ExprId>) -> O
 fn destructuring_patterns(
     module: &HirModule,
     expr: ExprId,
+    source_index: &dyn Fn(ExprId, usize, ExprId) -> Option<usize>,
 ) -> Option<Vec<(IrConstant, expressions::DestructuringPattern)>> {
     let expression = module.expressions().get(expr)?;
     let elements = match expression.kind().clone() {
@@ -1589,11 +1597,22 @@ fn destructuring_patterns(
                 value: Some(value),
                 unpack: false,
                 by_ref: false,
-            } => (destructuring_key(module, index, key)?, value),
+            } => (
+                destructuring_key(module, index, source_index(expr, index, element), key)?,
+                value,
+            ),
             HirExprKind::ArrayPair { .. } => return None,
-            _ => (IrConstant::Int(index.try_into().ok()?), element),
+            _ => (
+                IrConstant::Int(
+                    source_index(expr, index, element)
+                        .unwrap_or(index)
+                        .try_into()
+                        .ok()?,
+                ),
+                element,
+            ),
         };
-        let pattern = if let Some(children) = destructuring_patterns(module, value) {
+        let pattern = if let Some(children) = destructuring_patterns(module, value, source_index) {
             expressions::DestructuringPattern::Nested(children)
         } else {
             expressions::DestructuringPattern::Expr(value)
@@ -2643,6 +2662,48 @@ mod tests {
         assert!(snapshot.contains("local:0"), "{snapshot}");
         assert!(snapshot.contains("\"test\""), "{snapshot}");
         assert!(snapshot.contains("store_local local:1"), "{snapshot}");
+    }
+
+    #[test]
+    fn dynamic_static_method_call_lowers_variable_method_operand() {
+        let source = "<?php class DynamicStaticProbe { public static function test() { return 'ok'; } } $class = DynamicStaticProbe::class; $method = 'test'; echo $class::$method();";
+        let frontend = analyze_source(source);
+        let result = lower_frontend_result(
+            &frontend,
+            LoweringOptions {
+                source_text: Some(source.to_owned()),
+                ..LoweringOptions::default()
+            },
+        );
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("call_callable r"), "{snapshot}");
+        assert!(snapshot.contains("load_local r"), "{snapshot}");
+        assert!(!snapshot.contains("string \"method\""), "{snapshot}");
+    }
+
+    #[test]
+    fn function_import_alias_lowers_to_imported_name() {
+        let source = "<?php namespace App; use function Vendor\\Package\\helper as imported_helper; echo imported_helper();";
+        let frontend = analyze_source(source);
+        let result = lower_frontend_result(
+            &frontend,
+            LoweringOptions {
+                source_text: Some(source.to_owned()),
+                ..LoweringOptions::default()
+            },
+        );
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(
+            snapshot.contains("call_function") && snapshot.contains("vendor\\\\package\\\\helper"),
+            "{snapshot}"
+        );
+        assert!(!snapshot.contains("app\\\\imported_helper"), "{snapshot}");
     }
 
     #[test]
@@ -3977,6 +4038,29 @@ mod tests {
         assert!(snapshot.matches("store_local").count() >= 2, "{snapshot}");
         assert!(
             !snapshot.contains("foreach value target must be a simple local variable"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn foreach_lowers_list_destructuring_hole_offsets() {
+        let source = "<?php foreach ([[1, 2, 3]] as [$first, , $third]) { echo $third; }";
+        let frontend = analyze_source(source);
+        let result = lower_frontend_result(
+            &frontend,
+            LoweringOptions {
+                source_text: Some(source.to_owned()),
+                ..LoweringOptions::default()
+            },
+        );
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("$third"), "{snapshot}");
+        assert!(snapshot.contains("int 2"), "{snapshot}");
+        assert!(
+            !snapshot.contains("E_PHP_IR_DESTRUCTURING_HOLE_INDEX_GAP"),
             "{snapshot}"
         );
     }

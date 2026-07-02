@@ -396,6 +396,7 @@ pub struct BuiltinContext<'a> {
     sessions: BuiltinSessionContext<'a>,
     ini: IniRegistry,
     default_timezone: String,
+    network_requests_enabled: bool,
 }
 
 impl<'a> BuiltinContext<'a> {
@@ -414,6 +415,7 @@ impl<'a> BuiltinContext<'a> {
             sessions: BuiltinSessionContext::default(),
             ini: IniRegistry::default(),
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
+            network_requests_enabled: false,
         }
     }
 
@@ -433,7 +435,19 @@ impl<'a> BuiltinContext<'a> {
             sessions: BuiltinSessionContext::default(),
             ini: IniRegistry::default(),
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
+            network_requests_enabled: false,
         }
+    }
+
+    /// Allows request-local network builtins without reading process-global env.
+    pub fn set_network_requests_enabled(&mut self, enabled: bool) {
+        self.network_requests_enabled = enabled;
+    }
+
+    /// Returns whether request-local network builtins are explicitly enabled.
+    #[must_use]
+    pub const fn network_requests_enabled(&self) -> bool {
+        self.network_requests_enabled
     }
 
     /// Returns the output buffer.

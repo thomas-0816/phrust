@@ -1,4 +1,5 @@
 <?php
+// runtime-semantics: requires_ref_extension=mysqli
 $mysqli = new mysqli();
 if (!$mysqli->real_connect()) {
     echo 'connect-failed:' . $mysqli->connect_errno;

@@ -4453,10 +4453,9 @@ impl Vm {
             stack,
             state,
             &mut diagnostics,
-        ) {
-            if !result.status.is_success() {
-                return result;
-            }
+        ) && !result.status.is_success()
+        {
+            return result;
         }
         if let Some(result) = self.call_curl_response_callback(
             compiled,
@@ -4467,10 +4466,9 @@ impl Vm {
             stack,
             state,
             &mut diagnostics,
-        ) {
-            if !result.status.is_success() {
-                return result;
-            }
+        ) && !result.status.is_success()
+        {
+            return result;
         }
         VmResult::success_with_diagnostics(output.clone(), original_return_value, diagnostics)
     }
@@ -24323,6 +24321,8 @@ impl Vm {
                 output,
                 stack,
                 state,
+                allow_by_ref_value_warnings,
+                by_ref_warning_callable_name.clone(),
             ),
             Value::Array(array) => {
                 self.call_array_callable(
@@ -26550,36 +26550,47 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
+        allow_by_ref_value_warnings: bool,
+        by_ref_warning_callable_name: Option<String>,
     ) -> VmResult {
         if let Some((class_name, method)) = name.split_once("::") {
             return self.call_static_method_callable(
-                compiled, class_name, method, args, call_span, output, stack, state,
+                compiled,
+                class_name,
+                method,
+                args,
+                call_span,
+                output,
+                stack,
+                state,
+                allow_by_ref_value_warnings,
+                by_ref_warning_callable_name,
             );
         }
         let normalized = name.to_ascii_lowercase();
+        let make_call = |args| {
+            let call = FunctionCall::new(args, Vec::new())
+                .with_call_site_strict_types(compiled.unit().strict_types)
+                .with_optional_call_span(call_span);
+            if allow_by_ref_value_warnings {
+                call.with_by_ref_value_warnings()
+            } else {
+                call
+            }
+            .with_optional_by_ref_warning_callable_name(by_ref_warning_callable_name.clone())
+        };
         if let Some(function) = compiled.lookup_function(&normalized) {
             return self.execute_function(
                 compiled,
                 function,
-                FunctionCall::new(args, Vec::new())
-                    .with_call_site_strict_types(compiled.unit().strict_types)
-                    .with_optional_call_span(call_span),
+                make_call(args),
                 output,
                 stack,
                 state,
             );
         }
         if let Some((owner, function)) = dynamic_function_in_state(state, &normalized) {
-            return self.execute_function(
-                &owner,
-                function,
-                FunctionCall::new(args, Vec::new())
-                    .with_call_site_strict_types(compiled.unit().strict_types)
-                    .with_optional_call_span(call_span),
-                output,
-                stack,
-                state,
-            );
+            return self.execute_function(&owner, function, make_call(args), output, stack, state);
         }
         if is_autoload_builtin_name(&normalized)
             || is_symbol_introspection_builtin_name(&normalized)
@@ -27332,6 +27343,8 @@ impl Vm {
                 output,
                 stack,
                 state,
+                allow_by_ref_value_warnings,
+                None,
             ),
             other => self.runtime_error(
                 output,
@@ -30572,6 +30585,8 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
+        allow_by_ref_value_warnings: bool,
+        by_ref_warning_callable_name: Option<String>,
     ) -> VmResult {
         if is_closure_runtime_class(class_name) {
             let value = match closure_static_method_value(
@@ -30724,17 +30739,24 @@ impl Vm {
         }
         let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
+        let call = FunctionCall::new(args, Vec::new())
+            .with_call_site_strict_types(compiled.unit().strict_types)
+            .with_class_context(
+                declaring_class.name.clone(),
+                called_class,
+                declaring_class.name.clone(),
+            )
+            .with_optional_call_span(call_span);
+        let call = if allow_by_ref_value_warnings {
+            call.with_by_ref_value_warnings()
+        } else {
+            call
+        }
+        .with_optional_by_ref_warning_callable_name(by_ref_warning_callable_name);
         self.execute_function(
             &class_owner,
             method_entry.function,
-            FunctionCall::new(args, Vec::new())
-                .with_call_site_strict_types(compiled.unit().strict_types)
-                .with_class_context(
-                    declaring_class.name.clone(),
-                    called_class,
-                    declaring_class.name.clone(),
-                )
-                .with_optional_call_span(call_span),
+            call,
             output,
             stack,
             state,
@@ -31754,9 +31776,11 @@ impl Vm {
             "get_class_vars" => {
                 self.call_get_class_vars_builtin(compiled, values, output, stack, state)
             }
-            "call_user_func" => self.call_user_func_builtin(compiled, values, output, stack, state),
+            "call_user_func" => {
+                self.call_user_func_builtin(compiled, values, call_span, output, stack, state)
+            }
             "call_user_func_array" => {
-                self.call_user_func_array_builtin(compiled, values, output, stack, state)
+                self.call_user_func_array_builtin(compiled, values, call_span, output, stack, state)
             }
             "forward_static_call" => {
                 self.call_forward_static_call_builtin(compiled, values, output, stack, state)
@@ -32249,6 +32273,7 @@ impl Vm {
         &self,
         compiled: &CompiledUnit,
         values: Vec<Value>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -32276,8 +32301,8 @@ impl Vm {
         ) {
             return result;
         }
-        self.call_callable_with_by_ref_value_warnings(
-            compiled, callback, args, output, stack, state,
+        self.call_callable_inner(
+            compiled, callback, args, call_span, output, stack, state, true, None,
         )
     }
 
@@ -32285,6 +32310,7 @@ impl Vm {
         &self,
         compiled: &CompiledUnit,
         values: Vec<Value>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -32317,8 +32343,8 @@ impl Vm {
         ) {
             return result;
         }
-        self.call_callable_with_by_ref_value_warnings(
-            compiled, callback, args, output, stack, state,
+        self.call_callable_inner(
+            compiled, callback, args, call_span, output, stack, state, true, None,
         )
     }
 
@@ -54266,6 +54292,12 @@ fn execute_builtin_entry(
     );
     context.set_include_path(include_path);
     context.set_ini_registry(state.ini.clone());
+    context.set_network_requests_enabled(
+        runtime_context
+            .env
+            .iter()
+            .any(|(name, value)| name == "PHRUST_NET_TESTS" && value == "1"),
+    );
     if let php_runtime::RuntimeRequestMode::Http(request) = &runtime_context.request_mode {
         context.set_php_input(request.raw_body.clone());
     }
@@ -54679,11 +54711,12 @@ fn by_ref_value_given_warning(
     compiled: &CompiledUnit,
     function: &IrFunction,
     stack: &CallStack,
+    call_span: Option<php_ir::IrSpan>,
     position: usize,
     param_name: &str,
     callable_name: Option<&str>,
 ) -> RuntimeDiagnostic {
-    let source_span = runtime_source_span(compiled, function.span);
+    let source_span = runtime_source_span(compiled, call_span.unwrap_or(function.span));
     let callable = if let Some(callable_name) = callable_name {
         callable_name.to_owned()
     } else if function.flags.is_closure {
@@ -58932,8 +58965,6 @@ mod tests {
     use php_runtime::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
     use std::sync::Arc;
 
-    static CURL_NET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn property_fetch_profile<'a>(
         counters: &'a VmCounters,
         property: &str,
@@ -59147,12 +59178,6 @@ mod tests {
 
     #[test]
     fn curl_exec_invokes_header_and_write_callbacks() {
-        let _guard = CURL_NET_ENV_LOCK.lock().expect("curl env lock");
-        let previous = std::env::var_os("PHRUST_NET_TESTS");
-        unsafe {
-            std::env::set_var("PHRUST_NET_TESTS", "1");
-        }
-
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
         let port = listener.local_addr().expect("server addr").port();
         let server = std::thread::spawn(move || {
@@ -59170,8 +59195,9 @@ mod tests {
                 .expect("shutdown");
         });
 
-        let result = execute_source(&format!(
-            "<?php
+        let result = execute_source_with_options(
+            &format!(
+                "<?php
             class CurlCollector {{
                 public $headers = '';
                 public $body = '';
@@ -59195,16 +59221,13 @@ mod tests {
             echo '|', $collector->body;
             echo '|', $result;
             "
-        ));
-
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var("PHRUST_NET_TESTS", value);
+            ),
+            VmOptions {
+                runtime_context: RuntimeContext::default()
+                    .with_env(vec![("PHRUST_NET_TESTS".to_owned(), "1".to_owned())]),
+                ..VmOptions::default()
             },
-            None => unsafe {
-                std::env::remove_var("PHRUST_NET_TESTS");
-            },
-        }
+        );
         server.join().expect("server thread");
 
         assert!(result.status.is_success(), "{:?}", result.status);
@@ -73676,6 +73699,50 @@ $c = new foo;"#,
         );
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"by-ref");
+    }
+
+    #[test]
+    fn call_user_func_array_by_ref_value_warns_and_calls() {
+        let result = execute_source(
+            "<?php
+            function needs_ref(&$value): void { echo 'called'; }
+            call_user_func_array('needs_ref', [1]);
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(output.contains("Warning: needs_ref():"), "{output}");
+        assert!(output.contains("value given"), "{output}");
+        assert!(output.ends_with("called"), "{output}");
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.id() == "E_PHP_VM_BY_REF_ARG_VALUE_GIVEN_WARNING"
+                && diagnostic.severity() == RuntimeSeverity::Warning
+        }));
+    }
+
+    #[test]
+    fn list_destructuring_holes_use_source_offsets() {
+        let result =
+            execute_source("<?php [$first, , $third] = [1, 2, 3]; echo $first, ':', $third;");
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"1:3");
+    }
+
+    #[test]
+    fn dynamic_static_call_uses_variable_method_value() {
+        let result = execute_source(
+            "<?php
+            class DynamicStaticProbe { public static function label(): string { return 'ok'; } }
+            $class = DynamicStaticProbe::class;
+            $method = 'label';
+            echo $class::$method();
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"ok");
     }
 
     #[test]

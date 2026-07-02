@@ -53,6 +53,24 @@ pub(super) struct TraitCompositionInput<'a> {
     pub(super) class_parents: &'a ClassParentMap,
 }
 
+pub(super) struct PropertyLoweringInput<'a> {
+    pub(super) class_name: &'a str,
+    pub(super) display_class_name: &'a str,
+    pub(super) property: &'a HirProperty,
+    pub(super) class_constant_initializers: &'a ClassConstantInitializerMap,
+    pub(super) class_parents: &'a ClassParentMap,
+}
+
+pub(super) struct TraitCompositionMemberInput<'a> {
+    pub(super) module: &'a HirModule,
+    pub(super) trait_class_like: &'a php_semantics::hir::HirClassLike,
+    pub(super) trait_name: &'a str,
+    pub(super) class_name: &'a str,
+    pub(super) display_class_name: &'a str,
+    pub(super) class_constant_initializers: &'a ClassConstantInitializerMap,
+    pub(super) class_parents: &'a ClassParentMap,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TraitVisibility {
     Public,
@@ -388,11 +406,13 @@ impl LoweringContext<'_> {
                         self.push_lowered_property_entries(
                             builder,
                             &mut properties,
-                            &name,
-                            &display_class_name,
-                            property,
-                            &class_constant_initializers,
-                            &class_parents,
+                            PropertyLoweringInput {
+                                class_name: &name,
+                                display_class_name: &display_class_name,
+                                property,
+                                class_constant_initializers: &class_constant_initializers,
+                                class_parents: &class_parents,
+                            },
                         );
                     }
                     Some(ClassLikeMemberId::ClassConstant(const_id)) => {
@@ -554,12 +574,15 @@ impl LoweringContext<'_> {
         &mut self,
         builder: &mut IrBuilder,
         properties: &mut Vec<ClassPropertyEntry>,
-        class_name: &str,
-        display_class_name: &str,
-        property: &HirProperty,
-        class_constant_initializers: &ClassConstantInitializerMap,
-        class_parents: &ClassParentMap,
+        input: PropertyLoweringInput<'_>,
     ) {
+        let PropertyLoweringInput {
+            class_name,
+            display_class_name,
+            property,
+            class_constant_initializers,
+            class_parents,
+        } = input;
         let property_type = self.lower_runtime_type(property.type_id());
         let hooks = self.lower_property_hooks(builder, class_name, display_class_name, property);
         let set_visibility = property.modifiers().set_visibility();
@@ -1088,13 +1111,15 @@ impl LoweringContext<'_> {
                 };
                 self.collect_trait_composition_members(
                     builder,
-                    module,
-                    trait_class_like,
-                    &trait_name,
-                    class_name,
-                    display_class_name,
-                    class_constant_initializers,
-                    class_parents,
+                    TraitCompositionMemberInput {
+                        module,
+                        trait_class_like,
+                        trait_name: &trait_name,
+                        class_name,
+                        display_class_name,
+                        class_constant_initializers,
+                        class_parents,
+                    },
                     &mut candidates,
                     properties,
                 );
@@ -1222,16 +1247,19 @@ impl LoweringContext<'_> {
     pub(super) fn collect_trait_composition_members(
         &mut self,
         builder: &mut IrBuilder,
-        module: &HirModule,
-        trait_class_like: &php_semantics::hir::HirClassLike,
-        trait_name: &str,
-        class_name: &str,
-        display_class_name: &str,
-        class_constant_initializers: &ClassConstantInitializerMap,
-        class_parents: &ClassParentMap,
+        input: TraitCompositionMemberInput<'_>,
         candidates: &mut Vec<TraitMethodCandidate>,
         properties: &mut Vec<ClassPropertyEntry>,
     ) {
+        let TraitCompositionMemberInput {
+            module,
+            trait_class_like,
+            trait_name,
+            class_name,
+            display_class_name,
+            class_constant_initializers,
+            class_parents,
+        } = input;
         let display_trait_name = trait_class_like
             .name()
             .map(ToOwned::to_owned)
@@ -1271,11 +1299,13 @@ impl LoweringContext<'_> {
                     self.push_lowered_property_entries(
                         builder,
                         properties,
-                        class_name,
-                        display_class_name,
-                        property,
-                        class_constant_initializers,
-                        class_parents,
+                        PropertyLoweringInput {
+                            class_name,
+                            display_class_name,
+                            property,
+                            class_constant_initializers,
+                            class_parents,
+                        },
                     );
                 }
                 Some(ClassLikeMemberId::ClassConstant(const_id)) => {

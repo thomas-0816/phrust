@@ -54,12 +54,14 @@ CATEGORIES = (
     "wordpress_blockers",
     "wp_language_vm",
     "wp_autoload_stdlib",
+    "oracle_generated",
     "regressions",
     "known_gaps",
 )
 
 EXPECTATIONS = {"pass", "fail", "skip", "known_gap"}
 FIXTURE_DATA_DIRS = {"_data"}
+REF_EXTENSION_CACHE: dict[tuple[str, str], bool] = {}
 
 
 @dataclass
@@ -342,7 +344,37 @@ def run_reference(fixture: Fixture) -> dict:
     php_path = Path(php)
     if not php_path.is_file():
         return {"status": "error", "message": f"REFERENCE_PHP is not a file: {php}"}
+    required_extension = fixture.metadata.get("requires_ref_extension")
+    if required_extension and not reference_has_extension(php_path, required_extension):
+        return {
+            "status": "skip",
+            "message": f"REFERENCE_PHP missing extension {required_extension}",
+        }
     return run_process([str(php_path), str(fixture.path), *fixture.args], fixture.path, php_path)
+
+
+def reference_has_extension(php_path: Path, extension: str) -> bool:
+    key = (str(php_path), extension.lower())
+    if key in REF_EXTENSION_CACHE:
+        return REF_EXTENSION_CACHE[key]
+    try:
+        completed = subprocess.run(
+            [str(php_path), "-m"],
+            check=False,
+            capture_output=True,
+            env=process_env(),
+            text=True,
+        )
+    except OSError:
+        REF_EXTENSION_CACHE[key] = False
+        return False
+    loaded = {
+        line.strip().lower()
+        for line in completed.stdout.splitlines()
+        if line.strip() and not line.startswith("[")
+    }
+    REF_EXTENSION_CACHE[key] = completed.returncode == 0 and extension.lower() in loaded
+    return REF_EXTENSION_CACHE[key]
 
 
 def run_rust(fixture: Fixture, rust_vm: Path) -> dict:
@@ -358,15 +390,10 @@ def run_rust(fixture: Fixture, rust_vm: Path) -> dict:
 
 
 def run_process(command: list[str], fixture_path: Path, php_path: Path | None) -> dict:
-    env = {
-        "LC_ALL": "C",
-        "LANG": "C",
-        "NO_COLOR": "1",
-        "PHP_INI_SCAN_DIR": "",
-        "PATH": os.environ.get("PATH", ""),
-    }
     try:
-        completed = subprocess.run(command, check=False, capture_output=True, env=env, text=True)
+        completed = subprocess.run(
+            command, check=False, capture_output=True, env=process_env(), text=True
+        )
     except OSError as error:
         return {"status": "error", "message": f"failed to execute {command[0]}: {error}"}
     stderr = normalize_stderr(completed.stderr, fixture_path, php_path)
@@ -376,6 +403,16 @@ def run_process(command: list[str], fixture_path: Path, php_path: Path | None) -
         "stdout": completed.stdout,
         "stderr": completed.stderr,
         "stderr_normalized": stderr,
+    }
+
+
+def process_env() -> dict[str, str]:
+    return {
+        "LC_ALL": "C",
+        "LANG": "C",
+        "NO_COLOR": "1",
+        "PHP_INI_SCAN_DIR": "",
+        "PATH": os.environ.get("PATH", ""),
     }
 
 

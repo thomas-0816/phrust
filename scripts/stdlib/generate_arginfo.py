@@ -15,6 +15,10 @@ CLASS_RE = re.compile(
     r"(?P<name>[A-Za-z_\\][A-Za-z0-9_\\]*)[^{;]*\{",
     re.DOTALL,
 )
+NAMESPACE_RE = re.compile(
+    r"\bnamespace\s+(?P<name>[A-Za-z_\\][A-Za-z0-9_\\]*)\s*[;{]",
+    re.DOTALL,
+)
 FUNCTION_RE = re.compile(
     r"(?P<static>\bstatic\s+)?function\s+"
     r"(?P<name>[A-Za-z_\\][A-Za-z0-9_\\]*)\s*"
@@ -216,7 +220,7 @@ def find_class_ranges(text: str, relative: str, gaps: set[str]) -> list[ClassRan
             continue
         ranges.append(
             ClassRange(
-                name=match.group("name").split("\\")[-1],
+                name=qualify_name(namespace_at(text, match.start()), match.group("name")),
                 kind=match.group("kind"),
                 body_start=open_brace + 1,
                 body_end=close_brace,
@@ -225,6 +229,22 @@ def find_class_ranges(text: str, relative: str, gaps: set[str]) -> list[ClassRan
             )
         )
     return ranges
+
+
+def namespace_at(text: str, position: int) -> str | None:
+    namespace = None
+    for match in NAMESPACE_RE.finditer(text):
+        if match.start() >= position:
+            break
+        namespace = match.group("name").strip("\\")
+    return namespace or None
+
+
+def qualify_name(namespace: str | None, raw_name: str) -> str:
+    name = raw_name.strip("\\")
+    if "\\" in name or namespace is None:
+        return name
+    return f"{namespace}\\{name}"
 
 
 def find_matching_brace(text: str, open_brace: int) -> int | None:
