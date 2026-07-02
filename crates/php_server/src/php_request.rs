@@ -804,7 +804,8 @@ pub(crate) fn php_output_response(
         | PhpExecutionStatus::Fatal => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let stdout_len = output.stdout.len();
-    let body = if output.stdout.is_empty() && status != StatusCode::OK {
+    let execution_failed = output.status != PhpExecutionStatus::Success;
+    let body = if output.stdout.is_empty() && execution_failed {
         Bytes::from_static(b"php execution failed\n")
     } else if is_head {
         Bytes::new()

@@ -977,6 +977,7 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("str_pad", "standard"))
         .with_function(FunctionDescriptor::php("str_repeat", "standard"))
         .with_function(FunctionDescriptor::php("str_replace", "standard"))
+        .with_function(FunctionDescriptor::php("str_split", "standard"))
         .with_function(FunctionDescriptor::php("str_starts_with", "standard"))
         .with_function(FunctionDescriptor::php("strcasecmp", "standard"))
         .with_function(FunctionDescriptor::php("strcmp", "standard"))

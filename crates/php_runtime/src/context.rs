@@ -1162,9 +1162,28 @@ pub fn parse_cookie_header(cookie: &str) -> Vec<(String, String)> {
                 return None;
             }
             let (name, value) = trimmed.split_once('=')?;
-            Some((name.trim().to_string(), value.trim().to_string()))
+            Some((name.trim().to_string(), decode_cookie_value(value.trim())))
         })
         .collect()
+}
+
+fn decode_cookie_value(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let (Some(high), Some(low)) = (bytes.get(index + 1), bytes.get(index + 2))
+            && let (Some(high), Some(low)) = (hex_value(*high), hex_value(*low))
+        {
+            output.push(high << 4 | low);
+            index += 3;
+            continue;
+        }
+        output.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(output).unwrap_or_else(|_| input.to_string())
 }
 
 fn decode_component(input: &[u8]) -> Option<String> {
@@ -1330,14 +1349,17 @@ mod tests {
     }
 
     #[test]
-    fn cookie_header_parser_keeps_incoming_cookies_as_request_pairs() {
+    fn cookie_header_parser_raw_decodes_incoming_cookie_values() {
         assert_eq!(
-            parse_cookie_header("sid=abc; theme=dark%20mode; empty=; flag; spaced = value "),
+            parse_cookie_header(
+                "sid=abc; theme=dark%20mode; auth=user%7Ctoken; plus=a+b%2Bc; bad=%xx"
+            ),
             vec![
                 ("sid".to_string(), "abc".to_string()),
-                ("theme".to_string(), "dark%20mode".to_string()),
-                ("empty".to_string(), "".to_string()),
-                ("spaced".to_string(), "value".to_string()),
+                ("theme".to_string(), "dark mode".to_string()),
+                ("auth".to_string(), "user|token".to_string()),
+                ("plus".to_string(), "a+b+c".to_string()),
+                ("bad".to_string(), "%xx".to_string()),
             ]
         );
 

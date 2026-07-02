@@ -152,19 +152,60 @@ pub(in crate::builtins::modules) fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-pub(in crate::builtins::modules) fn html_escape(bytes: &[u8]) -> Vec<u8> {
+pub(in crate::builtins::modules) fn html_escape_with_options(
+    bytes: &[u8],
+    flags: i64,
+    double_encode: bool,
+) -> Vec<u8> {
     let mut output = Vec::new();
-    for byte in bytes {
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
         match byte {
+            b'&' if !double_encode => {
+                if let Some(entity_len) = valid_html_entity_len(&bytes[index..]) {
+                    output.extend_from_slice(&bytes[index..index + entity_len]);
+                    index += entity_len;
+                    continue;
+                }
+                output.extend_from_slice(b"&amp;");
+            }
             b'&' => output.extend_from_slice(b"&amp;"),
             b'<' => output.extend_from_slice(b"&lt;"),
             b'>' => output.extend_from_slice(b"&gt;"),
-            b'"' => output.extend_from_slice(b"&quot;"),
-            b'\'' => output.extend_from_slice(b"&#039;"),
-            _ => output.push(*byte),
+            b'"' if flags & 2 != 0 => output.extend_from_slice(b"&quot;"),
+            b'\'' if flags & 1 != 0 => output.extend_from_slice(b"&#039;"),
+            _ => output.push(byte),
         }
+        index += 1;
     }
     output
+}
+
+fn valid_html_entity_len(bytes: &[u8]) -> Option<usize> {
+    debug_assert_eq!(bytes.first(), Some(&b'&'));
+    let semicolon = bytes.iter().position(|byte| *byte == b';')?;
+    if semicolon < 3 {
+        return None;
+    }
+    let entity = &bytes[1..semicolon];
+    if let Some(decimal) = entity.strip_prefix(b"#") {
+        if !decimal.is_empty() && decimal.iter().all(u8::is_ascii_digit) {
+            return Some(semicolon + 1);
+        }
+    }
+    if let Some(hex) = entity
+        .strip_prefix(b"#x")
+        .or_else(|| entity.strip_prefix(b"#X"))
+    {
+        if !hex.is_empty() && hex.iter().all(u8::is_ascii_hexdigit) {
+            return Some(semicolon + 1);
+        }
+    }
+    if matches!(entity, b"amp" | b"lt" | b"gt" | b"quot" | b"apos") {
+        return Some(semicolon + 1);
+    }
+    None
 }
 
 pub(in crate::builtins::modules) fn html_decode(text: &str) -> Vec<u8> {

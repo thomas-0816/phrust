@@ -27,7 +27,7 @@ use crate::{
 };
 pub(in crate::builtins::modules) use encoding::{
     build_query_pairs, format_array_values, hash_digest_bytes, hex_decode, hex_encode, hex_nibble,
-    hmac_digest_bytes, html_decode, html_escape, url_decode, url_encode,
+    hmac_digest_bytes, html_decode, html_escape_with_options, url_decode, url_encode,
 };
 use http::{
     builtin_header, builtin_header_remove, builtin_headers_list, builtin_headers_sent,
@@ -9736,6 +9736,58 @@ mod tests {
                 &mut output
             ),
             Value::string("&lt;a&amp;&quot;&#039;&gt;")
+        );
+        assert_eq!(
+            call(
+                "htmlspecialchars",
+                vec![
+                    Value::string("?a=1&amp;b=2&#038;c=3&#x26;d=4"),
+                    Value::Int(3),
+                    Value::string("UTF-8"),
+                    Value::Bool(false)
+                ],
+                &mut output
+            ),
+            Value::string("?a=1&amp;b=2&#038;c=3&#x26;d=4")
+        );
+        assert_eq!(
+            call(
+                "htmlspecialchars",
+                vec![
+                    Value::string("&bogus;"),
+                    Value::Int(3),
+                    Value::string("UTF-8"),
+                    Value::Bool(false)
+                ],
+                &mut output
+            ),
+            Value::string("&amp;bogus;")
+        );
+        assert_eq!(
+            call(
+                "htmlspecialchars",
+                vec![
+                    Value::string("\"'"),
+                    Value::Int(0),
+                    Value::string("UTF-8"),
+                    Value::Bool(true)
+                ],
+                &mut output
+            ),
+            Value::string("\"'")
+        );
+        assert_eq!(
+            call(
+                "htmlspecialchars",
+                vec![
+                    Value::string("\"'"),
+                    Value::Int(2),
+                    Value::string("UTF-8"),
+                    Value::Bool(true)
+                ],
+                &mut output
+            ),
+            Value::string("&quot;'")
         );
         assert_eq!(
             call(

@@ -50778,6 +50778,18 @@ fn dynamic_class_entry_in_state<'a>(
         .find(|entry| normalize_class_name(&entry.class.name) == normalized)
 }
 
+fn dynamic_class_in_loaded_units(
+    state: &ExecutionState,
+    class_name: &str,
+) -> Option<php_ir::module::ClassEntry> {
+    let normalized = normalize_class_name(class_name);
+    state.dynamic_units.iter().rev().find_map(|unit| {
+        unit.lookup_class(&normalized)
+            .filter(|class| normalize_class_name(&class.name) == normalized)
+            .cloned()
+    })
+}
+
 fn closure_owner_for_function(
     compiled: &CompiledUnit,
     state: &ExecutionState,
@@ -50851,6 +50863,9 @@ fn lookup_class_in_state(
         return Some(class);
     }
     if let Some(class) = compiled.lookup_class(class_name).cloned() {
+        return Some(class);
+    }
+    if let Some(class) = dynamic_class_in_loaded_units(state, &normalized) {
         return Some(class);
     }
     if state.failed_class_declarations.contains(&normalized) {
@@ -54026,6 +54041,7 @@ fn internal_builtin_string_arg_positions(name: &str, arity: usize) -> &'static [
         | "rawurlencode"
         | "rtrim"
         | "sha1"
+        | "str_split"
         | "stripslashes"
         | "stripcslashes"
         | "strlen"
@@ -54089,6 +54105,7 @@ fn internal_function_dispatch_cacheable(name: &str) -> bool {
                 | "str_ends_with"
                 | "str_repeat"
                 | "str_replace"
+                | "str_split"
                 | "str_starts_with"
                 | "strtolower"
                 | "strtoupper"
@@ -57627,6 +57644,7 @@ fn internal_builtin_generated_named_args_supported(function: &str) -> bool {
             | "round"
             | "strlen"
             | "str_contains"
+            | "str_split"
             | "str_starts_with"
             | "str_ends_with"
             | "strtolower"
@@ -60174,6 +60192,61 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
     }
 
     #[test]
+    fn included_parent_static_factory_instantiates_later_child() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-include-parent-static-factory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::write(
+            root.join("Base.php"),
+            "<?php
+            #[AllowDynamicProperties]
+            abstract class IncludedFactoryBase {
+                final public static function get_instance() {
+                    $manager = 'IncludedFactoryChild';
+                    return new $manager();
+                }
+                public function value(): string { return 'base'; }
+            }
+            ",
+        )
+        .expect("parent class should be written");
+        std::fs::write(
+            root.join("Child.php"),
+            "<?php
+            class IncludedFactoryChild extends IncludedFactoryBase {
+                public function value(): string { return parent::value() . '|child'; }
+            }
+            ",
+        )
+        .expect("child class should be written");
+        let source = "<?php
+            require __DIR__ . '/Base.php';
+            require __DIR__ . '/Child.php';
+            echo IncludedFactoryBase::get_instance()->value();
+        ";
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.to_string_lossy(), "base|child");
+    }
+
+    #[test]
     fn included_magic_property_methods_handle_inaccessible_declared_properties() {
         let root = std::env::temp_dir().join(format!(
             "phrust-vm-include-magic-property-{}-{}",
@@ -61267,6 +61340,25 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
         );
         assert!(strict.status.is_success(), "{:?}", strict.status);
         assert_eq!(strict.output.as_bytes(), b"strlen|ord");
+    }
+
+    #[test]
+    fn str_split_chunks_strings_and_reports_invalid_length() {
+        let result = execute_source(
+            "<?php
+            echo json_encode(str_split('abc')), '|';
+            echo json_encode(str_split('abcd', 2)), '|';
+            echo json_encode(str_split('')), '|';
+            echo json_encode(str_split(string: 'wxyz', length: 3)), '|';
+            try { str_split('abc', 0); } catch (ValueError $e) { echo $e->getMessage(); }
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "[\"a\",\"b\",\"c\"]|[\"ab\",\"cd\"]|[]|[\"wxy\",\"z\"]|str_split(): Argument #2 ($length) must be greater than 0"
+        );
     }
 
     #[test]

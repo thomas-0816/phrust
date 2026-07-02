@@ -1246,6 +1246,28 @@ fn server_synthetic_plugin_theme_fixture_runs() {
     );
 }
 
+#[test]
+fn successful_php_redirect_without_stdout_has_empty_body() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("redirect.php"),
+        "<?php header('Location: /next', true, 302); exit;",
+    )
+    .expect("write redirect fixture");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let redirect = http_request(&address, "GET", "/redirect.php");
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(redirect.starts_with("HTTP/1.1 302 Found"), "{redirect}");
+    assert_response_contains_header(&redirect, "location", "/next");
+    assert_response_contains_header(&redirect, "content-length", "0");
+    assert_eq!(response_body(&redirect), "");
+}
+
 #[cfg(unix)]
 #[test]
 fn server_rejects_symlink_escape_from_docroot() {

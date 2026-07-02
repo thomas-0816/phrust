@@ -694,6 +694,7 @@ mod tests {
             "rawurldecode",
             "rawurlencode",
             "sha1",
+            "str_split",
             "urldecode",
             "urlencode",
         ] {

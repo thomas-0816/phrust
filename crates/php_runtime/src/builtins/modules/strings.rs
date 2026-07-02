@@ -113,6 +113,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_str_replace,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("str_split", builtin_str_split, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "str_starts_with",
         builtin_str_starts_with,
@@ -706,6 +707,36 @@ pub(in crate::builtins::modules) fn builtin_str_repeat(
     Ok(Value::string(string.as_bytes().repeat(count as usize)))
 }
 
+pub(in crate::builtins::modules) fn builtin_str_split(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(arity_error("str_split", "one or two argument(s)"));
+    }
+    let string = string_arg("str_split", &args[0])?;
+    let length = args
+        .get(1)
+        .map(|value| int_arg("str_split", value))
+        .transpose()?
+        .unwrap_or(1);
+    if length <= 0 {
+        return Err(argument_value_error(
+            "str_split",
+            "#2 ($length)",
+            "must be greater than 0",
+        ));
+    }
+    Ok(Value::Array(PhpArray::from_packed(
+        string
+            .as_bytes()
+            .chunks(length as usize)
+            .map(Value::string)
+            .collect(),
+    )))
+}
+
 pub(in crate::builtins::modules) fn builtin_str_pad(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -1118,8 +1149,19 @@ pub(in crate::builtins::modules) fn builtin_htmlspecialchars(
             "builtin htmlspecialchars expects one to four argument(s)",
         ));
     }
-    Ok(Value::string(html_escape(
+    let flags = args
+        .get(1)
+        .map_or(Ok(3), |value| int_arg("htmlspecialchars", value))?;
+    let double_encode = args.get(3).map_or(Ok(true), to_bool).map_err(|message| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!("builtin htmlspecialchars expects bool-compatible double_encode: {message}"),
+        )
+    })?;
+    Ok(Value::string(html_escape_with_options(
         string_arg("htmlspecialchars", &args[0])?.as_bytes(),
+        flags,
+        double_encode,
     )))
 }
 
