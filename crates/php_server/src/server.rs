@@ -17,7 +17,7 @@ use php_executor::{CompiledScriptCache, IncludeCache};
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{Arc, Mutex, atomic::AtomicU64},
+    sync::{Arc, atomic::AtomicU64},
     time::Duration,
 };
 use tokio::{net::TcpListener, sync::Semaphore};
@@ -215,7 +215,6 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             cookie_path: config.session_cookie_path,
         },
         session_store,
-        session_lock: Arc::new(Mutex::new(())),
         local_addr,
         request_scheme: if startup_tls_enabled { "https" } else { "http" },
     });
@@ -659,7 +658,6 @@ mod tests {
                 cookie_path: "/".to_string(),
             },
             session_store: Arc::new(SessionStore::new(fixture.root.join("sessions"))),
-            session_lock: Arc::new(Mutex::new(())),
             local_addr: "127.0.0.1:8080".parse().expect("local addr"),
             request_scheme: "http",
         }

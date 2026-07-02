@@ -3,7 +3,8 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
     process::{Child, Command as Proc, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Barrier},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[test]
@@ -1349,7 +1350,132 @@ fn server_rejects_upload_file_over_limit() {
 }
 
 #[test]
-fn server_returns_503_when_max_in_flight_is_exhausted() {
+fn server_handles_default_two_hundred_concurrent_requests() {
+    let docroot = temp_docroot();
+    fs::write(docroot.join("static.txt"), "ok\n").expect("write static fixture");
+    let mut child = start_server(&docroot, &[]);
+
+    let address = read_listening_address(&mut child);
+    let start = Arc::new(Barrier::new(201));
+    let mut handles = Vec::with_capacity(200);
+    for _ in 0..200 {
+        let address = address.clone();
+        let start = Arc::clone(&start);
+        handles.push(std::thread::spawn(move || {
+            start.wait();
+            http_request(&address, "GET", "/static.txt")
+        }));
+    }
+    start.wait();
+    let responses = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("join request thread"))
+        .collect::<Vec<_>>();
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    for response in responses {
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert_eq!(response_body(&response), "ok\n");
+    }
+}
+
+#[test]
+fn server_waits_for_in_flight_capacity_before_overload() {
+    let docroot = fixture_docroot("fixtures/server/php");
+    let mut child = start_server(
+        &docroot,
+        &["--max-in-flight", "1", "--request-timeout-ms", "5000"],
+    );
+
+    let address = read_listening_address(&mut child);
+    let mut held_stream = TcpStream::connect(&address).expect("connect held request");
+    held_stream
+        .write_all(
+            b"POST /post.php HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\nConnection: close\r\n\r\n",
+        )
+        .expect("write held request headers");
+
+    let queued_address = address.clone();
+    let queued = std::thread::spawn(move || http_request(&queued_address, "GET", "/hello.php"));
+    std::thread::sleep(Duration::from_millis(100));
+    held_stream
+        .write_all(b"name=queued")
+        .expect("finish held request body");
+    held_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set held read timeout");
+    let mut held_response = String::new();
+    held_stream
+        .read_to_string(&mut held_response)
+        .expect("read held response");
+    let queued_response = queued.join().expect("join queued request");
+
+    stop_child(child);
+
+    assert!(
+        held_response.starts_with("HTTP/1.1 200 OK"),
+        "{held_response}"
+    );
+    assert!(held_response.ends_with("queued\n"), "{held_response}");
+    assert!(
+        queued_response.starts_with("HTTP/1.1 200 OK"),
+        "{queued_response}"
+    );
+    assert!(queued_response.ends_with("hello\n"), "{queued_response}");
+}
+
+#[test]
+fn server_runs_session_requests_without_global_execution_lock() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("session_slow.php"),
+        "<?php\nsession_start();\nusleep(400000);\necho \"done\\n\";\n",
+    )
+    .expect("write slow session fixture");
+    let mut child = start_server(
+        &docroot,
+        &["--max-in-flight", "4", "--max-execution-ms", "5000"],
+    );
+
+    let address = read_listening_address(&mut child);
+    let warmup = http_request(&address, "GET", "/session_slow.php");
+    assert!(warmup.starts_with("HTTP/1.1 200 OK"), "{warmup}");
+
+    let start = Arc::new(Barrier::new(4));
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let address = address.clone();
+        let start = Arc::clone(&start);
+        handles.push(std::thread::spawn(move || {
+            start.wait();
+            http_request(&address, "GET", "/session_slow.php")
+        }));
+    }
+    start.wait();
+    let responses = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("join session request thread"))
+        .collect::<Vec<_>>();
+    let elapsed = started.elapsed();
+
+    stop_child(child);
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    for response in responses {
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.ends_with("done\n"), "{response}");
+    }
+    assert!(
+        elapsed < Duration::from_millis(1_000),
+        "session requests were serialized: elapsed={elapsed:?}"
+    );
+}
+
+#[test]
+fn server_returns_503_when_max_in_flight_wait_expires() {
     let docroot = fixture_docroot("fixtures/server/php");
     let mut child = start_server(
         &docroot,
@@ -1365,7 +1491,9 @@ fn server_returns_503_when_max_in_flight_is_exhausted() {
         .expect("write held request headers");
     std::thread::sleep(Duration::from_millis(100));
 
+    let started = Instant::now();
     let response = http_request(&address, "GET", "/hello.php");
+    let elapsed = started.elapsed();
 
     drop(held_stream);
     stop_child(child);
@@ -1376,6 +1504,10 @@ fn server_returns_503_when_max_in_flight_is_exhausted() {
     );
     assert_response_contains_header(&response, "retry-after", "1");
     assert!(response.ends_with("server overloaded\n"), "{response}");
+    assert!(
+        elapsed >= Duration::from_millis(450),
+        "overload response did not wait for capacity: elapsed={elapsed:?}"
+    );
 }
 
 #[test]

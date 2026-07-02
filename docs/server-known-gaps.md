@@ -44,8 +44,8 @@ Remaining known gaps:
 - Cache invalidation is local to one process through an explicitly enabled
   loopback-only admin endpoint; there is no cross-process cache sharing or
   invalidation protocol.
-- The server handles a bounded in-flight request set, but it is not a complete
-  production process manager.
+- The server handles a bounded in-flight request set with a default limit of
+  200, but it is not a complete production process manager.
 - Include/require resolution is limited to deterministic allowed roots derived
   from the request script, document root, current working directory, and include
   path.

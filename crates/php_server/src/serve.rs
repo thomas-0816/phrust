@@ -36,6 +36,8 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
+const REQUEST_ADMISSION_TIMEOUT: Duration = Duration::from_millis(500);
+
 pub(crate) async fn serve_until_shutdown(
     listener: TcpListener,
     state: Arc<AppState>,
@@ -128,25 +130,33 @@ pub(crate) async fn handle(
             ),
         ]),
     );
-    let Ok(_permit) = Arc::clone(&state.in_flight).try_acquire_owned() else {
-        state.metrics.overload.fetch_add(1, Ordering::Relaxed);
-        let response = overloaded();
-        state.metrics.record_response(response.status());
-        write_access_log(
-            &state,
-            AccessLogEntry {
-                timestamp: request_time() as u64,
-                method: method.as_str(),
-                path: &request_target,
-                status: response.status(),
-                bytes: response_content_length(&response),
-                duration: started.elapsed(),
-                route: "overload",
-                cache_hit: None,
-            },
-        );
-        debug!(%peer, "request rejected because max in-flight limit is exhausted");
-        return response;
+    let _permit = match timeout(
+        REQUEST_ADMISSION_TIMEOUT,
+        Arc::clone(&state.in_flight).acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) | Err(_) => {
+            state.metrics.overload.fetch_add(1, Ordering::Relaxed);
+            let response = overloaded();
+            state.metrics.record_response(response.status());
+            write_access_log(
+                &state,
+                AccessLogEntry {
+                    timestamp: request_time() as u64,
+                    method: method.as_str(),
+                    path: &request_target,
+                    status: response.status(),
+                    bytes: response_content_length(&response),
+                    duration: started.elapsed(),
+                    route: "overload",
+                    cache_hit: None,
+                },
+            );
+            debug!(%peer, "request rejected because max in-flight admission wait expired");
+            return response;
+        }
     };
     let route = resolve_route(method.as_str(), parts.uri.path(), &state.route_config);
     emit_server_debug(

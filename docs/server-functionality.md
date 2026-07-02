@@ -97,10 +97,11 @@ longer creates `sess_<id>` files there. Operators can override cookie behavior
 with `--session-cookie-name` and `--session-cookie-path`, or disable the feature
 with `--disable-sessions`.
 
-The server holds a process-local session mutex while loading, executing, and
-finalizing a request. This prevents in-process concurrent request corruption.
-It is not a cross-process store, so sessions do not persist across server
-restarts and are not shared between multiple server processes.
+Session state is loaded and finalized per request without a global execution
+mutex. Requests can run concurrently up to the server in-flight request limit;
+concurrent writes for the same session id use last-completing-request-wins
+semantics. The store is not cross-process, so sessions do not persist across
+server restarts and are not shared between multiple server processes.
 
 ## PHP Execution Deadlines
 
@@ -218,7 +219,7 @@ front_controller = "index.php"
 max_body_bytes = 1048576
 upload_temp_dir = "/var/tmp/phrust-uploads"
 session_save_path = "/var/tmp/phrust-sessions"
-max_in_flight = 128
+max_in_flight = 200
 request_timeout_ms = 30000
 max_execution_ms = 30000
 metrics_endpoint_enabled = true

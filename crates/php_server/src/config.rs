@@ -22,6 +22,7 @@ const DEFAULT_SCRIPT_CACHE_MAX_ENTRIES: usize = 4096;
 const DEFAULT_SCRIPT_CACHE_CHECK_INTERVAL_MS: u64 = 0;
 const DEFAULT_SESSION_COOKIE_NAME: &str = "PHPSESSID";
 const DEFAULT_SESSION_COOKIE_PATH: &str = "/";
+const DEFAULT_MAX_IN_FLIGHT: usize = 200;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerConfig {
@@ -711,7 +712,7 @@ fn validate_relative_path(flag: &str, path: &Path) -> Result<(), ConfigError> {
 }
 
 fn default_max_in_flight() -> usize {
-    std::thread::available_parallelism().map_or(256, |count| count.get().saturating_mul(256))
+    DEFAULT_MAX_IN_FLIGHT
 }
 
 #[cfg(test)]
@@ -774,7 +775,7 @@ mod tests {
         assert!(!config.cache_clear_endpoint_enabled);
         assert!(config.front_controller.is_none());
         assert!(!config.help);
-        assert!(config.max_in_flight > 0);
+        assert_eq!(config.max_in_flight, 200);
     }
 
     #[test]

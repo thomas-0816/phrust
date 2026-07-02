@@ -282,16 +282,6 @@ pub(crate) async fn execute_php_request(
         }
     }
     let upload_cleanup = request_context.uploaded_files.clone();
-    let _session_guard = if state.session_config.enabled {
-        Some(
-            state
-                .session_lock
-                .lock()
-                .expect("session mutex poisoned while handling request session"),
-        )
-    } else {
-        None
-    };
     emit_server_debug(
         &state,
         Some(&request_id),

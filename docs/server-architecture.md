@@ -33,6 +33,8 @@ runtime, and VM in the server process.
 Request body reads obey `--max-body-bytes` and the `--request-timeout-ms`
 body-read timeout. PHP execution is bounded by the cooperative
 `--max-execution-ms` VM deadline and by the server in-flight request limit.
+The default limit is 200 concurrent requests; excess requests wait up to 500 ms
+for capacity before receiving `503 Service Unavailable`.
 Deadline checks happen in VM dispatch; native blocking builtins are observed
 when control returns to dispatch rather than by preemptive Tokio cancellation.
 

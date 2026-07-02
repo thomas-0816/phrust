@@ -9,7 +9,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -36,7 +36,6 @@ pub(crate) struct AppState {
     pub(crate) request_counter: Arc<AtomicU64>,
     pub(crate) session_config: SessionConfig,
     pub(crate) session_store: Arc<SessionStore>,
-    pub(crate) session_lock: Arc<Mutex<()>>,
     pub(crate) local_addr: SocketAddr,
     pub(crate) request_scheme: &'static str,
 }

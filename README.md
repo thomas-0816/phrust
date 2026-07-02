@@ -100,7 +100,9 @@ external PHP process fallback.
 Static file reads, route filesystem metadata checks, and PHP execution stay on
 the integrated server path. `--request-timeout-ms` bounds request body reads;
 PHP execution is bounded by the cooperative `--max-execution-ms` deadline and
-the server in-flight request limit.
+the server in-flight request limit. The default in-flight request limit is 200;
+requests above that limit wait briefly for capacity before receiving `503
+Service Unavailable`.
 
 The server uses the process-local compiled-script cache described in
 `docs/cache-architecture.md`; the CLI bytecode artifact cache remains a separate
