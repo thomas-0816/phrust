@@ -258,6 +258,19 @@ impl TieringState {
         }
     }
 
+    /// Returns true when per-site exit-policy bookkeeping has a consumer.
+    ///
+    /// The exit-policy table only feeds native-tier compile/blacklist
+    /// decisions (jit-cranelift builds) and optional tiering stats. Without
+    /// either, the per-site `ExitCounterKey` allocation and map updates are
+    /// write-only work on the dispatch hot path. Aggregate quickening/IC
+    /// stats (including `guard_failure_score`, which tier decisions read)
+    /// are recorded unconditionally by the callers below.
+    #[inline]
+    fn exit_policy_recording_active(&self) -> bool {
+        cfg!(feature = "jit-cranelift") || self.options.collect_stats
+    }
+
     pub fn record_quickening_site(
         &mut self,
         function: FunctionId,
@@ -265,7 +278,7 @@ impl TieringState {
         observation: QuickeningObservation,
     ) {
         self.record_quickening(observation);
-        if !self.options.enabled {
+        if !self.options.enabled || !self.exit_policy_recording_active() {
             return;
         }
         let key = ExitCounterKey::bytecode(
@@ -306,7 +319,7 @@ impl TieringState {
         observation: InlineCacheObservation,
     ) {
         self.record_inline_cache(observation);
-        if !self.options.enabled {
+        if !self.options.enabled || !self.exit_policy_recording_active() {
             return;
         }
         let guard_kind = inline_cache_guard_kind(observation.kind);
