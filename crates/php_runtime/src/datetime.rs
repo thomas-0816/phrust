@@ -519,15 +519,36 @@ fn parse_absolute_datetime(text: &str) -> Option<i64> {
     if date_parts.next().is_some() {
         return None;
     }
-    let time = time
-        .split_once(['+', '-'])
-        .map_or(time, |(clock, _)| clock)
-        .trim();
+    let (time, offset) = split_time_and_offset(time)?;
     let mut time_parts = time.split(':');
     let hour = time_parts.next().unwrap_or("0").parse::<u8>().ok()?;
     let minute = time_parts.next().unwrap_or("0").parse::<u8>().ok()?;
-    let second = time_parts.next().unwrap_or("0").parse::<u8>().ok()?;
-    Some(parts_to_timestamp(year, month, day, hour, minute, second))
+    let second = parse_second_component(time_parts.next().unwrap_or("0"))?;
+    let timestamp = parts_to_timestamp(year, month, day, hour, minute, second);
+    Some(offset.map_or(timestamp, |offset| timestamp.saturating_sub(offset)))
+}
+
+fn split_time_and_offset(time: &str) -> Option<(&str, Option<i64>)> {
+    let trimmed = time.trim();
+    let offset_start = trimmed
+        .char_indices()
+        .skip(1)
+        .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index));
+    if let Some(offset_start) = offset_start {
+        let (clock, offset) = trimmed.split_at(offset_start);
+        return Some((
+            clock.trim(),
+            Some(fixed_timezone_offset_seconds(offset.trim())?),
+        ));
+    }
+    Some((trimmed, None))
+}
+
+fn parse_second_component(component: &str) -> Option<u8> {
+    let seconds = component
+        .split_once('.')
+        .map_or(component, |(seconds, _)| seconds);
+    seconds.parse::<u8>().ok()
 }
 
 fn absolute_text_has_explicit_timezone(text: &str) -> bool {
@@ -785,7 +806,7 @@ fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_interval, format_timestamp};
+    use super::{format_interval, format_timestamp, parse_datetime_text};
 
     #[test]
     fn interval_format_supports_unpadded_and_padded_fields() {
@@ -810,6 +831,26 @@ mod tests {
         assert_eq!(
             format_timestamp(1_704_198_485, "UTC", "g h a A"),
             "12 12 pm PM"
+        );
+    }
+
+    #[test]
+    fn datetime_parser_accepts_rfc3339_fractional_seconds() {
+        assert_eq!(
+            parse_datetime_text("2026-07-03T02:03:18.228Z", 0),
+            Some(1_783_044_198)
+        );
+    }
+
+    #[test]
+    fn datetime_parser_applies_numeric_timezone_offsets() {
+        assert_eq!(
+            parse_datetime_text("2026-07-03T04:03:18.228+02:00", 0),
+            Some(1_783_044_198)
+        );
+        assert_eq!(
+            parse_datetime_text("2026-07-03T04:03:18.228+0200", 0),
+            Some(1_783_044_198)
         );
     }
 }
