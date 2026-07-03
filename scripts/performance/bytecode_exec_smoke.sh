@@ -34,8 +34,10 @@ supported_fixtures=(
   "tests/fixtures/performance/framework_smoke/packed_mixed_array_traversal.php"
 )
 
+# Must stay outside the dense subset in strict mode; includes gained dense
+# support, so generator yields are the probe now.
 strict_unsupported_fixtures=(
-  "fixtures/bytecode/fallback/include-unsupported.php:include"
+  "fixtures/runtime/valid/generators/yield.php:instruction_subset"
 )
 
 auto_fallback_fixtures=(
@@ -46,7 +48,6 @@ auto_fallback_fixtures=(
   "fixtures/bytecode/fallback/dynamic-property-auto.php:object_instantiation"
   "fixtures/bytecode/fallback/typed-property-auto.php:object_instantiation"
   "fixtures/bytecode/fallback/property-hook-auto.php:object_instantiation"
-  "tests/fixtures/performance/inline_cache/include-path-cache.php:include"
 )
 
 json_escape() {
@@ -132,7 +133,9 @@ PY
   summary_rows+=("$(json_escape "${fixture}")")
 done
 
-fallback_fixture="fixtures/runtime/valid/scalars/casts.php"
+# Must stay a mixed-plan fixture: the unit lowers but main is rich-planned.
+# casts.php stopped qualifying when `cast` joined the dense subset.
+fallback_fixture="fixtures/runtime/valid/exceptions/catch-exception.php"
 fallback_ir_stdout="${OUT_DIR}/fallback.ir.stdout"
 fallback_ir_stderr="${OUT_DIR}/fallback.ir.stderr"
 fallback_auto_stdout="${OUT_DIR}/fallback.auto.stdout"
