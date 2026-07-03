@@ -25,7 +25,7 @@ use php_executor::{
 };
 use php_runtime::api::{
     RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionLoadCallback,
-    SessionState, parse_cookie_header, parse_form_urlencoded_body,
+    SessionState, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
 };
 use std::{
     collections::BTreeMap,
@@ -939,6 +939,7 @@ pub(crate) fn http_runtime_context(
     context.https = state.request_scheme == "https";
     context.php_self = php_self_for(script_name, path_info.as_deref());
     context.path_info = path_info;
+    apply_wordpress_rest_rewrite(&mut context);
     context.remote_addr = peer.ip().to_string();
     context.request_time = request_time;
     context.request_time_float_micros = request_time_float_micros;
@@ -971,6 +972,58 @@ pub(crate) fn http_runtime_context(
         context.parsed_cookie = parse_cookie_header(&cookie);
     }
     context
+}
+
+fn apply_wordpress_rest_rewrite(context: &mut RuntimeHttpRequestContext) {
+    let Some(rest_route) = wordpress_rest_route_from_path_info(context.path_info.as_deref()) else {
+        return;
+    };
+    let rest_query = format!("rest_route={}", percent_encode_query_value(&rest_route));
+    context.query_string = if context.query_string.is_empty() {
+        rest_query
+    } else {
+        format!("{rest_query}&{}", context.query_string)
+    };
+    context.parsed_get = parse_query_string(&context.query_string);
+}
+
+fn wordpress_rest_route_from_path_info(path_info: Option<&str>) -> Option<String> {
+    let path_info = path_info?;
+    let rest = match path_info {
+        "/wp-json" | "/wp-json/" => "",
+        path if path.starts_with("/wp-json/") => &path["/wp-json/".len()..],
+        _ => return None,
+    };
+    if rest.is_empty() {
+        Some("/".to_string())
+    } else {
+        Some(format!("/{rest}"))
+    }
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push(hex_digit(byte >> 4));
+                encoded.push(hex_digit(byte & 0x0f));
+            }
+        }
+    }
+    encoded
+}
+
+fn hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'A' + (nibble - 10)) as char,
+        _ => unreachable!("hex nibble is four bits"),
+    }
 }
 
 pub(crate) fn php_runtime_context_for_http(

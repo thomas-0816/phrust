@@ -636,6 +636,45 @@ mod tests {
     }
 
     #[test]
+    fn http_runtime_context_rewrites_wordpress_rest_path_info_query_var() {
+        let fixture = ServerCacheFixture::new();
+        let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        state.local_addr = "127.0.0.1:18080".parse().expect("local addr");
+        let script_path = fixture.write_named("index.php", "<?php echo 'ok';");
+        let (parts, _) = Request::builder()
+            .method("GET")
+            .uri("/wp-json/wp/v2/types?context=edit")
+            .header(header::HOST, "127.0.0.1:18080")
+            .body(())
+            .expect("request")
+            .into_parts();
+
+        let context = http_runtime_context(
+            &parts,
+            &state,
+            &script_path,
+            "/index.php",
+            Some("/wp-json/wp/v2/types".to_string()),
+            Arc::from(&b""[..]),
+            "127.0.0.1:50123".parse().expect("peer addr"),
+        );
+
+        assert_eq!(context.request_uri, "/wp-json/wp/v2/types?context=edit");
+        assert_eq!(
+            context.query_string,
+            "rest_route=%2Fwp%2Fv2%2Ftypes&context=edit"
+        );
+        assert_eq!(
+            context.parsed_get,
+            vec![
+                ("rest_route".to_string(), "/wp/v2/types".to_string()),
+                ("context".to_string(), "edit".to_string()),
+            ]
+        );
+        assert_eq!(context.path_info.as_deref(), Some("/wp-json/wp/v2/types"));
+    }
+
+    #[test]
     fn tls_fixture_cert_and_key_load() {
         let cert = tls_fixture("localhost.crt");
         let key = tls_fixture("localhost.key");
