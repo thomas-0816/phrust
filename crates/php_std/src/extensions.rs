@@ -1079,27 +1079,117 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_constant(ConstantDescriptor::with_value(
             "IMAGETYPE_GIF",
             "standard",
-            ConstantValue::Int(1),
+            ConstantValue::Int(constants::IMAGETYPE_GIF),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "IMAGETYPE_JPEG",
             "standard",
-            ConstantValue::Int(2),
+            ConstantValue::Int(constants::IMAGETYPE_JPEG),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "IMAGETYPE_PNG",
             "standard",
-            ConstantValue::Int(3),
+            ConstantValue::Int(constants::IMAGETYPE_PNG),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_SWF",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_SWF),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_PSD",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_PSD),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_BMP",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_BMP),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_TIFF_II",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_TIFF_II),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_TIFF_MM",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_TIFF_MM),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_JPC",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_JPC),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_JP2",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_JP2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_JPX",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_JPX),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_JB2",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_JB2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_SWC",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_SWC),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_IFF",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_IFF),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_WBMP",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_WBMP),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_JPEG2000",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_JPEG2000),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_XBM",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_XBM),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_ICO",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_ICO),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "IMAGETYPE_WEBP",
             "standard",
-            ConstantValue::Int(18),
+            ConstantValue::Int(constants::IMAGETYPE_WEBP),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "IMAGETYPE_AVIF",
             "standard",
-            ConstantValue::Int(19),
+            ConstantValue::Int(constants::IMAGETYPE_AVIF),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_HEIF",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_HEIF),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_UNKNOWN",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_UNKNOWN),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "IMAGETYPE_COUNT",
+            "standard",
+            ConstantValue::Int(constants::IMAGETYPE_COUNT),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "UPLOAD_ERR_OK",

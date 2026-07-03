@@ -24,6 +24,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_mime_content_type,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new(
+        "image_type_to_mime_type",
+        builtin_image_type_to_mime_type,
+        BuiltinCompatibility::Php,
+    ),
 ];
 
 pub(in crate::builtins::modules) const FILEINFO_NONE: i64 = 0;
@@ -121,6 +126,20 @@ fn builtin_mime_content_type(
         FILEINFO_MIME_TYPE,
         span,
     )
+}
+
+fn builtin_image_type_to_mime_type(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("image_type_to_mime_type", "one argument"));
+    }
+    Ok(Value::string(image_type_to_mime_type(int_arg(
+        "image_type_to_mime_type",
+        &args[0],
+    )?)))
 }
 
 fn is_fileinfo_resource(value: &Value) -> bool {
@@ -227,6 +246,28 @@ pub(in crate::builtins::modules) fn image_type(bytes: &[u8]) -> Option<i64> {
     }
 }
 
+fn image_type_to_mime_type(image_type: i64) -> &'static str {
+    match image_type {
+        1 => "image/gif",
+        2 => "image/jpeg",
+        3 => "image/png",
+        4 | 13 => "application/x-shockwave-flash",
+        5 => "image/psd",
+        6 => "image/bmp",
+        7 | 8 => "image/tiff",
+        9 | 20 => "application/octet-stream",
+        10 => "image/jp2",
+        14 => "image/iff",
+        15 => "image/vnd.wap.wbmp",
+        16 => "image/xbm",
+        17 => "image/vnd.microsoft.icon",
+        18 => "image/webp",
+        19 => "image/avif",
+        21 => "image/heif",
+        _ => "application/octet-stream",
+    }
+}
+
 pub(in crate::builtins::modules) fn image_size(
     bytes: &[u8],
 ) -> Option<(i64, i64, i64, &'static str)> {
@@ -300,4 +341,44 @@ pub(in crate::builtins::modules) fn size_array(
         Value::string(mime),
     );
     array
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::OutputBuffer;
+    use crate::builtins::BuiltinRegistry;
+
+    #[test]
+    fn image_type_to_mime_type_matches_php_standard_mapping() {
+        let entry = BuiltinRegistry::new()
+            .get("image_type_to_mime_type")
+            .expect("image_type_to_mime_type exists");
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        let png = (entry.function())(
+            &mut context,
+            vec![Value::Int(IMAGETYPE_PNG)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("png mime");
+        assert_eq!(png, Value::string("image/png"));
+
+        let webp = (entry.function())(
+            &mut context,
+            vec![Value::Int(IMAGETYPE_WEBP)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("webp mime");
+        assert_eq!(webp, Value::string("image/webp"));
+
+        let unknown = (entry.function())(
+            &mut context,
+            vec![Value::Int(999)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("unknown mime");
+        assert_eq!(unknown, Value::string("application/octet-stream"));
+    }
 }

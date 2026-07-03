@@ -178,6 +178,7 @@ fn builtin_mb_strlen(
                 .chars()
                 .count() as i64,
         )),
+        Some("8BIT") => Ok(Value::Int(string.len() as i64)),
         Some("ASCII") => {
             if string.as_bytes().is_ascii() {
                 Ok(Value::Int(string.len() as i64))
@@ -383,6 +384,7 @@ fn canonical_encoding(encoding: &str) -> Option<&'static str> {
     match normalized.as_str() {
         "" | "utf8" => Some("UTF-8"),
         "ascii" | "usascii" => Some("ASCII"),
+        "8bit" | "binary" => Some("8BIT"),
         _ => None,
     }
 }
@@ -390,6 +392,7 @@ fn canonical_encoding(encoding: &str) -> Option<&'static str> {
 fn bytes_match_encoding(bytes: &[u8], encoding: &str) -> bool {
     match encoding {
         "ASCII" => bytes.is_ascii(),
+        "8BIT" => true,
         "UTF-8" => std::str::from_utf8(bytes).is_ok(),
         _ => false,
     }
@@ -502,5 +505,37 @@ mod tests {
         let current = (entry.function())(&mut context, vec![], RuntimeSourceSpan::default())
             .expect("updated encoding");
         assert_eq!(current, Value::string("ASCII"));
+    }
+
+    #[test]
+    fn mbstring_8bit_encoding_counts_and_accepts_raw_bytes() {
+        let registry = BuiltinRegistry::new();
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let raw_bytes = Value::string(vec![0xff, b'A', 0xc3]);
+
+        let len = (registry.get("mb_strlen").unwrap().function())(
+            &mut context,
+            vec![raw_bytes.clone(), Value::string("8bit")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_strlen 8bit succeeds");
+        assert_eq!(len, Value::Int(3));
+
+        let binary_len = (registry.get("mb_strlen").unwrap().function())(
+            &mut context,
+            vec![raw_bytes.clone(), Value::string("binary")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_strlen binary succeeds");
+        assert_eq!(binary_len, Value::Int(3));
+
+        let check = (registry.get("mb_check_encoding").unwrap().function())(
+            &mut context,
+            vec![raw_bytes, Value::string("8bit")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_check_encoding 8bit succeeds");
+        assert_eq!(check, Value::Bool(true));
     }
 }

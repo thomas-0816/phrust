@@ -10090,27 +10090,16 @@ impl Vm {
                 return Err(self.runtime_error(output, compiled, stack, message));
             }
         };
-        let [key] = dims else {
-            return Err(self.runtime_error(
-                output,
-                compiled,
-                stack,
-                "E_PHP_VM_ARRAYACCESS_NESTED_DIM: nested ArrayAccess isset/empty is not implemented",
-            ));
-        };
-        let result = self.call_userland_arrayaccess_method(
+        self.arrayaccess_dim_isset_value(
             compiled,
             output,
             stack,
             state,
-            object,
-            "offsetExists",
-            vec![CallArgument::positional(array_key_to_value(key.clone()))],
+            Value::Object(object),
+            dims,
             span,
-        )?;
-        to_bool(&result)
-            .map(Some)
-            .map_err(|message| self.runtime_error(output, compiled, stack, message))
+        )
+        .map(Some)
     }
 
     fn try_userland_arrayaccess_offset_empty_local(
@@ -10133,43 +10122,134 @@ impl Vm {
                 return Err(self.runtime_error(output, compiled, stack, message));
             }
         };
-        let [key] = dims else {
-            return Err(self.runtime_error(
-                output,
-                compiled,
-                stack,
-                "E_PHP_VM_ARRAYACCESS_NESTED_DIM: nested ArrayAccess isset/empty is not implemented",
+        self.arrayaccess_dim_empty_value(
+            compiled,
+            output,
+            stack,
+            state,
+            Value::Object(object),
+            dims,
+            span,
+        )
+        .map(Some)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn arrayaccess_dim_isset_value(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        value: Value,
+        dims: &[ArrayKey],
+        span: IrSpan,
+    ) -> Result<bool, VmResult> {
+        let Some((first, rest)) = dims.split_first() else {
+            return Ok(!matches!(
+                effective_value(&value),
+                Value::Uninitialized | Value::Null
             ));
         };
-        let key_value = array_key_to_value(key.clone());
-        let exists = self.call_userland_arrayaccess_method(
-            compiled,
-            output,
-            stack,
-            state,
-            object.clone(),
-            "offsetExists",
-            vec![CallArgument::positional(key_value.clone())],
-            span,
-        )?;
-        if !to_bool(&exists)
-            .map_err(|message| self.runtime_error(output, compiled, stack, message))?
-        {
-            return Ok(Some(true));
+        let base = effective_value(&value);
+        if let Some(object) = match arrayaccess_object(compiled, state, &base) {
+            Ok(object) => object,
+            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+        } {
+            let key_value = array_key_to_value(first.clone());
+            let exists = self.call_array_access_dim_method(
+                compiled,
+                object.clone(),
+                "offsetExists",
+                key_value.clone(),
+                Some(span),
+                output,
+                stack,
+                state,
+            )?;
+            if !to_bool(&exists)
+                .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+            {
+                return Ok(false);
+            }
+            if rest.is_empty() {
+                return Ok(true);
+            }
+            let child = self.call_array_access_dim_method(
+                compiled,
+                object,
+                "offsetGet",
+                key_value,
+                Some(span),
+                output,
+                stack,
+                state,
+            )?;
+            return self
+                .arrayaccess_dim_isset_value(compiled, output, stack, state, child, rest, span);
         }
-        let value = self.call_userland_arrayaccess_method(
-            compiled,
-            output,
-            stack,
-            state,
-            object,
-            "offsetGet",
-            vec![CallArgument::positional(key_value)],
-            span,
-        )?;
-        php_empty(&value)
-            .map(Some)
-            .map_err(|message| self.runtime_error(output, compiled, stack, message))
+        let value = fetch_dim_path_value(&base, dims).ok().flatten();
+        Ok(!matches!(value, None | Some(Value::Null)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn arrayaccess_dim_empty_value(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        value: Value,
+        dims: &[ArrayKey],
+        span: IrSpan,
+    ) -> Result<bool, VmResult> {
+        let Some((first, rest)) = dims.split_first() else {
+            return php_empty(&value)
+                .map_err(|message| self.runtime_error(output, compiled, stack, message));
+        };
+        let base = effective_value(&value);
+        if let Some(object) = match arrayaccess_object(compiled, state, &base) {
+            Ok(object) => object,
+            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+        } {
+            let key_value = array_key_to_value(first.clone());
+            let exists = self.call_array_access_dim_method(
+                compiled,
+                object.clone(),
+                "offsetExists",
+                key_value.clone(),
+                Some(span),
+                output,
+                stack,
+                state,
+            )?;
+            if !to_bool(&exists)
+                .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+            {
+                return Ok(true);
+            }
+            let child = self.call_array_access_dim_method(
+                compiled,
+                object,
+                "offsetGet",
+                key_value,
+                Some(span),
+                output,
+                stack,
+                state,
+            )?;
+            if rest.is_empty() {
+                return php_empty(&child)
+                    .map_err(|message| self.runtime_error(output, compiled, stack, message));
+            }
+            return self
+                .arrayaccess_dim_empty_value(compiled, output, stack, state, child, rest, span);
+        }
+        let value = fetch_dim_path_value(&base, dims)
+            .ok()
+            .flatten()
+            .unwrap_or(Value::Uninitialized);
+        php_empty(&value).map_err(|message| self.runtime_error(output, compiled, stack, message))
     }
 
     fn try_userland_arrayaccess_offset_unset_local(
@@ -53273,6 +53353,20 @@ fn userland_arrayaccess_object(
     }
 }
 
+fn arrayaccess_object(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    value: &Value,
+) -> Result<Option<ObjectRef>, String> {
+    let Value::Object(object) = effective_value(value) else {
+        return Ok(None);
+    };
+    if spl_runtime_marker(&object).is_some_and(|class| is_spl_array_access_runtime_class(&class)) {
+        return Ok(Some(object));
+    }
+    userland_arrayaccess_object(compiled, state, &Value::Object(object))
+}
+
 fn interface_extends_in_state(
     compiled: &CompiledUnit,
     state: &ExecutionState,
@@ -72717,6 +72811,87 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
         assert_eq!(
             result.output.as_bytes(),
             b"0|2|isset|empty|gone|set:a=0;set:null=2;get:a;get:0;exists:a;exists:a;get:a;unset:a;exists:a;"
+        );
+    }
+
+    #[test]
+    fn userland_arrayaccess_supports_nested_isset_and_empty() {
+        let result = execute_source(
+            r#"<?php
+            class Box implements ArrayAccess {
+                public array $items = [];
+                public array $log = [];
+                public function offsetExists($offset): bool {
+                    $this->log[] = "exists:" . (string) $offset;
+                    return array_key_exists($offset, $this->items);
+                }
+                public function offsetGet($offset): mixed {
+                    $this->log[] = "get:" . (string) $offset;
+                    return $this->items[$offset] ?? null;
+                }
+                public function offsetSet($offset, $value): void {
+                    $this->items[$offset] = $value;
+                }
+                public function offsetUnset($offset): void {
+                    unset($this->items[$offset]);
+                }
+            }
+            $box = new Box();
+            $box["route"] = ["status" => "ok", "zero" => 0, "null" => null];
+            echo isset($box["route"]["status"]) ? "yes" : "no";
+            echo "|", isset($box["route"]["null"]) ? "bad" : "null";
+            echo "|", empty($box["route"]["zero"]) ? "empty" : "filled";
+            echo "|", empty($box["missing"]["status"]) ? "missing-empty" : "bad";
+            echo "|", implode(",", $box->log);
+            "#,
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"yes|null|empty|missing-empty|exists:route,get:route,exists:route,get:route,exists:route,get:route,exists:missing"
+        );
+    }
+
+    #[test]
+    fn userland_arrayaccess_supports_nested_arrayaccess_child_isset_and_empty() {
+        let result = execute_source(
+            r#"<?php
+            class Box implements ArrayAccess {
+                public array $items = [];
+                public array $log = [];
+                public string $name;
+                public function __construct(string $name) { $this->name = $name; }
+                public function offsetExists($offset): bool {
+                    $this->log[] = $this->name . ":exists:" . (string) $offset;
+                    return array_key_exists($offset, $this->items);
+                }
+                public function offsetGet($offset): mixed {
+                    $this->log[] = $this->name . ":get:" . (string) $offset;
+                    return $this->items[$offset] ?? null;
+                }
+                public function offsetSet($offset, $value): void {
+                    $this->items[$offset] = $value;
+                }
+                public function offsetUnset($offset): void {
+                    unset($this->items[$offset]);
+                }
+            }
+            $outer = new Box("outer");
+            $inner = new Box("inner");
+            $inner["flag"] = "ok";
+            $inner["zero"] = 0;
+            $outer["child"] = $inner;
+            echo isset($outer["child"]["flag"]) ? "yes" : "no";
+            echo "|", empty($outer["child"]["zero"]) ? "empty" : "filled";
+            echo "|", implode(",", $outer->log), "|", implode(",", $inner->log);
+            "#,
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"yes|empty|outer:exists:child,outer:get:child,outer:exists:child,outer:get:child|inner:exists:flag,inner:exists:zero,inner:get:zero"
         );
     }
 

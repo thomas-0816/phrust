@@ -280,6 +280,53 @@ pub const IMG_WEBP: i64 = 32;
 /// GD AVIF image-type bit.
 pub const IMG_AVIF: i64 = 256;
 
+/// Unknown image type.
+pub const IMAGETYPE_UNKNOWN: i64 = 0;
+/// GIF image type.
+pub const IMAGETYPE_GIF: i64 = 1;
+/// JPEG image type.
+pub const IMAGETYPE_JPEG: i64 = 2;
+/// PNG image type.
+pub const IMAGETYPE_PNG: i64 = 3;
+/// SWF image type.
+pub const IMAGETYPE_SWF: i64 = 4;
+/// PSD image type.
+pub const IMAGETYPE_PSD: i64 = 5;
+/// BMP image type.
+pub const IMAGETYPE_BMP: i64 = 6;
+/// Little-endian TIFF image type.
+pub const IMAGETYPE_TIFF_II: i64 = 7;
+/// Big-endian TIFF image type.
+pub const IMAGETYPE_TIFF_MM: i64 = 8;
+/// JPEG2000 codestream image type.
+pub const IMAGETYPE_JPC: i64 = 9;
+/// JP2 image type.
+pub const IMAGETYPE_JP2: i64 = 10;
+/// JPX image type.
+pub const IMAGETYPE_JPX: i64 = 11;
+/// JB2 image type.
+pub const IMAGETYPE_JB2: i64 = 12;
+/// SWC image type.
+pub const IMAGETYPE_SWC: i64 = 13;
+/// IFF image type.
+pub const IMAGETYPE_IFF: i64 = 14;
+/// WBMP image type.
+pub const IMAGETYPE_WBMP: i64 = 15;
+/// XBM image type.
+pub const IMAGETYPE_XBM: i64 = 16;
+/// ICO image type.
+pub const IMAGETYPE_ICO: i64 = 17;
+/// WebP image type.
+pub const IMAGETYPE_WEBP: i64 = 18;
+/// AVIF image type.
+pub const IMAGETYPE_AVIF: i64 = 19;
+/// JPEG2000 userland alias for JPC.
+pub const IMAGETYPE_JPEG2000: i64 = IMAGETYPE_JPC;
+/// HEIF image type.
+pub const IMAGETYPE_HEIF: i64 = 20;
+/// First dynamic image type id.
+pub const IMAGETYPE_COUNT: i64 = 21;
+
 /// PHP `PASSWORD_DEFAULT` algorithm marker.
 pub const PASSWORD_DEFAULT: &str = "2y";
 /// PHP `PASSWORD_BCRYPT` algorithm marker.
@@ -542,6 +589,18 @@ mod tests {
         assert_eq!(UPLOAD_ERR_NO_TMP_DIR, 6);
         assert_eq!(UPLOAD_ERR_CANT_WRITE, 7);
         assert_eq!(UPLOAD_ERR_EXTENSION, 8);
+        assert_eq!(IMAGETYPE_UNKNOWN, 0);
+        assert_eq!(IMAGETYPE_GIF, 1);
+        assert_eq!(IMAGETYPE_JPEG, 2);
+        assert_eq!(IMAGETYPE_PNG, 3);
+        assert_eq!(IMAGETYPE_TIFF_II, 7);
+        assert_eq!(IMAGETYPE_TIFF_MM, 8);
+        assert_eq!(IMAGETYPE_JPC, 9);
+        assert_eq!(IMAGETYPE_JPEG2000, IMAGETYPE_JPC);
+        assert_eq!(IMAGETYPE_WEBP, 18);
+        assert_eq!(IMAGETYPE_AVIF, 19);
+        assert_eq!(IMAGETYPE_HEIF, 20);
+        assert_eq!(IMAGETYPE_COUNT, 21);
         assert_eq!(M_PI.to_f64(), std::f64::consts::PI);
         assert_eq!(M_SQRTPI.to_f64(), 1.772453850905516);
         assert_eq!(M_EULER.to_f64(), 0.5772156649015329);

@@ -130,7 +130,7 @@ fn resolve_existing_path(
         return ResolvedRoute::Forbidden;
     }
     if is_php_path(&canonical) {
-        if method != "GET" && method != "HEAD" && method != "POST" && method != "OPTIONS" {
+        if !is_php_application_method(method) {
             return ResolvedRoute::MethodNotAllowed;
         }
         return ResolvedRoute::PhpScript {
@@ -215,6 +215,13 @@ fn contains_forbidden_component(path: &Path) -> bool {
 fn is_php_path(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("php"))
+}
+
+fn is_php_application_method(method: &str) -> bool {
+    matches!(
+        method,
+        "GET" | "HEAD" | "POST" | "OPTIONS" | "PUT" | "PATCH" | "DELETE"
+    )
 }
 
 fn path_info(path: &str) -> Option<String> {
@@ -340,6 +347,47 @@ mod tests {
             resolve_route("OPTIONS", "/wp-json/wp/v2/settings", &config),
             ResolvedRoute::PhpScript { .. }
         ));
+    }
+
+    #[test]
+    fn maps_rest_write_methods_to_php_script() {
+        let fixture = Fixture::new();
+        fixture.write("index.php", "<?php echo \"front\";");
+        let mut config = fixture.config("index.php");
+        config.front_controller = Some(PathBuf::from("index.php"));
+
+        for method in ["PUT", "PATCH", "DELETE"] {
+            assert!(
+                matches!(
+                    resolve_route(method, "/index.php", &config),
+                    ResolvedRoute::PhpScript { .. }
+                ),
+                "{method} should route existing PHP scripts"
+            );
+            assert!(
+                matches!(
+                    resolve_route(method, "/wp-json/wp/v2/posts/1", &config),
+                    ResolvedRoute::PhpScript { .. }
+                ),
+                "{method} should route front-controller REST paths"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_write_methods_for_static_files() {
+        let fixture = Fixture::new();
+        fixture.write("static.txt", "hello");
+
+        for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            assert!(
+                matches!(
+                    resolve_route(method, "/static.txt", &fixture.config("index.html")),
+                    ResolvedRoute::MethodNotAllowed
+                ),
+                "{method} should not route static files"
+            );
+        }
     }
 
     #[test]
