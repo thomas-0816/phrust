@@ -914,6 +914,9 @@ where
         jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
         tiering: run_options.tiering.clone(),
         adaptive_tiny_unit_setup_threshold: run_options.adaptive_tiny_unit_setup_threshold,
+        // Real PHP has no step ceiling; the library default (100k) exists for
+        // embedded/test use and would abort real programs run via the CLI.
+        max_steps: usize::MAX,
         ..VmOptions::default()
     });
     if let Some(timings) = timings.as_mut() {
@@ -1094,6 +1097,8 @@ where
             jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
             tiering: run_options.tiering.clone(),
             adaptive_tiny_unit_setup_threshold: run_options.adaptive_tiny_unit_setup_threshold,
+            // CLI runs must not hit the embedded/test step ceiling.
+            max_steps: usize::MAX,
             ..VmOptions::default()
         },
     });
@@ -1347,6 +1352,8 @@ where
         let vm = Vm::with_options(VmOptions {
             include_loader,
             runtime_context,
+            // CLI runs must not hit the embedded/test step ceiling.
+            max_steps: usize::MAX,
             ..VmOptions::default()
         });
         Some(vm.execute(pipeline.lowering.unit.clone()))
@@ -4312,6 +4319,33 @@ mod tests {
         assert_eq!(code, EXIT_SUCCESS);
         assert!(stderr.is_empty());
         assert!(String::from_utf8(stdout).unwrap().contains("dump-ir"));
+    }
+
+    #[test]
+    fn run_completes_loops_beyond_embedded_step_ceiling() {
+        // Real PHP has no VM step limit; the CLI must not abort programs that
+        // exceed the library's embedded/test default of 100k steps.
+        let path = std::env::temp_dir().join(format!(
+            "phrust-vm-cli-step-ceiling-{}.php",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "<?php $i = 0; while ($i < 150000) { $i++; } echo 'done:', $i, \"\\n\";",
+        )
+        .expect("step-ceiling fixture should be writable");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            ["run".to_string(), path.display().to_string()],
+            &mut stdout,
+            &mut stderr,
+        );
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(stdout, b"done:150000\n");
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
     }
 
     #[test]
