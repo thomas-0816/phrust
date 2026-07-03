@@ -1009,11 +1009,100 @@ pub(in crate::builtins::modules) fn builtin_intval(
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    expect_arity("intval", &args, 1)?;
-    let value = args.into_iter().next().expect("checked arity");
-    to_int(&value)
-        .map(Value::Int)
-        .map_err(|message| conversion_error("intval", message))
+    if !(1..=2).contains(&args.len()) {
+        return Err(arity_error("intval", "one or two argument(s)"));
+    }
+    let base = args
+        .get(1)
+        .map(|value| int_arg("intval", value))
+        .transpose()?
+        .unwrap_or(10);
+    let value = args.first().expect("checked arity");
+    let Value::String(text) = deref_value(value) else {
+        return to_int(value)
+            .map(Value::Int)
+            .map_err(|message| conversion_error("intval", message));
+    };
+    if base == 10 {
+        return to_int(value)
+            .map(Value::Int)
+            .map_err(|message| conversion_error("intval", message));
+    }
+    Ok(Value::Int(parse_intval_string_base(text.as_bytes(), base)))
+}
+
+fn parse_intval_string_base(bytes: &[u8], base: i64) -> i64 {
+    let mut cursor = 0;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+
+    let mut negative = false;
+    if let Some(sign) = bytes.get(cursor) {
+        if *sign == b'-' || *sign == b'+' {
+            negative = *sign == b'-';
+            cursor += 1;
+        }
+    }
+
+    let mut parse_base = base;
+    if parse_base == 0 {
+        parse_base = 10;
+        if bytes.get(cursor) == Some(&b'0') {
+            match bytes.get(cursor + 1).copied() {
+                Some(b'x' | b'X') => {
+                    parse_base = 16;
+                    cursor += 2;
+                }
+                Some(b'b' | b'B') => {
+                    parse_base = 2;
+                    cursor += 2;
+                }
+                _ => {
+                    parse_base = 8;
+                    cursor += 1;
+                }
+            }
+        }
+    } else if (parse_base == 2 || parse_base == 16)
+        && bytes.get(cursor) == Some(&b'0')
+        && matches!(
+            (parse_base, bytes.get(cursor + 1).copied()),
+            (2, Some(b'b' | b'B')) | (16, Some(b'x' | b'X'))
+        )
+    {
+        cursor += 2;
+    }
+
+    if !(2..=36).contains(&parse_base) {
+        return 0;
+    }
+
+    let mut value = 0_i128;
+    while let Some(byte) = bytes.get(cursor).copied() {
+        let Some(digit) = ascii_digit_value(byte) else {
+            break;
+        };
+        if i64::from(digit) >= parse_base {
+            break;
+        }
+        value = value
+            .saturating_mul(i128::from(parse_base))
+            .saturating_add(i128::from(digit));
+        cursor += 1;
+    }
+
+    let signed = if negative { -value } else { value };
+    signed.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn ascii_digit_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some(u32::from(byte - b'0')),
+        b'a'..=b'z' => Some(u32::from(byte - b'a') + 10),
+        b'A'..=b'Z' => Some(u32::from(byte - b'A') + 10),
+        _ => None,
+    }
 }
 
 pub(in crate::builtins::modules) fn builtin_floatval(
@@ -6473,6 +6562,34 @@ mod tests {
         assert_eq!(
             call("intval", vec![Value::string("12abc")], &mut output),
             Value::Int(12)
+        );
+        assert_eq!(
+            call(
+                "intval",
+                vec![Value::string("ff"), Value::Int(16)],
+                &mut output
+            ),
+            Value::Int(255)
+        );
+        assert_eq!(
+            call(
+                "intval",
+                vec![Value::string("0b1010"), Value::Int(0)],
+                &mut output
+            ),
+            Value::Int(10)
+        );
+        assert_eq!(
+            call(
+                "intval",
+                vec![Value::string("0b1010"), Value::Int(2)],
+                &mut output
+            ),
+            Value::Int(10)
+        );
+        assert_eq!(
+            call("intval", vec![Value::Int(123), Value::Int(16)], &mut output),
+            Value::Int(123)
         );
         assert_eq!(
             call("floatval", vec![Value::string("1.5x")], &mut output),
@@ -12031,6 +12148,24 @@ mod tests {
         assert_eq!(
             call("array_flip", vec![Value::Array(flip_input)], &mut output),
             Value::Array(expected_flip)
+        );
+        let mut flip_reference_input = PhpArray::new();
+        flip_reference_input.insert(
+            ArrayKey::String(PhpString::from_test_str("template")),
+            Value::Reference(ReferenceCell::new(Value::string("Page No Title"))),
+        );
+        let mut expected_reference_flip = PhpArray::new();
+        expected_reference_flip.insert(
+            ArrayKey::String(PhpString::from_test_str("Page No Title")),
+            Value::string("template"),
+        );
+        assert_eq!(
+            call(
+                "array_flip",
+                vec![Value::Array(flip_reference_input)],
+                &mut output
+            ),
+            Value::Array(expected_reference_flip)
         );
         let mut flip_skip_input = PhpArray::new();
         flip_skip_input.insert(

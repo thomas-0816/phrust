@@ -1269,6 +1269,19 @@ impl HirLowerer<'_> {
                 expr
             });
         }
+        if let Some(expr) = self.simple_construct_arithmetic_operand_source(rest, range) {
+            return Some(if let Some(kind) = leading_cast {
+                self.alloc_expr(
+                    HirExprKind::Cast {
+                        kind,
+                        expr: Some(expr),
+                    },
+                    range,
+                )
+            } else {
+                expr
+            });
+        }
         if let Some(expr) = self.simple_static_property_construct_operand_source(rest, range) {
             return Some(if let Some(kind) = leading_cast {
                 self.alloc_expr(
@@ -1607,6 +1620,24 @@ impl HirLowerer<'_> {
         range: TextRange,
     ) -> Option<ExprId> {
         let (left, operator, right) = split_construct_logical_operator(rest)?;
+        let left = self.simple_construct_operand_source(left.trim(), range)?;
+        let right = self.simple_construct_operand_source(right.trim(), range)?;
+        Some(self.alloc_expr(
+            HirExprKind::Binary {
+                operator: operator.to_owned(),
+                left: Some(left),
+                right: Some(right),
+            },
+            range,
+        ))
+    }
+
+    fn simple_construct_arithmetic_operand_source(
+        &mut self,
+        rest: &str,
+        range: TextRange,
+    ) -> Option<ExprId> {
+        let (left, operator, right) = split_construct_additive_operator(rest)?;
         let left = self.simple_construct_operand_source(left.trim(), range)?;
         let right = self.simple_construct_operand_source(right.trim(), range)?;
         Some(self.alloc_expr(
@@ -3263,6 +3294,84 @@ fn split_construct_concat_parts(source: &str) -> Option<Vec<&str>> {
     Some(parts)
 }
 
+fn split_construct_additive_operator(source: &str) -> Option<(&str, &'static str, &str)> {
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote = None::<u8>;
+    let mut escaped = false;
+    let bytes = source.as_bytes();
+    for (index, byte) in bytes.iter().copied().enumerate().rev() {
+        if let Some(quoted) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                continue;
+            }
+            if byte == quoted {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b']' => bracket_depth = bracket_depth.saturating_add(1),
+            b'[' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'}' => brace_depth = brace_depth.saturating_add(1),
+            b'{' => brace_depth = brace_depth.saturating_sub(1),
+            b')' => paren_depth = paren_depth.saturating_add(1),
+            b'(' => paren_depth = paren_depth.saturating_sub(1),
+            b'+' | b'-' if bracket_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
+                if additive_byte_is_unary_or_compound(bytes, index, byte) {
+                    continue;
+                }
+                let left = source[..index].trim();
+                let right = source[index + 1..].trim();
+                if !left.is_empty() && !right.is_empty() {
+                    return Some((left, if byte == b'+' { "+" } else { "-" }, right));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn additive_byte_is_unary_or_compound(bytes: &[u8], index: usize, byte: u8) -> bool {
+    if index == 0 {
+        return true;
+    }
+    let prev = bytes[..index]
+        .iter()
+        .rposition(|candidate| !candidate.is_ascii_whitespace())
+        .map(|position| bytes[position]);
+    let next = bytes[index + 1..]
+        .iter()
+        .position(|candidate| !candidate.is_ascii_whitespace())
+        .map(|position| bytes[index + 1 + position]);
+    if matches!(
+        prev,
+        None | Some(b'(' | b'[' | b'{' | b',' | b'?' | b':' | b'=')
+    ) {
+        return true;
+    }
+    if byte == b'-' && next == Some(b'>') {
+        return true;
+    }
+    matches!(
+        (byte, prev, next),
+        (b'+', Some(b'+'), _)
+            | (b'+', _, Some(b'+'))
+            | (b'-', Some(b'-'), _)
+            | (b'-', _, Some(b'-'))
+            | (b'+', _, Some(b'='))
+            | (b'-', _, Some(b'='))
+    )
+}
+
 fn split_construct_logical_operator(source: &str) -> Option<(&str, &'static str, &str)> {
     let mut bracket_depth = 0usize;
     let mut brace_depth = 0usize;
@@ -3924,6 +4033,38 @@ mod tests {
         });
 
         assert!(has_binary_dim, "array dim should preserve `$counter - 1`");
+        assert!(reporter.into_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn lowers_isset_array_dim_arithmetic_operand() {
+        let source = "<?php isset($zonen[$key - 1]);\n";
+        let parse = parse_source_file(source);
+        let root = source_file(parse.root()).expect("source file");
+        let mut database = FrontendDatabase::new();
+        let module_id = database.add_module(HirModule::new("SOURCE_FILE", source.len()));
+        let mut reporter = DiagnosticReporter::new();
+
+        collect_hir_in_node(
+            root.syntax(),
+            &mut database,
+            module_id,
+            &mut reporter,
+            TypeLoweringScope::new(None, Default::default()),
+        );
+
+        let module = database.module(module_id).expect("module");
+        let has_binary_dim = module.expressions().iter().any(|(_, expr)| {
+            let HirExprKind::DimFetch { dim: Some(dim), .. } = expr.kind() else {
+                return false;
+            };
+            matches!(
+                module.expressions()[*dim].kind(),
+                HirExprKind::Binary { operator, .. } if operator == "-"
+            )
+        });
+
+        assert!(has_binary_dim, "isset array dim should preserve `$key - 1`");
         assert!(reporter.into_diagnostics().is_empty());
     }
 

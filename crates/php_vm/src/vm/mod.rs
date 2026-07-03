@@ -11662,7 +11662,11 @@ impl Vm {
                             }
                         };
                         let cell = match ensure_property_reference_cell(
-                            compiled, stack, &object, property,
+                            compiled,
+                            Some(state),
+                            stack,
+                            &object,
+                            property,
                         ) {
                             Ok(cell) => cell,
                             Err(message) => {
@@ -11716,7 +11720,11 @@ impl Vm {
                             }
                         };
                         let cell = match ensure_property_reference_cell(
-                            compiled, stack, &object, property,
+                            compiled,
+                            Some(state),
+                            stack,
+                            &object,
+                            property,
                         ) {
                             Ok(cell) => cell,
                             Err(message) => {
@@ -11770,7 +11778,12 @@ impl Vm {
                             }
                         };
                         let cell = match ensure_property_dim_reference_cell(
-                            compiled, stack, &object, property, &dims,
+                            compiled,
+                            Some(state),
+                            stack,
+                            &object,
+                            property,
+                            &dims,
                         ) {
                             Ok(cell) => cell,
                             Err(message) => {
@@ -18181,8 +18194,9 @@ impl Vm {
                                 }
                             };
                         let scope = current_scope_class(compiled, stack);
-                        let resolved = match lookup_property_in_hierarchy(
+                        let resolved = match lookup_resolved_property_in_state(
                             compiled,
+                            state,
                             &class,
                             &property,
                             scope.as_deref(),
@@ -18252,19 +18266,25 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        let entry = resolved.property;
+                        let resolved_class = &resolved.class;
+                        let entry = &resolved.property;
                         if entry.flags.is_static {
-                            if let Err(message) =
-                                validate_property_access(compiled, stack, resolved.class, entry)
-                                    .and_then(|()| {
-                                        validate_property_set_access(
-                                            compiled,
-                                            stack,
-                                            resolved.class,
-                                            entry,
-                                        )
-                                    })
-                            {
+                            if let Err(message) = validate_property_access_in_state(
+                                compiled,
+                                state,
+                                stack,
+                                resolved_class,
+                                entry,
+                            )
+                            .and_then(|()| {
+                                validate_property_set_access_in_state(
+                                    compiled,
+                                    state,
+                                    stack,
+                                    resolved_class,
+                                    entry,
+                                )
+                            }) {
                                 match self.raise_runtime_error(
                                     compiled,
                                     output,
@@ -18293,7 +18313,7 @@ impl Vm {
                                 output,
                                 stack,
                                 state,
-                                resolved.class,
+                                resolved_class,
                                 entry,
                                 instruction.span,
                             );
@@ -18308,17 +18328,22 @@ impl Vm {
                             }
                             continue;
                         }
-                        if let Err(message) =
-                            validate_property_access(compiled, stack, resolved.class, entry)
-                                .and_then(|()| {
-                                    validate_property_set_access(
-                                        compiled,
-                                        stack,
-                                        resolved.class,
-                                        entry,
-                                    )
-                                })
-                        {
+                        if let Err(message) = validate_property_access_in_state(
+                            compiled,
+                            state,
+                            stack,
+                            resolved_class,
+                            entry,
+                        )
+                        .and_then(|()| {
+                            validate_property_set_access_in_state(
+                                compiled,
+                                state,
+                                stack,
+                                resolved_class,
+                                entry,
+                            )
+                        }) {
                             let value = match read_operand(unit, stack, *value) {
                                 Ok(value) => value,
                                 Err(message) => {
@@ -18355,7 +18380,7 @@ impl Vm {
                                 Ok(None) => {
                                     if entry.flags.is_private
                                         && normalize_class_name(&class.name)
-                                            != normalize_class_name(&resolved.class.name)
+                                            != normalize_class_name(&resolved_class.name)
                                     {
                                         diagnostics.push(RuntimeDiagnostic::new(
                                             "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
@@ -18410,7 +18435,7 @@ impl Vm {
                         if let Err(message) = check_property_type(
                             compiled,
                             Some(state),
-                            resolved.class.display_name.as_str(),
+                            resolved_class.display_name.as_str(),
                             &property,
                             &property_type,
                             &value,
@@ -18434,17 +18459,17 @@ impl Vm {
                             }
                         }
                         if let Err(message) =
-                            validate_property_write(resolved.class, entry, &object, stack, compiled)
+                            validate_property_write(resolved_class, entry, &object, stack, compiled)
                         {
                             return self.runtime_error(output, compiled, stack, message);
                         }
-                        if !property_hook_is_active(state, &object, resolved.class, entry)
+                        if !property_hook_is_active(state, &object, resolved_class, entry)
                             && let Some(function) = entry.hooks.set
                         {
                             match self.call_property_hook(
                                 compiled,
                                 object.clone(),
-                                resolved.class,
+                                resolved_class,
                                 entry,
                                 function,
                                 vec![CallArgument::positional(value.clone())],
@@ -18476,11 +18501,11 @@ impl Vm {
                                 stack,
                                 format!(
                                     "E_PHP_VM_VIRTUAL_PROPERTY_WRITE: property {}::${} has no backing storage",
-                                    resolved.class.name, entry.name
+                                    resolved_class.name, entry.name
                                 ),
                             );
                         }
-                        let storage_name = property_storage_name(resolved.class, entry);
+                        let storage_name = property_storage_name(resolved_class, entry);
                         if !entry.flags.is_typed
                             && object.get_property(&storage_name).is_none()
                             && !magic_property_call_is_active(state, &object, "__set", &property)
@@ -25998,9 +26023,17 @@ impl Vm {
                 "E_PHP_VM_BUILTIN_ARITY: array_walk expects two or three argument(s)".to_owned(),
             ));
         }
-        let (array_cell, callback, userdata) =
-            array_walk_args(compiled, "array_walk", args, call_span, output, stack)?;
-        let entries = array_walk_reference_entries("array_walk", compiled, stack, &array_cell)?;
+        let (array_cell, callback, userdata) = array_walk_args(
+            compiled,
+            state,
+            "array_walk",
+            args,
+            call_span,
+            output,
+            stack,
+        )?;
+        let entries =
+            array_walk_reference_entries("array_walk", compiled, state, stack, &array_cell)?;
         for (key, cell) in entries {
             let mut callback_args = vec![Value::Reference(cell), array_callback_key_value(&key)];
             if let Some(userdata) = &userdata {
@@ -26035,6 +26068,7 @@ impl Vm {
         }
         let (array_cell, callback, userdata) = array_walk_args(
             compiled,
+            state,
             "array_walk_recursive",
             args,
             call_span,
@@ -26058,7 +26092,7 @@ impl Vm {
         state: &mut ExecutionState,
     ) -> Result<(), ArrayCallbackError> {
         for (key, entry_cell) in
-            array_walk_reference_entries("array_walk_recursive", compiled, stack, &cell)?
+            array_walk_reference_entries("array_walk_recursive", compiled, state, stack, &cell)?
         {
             if matches!(
                 callable_resolve_reference(entry_cell.get()),
@@ -26219,7 +26253,7 @@ impl Vm {
 
         let mut args = args.into_iter();
         let first = args.next().expect("checked non-empty");
-        let cell = sort_reference_cell(compiled, name, first, stack)?;
+        let cell = sort_reference_cell(compiled, state, name, first, stack)?;
         let Value::Array(array) = cell.get() else {
             return Err(ArrayCallbackError::Message(format!(
                 "E_PHP_VM_BUILTIN_TYPE: {name} expects array"
@@ -26300,14 +26334,14 @@ impl Vm {
         let mut specs = Vec::new();
         while let Some((arg_index, arg)) = args.next() {
             let position = arg_index + 1;
-            let cell = multisort_reference_cell_at(compiled, name, arg, stack, position)?;
+            let cell = multisort_reference_cell_at(compiled, state, name, arg, stack, position)?;
             let entries = multisort_array_entries(name, position, &cell.get())?;
             let mut descending = false;
             let mut flags = SORT_REGULAR;
             let mut order_flag_seen = false;
             let mut sort_flag_seen = false;
             while let Some((_, next)) = args.peek() {
-                if sort_argument_is_array(compiled, next, stack)? {
+                if sort_argument_is_array(compiled, state, next, stack)? {
                     break;
                 }
                 let (flag_index, flag_arg) = args.next().expect("peeked argument");
@@ -32228,7 +32262,7 @@ impl Vm {
         }
         let callable = value_is_callable(compiled, state, &value, syntax_only);
         if let Some(name_arg) = bound[2].as_ref() {
-            match call_argument_reference_cell(compiled, name_arg, stack) {
+            match call_argument_reference_cell(compiled, Some(state), name_arg, stack) {
                 Ok(Some(cell)) => {
                     let name = if callable {
                         callable_name_for_is_callable(compiled, state, &value)
@@ -40709,11 +40743,43 @@ fn magic_property_call_is_active(
 
 fn ensure_property_reference_cell(
     compiled: &CompiledUnit,
+    state: Option<&ExecutionState>,
     stack: &CallStack,
     object: &ObjectRef,
     property: &str,
 ) -> Result<ReferenceCell, String> {
-    let storage_name = if let Some(class) = compiled.lookup_class(&object.class_name()) {
+    let storage_name = if let Some(state) = state {
+        if let Some(class) = lookup_class_in_state(compiled, state, &object.class_name()) {
+            let scope = current_scope_class(compiled, stack);
+            if let Some(resolved) = lookup_resolved_property_in_state(
+                compiled,
+                state,
+                &class,
+                property,
+                scope.as_deref(),
+            )? {
+                validate_property_access_in_state(
+                    compiled,
+                    state,
+                    stack,
+                    &resolved.class,
+                    &resolved.property,
+                )?;
+                validate_property_set_access_in_state(
+                    compiled,
+                    state,
+                    stack,
+                    &resolved.class,
+                    &resolved.property,
+                )?;
+                property_storage_name(&resolved.class, &resolved.property)
+            } else {
+                property.to_owned()
+            }
+        } else {
+            property.to_owned()
+        }
+    } else if let Some(class) = compiled.lookup_class(&object.class_name()) {
         let scope = current_scope_class(compiled, stack);
         if let Some(resolved) =
             lookup_property_in_hierarchy(compiled, class, property, scope.as_deref())?
@@ -40739,12 +40805,13 @@ fn ensure_property_reference_cell(
 
 fn ensure_property_dim_reference_cell(
     compiled: &CompiledUnit,
+    state: Option<&ExecutionState>,
     stack: &CallStack,
     object: &ObjectRef,
     property: &str,
     dims: &[ArrayKey],
 ) -> Result<ReferenceCell, String> {
-    let property_cell = ensure_property_reference_cell(compiled, stack, object, property)?;
+    let property_cell = ensure_property_reference_cell(compiled, state, stack, object, property)?;
     let mut current = property_cell.get();
     if matches!(current, Value::Uninitialized | Value::Null) {
         current = Value::Array(PhpArray::new());
@@ -43825,7 +43892,7 @@ fn collect_mysqli_call_refs(
 ) -> Result<Vec<ReferenceCell>, String> {
     let mut refs = Vec::with_capacity(args.len());
     for arg in args {
-        let Some(cell) = call_argument_reference_cell(compiled, arg, stack)? else {
+        let Some(cell) = call_argument_reference_cell(compiled, None, arg, stack)? else {
             return Err(
                 "E_PHP_VM_MYSQLI_REFERENCE: mysqli_stmt bind arguments must be variables"
                     .to_owned(),
@@ -55310,6 +55377,7 @@ fn precheck_bound_argument_types(
 
 fn call_argument_reference_cell(
     compiled: &CompiledUnit,
+    state: Option<&ExecutionState>,
     arg: &CallArgument,
     stack: &mut CallStack,
 ) -> Result<Option<ReferenceCell>, String> {
@@ -55321,12 +55389,19 @@ fn call_argument_reference_cell(
         return ensure_dim_reference_cell(stack, target.local, &target.dims).map(Some);
     }
     if let Some(target) = &arg.by_ref_property {
-        return ensure_property_reference_cell(compiled, stack, &target.object, &target.property)
-            .map(Some);
+        return ensure_property_reference_cell(
+            compiled,
+            state,
+            stack,
+            &target.object,
+            &target.property,
+        )
+        .map(Some);
     }
     if let Some(target) = &arg.by_ref_property_dim {
         return ensure_property_dim_reference_cell(
             compiled,
+            state,
             stack,
             &target.object,
             &target.property,
@@ -57181,6 +57256,7 @@ fn array_callback_entries(
 
 fn array_walk_args(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     function: &'static str,
     mut args: Vec<CallArgument>,
     call_span: Option<IrSpan>,
@@ -57197,20 +57273,23 @@ fn array_walk_args(
     let array_arg = args.remove(0);
     let callback = args.remove(0).value;
     let userdata = args.pop().map(|arg| arg.value);
-    let array = array_walk_reference_cell(compiled, function, array_arg, call_span, output, stack)?;
+    let array = array_walk_reference_cell(
+        compiled, state, function, array_arg, call_span, output, stack,
+    )?;
     Ok((array, callback, userdata))
 }
 
 fn array_walk_reference_cell(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     function: &str,
     arg: CallArgument,
     call_span: Option<IrSpan>,
     output: &mut OutputBuffer,
     stack: &mut CallStack,
 ) -> Result<ReferenceCell, ArrayCallbackError> {
-    if let Some(cell) =
-        call_argument_reference_cell(compiled, &arg, stack).map_err(ArrayCallbackError::Message)?
+    if let Some(cell) = call_argument_reference_cell(compiled, Some(state), &arg, stack)
+        .map_err(ArrayCallbackError::Message)?
     {
         return Ok(cell);
     }
@@ -57227,11 +57306,14 @@ fn array_walk_reference_cell(
 fn array_walk_reference_entries(
     function: &'static str,
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     stack: &CallStack,
     cell: &ReferenceCell,
 ) -> Result<Vec<(ArrayKey, ReferenceCell)>, ArrayCallbackError> {
     match cell.get() {
-        Value::Reference(inner) => array_walk_reference_entries(function, compiled, stack, &inner),
+        Value::Reference(inner) => {
+            array_walk_reference_entries(function, compiled, state, stack, &inner)
+        }
         Value::Array(mut array) => {
             let keys = array.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
             let mut entries = Vec::with_capacity(keys.len());
@@ -57244,7 +57326,9 @@ fn array_walk_reference_entries(
             cell.set(Value::Array(array));
             Ok(entries)
         }
-        Value::Object(object) => Ok(object_walk_reference_entries(compiled, stack, &object)),
+        Value::Object(object) => Ok(object_walk_reference_entries(
+            compiled, state, stack, &object,
+        )),
         other => Err(ArrayCallbackError::BuiltinType {
             function,
             actual: value_type_name(&other).to_owned(),
@@ -57254,10 +57338,11 @@ fn array_walk_reference_entries(
 
 fn object_walk_reference_entries(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     _stack: &CallStack,
     object: &ObjectRef,
 ) -> Vec<(ArrayKey, ReferenceCell)> {
-    let class = compiled.lookup_class(&object.class_name());
+    let class = lookup_class_in_state(compiled, state, &object.class_name());
     let mut entries = Vec::new();
     for (storage_name, value) in object.properties_snapshot() {
         let key = if let Some((declaring_class, property)) = private_storage_parts(&storage_name) {
@@ -57268,8 +57353,9 @@ fn object_walk_reference_entries(
             )))
         } else {
             class
+                .as_ref()
                 .and_then(|class| {
-                    lookup_property_in_hierarchy(compiled, class, &storage_name, None)
+                    lookup_resolved_property_in_state(compiled, state, class, &storage_name, None)
                         .ok()
                         .flatten()
                 })
@@ -57417,22 +57503,24 @@ fn array_callback_key_value(key: &ArrayKey) -> Value {
 
 fn sort_reference_cell(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     function: &str,
     arg: CallArgument,
     stack: &mut CallStack,
 ) -> Result<ReferenceCell, ArrayCallbackError> {
-    sort_reference_cell_at(compiled, function, arg, stack, 1)
+    sort_reference_cell_at(compiled, state, function, arg, stack, 1)
 }
 
 fn sort_reference_cell_at(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     function: &str,
     arg: CallArgument,
     stack: &mut CallStack,
     position: usize,
 ) -> Result<ReferenceCell, ArrayCallbackError> {
-    if let Some(cell) =
-        call_argument_reference_cell(compiled, &arg, stack).map_err(ArrayCallbackError::Message)?
+    if let Some(cell) = call_argument_reference_cell(compiled, Some(state), &arg, stack)
+        .map_err(ArrayCallbackError::Message)?
     {
         return Ok(cell);
     }
@@ -57509,13 +57597,14 @@ fn emit_sort_bool_compare_deprecation(
 
 fn multisort_reference_cell_at(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     _function: &str,
     arg: CallArgument,
     stack: &mut CallStack,
     _position: usize,
 ) -> Result<ReferenceCell, ArrayCallbackError> {
-    if let Some(cell) =
-        call_argument_reference_cell(compiled, &arg, stack).map_err(ArrayCallbackError::Message)?
+    if let Some(cell) = call_argument_reference_cell(compiled, Some(state), &arg, stack)
+        .map_err(ArrayCallbackError::Message)?
     {
         return Ok(cell);
     }
@@ -57527,11 +57616,12 @@ fn multisort_reference_cell_at(
 
 fn sort_argument_is_array(
     compiled: &CompiledUnit,
+    state: &ExecutionState,
     arg: &CallArgument,
     stack: &mut CallStack,
 ) -> Result<bool, ArrayCallbackError> {
-    if let Some(cell) =
-        call_argument_reference_cell(compiled, arg, stack).map_err(ArrayCallbackError::Message)?
+    if let Some(cell) = call_argument_reference_cell(compiled, Some(state), arg, stack)
+        .map_err(ArrayCallbackError::Message)?
     {
         return Ok(matches!(cell.get(), Value::Array(_)));
     }
@@ -58109,7 +58199,7 @@ fn call_builtin_args_to_positional(
         }
         let bind_by_ref = internal_builtin_param_requires_reference(function, index);
         if bind_by_ref {
-            if let Some(cell) = call_argument_reference_cell(compiled, &arg, stack)
+            if let Some(cell) = call_argument_reference_cell(compiled, Some(state), &arg, stack)
                 .map_err(InternalBuiltinArgError::Message)?
             {
                 values.push(Value::Reference(cell));

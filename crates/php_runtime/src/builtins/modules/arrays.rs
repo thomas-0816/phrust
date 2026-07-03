@@ -1332,8 +1332,8 @@ pub(in crate::builtins::modules) fn builtin_array_flip(
 }
 
 fn array_flip_key(value: &Value) -> Option<ArrayKey> {
-    match value {
-        Value::Int(value) => Some(ArrayKey::Int(*value)),
+    match deref_value(value) {
+        Value::Int(value) => Some(ArrayKey::Int(value)),
         Value::String(value) => Some(ArrayKey::from_php_string(value.clone())),
         _ => None,
     }

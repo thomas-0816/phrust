@@ -292,13 +292,14 @@ fn bind_arguments(
             let reference = if param.by_ref {
                 if let Some(reference) = value_reference {
                     Some(reference)
-                } else if let Some(reference) = call_argument_reference_cell(compiled, &arg, stack)
-                    .map_err(|message| {
-                        VmError::fatal("E_PHP_VM_BY_REF_BINDING", "arguments", message)
-                            .with_context("function", &function.name)
-                            .with_context("parameter", &param.name)
-                    })?
-                {
+                } else if let Some(reference) = call_argument_reference_cell(
+                    compiled, None, &arg, stack,
+                )
+                .map_err(|message| {
+                    VmError::fatal("E_PHP_VM_BY_REF_BINDING", "arguments", message)
+                        .with_context("function", &function.name)
+                        .with_context("parameter", &param.name)
+                })? {
                     Some(reference)
                 } else if allow_by_ref_value_warnings {
                     diagnostics.push(by_ref_value_given_warning(
