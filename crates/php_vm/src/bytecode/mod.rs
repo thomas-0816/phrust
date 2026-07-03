@@ -3505,17 +3505,20 @@ echo $other;
 
     #[test]
     fn bytecode_lowering_rejects_unsupported_instruction_family() {
+        // Generator yields are still outside the dense subset (FetchConst,
+        // the previous probe, gained dense support).
         let mut unit = manual_basic_unit();
-        unit.functions[0].blocks[0].instructions[2].kind = InstructionKind::FetchConst {
+        unit.functions[0].blocks[0].instructions[2].kind = InstructionKind::Yield {
             dst: php_ir::RegId::new(2),
-            name: "PHP_VERSION".to_string(),
+            key: None,
+            value: None,
         };
-        let error = DenseBytecodeUnit::lower_from_ir(&unit).expect_err("fetch const unsupported");
+        let error = DenseBytecodeUnit::lower_from_ir(&unit).expect_err("yield unsupported");
         assert_eq!(
             error.code,
             super::DenseLowerErrorCode::UnsupportedInstruction
         );
-        assert!(error.message.contains("FetchConst"));
+        assert!(error.message.contains("Yield"));
     }
 
     #[test]
