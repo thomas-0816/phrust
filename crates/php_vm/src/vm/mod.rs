@@ -23468,7 +23468,21 @@ impl Vm {
                             state,
                         );
                         if !result.status.is_success() {
-                            return result;
+                            match self.route_throwable_result(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                result,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         if result.fiber_suspension.is_some() {
                             return self.propagate_fiber_suspension(
@@ -73081,6 +73095,61 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"caught:boom");
+    }
+
+    #[test]
+    fn exceptions_catch_userland_exception_thrown_below_static_method() {
+        let result = execute_source(
+            r#"<?php
+            namespace WpOrg\Requests {
+                class Exception extends \Exception {
+                    protected $type;
+                    protected $data;
+
+                    public function __construct($message, $type, $data = null, $code = 0) {
+                        parent::__construct($message, $code);
+                        $this->type = $type;
+                        $this->data = $data;
+                    }
+                }
+
+                class Requests {
+                    public static function request() {
+                        $transport = new \WpOrg\Requests\Transport\Curl();
+                        return $transport->request();
+                    }
+                }
+            }
+
+            namespace WpOrg\Requests\Transport {
+                use WpOrg\Requests\Exception;
+
+                final class Curl {
+                    public function request() {
+                        $this->process_response();
+                    }
+
+                    public function process_response() {
+                        throw new Exception('cURL error 35: wrong version number', 'curlerror', $this);
+                    }
+                }
+            }
+
+            namespace {
+                try {
+                    \WpOrg\Requests\Requests::request();
+                } catch (WpOrg\Requests\Exception $e) {
+                    echo 'caught:', $e->getMessage();
+                }
+            }
+            "#,
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"caught:cURL error 35: wrong version number"
+        );
     }
 
     #[test]
