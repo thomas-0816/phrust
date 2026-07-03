@@ -1,6 +1,6 @@
 //! cURL-compatible HTTP client builtin slice.
 
-use super::core::{argument_type_error, expect_arity, int_arg, string_arg};
+use super::core::{argument_type_error, expect_arity, int_arg, string_arg, string_array_key};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
@@ -69,6 +69,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "curl_multi_info_read",
+        builtin_curl_multi_info_read,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_multi_remove_handle",
+        builtin_curl_multi_remove_handle,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "curl_multi_close",
         builtin_curl_multi_close,
         BuiltinCompatibility::Php,
@@ -129,6 +139,7 @@ const CURLINFO_HEADER_SIZE: i64 = 2097163;
 const CURLINFO_TOTAL_TIME: i64 = 3145731;
 const CURLM_OK: i64 = 0;
 const CURLM_BAD_HANDLE: i64 = 1;
+const CURLMSG_DONE: i64 = 1;
 const CURL_VERSION_SSL: i64 = 4;
 
 type CurlTransportError = (i64, String);
@@ -231,10 +242,10 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_init(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_init", &args, 0)?;
-    Ok(Value::Object(ObjectRef::new_with_display_name(
-        &curl_runtime_class("CurlMultiHandle"),
-        "CurlMultiHandle",
-    )))
+    let object =
+        ObjectRef::new_with_display_name(&curl_runtime_class("CurlMultiHandle"), "CurlMultiHandle");
+    reset_curl_multi_handle(&object);
+    Ok(Value::Object(object))
 }
 
 pub(in crate::builtins::modules) fn builtin_curl_multi_add_handle(
@@ -243,21 +254,87 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_add_handle(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_multi_add_handle", &args, 2)?;
-    let _multi = curl_multi_handle_arg("curl_multi_add_handle", args.first())?;
-    let _handle = curl_handle_arg("curl_multi_add_handle", args.get(1))?;
+    let multi = curl_multi_handle_arg("curl_multi_add_handle", args.first())?;
+    let handle = curl_handle_arg("curl_multi_add_handle", args.get(1))?;
+    let mut handles = curl_multi_handles(&multi);
+    if !handles.iter().any(|existing| existing == &handle) {
+        handles.push(handle);
+    }
+    set_curl_multi_handles(&multi, handles);
+    set_curl_multi_pending(&multi, Vec::new());
+    multi.set_property("__curl_multi_executed", Value::Bool(false));
     Ok(Value::Int(CURLM_OK))
 }
 
 pub(in crate::builtins::modules) fn builtin_curl_multi_exec(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_multi_exec", &args, 2)?;
+    let multi = curl_multi_handle_arg("curl_multi_exec", args.first())?;
+    if multi.get_property("__curl_multi_closed") == Some(Value::Bool(true)) {
+        return Ok(Value::Int(CURLM_BAD_HANDLE));
+    }
+    if multi.get_property("__curl_multi_executed") != Some(Value::Bool(true)) {
+        let handles = curl_multi_handles(&multi);
+        let mut pending = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let _ = builtin_curl_exec(context, vec![Value::Object(handle.clone())], span.clone())?;
+            pending.push(curl_multi_done_entry(handle));
+        }
+        set_curl_multi_pending(&multi, pending);
+        multi.set_property("__curl_multi_executed", Value::Bool(true));
+    }
+    if let Some(Value::Reference(cell)) = args.get(1) {
+        cell.set(Value::Int(0));
+    }
+    Ok(Value::Int(CURLM_OK))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_multi_info_read(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    expect_arity("curl_multi_exec", &args, 2)?;
-    let _multi = curl_multi_handle_arg("curl_multi_exec", args.first())?;
-    if let Some(Value::Reference(cell)) = args.get(1) {
-        cell.set(Value::Int(0));
+    if !(1..=2).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin curl_multi_info_read expects one or two argument(s)",
+        ));
     }
+    let multi = curl_multi_handle_arg("curl_multi_info_read", args.first())?;
+    if multi.get_property("__curl_multi_closed") == Some(Value::Bool(true)) {
+        return Ok(Value::Bool(false));
+    }
+    let mut pending = curl_multi_pending(&multi);
+    if pending.is_empty() {
+        if let Some(Value::Reference(cell)) = args.get(1) {
+            cell.set(Value::Int(0));
+        }
+        return Ok(Value::Bool(false));
+    }
+    let entry = pending.remove(0);
+    if let Some(Value::Reference(cell)) = args.get(1) {
+        cell.set(Value::Int(pending.len() as i64));
+    }
+    set_curl_multi_pending(&multi, pending);
+    Ok(entry)
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_multi_remove_handle(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_multi_remove_handle", &args, 2)?;
+    let multi = curl_multi_handle_arg("curl_multi_remove_handle", args.first())?;
+    let handle = curl_handle_arg("curl_multi_remove_handle", args.get(1))?;
+    let handles = curl_multi_handles(&multi)
+        .into_iter()
+        .filter(|existing| existing != &handle)
+        .collect::<Vec<_>>();
+    set_curl_multi_handles(&multi, handles);
     Ok(Value::Int(CURLM_OK))
 }
 
@@ -1236,6 +1313,55 @@ fn reset_curl_handle(object: &ObjectRef) {
     );
 }
 
+fn reset_curl_multi_handle(object: &ObjectRef) {
+    object.set_property("__curl_multi_closed", Value::Bool(false));
+    object.set_property("__curl_multi_executed", Value::Bool(false));
+    set_curl_multi_handles(object, Vec::new());
+    set_curl_multi_pending(object, Vec::new());
+}
+
+fn curl_multi_handles(multi: &ObjectRef) -> Vec<ObjectRef> {
+    let Some(Value::Array(array)) = multi.get_property("__curl_multi_handles") else {
+        return Vec::new();
+    };
+    array
+        .iter()
+        .filter_map(|(_, value)| match value {
+            Value::Object(object) if object.class_name() == "curlhandle" => Some(object.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn set_curl_multi_handles(multi: &ObjectRef, handles: Vec<ObjectRef>) {
+    multi.set_property(
+        "__curl_multi_handles",
+        Value::packed_array(handles.into_iter().map(Value::Object).collect()),
+    );
+}
+
+fn curl_multi_pending(multi: &ObjectRef) -> Vec<Value> {
+    let Some(Value::Array(array)) = multi.get_property("__curl_multi_pending") else {
+        return Vec::new();
+    };
+    array.iter().map(|(_, value)| value.clone()).collect()
+}
+
+fn set_curl_multi_pending(multi: &ObjectRef, pending: Vec<Value>) {
+    multi.set_property("__curl_multi_pending", Value::packed_array(pending));
+}
+
+fn curl_multi_done_entry(handle: ObjectRef) -> Value {
+    let mut entry = PhpArray::new();
+    entry.insert(string_array_key("msg"), Value::Int(CURLMSG_DONE));
+    entry.insert(
+        string_array_key("result"),
+        curl_int_property(&handle, "__curl_errno"),
+    );
+    entry.insert(string_array_key("handle"), Value::Object(handle));
+    Value::Array(entry)
+}
+
 fn curl_runtime_class(name: &str) -> ClassEntry {
     ClassEntry {
         name: normalize_class_name(name),
@@ -1528,7 +1654,7 @@ struct CurlResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OutputBuffer;
+    use crate::{OutputBuffer, ReferenceCell};
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
     use std::thread;
@@ -1745,6 +1871,132 @@ mod tests {
             Value::Int(200)
         );
         server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_multi_info_read_reports_failed_handle_errno() {
+        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
+        let _override = NetTestsOverride::set(false);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let _ = stream.read(&mut [0_u8; 64]);
+            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+            let _ = stream.shutdown(Shutdown::Both);
+        });
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let multi = builtin_curl_multi_init(&mut context, vec![], RuntimeSourceSpan::default())
+            .expect("multi init");
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string(format!("https://127.0.0.1:{port}/"))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        assert_eq!(
+            builtin_curl_multi_add_handle(
+                &mut context,
+                vec![multi.clone(), handle.clone()],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("add"),
+            Value::Int(CURLM_OK)
+        );
+
+        let active = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            builtin_curl_multi_exec(
+                &mut context,
+                vec![multi.clone(), Value::Reference(active.clone())],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("exec"),
+            Value::Int(CURLM_OK)
+        );
+        assert_eq!(active.get(), Value::Int(0));
+
+        let queue = ReferenceCell::new(Value::Null);
+        let Value::Array(done) = builtin_curl_multi_info_read(
+            &mut context,
+            vec![multi.clone(), Value::Reference(queue.clone())],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("info read") else {
+            panic!("curl_multi_info_read should return an array");
+        };
+        assert_eq!(queue.get(), Value::Int(0));
+        assert_eq!(
+            done.get(&string_array_key("msg")),
+            Some(&Value::Int(CURLMSG_DONE))
+        );
+        let Some(Value::Int(result)) = done.get(&string_array_key("result")) else {
+            panic!("done result should be an integer");
+        };
+        assert_ne!(*result, 0);
+        assert_eq!(done.get(&string_array_key("handle")), Some(&handle));
+        assert_eq!(
+            builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
+                .expect("errno"),
+            Value::Int(*result)
+        );
+        assert_eq!(
+            builtin_curl_multi_info_read(
+                &mut context,
+                vec![multi, Value::Reference(queue)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("second info read"),
+            Value::Bool(false)
+        );
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_multi_remove_handle_removes_added_handle() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let multi = builtin_curl_multi_init(&mut context, vec![], RuntimeSourceSpan::default())
+            .expect("multi init");
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string("http://127.0.0.1/")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        builtin_curl_multi_add_handle(
+            &mut context,
+            vec![multi.clone(), handle.clone()],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("add");
+        assert_eq!(
+            curl_multi_handles(match &multi {
+                Value::Object(object) => object,
+                _ => panic!("multi should be an object"),
+            })
+            .len(),
+            1
+        );
+
+        assert_eq!(
+            builtin_curl_multi_remove_handle(
+                &mut context,
+                vec![multi.clone(), handle],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("remove"),
+            Value::Int(CURLM_OK)
+        );
+        assert!(
+            curl_multi_handles(match &multi {
+                Value::Object(object) => object,
+                _ => panic!("multi should be an object"),
+            })
+            .is_empty()
+        );
     }
 
     #[test]
