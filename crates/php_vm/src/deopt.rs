@@ -1108,14 +1108,19 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
     match instruction.opcode {
         DenseOpcode::Nop
         | DenseOpcode::LoadConst
+        | DenseOpcode::FetchConst
         | DenseOpcode::Move
         | DenseOpcode::StoreLocal
         | DenseOpcode::StoreLocalDiscard
+        | DenseOpcode::UnsetLocal
+        | DenseOpcode::IssetLocal
+        | DenseOpcode::EmptyLocal
+        | DenseOpcode::BindGlobal
         | DenseOpcode::Jump
         | DenseOpcode::Return
         | DenseOpcode::Exit
         | DenseOpcode::Discard => Vec::new(),
-        DenseOpcode::LoadLocal | DenseOpcode::LoadLocalEcho => {
+        DenseOpcode::LoadLocal | DenseOpcode::LoadLocalEcho | DenseOpcode::LoadLocalQuiet => {
             vec![VmDeoptReason::UnsupportedValue]
         }
         DenseOpcode::BinaryAdd
@@ -1135,6 +1140,7 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         | DenseOpcode::UnaryMinus
         | DenseOpcode::UnaryNot
         | DenseOpcode::UnaryBitNot
+        | DenseOpcode::Cast
         | DenseOpcode::CompareEqual
         | DenseOpcode::CompareNotEqual
         | DenseOpcode::CompareIdentical
@@ -1148,9 +1154,11 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
             VmDeoptReason::Overflow,
             VmDeoptReason::HelperStatus,
         ],
-        DenseOpcode::CallFunction | DenseOpcode::CallMethod | DenseOpcode::CallStaticMethod => {
-            vec![VmDeoptReason::CallFrameBoundary]
-        }
+        DenseOpcode::CallFunction
+        | DenseOpcode::CallMethod
+        | DenseOpcode::CallStaticMethod
+        | DenseOpcode::Include => vec![VmDeoptReason::CallFrameBoundary],
+        DenseOpcode::IssetDim => vec![VmDeoptReason::HelperStatus],
         DenseOpcode::LoadConstEcho | DenseOpcode::Echo => {
             vec![VmDeoptReason::OutputBufferState]
         }
@@ -1159,6 +1167,8 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         | DenseOpcode::FetchDim
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::EmptyDim
+        | DenseOpcode::UnsetDim
         | DenseOpcode::InitStaticLocal => vec![VmDeoptReason::ReferenceCowIdentity],
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => vec![
             VmDeoptReason::GuardFailed,

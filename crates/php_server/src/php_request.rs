@@ -437,7 +437,7 @@ pub(crate) async fn execute_php_request(
         request_context,
         session_state,
         Arc::clone(&body),
-        state.env_snapshot.as_ref().clone(),
+        server_env_for_request(&state),
     );
     if state.execution_time_limit.is_none() {
         state
@@ -1186,6 +1186,14 @@ fn hex_digit(nibble: u8) -> char {
         10..=15 => (b'A' + (nibble - 10)) as char,
         _ => unreachable!("hex nibble is four bits"),
     }
+}
+
+pub(crate) fn server_env_for_request(state: &AppState) -> Vec<(String, String)> {
+    let mut env = state.env_snapshot.as_ref().clone();
+    if state.network_requests_enabled && !env.iter().any(|(name, _)| name == "PHRUST_NET_TESTS") {
+        env.push(("PHRUST_NET_TESTS".to_string(), "1".to_string()));
+    }
+    env
 }
 
 pub(crate) fn php_runtime_context_for_http(

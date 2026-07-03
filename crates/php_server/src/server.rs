@@ -217,6 +217,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         access_log,
         perf_trace,
         perf_trace_vm_counters: config.perf_trace_vm_counters,
+        network_requests_enabled: config.network_requests_enabled,
         env_snapshot: Arc::new(std::env::vars().collect()),
         debug: config.debug,
         error_format: config.error_format,
@@ -244,6 +245,7 @@ mod tests {
         php_request::{
             append_vm_counters_to_trace, collect_vm_counters_for_request,
             execute_compiled_php_with_state, http_runtime_context, php_runtime_context_for_http,
+            server_env_for_request,
         },
         serve::clear_cache_response,
         static_files::{
@@ -642,6 +644,40 @@ mod tests {
     }
 
     #[test]
+    fn server_env_for_request_injects_network_capability_when_enabled() {
+        let fixture = ServerCacheFixture::new();
+        let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        state.network_requests_enabled = true;
+
+        let env = server_env_for_request(&state);
+
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == "PHRUST_NET_TESTS")
+                .map(|(_, value)| value.as_str()),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn server_env_for_request_preserves_existing_network_capability_value() {
+        let fixture = ServerCacheFixture::new();
+        let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        state.network_requests_enabled = true;
+        state.env_snapshot = Arc::new(vec![("PHRUST_NET_TESTS".to_string(), "0".to_string())]);
+
+        let env = server_env_for_request(&state);
+
+        assert_eq!(
+            env.iter()
+                .filter(|(key, _)| key == "PHRUST_NET_TESTS")
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0"]
+        );
+    }
+
+    #[test]
     fn http_runtime_context_maps_server_name_https_and_remote_addr() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
@@ -764,6 +800,7 @@ mod tests {
             access_log: None,
             perf_trace: None,
             perf_trace_vm_counters: false,
+            network_requests_enabled: false,
             env_snapshot: Arc::new(Vec::new()),
             debug: false,
             error_format: DiagnosticOutputFormat::Text,

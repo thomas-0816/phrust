@@ -3009,11 +3009,17 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
             unsupported_reason: None,
         },
         DenseOpcode::LoadConst
+        | DenseOpcode::FetchConst
         | DenseOpcode::Move
         | DenseOpcode::LoadLocal
+        | DenseOpcode::LoadLocalQuiet
+        | DenseOpcode::IssetLocal
+        | DenseOpcode::EmptyLocal
         | DenseOpcode::StoreLocal
         | DenseOpcode::InitStaticLocal
         | DenseOpcode::StoreLocalDiscard
+        | DenseOpcode::UnsetLocal
+        | DenseOpcode::BindGlobal
         | DenseOpcode::LoadConstEcho
         | DenseOpcode::LoadLocalEcho
         | DenseOpcode::Echo
@@ -3061,6 +3067,7 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         | DenseOpcode::UnaryMinus
         | DenseOpcode::UnaryNot
         | DenseOpcode::UnaryBitNot
+        | DenseOpcode::Cast
         | DenseOpcode::BinaryConcatEcho => BaselineStencilClass {
             helper_calls: 1,
             deopt_slots: 1,
@@ -3068,15 +3075,16 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
             code_size_bytes_estimate: 16,
             unsupported_reason: None,
         },
-        DenseOpcode::CallFunction | DenseOpcode::CallMethod | DenseOpcode::CallStaticMethod => {
-            BaselineStencilClass {
-                helper_calls: 1,
-                deopt_slots: 1,
-                compile_cost_units: 5,
-                code_size_bytes_estimate: 0,
-                unsupported_reason: Some("call_frame_and_userland_side_effect_state"),
-            }
-        }
+        DenseOpcode::CallFunction
+        | DenseOpcode::CallMethod
+        | DenseOpcode::CallStaticMethod
+        | DenseOpcode::Include => BaselineStencilClass {
+            helper_calls: 1,
+            deopt_slots: 1,
+            compile_cost_units: 5,
+            code_size_bytes_estimate: 0,
+            unsupported_reason: Some("call_frame_and_userland_side_effect_state"),
+        },
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => BaselineStencilClass {
             helper_calls: 1,
             deopt_slots: 1,
@@ -3087,8 +3095,11 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert
         | DenseOpcode::FetchDim
+        | DenseOpcode::IssetDim
+        | DenseOpcode::EmptyDim
         | DenseOpcode::AssignDim
-        | DenseOpcode::AppendDim => BaselineStencilClass {
+        | DenseOpcode::AppendDim
+        | DenseOpcode::UnsetDim => BaselineStencilClass {
             helper_calls: 1,
             deopt_slots: 1,
             compile_cost_units: 5,
@@ -3189,7 +3200,11 @@ fn classify_copy_patch_stencil_instruction(
     operands: &DenseOperands,
 ) -> CopyPatchStencilClass {
     match opcode {
-        DenseOpcode::LoadLocal | DenseOpcode::LoadLocalEcho => CopyPatchStencilClass {
+        DenseOpcode::LoadLocal
+        | DenseOpcode::LoadLocalEcho
+        | DenseOpcode::LoadLocalQuiet
+        | DenseOpcode::IssetLocal
+        | DenseOpcode::EmptyLocal => CopyPatchStencilClass {
             kind: "load_local",
             patch_sites: &["frame_local_slot", "destination_register"],
             guard_dependencies: &["frame_layout_epoch"],
@@ -3228,31 +3243,33 @@ fn classify_copy_patch_stencil_instruction(
                 unsupported_reason: None,
             }
         }
-        DenseOpcode::FetchDim => CopyPatchStencilClass {
-            kind: "packed_array_guard_fetch",
-            patch_sites: &[
-                "array_register",
-                "key_register",
-                "destination_register",
-                "oob_exit",
-            ],
-            guard_dependencies: &["array_is_packed", "key_is_int", "no_by_ref_element"],
-            helper_calls: &[
-                "php_jit_array_is_packed_ints",
-                "php_jit_array_fetch_int_slow",
-            ],
-            live_state_requirements: &[
-                "array_value",
-                "key_value",
-                "destination_register",
-                "diagnostic_order",
-                "resume_instruction",
-            ],
-            side_exit_target: "interpreter_array_fetch_exit",
-            code_size_bytes_estimate: 48,
-            compile_cost_units: 5,
-            unsupported_reason: None,
-        },
+        DenseOpcode::FetchDim | DenseOpcode::IssetDim | DenseOpcode::EmptyDim => {
+            CopyPatchStencilClass {
+                kind: "packed_array_guard_fetch",
+                patch_sites: &[
+                    "array_register",
+                    "key_register",
+                    "destination_register",
+                    "oob_exit",
+                ],
+                guard_dependencies: &["array_is_packed", "key_is_int", "no_by_ref_element"],
+                helper_calls: &[
+                    "php_jit_array_is_packed_ints",
+                    "php_jit_array_fetch_int_slow",
+                ],
+                live_state_requirements: &[
+                    "array_value",
+                    "key_value",
+                    "destination_register",
+                    "diagnostic_order",
+                    "resume_instruction",
+                ],
+                side_exit_target: "interpreter_array_fetch_exit",
+                code_size_bytes_estimate: 48,
+                compile_cost_units: 5,
+                unsupported_reason: None,
+            }
+        }
         DenseOpcode::FetchProperty => CopyPatchStencilClass {
             kind: "guarded_property_fetch",
             patch_sites: &[
@@ -3352,7 +3369,10 @@ fn classify_copy_patch_stencil_instruction(
         },
         DenseOpcode::Exit => unsupported_copy_patch_class("script_exit_requires_request_state"),
         DenseOpcode::InitStaticLocal => unsupported_copy_patch_class("static_local_request_state"),
+        DenseOpcode::UnsetLocal => unsupported_copy_patch_class("local_unset_destructor_state"),
+        DenseOpcode::BindGlobal => unsupported_copy_patch_class("global_reference_state"),
         DenseOpcode::LoadConst
+        | DenseOpcode::FetchConst
         | DenseOpcode::Move
         | DenseOpcode::StoreLocal
         | DenseOpcode::StoreLocalDiscard
@@ -3384,10 +3404,12 @@ fn classify_copy_patch_stencil_instruction(
         DenseOpcode::CallFunction | DenseOpcode::CallMethod | DenseOpcode::CallStaticMethod => {
             unsupported_copy_patch_class("dynamic_or_userland_call_requires_frame_and_symbol_state")
         }
+        DenseOpcode::Include => unsupported_copy_patch_class("include_requires_request_state"),
         DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
-        | DenseOpcode::AppendDim => unsupported_copy_patch_class(
+        | DenseOpcode::AppendDim
+        | DenseOpcode::UnsetDim => unsupported_copy_patch_class(
             "array_mutation_requires_reference_cow_and_allocator_state",
         ),
         DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
@@ -3415,6 +3437,7 @@ fn classify_copy_patch_stencil_instruction(
         | DenseOpcode::UnaryMinus
         | DenseOpcode::UnaryNot
         | DenseOpcode::UnaryBitNot
+        | DenseOpcode::Cast
         | DenseOpcode::BinaryConcatEcho => {
             unsupported_copy_patch_class("opcode_needs_php_semantic_helper_or_string_state")
         }
@@ -3559,7 +3582,7 @@ fn classify_mid_tier_instruction(
             push_unique(&mut plan.expected_guards, "overflow_precision_guard");
             plan.deopt_points += 1;
         }
-        DenseOpcode::FetchDim => {
+        DenseOpcode::FetchDim | DenseOpcode::IssetDim | DenseOpcode::EmptyDim => {
             push_unique(
                 &mut plan.candidate_optimizations,
                 "packed_array_loop_specialization",
@@ -3600,7 +3623,10 @@ fn classify_mid_tier_instruction(
             push_unique(&mut plan.required_helpers, "known_builtin_helper");
             plan.deopt_points += 1;
         }
-        DenseOpcode::CallFunction | DenseOpcode::CallMethod | DenseOpcode::CallStaticMethod => {
+        DenseOpcode::CallFunction
+        | DenseOpcode::CallMethod
+        | DenseOpcode::CallStaticMethod
+        | DenseOpcode::Include => {
             push_unique(&mut plan.rejection_reasons, "magic_hooks_or_dynamic_calls");
             plan.deopt_points += 1;
         }
@@ -3613,7 +3639,8 @@ fn classify_mid_tier_instruction(
         DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
-        | DenseOpcode::AppendDim => {
+        | DenseOpcode::AppendDim
+        | DenseOpcode::UnsetDim => {
             push_unique(&mut plan.rejection_reasons, "cow_mutation_ambiguity");
             push_unique(
                 &mut plan.rejection_reasons,
@@ -3648,9 +3675,24 @@ fn classify_mid_tier_instruction(
             push_unique(&mut plan.rejection_reasons, "static_local_request_state");
             plan.deopt_points += 1;
         }
+        DenseOpcode::BindGlobal => {
+            push_unique(&mut plan.rejection_reasons, "global_reference_state");
+            plan.deopt_points += 1;
+        }
+        DenseOpcode::UnsetLocal => {
+            push_unique(
+                &mut plan.expected_guards,
+                "destructor_sensitive_value_state",
+            );
+            plan.deopt_points += 1;
+        }
         DenseOpcode::LoadConst
+        | DenseOpcode::FetchConst
         | DenseOpcode::Move
         | DenseOpcode::LoadLocal
+        | DenseOpcode::LoadLocalQuiet
+        | DenseOpcode::IssetLocal
+        | DenseOpcode::EmptyLocal
         | DenseOpcode::StoreLocal
         | DenseOpcode::StoreLocalDiscard
         | DenseOpcode::LoadConstEcho
@@ -3678,7 +3720,8 @@ fn classify_mid_tier_instruction(
         | DenseOpcode::UnaryPlus
         | DenseOpcode::UnaryMinus
         | DenseOpcode::UnaryNot
-        | DenseOpcode::UnaryBitNot => {
+        | DenseOpcode::UnaryBitNot
+        | DenseOpcode::Cast => {
             push_unique(&mut plan.expected_guards, "php_scalar_semantics");
             plan.deopt_points += 1;
         }

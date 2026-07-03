@@ -62,6 +62,7 @@ pub struct ServerConfig {
     pub access_log: Option<String>,
     pub perf_trace: Option<PathBuf>,
     pub perf_trace_vm_counters: bool,
+    pub network_requests_enabled: bool,
     pub help: bool,
 }
 
@@ -210,6 +211,9 @@ impl ServerConfig {
         let mut perf_trace_vm_counters = file_config
             .bool("perf_trace_vm_counters")?
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_SERVER_PERF_TRACE_VM_COUNTERS"));
+        let mut network_requests_enabled = file_config
+            .bool("network_requests_enabled")?
+            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_SERVER_ENABLE_NETWORK_REQUESTS"));
         let mut debug = env_bool(&env_value, "PHRUST_SERVER_DEBUG");
         let mut error_format = env_output_format(&env_value, "PHRUST_SERVER_ERROR_FORMAT")?;
         let mut debug_log = env_value("PHRUST_SERVER_DEBUG_LOG")
@@ -310,6 +314,7 @@ impl ServerConfig {
                     perf_trace = Some(PathBuf::from(required_value(&arg, &mut args)?))
                 }
                 "--perf-trace-vm-counters" => perf_trace_vm_counters = true,
+                "--enable-network-requests" => network_requests_enabled = true,
                 "--debug" => debug = true,
                 "--error-format" => {
                     error_format = parse_output_format(&required_value(&arg, &mut args)?)?;
@@ -373,6 +378,7 @@ impl ServerConfig {
                 access_log,
                 perf_trace,
                 perf_trace_vm_counters,
+                network_requests_enabled,
                 help,
             });
         }
@@ -416,6 +422,7 @@ impl ServerConfig {
             access_log,
             perf_trace,
             perf_trace_vm_counters,
+            network_requests_enabled,
             help,
         })
     }
@@ -450,6 +457,7 @@ Options:\n\
   --access-log <path|->        write compact access logs to file or stdout\n\
   --perf-trace <path>          append per-PHP-request performance trace JSONL\n\
   --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
+  --enable-network-requests    allow PHP cURL requests to external hosts\n\
   --debug                      emit structured server debug events to stderr\n\
   --error-format <text|json>   render server diagnostics/debug events as text or JSON\n\
   --debug-log <path>           append server debug events to a file instead of stderr\n\
@@ -810,6 +818,7 @@ mod tests {
         assert_eq!(config.access_log, None);
         assert_eq!(config.perf_trace, None);
         assert!(!config.perf_trace_vm_counters);
+        assert!(!config.network_requests_enabled);
         assert!(config.script_cache_enabled);
         assert_eq!(config.script_cache_shards, 16);
         assert_eq!(config.script_cache_max_entries, 4096);
@@ -871,6 +880,7 @@ mod tests {
             "--perf-trace",
             "perf.jsonl",
             "--perf-trace-vm-counters",
+            "--enable-network-requests",
             "--debug",
             "--error-format",
             "json",
@@ -914,6 +924,7 @@ mod tests {
         assert_eq!(config.access_log, Some("-".to_string()));
         assert_eq!(config.perf_trace, Some(PathBuf::from("perf.jsonl")));
         assert!(config.perf_trace_vm_counters);
+        assert!(config.network_requests_enabled);
         assert!(config.debug);
         assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
         assert_eq!(config.debug_log, Some(PathBuf::from("debug.log")));
@@ -952,6 +963,7 @@ script_cache_max_entries = 12
 strict_preload = true
 engine_preset = "baseline"
 max_vm_steps = 333000
+network_requests_enabled = true
 "#,
         );
 
@@ -984,6 +996,7 @@ max_vm_steps = 333000
         assert_eq!(config.tls_key, Some(PathBuf::from("key.pem")));
         assert_eq!(config.script_cache_max_entries, 12);
         assert!(config.strict_preload);
+        assert!(config.network_requests_enabled);
         assert_eq!(config.engine_preset, EngineProfileName::Default);
         assert_eq!(config.max_vm_steps, 333_000);
     }
@@ -1040,6 +1053,7 @@ index = "../bad.php"
             ("PHRUST_SERVER_DEBUG", "1"),
             ("PHRUST_SERVER_ERROR_FORMAT", "json"),
             ("PHRUST_SERVER_DEBUG_LOG", "server-debug.log"),
+            ("PHRUST_SERVER_ENABLE_NETWORK_REQUESTS", "1"),
         ]);
         let config = ServerConfig::parse_from_with_env(["--docroot", "public"], |name| {
             env.get(name).map(|value| (*value).to_string())
@@ -1049,6 +1063,7 @@ index = "../bad.php"
         assert!(config.debug);
         assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
         assert_eq!(config.debug_log, Some(PathBuf::from("server-debug.log")));
+        assert!(config.network_requests_enabled);
     }
 
     #[test]

@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 
 use php_ir::ids::{LocalId, RegId};
+use php_ir::instruction::CastKind;
+use php_ir::instruction::IncludeKind;
 use php_ir::instruction::UnaryOp;
 use php_ir::instruction::{IrCallArg, IrCallArgValueKind, Terminator, TerminatorKind};
 use php_ir::rule_selection::{RuleKind, RuleSelection, RuleSelectionReport};
@@ -133,6 +135,28 @@ pub enum DenseOpcode {
     Exit = 53,
     /// Bind a local to a request-persistent static local cell.
     InitStaticLocal = 54,
+    /// Runtime include/require through the shared include loader.
+    Include = 56,
+    /// Tests whether a local array dimension exists and is not null.
+    IssetDim = 57,
+    /// Fetch a runtime global constant by lexical name.
+    FetchConst = 58,
+    /// Cast a value to a PHP scalar/container kind.
+    Cast = 59,
+    /// Unset a local slot.
+    UnsetLocal = 60,
+    /// Tests whether a local array dimension is PHP-empty.
+    EmptyDim = 61,
+    /// Unset a local array dimension.
+    UnsetDim = 62,
+    /// Tests whether a local exists and is not null.
+    IssetLocal = 63,
+    /// Tests whether a local is PHP-empty.
+    EmptyLocal = 64,
+    /// Bind a local slot to a global symbol.
+    BindGlobal = 65,
+    /// Quiet local load used by null/isset-adjacent access paths.
+    LoadLocalQuiet = 66,
 }
 
 impl DenseOpcode {
@@ -209,6 +233,17 @@ impl DenseOpcode {
             Self::Discard => "discard",
             Self::Exit => "exit",
             Self::InitStaticLocal => "init_static_local",
+            Self::Include => "include",
+            Self::IssetDim => "isset_dim",
+            Self::FetchConst => "fetch_const",
+            Self::Cast => "cast",
+            Self::UnsetLocal => "unset_local",
+            Self::EmptyDim => "empty_dim",
+            Self::UnsetDim => "unset_dim",
+            Self::IssetLocal => "isset_local",
+            Self::EmptyLocal => "empty_local",
+            Self::BindGlobal => "bind_global",
+            Self::LoadLocalQuiet => "load_local_quiet",
         }
     }
 
@@ -309,11 +344,23 @@ pub enum DenseOperands {
     RegOperand { dst: u32, src: DenseOperand },
     /// Local destination/source and generic operand.
     LocalOperand { local: u32, src: DenseOperand },
+    /// Local-only operand.
+    Local { local: u32 },
     /// Local slot, name side-table index, and default-value operand.
     StaticLocal {
         local: u32,
         name: u32,
         default: DenseOperand,
+    },
+    /// Local slot and name side-table index.
+    LocalName { local: u32, name: u32 },
+    /// Register destination and name side-table index.
+    RegName { dst: u32, name: u32 },
+    /// Cast operation over one predecoded operand.
+    Cast {
+        dst: u32,
+        kind: CastKind,
+        src: DenseOperand,
     },
     /// Binary operation over two predecoded operands.
     Binary {
@@ -364,6 +411,20 @@ pub enum DenseOperands {
         dims: Vec<DenseOperand>,
         value: DenseOperand,
     },
+    /// Local array dimension isset test operands.
+    IssetDim {
+        dst: u32,
+        local: u32,
+        dims: Vec<DenseOperand>,
+    },
+    /// Local array dimension empty test operands.
+    EmptyDim {
+        dst: u32,
+        local: u32,
+        dims: Vec<DenseOperand>,
+    },
+    /// Local array dimension unset operands.
+    UnsetDim { local: u32, dims: Vec<DenseOperand> },
     /// Foreach iterator initialization.
     ForeachInit { iterator: u32, source: DenseOperand },
     /// Foreach iterator advance.
@@ -407,6 +468,12 @@ pub enum DenseOperands {
     Return { value: Option<DenseOperand> },
     /// Optional script-exit operand.
     Exit { value: Option<DenseOperand> },
+    /// Include/require path operand.
+    Include {
+        dst: u32,
+        kind: IncludeKind,
+        path: DenseOperand,
+    },
 }
 
 /// One dense function-call argument with call-shape metadata preserved.
@@ -1313,6 +1380,17 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::JumpIfTrue
         | DenseOpcode::JumpIf
         | DenseOpcode::Exit
+        | DenseOpcode::FetchConst
+        | DenseOpcode::Include
+        | DenseOpcode::IssetDim
+        | DenseOpcode::Cast
+        | DenseOpcode::UnsetLocal
+        | DenseOpcode::EmptyDim
+        | DenseOpcode::UnsetDim
+        | DenseOpcode::IssetLocal
+        | DenseOpcode::EmptyLocal
+        | DenseOpcode::BindGlobal
+        | DenseOpcode::LoadLocalQuiet
         | DenseOpcode::Echo
         | DenseOpcode::Discard => Some(RuleKind::NoRule),
         DenseOpcode::CallFunction
@@ -1561,6 +1639,13 @@ fn lower_instruction(
                 constant: constant.raw(),
             },
         ),
+        InstructionKind::FetchConst { dst, name } => (
+            DenseOpcode::FetchConst,
+            DenseOperands::RegName {
+                dst: dst.raw(),
+                name: push_name(names, name).index() as u32,
+            },
+        ),
         InstructionKind::Move { dst, src } => (
             DenseOpcode::Move,
             DenseOperands::RegOperand {
@@ -1578,11 +1663,52 @@ fn lower_instruction(
                 },
             },
         ),
+        InstructionKind::LoadLocalQuiet { dst, local } => (
+            DenseOpcode::LoadLocalQuiet,
+            DenseOperands::RegOperand {
+                dst: dst.raw(),
+                src: DenseOperand {
+                    kind: DenseOperandKind::Local,
+                    index: local.raw(),
+                },
+            },
+        ),
         InstructionKind::StoreLocal { local, src } => (
             DenseOpcode::StoreLocal,
             DenseOperands::LocalOperand {
                 local: local.raw(),
                 src: lower_operand(*src),
+            },
+        ),
+        InstructionKind::UnsetLocal { local } => (
+            DenseOpcode::UnsetLocal,
+            DenseOperands::Local { local: local.raw() },
+        ),
+        InstructionKind::IssetLocal { dst, local } => (
+            DenseOpcode::IssetLocal,
+            DenseOperands::RegOperand {
+                dst: dst.raw(),
+                src: DenseOperand {
+                    kind: DenseOperandKind::Local,
+                    index: local.raw(),
+                },
+            },
+        ),
+        InstructionKind::EmptyLocal { dst, local } => (
+            DenseOpcode::EmptyLocal,
+            DenseOperands::RegOperand {
+                dst: dst.raw(),
+                src: DenseOperand {
+                    kind: DenseOperandKind::Local,
+                    index: local.raw(),
+                },
+            },
+        ),
+        InstructionKind::BindGlobal { local, name } => (
+            DenseOpcode::BindGlobal,
+            DenseOperands::LocalName {
+                local: local.raw(),
+                name: push_name(names, name).index() as u32,
             },
         ),
         InstructionKind::InitStaticLocal {
@@ -1617,6 +1743,14 @@ fn lower_instruction(
             dense_unary_opcode(*op),
             DenseOperands::RegOperand {
                 dst: dst.raw(),
+                src: lower_operand(*src),
+            },
+        ),
+        InstructionKind::Cast { dst, kind, src } => (
+            DenseOpcode::Cast,
+            DenseOperands::Cast {
+                dst: dst.raw(),
+                kind: *kind,
                 src: lower_operand(*src),
             },
         ),
@@ -1718,6 +1852,29 @@ fn lower_instruction(
                 value: lower_operand(*value),
             },
         ),
+        InstructionKind::IssetDim { dst, local, dims } => (
+            DenseOpcode::IssetDim,
+            DenseOperands::IssetDim {
+                dst: dst.raw(),
+                local: local.raw(),
+                dims: dims.iter().copied().map(lower_operand).collect(),
+            },
+        ),
+        InstructionKind::EmptyDim { dst, local, dims } => (
+            DenseOpcode::EmptyDim,
+            DenseOperands::EmptyDim {
+                dst: dst.raw(),
+                local: local.raw(),
+                dims: dims.iter().copied().map(lower_operand).collect(),
+            },
+        ),
+        InstructionKind::UnsetDim { local, dims } => (
+            DenseOpcode::UnsetDim,
+            DenseOperands::UnsetDim {
+                local: local.raw(),
+                dims: dims.iter().copied().map(lower_operand).collect(),
+            },
+        ),
         InstructionKind::ForeachInit { iterator, source } => (
             DenseOpcode::ForeachInit,
             DenseOperands::ForeachInit {
@@ -1790,6 +1947,14 @@ fn lower_instruction(
             DenseOpcode::Discard,
             DenseOperands::Operand {
                 src: lower_operand(*src),
+            },
+        ),
+        InstructionKind::Include { dst, kind, path } => (
+            DenseOpcode::Include,
+            DenseOperands::Include {
+                dst: dst.raw(),
+                kind: *kind,
+                path: lower_operand(*path),
             },
         ),
         other => return unsupported_instruction(instruction, format!("{other:?}")),
@@ -2135,19 +2300,27 @@ fn verify_instruction(
         }
         (DenseOpcode::Move, DenseOperands::RegOperand { dst, src })
         | (
-            DenseOpcode::LoadLocal | DenseOpcode::LoadLocalEcho,
+            DenseOpcode::LoadLocal
+            | DenseOpcode::LoadLocalEcho
+            | DenseOpcode::LoadLocalQuiet
+            | DenseOpcode::IssetLocal
+            | DenseOpcode::EmptyLocal,
             DenseOperands::RegOperand { dst, src },
         ) => {
             verify_register(*dst, function, errors);
             verify_operand(*src, unit, function, errors);
             if matches!(
                 instruction.opcode,
-                DenseOpcode::LoadLocal | DenseOpcode::LoadLocalEcho
+                DenseOpcode::LoadLocal
+                    | DenseOpcode::LoadLocalEcho
+                    | DenseOpcode::LoadLocalQuiet
+                    | DenseOpcode::IssetLocal
+                    | DenseOpcode::EmptyLocal
             ) && src.kind != DenseOperandKind::Local
             {
                 errors.push(error(
                     DenseVerifyErrorCode::InvalidOperandShape,
-                    "load_local source must be a local operand".to_string(),
+                    "local test/load source must be a local operand".to_string(),
                 ));
             }
         }
@@ -2169,6 +2342,21 @@ fn verify_instruction(
             verify_local(*local, function, errors);
             verify_name(*name, unit, errors);
             verify_operand(*default, unit, function, errors);
+        }
+        (DenseOpcode::FetchConst, DenseOperands::RegName { dst, name }) => {
+            verify_register(*dst, function, errors);
+            verify_name(*name, unit, errors);
+        }
+        (DenseOpcode::BindGlobal, DenseOperands::LocalName { local, name }) => {
+            verify_local(*local, function, errors);
+            verify_name(*name, unit, errors);
+        }
+        (DenseOpcode::UnsetLocal, DenseOperands::Local { local }) => {
+            verify_local(*local, function, errors);
+        }
+        (DenseOpcode::Cast, DenseOperands::Cast { dst, src, .. }) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*src, unit, function, errors);
         }
         (
             DenseOpcode::BinaryAdd
@@ -2295,6 +2483,26 @@ fn verify_instruction(
             }
             verify_operand(*value, unit, function, errors);
         }
+        (DenseOpcode::IssetDim, DenseOperands::IssetDim { dst, local, dims }) => {
+            verify_register(*dst, function, errors);
+            verify_local(*local, function, errors);
+            for dim in dims {
+                verify_operand(*dim, unit, function, errors);
+            }
+        }
+        (DenseOpcode::EmptyDim, DenseOperands::EmptyDim { dst, local, dims }) => {
+            verify_register(*dst, function, errors);
+            verify_local(*local, function, errors);
+            for dim in dims {
+                verify_operand(*dim, unit, function, errors);
+            }
+        }
+        (DenseOpcode::UnsetDim, DenseOperands::UnsetDim { local, dims }) => {
+            verify_local(*local, function, errors);
+            for dim in dims {
+                verify_operand(*dim, unit, function, errors);
+            }
+        }
         (DenseOpcode::ForeachInit, DenseOperands::ForeachInit { iterator, source }) => {
             verify_register(*iterator, function, errors);
             verify_operand(*source, unit, function, errors);
@@ -2381,6 +2589,10 @@ fn verify_instruction(
             if let Some(value) = value {
                 verify_operand(*value, unit, function, errors);
             }
+        }
+        (DenseOpcode::Include, DenseOperands::Include { dst, path, .. }) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*path, unit, function, errors);
         }
         _ => errors.push(error(
             DenseVerifyErrorCode::InvalidOperandShape,
@@ -2640,11 +2852,17 @@ fn render_operands(operands: &DenseOperands) -> String {
         DenseOperands::RegConst { dst, constant } => format!("r{dst} c{constant}"),
         DenseOperands::RegOperand { dst, src } => format!("r{dst} {}", render_operand(*src)),
         DenseOperands::LocalOperand { local, src } => format!("l{local} {}", render_operand(*src)),
+        DenseOperands::Local { local } => format!("l{local}"),
         DenseOperands::StaticLocal {
             local,
             name,
             default,
         } => format!("l{local} n{name} default={}", render_operand(*default)),
+        DenseOperands::LocalName { local, name } => format!("l{local} n{name}"),
+        DenseOperands::RegName { dst, name } => format!("r{dst} n{name}"),
+        DenseOperands::Cast { dst, kind, src } => {
+            format!("r{dst} {kind:?} {}", render_operand(*src))
+        }
         DenseOperands::Binary { dst, lhs, rhs } => {
             format!("r{dst} {} {}", render_operand(*lhs), render_operand(*rhs))
         }
@@ -2711,6 +2929,18 @@ fn render_operands(operands: &DenseOperands) -> String {
                 render_operand(*value)
             )
         }
+        DenseOperands::IssetDim { dst, local, dims } => {
+            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
+            format!("r{dst} l{local} [{}]", dims.join(", "))
+        }
+        DenseOperands::EmptyDim { dst, local, dims } => {
+            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
+            format!("r{dst} l{local} [{}]", dims.join(", "))
+        }
+        DenseOperands::UnsetDim { local, dims } => {
+            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
+            format!("l{local} [{}]", dims.join(", "))
+        }
         DenseOperands::ForeachInit { iterator, source } => {
             format!("r{iterator} {}", render_operand(*source))
         }
@@ -2751,6 +2981,9 @@ fn render_operands(operands: &DenseOperands) -> String {
         } => format!("{} b{if_true} b{if_false}", render_operand(*condition)),
         DenseOperands::Return { value } => value.map_or_else(|| "-".to_string(), render_operand),
         DenseOperands::Exit { value } => value.map_or_else(|| "-".to_string(), render_operand),
+        DenseOperands::Include { dst, kind, path } => {
+            format!("r{dst} {kind:?} {}", render_operand(*path))
+        }
     }
 }
 

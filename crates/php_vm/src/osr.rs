@@ -404,10 +404,22 @@ fn collect_live_slots(function: &DenseFunction, header: u32, backedge: u32) -> V
 fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSet<OsrVmSlot>) {
     match &instruction.operands {
         DenseOperands::None => {}
-        DenseOperands::RegConst { dst, .. } | DenseOperands::Dst { dst } => {
+        DenseOperands::RegConst { dst, .. }
+        | DenseOperands::RegName { dst, .. }
+        | DenseOperands::Dst { dst } => {
             slots.insert(OsrVmSlot::Register(*dst));
         }
+        DenseOperands::Local { local } => {
+            slots.insert(OsrVmSlot::Local(*local));
+        }
+        DenseOperands::LocalName { local, .. } => {
+            slots.insert(OsrVmSlot::Local(*local));
+        }
         DenseOperands::RegOperand { dst, src } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            collect_operand_slot(*src, slots);
+        }
+        DenseOperands::Cast { dst, src, .. } => {
             slots.insert(OsrVmSlot::Register(*dst));
             collect_operand_slot(*src, slots);
         }
@@ -452,6 +464,30 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
                 if let Some(local) = arg.by_ref_local {
                     slots.insert(OsrVmSlot::Local(local));
                 }
+            }
+        }
+        DenseOperands::Include { dst, path, .. } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            collect_operand_slot(*path, slots);
+        }
+        DenseOperands::IssetDim { dst, local, dims } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            slots.insert(OsrVmSlot::Local(*local));
+            for dim in dims {
+                collect_operand_slot(*dim, slots);
+            }
+        }
+        DenseOperands::EmptyDim { dst, local, dims } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            slots.insert(OsrVmSlot::Local(*local));
+            for dim in dims {
+                collect_operand_slot(*dim, slots);
+            }
+        }
+        DenseOperands::UnsetDim { local, dims } => {
+            slots.insert(OsrVmSlot::Local(*local));
+            for dim in dims {
+                collect_operand_slot(*dim, slots);
             }
         }
         DenseOperands::ArrayInsert {

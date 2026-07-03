@@ -35,6 +35,7 @@ pub(crate) struct AppState {
     pub(crate) access_log: Option<Arc<AccessLogger>>,
     pub(crate) perf_trace: Option<Arc<PerfTraceWriter>>,
     pub(crate) perf_trace_vm_counters: bool,
+    pub(crate) network_requests_enabled: bool,
     pub(crate) env_snapshot: Arc<Vec<(String, String)>>,
     pub(crate) debug: bool,
     pub(crate) error_format: DiagnosticOutputFormat,

@@ -6849,6 +6849,84 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::FetchConst => {
+                        let DenseOperands::RegName { dst, name } = instruction.operands else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(name) = dense.names.get(name as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense name index {name}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let value = match name.as_str() {
+                            "STDIN" => {
+                                let resource = state
+                                    .stdin
+                                    .get_or_insert_with(|| {
+                                        state.resources.register_stdin(Vec::new())
+                                    })
+                                    .clone();
+                                Value::Resource(resource)
+                            }
+                            "STDOUT" => {
+                                let resource = state
+                                    .stdout
+                                    .get_or_insert_with(|| state.resources.register_stdout())
+                                    .clone();
+                                Value::Resource(resource)
+                            }
+                            "STDERR" => {
+                                let resource = state
+                                    .stderr
+                                    .get_or_insert_with(|| state.resources.register_stderr())
+                                    .clone();
+                                Value::Resource(resource)
+                            }
+                            _ => match lexical_constant_value(compiled, state, stack, name) {
+                                Ok(Some(value)) => value,
+                                Ok(None) => {
+                                    let result = self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        format!(
+                                            "E_PHP_RUNTIME_UNDEFINED_CONSTANT: undefined constant {name}"
+                                        ),
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            },
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::Move => {
                         let DenseOperands::RegOperand { dst, src } = instruction.operands else {
                             let result = self.invalid_bytecode_operand_shape(
@@ -6864,6 +6942,55 @@ impl Vm {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::Cast => {
+                        let DenseOperands::Cast { dst, kind, src } = instruction.operands else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let src = match self.read_dense_operand(compiled, stack, src) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let source_span = runtime_source_span(
+                            compiled,
+                            dense_instruction_span(dense, instruction),
+                        );
+                        let value = match self.execute_cast(
+                            compiled,
+                            kind,
+                            &src,
+                            source_span,
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            Ok(value) => value,
+                            Err(result) => {
                                 stack.pop_recycle();
                                 return result;
                             }
@@ -7002,6 +7129,116 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::LoadLocalQuiet => {
+                        let DenseOperands::RegOperand { dst, src } = instruction.operands else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        if src.kind != DenseOperandKind::Local {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        let local = LocalId::new(src.index);
+                        let value = if is_globals_local(ir_function, local) {
+                            self.record_counter_local_slot_fast_path(false);
+                            Value::Array(state.globals.globals_array())
+                        } else {
+                            self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
+                                stack, local,
+                            ));
+                            match stack
+                                .current()
+                                .expect("bytecode frame was pushed")
+                                .locals
+                                .get(local)
+                            {
+                                Some(Value::Uninitialized) => Value::Null,
+                                Some(value) => value.clone(),
+                                None => {
+                                    let result = self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        format!("invalid local local:{}", local.raw()),
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::IssetLocal | DenseOpcode::EmptyLocal => {
+                        let DenseOperands::RegOperand { dst, src } = instruction.operands else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        if src.kind != DenseOperandKind::Local {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        let local = LocalId::new(src.index);
+                        self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
+                            stack, local,
+                        ));
+                        let value = read_local_value(stack, local).unwrap_or(Value::Uninitialized);
+                        let result = if instruction.opcode == DenseOpcode::IssetLocal {
+                            !matches!(value, Value::Uninitialized | Value::Null)
+                        } else {
+                            match php_empty(&value) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), Value::Bool(result))
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::StoreLocal | DenseOpcode::StoreLocalDiscard => {
                         let DenseOperands::LocalOperand { local, src } = instruction.operands
                         else {
@@ -7072,6 +7309,126 @@ impl Vm {
                                     }
                                 }
                             }
+                        }
+                    }
+                    DenseOpcode::UnsetLocal => {
+                        let DenseOperands::Local { local } = instruction.operands else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let local = LocalId::new(local);
+                        self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
+                            stack, local,
+                        ));
+                        let previous = stack
+                            .current()
+                            .expect("bytecode frame was pushed")
+                            .locals
+                            .get(local)
+                            .unwrap_or(Value::Uninitialized);
+                        if ir_function.flags.is_top_level
+                            && !is_globals_local(ir_function, local)
+                            && let Some(Slot::Reference(cell)) = stack
+                                .current()
+                                .expect("bytecode frame was pushed")
+                                .locals
+                                .get_slot(local)
+                                .cloned()
+                            && let Some(name) = ir_function.locals.get(local.index())
+                            && state
+                                .globals
+                                .get_slot(name)
+                                .is_some_and(|global| global.ptr_eq(&cell))
+                        {
+                            cell.set(Value::Uninitialized);
+                        }
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .locals
+                            .unset(local)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        let mut exception_handlers = Vec::new();
+                        let mut pending_control = None;
+                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            &mut exception_handlers,
+                            &mut pending_control,
+                            &previous,
+                        ) {
+                            match outcome {
+                                RaiseOutcome::Done(result) => {
+                                    stack.pop_recycle();
+                                    return *result;
+                                }
+                                RaiseOutcome::Caught(_) => {
+                                    let result = self.runtime_error(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        "E_PHP_VM_BYTECODE_DESTRUCTOR_CATCH_UNSUPPORTED: bytecode unset cannot route a caught destructor exception",
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        }
+                    }
+                    DenseOpcode::BindGlobal => {
+                        let DenseOperands::LocalName { local, name } = instruction.operands else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(name) = dense.names.get(name as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense name index {name}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        self.record_counter_alias_state_transition(
+                            AliasState::NoReferencesObserved,
+                            AliasState::GlobalOrSuperglobalReference,
+                        );
+                        self.record_counter_fast_path_disabled_by_reference(
+                            AliasState::GlobalOrSuperglobalReference,
+                        );
+                        let cell = state.globals.ensure_slot(name.clone(), Value::Null);
+                        if cell.get().is_uninitialized() {
+                            cell.set(Value::Null);
+                        }
+                        self.record_counter_local_slot_fast_path(false);
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .locals
+                            .bind_reference_cell(LocalId::new(local), cell)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
                         }
                     }
                     DenseOpcode::InitStaticLocal => {
@@ -7398,6 +7755,71 @@ impl Vm {
                             .expect("bytecode frame was pushed")
                             .registers
                             .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::Include => {
+                        let DenseOperands::Include { dst, kind, path } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let path = match self.read_dense_operand(compiled, stack, path) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let result = self.execute_include(
+                            compiled,
+                            compiled_unit_cache_key(compiled),
+                            function_id,
+                            BlockId::new(block_index),
+                            InstrId::new(dense_instruction_index),
+                            dense_instruction_span(dense, instruction),
+                            kind,
+                            &path,
+                            output,
+                            stack,
+                            state,
+                        );
+                        if !result.status.is_success() {
+                            if include_failure_allows_continuation(kind, &result) {
+                                diagnostics.extend(result.diagnostics);
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("bytecode caller frame is active")
+                                    .registers
+                                    .set(RegId::new(dst), Value::Bool(false))
+                                {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                continue;
+                            }
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        diagnostics.extend(result.diagnostics);
+                        let return_value = result.return_value.unwrap_or(Value::Int(1));
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode caller frame is active")
+                            .registers
+                            .set(RegId::new(dst), return_value)
                         {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
@@ -7981,6 +8403,358 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         }
+                    }
+                    DenseOpcode::IssetDim => {
+                        let DenseOperands::IssetDim {
+                            dst,
+                            local,
+                            ref dims,
+                        } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let local = LocalId::new(local);
+                        let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
+                            stack, local,
+                        ));
+                        let span = dense
+                            .spans
+                            .get(instruction.span.index())
+                            .copied()
+                            .unwrap_or_default();
+                        match self.try_userland_arrayaccess_offset_exists_local(
+                            compiled, output, stack, state, local, &dims, span,
+                        ) {
+                            Ok(Some(result)) => {
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("bytecode frame was pushed")
+                                    .registers
+                                    .set(RegId::new(dst), Value::Bool(result))
+                                {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(result) => {
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        }
+                        let local_value = if is_globals_local(ir_function, local) {
+                            Some(Value::Array(state.globals.globals_array()))
+                        } else {
+                            read_local_value(stack, local)
+                        };
+                        let value = if let Some((object, key_value)) = local_value
+                            .as_ref()
+                            .and_then(|value| spl_array_access_dim_target(value, &dims))
+                        {
+                            let exists = match self.call_array_access_dim_method(
+                                compiled,
+                                object,
+                                "offsetExists",
+                                key_value,
+                                Some(span),
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(value) => value,
+                                Err(result) => {
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            };
+                            match to_bool(&exists) {
+                                Ok(true) => Some(Value::Bool(true)),
+                                Ok(false) => None,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        } else if let (Some(base_value), [key]) =
+                            (local_value.as_ref(), dims.as_slice())
+                        {
+                            let base = effective_value(base_value);
+                            if let Value::Array(array) = &base {
+                                match self.try_array_shape_lookup(array, key) {
+                                    Some(value) => value,
+                                    None => fetch_dim_path_value(base_value, &dims).ok().flatten(),
+                                }
+                            } else {
+                                fetch_dim_path_value(base_value, &dims).ok().flatten()
+                            }
+                        } else {
+                            local_value.and_then(|value| {
+                                fetch_dim_path_value(&value, &dims).ok().flatten()
+                            })
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(
+                                RegId::new(dst),
+                                Value::Bool(!matches!(value, None | Some(Value::Null))),
+                            )
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::EmptyDim => {
+                        let DenseOperands::EmptyDim {
+                            dst,
+                            local,
+                            ref dims,
+                        } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let local = LocalId::new(local);
+                        let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
+                            stack, local,
+                        ));
+                        let span = dense
+                            .spans
+                            .get(instruction.span.index())
+                            .copied()
+                            .unwrap_or_default();
+                        match self.try_userland_arrayaccess_offset_empty_local(
+                            compiled, output, stack, state, local, &dims, span,
+                        ) {
+                            Ok(Some(result)) => {
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("bytecode frame was pushed")
+                                    .registers
+                                    .set(RegId::new(dst), Value::Bool(result))
+                                {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(result) => {
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        }
+                        let local_value = if is_globals_local(ir_function, local) {
+                            Some(Value::Array(state.globals.globals_array()))
+                        } else {
+                            read_local_value(stack, local)
+                        };
+                        let value = if let Some((object, key_value)) = local_value
+                            .as_ref()
+                            .and_then(|value| spl_array_access_dim_target(value, &dims))
+                        {
+                            let exists = match self.call_array_access_dim_method(
+                                compiled,
+                                object.clone(),
+                                "offsetExists",
+                                key_value.clone(),
+                                Some(span),
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(value) => value,
+                                Err(result) => {
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            };
+                            let exists = match to_bool(&exists) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            };
+                            if exists {
+                                match self.call_array_access_dim_method(
+                                    compiled,
+                                    object,
+                                    "offsetGet",
+                                    key_value,
+                                    Some(span),
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(result) => {
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                }
+                            } else {
+                                Value::Uninitialized
+                            }
+                        } else {
+                            local_value
+                                .and_then(|value| {
+                                    fetch_dim_path_value(&value, &dims).ok().flatten()
+                                })
+                                .unwrap_or(Value::Uninitialized)
+                        };
+                        let result = match php_empty(&value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), Value::Bool(result))
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::UnsetDim => {
+                        let DenseOperands::UnsetDim { local, ref dims } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let local = LocalId::new(local);
+                        let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(
+                            stack, local,
+                        ));
+                        let was_packed = if is_globals_local(ir_function, local) {
+                            false
+                        } else {
+                            local_array_is_packed_fast(stack, local)
+                        };
+                        let span = dense
+                            .spans
+                            .get(instruction.span.index())
+                            .copied()
+                            .unwrap_or_default();
+                        match self.try_userland_arrayaccess_offset_unset_local(
+                            compiled, output, stack, state, local, &dims, span,
+                        ) {
+                            Ok(true) => {
+                                self.record_lvalue_trace_event("array-unset-dim", local, &dims);
+                                continue;
+                            }
+                            Ok(false) => {}
+                            Err(result) => {
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        }
+                        let local_value = if is_globals_local(ir_function, local) {
+                            Some(Value::Array(state.globals.globals_array()))
+                        } else {
+                            read_local_value(stack, local)
+                        };
+                        if let Some((object, key_value)) = local_value
+                            .as_ref()
+                            .and_then(|value| spl_array_access_dim_target(value, &dims))
+                        {
+                            match self.call_array_access_dim_method(
+                                compiled,
+                                object,
+                                "offsetUnset",
+                                key_value,
+                                Some(span),
+                                output,
+                                stack,
+                                state,
+                            ) {
+                                Ok(_) => {
+                                    self.record_lvalue_trace_event("array-unset-dim", local, &dims);
+                                    continue;
+                                }
+                                Err(result) => {
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        }
+                        let result = if is_globals_local(ir_function, local) {
+                            unset_globals_dim(&mut state.globals, &dims)
+                        } else {
+                            unset_dim_local(stack, local, &dims)
+                        };
+                        if let Err(message) = result {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        if !is_globals_local(ir_function, local)
+                            && was_packed
+                            && !local_array_is_packed_fast(stack, local)
+                        {
+                            self.record_counter_array_packed_to_mixed_transition();
+                        }
+                        self.record_lvalue_trace_event("array-unset-dim", local, &dims);
                     }
                     DenseOpcode::AssignDim | DenseOpcode::AppendDim => {
                         let DenseOperands::AssignDim {
@@ -57311,9 +58085,13 @@ fn dense_instruction_dst(instruction: &DenseInstruction) -> Option<u32> {
         | DenseOperands::Call { dst, .. }
         | DenseOperands::MethodCall { dst, .. }
         | DenseOperands::StaticCall { dst, .. }
+        | DenseOperands::RegName { dst, .. }
+        | DenseOperands::Cast { dst, .. }
         | DenseOperands::Dst { dst }
         | DenseOperands::FetchDim { dst, .. }
         | DenseOperands::AssignDim { dst, .. }
+        | DenseOperands::IssetDim { dst, .. }
+        | DenseOperands::EmptyDim { dst, .. }
         | DenseOperands::ForeachNext { has_value: dst, .. }
         | DenseOperands::FetchProperty { dst, .. }
         | DenseOperands::AssignProperty { dst, .. } => Some(dst),
@@ -59341,13 +60119,20 @@ fn dense_binary_op(opcode: DenseOpcode) -> Option<BinaryOp> {
 
 fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
     match opcode {
-        DenseOpcode::LoadConst | DenseOpcode::LoadConstEcho => "constants",
+        DenseOpcode::LoadConst | DenseOpcode::LoadConstEcho | DenseOpcode::FetchConst => {
+            "constants"
+        }
         DenseOpcode::Move
         | DenseOpcode::LoadLocal
         | DenseOpcode::LoadLocalEcho
+        | DenseOpcode::LoadLocalQuiet
         | DenseOpcode::StoreLocal
         | DenseOpcode::StoreLocalDiscard
-        | DenseOpcode::InitStaticLocal => "locals",
+        | DenseOpcode::InitStaticLocal
+        | DenseOpcode::UnsetLocal
+        | DenseOpcode::IssetLocal
+        | DenseOpcode::EmptyLocal
+        | DenseOpcode::BindGlobal => "locals",
         DenseOpcode::BinaryAdd
         | DenseOpcode::BinarySub
         | DenseOpcode::BinaryMul
@@ -59360,7 +60145,8 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::BinaryBitOr
         | DenseOpcode::BinaryBitXor
         | DenseOpcode::BinaryShiftLeft
-        | DenseOpcode::BinaryShiftRight => "scalar_ops",
+        | DenseOpcode::BinaryShiftRight
+        | DenseOpcode::Cast => "scalar_ops",
         DenseOpcode::CompareEqual
         | DenseOpcode::CompareNotEqual
         | DenseOpcode::CompareIdentical
@@ -59381,11 +60167,15 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::ArrayInsert
         | DenseOpcode::FetchDim
         | DenseOpcode::AssignDim
-        | DenseOpcode::AppendDim => "arrays",
+        | DenseOpcode::AppendDim
+        | DenseOpcode::IssetDim
+        | DenseOpcode::EmptyDim
+        | DenseOpcode::UnsetDim => "arrays",
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => "properties",
         DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             "foreach"
         }
+        DenseOpcode::Include => "includes",
         DenseOpcode::Echo => "output",
         DenseOpcode::Jump
         | DenseOpcode::JumpIfFalse
@@ -76074,6 +76864,124 @@ echo dense_supported(4), "\n", rich_fallback(), "\n";
                 .copied()
                 .unwrap_or_default()
                 >= 2,
+            "{counters:?}"
+        );
+    }
+
+    #[test]
+    fn dense_bytecode_auto_executes_include() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-dense-include-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::write(root.join("lib.php"), "<?php echo 'lib'; return 7;\n")
+            .expect("include file should be written");
+        let source = "<?php $value = require 'lib.php'; echo '|', $value;";
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"lib|7");
+        let counters = result.counters.expect("counters should be collected");
+        assert_eq!(counters.bytecode_lower_attempts, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_lower_successes, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+        assert!(counters.bytecode_instructions_executed >= 1, "{counters:?}");
+        assert!(counters.dense_functions_executed >= 1, "{counters:?}");
+        assert!(counters.includes >= 1, "{counters:?}");
+        assert!(
+            counters
+                .dense_instruction_families_executed
+                .get("includes")
+                .copied()
+                .unwrap_or_default()
+                >= 1,
+            "{counters:?}"
+        );
+    }
+
+    #[test]
+    fn dense_bytecode_auto_executes_isset_dim() {
+        let result = execute_source_with_options(
+            r#"<?php
+$items = ['present' => 1, 'nullish' => null];
+echo isset($items['present']) ? '1' : '0';
+echo isset($items['nullish']) ? '1' : '0';
+echo isset($items['missing']) ? '1' : '0';
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"100");
+        let counters = result.counters.expect("counters should be collected");
+        assert_eq!(counters.bytecode_lower_attempts, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_lower_successes, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+        assert!(counters.dense_functions_executed >= 1, "{counters:?}");
+        assert!(
+            counters
+                .dense_instruction_families_executed
+                .get("arrays")
+                .copied()
+                .unwrap_or_default()
+                >= 3,
+            "{counters:?}"
+        );
+    }
+
+    #[test]
+    fn dense_bytecode_auto_executes_fetch_const() {
+        let result = execute_source_with_options(
+            r#"<?php
+define('DENSE_FETCH_CONST_PROBE', 'ok');
+echo DENSE_FETCH_CONST_PROBE;
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"ok");
+        let counters = result.counters.expect("counters should be collected");
+        assert_eq!(counters.bytecode_lower_attempts, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_lower_successes, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+        assert!(counters.dense_functions_executed >= 1, "{counters:?}");
+        assert!(
+            counters
+                .dense_instruction_families_executed
+                .get("constants")
+                .copied()
+                .unwrap_or_default()
+                >= 1,
             "{counters:?}"
         );
     }

@@ -815,6 +815,9 @@ impl VmCounters {
 
     pub(crate) fn record_bytecode_instruction(&mut self, opcode: &str) {
         self.bytecode_instructions_executed += 1;
+        if opcode == "include" {
+            self.includes += 1;
+        }
         let family = bytecode_opcode_family(opcode).to_owned();
         *self
             .opcodes
@@ -4096,13 +4099,13 @@ fn opcode_name(kind: &InstructionKind) -> &'static str {
 
 fn bytecode_opcode_family(opcode: &str) -> &'static str {
     match opcode {
-        "load_const" | "load_const_echo" => "constants",
-        "move" | "load_local" | "load_local_echo" | "store_local" => "locals",
+        "load_const" | "load_const_echo" | "fetch_const" => "constants",
+        "move" | "load_local" | "load_local_echo" | "load_local_quiet" | "store_local"
+        | "unset_local" | "isset_local" | "empty_local" | "bind_global" => "locals",
         "binary_add" | "binary_sub" | "binary_mul" | "binary_div" | "binary_mod"
         | "binary_concat" | "binary_concat_echo" | "binary_pow" | "binary_bit_and"
-        | "binary_bit_or" | "binary_bit_xor" | "binary_shift_left" | "binary_shift_right" => {
-            "scalar_ops"
-        }
+        | "binary_bit_or" | "binary_bit_xor" | "binary_shift_left" | "binary_shift_right"
+        | "cast" => "scalar_ops",
         "compare_equal"
         | "compare_not_equal"
         | "compare_identical"
@@ -4114,9 +4117,11 @@ fn bytecode_opcode_family(opcode: &str) -> &'static str {
         | "compare_spaceship" => "comparisons",
         "unary_plus" | "unary_minus" | "unary_not" | "unary_bit_not" => "unary_ops",
         "call_function" => "function_calls",
-        "new_array" | "array_insert" | "fetch_dim" | "assign_dim" | "append_dim" => "arrays",
+        "new_array" | "array_insert" | "fetch_dim" | "assign_dim" | "append_dim" | "isset_dim"
+        | "empty_dim" | "unset_dim" => "arrays",
         "fetch_property" | "assign_property" => "properties",
         "foreach_init" | "foreach_next" => "foreach",
+        "include" => "includes",
         "echo" => "output",
         "jump" | "jump_if_false" | "jump_if_true" | "jump_if" => "control_flow",
         "return" => "returns",

@@ -965,6 +965,11 @@ fn parse_http_response(bytes: &[u8]) -> Result<CurlResponse, (i64, String)> {
     let headers = bytes[..header_end + 4].to_vec();
     let header = String::from_utf8_lossy(&bytes[..header_end]);
     let status = response_status(&header)?;
+    let body = if header_has_chunked_transfer_encoding(&header) {
+        decode_chunked_body(&bytes[header_end + 4..])?
+    } else {
+        bytes[header_end + 4..].to_vec()
+    };
     let location = header.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case("location")
@@ -975,7 +980,7 @@ fn parse_http_response(bytes: &[u8]) -> Result<CurlResponse, (i64, String)> {
         effective_url: String::new(),
         header_size: headers.len(),
         headers,
-        body: bytes[header_end + 4..].to_vec(),
+        body,
         location,
     })
 }
@@ -1050,6 +1055,40 @@ fn chunked_response_complete(body: &[u8]) -> bool {
             return false;
         }
         offset = next_offset;
+    }
+}
+
+fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>, (i64, String)> {
+    let mut offset = 0;
+    let mut decoded = Vec::new();
+    loop {
+        let Some(line_end) = find_crlf(&body[offset..]) else {
+            return Err((56, "invalid chunked HTTP response".to_owned()));
+        };
+        let size_line = &body[offset..offset + line_end];
+        let size_text = String::from_utf8_lossy(size_line);
+        let Some(size) = size_text
+            .split(';')
+            .next()
+            .and_then(|value| usize::from_str_radix(value.trim(), 16).ok())
+        else {
+            return Err((56, "invalid chunked HTTP response".to_owned()));
+        };
+        offset += line_end + 2;
+        if size == 0 {
+            return Ok(decoded);
+        }
+        let chunk_end = offset
+            .checked_add(size)
+            .ok_or_else(|| (56, "invalid chunked HTTP response".to_owned()))?;
+        let crlf_end = chunk_end
+            .checked_add(2)
+            .ok_or_else(|| (56, "invalid chunked HTTP response".to_owned()))?;
+        if body.len() < crlf_end || body.get(chunk_end..crlf_end) != Some(b"\r\n") {
+            return Err((56, "invalid chunked HTTP response".to_owned()));
+        }
+        decoded.extend_from_slice(&body[offset..chunk_end]);
+        offset = crlf_end;
     }
 }
 
@@ -2066,6 +2105,63 @@ mod tests {
             builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
                 .expect("errno"),
             Value::Int(0)
+        );
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_exec_decodes_complete_chunked_response() {
+        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
+        let _override = NetTestsOverride::set(true);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /chunked"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n",
+                )
+                .expect("write response");
+            thread::sleep(Duration::from_millis(500));
+        });
+
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let handle = builtin_curl_init(
+            &mut context,
+            vec![Value::string(format!("http://127.0.0.1:{port}/chunked"))],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("init");
+        for (option, value) in [
+            (CURLOPT_RETURNTRANSFER, Value::Bool(true)),
+            (CURLOPT_TIMEOUT_MS, Value::Int(100)),
+        ] {
+            builtin_curl_setopt(
+                &mut context,
+                vec![handle.clone(), Value::Int(option), value],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("setopt");
+        }
+
+        assert_eq!(
+            builtin_curl_exec(
+                &mut context,
+                vec![handle.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("exec"),
+            Value::string("Wikipedia")
+        );
+        assert_eq!(
+            curl_handle_arg("curl_exec", Some(&handle))
+                .expect("curl handle")
+                .get_property("__curl_last_response_body"),
+            Some(Value::string("Wikipedia"))
         );
         server.join().expect("server");
     }
