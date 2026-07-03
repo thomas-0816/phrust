@@ -275,6 +275,25 @@ impl Vm {
             );
         }
 
+        // Match the rich-IR static-call arm: an unknown class must attempt
+        // registered autoloaders before resolution fails.
+        if let Err(result) = self.autoload_static_class_if_missing(
+            compiled,
+            class_name,
+            call_span.unwrap_or_default(),
+            Some((
+                compiled_unit_cache_key(compiled),
+                function_id,
+                block_id,
+                instruction_id,
+            )),
+            output,
+            stack,
+            state,
+        ) {
+            return result;
+        }
+
         let class = match resolve_static_class_name(compiled, state, stack, class_name) {
             Ok(class) => class,
             Err(message) => {

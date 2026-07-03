@@ -224,6 +224,7 @@ fn class_resolution_display_name(
         .or_else(|| {
             source_namespaced_class_resolution_display_name(module, resolution, class_range)
         })
+        .or_else(|| source_unqualified_class_resolution_display_name(resolution))
         .or_else(|| {
             resolution
                 .resolved()
@@ -231,6 +232,21 @@ fn class_resolution_display_name(
                 .map(display_class_name)
         })
         .unwrap_or_else(|| display_class_name(resolution.source()))
+}
+
+/// Preserves the source spelling for a plain unqualified reference whose
+/// resolution is just its normalization (for example an undeclared global
+/// parent class that autoloading must observe with its PHP-visible casing).
+fn source_unqualified_class_resolution_display_name(
+    resolution: &HirNameResolution,
+) -> Option<String> {
+    let source = resolution.source().trim_start_matches('\\');
+    if source.is_empty() || source.contains('\\') {
+        return None;
+    }
+    let resolved = resolution.resolved().or_else(|| resolution.fallback())?;
+    (normalize_class_name(source) == normalize_class_name(resolved))
+        .then(|| display_class_name(source))
 }
 
 fn source_qualified_class_resolution_display_name(
