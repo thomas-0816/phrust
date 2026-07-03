@@ -41,6 +41,7 @@ pub(in crate::builtins::modules) const IMAGETYPE_JPEG: i64 = 2;
 pub(in crate::builtins::modules) const IMAGETYPE_PNG: i64 = 3;
 pub(in crate::builtins::modules) const IMAGETYPE_WEBP: i64 = 18;
 pub(in crate::builtins::modules) const IMAGETYPE_AVIF: i64 = 19;
+pub(in crate::builtins::modules) const IMAGETYPE_SVG: i64 = 21;
 
 fn builtin_finfo_open(
     context: &mut BuiltinContext<'_>,
@@ -255,7 +256,7 @@ fn image_type_to_mime_type(image_type: i64) -> &'static str {
         5 => "image/psd",
         6 => "image/bmp",
         7 | 8 => "image/tiff",
-        9 | 20 => "application/octet-stream",
+        9 => "application/octet-stream",
         10 => "image/jp2",
         14 => "image/iff",
         15 => "image/vnd.wap.wbmp",
@@ -263,7 +264,8 @@ fn image_type_to_mime_type(image_type: i64) -> &'static str {
         17 => "image/vnd.microsoft.icon",
         18 => "image/webp",
         19 => "image/avif",
-        21 => "image/heif",
+        20 => "image/heif",
+        21 => "image/svg+xml",
         _ => "application/octet-stream",
     }
 }
@@ -290,7 +292,66 @@ pub(in crate::builtins::modules) fn image_size(
         let height = (u16::from_le_bytes(bytes[28..30].try_into().ok()?) & 0x3fff) as i64;
         return Some((width, height, IMAGETYPE_WEBP, "image/webp"));
     }
+    if let Some((width, height)) = svg_size(bytes) {
+        return Some((width, height, IMAGETYPE_SVG, "image/svg+xml"));
+    }
     jpeg_size(bytes).map(|(width, height)| (width, height, IMAGETYPE_JPEG, "image/jpeg"))
+}
+
+fn svg_size(bytes: &[u8]) -> Option<(i64, i64)> {
+    let text = std::str::from_utf8(bytes)
+        .ok()?
+        .trim_start_matches('\u{feff}');
+    let text = text.trim_start();
+    if !text.starts_with("<svg") {
+        return None;
+    }
+    let tag_end = text.find('>')?;
+    let tag = &text[..tag_end];
+    let width = svg_dimension_attribute(tag, "width")?;
+    let height = svg_dimension_attribute(tag, "height")?;
+    Some((width, height))
+}
+
+fn svg_dimension_attribute(tag: &str, name: &str) -> Option<i64> {
+    let mut rest = tag;
+    loop {
+        let offset = rest.find(name)?;
+        let candidate = &rest[offset + name.len()..];
+        let before = rest[..offset].chars().next_back();
+        if before.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+            rest = candidate;
+            continue;
+        }
+        let candidate = candidate.trim_start();
+        let Some(candidate) = candidate.strip_prefix('=') else {
+            rest = candidate;
+            continue;
+        };
+        let candidate = candidate.trim_start();
+        let quote = candidate.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let value_start = quote.len_utf8();
+        let value_end = candidate[value_start..].find(quote)? + value_start;
+        let value = candidate[value_start..value_end].trim();
+        return parse_svg_dimension(value);
+    }
+}
+
+fn parse_svg_dimension(value: &str) -> Option<i64> {
+    let numeric = value
+        .strip_suffix("px")
+        .unwrap_or(value)
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    if numeric.is_finite() && numeric > 0.0 {
+        Some(numeric as i64)
+    } else {
+        None
+    }
 }
 
 fn jpeg_size(bytes: &[u8]) -> Option<(i64, i64)> {
@@ -373,6 +434,22 @@ mod tests {
         .expect("webp mime");
         assert_eq!(webp, Value::string("image/webp"));
 
+        let heif = (entry.function())(
+            &mut context,
+            vec![Value::Int(20)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("heif mime");
+        assert_eq!(heif, Value::string("image/heif"));
+
+        let svg = (entry.function())(
+            &mut context,
+            vec![Value::Int(IMAGETYPE_SVG)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("svg mime");
+        assert_eq!(svg, Value::string("image/svg+xml"));
+
         let unknown = (entry.function())(
             &mut context,
             vec![Value::Int(999)],
@@ -380,5 +457,15 @@ mod tests {
         )
         .expect("unknown mime");
         assert_eq!(unknown, Value::string("application/octet-stream"));
+    }
+
+    #[test]
+    fn image_size_reads_svg_dimensions() {
+        let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="64" viewBox="0 0 120 160"></svg>"#;
+
+        assert_eq!(
+            image_size(bytes),
+            Some((48, 64, IMAGETYPE_SVG, "image/svg+xml"))
+        );
     }
 }

@@ -10,6 +10,7 @@ use crate::{
     RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity, Value,
     WordPressDiagnosticContext, normalize_class_name,
 };
+use native_tls::TlsConnector;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(test)]
@@ -132,6 +133,10 @@ const CURL_VERSION_SSL: i64 = 4;
 
 type CurlTransportError = (i64, String);
 type CurlPostBody = (Vec<u8>, Option<&'static str>);
+
+trait CurlStream: Read + Write {}
+
+impl<T: Read + Write> CurlStream for T {}
 
 pub(in crate::builtins::modules) fn builtin_curl_version(
     _context: &mut BuiltinContext<'_>,
@@ -404,7 +409,8 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
 ) -> BuiltinResult {
     expect_arity("curl_exec", &args, 1)?;
     let handle = curl_handle_arg("curl_exec", args.first())?;
-    if !curl_network_requests_enabled(context) && !curl_handle_targets_loopback(&handle) {
+    let network_requests_enabled = curl_network_requests_enabled(context);
+    if !network_requests_enabled && !curl_handle_targets_loopback(&handle) {
         set_curl_error(
             &handle,
             1,
@@ -425,7 +431,7 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
         );
         return Ok(Value::Bool(false));
     }
-    let request = match build_request(&handle) {
+    let request = match build_request(&handle, network_requests_enabled) {
         Ok(request) => request,
         Err((code, message)) => {
             set_curl_error(&handle, code, message.clone());
@@ -675,7 +681,10 @@ pub(in crate::builtins::modules) fn builtin_curl_copy_handle(
     Ok(Value::Object(copy))
 }
 
-fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
+fn build_request(
+    handle: &ObjectRef,
+    network_requests_enabled: bool,
+) -> Result<CurlRequest, (i64, String)> {
     if handle.get_property("__curl_closed") == Some(Value::Bool(true)) {
         return Err((3, "cURL handle is closed".to_owned()));
     }
@@ -684,7 +693,7 @@ fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
         _ => return Err((3, "cURL URL is empty".to_owned())),
     };
     let parsed = parse_http_url(&url)?;
-    if !curl_host_is_loopback(&parsed.host) {
+    if !network_requests_enabled && !curl_host_is_loopback(&parsed.host) {
         return Err((
             7,
             "cURL MVP only permits local loopback hosts when network tests are enabled".to_owned(),
@@ -723,6 +732,7 @@ fn build_request(handle: &ObjectRef) -> Result<CurlRequest, (i64, String)> {
     }
     Ok(CurlRequest {
         url,
+        https: parsed.https,
         host: parsed.host,
         port: parsed.port,
         path: parsed.path,
@@ -768,25 +778,36 @@ fn execute_http_request(request: &CurlRequest) -> Result<CurlResponse, (i64, Str
 fn execute_single_http_request(request: &CurlRequest) -> Result<CurlResponse, (i64, String)> {
     let mut addrs = (request.host.as_str(), request.port)
         .to_socket_addrs()
-        .map_err(|error| (7, format!("failed to resolve local cURL host: {error}")))?;
+        .map_err(|error| (7, format!("failed to resolve cURL host: {error}")))?;
     let Some(addr) = addrs.next() else {
-        return Err((7, "failed to resolve local cURL host".to_owned()));
+        return Err((7, "failed to resolve cURL host".to_owned()));
     };
-    let mut stream = TcpStream::connect_timeout(&addr, request.connect_timeout)
-        .map_err(|error| (7, format!("failed to connect local cURL host: {error}")))?;
-    stream
+    let tcp_stream = TcpStream::connect_timeout(&addr, request.connect_timeout)
+        .map_err(|error| (7, format!("failed to connect cURL host: {error}")))?;
+    tcp_stream
         .set_read_timeout(Some(curl_read_poll_timeout(request.timeout)))
         .map_err(|error| (28, format!("failed to set cURL read timeout: {error}")))?;
-    stream
+    tcp_stream
         .set_write_timeout(Some(request.timeout))
         .map_err(|error| (28, format!("failed to set cURL write timeout: {error}")))?;
+    let mut stream: Box<dyn CurlStream> = if request.https {
+        let connector = TlsConnector::new()
+            .map_err(|error| (35, format!("failed to initialize cURL TLS: {error}")))?;
+        Box::new(
+            connector
+                .connect(&request.host, tcp_stream)
+                .map_err(|error| (35, format!("failed cURL TLS handshake: {error}")))?,
+        )
+    } else {
+        Box::new(tcp_stream)
+    };
     let mut payload = Vec::new();
     write!(
         payload,
         "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
         request.method,
         request.path,
-        request_host_header(&request.host, request.port)
+        request_host_header(&request.host, request.port, request.https)
     )
     .expect("write to vec");
     for header in &request.headers {
@@ -801,14 +822,14 @@ fn execute_single_http_request(request: &CurlRequest) -> Result<CurlResponse, (i
     stream
         .write_all(&payload)
         .map_err(|error| (55, format!("failed to write cURL request: {error}")))?;
-    let bytes = read_http_response(&mut stream, &request.method, request.timeout)?;
+    let bytes = read_http_response(stream.as_mut(), &request.method, request.timeout)?;
     let mut response = parse_http_response(&bytes)?;
     response.effective_url = request.url.clone();
     Ok(response)
 }
 
 fn read_http_response(
-    stream: &mut TcpStream,
+    stream: &mut dyn Read,
     method: &str,
     timeout: Duration,
 ) -> Result<Vec<u8>, (i64, String)> {
@@ -881,13 +902,13 @@ fn parse_http_response(bytes: &[u8]) -> Result<CurlResponse, (i64, String)> {
     })
 }
 
-fn request_host_header(host: &str, port: u16) -> String {
+fn request_host_header(host: &str, port: u16, https: bool) -> String {
     let host = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
     } else {
         host.to_owned()
     };
-    if port == 80 {
+    if port == 80 || (https && port == 443) {
         host
     } else {
         format!("{host}:{port}")
@@ -959,10 +980,10 @@ fn find_crlf(bytes: &[u8]) -> Option<usize> {
 }
 
 fn parse_http_url(url: &str) -> Result<ParsedUrl, (i64, String)> {
-    let (rest, default_port) = if let Some(rest) = url.strip_prefix("http://") {
-        (rest, 80)
+    let (rest, default_port, https) = if let Some(rest) = url.strip_prefix("http://") {
+        (rest, 80, false)
     } else if let Some(rest) = url.strip_prefix("https://") {
-        (rest, 443)
+        (rest, 443, true)
     } else {
         return Err((
             3,
@@ -988,6 +1009,7 @@ fn parse_http_url(url: &str) -> Result<ParsedUrl, (i64, String)> {
         host: host.trim_matches(['[', ']']).to_owned(),
         port,
         path,
+        https,
     })
 }
 
@@ -1437,11 +1459,13 @@ struct ParsedUrl {
     host: String,
     port: u16,
     path: String,
+    https: bool,
 }
 
 #[derive(Clone)]
 struct CurlRequest {
     url: String,
+    https: bool,
     host: String,
     port: u16,
     path: String,
@@ -1459,14 +1483,21 @@ impl CurlRequest {
         let url = if location.starts_with("http://") || location.starts_with("https://") {
             location.to_owned()
         } else if location.starts_with('/') {
-            format!("http://{}:{}{}", self.host, self.port, location)
+            format!(
+                "{}://{}:{}{}",
+                if self.https { "https" } else { "http" },
+                self.host,
+                self.port,
+                location
+            )
         } else {
             let base = self
                 .path
                 .rsplit_once('/')
                 .map_or("/", |(base, _)| if base.is_empty() { "/" } else { base });
             format!(
-                "http://{}:{}/{}{}",
+                "{}://{}:{}/{}{}",
+                if self.https { "https" } else { "http" },
                 self.host,
                 self.port,
                 base.trim_end_matches('/'),
@@ -1476,6 +1507,7 @@ impl CurlRequest {
         let parsed = parse_http_url(&url)?;
         let mut next = self.clone();
         next.url = url;
+        next.https = parsed.https;
         next.host = parsed.host;
         next.port = parsed.port;
         next.path = parsed.path;
@@ -1638,60 +1670,22 @@ mod tests {
     }
 
     #[test]
-    fn curl_exec_accepts_https_loopback_urls() {
-        let _guard = NET_TEST_ENV_LOCK.lock().expect("env lock");
-        let _override = NetTestsOverride::set(false);
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
-        let port = listener.local_addr().expect("addr").port();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut request = [0_u8; 1024];
-            let read = stream.read(&mut request).expect("read request");
-            let request = String::from_utf8_lossy(&request[..read]);
-            assert!(request.starts_with("GET /site-health"));
-            assert!(request.contains(&format!("Host: 127.0.0.1:{port}\r\n")));
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
-                .expect("write response");
-        });
-
-        let mut output = OutputBuffer::default();
-        let mut context = BuiltinContext::new(&mut output);
-        let handle = builtin_curl_init(
-            &mut context,
-            vec![Value::string(format!(
-                "https://127.0.0.1:{port}/site-health"
-            ))],
-            RuntimeSourceSpan::default(),
-        )
-        .expect("init");
-        builtin_curl_setopt(
-            &mut context,
-            vec![
-                handle.clone(),
-                Value::Int(CURLOPT_RETURNTRANSFER),
-                Value::Bool(true),
-            ],
-            RuntimeSourceSpan::default(),
-        )
-        .expect("set return transfer");
-
-        assert_eq!(
-            builtin_curl_exec(
-                &mut context,
-                vec![handle.clone()],
-                RuntimeSourceSpan::default()
-            )
-            .expect("exec"),
-            Value::string("OK")
+    fn curl_build_request_marks_https_loopback_urls() {
+        let handle = curl_handle_object();
+        handle.set_property(
+            "__curl_url",
+            Value::String(PhpString::from("https://127.0.0.1/site-health")),
         );
+
+        let request = build_request(&handle, false).expect("loopback https request");
+        assert!(request.https);
+        assert_eq!(request.host, "127.0.0.1");
+        assert_eq!(request.port, 443);
+        assert_eq!(request.path, "/site-health");
         assert_eq!(
-            builtin_curl_errno(&mut context, vec![handle], RuntimeSourceSpan::default())
-                .expect("errno"),
-            Value::Int(0)
+            request_host_header(&request.host, request.port, true),
+            "127.0.0.1"
         );
-        assert!(context.take_diagnostics().is_empty());
-        server.join().expect("server");
     }
 
     #[test]
@@ -1750,6 +1744,23 @@ mod tests {
             Value::Int(200)
         );
         server.join().expect("server");
+    }
+
+    #[test]
+    fn curl_build_request_allows_external_hosts_when_network_is_enabled() {
+        let handle = curl_handle_object();
+        handle.set_property(
+            "__curl_url",
+            Value::String(PhpString::from(
+                "https://api.wordpress.org/core/version-check/1.7/",
+            )),
+        );
+
+        assert!(build_request(&handle, false).is_err());
+        let request = build_request(&handle, true).expect("external request allowed");
+        assert_eq!(request.host, "api.wordpress.org");
+        assert_eq!(request.port, 443);
+        assert_eq!(request.path, "/core/version-check/1.7/");
     }
 
     #[test]

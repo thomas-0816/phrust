@@ -16,6 +16,7 @@ getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 md-5 = "0.10"
 mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
+native-tls = "0.2"
 num-bigint = "0.4"
 num-traits = "0.2"
 pcre2 = "0.2"
