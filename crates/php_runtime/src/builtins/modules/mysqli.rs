@@ -7,9 +7,10 @@ use crate::builtins::{
 };
 use crate::{
     ArrayKey, MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_REPORT_ERROR,
-    MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV, MysqlConnectOptions, MysqlError, ObjectRef,
-    PhpArray, PhpString, ReferenceCell, RuntimeDiagnostic, RuntimeDiagnosticPayload,
-    RuntimeSeverity, Value, WordPressDiagnosticContext,
+    MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV, MYSQLND_CLIENT_INFO, MYSQLND_CLIENT_VERSION,
+    MysqlConnectOptions, MysqlError, ObjectRef, PhpArray, PhpString, ReferenceCell,
+    RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity, Value,
+    WordPressDiagnosticContext,
 };
 use std::env;
 
@@ -265,9 +266,6 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
 ];
-
-const MYSQLND_CLIENT_INFO: &str = "mysqlnd 8.5.7";
-const MYSQLND_CLIENT_VERSION: i64 = 80507;
 
 pub(in crate::builtins::modules) fn builtin_mysqli_connect(
     context: &mut BuiltinContext<'_>,
@@ -1629,6 +1627,11 @@ pub fn mysqli_object(connection_id: Option<i64>) -> ObjectRef {
     object.set_property("error", Value::String(PhpString::from("")));
     object.set_property("affected_rows", Value::Int(0));
     object.set_property("insert_id", Value::Int(0));
+    object.set_property(
+        "client_info",
+        Value::String(PhpString::from(MYSQLND_CLIENT_INFO)),
+    );
+    object.set_property("client_version", Value::Int(MYSQLND_CLIENT_VERSION));
     object
 }
 
@@ -1982,6 +1985,26 @@ mod tests {
         .expect("mysqli_get_server_info should be available");
 
         assert!(matches!(result, Value::String(_)));
+    }
+
+    #[test]
+    fn mysqli_init_populates_client_properties() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let result = builtin_mysqli_init(&mut context, Vec::new(), RuntimeSourceSpan::default())
+            .expect("mysqli_init should create a handle");
+        let Value::Object(object) = result else {
+            panic!("mysqli_init should return an object");
+        };
+
+        assert_eq!(
+            object.get_property("client_info"),
+            Some(Value::string(MYSQLND_CLIENT_INFO))
+        );
+        assert_eq!(
+            object.get_property("client_version"),
+            Some(Value::Int(MYSQLND_CLIENT_VERSION))
+        );
     }
 
     #[test]

@@ -554,6 +554,49 @@ fn server_debug_log_contains_request_failure_diagnostics_without_secrets() {
 }
 
 #[test]
+fn server_debug_log_samples_successful_runtime_diagnostics() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("warn.php"),
+        "<?php $items = []; echo $items['missing']; echo 'after';",
+    )
+    .expect("write warning fixture");
+    let debug_dir = temp_docroot();
+    let debug_log = debug_dir.join("server-debug.jsonl");
+    let debug_log_arg = debug_log.to_string_lossy().to_string();
+    let mut child = start_server(
+        &docroot,
+        &[
+            "--debug",
+            "--error-format",
+            "json",
+            "--debug-log",
+            &debug_log_arg,
+        ],
+    );
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/warn.php");
+
+    stop_child(child);
+    let log = fs::read_to_string(&debug_log).expect("read debug log");
+    fs::remove_dir_all(debug_dir).expect("remove debug temp dir");
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(log.contains("D_PHRUST_SERVER_EXECUTE_END"), "{log}");
+    assert!(
+        log.contains("runtime_diagnostic_samples"),
+        "missing diagnostic samples in {log}"
+    );
+    assert!(
+        log.contains("E_PHP_RUNTIME_UNDEFINED_ARRAY_KEY_WARNING"),
+        "{log}"
+    );
+    assert!(log.contains("missing"), "{log}");
+}
+
+#[test]
 fn server_debug_off_does_not_emit_request_timeline() {
     let docroot = fixture_docroot("fixtures/server/php");
     let debug_dir = temp_docroot();

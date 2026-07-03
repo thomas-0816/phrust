@@ -19,6 +19,7 @@ hyper-util = { version = "0.1", features = ["http1", "server", "tokio"] }
 php_executor = { path = "../php_executor", version = "0.0.0" }
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0" }
+php_vm = { path = "../php_vm", version = "0.0.0" }
 rustls-pki-types = { version = "1", features = ["std"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

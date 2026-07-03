@@ -1498,6 +1498,7 @@ dependencies = [
  "php_diagnostics",
  "php_executor",
  "php_runtime",
+ "php_vm",
  "rustls-pki-types",
  "serde_json",
  "tokio",

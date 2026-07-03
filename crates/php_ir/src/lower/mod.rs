@@ -4152,6 +4152,21 @@ mod tests {
     }
 
     #[test]
+    fn null_coalescing_expression_lowers_static_property_dim_fetch_quietly() {
+        let frontend = analyze_source(
+            "<?php class S { private static array $items = []; public string $id = 'dashboard'; function f() { return self::$items[$this->id] ?? ''; } }",
+        );
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("fetch_static_property"), "{snapshot}");
+        assert!(snapshot.contains("fetch_dim r"), "{snapshot}");
+        assert!(snapshot.contains("quiet=true"), "{snapshot}");
+    }
+
+    #[test]
     fn dim_fetch_lowers_binary_index_expression() {
         let frontend = analyze_source(
             "<?php $args_array = array(array(0), array(-1, 1)); $counter = 1; var_dump($args_array[$counter - 1]);",

@@ -12,6 +12,10 @@ use std::fmt;
 pub const MYSQL_TEST_DSN_ENV: &str = "PHRUST_MYSQL_TEST_DSN";
 /// Environment variable that enables the deterministic mysqli SQLite adapter.
 pub const MYSQLI_SQLITE_COMPAT_ENV: &str = "PHRUST_MYSQLI_SQLITE_COMPAT";
+/// `mysqlnd`-style client info reported by the mysqli MVP.
+pub const MYSQLND_CLIENT_INFO: &str = "mysqlnd 8.5.7";
+/// `mysqlnd`-style client version reported by the mysqli MVP.
+pub const MYSQLND_CLIENT_VERSION: i64 = 80507;
 
 /// `mysqli_fetch_array()` associative columns.
 pub const MYSQLI_ASSOC: i64 = 1;

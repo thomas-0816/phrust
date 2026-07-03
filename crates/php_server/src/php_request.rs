@@ -508,6 +508,7 @@ pub(crate) async fn execute_php_request(
     ]);
     match result {
         Ok(mut output) => {
+            append_vm_counters_to_trace(&mut trace, output.counters.as_ref());
             let mut execute_end_context = BTreeMap::from([
                 ("status".to_string(), format!("{:?}", output.status)),
                 (
@@ -528,6 +529,10 @@ pub(crate) async fn execute_php_request(
                         .map(|diagnostic| diagnostic.id())
                         .collect::<Vec<_>>()
                         .join(","),
+                );
+                execute_end_context.insert(
+                    "runtime_diagnostic_samples".to_string(),
+                    runtime_diagnostic_samples(&output),
                 );
             }
             emit_server_debug(
@@ -681,8 +686,19 @@ pub(crate) fn execute_compiled_php_in_blocking_region(
     runtime_context: RuntimeContext,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
     task::block_in_place(move || {
-        execute_compiled_php_with_state(&state, lookup, script_path, runtime_context, false)
+        let collect_counters = collect_vm_counters_for_request(&state);
+        execute_compiled_php_with_state(
+            &state,
+            lookup,
+            script_path,
+            runtime_context,
+            collect_counters,
+        )
     })
+}
+
+pub(crate) fn collect_vm_counters_for_request(state: &AppState) -> bool {
+    state.perf_trace.is_some() && state.perf_trace_vm_counters
 }
 
 pub(crate) fn execute_compiled_php_with_state(
@@ -744,6 +760,152 @@ pub(crate) fn log_php_execution_failure(script_path: &Path, output: &PhpExecutio
         diagnostics=%diagnostic_summary,
         "php execution failed"
     );
+}
+
+pub(crate) fn append_vm_counters_to_trace(
+    trace: &mut PerfTraceEvent,
+    counters: Option<&php_vm::VmCounters>,
+) {
+    let Some(counters) = counters else {
+        return;
+    };
+    trace.counters.extend([
+        ("vm_instructions_executed", counters.instructions_executed),
+        (
+            "vm_bytecode_instructions_executed",
+            counters.bytecode_instructions_executed,
+        ),
+        ("vm_function_calls", counters.function_calls),
+        ("vm_method_calls", counters.method_calls),
+        ("vm_frame_allocations", counters.frame_allocations),
+        ("vm_frame_reuses", counters.frame_reuses),
+        ("vm_value_clones", counters.value_clones),
+        ("vm_string_allocations", counters.string_allocations),
+        ("vm_array_handle_clones", counters.array_handle_clones),
+        ("vm_object_allocations", counters.object_allocations),
+        ("vm_cow_separations", counters.cow_separations),
+        (
+            "vm_reference_cell_creations",
+            counters.reference_cell_creations,
+        ),
+        ("vm_array_dim_fetches", counters.array_dim_fetches),
+        ("vm_output_bytes", counters.output_bytes),
+        (
+            "vm_internal_function_dispatches",
+            counters.internal_function_dispatches,
+        ),
+        (
+            "vm_internal_function_dispatch_cache_hits",
+            counters.internal_function_dispatch_cache_hits,
+        ),
+        (
+            "vm_internal_function_dispatch_cache_misses",
+            counters.internal_function_dispatch_cache_misses,
+        ),
+        ("vm_builtin_call_ic_hits", counters.builtin_call_ic_hits),
+        ("vm_builtin_call_ic_misses", counters.builtin_call_ic_misses),
+        ("vm_includes", counters.includes),
+        ("vm_autoloads", counters.autoloads),
+        ("vm_quickening_attempts", counters.quickening_attempts),
+        ("vm_quickening_specialized", counters.quickening_specialized),
+        ("vm_inline_cache_hits", counters.inline_cache_hits),
+        ("vm_inline_cache_misses", counters.inline_cache_misses),
+        (
+            "vm_inline_cache_guard_failures",
+            counters.inline_cache_guard_failures,
+        ),
+        ("vm_function_call_ic_hits", counters.function_call_ic_hits),
+        (
+            "vm_function_call_ic_misses",
+            counters.function_call_ic_misses,
+        ),
+        ("vm_method_ic_hits", counters.method_ic_hits),
+        ("vm_method_ic_misses", counters.method_ic_misses),
+        ("vm_property_ic_hits", counters.property_ic_hits),
+        ("vm_property_ic_misses", counters.property_ic_misses),
+        (
+            "vm_property_assign_ic_hits",
+            counters.property_assign_ic_hits,
+        ),
+        (
+            "vm_property_assign_ic_misses",
+            counters.property_assign_ic_misses,
+        ),
+        ("vm_include_path_ic_hits", counters.include_path_ic_hits),
+        ("vm_include_path_ic_misses", counters.include_path_ic_misses),
+        (
+            "vm_autoload_class_lookup_ic_hits",
+            counters.autoload_class_lookup_ic_hits,
+        ),
+        (
+            "vm_autoload_class_lookup_ic_misses",
+            counters.autoload_class_lookup_ic_misses,
+        ),
+        (
+            "vm_dense_functions_executed",
+            counters.dense_functions_executed,
+        ),
+        (
+            "vm_rich_fallback_functions_executed",
+            counters.rich_fallback_functions_executed,
+        ),
+        ("vm_dense_direct_call_hits", counters.dense_direct_call_hits),
+        ("vm_dense_method_call_hits", counters.dense_method_call_hits),
+        ("vm_dense_static_call_hits", counters.dense_static_call_hits),
+        ("vm_dense_call_ic_hits", counters.dense_call_ic_hits),
+        ("vm_dense_call_ic_misses", counters.dense_call_ic_misses),
+        (
+            "vm_persistent_engine_allocations",
+            counters.persistent_engine_allocations,
+        ),
+        (
+            "vm_persistent_engine_bytes",
+            counters.persistent_engine_bytes,
+        ),
+        ("vm_jit_compile_attempts", counters.jit_compile_attempts),
+        ("vm_jit_compiled", counters.jit_compiled),
+        ("vm_jit_executed", counters.jit_executed),
+        ("vm_jit_side_exits", counters.jit_side_exits),
+    ]);
+}
+
+fn runtime_diagnostic_samples(output: &PhpExecutionOutput) -> String {
+    output
+        .runtime_diagnostics
+        .iter()
+        .take(5)
+        .map(|diagnostic| {
+            let mut sample = String::new();
+            sample.push_str(diagnostic.id());
+            sample.push_str(": ");
+            sample.push_str(&truncate_debug_value(diagnostic.message(), 240));
+            let span = diagnostic.source_span();
+            if let Some(file) = &span.file {
+                sample.push_str(" @ ");
+                sample.push_str(&truncate_debug_value(file, 160));
+                sample.push(':');
+                sample.push_str(&span.start.to_string());
+            }
+            sample
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn truncate_debug_value(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index >= max_chars {
+            out.push_str("...");
+            break;
+        }
+        if ch.is_control() {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 pub(crate) fn multipart_error_response(
     error: MultipartError,

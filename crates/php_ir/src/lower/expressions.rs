@@ -5621,6 +5621,13 @@ impl LoweringContext<'_> {
         {
             return self.lower_quiet_property_dim_target_to_register(builder, site, target, left);
         }
+        if let Some(target) = self.static_property_dim_target(left)
+            && !target.append
+            && !target.dims.is_empty()
+        {
+            return self
+                .lower_quiet_static_property_dim_target_to_register(builder, site, target, left);
+        }
         self.lower_expr_to_register(builder, site.function, site.block, left)
     }
 
@@ -5703,6 +5710,51 @@ impl LoweringContext<'_> {
             span,
         );
         self.add_expr_source_map(builder, site.function, current, fetch_property, expr, span);
+        for dim in dims {
+            let fetched = builder.alloc_register(site.function);
+            let fetch = builder.emit(
+                site.function,
+                current,
+                InstructionKind::FetchDim {
+                    dst: fetched,
+                    array: Operand::Register(value),
+                    key: dim,
+                    quiet: true,
+                },
+                span,
+            );
+            self.add_expr_source_map(builder, site.function, current, fetch, expr, span);
+            value = fetched;
+        }
+        Some(LoweredExpr {
+            register: value,
+            block: current,
+        })
+    }
+
+    pub(super) fn lower_quiet_static_property_dim_target_to_register(
+        &mut self,
+        builder: &mut IrBuilder,
+        site: LowerSite,
+        target: StaticPropertyDimTarget,
+        expr: ExprId,
+    ) -> Option<LoweredExpr> {
+        let range = self.span_for(SourceMappedId::from(expr));
+        let span = span_from_range(self.file, range);
+        let property = StaticPropertyTarget {
+            class_name: target.class_name,
+            property: target.property,
+        };
+        let mut value = self
+            .lower_static_property_fetch_to_register(builder, site, property)?
+            .register;
+        let mut current = site.block;
+        let mut dims = Vec::with_capacity(target.dims.len());
+        for dim in target.dims {
+            let dim_value = self.lower_expr_to_register(builder, site.function, current, dim)?;
+            current = dim_value.block;
+            dims.push(Operand::Register(dim_value.register));
+        }
         for dim in dims {
             let fetched = builder.alloc_register(site.function);
             let fetch = builder.emit(

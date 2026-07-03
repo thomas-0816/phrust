@@ -216,6 +216,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         metrics_token: config.metrics_token,
         access_log,
         perf_trace,
+        perf_trace_vm_counters: config.perf_trace_vm_counters,
         env_snapshot: Arc::new(std::env::vars().collect()),
         debug: config.debug,
         error_format: config.error_format,
@@ -239,7 +240,9 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
 mod tests {
     use super::*;
     use crate::{
+        perf_trace::{PerfTraceEvent, PerfTraceWriter},
         php_request::{
+            append_vm_counters_to_trace, collect_vm_counters_for_request,
             execute_compiled_php_with_state, http_runtime_context, php_runtime_context_for_http,
         },
         serve::clear_cache_response,
@@ -388,6 +391,44 @@ mod tests {
         assert!(counters.bytecode_lower_attempts > 0, "{counters:?}");
         assert!(counters.quickening_attempts > 0, "{counters:?}");
         assert!(counters.inline_cache_observations > 0, "{counters:?}");
+
+        let mut trace = PerfTraceEvent::default();
+        append_vm_counters_to_trace(&mut trace, Some(&counters));
+        let traced_counters = trace.counters.iter().copied().collect::<BTreeMap<_, _>>();
+        assert!(
+            traced_counters
+                .get("vm_instructions_executed")
+                .is_some_and(|value| *value > 0),
+            "{traced_counters:?}"
+        );
+        assert!(
+            traced_counters
+                .get("vm_function_calls")
+                .is_some_and(|value| *value > 0),
+            "{traced_counters:?}"
+        );
+        assert!(
+            traced_counters
+                .get("vm_inline_cache_hits")
+                .is_some_and(|value| *value > 0),
+            "{traced_counters:?}"
+        );
+    }
+
+    #[test]
+    fn perf_trace_enabled_requests_collect_vm_counters() {
+        let fixture = ServerCacheFixture::new();
+        let plain_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        assert!(!collect_vm_counters_for_request(&plain_state));
+
+        let mut traced_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        traced_state.perf_trace = Some(Arc::new(
+            PerfTraceWriter::open(fixture.root.join("perf.jsonl")).expect("perf trace"),
+        ));
+        assert!(!collect_vm_counters_for_request(&traced_state));
+
+        traced_state.perf_trace_vm_counters = true;
+        assert!(collect_vm_counters_for_request(&traced_state));
     }
 
     #[test]
@@ -722,6 +763,7 @@ mod tests {
             metrics_token: None,
             access_log: None,
             perf_trace: None,
+            perf_trace_vm_counters: false,
             env_snapshot: Arc::new(Vec::new()),
             debug: false,
             error_format: DiagnosticOutputFormat::Text,

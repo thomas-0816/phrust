@@ -61,6 +61,7 @@ pub struct ServerConfig {
     pub cache_clear_endpoint_enabled: bool,
     pub access_log: Option<String>,
     pub perf_trace: Option<PathBuf>,
+    pub perf_trace_vm_counters: bool,
     pub help: bool,
 }
 
@@ -206,6 +207,9 @@ impl ServerConfig {
         let mut perf_trace = file_config
             .path("perf_trace")
             .or_else(|| env_perf_trace_path(&env_value));
+        let mut perf_trace_vm_counters = file_config
+            .bool("perf_trace_vm_counters")?
+            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_SERVER_PERF_TRACE_VM_COUNTERS"));
         let mut debug = env_bool(&env_value, "PHRUST_SERVER_DEBUG");
         let mut error_format = env_output_format(&env_value, "PHRUST_SERVER_ERROR_FORMAT")?;
         let mut debug_log = env_value("PHRUST_SERVER_DEBUG_LOG")
@@ -305,6 +309,7 @@ impl ServerConfig {
                 "--perf-trace" => {
                     perf_trace = Some(PathBuf::from(required_value(&arg, &mut args)?))
                 }
+                "--perf-trace-vm-counters" => perf_trace_vm_counters = true,
                 "--debug" => debug = true,
                 "--error-format" => {
                     error_format = parse_output_format(&required_value(&arg, &mut args)?)?;
@@ -367,6 +372,7 @@ impl ServerConfig {
                 cache_clear_endpoint_enabled,
                 access_log,
                 perf_trace,
+                perf_trace_vm_counters,
                 help,
             });
         }
@@ -409,6 +415,7 @@ impl ServerConfig {
             cache_clear_endpoint_enabled,
             access_log,
             perf_trace,
+            perf_trace_vm_counters,
             help,
         })
     }
@@ -442,6 +449,7 @@ Options:\n\
   --tls-key <path>             PEM private key for HTTPS\n\
   --access-log <path|->        write compact access logs to file or stdout\n\
   --perf-trace <path>          append per-PHP-request performance trace JSONL\n\
+  --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
   --debug                      emit structured server debug events to stderr\n\
   --error-format <text|json>   render server diagnostics/debug events as text or JSON\n\
   --debug-log <path>           append server debug events to a file instead of stderr\n\
@@ -800,6 +808,8 @@ mod tests {
         assert_eq!(config.tls_cert, None);
         assert_eq!(config.tls_key, None);
         assert_eq!(config.access_log, None);
+        assert_eq!(config.perf_trace, None);
+        assert!(!config.perf_trace_vm_counters);
         assert!(config.script_cache_enabled);
         assert_eq!(config.script_cache_shards, 16);
         assert_eq!(config.script_cache_max_entries, 4096);
@@ -858,6 +868,9 @@ mod tests {
             "tls/key.pem",
             "--access-log",
             "-",
+            "--perf-trace",
+            "perf.jsonl",
+            "--perf-trace-vm-counters",
             "--debug",
             "--error-format",
             "json",
@@ -899,6 +912,8 @@ mod tests {
         assert_eq!(config.tls_cert, Some(PathBuf::from("tls/cert.pem")));
         assert_eq!(config.tls_key, Some(PathBuf::from("tls/key.pem")));
         assert_eq!(config.access_log, Some("-".to_string()));
+        assert_eq!(config.perf_trace, Some(PathBuf::from("perf.jsonl")));
+        assert!(config.perf_trace_vm_counters);
         assert!(config.debug);
         assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
         assert_eq!(config.debug_log, Some(PathBuf::from("debug.log")));

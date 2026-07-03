@@ -9371,17 +9371,11 @@ impl Vm {
                     Ok(None) => {}
                     Err(result) => return Err(result),
                 }
-                state.diagnostics.push(RuntimeDiagnostic::new(
-                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
-                    RuntimeSeverity::Deprecation,
-                    format!(
-                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
-                        object.class_name()
-                    ),
-                    RuntimeSourceSpan::default(),
-                    stack_trace(compiled, stack),
-                    None,
-                ));
+                if let Some(diagnostic) = dynamic_property_deprecation_diagnostic(
+                    compiled, state, &class, &object, property, stack,
+                ) {
+                    state.diagnostics.push(diagnostic);
+                }
                 object.set_property(property, value.clone());
                 return Ok(value);
             }
@@ -9939,6 +9933,7 @@ impl Vm {
             Ok(None) => {
                 diagnostics.push(undefined_array_key_warning(
                     &key,
+                    runtime_source_span(compiled, span),
                     stack_trace(compiled, stack),
                 ));
                 Ok(Value::Null)
@@ -12266,17 +12261,16 @@ impl Vm {
                                     Ok(None) => {}
                                     Err(result) => return result,
                                 }
-                                diagnostics.push(RuntimeDiagnostic::new(
-                                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
-                                    RuntimeSeverity::Deprecation,
-                                    format!(
-                                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
-                                        object.class_name()
-                                    ),
-                                    RuntimeSourceSpan::default(),
-                                    stack_trace(compiled, stack),
-                                    None,
-                                ));
+                                if let Some(diagnostic) = dynamic_property_deprecation_diagnostic(
+                                    compiled,
+                                    state,
+                                    &class,
+                                    &object,
+                                    property.as_ref(),
+                                    stack,
+                                ) {
+                                    diagnostics.push(diagnostic);
+                                }
                                 object.set_property(property, Value::Reference(cell));
                                 self.record_counter_alias_state(local_alias_state(stack, *source));
                                 continue;
@@ -17885,17 +17879,16 @@ impl Vm {
                                     Ok(None) => {}
                                     Err(result) => return result,
                                 }
-                                diagnostics.push(RuntimeDiagnostic::new(
-                                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
-                                    RuntimeSeverity::Deprecation,
-                                    format!(
-                                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
-                                        object.class_name()
-                                    ),
-                                    RuntimeSourceSpan::default(),
-                                    stack_trace(compiled, stack),
-                                    None,
-                                ));
+                                if let Some(diagnostic) = dynamic_property_deprecation_diagnostic(
+                                    compiled,
+                                    state,
+                                    &class,
+                                    &object,
+                                    property.as_ref(),
+                                    stack,
+                                ) {
+                                    diagnostics.push(diagnostic);
+                                }
                                 object.set_property(property, value.clone());
                                 if let Err(message) = stack
                                     .current_mut()
@@ -18031,17 +18024,18 @@ impl Vm {
                                         && normalize_class_name(&class.name)
                                             != normalize_class_name(&resolved_class.name)
                                     {
-                                        diagnostics.push(RuntimeDiagnostic::new(
-                                            "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
-                                            RuntimeSeverity::Deprecation,
-                                            format!(
-                                                "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
-                                                object.class_name()
-                                            ),
-                                            RuntimeSourceSpan::default(),
-                                            stack_trace(compiled, stack),
-                                            None,
-                                        ));
+                                        if let Some(diagnostic) =
+                                            dynamic_property_deprecation_diagnostic(
+                                                compiled,
+                                                state,
+                                                &class,
+                                                &object,
+                                                property.as_ref(),
+                                                stack,
+                                            )
+                                        {
+                                            diagnostics.push(diagnostic);
+                                        }
                                         object.set_property(property, value.clone());
                                         if let Err(message) = stack
                                             .current_mut()
@@ -18372,17 +18366,16 @@ impl Vm {
                                     Ok(None) => {}
                                     Err(result) => return result,
                                 }
-                                diagnostics.push(RuntimeDiagnostic::new(
-                                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
-                                    RuntimeSeverity::Deprecation,
-                                    format!(
-                                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
-                                        object.class_name()
-                                    ),
-                                    RuntimeSourceSpan::default(),
-                                    stack_trace(compiled, stack),
-                                    None,
-                                ));
+                                if let Some(diagnostic) = dynamic_property_deprecation_diagnostic(
+                                    compiled,
+                                    state,
+                                    &class,
+                                    &object,
+                                    property.as_ref(),
+                                    stack,
+                                ) {
+                                    diagnostics.push(diagnostic);
+                                }
                                 object.set_property(&property, value.clone());
                                 if let Err(message) = stack
                                     .current_mut()
@@ -18514,17 +18507,18 @@ impl Vm {
                                         && normalize_class_name(&class.name)
                                             != normalize_class_name(&resolved_class.name)
                                     {
-                                        diagnostics.push(RuntimeDiagnostic::new(
-                                            "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
-                                            RuntimeSeverity::Deprecation,
-                                            format!(
-                                                "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
-                                                object.class_name()
-                                            ),
-                                            RuntimeSourceSpan::default(),
-                                            stack_trace(compiled, stack),
-                                            None,
-                                        ));
+                                        if let Some(diagnostic) =
+                                            dynamic_property_deprecation_diagnostic(
+                                                compiled,
+                                                state,
+                                                &class,
+                                                &object,
+                                                property.as_ref(),
+                                                stack,
+                                            )
+                                        {
+                                            diagnostics.push(diagnostic);
+                                        }
                                         object.set_property(&property, value.clone());
                                         if let Err(message) = stack
                                             .current_mut()
@@ -18858,17 +18852,16 @@ impl Vm {
                                         RaiseOutcome::Done(result) => return *result,
                                     }
                                 }
-                                diagnostics.push(RuntimeDiagnostic::new(
-                                    "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
-                                    RuntimeSeverity::Deprecation,
-                                    format!(
-                                        "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
-                                        object.class_name()
-                                    ),
-                                    RuntimeSourceSpan::default(),
-                                    stack_trace(compiled, stack),
-                                    None,
-                                ));
+                                if let Some(diagnostic) = dynamic_property_deprecation_diagnostic(
+                                    compiled,
+                                    state,
+                                    &class,
+                                    &object,
+                                    property.as_ref(),
+                                    stack,
+                                ) {
+                                    diagnostics.push(diagnostic);
+                                }
                                 object.set_property(property, current);
                                 if let Err(message) = stack
                                     .current_mut()
@@ -19917,6 +19910,10 @@ impl Vm {
                                                 Some(None) => {
                                                     diagnostics.push(undefined_array_key_warning(
                                                         &key,
+                                                        runtime_source_span(
+                                                            compiled,
+                                                            instruction.span,
+                                                        ),
                                                         stack_trace(compiled, stack),
                                                     ));
                                                     Value::Null
@@ -19928,6 +19925,10 @@ impl Vm {
                                                         diagnostics.push(
                                                             undefined_array_key_warning(
                                                                 &key,
+                                                                runtime_source_span(
+                                                                    compiled,
+                                                                    instruction.span,
+                                                                ),
                                                                 stack_trace(compiled, stack),
                                                             ),
                                                         );
@@ -19979,6 +19980,10 @@ impl Vm {
                                                 Ok(None) => {
                                                     diagnostics.push(undefined_array_key_warning(
                                                         &key,
+                                                        runtime_source_span(
+                                                            compiled,
+                                                            instruction.span,
+                                                        ),
                                                         stack_trace(compiled, stack),
                                                     ));
                                                     Value::Null
@@ -42049,6 +42054,59 @@ fn class_has_public_magic_set(compiled: &CompiledUnit, class: &php_ir::module::C
         })
 }
 
+fn class_allows_dynamic_properties(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class: &php_ir::module::ClassEntry,
+) -> bool {
+    let mut current = Some(class.clone());
+    while let Some(entry) = current {
+        if entry
+            .attributes
+            .iter()
+            .any(attribute_is_allow_dynamic_properties)
+        {
+            return true;
+        }
+        current = entry
+            .parent
+            .as_deref()
+            .and_then(|parent| lookup_class_in_state(compiled, state, parent));
+    }
+    false
+}
+
+fn attribute_is_allow_dynamic_properties(attribute: &php_ir::module::AttributeEntry) -> bool {
+    [&attribute.resolved_name, &attribute.fallback_name]
+        .into_iter()
+        .filter_map(|name| name.as_deref())
+        .chain(std::iter::once(attribute.name.as_str()))
+        .any(|name| normalize_class_name(name) == "allowdynamicproperties")
+}
+
+fn dynamic_property_deprecation_diagnostic(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class: &php_ir::module::ClassEntry,
+    object: &ObjectRef,
+    property: &str,
+    stack: &CallStack,
+) -> Option<RuntimeDiagnostic> {
+    (!class_allows_dynamic_properties(compiled, state, class)).then(|| {
+        RuntimeDiagnostic::new(
+            "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED",
+            RuntimeSeverity::Deprecation,
+            format!(
+                "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED: creating dynamic property {}::${property}",
+                object.class_name()
+            ),
+            RuntimeSourceSpan::default(),
+            stack_trace(compiled, stack),
+            None,
+        )
+    })
+}
+
 fn class_has_public_magic_call(
     compiled: &CompiledUnit,
     class: &php_ir::module::ClassEntry,
@@ -43924,6 +43982,14 @@ fn mysqli_object(connection_id: Option<i64>) -> ObjectRef {
     object.set_property("error", Value::string(""));
     object.set_property("affected_rows", Value::Int(0));
     object.set_property("insert_id", Value::Int(0));
+    object.set_property(
+        "client_info",
+        Value::string(php_runtime::MYSQLND_CLIENT_INFO),
+    );
+    object.set_property(
+        "client_version",
+        Value::Int(php_runtime::MYSQLND_CLIENT_VERSION),
+    );
     object
 }
 
@@ -46486,9 +46552,38 @@ fn date_time_display_name(class_name: &str) -> &'static str {
 }
 
 fn date_time_class_constant_value(class_name: &str, constant: &str) -> Option<Value> {
-    if normalize_class_name(class_name) != "datetimezone" {
-        return None;
+    match normalize_class_name(class_name).as_str() {
+        "datetimeinterface" | "datetime" | "datetimeimmutable" => {
+            date_time_format_class_constant_value(constant)
+        }
+        "datetimezone" => date_time_zone_class_constant_value(constant),
+        _ => None,
     }
+}
+
+fn date_time_format_class_constant_value(constant: &str) -> Option<Value> {
+    Some(Value::string(
+        match normalize_class_name(constant).as_str() {
+            "atom" => php_std::constants::DATE_ATOM,
+            "cookie" => php_std::constants::DATE_COOKIE,
+            "iso8601" => php_std::constants::DATE_ISO8601,
+            "iso8601_expanded" => php_std::constants::DATE_ISO8601_EXPANDED,
+            "rfc822" => php_std::constants::DATE_RFC822,
+            "rfc850" => php_std::constants::DATE_RFC850,
+            "rfc1036" => php_std::constants::DATE_RFC1036,
+            "rfc1123" => php_std::constants::DATE_RFC1123,
+            "rfc7231" => php_std::constants::DATE_RFC7231,
+            "rfc2822" => php_std::constants::DATE_RFC2822,
+            "rfc3339" => php_std::constants::DATE_RFC3339,
+            "rfc3339_extended" => php_std::constants::DATE_RFC3339_EXTENDED,
+            "rss" => php_std::constants::DATE_RSS,
+            "w3c" => php_std::constants::DATE_W3C,
+            _ => return None,
+        },
+    ))
+}
+
+fn date_time_zone_class_constant_value(constant: &str) -> Option<Value> {
     Some(Value::Int(match normalize_class_name(constant).as_str() {
         "africa" => 1,
         "america" => 2,
@@ -59062,6 +59157,7 @@ fn uninitialized_string_offset_warning(
 
 fn undefined_array_key_warning(
     key: &ArrayKey,
+    span: RuntimeSourceSpan,
     stack_trace: Vec<RuntimeStackFrame>,
 ) -> RuntimeDiagnostic {
     let key = match key {
@@ -59072,7 +59168,7 @@ fn undefined_array_key_warning(
         "E_PHP_RUNTIME_UNDEFINED_ARRAY_KEY_WARNING",
         RuntimeSeverity::Warning,
         format!("undefined array key {key}"),
-        RuntimeSourceSpan::default(),
+        span,
         stack_trace,
         Some(php_runtime::PhpReferenceClassification::Warning),
     )
@@ -62110,6 +62206,7 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
             echo $date->getTimestamp(), \"\\n\";
             echo $date->getTimezone()->getName(), \"\\n\";
             echo $date->getOffset(), '|', $zone->getOffset($date), \"\\n\";
+            echo DateTime::ATOM, '|', DateTimeImmutable::RFC3339_EXTENDED, '|', DateTimeInterface::RFC7231, \"\\n\";
             echo DateTimeZone::ALL_WITH_BC, \"\\n\";
             echo (new datetimezone('UTC'))->getName(), \"\\n\";
             $offsetZone = new DateTimeZone('+00:00');
@@ -62132,8 +62229,27 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.to_string_lossy(),
-            "UTC\n2024-01-02 03:04:05 UTC 1704164645\n1704164645\nUTC\n0|0\n4095\nUTC\n+00:00\n19800 -05:30 -0530 GMT-0530\n2024-01-02 03:04:05 CET 1704161045\n1|2|1 2 0 0\n2024-01-03 05:04:05\n2024-01-02|2024-01-03\n86400|0\n"
+            "UTC\n2024-01-02 03:04:05 UTC 1704164645\n1704164645\nUTC\n0|0\nY-m-d\\TH:i:sP|Y-m-d\\TH:i:s.vP|D, d M Y H:i:s \\G\\M\\T\n4095\nUTC\n+00:00\n19800 -05:30 -0530 GMT-0530\n2024-01-02 03:04:05 CET 1704161045\n1|2|1 2 0 0\n2024-01-03 05:04:05\n2024-01-02|2024-01-03\n86400|0\n"
         );
+    }
+
+    #[test]
+    fn mysqli_runtime_objects_expose_client_properties() {
+        let result = execute_source(
+            "<?php
+            $mysqli = new mysqli();
+            echo $mysqli->client_info, '|', $mysqli->client_version, \"\\n\";
+            $init = mysqli_init();
+            echo $init->client_info, '|', $init->client_version, \"\\n\";
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "mysqlnd 8.5.7|80507\nmysqlnd 8.5.7|80507\n"
+        );
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 
     #[test]
@@ -65310,7 +65426,7 @@ good"
             source,
             VmOptions {
                 include_loader: Some(loader),
-                execution_format: ExecutionFormat::Bytecode,
+                execution_format: ExecutionFormat::Auto,
                 ..VmOptions::default()
             },
             main_path.to_string_lossy().into_owned(),
@@ -66679,6 +66795,17 @@ var_dump(unserialize('O:1:"C":0:{}'));
             dynamic.diagnostics[0].id(),
             "E_PHP_VM_DYNAMIC_PROPERTY_DEPRECATED"
         );
+
+        let allowed_dynamic = execute_source(
+            "<?php #[AllowDynamicProperties] class A {} class B extends A {} $a = new A(); $a->x = 1; $b = new B(); $b->y = 2; echo $a->x, '|', $b->y;",
+        );
+        assert!(
+            allowed_dynamic.status.is_success(),
+            "{:?}",
+            allowed_dynamic.status
+        );
+        assert_eq!(allowed_dynamic.output.as_bytes(), b"1|2");
+        assert!(allowed_dynamic.diagnostics.is_empty());
 
         let state_ops = execute_source(
             "<?php class C { public $x = 0; public $y = null; } $c = new C(); echo isset($c->x), isset($c->y), empty($c->x), empty($c->missing); unset($c->x); echo isset($c->x), empty($c->x);",
@@ -71574,6 +71701,17 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
     }
 
     #[test]
+    fn coalesce_static_property_dim_fetch_treats_missing_key_as_null() {
+        let result = execute_source(
+            "<?php class S { private static array $items = []; public string $id = 'dashboard'; function f() { return self::$items[$this->id] ?? ''; } } var_dump((new S())->f());",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"string(0) \"\"\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
     fn control_flow_executes_switch_match_ternary_coalesce_and_return() {
         let result = execute_source(
             "<?php $x = 0; switch ($x) { case 0: echo \"zero\"; case 1: echo \"one\"; break; default: echo \"default\"; } echo \"|\"; echo match ($x) { 0 => \"match\", default => \"default\" }; echo \"|\"; echo $missing ?? \"fallback\"; echo \"|\"; echo true ? \"yes\" : \"no\"; return \"done\"; echo \"bad\";",
@@ -72903,6 +73041,14 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
         assert_eq!(
             result.diagnostics[0].id(),
             "E_PHP_RUNTIME_UNDEFINED_ARRAY_KEY_WARNING"
+        );
+        assert!(
+            result.diagnostics[0].source_span().file.is_some(),
+            "{:?}",
+            result.diagnostics[0]
+        );
+        assert!(
+            result.diagnostics[0].source_span().end > result.diagnostics[0].source_span().start
         );
     }
 
