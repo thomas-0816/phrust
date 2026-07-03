@@ -514,7 +514,7 @@ pub(in crate::builtins::modules) fn builtin_mt_rand(
 }
 
 fn random_range_builtin(name: &str, args: Vec<Value>) -> BuiltinResult {
-    if args.len() != 0 && args.len() != 2 {
+    if !args.is_empty() && args.len() != 2 {
         return Err(arity_error(name, "zero or two argument(s)"));
     }
     let (min, max) = if args.is_empty() {
@@ -1038,11 +1038,11 @@ fn parse_intval_string_base(bytes: &[u8], base: i64) -> i64 {
     }
 
     let mut negative = false;
-    if let Some(sign) = bytes.get(cursor) {
-        if *sign == b'-' || *sign == b'+' {
-            negative = *sign == b'-';
-            cursor += 1;
-        }
+    if let Some(sign) = bytes.get(cursor)
+        && (*sign == b'-' || *sign == b'+')
+    {
+        negative = *sign == b'-';
+        cursor += 1;
     }
 
     let mut parse_base = base;

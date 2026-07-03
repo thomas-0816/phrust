@@ -383,11 +383,12 @@ pub enum ProcessCapability {
     },
 }
 
+/// Callback signature for loading web-session data by session id.
+type SessionLoadFn = dyn Fn(&str) -> Result<PhpArray, String> + Send + Sync + 'static;
+
 /// Optional transport callback for loading web-session data on `session_start()`.
 #[derive(Clone)]
-pub struct SessionLoadCallback(
-    Arc<dyn Fn(&str) -> Result<PhpArray, String> + Send + Sync + 'static>,
-);
+pub struct SessionLoadCallback(Arc<SessionLoadFn>);
 
 impl SessionLoadCallback {
     #[must_use]

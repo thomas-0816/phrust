@@ -189,18 +189,19 @@ fn valid_html_entity_len(bytes: &[u8]) -> Option<usize> {
         return None;
     }
     let entity = &bytes[1..semicolon];
-    if let Some(decimal) = entity.strip_prefix(b"#") {
-        if !decimal.is_empty() && decimal.iter().all(u8::is_ascii_digit) {
-            return Some(semicolon + 1);
-        }
+    if let Some(decimal) = entity.strip_prefix(b"#")
+        && !decimal.is_empty()
+        && decimal.iter().all(u8::is_ascii_digit)
+    {
+        return Some(semicolon + 1);
     }
     if let Some(hex) = entity
         .strip_prefix(b"#x")
         .or_else(|| entity.strip_prefix(b"#X"))
+        && !hex.is_empty()
+        && hex.iter().all(u8::is_ascii_hexdigit)
     {
-        if !hex.is_empty() && hex.iter().all(u8::is_ascii_hexdigit) {
-            return Some(semicolon + 1);
-        }
+        return Some(semicolon + 1);
     }
     if matches!(entity, b"amp" | b"lt" | b"gt" | b"quot" | b"apos") {
         return Some(semicolon + 1);
