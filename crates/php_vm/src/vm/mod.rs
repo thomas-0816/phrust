@@ -3706,6 +3706,8 @@ impl Vm {
             property: declaring_property.name.clone(),
             storage_name: storage_name.to_owned(),
             layout,
+            object_layout_epoch: object.class_layout_epoch(),
+            declared_slot: object.declared_slot_index(storage_name),
         });
         let target = match dynamic_class_owner_index_in_state(state, &declaring_class.name) {
             Some(unit_index) => PropertyFetchCacheTarget::DynamicUnit {
@@ -3855,6 +3857,12 @@ impl Vm {
             property: declaring_property.name.clone(),
             storage_name: storage_name.to_owned(),
             layout,
+            object_layout_epoch: object.class_layout_epoch(),
+            declared_slot: object.declared_slot_index(storage_name),
+            // Typed properties still need the per-write type check, so they
+            // stay on the generic re-validation path. Readonly, hooks,
+            // asymmetric set visibility, and references were rejected above.
+            slot_write_eligible: declaring_property.type_.is_none(),
         });
         let target = match dynamic_class_owner_index_in_state(state, &declaring_class.name) {
             Some(unit_index) => PropertyAssignCacheTarget::DynamicUnit {
@@ -19072,7 +19080,22 @@ impl Vm {
                             validate_property_write(resolved_class, entry, &object, stack, compiled)
                         {
                             self.record_counter_property_assign_ic_fallback("readonly_property");
-                            return self.runtime_error(output, compiled, stack, message);
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         if !property_hook_is_active(state, &object, resolved_class, entry)
                             && let Some(function) = entry.hooks.set
@@ -19553,7 +19576,22 @@ impl Vm {
                         if let Err(message) =
                             validate_property_write(resolved_class, entry, &object, stack, compiled)
                         {
-                            return self.runtime_error(output, compiled, stack, message);
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         if !property_hook_is_active(state, &object, resolved_class, entry)
                             && let Some(function) = entry.hooks.set
@@ -20075,7 +20113,22 @@ impl Vm {
                         if let Err(message) =
                             validate_property_write(resolved_class, entry, &object, stack, compiled)
                         {
-                            return self.runtime_error(output, compiled, stack, message);
+                            match self.raise_runtime_error(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                instruction.span,
+                                message,
+                            ) {
+                                RaiseOutcome::Caught(target) => {
+                                    block_id = target;
+                                    continue 'dispatch;
+                                }
+                                RaiseOutcome::Done(result) => return *result,
+                            }
                         }
                         object.set_property(storage_name, current);
                         if let Err(message) = stack
@@ -28314,10 +28367,28 @@ impl Vm {
             property: property_name,
             storage_name,
             layout,
+            object_layout_epoch,
+            declared_slot,
         } = *target;
         if state.lookup_epoch().raw() != layout.layout_version {
             self.record_counter_property_ic_fallback("layout_epoch_mismatch");
             return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        // Direct declared-slot read: the storage layout guard subsumes the
+        // receiver-class/declaring-class/slot re-validation below (a layout
+        // id identifies one class shape per thread), and the install gate
+        // plus the IC scope guard cover hooks, protected access, and private
+        // visibility. Guard mismatches and unset slots fall through to the
+        // generic path, which attributes the exact fallback reason.
+        if let Some(slot) = declared_slot {
+            match object.get_declared_slot(slot, object_layout_epoch) {
+                Some(Value::Uninitialized) => {
+                    self.record_counter_property_ic_fallback("uninitialized_typed_property");
+                    return Ok(PropertyFetchCacheRead::Fallback);
+                }
+                Some(value) => return Ok(PropertyFetchCacheRead::Value(value)),
+                None => {}
+            }
         }
         if normalize_class_name(&object.class_name()) != receiver_class {
             self.record_counter_property_ic_fallback("receiver_class_mismatch");
@@ -28419,10 +28490,29 @@ impl Vm {
             property: property_name,
             storage_name,
             layout,
+            object_layout_epoch,
+            declared_slot,
+            slot_write_eligible,
         } = *target;
         if state.lookup_epoch().raw() != layout.layout_version {
             self.record_counter_property_assign_ic_fallback("layout_epoch_mismatch");
             return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        // Direct declared-slot write for untyped, non-readonly, hook-free
+        // slots (install gate). The layout guard subsumes class/slot
+        // re-validation; a slot currently holding a reference must write
+        // through the cell, so it falls back to the generic path.
+        if slot_write_eligible && let Some(slot) = declared_slot {
+            let current = object.get_declared_slot(slot, object_layout_epoch);
+            if matches!(current, Some(Value::Reference(_))) {
+                self.record_counter_property_assign_ic_fallback("reference_slot");
+                return Ok(PropertyAssignCacheWrite::Fallback);
+            }
+            if current.is_some()
+                && object.set_declared_slot(slot, object_layout_epoch, value.clone())
+            {
+                return Ok(PropertyAssignCacheWrite::Written(value));
+            }
         }
         if normalize_class_name(&object.class_name()) != receiver_class {
             self.record_counter_property_assign_ic_fallback("receiver_class_mismatch");
@@ -68458,6 +68548,34 @@ var_dump(unserialize('O:1:"C":0:{}'));
         let counters = result.counters.expect("counters should be collected");
         assert!(counters.literal_intern_misses >= 1, "{counters:?}");
         assert!(counters.literal_intern_hits >= 2, "{counters:?}");
+    }
+
+    #[test]
+    fn property_ic_hits_use_declared_slots() {
+        let source = "<?php class P { public $a = 0; public $b = \"\"; } \
+                      function fill($p, $i) { $p->a = $i; $p->b = \"v$i\"; return $p->a; } \
+                      $p = new P(); $t = 0; \
+                      for ($i = 0; $i < 10; $i++) { $t += fill($p, $i); } \
+                      echo $t, $p->b;";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"45v9");
+        let counters = result.counters.expect("counters");
+        assert!(counters.property_ic_hits >= 5, "{counters:?}");
+        assert!(counters.property_assign_ic_hits >= 5, "{counters:?}");
+        assert!(counters.object_declared_slot_reads >= 5, "{counters:?}");
+        assert!(counters.object_declared_slot_writes >= 5, "{counters:?}");
+        assert_eq!(
+            counters.object_dynamic_property_map_writes, 0,
+            "{counters:?}"
+        );
     }
 
     #[test]

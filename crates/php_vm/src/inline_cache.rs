@@ -283,6 +283,11 @@ pub struct PropertyFetchResolvedTarget {
     pub property: String,
     pub storage_name: String,
     pub layout: PropertyFetchLayoutMetadata,
+    /// Object-storage layout guard captured at install; `get_declared_slot`
+    /// validates it so slot reads never observe a different class shape.
+    pub object_layout_epoch: u64,
+    /// Declared slot index under that layout, when the property is backed.
+    pub declared_slot: Option<u32>,
 }
 
 /// Resolution target cached by a property-fetch IC slot.
@@ -324,6 +329,14 @@ pub struct PropertyAssignResolvedTarget {
     pub property: String,
     pub storage_name: String,
     pub layout: PropertyAssignLayoutMetadata,
+    /// Object-storage layout guard captured at install; `set_declared_slot`
+    /// validates it so slot writes never touch a different class shape.
+    pub object_layout_epoch: u64,
+    /// Declared slot index under that layout, when the property is backed.
+    pub declared_slot: Option<u32>,
+    /// True when the slot write path is semantics-complete for this
+    /// property: untyped, not readonly, no asymmetric set visibility.
+    pub slot_write_eligible: bool,
 }
 
 /// Resolution target cached by a property-assignment IC slot.
@@ -2413,6 +2426,8 @@ mod tests {
             property: "value".to_owned(),
             storage_name: "value".to_owned(),
             layout: property_layout(class_id),
+            object_layout_epoch: 0,
+            declared_slot: None,
         })
     }
 
