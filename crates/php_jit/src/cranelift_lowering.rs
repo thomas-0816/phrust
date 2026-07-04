@@ -183,6 +183,7 @@ const PACKED_ARRAY_FETCH_HELPER_SYMBOL: &str = "phrust_jit_array_fetch_int_slow_
 const KNOWN_STRLEN_HELPER_SYMBOL: &str = "phrust_jit_strlen_known_abi";
 const KNOWN_COUNT_HELPER_SYMBOL: &str = "phrust_jit_count_known_abi";
 const STRING_CONCAT_HELPER_SYMBOL: &str = "php_jit_concat_string_string_fast";
+const RECORD_ARRAY_LOOKUP_HELPER_SYMBOL: &str = "phrust_jit_record_array_lookup";
 const PROPERTY_LOAD_HELPER_SYMBOL: &str = "php_jit_property_load_monomorphic_fast";
 
 /// Cranelift backend skeleton that lowers and verifies CLIF but never executes.
@@ -406,6 +407,44 @@ impl JitBackendApi for CraneliftNoExecBackend {
                         },
                         format!(
                             "Cranelift native string-concat compile rejected region `{}`: {}",
+                            request.compile.region_id, error
+                        ),
+                    );
+                }
+            }
+        }
+
+        if let Ok(candidate) = record_array_lookup_candidate(unit, function) {
+            let start = Instant::now();
+            match compile_record_array_lookup_native(
+                function,
+                &candidate,
+                request.runtime_helpers.record_array_lookup,
+                &request.compile.region_id,
+            ) {
+                Ok(compiled) => {
+                    let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
+                    return JitBackendCompileOutcome::compiled(
+                        compiled.handle,
+                        format!(
+                            "Cranelift native record-lookup region `{}` function={} abi_hash={} code_bytes={} helper={}",
+                            request.compile.region_id,
+                            function.raw(),
+                            JIT_RUNTIME_ABI_HASH,
+                            compiled.code_bytes,
+                            RECORD_ARRAY_LOOKUP_HELPER_SYMBOL
+                        ),
+                        compiled.code_bytes,
+                        elapsed.max(1),
+                    );
+                }
+                Err(error) => {
+                    return JitBackendCompileOutcome::skipped(
+                        JitCompileStatus::Rejected {
+                            reason: error.code.to_owned(),
+                        },
+                        format!(
+                            "Cranelift native record-lookup compile rejected region `{}`: {}",
                             request.compile.region_id, error
                         ),
                     );
@@ -1779,6 +1818,291 @@ fn known_call_candidate(
         kind,
         value_param: param.local,
     })
+}
+
+struct RecordArrayLookupCandidate {
+    #[allow(dead_code)]
+    array_param: LocalId,
+    #[allow(dead_code)]
+    key_param: LocalId,
+}
+
+struct NativeRecordArrayLookupCompileResult {
+    handle: JitFunctionHandle,
+    code_bytes: u64,
+}
+
+/// Leaf shape `function f(array $map, string $key) { return $map[$key]; }`
+/// with untyped return: the record-shape and key-symbol guards live in the
+/// runtime helper, which reports exact side-exit statuses.
+fn record_array_lookup_candidate(
+    unit: &IrUnit,
+    function: FunctionId,
+) -> Result<RecordArrayLookupCandidate, CraneliftLoweringError> {
+    let ir_function = unit.functions.get(function.index()).ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_MISSING_FUNCTION",
+            format!("function id {} is not present", function.raw()),
+        )
+    })?;
+    if ir_function.flags.is_top_level
+        || ir_function.flags.is_closure
+        || ir_function.flags.is_method
+        || ir_function.flags.is_generator
+        || ir_function.returns_by_ref
+        || !ir_function.captures.is_empty()
+    {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_SHAPE",
+            "record-lookup fast path requires an ordinary leaf function",
+        ));
+    }
+    if ir_function.return_type.is_some() {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_RETURN",
+            "record-lookup fast path requires an undeclared return type",
+        ));
+    }
+    let [array_param, key_param] = ir_function.params.as_slice() else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_PARAMS",
+            "record-lookup fast path requires array and string parameters",
+        ));
+    };
+    for (param, expected) in [
+        (array_param, IrReturnType::Array),
+        (key_param, IrReturnType::String),
+    ] {
+        if param.by_ref || param.variadic || param.default.is_some() {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_PARAMS",
+                "record-lookup parameters must be required and by-value",
+            ));
+        }
+        if param.type_.as_ref() != Some(&expected) {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_PARAM_TYPE",
+                "record-lookup fast path requires declared array and string operands",
+            ));
+        }
+    }
+    let [block] = ir_function.blocks.as_slice() else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_CONTROL_FLOW",
+            "record-lookup fast path requires one straight-line block",
+        ));
+    };
+    let [load_array, load_key, fetch] = block.instructions.as_slice() else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_INSTRUCTIONS",
+            "record-lookup fast path expects load, load, fetch_dim",
+        ));
+    };
+    let InstructionKind::LoadLocal {
+        dst: array_reg,
+        local: array_local,
+    } = load_array.kind.clone()
+    else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_LOAD",
+            "record-lookup fast path must load the array parameter",
+        ));
+    };
+    let InstructionKind::LoadLocal {
+        dst: key_reg,
+        local: key_local,
+    } = load_key.kind.clone()
+    else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_LOAD",
+            "record-lookup fast path must load the key parameter",
+        ));
+    };
+    if array_local != array_param.local || key_local != key_param.local {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_LOAD",
+            "record-lookup operands must load the declared parameters",
+        ));
+    }
+    let InstructionKind::FetchDim {
+        dst,
+        array: Operand::Register(fetch_array),
+        key: Operand::Register(fetch_key),
+        quiet: false,
+    } = fetch.kind.clone()
+    else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_OPCODE",
+            "record-lookup fast path expects a loud fetch_dim",
+        ));
+    };
+    if fetch_array != array_reg || fetch_key != key_reg {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_SHAPE",
+            "fetch_dim operands must match the loaded parameters",
+        ));
+    }
+    match &block.terminator {
+        Some(Terminator {
+            kind:
+                TerminatorKind::Return {
+                    value: Some(Operand::Register(return_reg)),
+                    by_ref_local: None,
+                },
+            ..
+        }) if *return_reg == dst => Ok(RecordArrayLookupCandidate {
+            array_param: array_param.local,
+            key_param: key_param.local,
+        }),
+        other => Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_TERMINATOR",
+            format!("terminator {other:?} is outside record-lookup subset"),
+        )),
+    }
+}
+
+fn compile_record_array_lookup_native(
+    function: FunctionId,
+    _candidate: &RecordArrayLookupCandidate,
+    helper_address: usize,
+    region_id: &str,
+) -> Result<NativeRecordArrayLookupCompileResult, CraneliftLoweringError> {
+    if helper_address == 0 {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_HELPER",
+            "record-lookup fast path requires a runtime helper address",
+        ));
+    }
+
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("use_colocated_libcalls", "false")
+        .map_err(|error| {
+            CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_FLAGS", error.to_string())
+        })?;
+    flag_builder.set("is_pic", "false").map_err(|error| {
+        CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_FLAGS", error.to_string())
+    })?;
+    let isa_builder = cranelift_native::builder().map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_TARGET",
+            format!("host target is unsupported: {error}"),
+        )
+    })?;
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .map_err(|error| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_NATIVE_TARGET",
+                format!("host ISA setup failed: {error}"),
+            )
+        })?;
+    let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+    jit_builder.symbol(
+        RECORD_ARRAY_LOOKUP_HELPER_SYMBOL,
+        helper_address as *const u8,
+    );
+    let mut module = JITModule::new(jit_builder);
+    let pointer_type = module.target_config().pointer_type();
+
+    let mut helper_signature = module.make_signature();
+    helper_signature.params.push(AbiParam::new(pointer_type));
+    helper_signature.params.push(AbiParam::new(pointer_type));
+    helper_signature.params.push(AbiParam::new(pointer_type));
+    helper_signature.returns.push(AbiParam::new(types::I32));
+    let helper = module
+        .declare_function(
+            RECORD_ARRAY_LOOKUP_HELPER_SYMBOL,
+            Linkage::Import,
+            &helper_signature,
+        )
+        .map_err(|error| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_DECLARE",
+                format!("failed to declare record-lookup helper import: {error}"),
+            )
+        })?;
+
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.returns.push(AbiParam::new(types::I32));
+
+    let name = format!(
+        "phrust_cl_record_lookup_{}_{}",
+        function.raw(),
+        sanitize_symbol_component(region_id)
+    );
+    let func_id = module
+        .declare_function(&name, Linkage::Local, &signature)
+        .map_err(|error| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_DECLARE",
+                format!("failed to declare native record-lookup function: {error}"),
+            )
+        })?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = signature;
+    ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+
+    let mut builder_context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let params = builder.block_params(entry).to_vec();
+        let array_ptr = params[0];
+        let key_ptr = params[1];
+        let out_ptr = params[2];
+        let helper_ref = module.declare_func_in_func(helper, builder.func);
+        let call = builder
+            .ins()
+            .call(helper_ref, &[array_ptr, key_ptr, out_ptr]);
+        let status = builder.inst_results(call)[0];
+        builder.ins().return_(&[status]);
+        builder.seal_block(entry);
+        builder.finalize();
+    }
+
+    let verifier_flags = settings::Flags::new(settings::builder());
+    verify_function(&ctx.func, &verifier_flags).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_VERIFIER",
+            format!("Cranelift verifier rejected native record-lookup IR: {error}"),
+        )
+    })?;
+    module.define_function(func_id, &mut ctx).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_DEFINE",
+            format!("failed to define native record-lookup function: {error}"),
+        )
+    })?;
+    let code_bytes = ctx
+        .compiled_code()
+        .map(|compiled| compiled.code_buffer().len() as u64)
+        .unwrap_or(0);
+    module.clear_context(&mut ctx);
+    module.finalize_definitions().map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_FINALIZE",
+            format!("failed to finalize native record-lookup function: {error}"),
+        )
+    })?;
+    let address = module.get_finalized_function(func_id) as usize;
+    leak_jit_module_for_handle_lifetime(module);
+    let handle = JitFunctionHandle::value_value_status_out_native(
+        u64::from(function.raw()) + 1,
+        region_id.to_owned(),
+        JitBackend::CraneliftExperiment,
+        address,
+        code_bytes,
+        1,
+        1,
+        JitNativeSpecialization::RecordArrayLookup,
+    );
+    Ok(NativeRecordArrayLookupCompileResult { handle, code_bytes })
 }
 
 fn string_concat_candidate(
@@ -3834,6 +4158,7 @@ mod tests {
                 known_count: 0,
                 string_concat: 0,
                 property_load: 0,
+                record_array_lookup: 0,
             },
         });
 
@@ -3879,6 +4204,7 @@ mod tests {
                 known_count: 0,
                 string_concat: 0,
                 property_load: 0,
+                record_array_lookup: 0,
             },
         });
 
@@ -3916,6 +4242,7 @@ mod tests {
                 known_count: 0,
                 string_concat: 0,
                 property_load: 0,
+                record_array_lookup: 0,
             },
         });
 
@@ -3958,6 +4285,7 @@ mod tests {
                 known_count: 0,
                 string_concat: test_string_concat_helper as *const () as usize,
                 property_load: 0,
+                record_array_lookup: 0,
             },
         });
 

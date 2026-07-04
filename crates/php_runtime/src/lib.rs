@@ -251,9 +251,9 @@ pub use globals::GlobalSymbolTable;
 pub use ini::{IniEntrySnapshot, IniRegistry};
 pub use jit_array::{
     PHP_JIT_ARRAY_LAYOUT_VERSION, PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT, PHP_JIT_ARRAY_STATUS_FALLBACK,
-    PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK, PhpJitArrayAbiError,
-    php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints, php_jit_array_layout_guard,
-    php_jit_array_len,
+    PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT, PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT, PHP_JIT_ARRAY_STATUS_OK,
+    PhpJitArrayAbiError, php_jit_array_fetch_int_slow, php_jit_array_is_packed_ints,
+    php_jit_array_layout_guard, php_jit_array_len, php_jit_record_array_lookup,
 };
 pub use object::{
     AttributeEntry, ClassConstantEntry, ClassConstantFlags, ClassEntry, ClassEnumBackingType,

@@ -12,7 +12,55 @@ pub fn templates() -> Vec<RuntimeTemplate> {
         packed_array_fetch_readonly(),
         packed_foreach_int_sum_metadata_only(),
         isset_array_key_interned_exact(),
+        record_array_lookup_symbol_guard(),
     ]
+}
+
+fn record_array_lookup_symbol_guard() -> RuntimeTemplate {
+    RuntimeTemplate {
+        name: "record_array_lookup_symbol_guard",
+        kind: RuntimeTemplateKind::RecordArrayLookupSymbolGuard,
+        params: vec![
+            TemplateParam::new(
+                "array",
+                TemplateValueClass::PackedArray,
+                Some(VmSlotId::new(0)),
+            ),
+            TemplateParam::new(
+                "key",
+                TemplateValueClass::ExactString,
+                Some(VmSlotId::new(1)),
+            ),
+        ],
+        guards: vec![
+            TemplateGuard::new("array_is_record_shaped", "array uses record storage", true),
+            TemplateGuard::new(
+                "key_symbol_has_slot",
+                "interned key symbol resolves to a shape slot",
+                true,
+            ),
+            TemplateGuard::new(
+                "slot_not_reference",
+                "resolved slot does not hold a reference cell",
+                true,
+            ),
+        ],
+        required_vm_slots: vec![VmSlotId::new(0), VmSlotId::new(1)],
+        reference_cow_restrictions: vec![
+            "array must use record-shaped storage",
+            "slot value must not be a reference cell",
+            "result is a read-only clone",
+        ],
+        possible_side_exits: vec!["layout_mismatch", "key_symbol_miss", "reference_cell"],
+        snapshot_requirements: array_snapshot(),
+        fallback_helper: Some("interpreter_fetch_dim"),
+        unsupported_php_semantic_cases: vec![
+            "missing-key warning/null behavior",
+            "by-reference element access",
+            "ArrayAccess object",
+            "integer or numeric-string keys",
+        ],
+    }
 }
 
 fn packed_array_fetch_readonly() -> RuntimeTemplate {

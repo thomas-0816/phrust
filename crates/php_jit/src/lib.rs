@@ -97,6 +97,8 @@ pub struct JitRuntimeHelperAddresses {
     pub string_concat: usize,
     /// ABI wrapper for guarded monomorphic property loads.
     pub property_load: usize,
+    /// ABI wrapper for record-shape symbol-guarded array lookups.
+    pub record_array_lookup: usize,
 }
 
 /// Request to compile one future JIT region.
@@ -196,6 +198,8 @@ pub enum JitNativeSpecialization {
     StringConcat,
     /// Guarded monomorphic property load.
     PropertyLoad,
+    /// Guarded record-shape symbol-keyed array lookup.
+    RecordArrayLookup,
 }
 
 impl JitFunctionHandle {

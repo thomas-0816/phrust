@@ -18,6 +18,8 @@ pub const PHP_JIT_ARRAY_STATUS_FALLBACK: i32 = 1;
 pub const PHP_JIT_ARRAY_STATUS_BOUNDS_EXIT: i32 = 2;
 /// Helper status for layout, alias, or element-shape guard failure.
 pub const PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT: i32 = 3;
+/// Helper status for a record-shape lookup whose key symbol has no slot.
+pub const PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT: i32 = 4;
 
 /// Conservative failure reason for packed-array helper guards.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,6 +84,44 @@ pub fn php_jit_array_len(value: &Value, out: &mut usize) -> i32 {
 fn php_jit_array_len_result(value: &Value) -> Result<usize, PhpJitArrayAbiError> {
     let array = validate_packed_int_array(value)?;
     Ok(array.packed_len_fast().expect("validated packed array"))
+}
+
+/// Record-shaped array lookup with an interned string-key symbol guard.
+///
+/// Guards: the value must be a record-storage array, the key a string whose
+/// symbol resolves to a shape slot, and the slot must not hold a reference
+/// cell (read-only region restriction). Guard misses report the exact side
+/// exit so the caller can fall back to the interpreter.
+pub fn php_jit_record_array_lookup(array: &Value, key: &Value) -> Result<Value, i32> {
+    let array = match array {
+        Value::Reference(cell) => cell.get(),
+        other => other.clone(),
+    };
+    let Value::Array(array) = array else {
+        return Err(PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT);
+    };
+    let key = match key {
+        Value::Reference(cell) => cell.get(),
+        other => other.clone(),
+    };
+    let Value::String(key) = key else {
+        return Err(PHP_JIT_ARRAY_STATUS_FALLBACK);
+    };
+    if array.record_slot_for_symbol(&key).is_none() {
+        // Distinguish a shape/storage miss from a genuine key miss so side
+        // exits blame the right guard.
+        return match array.get(&crate::ArrayKey::String(key.clone())) {
+            _ if !array.is_record_storage() => Err(PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT),
+            _ => Err(PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT),
+        };
+    }
+    let Some(value) = array.record_get_symbol(&key) else {
+        return Err(PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT);
+    };
+    if matches!(value, Value::Reference(_)) {
+        return Err(PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT);
+    }
+    Ok(value.clone())
 }
 
 /// Fetches an integer element through the safe runtime facade.

@@ -1361,6 +1361,12 @@ impl PhpArray {
         Some((key, value))
     }
 
+    /// True when this array currently uses shaped record storage.
+    #[must_use]
+    pub fn is_record_storage(&self) -> bool {
+        matches!(self.storage.as_ref(), ArrayStorage::Record(_))
+    }
+
     /// Record-storage slot index for a string key, when this array uses
     /// shaped record storage.
     #[must_use]

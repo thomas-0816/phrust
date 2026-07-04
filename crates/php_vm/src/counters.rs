@@ -395,6 +395,9 @@ pub struct VmCounters {
     pub jit_helper_calls: u64,
     pub jit_fast_path_hits: u64,
     pub packed_fetch_fast_hits: u64,
+    pub record_lookup_fast_hits: u64,
+    pub record_lookup_key_miss_exits: u64,
+    pub record_lookup_layout_exits: u64,
     pub packed_fetch_bounds_exits: u64,
     pub packed_fetch_layout_exits: u64,
     pub packed_fetch_bounds_fallbacks: u64,
@@ -1752,6 +1755,20 @@ impl VmCounters {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn record_record_lookup_fast_hit(&mut self) {
+        self.record_lookup_fast_hits += 1;
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    pub(crate) fn record_record_lookup_key_miss_exit(&mut self) {
+        self.record_lookup_key_miss_exits += 1;
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    pub(crate) fn record_record_lookup_layout_exit(&mut self) {
+        self.record_lookup_layout_exits += 1;
+    }
+
     pub(crate) fn record_packed_fetch_fast_hit(&mut self) {
         self.packed_fetch_fast_hits += 1;
         self.record_array_fast_path_hit("packed_int_fetch");
@@ -3565,6 +3582,24 @@ impl VmCounters {
             &mut json,
             "packed_fetch_fast_hits",
             self.packed_fetch_fast_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "record_lookup_fast_hits",
+            self.record_lookup_fast_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "record_lookup_key_miss_exits",
+            self.record_lookup_key_miss_exits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "record_lookup_layout_exits",
+            self.record_lookup_layout_exits,
             true,
         );
         push_field(

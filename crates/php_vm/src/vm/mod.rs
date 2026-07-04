@@ -282,6 +282,35 @@ extern "C" fn jit_count_known_abi(value_ptr: usize, out: *mut i64) -> i32 {
 }
 
 #[cfg(feature = "jit-cranelift")]
+extern "C" fn jit_record_array_lookup_abi(
+    array_ptr: usize,
+    key_ptr: usize,
+    out: *mut usize,
+) -> i32 {
+    if array_ptr == 0 || key_ptr == 0 || out.is_null() {
+        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+    }
+    // SAFETY: Cranelift passes pointers to `PreparedArg.value` slots owned by
+    // the active VM call frame and invokes this helper synchronously.
+    let array = unsafe { &*(array_ptr as *const Value) };
+    // SAFETY: Same as above for the key operand.
+    let key = unsafe { &*(key_ptr as *const Value) };
+    match php_runtime::php_jit_record_array_lookup(array, key) {
+        Ok(value) => {
+            let result = Box::new(value);
+            // SAFETY: The out pointer was checked for null and points to the
+            // native caller's stack-owned output slot. The VM reclaims the
+            // boxed value immediately after the native call returns.
+            unsafe {
+                *out = Box::into_raw(result) as usize;
+            }
+            php_runtime::PHP_JIT_ARRAY_STATUS_OK
+        }
+        Err(status) => status,
+    }
+}
+
+#[cfg(feature = "jit-cranelift")]
 extern "C" fn jit_concat_string_string_fast(
     lhs_ptr: usize,
     rhs_ptr: usize,
@@ -3177,6 +3206,35 @@ impl Vm {
     }
 
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
+    fn record_counter_record_lookup_fast_hit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_record_lookup_fast_hit();
+        }
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    fn record_counter_record_lookup_key_miss_exit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_record_lookup_key_miss_exit();
+        }
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    fn record_counter_record_lookup_layout_exit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_record_lookup_layout_exit();
+        }
+    }
+
     fn record_counter_packed_fetch_fast_hit(&self) {
         if !self.options.collect_counters {
             return;
@@ -6525,9 +6583,10 @@ impl Vm {
                         | php_jit::JitNativeSpecialization::KnownCallCount => {
                             self.record_counter_known_call_fast_hit();
                         }
-                        php_jit::JitNativeSpecialization::StringConcat => {}
-                        php_jit::JitNativeSpecialization::PropertyLoad => {}
-                        php_jit::JitNativeSpecialization::Generic => {}
+                        php_jit::JitNativeSpecialization::StringConcat
+                        | php_jit::JitNativeSpecialization::PropertyLoad
+                        | php_jit::JitNativeSpecialization::RecordArrayLookup
+                        | php_jit::JitNativeSpecialization::Generic => {}
                     }
                     self.record_counter_jit_executed();
                     return Some(Value::Int(value));
@@ -6555,9 +6614,10 @@ impl Vm {
                             self.record_counter_known_call_guard_exit();
                             self.record_counter_known_call_slow_call();
                         }
-                        php_jit::JitNativeSpecialization::StringConcat => {}
-                        php_jit::JitNativeSpecialization::PropertyLoad => {}
-                        php_jit::JitNativeSpecialization::Generic => {}
+                        php_jit::JitNativeSpecialization::StringConcat
+                        | php_jit::JitNativeSpecialization::PropertyLoad
+                        | php_jit::JitNativeSpecialization::RecordArrayLookup
+                        | php_jit::JitNativeSpecialization::Generic => {}
                     }
                     self.record_jit_side_exit_for_key(key, side_exit);
                     self.record_counter_jit_bailout();
@@ -6582,13 +6642,21 @@ impl Vm {
             let rhs_ptr = &rhs_arg.value as *const Value as usize;
             match handle.invoke_value_value(lhs_ptr, rhs_ptr, php_jit::JIT_RUNTIME_ABI_HASH) {
                 Ok(value_ptr) if value_ptr != 0 => {
-                    // SAFETY: Successful string-concat helpers return a pointer
+                    // SAFETY: Successful value/value helpers return a pointer
                     // created with `Box::into_raw(Box<Value>)` specifically for
                     // this synchronous VM call.
                     let value = unsafe { *Box::from_raw(value_ptr as *mut Value) };
                     self.record_counter_jit_helper_calls(handle.helper_calls_per_invocation());
                     self.record_counter_jit_fast_path_hits(handle.fast_path_hits_per_invocation());
-                    self.record_counter_string_concat_fast_path(true);
+                    match handle.specialization() {
+                        php_jit::JitNativeSpecialization::StringConcat => {
+                            self.record_counter_string_concat_fast_path(true);
+                        }
+                        php_jit::JitNativeSpecialization::RecordArrayLookup => {
+                            self.record_counter_record_lookup_fast_hit();
+                        }
+                        _ => {}
+                    }
                     self.record_counter_jit_executed();
                     return Some(value);
                 }
@@ -6599,7 +6667,9 @@ impl Vm {
                     );
                     self.record_counter_jit_bailout();
                     self.record_counter_jit_slow_path_call();
-                    self.record_counter_string_concat_fast_path(false);
+                    if handle.specialization() == php_jit::JitNativeSpecialization::StringConcat {
+                        self.record_counter_string_concat_fast_path(false);
+                    }
                     return None;
                 }
                 Err(error) => {
@@ -6611,9 +6681,30 @@ impl Vm {
                     ) {
                         self.record_counter_jit_overflow_exit();
                     }
+                    match handle.specialization() {
+                        php_jit::JitNativeSpecialization::StringConcat => {
+                            self.record_counter_string_concat_fast_path(false);
+                        }
+                        php_jit::JitNativeSpecialization::RecordArrayLookup => {
+                            match error.native_status() {
+                                Some(status)
+                                    if status
+                                        == php_runtime::PHP_JIT_ARRAY_STATUS_KEY_MISS_EXIT =>
+                                {
+                                    self.record_counter_record_lookup_key_miss_exit();
+                                }
+                                Some(status)
+                                    if status == php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT =>
+                                {
+                                    self.record_counter_record_lookup_layout_exit();
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
                     self.record_counter_jit_bailout();
                     self.record_counter_jit_slow_path_call();
-                    self.record_counter_string_concat_fast_path(false);
                     return None;
                 }
             }
@@ -6737,6 +6828,7 @@ impl Vm {
                 known_count: jit_count_known_abi as *const () as usize,
                 string_concat: jit_concat_string_string_fast as *const () as usize,
                 property_load: jit_property_load_monomorphic_fast as *const () as usize,
+                record_array_lookup: jit_record_array_lookup_abi as *const () as usize,
             },
         );
         match compile_result {
@@ -70595,6 +70687,114 @@ var_dump(unserialize('O:1:"C":0:{}'));
         assert_eq!(counters.jit_slow_path_calls, 0, "{counters:?}");
         assert!(counters.jit_code_bytes > 0, "{counters:?}");
         assert!(counters.jit_compile_time_nanos > 0, "{counters:?}");
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    #[test]
+    fn cranelift_record_lookup_executes_native_and_counts_fast_hit() {
+        let source = "<?php function perf_record_lookup(array $m, string $k) { return $m[$k]; } $m = [\"host\" => \"db.local\", \"port\" => 5432]; echo perf_record_lookup($m, \"host\"), \":\", perf_record_lookup($m, \"port\");";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                jit: JitMode::Cranelift,
+                tiering: TieringOptions {
+                    function_entry_threshold: 1,
+                    ..TieringOptions::default()
+                },
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"db.local:5432");
+        let counters = result.counters.expect("counters");
+        assert_eq!(counters.jit_compiled, 1, "{counters:?}");
+        assert!(counters.record_lookup_fast_hits >= 1, "{counters:?}");
+        assert_eq!(counters.record_lookup_key_miss_exits, 0, "{counters:?}");
+        assert_eq!(counters.record_lookup_layout_exits, 0, "{counters:?}");
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    #[test]
+    fn cranelift_record_lookup_key_miss_side_exits_and_resumes_interpreter() {
+        // The missing key must side-exit and resume through the interpreter,
+        // reproducing the undefined-key warning and null result exactly.
+        let source = "<?php function perf_record_lookup_miss(array $m, string $k) { return $m[$k]; } $m = [\"present\" => 1]; var_dump(perf_record_lookup_miss($m, \"absent\"));";
+        let native = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                jit: JitMode::Cranelift,
+                tiering: TieringOptions {
+                    function_entry_threshold: 1,
+                    ..TieringOptions::default()
+                },
+                ..VmOptions::default()
+            },
+        );
+        let interpreted = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+        );
+        assert!(native.status.is_success(), "{:?}", native.status);
+        assert_eq!(native.output.as_bytes(), interpreted.output.as_bytes());
+        let counters = native.counters.expect("counters");
+        assert!(counters.record_lookup_key_miss_exits >= 1, "{counters:?}");
+        assert_eq!(counters.record_lookup_fast_hits, 0, "{counters:?}");
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    #[test]
+    fn cranelift_record_lookup_layout_exit_falls_back_for_non_record_array() {
+        // A packed (non-record) array fails the record-shape guard; the
+        // interpreter fallback still produces the exact value.
+        let source = "<?php function perf_record_lookup_layout(array $m, string $k) { return $m[$k]; } $m = [7, 8, 9]; $m[\"late\"] = 10; echo perf_record_lookup_layout($m, \"late\");";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                jit: JitMode::Cranelift,
+                tiering: TieringOptions {
+                    function_entry_threshold: 1,
+                    ..TieringOptions::default()
+                },
+                ..VmOptions::default()
+            },
+        );
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"10");
+        let counters = result.counters.expect("counters");
+        assert!(counters.record_lookup_layout_exits >= 1, "{counters:?}");
+        assert_eq!(counters.record_lookup_fast_hits, 0, "{counters:?}");
+    }
+
+    #[cfg(feature = "jit-cranelift")]
+    #[test]
+    fn cranelift_record_lookup_reference_slot_side_exits() {
+        // A reference-holding slot violates the read-only guard; the
+        // interpreter fallback preserves reference semantics.
+        let source = "<?php function perf_record_lookup_ref(array $m, string $k) { return $m[$k]; } $cell = 41; $m = [\"cell\" => &$cell]; $cell = 42; echo perf_record_lookup_ref($m, \"cell\");";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                jit: JitMode::Cranelift,
+                tiering: TieringOptions {
+                    function_entry_threshold: 1,
+                    ..TieringOptions::default()
+                },
+                ..VmOptions::default()
+            },
+        );
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"42");
+        let counters = result.counters.expect("counters");
+        assert!(counters.record_lookup_layout_exits >= 1, "{counters:?}");
+        assert_eq!(counters.record_lookup_fast_hits, 0, "{counters:?}");
     }
 
     #[cfg(feature = "jit-cranelift")]

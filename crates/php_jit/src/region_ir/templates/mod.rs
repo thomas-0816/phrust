@@ -121,6 +121,8 @@ pub enum RuntimeTemplateKind {
     KnownBuiltinCountPackedExact,
     /// Interned-key `isset` array lookup declaration.
     IssetArrayKeyInternedExact,
+    /// Record-shape array lookup guarded by the key's interned symbol.
+    RecordArrayLookupSymbolGuard,
 }
 
 /// Runtime operation template descriptor.
@@ -181,6 +183,16 @@ impl RuntimeTemplate {
                     TemplateLoweringOutcome::rejected("object_value_region_model_missing")
                 } else {
                     TemplateLoweringOutcome::rejected("magic_property_or_hook")
+                }
+            }
+            RuntimeTemplateKind::RecordArrayLookupSymbolGuard => {
+                // The record lookup executes natively through the helper-backed
+                // candidate pipeline (like string concat); region-IR lowering
+                // of the raw slot read remains unavailable.
+                if context.no_references && context.no_cow {
+                    TemplateLoweringOutcome::rejected("record_value_region_model_missing")
+                } else {
+                    TemplateLoweringOutcome::rejected("reference_or_cow_sensitive_array")
                 }
             }
             RuntimeTemplateKind::IssetArrayKeyInternedExact => {
@@ -758,7 +770,7 @@ mod tests {
         let json = report.to_json();
         let markdown = report.to_markdown();
 
-        assert_eq!(report.templates_considered, 9);
+        assert_eq!(report.templates_considered, 10);
         assert!(report.templates_lowered >= 4);
         assert!(report.guards_required > 0);
         assert!(report.snapshot_slots_required > 0);

@@ -199,6 +199,15 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
         has_side_effects: true,
         description: "guarded monomorphic property-load helper",
     },
+    JitHelperSymbol {
+        id: JitHelperId(12),
+        name: "phrust_jit_record_array_lookup",
+        args: CONTEXT_VALUE_VALUE_ARGS,
+        returns: JitHelperReturnKind::Exit,
+        can_throw: false,
+        has_side_effects: true,
+        description: "record-shape array lookup helper with symbol-guarded slot read",
+    },
 ];
 
 /// Looks up a helper by stable id.
@@ -296,7 +305,7 @@ mod tests {
             JIT_HELPER_SYMBOLS.first().expect("first").id,
             JitHelperId(1)
         );
-        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(11));
+        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(12));
     }
 
     #[test]
