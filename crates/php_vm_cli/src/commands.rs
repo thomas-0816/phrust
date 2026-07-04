@@ -3084,6 +3084,7 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
             unsupported_reason: None,
         },
         DenseOpcode::CallFunction
+        | DenseOpcode::NewObject
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::Include => BaselineStencilClass {
@@ -3409,7 +3410,10 @@ fn classify_copy_patch_stencil_instruction(
             compile_cost_units: 1,
             unsupported_reason: None,
         },
-        DenseOpcode::CallFunction | DenseOpcode::CallMethod | DenseOpcode::CallStaticMethod => {
+        DenseOpcode::CallFunction
+        | DenseOpcode::NewObject
+        | DenseOpcode::CallMethod
+        | DenseOpcode::CallStaticMethod => {
             unsupported_copy_patch_class("dynamic_or_userland_call_requires_frame_and_symbol_state")
         }
         DenseOpcode::Include => unsupported_copy_patch_class("include_requires_request_state"),
@@ -3632,6 +3636,7 @@ fn classify_mid_tier_instruction(
             plan.deopt_points += 1;
         }
         DenseOpcode::CallFunction
+        | DenseOpcode::NewObject
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::Include => {

@@ -603,4 +603,163 @@ impl Vm {
             state,
         )
     }
+
+    /// Dense `new` over the same userland-instantiation helpers as the
+    /// rich-IR arm: class lookup with autoload, runtime class-entry
+    /// construction, instantiation guards, constructor resolution and
+    /// dispatch, SPL-subclass storage, and destructor registration.
+    /// Builtin runtime classes never reach this path: dense lowering
+    /// rejects their names (`dense_new_object_lowering_supported`), so
+    /// their dedicated construction paths stay on the rich interpreter.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_dense_new_object(
+        &self,
+        compiled: &CompiledUnit,
+        function_id: FunctionId,
+        block_id: BlockId,
+        instruction_id: InstrId,
+        class_name: &str,
+        display_class_name: &str,
+        args: Vec<CallArgument>,
+        call_span: Option<IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        if let Err(result) = self.autoload_static_class_if_missing(
+            compiled,
+            class_name,
+            call_span.unwrap_or_default(),
+            Some((
+                compiled_unit_cache_key(compiled),
+                function_id,
+                block_id,
+                instruction_id,
+            )),
+            output,
+            stack,
+            state,
+        ) {
+            return result;
+        }
+        let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!("E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"),
+            );
+        };
+        let class = class.clone();
+        if let Err(result) =
+            self.autoload_class_parents_if_missing(compiled, &class, output, stack, state)
+        {
+            return result;
+        }
+        let class_owner = class_owner_in_state(compiled, state, &class.name);
+        let runtime_class = match runtime_class_entry(
+            &class_owner,
+            state,
+            &class,
+            &|value| self.constant_value(class_owner.unit(), value),
+            &|reference| class_constant_reference_value(&class_owner, state, reference),
+            &|reference| named_constant_reference_value(&class_owner, state, reference),
+        ) {
+            Ok(runtime_class) => runtime_class,
+            Err(error) => {
+                let location_span = error
+                    .constant_initializer_span
+                    .unwrap_or_else(|| call_span.unwrap_or_default());
+                let result = self.runtime_error(output, compiled, stack, error.message);
+                if let Some(throwable) = runtime_error_throwable(&result) {
+                    tag_throwable_location(&throwable, compiled, location_span);
+                    state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                }
+                return result;
+            }
+        };
+        if let Err(message) = validate_object_mvp(&runtime_class) {
+            return self.runtime_error_at_optional_span(
+                compiled, output, stack, state, call_span, message,
+            );
+        }
+        let spl_runtime_parent = spl_runtime_parent_for_class(compiled, state, &class);
+        let object = ObjectRef::new_with_display_name(&runtime_class, display_class_name);
+        if let Some(spl_class) = spl_runtime_parent.as_deref() {
+            object.set_property(
+                SPL_RUNTIME_CLASS_PROPERTY,
+                Value::string(spl_class.as_bytes().to_vec()),
+            );
+        }
+        let caller_scope = current_scope_class(compiled, stack);
+        let constructor = match lookup_resolved_method_in_state(
+            compiled,
+            state,
+            &class.name,
+            "__construct",
+            caller_scope.as_deref(),
+        ) {
+            Ok(constructor) => constructor,
+            Err(message) => {
+                return self.runtime_error(output, compiled, stack, message);
+            }
+        };
+        let mut constructor_diagnostics = Vec::new();
+        if let Some(constructor) = constructor {
+            if let Err(message) = validate_constructor_callable_in_state_scope(
+                compiled,
+                state,
+                caller_scope.as_deref(),
+                &constructor.class,
+                &constructor.method,
+            ) {
+                return self.runtime_error_at_optional_span(
+                    compiled, output, stack, state, call_span, message,
+                );
+            }
+            let class_owner = dynamic_class_owner_in_state(state, &constructor.class.name)
+                .unwrap_or_else(|| compiled.clone());
+            let result = self.execute_function(
+                &class_owner,
+                constructor.method.function,
+                FunctionCall::new(args, Vec::new())
+                    .with_call_site_strict_types(compiled.unit().strict_types)
+                    .with_optional_call_span(call_span)
+                    .with_this(object.clone())
+                    .with_class_context(
+                        constructor.class.name.clone(),
+                        object.display_name(),
+                        constructor.class.name.clone(),
+                    ),
+                output,
+                stack,
+                state,
+            );
+            if !result.status.is_success() {
+                return result;
+            }
+            if result.fiber_suspension.is_some() {
+                return VmResult::unsupported(
+                    output.clone(),
+                    "E_PHP_VM_DENSE_BYTECODE_NEW_FIBER_UNSUPPORTED: dense bytecode object construction does not support fiber suspension yet",
+                );
+            }
+            constructor_diagnostics = result.diagnostics;
+        } else if let Some(spl_class) = spl_runtime_parent
+            && let Err(message) = initialize_spl_runtime_subclass_storage(
+                &object,
+                &spl_class,
+                args,
+                &self.options.runtime_context,
+            )
+        {
+            return self.runtime_error_at_optional_span(
+                compiled, output, stack, state, call_span, message,
+            );
+        }
+        self.register_destructor_if_needed(compiled, &class, object.clone(), state);
+        let mut result = VmResult::success_no_output(Some(Value::Object(object)));
+        result.diagnostics = constructor_diagnostics;
+        result
+    }
 }

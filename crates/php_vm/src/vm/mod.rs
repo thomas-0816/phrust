@@ -8189,6 +8189,81 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::NewObject => {
+                        let DenseOperands::NewObject {
+                            dst,
+                            class_name,
+                            display_class_name,
+                            ref args,
+                        } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(class_name) = dense.names.get(class_name as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode class name n{class_name}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(display_class_name) = dense.names.get(display_class_name as usize)
+                        else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode class name n{display_class_name}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let values = match self.read_dense_call_args(dense, compiled, stack, args) {
+                            Ok(values) => values,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let result = self.execute_dense_new_object(
+                            compiled,
+                            function_id,
+                            BlockId::new(block_index),
+                            InstrId::new(dense_instruction_index),
+                            class_name,
+                            display_class_name,
+                            values,
+                            dense.spans.get(instruction.span.index()).copied(),
+                            output,
+                            stack,
+                            state,
+                        );
+                        if !result.status.is_success() {
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        let value = result.return_value.unwrap_or(Value::Null);
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode caller frame is active")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::CallMethod => {
                         let DenseOperands::MethodCall {
                             dst,
@@ -43732,6 +43807,26 @@ fn is_closure_runtime_class(class_name: &str) -> bool {
     normalize_class_name(class_name) == "closure"
 }
 
+/// Returns true when a statically named `new` expression can lower to the
+/// dense `NewObject` opcode. Builtin runtime classes keep their dedicated
+/// rich-interpreter construction paths; everything else resolves through
+/// the shared userland instantiation helpers at execution time (including
+/// autoload, abstract/interface/enum guards, and constructor dispatch).
+pub(crate) fn dense_new_object_lowering_supported(class_name: &str) -> bool {
+    !(is_special_static_class_name(class_name)
+        || is_closure_runtime_class(class_name)
+        || is_fiber_runtime_class(class_name)
+        || is_reflection_runtime_class(class_name)
+        || is_zip_runtime_class(class_name)
+        || is_xml_runtime_class(class_name)
+        || is_spl_iterator_runtime_class(class_name)
+        || is_spl_container_runtime_class(class_name)
+        || is_spl_heap_runtime_class(class_name)
+        || is_spl_file_runtime_class(class_name)
+        || is_std_class_runtime_class(class_name)
+        || is_date_time_runtime_class(class_name))
+}
+
 fn is_std_class_object(object: &ObjectRef) -> bool {
     normalize_class_name(&object.class_name()) == "stdclass"
 }
@@ -60776,6 +60871,7 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::UnaryMinus
         | DenseOpcode::UnaryNot
         | DenseOpcode::UnaryBitNot => "unary_ops",
+        DenseOpcode::NewObject => "objects",
         DenseOpcode::CallFunction | DenseOpcode::CallMethod | DenseOpcode::CallStaticMethod => {
             "function_calls"
         }
@@ -77773,6 +77869,138 @@ echo '|', function_exists('inner_direct_nested') ? 'late' : 'missing';
                 >= 1,
             "{counters:?}"
         );
+    }
+
+    #[test]
+    fn dense_bytecode_auto_executes_new_object_with_constructor() {
+        let result = execute_source_with_options(
+            r#"<?php
+class DenseDto {
+    public $id = 0;
+    public $label = "";
+    public int $typed = 1;
+    private $secret = "s";
+    protected $shade = "p";
+    public function __construct($id, $label) {
+        $this->id = $id;
+        $this->label = $label;
+        $this->typed = $id * 2;
+    }
+    public function summary() {
+        return $this->id . ":" . $this->label . ":" . $this->typed
+            . ":" . $this->secret . ":" . $this->shade;
+    }
+}
+$total = 0;
+$last = "";
+for ($i = 1; $i <= 4; $i++) {
+    $dto = new DenseDto($i, "row$i");
+    $total += $dto->typed;
+    $last = $dto->summary();
+}
+echo $total, "|", $last;
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"20|4:row4:8:s:p");
+        let counters = result.counters.expect("counters should be collected");
+        assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+        assert_eq!(
+            counters
+                .dense_function_fallback_by_reason
+                .get("object_instantiation"),
+            None,
+            "{counters:?}"
+        );
+        assert!(
+            counters
+                .opcodes
+                .get("bytecode_new_object")
+                .copied()
+                .unwrap_or_default()
+                >= 4,
+            "{counters:?}"
+        );
+    }
+
+    #[test]
+    fn dense_bytecode_auto_new_object_falls_back_for_magic_and_dynamic() {
+        // Magic __set/__get and dynamic properties stay on the generic
+        // helpers; output and diagnostics must match the rich interpreter.
+        let source = r#"<?php
+class DenseMagic {
+    private $bag = [];
+    public function __set($name, $value) {
+        $this->bag[$name] = strtoupper($value);
+    }
+    public function __get($name) {
+        return $this->bag[$name] ?? "absent";
+    }
+}
+#[AllowDynamicProperties]
+class DenseDyn {
+    public $declared = "d";
+}
+$m = new DenseMagic();
+$m->title = "quiet";
+$d = new DenseDyn();
+$d->extra = "x";
+echo $m->title, "|", $m->missing, "|", $d->declared, "|", $d->extra;
+"#;
+        let auto = execute_source_with_options(
+            source,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+        let rich = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+        );
+        assert!(auto.status.is_success(), "{:?}", auto.status);
+        assert_eq!(auto.output.as_bytes(), b"QUIET|absent|d|x");
+        assert_eq!(auto.output, rich.output);
+        assert_eq!(auto.diagnostics, rich.diagnostics);
+    }
+
+    #[test]
+    fn dense_bytecode_new_object_reports_property_error_diagnostics() {
+        // Typed property violations inside dense-instantiated objects keep
+        // their catchable TypeError shape.
+        let result = execute_source_with_options(
+            r#"<?php
+class DenseTyped {
+    public int $n = 0;
+}
+$o = new DenseTyped();
+try {
+    $o->n = "nope";
+} catch (TypeError $e) {
+    echo "caught|", $o->n;
+}
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"caught|0");
     }
 
     #[test]

@@ -158,6 +158,8 @@ pub enum DenseOpcode {
     BindGlobal = 65,
     /// Quiet local load used by null/isset-adjacent access paths.
     LoadLocalQuiet = 66,
+    /// Instantiate a statically named class and run its constructor.
+    NewObject = 67,
 }
 
 impl DenseOpcode {
@@ -245,6 +247,7 @@ impl DenseOpcode {
             Self::EmptyLocal => "empty_local",
             Self::BindGlobal => "bind_global",
             Self::LoadLocalQuiet => "load_local_quiet",
+            Self::NewObject => "new_object",
         }
     }
 
@@ -373,6 +376,13 @@ pub enum DenseOperands {
     Call {
         dst: u32,
         name: u32,
+        args: Vec<DenseCallArg>,
+    },
+    /// Instantiate a statically named class with predecoded arguments.
+    NewObject {
+        dst: u32,
+        class_name: u32,
+        display_class_name: u32,
         args: Vec<DenseCallArg>,
     },
     /// Instance method call.
@@ -1433,6 +1443,7 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::Echo
         | DenseOpcode::Discard => Some(RuleKind::NoRule),
         DenseOpcode::CallFunction
+        | DenseOpcode::NewObject
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::InitStaticLocal
@@ -1483,6 +1494,7 @@ fn compare_result_feeds_branch(compare: &DenseOperands, branch: &DenseOperands) 
 fn dense_skip_reason(opcode: DenseOpcode) -> &'static str {
     match opcode {
         DenseOpcode::CallFunction => "effectful_call",
+        DenseOpcode::NewObject => "effectful_object_instantiation",
         DenseOpcode::CallMethod => "effectful_method_call",
         DenseOpcode::CallStaticMethod => "effectful_static_method_call",
         DenseOpcode::NewArray
@@ -1804,6 +1816,28 @@ fn lower_instruction(
                 args: lower_call_args(instruction, names, args)?,
             },
         ),
+        InstructionKind::NewObject {
+            dst,
+            display_class_name,
+            class_name,
+            args,
+        } => {
+            if !crate::vm::dense_new_object_lowering_supported(class_name) {
+                return unsupported_instruction(
+                    instruction,
+                    format!("NewObject with builtin or static-context class {class_name}"),
+                );
+            }
+            (
+                DenseOpcode::NewObject,
+                DenseOperands::NewObject {
+                    dst: dst.raw(),
+                    class_name: push_name(names, class_name).index() as u32,
+                    display_class_name: push_name(names, display_class_name).index() as u32,
+                    args: lower_call_args(instruction, names, args)?,
+                },
+            )
+        }
         InstructionKind::CallMethod {
             dst,
             object,
@@ -2447,6 +2481,22 @@ fn verify_instruction(
             }
         }
         (
+            DenseOpcode::NewObject,
+            DenseOperands::NewObject {
+                dst,
+                class_name,
+                display_class_name,
+                args,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_name(*class_name, unit, errors);
+            verify_name(*display_class_name, unit, errors);
+            for arg in args {
+                verify_call_arg(arg, unit, function, errors);
+            }
+        }
+        (
             DenseOpcode::CallMethod,
             DenseOperands::MethodCall {
                 dst,
@@ -2911,6 +2961,18 @@ fn render_operands(operands: &DenseOperands) -> String {
         DenseOperands::Call { dst, name, args } => {
             let rendered_args: Vec<_> = args.iter().map(render_call_arg).collect();
             format!("r{dst} n{name} ({})", rendered_args.join(", "))
+        }
+        DenseOperands::NewObject {
+            dst,
+            class_name,
+            display_class_name,
+            args,
+        } => {
+            let rendered_args: Vec<_> = args.iter().map(render_call_arg).collect();
+            format!(
+                "r{dst} new n{class_name} (display n{display_class_name}) ({})",
+                rendered_args.join(", ")
+            )
         }
         DenseOperands::MethodCall {
             dst,
