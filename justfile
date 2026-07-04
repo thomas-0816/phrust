@@ -14,6 +14,9 @@ help:
       '  just verify-phpt          PHPT tooling, manifests, and source-integrity checks' \
       '  just known-gaps           Validate checked known-gap manifests' \
       '  just source-integrity      Check module wiring and generated metadata' \
+      '  just dependency-boundaries Check documented workspace dependency edges' \
+      '  just panic-unwrap-policy   Check production panic/unwrap policy' \
+      '  just stdlib-registry-drift Check stdlib/runtime registry drift' \
       '  just verify-generated-arginfo Strict php-src arginfo drift check' \
       '  just oracle-api-index    Generate php-src/reference API oracle JSONL' \
       '  just oracle-api-summary  Print the latest API oracle summary' \
@@ -193,6 +196,14 @@ check:
 
 source-integrity:
     scripts/verify/source_integrity.py
+    scripts/verify/dependency_boundaries.py
+    scripts/verify/panic_unwrap_policy.py
+
+dependency-boundaries:
+    scripts/verify/dependency_boundaries.py
+
+panic-unwrap-policy:
+    scripts/verify/panic_unwrap_policy.py
 
 quality:
     @just quality-fast
@@ -348,6 +359,7 @@ verify-runtime:
 verify-stdlib:
     @just stdlib-docs
     @just stdlib-coverage
+    @just stdlib-registry-drift
     @just diff-stdlib
     @just diff-streams
     @just diff-json-pcre-date
@@ -578,6 +590,9 @@ stdlib-docs:
 
 stdlib-coverage:
     scripts/stdlib-coverage.sh
+
+stdlib-registry-drift:
+    scripts/stdlib/registry_drift.py
 
 generate-arginfo php_src="third_party/php-src" out="crates/php_std/src/generated/arginfo.rs":
     scripts/stdlib/generate_arginfo.py --php-src "{{php_src}}" --overrides fixtures/stdlib/arginfo_overrides.txt --out "{{out}}"

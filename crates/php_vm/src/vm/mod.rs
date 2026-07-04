@@ -61365,6 +61365,7 @@ mod tests {
 
     #[test]
     fn curl_exec_invokes_header_and_write_callbacks() {
+        let _network_override = php_runtime::debug::set_curl_network_tests_override_for_tests(true);
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind local server");
         let port = listener.local_addr().expect("server addr").port();
         let server = std::thread::spawn(move || {
@@ -61382,9 +61383,8 @@ mod tests {
                 .expect("shutdown");
         });
 
-        let result = execute_source_with_options(
-            &format!(
-                "<?php
+        let result = execute_source(&format!(
+            "<?php
             class CurlCollector {{
                 public $headers = '';
                 public $body = '';
@@ -61409,13 +61409,7 @@ mod tests {
             echo '|', $collector->body;
             echo '|', $result;
             "
-            ),
-            VmOptions {
-                runtime_context: RuntimeContext::default()
-                    .with_env(vec![("PHRUST_NET_TESTS".to_owned(), "1".to_owned())]),
-                ..VmOptions::default()
-            },
-        );
+        ));
         server.join().expect("server thread");
 
         assert!(result.status.is_success(), "{:?}", result.status);

@@ -13,7 +13,6 @@ use crate::{
 use openssl::ssl::{HandshakeError, SslConnector, SslMethod, SslStream};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-#[cfg(test)]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -97,8 +96,31 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 ];
 
 pub const PHRUST_NET_TESTS_ENV: &str = "PHRUST_NET_TESTS";
-#[cfg(test)]
 static NET_TESTS_OVERRIDE: Mutex<Option<bool>> = Mutex::new(None);
+
+#[doc(hidden)]
+pub struct CurlNetworkTestOverride {
+    previous: Option<bool>,
+}
+
+#[doc(hidden)]
+pub fn set_curl_network_tests_override_for_tests(enabled: bool) -> CurlNetworkTestOverride {
+    let mut override_value = NET_TESTS_OVERRIDE
+        .lock()
+        .expect("network test override lock");
+    let previous = *override_value;
+    *override_value = Some(enabled);
+    CurlNetworkTestOverride { previous }
+}
+
+impl Drop for CurlNetworkTestOverride {
+    fn drop(&mut self) {
+        *NET_TESTS_OVERRIDE
+            .lock()
+            .expect("network test override lock") = self.previous;
+    }
+}
+
 const CURLOPT_URL: i64 = 10002;
 const CURLOPT_RETURNTRANSFER: i64 = 19913;
 const CURLOPT_TIMEOUT: i64 = 13;
@@ -607,11 +629,6 @@ pub(in crate::builtins::modules) fn builtin_curl_exec(
 }
 
 fn curl_network_requests_enabled(context: &BuiltinContext<'_>) -> bool {
-    if context.network_requests_enabled() {
-        return true;
-    }
-
-    #[cfg(test)]
     if let Some(enabled) = *NET_TESTS_OVERRIDE
         .lock()
         .expect("network test override lock")
@@ -619,7 +636,7 @@ fn curl_network_requests_enabled(context: &BuiltinContext<'_>) -> bool {
         return enabled;
     }
 
-    std::env::var(PHRUST_NET_TESTS_ENV).as_deref() == Ok("1")
+    context.network_requests_enabled()
 }
 
 pub(in crate::builtins::modules) fn builtin_curl_getinfo(

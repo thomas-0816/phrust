@@ -14,10 +14,10 @@ pub enum EngineProfileName {
     /// features are disabled.
     Baseline,
     /// Safe fast product default: optimizer, interpreter fast paths, and the
-    /// guarded native tier are enabled when backend support is available.
+    /// guarded Cranelift experiment are selected when backend support is available.
     #[default]
     Default,
-    /// Developer profile that keeps the native-oriented settings explicit.
+    /// Developer profile that keeps JIT experiment settings explicit.
     ExperimentalJit,
 }
 
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn default_profile_is_managed_fast_runtime_with_native_tier() {
+    fn default_profile_is_managed_fast_runtime_with_cranelift_experiment() {
         let options = PhpExecutorOptions::managed_fast_runtime();
 
         assert_eq!(options.optimization_level, OptimizationLevel::O2);
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_jit_profile_is_explicit_native_opt_in() {
+    fn experimental_jit_profile_is_explicit_cranelift_opt_in() {
         let options = PhpExecutorOptions::for_profile(EngineProfileName::ExperimentalJit);
 
         assert_eq!(options.optimization_level, OptimizationLevel::O2);

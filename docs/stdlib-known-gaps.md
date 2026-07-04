@@ -6,6 +6,12 @@ Standard library known gaps are tracked per test ID. A gap is valid only when th
 reference expectation, reason, and next-layer priority are listed here or in a
 generated Standard library coverage report.
 
+Registry drift between runtime builtin registration and `php_std` metadata is
+checked by `nix develop -c just stdlib-registry-drift`. Temporary symbol-level
+drift belongs in `scripts/stdlib/registry_drift_allowlist.jsonl`; generated
+reports under `target/stdlib/registry-drift/` are local evidence and are not
+committed.
+
 | Test ID | Area | Reason | Priority |
 | --- | --- | --- | --- |
 | STDLIB-GAP-PHAR-REQUIRED | PHAR | The optional read-only PHAR MVP covers local uncompressed archive reads, `phar://` file access, class visibility, and selected static capability probes. Writable archives, `PharData`, compressed archive reads/writes, bz2 support, signature validation/enforcement, metadata APIs, and full stub/diagnostic parity remain outside required Standard library gates. | Performance |

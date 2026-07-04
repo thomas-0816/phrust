@@ -53,7 +53,8 @@ pub(super) struct TraitCompositionInput<'a> {
     pub(super) class_parents: &'a ClassParentMap,
 }
 
-pub(super) struct PropertyLoweringInput<'a> {
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PropertyEntriesInput<'a> {
     pub(super) class_name: &'a str,
     pub(super) display_class_name: &'a str,
     pub(super) property: &'a HirProperty,
@@ -61,7 +62,8 @@ pub(super) struct PropertyLoweringInput<'a> {
     pub(super) class_parents: &'a ClassParentMap,
 }
 
-pub(super) struct TraitCompositionMemberInput<'a> {
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TraitCompositionMembersInput<'a> {
     pub(super) module: &'a HirModule,
     pub(super) trait_class_like: &'a php_semantics::hir::HirClassLike,
     pub(super) trait_name: &'a str,
@@ -407,7 +409,7 @@ impl LoweringContext<'_> {
                         self.push_lowered_property_entries(
                             builder,
                             &mut properties,
-                            PropertyLoweringInput {
+                            PropertyEntriesInput {
                                 class_name: &name,
                                 display_class_name: &display_class_name,
                                 property,
@@ -575,15 +577,11 @@ impl LoweringContext<'_> {
         &mut self,
         builder: &mut IrBuilder,
         properties: &mut Vec<ClassPropertyEntry>,
-        input: PropertyLoweringInput<'_>,
+        input: PropertyEntriesInput<'_>,
     ) {
-        let PropertyLoweringInput {
-            class_name,
-            display_class_name,
-            property,
-            class_constant_initializers,
-            class_parents,
-        } = input;
+        let class_name = input.class_name;
+        let display_class_name = input.display_class_name;
+        let property = input.property;
         let property_type = self.lower_runtime_type(property.type_id());
         let hooks = self.lower_property_hooks(builder, class_name, display_class_name, property);
         let set_visibility = property.modifiers().set_visibility();
@@ -601,8 +599,8 @@ impl LoweringContext<'_> {
                     item.default(),
                     Some(class_name),
                     Some(display_class_name),
-                    class_constant_initializers,
-                    class_parents,
+                    input.class_constant_initializers,
+                    input.class_parents,
                 )
                 .map(|constant| builder.intern_constant(constant));
             let default_class_constant = if default.is_none() {
@@ -616,7 +614,7 @@ impl LoweringContext<'_> {
                         )
                     },
                     Some(class_name),
-                    class_parents,
+                    input.class_parents,
                 )
             } else {
                 None
@@ -640,8 +638,8 @@ impl LoweringContext<'_> {
                     item.default(),
                     Some(class_name),
                     Some(display_class_name),
-                    class_constant_initializers,
-                    class_parents,
+                    input.class_constant_initializers,
+                    input.class_parents,
                 )
             } else {
                 None
@@ -1112,7 +1110,7 @@ impl LoweringContext<'_> {
                 };
                 self.collect_trait_composition_members(
                     builder,
-                    TraitCompositionMemberInput {
+                    TraitCompositionMembersInput {
                         module,
                         trait_class_like,
                         trait_name: &trait_name,
@@ -1248,19 +1246,17 @@ impl LoweringContext<'_> {
     pub(super) fn collect_trait_composition_members(
         &mut self,
         builder: &mut IrBuilder,
-        input: TraitCompositionMemberInput<'_>,
+        input: TraitCompositionMembersInput<'_>,
         candidates: &mut Vec<TraitMethodCandidate>,
         properties: &mut Vec<ClassPropertyEntry>,
     ) {
-        let TraitCompositionMemberInput {
-            module,
-            trait_class_like,
-            trait_name,
-            class_name,
-            display_class_name,
-            class_constant_initializers,
-            class_parents,
-        } = input;
+        let module = input.module;
+        let trait_class_like = input.trait_class_like;
+        let trait_name = input.trait_name;
+        let class_name = input.class_name;
+        let display_class_name = input.display_class_name;
+        let class_constant_initializers = input.class_constant_initializers;
+        let class_parents = input.class_parents;
         let display_trait_name = trait_class_like
             .name()
             .map(ToOwned::to_owned)
@@ -1300,7 +1296,7 @@ impl LoweringContext<'_> {
                     self.push_lowered_property_entries(
                         builder,
                         properties,
-                        PropertyLoweringInput {
+                        PropertyEntriesInput {
                             class_name,
                             display_class_name,
                             property,

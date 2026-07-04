@@ -1,0 +1,9 @@
+{"kind":"runtime_without_std_metadata","name":"apcu_add","reason":"APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata."}
+{"kind":"runtime_without_std_metadata","name":"apcu_clear_cache","reason":"APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata."}
+{"kind":"runtime_without_std_metadata","name":"apcu_delete","reason":"APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata."}
+{"kind":"runtime_without_std_metadata","name":"apcu_enabled","reason":"APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata."}
+{"kind":"runtime_without_std_metadata","name":"apcu_exists","reason":"APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata."}
+{"kind":"runtime_without_std_metadata","name":"apcu_fetch","reason":"APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata."}
+{"kind":"runtime_without_std_metadata","name":"apcu_store","reason":"APCu is a PECL-style compatibility surface not yet backed by committed php-src arginfo metadata."}
+{"kind":"runtime_without_std_metadata","name":"print","reason":"print is a PHP language construct rather than a normal internal function arginfo symbol."}
+{"kind":"std_descriptor_without_runtime","name":"define","reason":"Standard-library descriptor metadata exists before the runtime builtin implementation is wired."}

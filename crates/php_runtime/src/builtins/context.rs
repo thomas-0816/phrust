@@ -873,11 +873,12 @@ pub(in crate::builtins) const fn json_error_message(code: i64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        BuiltinContext, JSON_ERROR_NONE, JSON_ERROR_SYNTAX, StrtokState, json_error_message,
+        BuiltinContext, JSON_ERROR_NONE, JSON_ERROR_SYNTAX, RuntimeSourceSpan, StrtokState,
+        json_error_message,
     };
     use crate::{
         ArrayKey, OutputBuffer, PhpArray, PhpString, ReferenceCell, RuntimeHttpResponseState,
-        SessionState, Value, pcre,
+        RuntimeUploadedFile, SessionState, UploadRegistry, Value, pcre,
     };
     use std::path::PathBuf;
 
@@ -989,6 +990,63 @@ mod tests {
 
         assert_eq!(response.status_code, 404);
         assert_eq!(response.headers_list(), vec!["X-Test: yes"]);
+    }
+
+    #[test]
+    fn warning_emission_writes_output_and_structured_diagnostic() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        context.php_warning(
+            "E_PHP_RUNTIME_TEST_WARNING",
+            "fixture warning",
+            RuntimeSourceSpan {
+                file: Some("fixture.php".to_owned()),
+                start: 0,
+                end: 7,
+            },
+        );
+
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].id(), "E_PHP_RUNTIME_TEST_WARNING");
+        assert_eq!(diagnostics[0].message(), "fixture warning");
+        drop(context);
+
+        let rendered = std::str::from_utf8(output.as_bytes()).expect("warning output is utf-8");
+        assert!(rendered.contains("Warning: fixture warning"));
+        assert!(rendered.contains("fixture.php"));
+    }
+
+    #[test]
+    fn upload_registry_is_exposed_through_http_service() {
+        let mut output = OutputBuffer::new();
+        let upload = RuntimeUploadedFile {
+            field_name: "file".to_owned(),
+            client_filename: "test.txt".to_owned(),
+            content_type: "text/plain".to_owned(),
+            temp_path: "/tmp/php-upload-test".to_owned(),
+            error: 0,
+            size: 4,
+        };
+        let mut registry = UploadRegistry::from_uploaded_files(&[upload]);
+
+        {
+            let mut context = BuiltinContext::new(&mut output);
+            context.set_upload_registry(&mut registry);
+            assert!(
+                context
+                    .upload_registry()
+                    .is_some_and(|registry| registry.is_active_upload("/tmp/php-upload-test"))
+            );
+            assert!(
+                context
+                    .upload_registry_mut()
+                    .is_some_and(|registry| registry.mark_moved("/tmp/php-upload-test"))
+            );
+        }
+
+        assert!(!registry.is_active_upload("/tmp/php-upload-test"));
     }
 
     #[test]

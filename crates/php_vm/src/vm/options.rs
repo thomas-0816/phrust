@@ -46,7 +46,8 @@ pub struct VmOptions {
     pub quickening: QuickeningMode,
     /// Allocate request-local inline-cache slots without changing semantics.
     pub inline_caches: InlineCacheMode,
-    /// Enable the experimental performance JIT tier for eligible hot leaf functions.
+    /// Select the experimental performance JIT tier for eligible hot leaf functions.
+    /// Unsupported builds or ineligible functions stay on managed VM paths.
     pub jit: JitMode,
     /// Hot-call threshold requested by the CLI for JIT compilation.
     pub jit_threshold: u64,
@@ -200,7 +201,9 @@ pub enum JitMode {
     Off,
     /// Accept JIT plumbing flags but keep execution on the interpreter.
     Noop,
-    /// Select the Cranelift backend for reports without enabling PHP-code JIT execution yet.
+    /// Select the Cranelift backend. Native entry is constrained to eligible
+    /// experimental leaf functions when feature support and runtime guards allow
+    /// it; otherwise execution remains on managed VM paths.
     Cranelift,
 }
 

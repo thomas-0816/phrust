@@ -53,13 +53,14 @@ committed closure plan. Current topic docs are:
 Standard library should reuse the public Rust surface already documented in
 `docs/runtime-semantics-contract.md`:
 
-- `php_vm::Vm`, `VmOptions`, `VmResult`, `CompiledUnit`, and `IncludeLoader`;
-- `php_runtime::Value`, `Slot`, `ReferenceCell`, `PhpArray`, `PhpString`,
-  `ObjectRef`, `CallableValue`, `GeneratorRef`, `FiberRef`, and
+- `php_vm::api::{Vm, VmOptions, VmResult, CompiledUnit, IncludeLoader}`;
+- `php_runtime::api` for `Value`, `Slot`, `ReferenceCell`, `PhpArray`,
+  `PhpString`, `ObjectRef`, `CallableValue`, `GeneratorRef`, `FiberRef`, and
   `RuntimeDiagnostic`;
-- `ClassEntry`, member metadata entries, `RuntimeType`, `AttributeEntry`,
-  `GlobalSymbolTable`, `AutoloadRegistry`, `BuiltinRegistry`, and GC debug
-  root APIs.
+- `php_runtime::api` for `ClassEntry`, `RuntimeType`, `AttributeEntry`,
+  `GlobalSymbolTable`, `AutoloadRegistry`, and `BuiltinRegistry`;
+- `php_runtime::debug` for GC debug root APIs and other intentionally
+  non-PHP-visible inspection helpers.
 
 VM frame internals, continuation structs, GC debug IDs, and trace formatting
 are implementation details unless a Standard library ADR stabilizes them.

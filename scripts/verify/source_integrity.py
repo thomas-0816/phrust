@@ -31,7 +31,17 @@ REQUIRED_FILES = [
     "crates/php_std/src/generated/mod.rs",
     "crates/php_std/src/generated/arginfo.rs",
     "scripts/stdlib/generate_arginfo.py",
+    "scripts/stdlib/registry_drift.py",
+    "scripts/stdlib/registry_drift_allowlist.jsonl",
     "scripts/verify/api_facade_allowlist.txt",
+    "scripts/verify/dependency_boundaries.py",
+    "scripts/verify/dependency_boundary_allowlist.json",
+    "scripts/verify/panic_unwrap_policy.py",
+    "scripts/verify/panic_unwrap_allowlist.jsonl",
+    "docs/repository-truth-ratchet.md",
+    "docs/runtime-module-boundaries.md",
+    "docs/performance-mode-matrix.md",
+    "docs/panic-unwrap-policy.md",
 ]
 
 API_FACADE_ROOT_RE = re.compile(
@@ -118,6 +128,15 @@ PHP_STD_CONSUMED_SYMBOLS = [
     "generated::arginfo::GENERATED_CLASSES",
 ]
 
+RUNTIME_MODULE_BOUNDARY_DOC = "docs/runtime-module-boundaries.md"
+
+DOC_STALE_IMPORTS = {
+    "docs/runtime-semantics-status.md": [
+        "php_vm::Vm",
+        "php_runtime::Value",
+    ],
+}
+
 
 @dataclass(frozen=True)
 class ApiFacadeAllowlistEntry:
@@ -200,6 +219,25 @@ def check_vm_module_wiring() -> None:
         require_snippets(relative, read_required(relative), snippets)
     for relative, snippets in VM_SUBMODULE_FORBIDDEN_SNIPPETS.items():
         forbid_snippets(relative, read_required(relative), snippets)
+
+    declared_modules = set(re.findall(r"^mod\s+([A-Za-z0-9_]+);", vm_mod, re.MULTILINE))
+    sibling_modules = {
+        path.stem
+        for path in (ROOT / "crates/php_vm/src/vm").glob("*.rs")
+        if path.name != "mod.rs"
+    }
+    if declared_modules != sibling_modules:
+        missing = sorted(sibling_modules - declared_modules)
+        extra = sorted(declared_modules - sibling_modules)
+        details = []
+        if missing:
+            details.append(f"missing declarations: {', '.join(missing)}")
+        if extra:
+            details.append(f"declarations without files: {', '.join(extra)}")
+        raise IntegrityError(
+            "php_vm::vm module declarations do not match sibling files: "
+            + "; ".join(details)
+        )
 
 
 def generated_count(text: str, name: str) -> int:
@@ -292,6 +330,29 @@ def check_api_facade_imports() -> None:
         )
 
 
+def check_runtime_module_boundaries_doc() -> None:
+    lib = read_required("crates/php_runtime/src/lib.rs")
+    doc = read_required(RUNTIME_MODULE_BOUNDARY_DOC)
+    modules = sorted(re.findall(r"^pub mod\s+([A-Za-z0-9_]+);", lib, re.MULTILINE))
+    missing = [module for module in modules if f"`{module}`" not in doc]
+    if missing:
+        raise IntegrityError(
+            f"{RUNTIME_MODULE_BOUNDARY_DOC} does not categorize runtime modules: "
+            + ", ".join(missing)
+        )
+
+
+def check_doc_import_guidance() -> None:
+    for relative, stale_imports in DOC_STALE_IMPORTS.items():
+        text = read_required(relative)
+        present = [stale for stale in stale_imports if stale in text]
+        if present:
+            raise IntegrityError(
+                f"{relative} contains stale root facade guidance: "
+                + ", ".join(present)
+            )
+
+
 def main() -> int:
     checks = [
         check_required_files,
@@ -300,6 +361,8 @@ def main() -> int:
         check_generated_arginfo,
         check_php_std_consumers,
         check_api_facade_imports,
+        check_runtime_module_boundaries_doc,
+        check_doc_import_guidance,
     ]
     try:
         for check in checks:

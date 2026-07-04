@@ -1,0 +1,76 @@
+{
+  "allowed_edges": [
+    {
+      "from": "php_runtime",
+      "to": "php_lexer",
+      "category": "tokenizer-service",
+      "reason": "Runtime exposes PHP tokenization helpers for stdlib tokenizer behavior without adding a second lexer."
+    },
+    {
+      "from": "php_runtime",
+      "to": "php_testkit",
+      "category": "test-support",
+      "reason": "Runtime package tests use shared fixture/testkit helpers; production APIs do not expose the testkit."
+    },
+    {
+      "from": "php_ir",
+      "to": "php_std",
+      "category": "builtin-lowering-contract",
+      "reason": "IR lowering consults standard-library metadata for builtin call descriptors without adding runtime execution behavior."
+    },
+    {
+      "from": "php_std",
+      "to": "php_runtime",
+      "category": "stdlib-runtime-services",
+      "reason": "Standard-library descriptors and arginfo bridge into runtime builtin registration."
+    },
+    {
+      "from": "php_std",
+      "to": "php_lexer",
+      "category": "metadata-normalization",
+      "reason": "Stdlib metadata generation and validation reuse lexer token names instead of parallel token definitions."
+    },
+    {
+      "from": "php_vm",
+      "to": "php_runtime",
+      "category": "runtime-execution",
+      "reason": "The VM consumes runtime values, diagnostics, objects, resources, and builtin services."
+    },
+    {
+      "from": "php_vm",
+      "to": "php_semantics",
+      "category": "compiled-unit-contract",
+      "reason": "VM execution consumes semantic frontend metadata through compiled units."
+    },
+    {
+      "from": "php_vm",
+      "to": "php_std",
+      "category": "builtin-registration",
+      "reason": "VM request setup installs the standard-library builtin registry."
+    },
+    {
+      "from": "php_executor",
+      "to": "php_runtime",
+      "category": "execution-orchestration",
+      "reason": "Executor assembles runtime context and VM options for CLI/server entry points."
+    },
+    {
+      "from": "php_executor",
+      "to": "php_vm",
+      "category": "execution-orchestration",
+      "reason": "Executor invokes the VM and translates execution results."
+    },
+    {
+      "from": "php_server",
+      "to": "php_runtime",
+      "category": "http-runtime-context",
+      "reason": "Server builds request/response runtime context for VM execution."
+    },
+    {
+      "from": "php_server",
+      "to": "php_executor",
+      "category": "http-execution",
+      "reason": "Server delegates PHP execution to the executor crate."
+    }
+  ]
+}

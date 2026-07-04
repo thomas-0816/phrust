@@ -10,6 +10,8 @@ nix develop -c just verify-stdlib
 ## In Scope
 
 - builtin-function ABI, arginfo, coercion, and diagnostics
+- registry drift checks between runtime builtin registration and `php_std`
+  function metadata
 - core constants and extension/symbol introspection
 - variable, type, string, array, math, config, error, output-buffering,
   environment, and superglobal functions
@@ -31,6 +33,15 @@ explicitly bounded.
 PHAR is not a required gate. Composer source mode is the required path. ADR-0066
 keeps PHAR as a known gap unless a later optional read-only MVP is explicitly
 accepted with archive, wrapper, stub, and diagnostic boundaries.
+
+## Registry Drift
+
+`nix develop -c just stdlib-registry-drift` compares
+`crates/php_runtime/src/builtins/registry.rs` with `php_std` function metadata.
+The generated report is written to `target/stdlib/registry-drift/`; only the
+policy allowlist in `scripts/stdlib/registry_drift_allowlist.jsonl` is
+committed. New runtime-only or metadata-only symbols must either be closed or
+documented there with a reason.
 
 ## References
 

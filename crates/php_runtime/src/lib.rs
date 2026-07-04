@@ -8,6 +8,9 @@
 //! The root re-exports remain as compatibility aliases while internal crates are
 //! migrated. New downstream imports should use the explicit facades instead of
 //! relying on the full crate root.
+//!
+//! Module ownership is grouped in `docs/runtime-module-boundaries.md`. New
+//! top-level modules must be categorized there before they are exposed here.
 
 pub mod array;
 pub mod autoload;
@@ -154,6 +157,10 @@ pub mod api {
 pub mod debug {
     #[doc(hidden)]
     pub use crate::array::WeakArrayHandle;
+    #[doc(hidden)]
+    pub use crate::builtins::CurlNetworkTestOverride;
+    #[doc(hidden)]
+    pub use crate::builtins::set_curl_network_tests_override_for_tests;
     #[doc(hidden)]
     pub use crate::gc::{
         GcCollectResult, GcCollectedEntity, GcCycleCandidate, GcEntityId, GcEntityKind, GcNode,
