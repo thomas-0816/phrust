@@ -277,6 +277,7 @@ pub struct VmCounters {
     pub intrinsic_fallback_by_reason: BTreeMap<String, u64>,
     pub specialized_builtin_opcode_hits: BTreeMap<String, u64>,
     pub slow_path_calls_by_reason: BTreeMap<String, u64>,
+    pub value_clone_by_reason: BTreeMap<String, u64>,
     pub call_ic_megamorphic_fallbacks: u64,
     pub local_slot_fast_path_hits: u64,
     pub local_slot_fast_path_misses: u64,
@@ -602,6 +603,15 @@ impl VmCounters {
     pub(crate) fn record_slow_path_call(&mut self, reason: &str) {
         *self
             .slow_path_calls_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
+    }
+
+    /// Attributes a forced `Value` clone at a semantic funnel (call-argument
+    /// snapshot, return value, foreach element, reference/COW, property read).
+    pub(crate) fn record_value_clone_by_reason(&mut self, reason: &str) {
+        *self
+            .value_clone_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
     }
@@ -2719,6 +2729,12 @@ impl VmCounters {
             &mut json,
             "slow_path_calls_by_reason",
             &self.slow_path_calls_by_reason,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "value_clone_by_reason",
+            &self.value_clone_by_reason,
             true,
         );
         push_field(

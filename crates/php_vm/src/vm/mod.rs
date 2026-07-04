@@ -4054,6 +4054,15 @@ impl Vm {
         }
     }
 
+    fn record_counter_value_clone_reason(&self, reason: &'static str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_value_clone_by_reason(reason);
+        }
+    }
+
     fn record_quickened_concat_guard(
         &self,
         function_id: FunctionId,
@@ -6712,7 +6721,7 @@ impl Vm {
                 .locals;
             let result = if param.by_ref {
                 if let Some(reference) = arg.reference {
-                    reference.set(arg.value.clone());
+                    reference.set(arg.value);
                     locals.bind_reference_cell(param.local, reference)
                 } else {
                     locals.set(param.local, arg.value)
@@ -6853,18 +6862,21 @@ impl Vm {
                                 return result;
                             }
                         };
+                        // Echo borrows the value, so echo first and move the
+                        // value into the register afterwards instead of
+                        // cloning it for the register write.
+                        if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
+                        {
+                            stack.pop_recycle();
+                            return result;
+                        }
                         if let Err(message) = stack
                             .current_mut()
                             .expect("bytecode frame was pushed")
                             .registers
-                            .set(RegId::new(dst), value.clone())
+                            .set(RegId::new(dst), value)
                         {
                             let result = self.runtime_error(output, compiled, stack, message);
-                            stack.pop_recycle();
-                            return result;
-                        }
-                        if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
-                        {
                             stack.pop_recycle();
                             return result;
                         }
@@ -7133,18 +7145,21 @@ impl Vm {
                                 return result;
                             }
                         };
+                        // Echo borrows the value, so echo first and move the
+                        // value into the register afterwards instead of
+                        // cloning it for the register write.
+                        if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
+                        {
+                            stack.pop_recycle();
+                            return result;
+                        }
                         if let Err(message) = stack
                             .current_mut()
                             .expect("bytecode frame was pushed")
                             .registers
-                            .set(RegId::new(dst), value.clone())
+                            .set(RegId::new(dst), value)
                         {
                             let result = self.runtime_error(output, compiled, stack, message);
-                            stack.pop_recycle();
-                            return result;
-                        }
-                        if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
-                        {
                             stack.pop_recycle();
                             return result;
                         }
@@ -7279,12 +7294,19 @@ impl Vm {
                                 return result;
                             }
                         };
-                        let previous = stack
-                            .current()
-                            .expect("bytecode frame was pushed")
-                            .locals
-                            .get(LocalId::new(local))
-                            .unwrap_or(Value::Uninitialized);
+                        // Only the discard variant inspects the overwritten
+                        // value (for destructor timing); plain stores skip
+                        // the previous-value clone entirely.
+                        let previous = if instruction.opcode == DenseOpcode::StoreLocalDiscard {
+                            stack
+                                .current()
+                                .expect("bytecode frame was pushed")
+                                .locals
+                                .get(LocalId::new(local))
+                                .unwrap_or(Value::Uninitialized)
+                        } else {
+                            Value::Uninitialized
+                        };
                         if let Err(message) = stack
                             .current_mut()
                             .expect("bytecode frame was pushed")
@@ -7525,7 +7547,10 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let lhs = match self.read_dense_operand(compiled, stack, lhs) {
+                        // Borrow both operands for the quickened concat fast
+                        // path; only the generic fallback materializes owned
+                        // values.
+                        let lhs = match self.read_dense_operand_ref(compiled, stack, lhs) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7533,7 +7558,7 @@ impl Vm {
                                 return result;
                             }
                         };
-                        let rhs = match self.read_dense_operand(compiled, stack, rhs) {
+                        let rhs = match self.read_dense_operand_ref(compiled, stack, rhs) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7550,40 +7575,47 @@ impl Vm {
                             unit_id,
                             function_id,
                             dense_instruction_index,
-                            &lhs,
-                            &rhs,
+                            lhs.as_value(),
+                            rhs.as_value(),
                         );
                         let value = match value {
                             Some(value) => value,
-                            None => match self.execute_binary(
-                                compiled,
-                                BinaryOp::Concat,
-                                &lhs,
-                                &rhs,
-                                runtime_source_span(compiled, span),
-                                output,
-                                stack,
-                                state,
-                            ) {
-                                Ok(value) => value,
-                                Err(result) => {
-                                    stack.pop_recycle();
-                                    return result;
+                            None => {
+                                let lhs = lhs.into_owned();
+                                let rhs = rhs.into_owned();
+                                match self.execute_binary(
+                                    compiled,
+                                    BinaryOp::Concat,
+                                    &lhs,
+                                    &rhs,
+                                    runtime_source_span(compiled, span),
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(result) => {
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
                                 }
-                            },
+                            }
                         };
+                        // Echo borrows the value, so echo first and move the
+                        // value into the register afterwards instead of
+                        // cloning it for the register write.
+                        if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
+                        {
+                            stack.pop_recycle();
+                            return result;
+                        }
                         if let Err(message) = stack
                             .current_mut()
                             .expect("bytecode frame was pushed")
                             .registers
-                            .set(RegId::new(dst), value.clone())
+                            .set(RegId::new(dst), value)
                         {
                             let result = self.runtime_error(output, compiled, stack, message);
-                            stack.pop_recycle();
-                            return result;
-                        }
-                        if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
-                        {
                             stack.pop_recycle();
                             return result;
                         }
@@ -7610,7 +7642,11 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let lhs = match self.read_dense_operand(compiled, stack, lhs) {
+                        // Borrow both operands for the quickened fast paths;
+                        // only the generic `execute_binary` fallback (which
+                        // needs `&mut` VM state for warnings/`__toString`)
+                        // materializes owned values.
+                        let lhs = match self.read_dense_operand_ref(compiled, stack, lhs) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7618,7 +7654,7 @@ impl Vm {
                                 return result;
                             }
                         };
-                        let rhs = match self.read_dense_operand(compiled, stack, rhs) {
+                        let rhs = match self.read_dense_operand_ref(compiled, stack, rhs) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7640,36 +7676,40 @@ impl Vm {
                                     function_id,
                                     dense_instruction_index,
                                     op,
-                                    &lhs,
-                                    &rhs,
+                                    lhs.as_value(),
+                                    rhs.as_value(),
                                 ),
                             BinaryOp::Concat => self.try_quickened_dense_concat_string_string(
                                 unit_id,
                                 function_id,
                                 dense_instruction_index,
-                                &lhs,
-                                &rhs,
+                                lhs.as_value(),
+                                rhs.as_value(),
                             ),
                             _ => None,
                         };
                         let value = match value {
                             Some(value) => value,
-                            None => match self.execute_binary(
-                                compiled,
-                                op,
-                                &lhs,
-                                &rhs,
-                                runtime_source_span(compiled, span),
-                                output,
-                                stack,
-                                state,
-                            ) {
-                                Ok(value) => value,
-                                Err(result) => {
-                                    stack.pop_recycle();
-                                    return result;
+                            None => {
+                                let lhs = lhs.into_owned();
+                                let rhs = rhs.into_owned();
+                                match self.execute_binary(
+                                    compiled,
+                                    op,
+                                    &lhs,
+                                    &rhs,
+                                    runtime_source_span(compiled, span),
+                                    output,
+                                    stack,
+                                    state,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(result) => {
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
                                 }
-                            },
+                            }
                         };
                         if let Err(message) = stack
                             .current_mut()
@@ -7701,7 +7741,9 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let lhs = match self.read_dense_operand(compiled, stack, lhs) {
+                        // `execute_compare` is pure, so both operands can be
+                        // borrowed straight from the frame without cloning.
+                        let lhs = match self.read_dense_operand_ref(compiled, stack, lhs) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7709,7 +7751,7 @@ impl Vm {
                                 return result;
                             }
                         };
-                        let rhs = match self.read_dense_operand(compiled, stack, rhs) {
+                        let rhs = match self.read_dense_operand_ref(compiled, stack, rhs) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7719,7 +7761,7 @@ impl Vm {
                         };
                         let op = dense_compare_op(instruction.opcode)
                             .expect("dense compare opcode matched");
-                        let value = match execute_compare(op, &lhs, &rhs) {
+                        let value = match execute_compare(op, lhs.as_value(), rhs.as_value()) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7752,7 +7794,9 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let src = match self.read_dense_operand(compiled, stack, src) {
+                        // `execute_unary` is pure, so the operand can be
+                        // borrowed straight from the frame without cloning.
+                        let src = match self.read_dense_operand_ref(compiled, stack, src) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -7762,7 +7806,7 @@ impl Vm {
                         };
                         let op =
                             dense_unary_op(instruction.opcode).expect("dense unary opcode matched");
-                        let value = match execute_unary(op, &src) {
+                        let value = match execute_unary(op, src.as_value()) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -8835,7 +8879,7 @@ impl Vm {
                             local,
                             &dim_values,
                             append,
-                            value.clone(),
+                            &value,
                             dense
                                 .spans
                                 .get(instruction.span.index())
@@ -9300,7 +9344,10 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let value = match self.read_dense_operand(compiled, stack, src) {
+                        // Borrow the operand for the shared echo fast path;
+                        // only conversion/`__toString` fallbacks need an
+                        // owned value (and `&mut` access to the stack).
+                        let value = match self.read_dense_operand_ref(compiled, stack, src) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -9308,10 +9355,14 @@ impl Vm {
                                 return result;
                             }
                         };
-                        if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
-                        {
-                            stack.pop_recycle();
-                            return result;
+                        if !Self::try_write_echo_fast(output, value.as_value()) {
+                            let value = value.into_owned();
+                            if let Err(result) =
+                                self.write_echo(compiled, output, stack, state, &value)
+                            {
+                                stack.pop_recycle();
+                                return result;
+                            }
                         }
                     }
                     DenseOpcode::Discard => {
@@ -9514,7 +9565,10 @@ impl Vm {
                         };
                         let value = match value {
                             Some(value) => match self.read_dense_operand(compiled, stack, value) {
-                                Ok(value) => Some(value),
+                                Ok(value) => {
+                                    self.record_counter_value_clone_reason("return_value");
+                                    Some(value)
+                                }
                                 Err(message) => {
                                     let result =
                                         self.runtime_error(output, compiled, stack, message);
@@ -10398,7 +10452,10 @@ impl Vm {
                         Ok(DenseOperandRead::Owned(Value::Null))
                     }
                     Slot::Value(value) => Ok(DenseOperandRead::Borrowed(value)),
-                    Slot::Reference(cell) => Ok(DenseOperandRead::Owned(cell.get())),
+                    Slot::Reference(cell) => {
+                        self.record_counter_value_clone_reason("reference_or_cow");
+                        Ok(DenseOperandRead::Owned(cell.get()))
+                    }
                 }
             }
             DenseOperandKind::Constant => self
@@ -10461,6 +10518,7 @@ impl Vm {
         let mut out = Vec::with_capacity(args.len());
         for arg in args {
             let value = self.read_dense_operand(compiled, stack, arg.value)?;
+            self.record_counter_value_clone_reason("call_argument_snapshot");
             let by_ref_dim = arg
                 .by_ref_dim
                 .as_ref()
@@ -10824,7 +10882,10 @@ impl Vm {
         local: LocalId,
         dim_values: &[Value],
         append: bool,
-        value: Value,
+        // Borrowed: the common non-ArrayAccess target returns `Ok(false)`
+        // without ever needing the value, so the clone happens only on the
+        // actual `offsetSet` dispatch below.
+        value: &Value,
         span: IrSpan,
     ) -> Result<bool, VmResult> {
         let Some(local_value) = read_local_value(stack, local) else {
@@ -10867,7 +10928,7 @@ impl Vm {
             "offsetSet",
             vec![
                 CallArgument::positional(key),
-                CallArgument::positional(value),
+                CallArgument::positional(value.clone()),
             ],
             span,
         )?;
@@ -11163,17 +11224,20 @@ impl Vm {
         iterator: RegId,
         needs_key: bool,
     ) -> Result<Option<(Option<Value>, Value)>, VmResult> {
-        let next_value = match foreach_iterators.get(&iterator).cloned() {
+        // Step the iterator in place: cloning the whole `ForeachIterator`
+        // per step deep-copied the snapshot entries vector on every
+        // iteration. Only the produced element is cloned (PHP by-value copy
+        // semantics); the object/generator branches clone their cheap
+        // handles so the map borrow ends before nested calls re-enter.
+        let next_value = match foreach_iterators.get_mut(&iterator) {
             Some(ForeachIterator::Snapshot { entries, position }) => {
                 let next = entries
-                    .get(position)
+                    .get(*position)
                     .cloned()
                     .map(|(key, value)| (Some(array_key_to_value(key)), value));
-                if next.is_some()
-                    && let Some(ForeachIterator::Snapshot { position, .. }) =
-                        foreach_iterators.get_mut(&iterator)
-                {
+                if next.is_some() {
                     *position += 1;
+                    self.record_counter_value_clone_reason("foreach_value");
                 }
                 next
             }
@@ -11182,22 +11246,21 @@ impl Vm {
                 entries,
                 position,
             }) => {
-                let next = entries.get(position).cloned().map(|entry| {
+                let next = entries.get(*position).map(|entry| {
                     let value = object
                         .get_property(&entry.storage_name)
                         .map(|value| effective_value(&value))
                         .unwrap_or(Value::Null);
-                    (Some(Value::string(entry.key.into_bytes())), value)
+                    (Some(Value::string(entry.key.clone().into_bytes())), value)
                 });
-                if next.is_some()
-                    && let Some(ForeachIterator::ObjectProperties { position, .. }) =
-                        foreach_iterators.get_mut(&iterator)
-                {
+                if next.is_some() {
                     *position += 1;
                 }
                 next
             }
             Some(ForeachIterator::IteratorObject { object, needs_next }) => {
+                let object = object.clone();
+                let needs_next = *needs_next;
                 if needs_next {
                     self.call_object_method_value(
                         compiled,
@@ -11253,7 +11316,10 @@ impl Vm {
                 generator,
                 consumed,
             }) => {
-                if consumed {
+                let generator = generator.clone();
+                let was_consumed = *consumed;
+                *consumed = true;
+                if was_consumed {
                     self.resume_generator_to_next_yield(
                         compiled,
                         generator,
@@ -11263,11 +11329,6 @@ impl Vm {
                         state,
                     )?
                 } else {
-                    if let Some(ForeachIterator::Generator { consumed, .. }) =
-                        foreach_iterators.get_mut(&iterator)
-                    {
-                        *consumed = true;
-                    }
                     self.advance_generator_to_first_yield(
                         compiled, generator, output, stack, state,
                     )?
@@ -11692,7 +11753,7 @@ impl Vm {
                 let locals = &mut stack.current_mut().expect("frame was pushed").locals;
                 let result = if param.by_ref {
                     if let Some(reference) = arg.reference {
-                        reference.set(arg.value.clone());
+                        reference.set(arg.value);
                         self.record_counter_alias_state_transition(
                             AliasState::NoReferencesObserved,
                             AliasState::EscapedReference,
@@ -20863,7 +20924,7 @@ impl Vm {
                             *local,
                             &dim_values,
                             false,
-                            value.clone(),
+                            &value,
                             instruction.span,
                         ) {
                             Ok(true) => {
@@ -21033,7 +21094,7 @@ impl Vm {
                             *local,
                             &dim_values,
                             true,
-                            value.clone(),
+                            &value,
                             instruction.span,
                         ) {
                             Ok(true) => {
@@ -21660,17 +21721,18 @@ impl Vm {
                         key,
                         value,
                     } => {
-                        let next_value = match foreach_iterators.get(iterator).cloned() {
+                        // Step the iterator in place; see `next_foreach_value`
+                        // for the rationale (avoids per-step deep clones of
+                        // the snapshot entries).
+                        let next_value = match foreach_iterators.get_mut(iterator) {
                             Some(ForeachIterator::Snapshot { entries, position }) => {
                                 let next = entries
-                                    .get(position)
+                                    .get(*position)
                                     .cloned()
                                     .map(|(key, value)| (Some(array_key_to_value(key)), value));
-                                if next.is_some()
-                                    && let Some(ForeachIterator::Snapshot { position, .. }) =
-                                        foreach_iterators.get_mut(iterator)
-                                {
+                                if next.is_some() {
                                     *position += 1;
+                                    self.record_counter_value_clone_reason("foreach_value");
                                 }
                                 next
                             }
@@ -21679,23 +21741,21 @@ impl Vm {
                                 entries,
                                 position,
                             }) => {
-                                let next = entries.get(position).cloned().map(|entry| {
+                                let next = entries.get(*position).map(|entry| {
                                     let value = object
                                         .get_property(&entry.storage_name)
                                         .map(|value| effective_value(&value))
                                         .unwrap_or(Value::Null);
-                                    (Some(Value::string(entry.key.into_bytes())), value)
+                                    (Some(Value::string(entry.key.clone().into_bytes())), value)
                                 });
-                                if next.is_some()
-                                    && let Some(ForeachIterator::ObjectProperties {
-                                        position, ..
-                                    }) = foreach_iterators.get_mut(iterator)
-                                {
+                                if next.is_some() {
                                     *position += 1;
                                 }
                                 next
                             }
                             Some(ForeachIterator::IteratorObject { object, needs_next }) => {
+                                let object = object.clone();
+                                let needs_next = *needs_next;
                                 if needs_next
                                     && let Err(result) = self.call_object_method_value(
                                         compiled,
@@ -21830,7 +21890,10 @@ impl Vm {
                                 generator,
                                 consumed,
                             }) => {
-                                if consumed {
+                                let generator = generator.clone();
+                                let was_consumed = *consumed;
+                                *consumed = true;
+                                if was_consumed {
                                     match self.resume_generator_to_next_yield(
                                         compiled,
                                         generator,
@@ -21843,11 +21906,6 @@ impl Vm {
                                         Err(result) => return result,
                                     }
                                 } else {
-                                    if let Some(ForeachIterator::Generator { consumed, .. }) =
-                                        foreach_iterators.get_mut(iterator)
-                                    {
-                                        *consumed = true;
-                                    }
                                     match self.advance_generator_to_first_yield(
                                         compiled, generator, output, stack, state,
                                     ) {
@@ -31456,14 +31514,12 @@ impl Vm {
         DestructorSweep { outcome: None }
     }
 
-    fn write_echo(
-        &self,
-        compiled: &CompiledUnit,
-        output: &mut OutputBuffer,
-        stack: &mut CallStack,
-        state: &mut ExecutionState,
-        value: &Value,
-    ) -> Result<(), VmResult> {
+    /// Fast half of `write_echo` for callers holding a frame borrow: appends
+    /// values the shared semantic helper classifies as fast hits without
+    /// needing `&mut CallStack`. Returns false when the value requires the
+    /// conversion/`__toString` fallback, which the caller runs via
+    /// `write_echo` on an owned value.
+    fn try_write_echo_fast(output: &mut OutputBuffer, value: &Value) -> bool {
         match Self::echo_append_semantic_helper(value) {
             SemanticHelperResult::FastHit => {
                 match value {
@@ -31474,8 +31530,25 @@ impl Vm {
                     Value::Reference(_) => unreachable!("reference is a fallback"),
                     _ => unreachable!("non-scalar echo is a fallback"),
                 }
-                Ok(())
+                true
             }
+            SemanticHelperResult::Fallback(_) => false,
+        }
+    }
+
+    fn write_echo(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        value: &Value,
+    ) -> Result<(), VmResult> {
+        if Self::try_write_echo_fast(output, value) {
+            return Ok(());
+        }
+        match Self::echo_append_semantic_helper(value) {
+            SemanticHelperResult::FastHit => unreachable!("fast hit already appended"),
             SemanticHelperResult::Fallback(reason) => {
                 output.record_slow_append_reason(reason);
                 if let Value::Reference(cell) = value {
@@ -68292,6 +68365,46 @@ var_dump(unserialize('O:1:"C":0:{}'));
         let counters = result.counters.expect("counters should be collected");
         assert!(counters.literal_intern_misses >= 1, "{counters:?}");
         assert!(counters.literal_intern_hits >= 2, "{counters:?}");
+    }
+
+    #[test]
+    fn foreach_by_value_clones_elements_not_snapshots() {
+        // 64 iterations over a 64-element array: cloning the whole snapshot
+        // per step costs at least 64*64 value clones; in-place stepping
+        // keeps the total for the entire program far below that.
+        let elements = (0..64).map(|i| i.to_string()).collect::<Vec<_>>();
+        let source = format!(
+            "<?php $a = [{}]; $sum = 0; foreach ($a as $v) {{ $sum += $v; }} echo $sum;",
+            elements.join(", ")
+        );
+        for format in [ExecutionFormat::Ir, ExecutionFormat::Bytecode] {
+            let result = execute_source_with_options(
+                &source,
+                VmOptions {
+                    collect_counters: true,
+                    execution_format: format,
+                    ..VmOptions::default()
+                },
+            );
+            assert!(
+                result.status.is_success(),
+                "{format:?}: {:?}",
+                result.status
+            );
+            assert_eq!(result.output.as_bytes(), b"2016", "{format:?}");
+            let counters = result.counters.expect("counters");
+            assert!(
+                counters.value_clones < 1500,
+                "{format:?}: foreach should not clone the snapshot per step: {}",
+                counters.value_clones
+            );
+            assert_eq!(
+                counters.value_clone_by_reason.get("foreach_value").copied(),
+                Some(64),
+                "{format:?}: {:?}",
+                counters.value_clone_by_reason
+            );
+        }
     }
 
     #[test]
