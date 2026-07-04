@@ -3948,10 +3948,12 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: php_ir::ids::InstrId,
+        kind: &InstructionKind,
     ) {
         if !self.options.tiering.enabled
             || !self.options.quickening.enabled()
             || self.adaptive_tiny_unit_setup_skipped.get()
+            || !rich_quickening_candidate_kind(kind)
         {
             return;
         }
@@ -11767,7 +11769,7 @@ impl Vm {
                     );
                 }
                 self.record_counter_instruction(&instruction.kind);
-                self.observe_quickening(function_id, block_id, instruction.id);
+                self.observe_quickening(function_id, block_id, instruction.id, &instruction.kind);
                 self.observe_inline_cache(
                     compiled_unit_cache_key(compiled),
                     function_id,
@@ -57614,6 +57616,22 @@ fn string_offset_for_read(string: &PhpString, key: &ArrayKey) -> StringOffsetRea
     }
 }
 
+/// Rich-IR instruction kinds with a quickening candidate or guard arm in the
+/// dispatch loop (int add/sub/mul, string concat, packed-array int-key fetch).
+/// Observing any other kind cannot lead to a specialization: it only grows the
+/// per-site ordered map with write-only entries on the dispatch hot path and
+/// reports phantom `specialized` events once a site crosses the execution
+/// threshold, so per-instruction observation is limited to these kinds.
+fn rich_quickening_candidate_kind(kind: &InstructionKind) -> bool {
+    matches!(
+        kind,
+        InstructionKind::Binary {
+            op: BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Concat,
+            ..
+        } | InstructionKind::FetchDim { .. }
+    )
+}
+
 fn fetch_dim_value(array: &Value, key: &ArrayKey) -> Result<Option<Value>, String> {
     if let Value::Reference(cell) = array {
         return fetch_dim_value(&cell.get(), key);
@@ -68310,6 +68328,41 @@ var_dump(unserialize('O:1:"C":0:{}'));
         assert_eq!(on_counters.quickening_guard_misses, 0);
         assert_eq!(on_counters.quickening_guard_failures, 0);
         assert_eq!(on_counters.quickening_dequickens, 0);
+    }
+
+    #[test]
+    fn quickening_observation_skips_non_candidate_rich_instructions() {
+        // Twelve foreach iterations cross the per-site specialization
+        // threshold, but no instruction kind here has a candidate arm, so no
+        // site may report attempts or a phantom specialization.
+        let source = "<?php foreach ([\"a\", \"b\", \"c\", \"d\", \"e\", \"f\", \"g\", \"h\", \"i\", \"j\", \"k\", \"l\"] as $item) { echo $item; }";
+        let off = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                quickening: QuickeningMode::Off,
+                ..VmOptions::default()
+            },
+        );
+        let on = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                quickening: QuickeningMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(off.status.is_success(), "{:?}", off.status);
+        assert!(on.status.is_success(), "{:?}", on.status);
+        assert_eq!(on.output.as_bytes(), b"abcdefghijkl");
+        assert_eq!(on.output, off.output);
+        assert_eq!(on.diagnostics, off.diagnostics);
+        let counters = on.counters.expect("on counters");
+        assert!(counters.instructions_executed > 12, "{counters:?}");
+        assert_eq!(counters.quickening_attempts, 0, "{counters:?}");
+        assert_eq!(counters.quickening_specialized, 0, "{counters:?}");
+        assert_eq!(counters.quickening_guard_hits, 0, "{counters:?}");
     }
 
     #[test]
