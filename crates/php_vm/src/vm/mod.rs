@@ -1974,6 +1974,9 @@ pub struct Vm {
     jit: RefCell<JitRuntimeState>,
     tiering: RefCell<TieringState>,
     internal_function_dispatch_cache: RefCell<InternalFunctionDispatchCache>,
+    /// Memoized per-(unit, function): whether the body can observe its
+    /// argument vector (func_get_args-style builtins or dynamic dispatch).
+    argument_vector_observers: RefCell<HashMap<(u64, u32), bool>>,
     adaptive_tiny_unit_setup_skipped: Cell<bool>,
 }
 
@@ -1993,6 +1996,7 @@ impl Vm {
             trace: RefCell::new(Vec::new()),
             counters: RefCell::new(None),
             literal_pool: RefCell::new(LiteralPool::default()),
+            argument_vector_observers: RefCell::new(HashMap::new()),
             quickening: RefCell::new(QuickeningTable::default()),
             inline_caches: RefCell::new(InlineCacheTable::default()),
             jit: RefCell::new(JitRuntimeState::default()),
@@ -2012,6 +2016,7 @@ impl Vm {
         let mut output = OutputBuffer::with_capacity(output_preallocation_hint(unit.unit()));
         self.trace.borrow_mut().clear();
         *self.literal_pool.borrow_mut() = LiteralPool::default();
+        self.argument_vector_observers.borrow_mut().clear();
         *self.quickening.borrow_mut() = QuickeningTable::default();
         *self.inline_caches.borrow_mut() = InlineCacheTable::default();
         *self.jit.borrow_mut() = JitRuntimeState::default();
@@ -4077,6 +4082,37 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_value_clone_by_reason(reason);
+        }
+    }
+
+    /// Memoized: can this function's body observe its argument vector?
+    fn frame_args_elidable(
+        &self,
+        compiled: &CompiledUnit,
+        function_id: FunctionId,
+        function: &IrFunction,
+    ) -> bool {
+        let key = (compiled_unit_cache_key(compiled), function_id.raw());
+        if let Some(observes) = self.argument_vector_observers.borrow().get(&key) {
+            return !observes;
+        }
+        let observes = function_body_observes_argument_vector(function);
+        self.argument_vector_observers
+            .borrow_mut()
+            .insert(key, observes);
+        !observes
+    }
+
+    fn record_counter_direct_frame(&self, layout: &str, function: &IrFunction, elided: bool) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            if elided {
+                counters.record_direct_frame_hit(layout, function.name.ends_with("::__construct"));
+            } else {
+                counters.record_direct_frame_fallback("argument_vector_observed");
+            }
         }
     }
 
@@ -6652,6 +6688,8 @@ impl Vm {
         let mut diagnostics = Vec::new();
         let frame_layout = call_frame_layout_class(ir_function, &call);
         let argument_policy = call.argument_binding_policy(compiled);
+        let elide_frame_args = self.frame_args_elidable(compiled, function_id, ir_function);
+        self.record_counter_direct_frame(frame_layout, ir_function, elide_frame_args);
         let prepared = match arguments::prepare_arguments(
             compiled,
             ir_function,
@@ -6663,6 +6701,7 @@ impl Vm {
             call.allow_by_ref_value_warnings,
             call.call_span,
             call.by_ref_warning_callable_name.as_deref(),
+            elide_frame_args,
         ) {
             Ok(args) => args,
             Err(message) => {
@@ -11773,6 +11812,8 @@ impl Vm {
                 frame_reuse_call_shape_blocked_reason(function, &call);
             let frame_layout = call_frame_layout_class(function, &call);
             let argument_policy = call.argument_binding_policy(compiled);
+            let elide_frame_args = self.frame_args_elidable(compiled, function_id, function);
+            self.record_counter_direct_frame(frame_layout, function, elide_frame_args);
             let prepared = match arguments::prepare_arguments(
                 compiled,
                 function,
@@ -11784,6 +11825,7 @@ impl Vm {
                 call.allow_by_ref_value_warnings,
                 call.call_span,
                 call.by_ref_warning_callable_name.as_deref(),
+                elide_frame_args,
             ) {
                 Ok(args) => args,
                 Err(message) => {
@@ -58066,6 +58108,32 @@ fn rich_quickening_candidate_kind(kind: &InstructionKind) -> bool {
     )
 }
 
+/// True when a function body can observe its call-argument vector: a
+/// direct call to a func_get_args-style builtin, or any dynamic dispatch
+/// or include/eval that could reach one. Bodies that cannot observe the
+/// vector let calls skip the per-call argument snapshot entirely
+/// (backtraces read the separately kept trace arguments).
+fn function_body_observes_argument_vector(function: &IrFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block
+            .instructions
+            .iter()
+            .any(|instruction| match &instruction.kind {
+                InstructionKind::CallFunction { name, .. } => matches!(
+                    normalize_function_name(name).as_str(),
+                    "func_get_args" | "func_num_args" | "func_get_arg"
+                ),
+                InstructionKind::CallCallable { .. }
+                | InstructionKind::Pipe { .. }
+                | InstructionKind::AcquireCallable { .. }
+                | InstructionKind::ResolveCallable { .. }
+                | InstructionKind::Include { .. }
+                | InstructionKind::Eval { .. } => true,
+                _ => false,
+            })
+    })
+}
+
 fn fetch_dim_value(array: &Value, key: &ArrayKey) -> Result<Option<Value>, String> {
     if let Value::Reference(cell) = array {
         return fetch_dim_value(&cell.get(), key);
@@ -68727,6 +68795,49 @@ var_dump(unserialize('O:1:"C":0:{}'));
         let counters = result.counters.expect("counters should be collected");
         assert!(counters.literal_intern_misses >= 1, "{counters:?}");
         assert!(counters.literal_intern_hits >= 2, "{counters:?}");
+    }
+
+    #[test]
+    fn direct_frames_elide_argument_vectors_unless_observed() {
+        // Plain calls elide the per-call argument snapshot; func_get_args
+        // bodies keep it and read the full vector including extras.
+        let source = "<?php \
+            function plain($a, $b) { return $a + $b; } \
+            function observer() { return implode(\",\", func_get_args()); } \
+            class Dto { public $v = 0; public function __construct($v) { $this->v = $v; } \
+                        public function get() { return $this->v; } } \
+            $sum = 0; \
+            for ($i = 0; $i < 5; $i++) { $sum += plain($i, 1); } \
+            $dto = new Dto(41); \
+            $c = function ($x) { return $x * 2; }; \
+            echo $sum, \"|\", observer(7, 8, 9), \"|\", $dto->get(), \"|\", $c(21);";
+        let result = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+        );
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"15|7,8,9|41|42");
+        let counters = result.counters.expect("counters");
+        assert!(counters.direct_arg_frame_hits >= 5, "{counters:?}");
+        assert!(counters.direct_method_frame_hits >= 1, "{counters:?}");
+        assert!(counters.direct_closure_frame_hits >= 1, "{counters:?}");
+        assert!(counters.direct_constructor_frame_hits >= 1, "{counters:?}");
+        assert!(
+            counters.argument_vector_allocations_avoided >= 8,
+            "{counters:?}"
+        );
+        assert!(
+            counters
+                .direct_frame_fallback_by_reason
+                .get("argument_vector_observed")
+                .copied()
+                .unwrap_or_default()
+                >= 1,
+            "{counters:?}"
+        );
     }
 
     #[test]

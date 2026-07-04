@@ -248,6 +248,12 @@ pub struct VmCounters {
     pub foreach_no_clone_hits: u64,
     pub foreach_clone_required_by_reason: BTreeMap<String, u64>,
     pub array_read_borrow_hits: u64,
+    pub direct_arg_frame_hits: u64,
+    pub direct_method_frame_hits: u64,
+    pub direct_closure_frame_hits: u64,
+    pub direct_constructor_frame_hits: u64,
+    pub argument_vector_allocations_avoided: u64,
+    pub direct_frame_fallback_by_reason: BTreeMap<String, u64>,
     pub symbolized_call_name_hits: u64,
     pub symbolized_method_name_hits: u64,
     pub symbolized_property_name_hits: u64,
@@ -641,6 +647,26 @@ impl VmCounters {
     pub(crate) fn record_value_clone_by_reason(&mut self, reason: &str) {
         *self
             .value_clone_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn record_direct_frame_hit(&mut self, layout: &str, is_constructor: bool) {
+        if is_constructor {
+            self.direct_constructor_frame_hits += 1;
+        } else {
+            match layout {
+                "known_method_frame" => self.direct_method_frame_hits += 1,
+                "closure_frame" => self.direct_closure_frame_hits += 1,
+                _ => self.direct_arg_frame_hits += 1,
+            }
+        }
+        self.argument_vector_allocations_avoided += 1;
+    }
+
+    pub(crate) fn record_direct_frame_fallback(&mut self, reason: &str) {
+        *self
+            .direct_frame_fallback_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
     }
@@ -2692,6 +2718,42 @@ impl VmCounters {
             &mut json,
             "array_read_borrow_hits",
             self.array_read_borrow_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "direct_arg_frame_hits",
+            self.direct_arg_frame_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "direct_method_frame_hits",
+            self.direct_method_frame_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "direct_closure_frame_hits",
+            self.direct_closure_frame_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "direct_constructor_frame_hits",
+            self.direct_constructor_frame_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "argument_vector_allocations_avoided",
+            self.argument_vector_allocations_avoided,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "direct_frame_fallback_by_reason",
+            &self.direct_frame_fallback_by_reason,
             true,
         );
         push_field(

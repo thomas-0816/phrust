@@ -40,6 +40,7 @@ impl<'a, 'vm> ArgumentBinder<'a, 'vm> {
         allow_by_ref_value_warnings: bool,
         call_span: Option<php_ir::IrSpan>,
         by_ref_warning_callable_name: Option<&str>,
+        elide_frame_args: bool,
     ) -> Result<PreparedArguments, VmError> {
         let compiled = self.compiled;
         let function = self.function;
@@ -59,10 +60,12 @@ impl<'a, 'vm> ArgumentBinder<'a, 'vm> {
             allow_by_ref_value_warnings,
             call_span,
             by_ref_warning_callable_name,
+            elide_frame_args,
         )
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_arguments(
     compiled: &CompiledUnit,
     function: &IrFunction,
@@ -74,15 +77,18 @@ pub(super) fn prepare_arguments(
     allow_by_ref_value_warnings: bool,
     call_span: Option<php_ir::IrSpan>,
     by_ref_warning_callable_name: Option<&str>,
+    elide_frame_args: bool,
 ) -> Result<PreparedArguments, VmError> {
     ArgumentBinder::new(compiled, function, stack, state, typecheck, policy).bind(
         args,
         allow_by_ref_value_warnings,
         call_span,
         by_ref_warning_callable_name,
+        elide_frame_args,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bind_arguments(
     compiled: &CompiledUnit,
     function: &IrFunction,
@@ -94,6 +100,7 @@ fn bind_arguments(
     allow_by_ref_value_warnings: bool,
     call_span: Option<php_ir::IrSpan>,
     by_ref_warning_callable_name: Option<&str>,
+    elide_frame_args: bool,
 ) -> Result<PreparedArguments, VmError> {
     let min = function
         .params
@@ -263,12 +270,14 @@ fn bind_arguments(
     let mut diagnostics = Vec::new();
     for (index, param) in function.params.iter().enumerate() {
         if param.variadic {
-            frame_args.extend(
-                variadic_tail
-                    .iter()
-                    .filter(|arg| arg.key.is_none())
-                    .map(|arg| arg.value.clone()),
-            );
+            if !elide_frame_args {
+                frame_args.extend(
+                    variadic_tail
+                        .iter()
+                        .filter(|arg| arg.key.is_none())
+                        .map(|arg| arg.value.clone()),
+                );
+            }
             let sensitive = param_is_sensitive(param);
             trace_args.extend(variadic_tail.iter().map(|arg| FrameTraceArgument {
                 name: arg.key.clone(),
@@ -322,7 +331,9 @@ fn bind_arguments(
                 name: None,
                 value: trace_value_for_param(&value, param_is_sensitive(param)),
             });
-            if highest_frame_param_index.is_some_and(|highest| index <= highest) {
+            if !elide_frame_args
+                && highest_frame_param_index.is_some_and(|highest| index <= highest)
+            {
                 frame_args.push(value.clone());
             }
             prepared.push(PreparedArg { value, reference });
@@ -334,7 +345,9 @@ fn bind_arguments(
             });
             if param.by_ref {
                 let reference = ReferenceCell::new(value.clone());
-                if highest_frame_param_index.is_some_and(|highest| index <= highest) {
+                if !elide_frame_args
+                    && highest_frame_param_index.is_some_and(|highest| index <= highest)
+                {
                     frame_args.push(value.clone());
                 }
                 prepared.push(PreparedArg {
@@ -343,7 +356,9 @@ fn bind_arguments(
                 });
                 continue;
             }
-            if highest_frame_param_index.is_some_and(|highest| index <= highest) {
+            if !elide_frame_args
+                && highest_frame_param_index.is_some_and(|highest| index <= highest)
+            {
                 frame_args.push(value.clone());
             }
             prepared.push(PreparedArg {
@@ -378,7 +393,9 @@ fn bind_arguments(
         name: None,
         value: arg.value.clone(),
     }));
-    frame_args.extend(extra_positional.iter().map(|arg| arg.value.clone()));
+    if !elide_frame_args {
+        frame_args.extend(extra_positional.iter().map(|arg| arg.value.clone()));
+    }
     prepared.extend(extra_positional);
     Ok(PreparedArguments {
         args: prepared,
