@@ -196,6 +196,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             docroot,
             index: config.index,
             front_controller: config.front_controller,
+            builtin_router: config.builtin_router,
             metrics_endpoint_enabled: config.metrics_endpoint_enabled,
             cache_clear_endpoint_enabled: config.cache_clear_endpoint_enabled,
         },
@@ -235,6 +236,14 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     preload_script_cache(&state, script_cache_preload.as_deref(), strict_preload)?;
     serve_until_shutdown(listener, state, tls_acceptor).await;
     Ok(())
+}
+
+pub fn run_blocking(config: ServerConfig) -> Result<(), ServerError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(ServerError::Io)?;
+    runtime.block_on(run(config))
 }
 
 #[cfg(test)]
@@ -776,6 +785,7 @@ mod tests {
                 docroot: fixture.root.clone(),
                 index: "index.php".to_string(),
                 front_controller: None,
+                builtin_router: None,
                 metrics_endpoint_enabled: true,
                 cache_clear_endpoint_enabled,
             },

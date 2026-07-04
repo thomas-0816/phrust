@@ -934,6 +934,8 @@ struct ExecutionState {
     upload_registry: UploadRegistry,
     session: php_runtime::SessionState,
     session_loader: Option<php_runtime::SessionLoadCallback>,
+    sapi_name: String,
+    php_binary: String,
     sqlite: php_runtime::SqliteState,
     mysql: php_runtime::MysqlState,
     error_handlers: Vec<ErrorHandlerEntry>,
@@ -2068,6 +2070,8 @@ impl Vm {
             upload_registry: self.options.runtime_context.upload_registry(),
             session: self.options.runtime_context.session.clone(),
             session_loader: self.options.runtime_context.session_loader.clone(),
+            sapi_name: self.options.runtime_context.sapi_name.clone(),
+            php_binary: self.options.runtime_context.php_binary.clone(),
             execution_deadline_at: self
                 .options
                 .runtime_context
@@ -26449,7 +26453,9 @@ impl Vm {
                         "E_PHP_VM_ENV_ARITY: php_sapi_name expects no arguments",
                     );
                 }
-                VmResult::success_no_output(Some(Value::string("cli")))
+                VmResult::success_no_output(Some(Value::string(
+                    self.options.runtime_context.sapi_name.clone(),
+                )))
             }
             "php_uname" => {
                 if values.len() > 1 {
@@ -34662,7 +34668,7 @@ impl Vm {
     ) -> VmResult {
         let mut standard = PhpArray::new();
         for constant in php_std::ExtensionRegistry::standard_library().enabled_constants() {
-            if let Some(value) = predefined_constant_value(constant.name()) {
+            if let Some(value) = predefined_constant_value_for_state(state, constant.name()) {
                 standard.insert(string_key(constant.name()), value);
             }
         }
@@ -53296,7 +53302,7 @@ fn global_constant_value(
     } else if let Some(value) = class_constant_value_by_name(compiled, state, stack, name)? {
         Ok(Some(value))
     } else {
-        Ok(predefined_constant_value(name))
+        Ok(predefined_constant_value_for_state(state, name))
     }
 }
 
@@ -53419,7 +53425,7 @@ fn named_constant_reference_value(
         if let Some(value) = state.user_constants.get(name) {
             return Ok(value.clone());
         }
-        if let Some(value) = predefined_constant_value(name) {
+        if let Some(value) = predefined_constant_value_for_state(state, name) {
             return Ok(value);
         }
     }
@@ -53595,6 +53601,14 @@ fn predefined_constant_value(name: &str) -> Option<Value> {
         .enabled_constant(name)
         .and_then(|constant| constant.value())
         .map(php_std::constants::constant_to_value)
+}
+
+fn predefined_constant_value_for_state(state: &ExecutionState, name: &str) -> Option<Value> {
+    match name {
+        "PHP_SAPI" => Some(Value::string(state.sapi_name.clone())),
+        "PHP_BINARY" => Some(Value::string(state.php_binary.clone())),
+        _ => predefined_constant_value(name),
+    }
 }
 
 fn ini_option_name(value: &Value) -> Result<String, String> {

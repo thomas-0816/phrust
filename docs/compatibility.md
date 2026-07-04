@@ -23,9 +23,13 @@ The repository currently contains:
 - bytecode/IR boundary;
 - runtime values and builtins;
 - interpreter VM;
-- developer CLI;
+- PHP-compatible `phrust-php` CLI and developer `php-vm` CLI;
 - integrated HTTP server;
 - PHPT indexing, execution, and reporting tools.
+
+See [PHP user interface matrix](php-user-interface-matrix.md) and
+[Switching from PHP](switching-from-php.md) for the current command-line and
+built-in-server surfaces.
 
 ## Explicit Non-Goals
 

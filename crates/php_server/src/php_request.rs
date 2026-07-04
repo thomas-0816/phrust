@@ -25,7 +25,7 @@ use php_executor::{
 };
 use php_runtime::api::{
     RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionLoadCallback,
-    SessionState, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
+    SessionState, Value, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
 };
 use std::{
     collections::BTreeMap,
@@ -179,6 +179,16 @@ pub(crate) async fn execute_php_request(
         "request body read completed",
         BTreeMap::from([("body_bytes".to_string(), body.len().to_string())]),
     );
+    if let Some(response) = execute_builtin_router_if_configured(
+        &parts,
+        Arc::clone(&state),
+        Arc::clone(&body),
+        peer,
+        &request_id,
+        &script_path,
+    ) {
+        return finish_php_request(&state, trace, response, None, Some("builtin_router"));
+    }
     emit_server_debug(
         &state,
         Some(&request_id),
@@ -676,6 +686,104 @@ pub(crate) async fn execute_php_request(
                 Some("php_vm_execution"),
             )
         }
+    }
+}
+
+fn execute_builtin_router_if_configured(
+    parts: &Parts,
+    state: Arc<AppState>,
+    body: Arc<[u8]>,
+    peer: SocketAddr,
+    request_id: &str,
+    target_script_path: &Path,
+) -> Option<Response<ResponseBody>> {
+    let router = state.route_config.builtin_router.as_ref()?;
+    let router_path = state.route_config.docroot.join(router);
+    let Ok(router_path) = router_path.canonicalize() else {
+        return Some(response::text(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "router script not found\n",
+        ));
+    };
+    if !router_path.starts_with(&state.route_config.docroot) {
+        return Some(response::text(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "router script outside document root\n",
+        ));
+    }
+    if router_path == target_script_path {
+        return None;
+    }
+    let script_name = script_name_for(&state.route_config.docroot, &router_path);
+    let request_context = http_runtime_context(
+        parts,
+        &state,
+        &router_path,
+        &script_name,
+        None,
+        Arc::clone(&body),
+        peer,
+    );
+    let session_state = match seed_session_state(&request_context, &state) {
+        Ok(session) => session,
+        Err(error) => {
+            warn!(%peer, error=%error, "router session state preparation failed");
+            return Some(response::text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session storage failed\n",
+            ));
+        }
+    };
+    let runtime_context = php_runtime_context_for_http(
+        &state,
+        request_context,
+        session_state,
+        body,
+        server_env_for_request(&state),
+    );
+    let lookup = match state.compile_script(&router_path) {
+        Ok(lookup) => lookup,
+        Err(PhpExecutionError::Compile(output)) => {
+            return Some(php_output_response(*output, false));
+        }
+        Err(PhpExecutionError::Engine(error)) => {
+            warn!(script=%router_path.display(), %error, "router compile engine error");
+            return Some(response::text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "router execution failed\n",
+            ));
+        }
+    };
+    let output = match execute_compiled_php_in_blocking_region(
+        Arc::clone(&state),
+        lookup,
+        router_path.clone(),
+        runtime_context,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            warn!(script=%router_path.display(), error=?error, "router execution engine error");
+            return Some(response::text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "router execution failed\n",
+            ));
+        }
+    };
+    emit_server_debug(
+        &state,
+        Some(request_id),
+        "D_PHRUST_SERVER_BUILTIN_ROUTER_END",
+        "routing",
+        "built-in router executed",
+        BTreeMap::from([(
+            "fallthrough".to_string(),
+            matches!(output.return_value, Some(Value::Bool(false))).to_string(),
+        )]),
+    );
+    if matches!(output.return_value, Some(Value::Bool(false))) {
+        None
+    } else {
+        Some(php_output_response(output, parts.method == Method::HEAD))
     }
 }
 

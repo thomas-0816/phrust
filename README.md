@@ -66,6 +66,8 @@ Primary guides:
 - [CLI usage](docs/cli.md)
 - [Web server](docs/web-server.md)
 - [Compatibility](docs/compatibility.md)
+- [PHP user interface matrix](docs/php-user-interface-matrix.md)
+- [Switching from PHP](docs/switching-from-php.md)
 - [Contributor guide](docs/contributing.md)
 
 Install the versioned git hooks once per checkout:
@@ -82,29 +84,36 @@ run manually.
 
 ## Running PHP Code
 
-The developer VM CLI is `php-vm`:
+Use `phrust-php` as the PHP-compatible front door:
 
 ```bash
-nix develop -c cargo run -p php_vm_cli --bin php-vm -- run path/to/file.php
+nix develop -c cargo run -p php_vm_cli --bin phrust-php -- path/to/file.php
+nix develop -c cargo run -p php_vm_cli --bin phrust-php -- -r 'echo PHP_SAPI, "\n";'
 ```
 
-The executable path used by tests is:
+For a local `php` shim backed by `phrust-php`:
 
-```text
-target/debug/php-vm
+```bash
+nix develop -c just install-user-bin
+export PATH="$PWD/target/phrust/bin:$PATH"
+php -v
 ```
+
+`php-vm` remains available for lower-level VM debugging and bytecode-oriented
+developer workflows.
 
 ## Running the integrated web server
 
-Run the in-process HTTP server against the basic app fixture:
+Run the PHP-compatible built-in server front door:
 
 ```bash
-nix develop -c cargo run -p php_server --bin phrust-server -- --docroot fixtures/server/apps/basic/public --listen 127.0.0.1:8080
+nix develop -c cargo run -p php_vm_cli --bin phrust-php -- -S 127.0.0.1:8080 -t fixtures/server/apps/basic/public
 ```
 
-`phrust-server` executes PHP through the workspace frontend, runtime, and VM in
+`phrust-php -S` executes PHP through the workspace frontend, runtime, and VM in
 the server process. It does not use FPM, FastCGI, CGI, Apache, `mod_php`, or an
-external PHP process fallback.
+external PHP process fallback. The advanced server binary remains available as
+`phrust-server` for explicit server diagnostics and non-PHP-compatible flags.
 
 Static file reads, route filesystem metadata checks, and PHP execution stay on
 the integrated server path. `--request-timeout-ms` bounds request body reads;
@@ -126,6 +135,7 @@ Useful server checks:
 
 ```bash
 nix develop -c just server-smoke
+nix develop -c just verify-user-interfaces
 nix develop -c just server-compat-smoke all
 nix develop -c just server-tls-smoke
 nix develop -c just server-benchmark-smoke

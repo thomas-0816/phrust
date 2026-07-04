@@ -2,7 +2,7 @@ use php_diagnostics::DiagnosticEnvelope;
 use php_optimizer::OptimizationLevel;
 use php_runtime::api::{
     ExitStatus, RuntimeContext, RuntimeDiagnostic, RuntimeHttpResponseState, SessionState,
-    UploadRegistry,
+    UploadRegistry, Value,
 };
 use php_vm::api::{TieringStats, VmCounters, VmOptions};
 use std::path::PathBuf;
@@ -62,6 +62,7 @@ pub struct PhpExecutionOutput {
     pub http_response: RuntimeHttpResponseState,
     pub upload_registry: UploadRegistry,
     pub session: SessionState,
+    pub return_value: Option<Value>,
     pub trace: Vec<String>,
     pub counters: Option<VmCounters>,
     pub tiering_stats: Option<TieringStats>,
@@ -78,6 +79,7 @@ impl PhpExecutionOutput {
             http_response: RuntimeHttpResponseState::default(),
             upload_registry: UploadRegistry::default(),
             session: SessionState::default(),
+            return_value: None,
             trace: Vec::new(),
             counters: None,
             tiering_stats: None,

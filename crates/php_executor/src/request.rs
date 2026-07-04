@@ -77,7 +77,8 @@ pub(crate) fn runtime_context_for(
             .with_include_path(include_path)
             .with_env(input.env.clone())
             .with_ini_overrides(input.ini.overrides.clone())
-            .with_stdin(input.stdin.clone());
+            .with_stdin(input.stdin.clone())
+            .with_php_binary(input.php_binary.clone());
     if let Some(mask) = input.ini.error_reporting {
         context.ini.error_reporting = ErrorReporting { mask };
     }

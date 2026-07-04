@@ -1,9 +1,10 @@
-use crate::engine::{CliIniOptions, EngineInput, execute_php, read_script};
+use crate::engine::{CliIniOptions, EngineInput, execute_php, lint_php, read_script};
 use php_diagnostics::DiagnosticOutputFormat;
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_PHP_ERROR: i32 = 255;
@@ -13,15 +14,45 @@ struct ParsedCli {
     action: CliAction,
     no_ini: bool,
     defines: Vec<(String, String)>,
+    config_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CliAction {
     Help,
     Version,
-    RunCode { code: String, args: Vec<String> },
-    RunFile { path: PathBuf, args: Vec<String> },
-    RunStdin { args: Vec<String> },
+    ShowIni,
+    ListModules,
+    PhpInfo,
+    UnsupportedIntrospection {
+        flag: String,
+    },
+    LintFile {
+        path: PathBuf,
+    },
+    RunCode {
+        code: String,
+        args: Vec<String>,
+    },
+    RunFile {
+        path: PathBuf,
+        args: Vec<String>,
+    },
+    RunStdin {
+        args: Vec<String>,
+    },
+    Serve {
+        listen: String,
+        docroot: Option<PathBuf>,
+        router: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LoadedIni {
+    path: Option<PathBuf>,
+    directives: Vec<(String, String)>,
+    disabled: bool,
 }
 
 pub fn run<I, R, W, E>(args: I, stdin: &mut R, stdout: &mut W, stderr: &mut E) -> i32
@@ -75,13 +106,15 @@ where
     E: Write,
 {
     let parsed = ParsedCli::parse(&args)?;
-    let _no_ini = parsed.no_ini;
+    let loaded_ini = load_ini(&parsed)?;
+    let merged_defines = merged_ini_defines(&loaded_ini, &parsed.defines);
     let debug = debug_enabled_from_env();
     let debug_log = env::var("PHRUST_DEBUG_LOG")
         .ok()
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let debug_format = error_format_from_env();
+    let php_binary = php_binary_path();
     match parsed.action {
         CliAction::Help => {
             print_usage(stdout)?;
@@ -96,6 +129,25 @@ where
             .map_err(|error| error.to_string())?;
             Ok(EXIT_SUCCESS)
         }
+        CliAction::ShowIni => {
+            print_ini(stdout, &loaded_ini)?;
+            Ok(EXIT_SUCCESS)
+        }
+        CliAction::ListModules => {
+            print_modules(stdout)?;
+            Ok(EXIT_SUCCESS)
+        }
+        CliAction::PhpInfo => {
+            print_php_info(stdout, &loaded_ini, &php_binary)?;
+            Ok(EXIT_SUCCESS)
+        }
+        CliAction::UnsupportedIntrospection { flag } => Err(format!(
+            "E_PHRUST_CLI_UNSUPPORTED_OPTION: {flag} is recognized, but reflection introspection is not implemented"
+        )),
+        CliAction::LintFile { path } => {
+            let (source, _real_path, source_path) = read_script(&path)?;
+            lint_php(&source, &source_path, stdout, stderr)
+        }
         CliAction::RunCode { code, args } => {
             let source = normalize_command_line_code(&code);
             let input = EngineInput {
@@ -106,8 +158,9 @@ where
                 script_args: args,
                 cwd: current_dir()?,
                 env: collect_env(),
-                ini: ini_options(&parsed.defines),
+                ini: ini_options(&merged_defines),
                 stdin: read_stdin_if_piped(stdin, stdin_is_terminal)?,
+                php_binary: php_binary.clone(),
                 debug,
                 debug_log,
                 debug_format,
@@ -124,8 +177,9 @@ where
                 script_args: args,
                 cwd: current_dir()?,
                 env: collect_env(),
-                ini: ini_options(&parsed.defines),
+                ini: ini_options(&merged_defines),
                 stdin: read_stdin_if_piped(stdin, stdin_is_terminal)?,
+                php_binary: php_binary.clone(),
                 debug,
                 debug_log,
                 debug_format,
@@ -145,14 +199,20 @@ where
                 script_args: args,
                 cwd: current_dir()?,
                 env: collect_env(),
-                ini: ini_options(&parsed.defines),
+                ini: ini_options(&merged_defines),
                 stdin: Vec::new(),
+                php_binary: php_binary.clone(),
                 debug,
                 debug_log,
                 debug_format,
             };
             execute_php(input, stdout, stderr)
         }
+        CliAction::Serve {
+            listen,
+            docroot,
+            router,
+        } => run_builtin_server(listen, docroot, router),
     }
 }
 
@@ -160,6 +220,10 @@ impl ParsedCli {
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut no_ini = false;
         let mut defines = Vec::new();
+        let mut config_path = None;
+        let mut server_listen: Option<String> = None;
+        let mut server_docroot: Option<PathBuf> = None;
+        let mut server_router: Option<PathBuf> = None;
         let mut index = 0usize;
         while index < args.len() {
             let arg = &args[index];
@@ -169,6 +233,7 @@ impl ParsedCli {
                         action: CliAction::Help,
                         no_ini,
                         defines,
+                        config_path,
                     });
                 }
                 "-v" | "--version" => {
@@ -176,6 +241,51 @@ impl ParsedCli {
                         action: CliAction::Version,
                         no_ini,
                         defines,
+                        config_path,
+                    });
+                }
+                "--ini" => {
+                    return Ok(Self {
+                        action: CliAction::ShowIni,
+                        no_ini,
+                        defines,
+                        config_path,
+                    });
+                }
+                "-m" => {
+                    reject_server_mix(&server_listen, "-m")?;
+                    return Ok(Self {
+                        action: CliAction::ListModules,
+                        no_ini,
+                        defines,
+                        config_path,
+                    });
+                }
+                "-i" => {
+                    reject_server_mix(&server_listen, "-i")?;
+                    return Ok(Self {
+                        action: CliAction::PhpInfo,
+                        no_ini,
+                        defines,
+                        config_path,
+                    });
+                }
+                "--ri" | "--rf" | "--rc" => {
+                    let flag = arg.clone();
+                    if args
+                        .get(index + 1)
+                        .is_some_and(|next| !next.starts_with('-'))
+                    {
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                    let _ = index;
+                    return Ok(Self {
+                        action: CliAction::UnsupportedIntrospection { flag },
+                        no_ini,
+                        defines,
+                        config_path,
                     });
                 }
                 "-n" | "-q" => {
@@ -195,9 +305,41 @@ impl ParsedCli {
                     index += 1;
                 }
                 "-c" => {
-                    if args.get(index + 1).is_none() {
-                        return Err("-c requires a path".to_string());
+                    let path = args
+                        .get(index + 1)
+                        .ok_or_else(|| "-c requires a path".to_string())?;
+                    config_path = Some(PathBuf::from(path));
+                    index += 2;
+                }
+                "-l" => {
+                    reject_server_mix(&server_listen, "-l")?;
+                    let path = args
+                        .get(index + 1)
+                        .ok_or_else(|| "-l requires a file path".to_string())?;
+                    return Ok(Self {
+                        action: CliAction::LintFile {
+                            path: PathBuf::from(path),
+                        },
+                        no_ini,
+                        defines,
+                        config_path,
+                    });
+                }
+                "-S" => {
+                    if server_listen.is_some() {
+                        return Err("-S may only be specified once".to_string());
                     }
+                    let listen = args
+                        .get(index + 1)
+                        .ok_or_else(|| "-S requires a listen address".to_string())?;
+                    server_listen = Some(listen.clone());
+                    index += 2;
+                }
+                "-t" => {
+                    let docroot = args
+                        .get(index + 1)
+                        .ok_or_else(|| "-t requires a document root".to_string())?;
+                    server_docroot = Some(PathBuf::from(docroot));
                     index += 2;
                 }
                 "--repeat" => {
@@ -207,6 +349,7 @@ impl ParsedCli {
                     index += 2;
                 }
                 "-r" => {
+                    reject_server_mix(&server_listen, "-r")?;
                     index += 1;
                     let code = args
                         .get(index)
@@ -218,9 +361,11 @@ impl ParsedCli {
                         action: CliAction::RunCode { code, args: rest },
                         no_ini,
                         defines,
+                        config_path,
                     });
                 }
                 "-f" => {
+                    reject_server_mix(&server_listen, "-f")?;
                     index += 1;
                     let path = args
                         .get(index)
@@ -234,36 +379,74 @@ impl ParsedCli {
                         },
                         no_ini,
                         defines,
+                        config_path,
                     });
                 }
                 "--" => {
+                    reject_server_mix(&server_listen, "--")?;
                     return Ok(Self {
                         action: CliAction::RunStdin {
                             args: args[index + 1..].to_vec(),
                         },
                         no_ini,
                         defines,
+                        config_path,
                     });
                 }
                 _ if arg.starts_with('-') => {
                     return Err(format!("unknown option `{arg}`"));
                 }
                 _ => {
+                    if server_listen.is_some() {
+                        if server_router.is_some() {
+                            return Err(
+                                "phrust-php -S accepts at most one router script".to_string()
+                            );
+                        }
+                        server_router = Some(PathBuf::from(arg));
+                        index += 1;
+                        continue;
+                    }
                     let path = PathBuf::from(arg);
                     let rest = parse_script_args(&args[index + 1..])?;
                     return Ok(Self {
                         action: CliAction::RunFile { path, args: rest },
                         no_ini,
                         defines,
+                        config_path,
                     });
                 }
             }
+        }
+        if let Some(listen) = server_listen {
+            return Ok(Self {
+                action: CliAction::Serve {
+                    listen,
+                    docroot: server_docroot,
+                    router: server_router,
+                },
+                no_ini,
+                defines,
+                config_path,
+            });
+        }
+        if server_docroot.is_some() {
+            return Err("-t requires -S".to_string());
         }
         Ok(Self {
             action: CliAction::RunStdin { args: Vec::new() },
             no_ini,
             defines,
+            config_path,
         })
+    }
+}
+
+fn reject_server_mix(server_listen: &Option<String>, flag: &str) -> Result<(), String> {
+    if server_listen.is_some() {
+        Err(format!("{flag} cannot be combined with -S"))
+    } else {
+        Ok(())
     }
 }
 
@@ -280,6 +463,143 @@ fn parse_define(value: &str) -> (String, String) {
         .split_once('=')
         .map(|(name, value)| (name.to_string(), value.to_string()))
         .unwrap_or_else(|| (value.to_string(), "1".to_string()))
+}
+
+fn load_ini(parsed: &ParsedCli) -> Result<LoadedIni, String> {
+    if parsed.no_ini {
+        return Ok(LoadedIni {
+            path: parsed.config_path.clone(),
+            directives: Vec::new(),
+            disabled: true,
+        });
+    }
+    let Some(path) = &parsed.config_path else {
+        return Ok(LoadedIni {
+            path: None,
+            directives: Vec::new(),
+            disabled: false,
+        });
+    };
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("configuration file `{}`: {error}", path.display()))?;
+    Ok(LoadedIni {
+        path: Some(path.clone()),
+        directives: parse_ini_directives(&contents),
+        disabled: false,
+    })
+}
+
+fn parse_ini_directives(contents: &str) -> Vec<(String, String)> {
+    let mut directives = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty()
+            || line.starts_with(';')
+            || line.starts_with('#')
+            || (line.starts_with('[') && line.ends_with(']'))
+        {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if !matches!(name, "include_path" | "display_errors" | "error_reporting") {
+            continue;
+        }
+        directives.push((name.to_string(), unquote_ini_value(value.trim())));
+    }
+    directives
+}
+
+fn unquote_ini_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn merged_ini_defines(
+    loaded_ini: &LoadedIni,
+    defines: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut merged = loaded_ini.directives.clone();
+    merged.extend_from_slice(defines);
+    merged
+}
+
+fn print_ini<W: Write>(stdout: &mut W, loaded_ini: &LoadedIni) -> Result<(), String> {
+    writeln!(
+        stdout,
+        "Configuration File (php.ini) Path: {}",
+        ini_path_display(loaded_ini)
+    )
+    .map_err(|error| error.to_string())?;
+    let loaded = if loaded_ini.disabled {
+        "(none)".to_string()
+    } else {
+        ini_path_display(loaded_ini)
+    };
+    writeln!(stdout, "Loaded Configuration File: {}", loaded).map_err(|error| error.to_string())?;
+    writeln!(stdout, "Scan for additional .ini files in: (none)").map_err(|error| error.to_string())
+}
+
+fn ini_path_display(loaded_ini: &LoadedIni) -> String {
+    loaded_ini
+        .path
+        .as_deref()
+        .map(Path::display)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "(none)".to_string())
+}
+
+fn print_modules<W: Write>(stdout: &mut W) -> Result<(), String> {
+    writeln!(stdout, "[PHP Modules]").map_err(|error| error.to_string())?;
+    for name in php_std::introspection::get_loaded_extensions(
+        php_std::ExtensionRegistry::standard_library(),
+    ) {
+        writeln!(stdout, "{name}").map_err(|error| error.to_string())?;
+    }
+    writeln!(stdout, "\n[Zend Modules]").map_err(|error| error.to_string())
+}
+
+fn print_php_info<W: Write>(
+    stdout: &mut W,
+    loaded_ini: &LoadedIni,
+    php_binary: &str,
+) -> Result<(), String> {
+    writeln!(stdout, "phpinfo()").map_err(|error| error.to_string())?;
+    writeln!(
+        stdout,
+        "PHP Version => {}",
+        php_source::reference_php_version()
+    )
+    .map_err(|error| error.to_string())?;
+    writeln!(stdout, "System => phrust").map_err(|error| error.to_string())?;
+    writeln!(stdout, "Server API => Command Line Interface").map_err(|error| error.to_string())?;
+    writeln!(stdout, "PHP Binary => {php_binary}").map_err(|error| error.to_string())?;
+    writeln!(
+        stdout,
+        "Loaded Configuration File => {}",
+        if loaded_ini.disabled {
+            "(none)".to_string()
+        } else {
+            ini_path_display(loaded_ini)
+        }
+    )
+    .map_err(|error| error.to_string())?;
+    writeln!(stdout, "\nPHP Modules").map_err(|error| error.to_string())?;
+    for name in php_std::introspection::get_loaded_extensions(
+        php_std::ExtensionRegistry::standard_library(),
+    ) {
+        writeln!(stdout, "{name}").map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn ini_options(defines: &[(String, String)]) -> CliIniOptions {
@@ -370,10 +690,30 @@ fn os_to_string(value: OsString) -> Option<String> {
     value.into_string().ok()
 }
 
+fn php_binary_path() -> String {
+    env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| "phrust-php".to_string())
+}
+
+fn run_builtin_server(
+    listen: String,
+    docroot: Option<PathBuf>,
+    router: Option<PathBuf>,
+) -> Result<i32, String> {
+    let docroot = docroot.unwrap_or(current_dir()?);
+    let config = php_server::config::ServerConfig::builtin_cli_server(&listen, docroot, router)
+        .map_err(|error| error.to_string())?;
+    php_server::server::run_blocking(config).map_err(|error| error.to_string())?;
+    Ok(EXIT_SUCCESS)
+}
+
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage: phrust-php [options] [-f] <file> [--] [args...]\n       phrust-php [options] -r <code> [--] [args...]"
+        "Usage: phrust-php [options] [-f] <file> [--] [args...]\n       phrust-php [options] -r <code> [--] [args...]\n       phrust-php -S <addr> [-t <docroot>] [router]\n\nOptions:\n  -v, --version        show PHP-compatible version\n  --ini                show loaded configuration file information\n  -c <path>            load minimal php.ini directives from path\n  -n                   ignore configuration files\n  -d name=value        set an INI directive; overrides -c\n  -l <file>            lint only; do not execute code\n  -m                   list loaded modules\n  -i                   show minimal phpinfo output\n  -S <addr>            start PHP-compatible built-in web server\n  -t <docroot>         document root for -S\n  -h, --help           show this help"
     )
     .map_err(|error| error.to_string())
 }
@@ -702,6 +1042,182 @@ mod tests {
 
         assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
         assert_eq!(String::from_utf8(stdout).expect("utf8"), "dep");
+    }
+
+    #[test]
+    fn config_file_loads_minimal_ini_and_d_overrides() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = temp_root("ini-config");
+        let lib_from_ini = root.join("ini-lib");
+        let lib_from_define = root.join("define-lib");
+        fs::create_dir_all(&lib_from_ini).expect("mkdir ini lib");
+        fs::create_dir_all(&lib_from_define).expect("mkdir define lib");
+        fs::write(lib_from_ini.join("dep.php"), "<?php echo 'ini';").expect("write ini dep");
+        fs::write(lib_from_define.join("dep.php"), "<?php echo 'define';")
+            .expect("write define dep");
+        let ini = root.join("php.ini");
+        fs::write(
+            &ini,
+            format!(
+                "; comment\n[PHP]\ninclude_path = \"{}\"\ndisplay_errors = 1\n",
+                lib_from_ini.display()
+            ),
+        )
+        .expect("write ini");
+        let script = root.join("fixture.php");
+        fs::write(&script, "<?php include 'dep.php';").expect("write script");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            [
+                "-c".to_string(),
+                ini.to_string_lossy().into_owned(),
+                "-d".to_string(),
+                format!("include_path={}", lib_from_define.display()),
+                script.to_string_lossy().into_owned(),
+            ],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(String::from_utf8(stdout).expect("utf8"), "define");
+    }
+
+    #[test]
+    fn lint_file_does_not_execute_side_effects() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = temp_root("lint");
+        fs::create_dir_all(&root).expect("mkdir");
+        let marker = root.join("marker.txt");
+        let script = root.join("fixture.php");
+        fs::write(
+            &script,
+            format!(
+                "<?php file_put_contents('{}', 'ran');",
+                marker.to_string_lossy()
+            ),
+        )
+        .expect("write script");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            ["-l".to_string(), script.to_string_lossy().into_owned()],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert!(!marker.exists());
+        assert!(
+            String::from_utf8(stdout)
+                .expect("utf8")
+                .contains("No syntax errors detected")
+        );
+    }
+
+    #[test]
+    fn exposes_cli_sapi_and_non_empty_php_binary() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            [
+                "-r".to_string(),
+                "echo PHP_SAPI, '|', php_sapi_name(), '|', PHP_BINARY === '' ? 'empty' : 'set';"
+                    .to_string(),
+            ],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(String::from_utf8(stdout).expect("utf8"), "cli|cli|set");
+    }
+
+    #[test]
+    fn prints_modules_phpinfo_and_ini_report() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        assert_eq!(
+            run(["-m".to_string()], &mut stdin, &mut stdout, &mut stderr),
+            0
+        );
+        assert!(
+            String::from_utf8(stdout)
+                .expect("utf8")
+                .contains("[PHP Modules]")
+        );
+
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run(["-i".to_string()], &mut stdin, &mut stdout, &mut stderr),
+            0
+        );
+        assert!(
+            String::from_utf8(stdout)
+                .expect("utf8")
+                .contains("PHP Version =>")
+        );
+
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run(["--ini".to_string()], &mut stdin, &mut stdout, &mut stderr),
+            0
+        );
+        assert!(
+            String::from_utf8(stdout)
+                .expect("utf8")
+                .contains("Loaded Configuration File")
+        );
+    }
+
+    #[test]
+    fn parser_accepts_server_flags_and_rejects_invalid_mixes() {
+        let parsed = ParsedCli::parse(&[
+            "-S".to_string(),
+            "127.0.0.1:0".to_string(),
+            "-t".to_string(),
+            "public".to_string(),
+            "router.php".to_string(),
+        ])
+        .expect("parse server");
+        assert_eq!(
+            parsed.action,
+            CliAction::Serve {
+                listen: "127.0.0.1:0".to_string(),
+                docroot: Some(PathBuf::from("public")),
+                router: Some(PathBuf::from("router.php")),
+            }
+        );
+
+        let error =
+            ParsedCli::parse(&["-t".to_string(), "public".to_string()]).expect_err("missing -S");
+        assert!(error.contains("-t requires -S"));
+        let error = ParsedCli::parse(&[
+            "-S".to_string(),
+            "127.0.0.1:0".to_string(),
+            "-r".to_string(),
+            "echo 1;".to_string(),
+        ])
+        .expect_err("invalid mix");
+        assert!(error.contains("cannot be combined with -S"));
     }
 
     fn temp_root(name: &str) -> PathBuf {

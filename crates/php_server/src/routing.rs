@@ -8,6 +8,7 @@ pub struct RouteConfig {
     pub docroot: PathBuf,
     pub index: String,
     pub front_controller: Option<PathBuf>,
+    pub builtin_router: Option<PathBuf>,
     pub metrics_endpoint_enabled: bool,
     pub cache_clear_endpoint_enabled: bool,
 }
@@ -579,6 +580,7 @@ mod tests {
                 docroot: self.root.canonicalize().expect("canonical docroot"),
                 index: index.to_string(),
                 front_controller: None,
+                builtin_router: None,
                 metrics_endpoint_enabled: true,
                 cache_clear_endpoint_enabled: false,
             }

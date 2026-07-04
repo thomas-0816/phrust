@@ -32,6 +32,11 @@ help:
       '  just diagnostics-audit    Run diagnostic quality ratchet' \
       '  just diagnostics-smoke    Run structured diagnostic smoke checks' \
       '  just debug-smoke          Run debug-mode JSONL smoke checks' \
+      '  just php ARGS             Run phrust-php with PHP-compatible flags' \
+      '  just serve DOCROOT=public [LISTEN=127.0.0.1:8080] Start phrust-php -S' \
+      '  just serve-advanced DOCROOT=public [LISTEN=127.0.0.1:8080] Start phrust-server' \
+      '  just install-user-bin     Install target/phrust/bin php shim' \
+      '  just verify-user-interfaces Run phrust-php CLI and server smoke gates' \
       '  just quality              Run additive Rust quality/tooling gates' \
       '  just quality-fast         Run required cheap integrity/dependency/docs gates' \
       '  just quality-deps         Check advisories, licenses, bans, sources' \
@@ -78,6 +83,8 @@ help:
       'Server:' \
       '  just verify-server        Run integrated web server verification' \
       '  just server-smoke         Run integrated web server smoke checks' \
+      '  just cli-interface-smoke  Run phrust-php CLI compatibility smoke checks' \
+      '  just cli-server-smoke     Run phrust-php -S built-in server smoke checks' \
       '  just server-compat-smoke [SECTION=all] Run Wave 2 server compatibility smoke checks' \
       '  just server-tls-smoke     Run integrated HTTPS server smoke checks' \
       '  just server-benchmark-smoke Run short optional server benchmark smoke' \
@@ -165,6 +172,28 @@ diagnostics-audit:
 
 server-smoke:
     scripts/server/smoke.sh
+
+php *ARGS:
+    cargo run -p php_vm_cli --bin phrust-php -- {{ARGS}}
+
+serve DOCROOT="public" LISTEN="127.0.0.1:8080":
+    cargo run -p php_vm_cli --bin phrust-php -- -S {{LISTEN}} -t {{DOCROOT}}
+
+serve-advanced DOCROOT="public" LISTEN="127.0.0.1:8080":
+    cargo run -p php_server --bin phrust-server -- --docroot {{DOCROOT}} --listen {{LISTEN}}
+
+install-user-bin:
+    scripts/install-user-bin.sh
+
+cli-interface-smoke:
+    scripts/cli/interface_smoke.sh
+
+cli-server-smoke:
+    scripts/cli/builtin_server_smoke.sh
+
+verify-user-interfaces:
+    @just cli-interface-smoke
+    @just cli-server-smoke
 
 diagnostics-smoke:
     scripts/diagnostics/smoke.sh diagnostics

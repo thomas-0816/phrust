@@ -158,6 +158,7 @@ pub(crate) fn execution_output_from_vm(
         http_response: result.http_response,
         upload_registry: result.upload_registry,
         session: result.session,
+        return_value: result.return_value,
         trace: result.trace,
         counters: result.counters,
         tiering_stats: result.tiering_stats,

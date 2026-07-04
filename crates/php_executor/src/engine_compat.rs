@@ -38,6 +38,7 @@ pub struct EngineInput {
     pub env: Vec<(String, String)>,
     pub ini: CliIniOptions,
     pub stdin: Vec<u8>,
+    pub php_binary: String,
     pub debug: bool,
     pub debug_log: Option<PathBuf>,
     pub debug_format: DiagnosticOutputFormat,
@@ -178,6 +179,28 @@ where
     }
 }
 
+/// Compiles PHP source without executing it and writes frontend diagnostics.
+pub fn lint_php<W, E>(
+    source: &str,
+    source_path: &str,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, String>
+where
+    W: Write,
+    E: Write,
+{
+    let pipeline = compile_source(source, source_path)?;
+    if pipeline.ok() {
+        writeln!(stdout, "No syntax errors detected in {source_path}")
+            .map_err(|error| error.to_string())?;
+        Ok(EXIT_SUCCESS)
+    } else {
+        write_frontend_diagnostics(stderr, &pipeline)?;
+        Ok(EXIT_PHP_ERROR)
+    }
+}
+
 pub fn read_script(path: &Path) -> Result<(String, PathBuf, String), String> {
     let source = fs::read_to_string(path).map_err(|error| {
         let cwd = std::env::current_dir()
@@ -306,6 +329,7 @@ mod tests {
             env: Vec::new(),
             ini: CliIniOptions::default(),
             stdin: Vec::new(),
+            php_binary: "phrust-php".to_string(),
             debug: false,
             debug_log: None,
             debug_format: DiagnosticOutputFormat::Text,

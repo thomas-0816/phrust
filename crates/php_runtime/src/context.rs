@@ -449,6 +449,10 @@ pub struct RuntimeContext {
     pub session_loader: Option<SessionLoadCallback>,
     /// Optional cooperative PHP execution budget for the VM.
     pub execution_time_limit: Option<Duration>,
+    /// Runtime SAPI name visible through PHP_SAPI and php_sapi_name().
+    pub sapi_name: String,
+    /// Runtime binary path visible through PHP_BINARY.
+    pub php_binary: String,
 }
 
 impl Default for RuntimeContext {
@@ -468,6 +472,8 @@ impl Default for RuntimeContext {
             session: SessionState::default(),
             session_loader: None,
             execution_time_limit: None,
+            sapi_name: "cli".to_string(),
+            php_binary: "phrust-php".to_string(),
         }
     }
 }
@@ -490,6 +496,7 @@ impl RuntimeContext {
     pub fn controlled_http(request: RuntimeHttpRequestContext) -> Self {
         Self {
             request_mode: RuntimeRequestMode::Http(Box::new(request)),
+            sapi_name: "cli-server".to_string(),
             ..Self::default()
         }
     }
@@ -592,6 +599,20 @@ impl RuntimeContext {
     #[must_use]
     pub fn with_execution_time_limit(mut self, limit: Option<Duration>) -> Self {
         self.execution_time_limit = limit;
+        self
+    }
+
+    /// Sets the runtime SAPI name.
+    #[must_use]
+    pub fn with_sapi_name(mut self, sapi_name: impl Into<String>) -> Self {
+        self.sapi_name = sapi_name.into();
+        self
+    }
+
+    /// Sets the runtime PHP binary path.
+    #[must_use]
+    pub fn with_php_binary(mut self, php_binary: impl Into<String>) -> Self {
+        self.php_binary = php_binary.into();
         self
     }
 
