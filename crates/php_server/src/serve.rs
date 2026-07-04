@@ -48,6 +48,8 @@ pub(crate) async fn serve_until_shutdown(
     tls_acceptor: Option<TlsAcceptor>,
 ) {
     let mut tasks = JoinSet::new();
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             accept = listener.accept() => {
@@ -68,7 +70,7 @@ pub(crate) async fn serve_until_shutdown(
                 });
             }
             Some(_) = tasks.join_next() => {}
-            signal = tokio::signal::ctrl_c() => {
+            signal = &mut shutdown => {
                 if signal.is_err() {
                     break;
                 }
