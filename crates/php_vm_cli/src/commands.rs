@@ -4881,11 +4881,17 @@ mod tests {
 
     #[test]
     fn run_writes_timings_sidecar_without_changing_stdout() {
-        let path =
-            PathBuf::from("target/performance/timings/tests/run-writes-timings-sidecar.json");
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create timing report test directory");
-        }
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-cli-timings-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("create timing report test directory");
+        let path = root.join("run-writes-timings-sidecar.json");
         let _ = fs::remove_file(&path);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -4904,6 +4910,7 @@ mod tests {
         assert_eq!(stdout, b"hello runtime\n");
         assert!(path.is_file());
         let report = parse_json_text(&fs::read_to_string(&path).expect("read timing report"));
+        let _ = fs::remove_dir_all(&root);
         assert_eq!(report["schema_version"], 1);
         assert_eq!(report["command"], "run");
         assert!(report["total_internal_ms"].as_f64().unwrap() >= 0.0);
