@@ -144,7 +144,8 @@ mod tests {
     use crate::PhpString;
 
     fn generic_encode(value: &Value) -> String {
-        let (json, error) = php_value_to_json_checked(value, 0).expect("generic encode succeeds");
+        let (json, error) =
+            php_value_to_json_checked(value, 0, 512).expect("generic encode succeeds");
         assert_eq!(error, None);
         normalize_json_encoded(
             serde_json::to_string(&json).expect("serde encode succeeds"),
