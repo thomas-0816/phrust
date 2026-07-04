@@ -35,7 +35,8 @@ fn encode_value(value: &Value, output: &mut String, depth: usize) -> Result<(), 
         Value::Bool(true) => output.push_str("true"),
         Value::Bool(false) => output.push_str("false"),
         Value::Int(value) => {
-            write!(output, "{value}").expect("write to String cannot fail");
+            // fmt::Write to String is infallible.
+            let _ = write!(output, "{value}");
         }
         Value::Float(_) => return Err("float"),
         Value::String(value) => encode_string(value.as_bytes(), output)?,
@@ -83,7 +84,8 @@ fn encode_array(array: &PhpArray, output: &mut String, depth: usize) -> Result<(
         match key {
             ArrayKey::Int(key) => {
                 output.push('"');
-                write!(output, "{key}").expect("write to String cannot fail");
+                // fmt::Write to String is infallible.
+                let _ = write!(output, "{key}");
                 output.push('"');
             }
             ArrayKey::String(key) => encode_string(key.as_bytes(), output)?,
@@ -124,12 +126,12 @@ fn encode_string(bytes: &[u8], output: &mut String) -> Result<(), &'static str> 
         }
         let code = ch as u32;
         if code <= 0xFFFF {
-            write!(output, "\\u{code:04x}").expect("write to String cannot fail");
+            let _ = write!(output, "\\u{code:04x}");
         } else {
             let code = code - 0x1_0000;
             let high = 0xD800 + ((code >> 10) & 0x3FF);
             let low = 0xDC00 + (code & 0x3FF);
-            write!(output, "\\u{high:04x}\\u{low:04x}").expect("write to String cannot fail");
+            let _ = write!(output, "\\u{high:04x}\\u{low:04x}");
         }
     }
     output.push_str(&text[run_start..]);
