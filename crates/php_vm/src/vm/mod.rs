@@ -10089,9 +10089,41 @@ impl Vm {
             Ok(Some(resolved)) => resolved,
             Ok(None) => {
                 self.record_counter_dense_property_fallback("dynamic_property");
+                let property_callsite =
+                    property_fetch_callsite(compiled, function_id, block_id, instruction_id);
                 if let Some(value) = object.get_property(property) {
+                    self.record_counter_property_fetch_profile(property_fetch_profile_observation(
+                        &property_callsite,
+                        property,
+                        &receiver_class,
+                        &class,
+                        None,
+                        normalized_scope.as_deref(),
+                        lookup_epoch,
+                        receiver_has_magic_get,
+                        false,
+                        true,
+                        false,
+                        false,
+                        Vec::new(),
+                    ));
                     return Ok(value);
                 }
+                self.record_counter_property_fetch_profile(property_fetch_profile_observation(
+                    &property_callsite,
+                    property,
+                    &receiver_class,
+                    &class,
+                    None,
+                    normalized_scope.as_deref(),
+                    lookup_epoch,
+                    receiver_has_magic_get,
+                    false,
+                    false,
+                    false,
+                    false,
+                    Vec::new(),
+                ));
                 match self.call_magic_property_method(
                     compiled,
                     object.clone(),
