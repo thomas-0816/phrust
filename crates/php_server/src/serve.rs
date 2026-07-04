@@ -5,7 +5,10 @@ use super::{
         route_debug_name,
     },
     metrics::metrics_response,
-    php_request::{PartsAndBody, execute_php_request, request_time},
+    php_request::{
+        BodyReadError, PartsAndBody, execute_builtin_router_if_configured, execute_php_request,
+        read_limited_body, request_time,
+    },
     state::AppState,
     static_files::static_file_response,
 };
@@ -17,6 +20,7 @@ use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
     header::{self, HeaderValue},
+    http::request::Parts,
     service::service_fn,
 };
 use hyper_util::{rt::TokioExecutor, rt::TokioIo, server::conn::auto::Builder};
@@ -189,15 +193,27 @@ pub(crate) async fn handle(
         ResolvedRoute::Metrics => (metrics_response(&state, &parts), "metrics", None),
         ResolvedRoute::CacheClear => (clear_cache_response(&state, peer), "cache-clear", None),
         ResolvedRoute::StaticFile { path, metadata } => {
-            state
-                .metrics
-                .static_responses
-                .fetch_add(1, Ordering::Relaxed);
-            (
-                static_file_response(&parts, &state, path, metadata).await,
-                "static",
-                None,
+            if let Some(response) = execute_builtin_router_before_normal_route(
+                &parts,
+                body,
+                Arc::clone(&state),
+                peer,
+                &request_id,
             )
+            .await
+            {
+                (response, "builtin-router", None)
+            } else {
+                state
+                    .metrics
+                    .static_responses
+                    .fetch_add(1, Ordering::Relaxed);
+                (
+                    static_file_response(&parts, &state, path, metadata).await,
+                    "static",
+                    None,
+                )
+            }
         }
         ResolvedRoute::PhpScript {
             script_path,
@@ -222,24 +238,36 @@ pub(crate) async fn handle(
             (response, route_kind, cache_hit)
         }
         ResolvedRoute::NotFound => {
-            emit_request_diagnostic(
-                &state,
+            if let Some(response) = execute_builtin_router_before_normal_route(
                 &parts,
-                Some(&request_id),
-                RequestDiagnostic::new(
-                    "E_PHP_SERVER_SCRIPT_RESOLUTION_FAILED",
-                    "routing",
-                    "server could not resolve a PHP script for the request",
-                    "resolve_route",
-                    parts.uri.path(),
-                    "",
-                ),
-            );
-            (
-                response::text(StatusCode::NOT_FOUND, "not found\n"),
-                "not-found",
-                None,
+                body,
+                Arc::clone(&state),
+                peer,
+                &request_id,
             )
+            .await
+            {
+                (response, "builtin-router", None)
+            } else {
+                emit_request_diagnostic(
+                    &state,
+                    &parts,
+                    Some(&request_id),
+                    RequestDiagnostic::new(
+                        "E_PHP_SERVER_SCRIPT_RESOLUTION_FAILED",
+                        "routing",
+                        "server could not resolve a PHP script for the request",
+                        "resolve_route",
+                        parts.uri.path(),
+                        "",
+                    ),
+                );
+                (
+                    response::text(StatusCode::NOT_FOUND, "not found\n"),
+                    "not-found",
+                    None,
+                )
+            }
         }
         ResolvedRoute::Forbidden => {
             emit_request_diagnostic(
@@ -333,6 +361,110 @@ pub(crate) fn response_content_length(response: &Response<ResponseBody>) -> u64 
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0)
 }
+
+async fn execute_builtin_router_before_normal_route(
+    parts: &Parts,
+    body: Incoming,
+    state: Arc<AppState>,
+    peer: SocketAddr,
+    request_id: &str,
+) -> Option<Response<ResponseBody>> {
+    state.route_config.builtin_router.as_ref()?;
+    emit_server_debug(
+        &state,
+        Some(request_id),
+        "D_PHRUST_SERVER_BODY_READ_START",
+        "body_read",
+        "request body read started",
+        BTreeMap::from([(
+            "max_body_bytes".to_string(),
+            state.max_body_bytes.to_string(),
+        )]),
+    );
+    let body_started = Instant::now();
+    let body = match timeout(
+        state.request_timeout,
+        read_limited_body(body, state.max_body_bytes),
+    )
+    .await
+    {
+        Err(_) => {
+            emit_server_debug(
+                &state,
+                Some(request_id),
+                "D_PHRUST_SERVER_BODY_READ_TIMEOUT",
+                "body_read",
+                "request body read timed out",
+                BTreeMap::from([(
+                    "timeout_ms".to_string(),
+                    state.request_timeout.as_millis().to_string(),
+                )]),
+            );
+            state.metrics.record_phase(
+                super::metrics::RequestPhase::BodyRead,
+                body_started.elapsed().as_nanos(),
+            );
+            return Some(response::text(
+                StatusCode::REQUEST_TIMEOUT,
+                "request timeout\n",
+            ));
+        }
+        Ok(Ok(body)) => body,
+        Ok(Err(BodyReadError::TooLarge)) => {
+            state.metrics.body_too_large.fetch_add(1, Ordering::Relaxed);
+            emit_server_debug(
+                &state,
+                Some(request_id),
+                "D_PHRUST_SERVER_BODY_TOO_LARGE",
+                "body_read",
+                "request body exceeded configured limit",
+                BTreeMap::from([(
+                    "max_body_bytes".to_string(),
+                    state.max_body_bytes.to_string(),
+                )]),
+            );
+            debug!(%peer, max_body_bytes=state.max_body_bytes, "request body too large");
+            state.metrics.record_phase(
+                super::metrics::RequestPhase::BodyRead,
+                body_started.elapsed().as_nanos(),
+            );
+            return Some(response::text(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload too large\n",
+            ));
+        }
+        Ok(Err(BodyReadError::Invalid)) => {
+            emit_server_debug(
+                &state,
+                Some(request_id),
+                "D_PHRUST_SERVER_BODY_INVALID",
+                "body_read",
+                "request body read failed",
+                BTreeMap::new(),
+            );
+            warn!(%peer, "failed to read request body");
+            state.metrics.record_phase(
+                super::metrics::RequestPhase::BodyRead,
+                body_started.elapsed().as_nanos(),
+            );
+            return Some(response::text(StatusCode::BAD_REQUEST, "bad request\n"));
+        }
+    };
+    state.metrics.record_phase(
+        super::metrics::RequestPhase::BodyRead,
+        body_started.elapsed().as_nanos(),
+    );
+    emit_server_debug(
+        &state,
+        Some(request_id),
+        "D_PHRUST_SERVER_BODY_READ_END",
+        "body_read",
+        "request body read completed",
+        BTreeMap::from([("body_bytes".to_string(), body.len().to_string())]),
+    );
+    execute_builtin_router_if_configured(parts, state, body, peer, request_id, None)
+}
+
 pub(crate) fn clear_cache_response(state: &AppState, peer: SocketAddr) -> Response<ResponseBody> {
     if !peer.ip().is_loopback() {
         return response::text(StatusCode::FORBIDDEN, "forbidden\n");

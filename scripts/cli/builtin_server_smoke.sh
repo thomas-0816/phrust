@@ -27,7 +27,7 @@ cat >"$docroot/sapi.php" <<'PHP'
 PHP
 cat >"$docroot/router.php" <<'PHP'
 <?php
-if ($_SERVER["REQUEST_URI"] === "/sapi.php") {
+if ($_SERVER["REQUEST_URI"] === "/router-hit") {
     echo "router-output:", $_SERVER["REQUEST_URI"];
     return true;
 }
@@ -74,7 +74,9 @@ for _ in {1..100}; do
 done
 [[ -n "$url" ]]
 
-curl -fsS "$url/sapi.php" | grep -q '^router-output:/sapi.php$'
+curl -fsS "$url/router-hit" | grep -q '^router-output:/router-hit$'
+curl -fsS "$url/static.txt" | grep -q '^static-ok$'
+curl -fsS "$url/sapi.php" | grep -q '^cli-server|cli-server$'
 curl -fsS "$url/" | grep -q '^index:/$'
 
 printf '%s\n' '[ok] phrust-php built-in server smoke passed'

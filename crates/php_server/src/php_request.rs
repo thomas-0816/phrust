@@ -185,7 +185,7 @@ pub(crate) async fn execute_php_request(
         Arc::clone(&body),
         peer,
         &request_id,
-        &script_path,
+        Some(&script_path),
     ) {
         return finish_php_request(&state, trace, response, None, Some("builtin_router"));
     }
@@ -689,13 +689,13 @@ pub(crate) async fn execute_php_request(
     }
 }
 
-fn execute_builtin_router_if_configured(
+pub(crate) fn execute_builtin_router_if_configured(
     parts: &Parts,
     state: Arc<AppState>,
     body: Arc<[u8]>,
     peer: SocketAddr,
     request_id: &str,
-    target_script_path: &Path,
+    target_script_path: Option<&Path>,
 ) -> Option<Response<ResponseBody>> {
     let router = state.route_config.builtin_router.as_ref()?;
     let router_path = state.route_config.docroot.join(router);
@@ -711,7 +711,7 @@ fn execute_builtin_router_if_configured(
             "router script outside document root\n",
         ));
     }
-    if router_path == target_script_path {
+    if target_script_path.is_some_and(|target| router_path == target) {
         return None;
     }
     let script_name = script_name_for(&state.route_config.docroot, &router_path);
