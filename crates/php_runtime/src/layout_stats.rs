@@ -76,6 +76,30 @@ pub struct RuntimeLayoutStats {
     pub packed_to_mixed_append_key_gap: u64,
     /// Packed arrays converted to mixed by an unset creating a hole.
     pub packed_to_mixed_unset_hole: u64,
+    /// Arrays promoted into record (shaped string-key) storage.
+    pub record_storage_arrays: u64,
+    /// Record shape promotions (packed/empty to record transitions).
+    pub record_shape_promotions: u64,
+    /// Reads resolved through a record shape slot.
+    pub record_slot_reads: u64,
+    /// Writes resolved through a record shape slot.
+    pub record_slot_writes: u64,
+    /// Record probes whose key carried interned symbol identity.
+    pub record_key_symbol_hits: u64,
+    /// Record arrays converted to mixed by an integer-key insert.
+    pub record_to_mixed_int_key: u64,
+    /// Record arrays converted to mixed by an ambiguous string key.
+    pub record_to_mixed_ambiguous_key: u64,
+    /// Record arrays converted to mixed by unset/order-sensitive mutation.
+    pub record_to_mixed_generic_mutation: u64,
+}
+
+/// Why a record array had to leave shaped storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordToMixedReason {
+    IntKey,
+    AmbiguousKey,
+    GenericMutation,
 }
 
 /// Why a packed array had to leave values-only storage.
@@ -245,6 +269,55 @@ layout_recorder!(
     record_packed_virtual_key_iteration_slow,
     packed_virtual_key_iterations
 );
+
+layout_recorder!(
+    pub(crate) record_record_storage_array,
+    record_record_storage_array_slow,
+    record_storage_arrays
+);
+layout_recorder!(
+    pub(crate) record_record_shape_promotion,
+    record_record_shape_promotion_slow,
+    record_shape_promotions
+);
+layout_recorder!(
+    pub(crate) record_record_slot_read,
+    record_record_slot_read_slow,
+    record_slot_reads
+);
+layout_recorder!(
+    pub(crate) record_record_slot_write,
+    record_record_slot_write_slow,
+    record_slot_writes
+);
+layout_recorder!(
+    pub(crate) record_record_key_symbol_hit,
+    record_record_key_symbol_hit_slow,
+    record_key_symbol_hits
+);
+
+/// Reason-tagged record-to-mixed conversion recorder.
+#[inline(always)]
+pub(crate) fn record_record_to_mixed(reason: RecordToMixedReason) {
+    if stats_enabled() {
+        record_record_to_mixed_slow(reason);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn record_record_to_mixed_slow(reason: RecordToMixedReason) {
+    LAYOUT_STATS.with(|stats| {
+        let mut stats = stats.borrow_mut();
+        match reason {
+            RecordToMixedReason::IntKey => stats.record_to_mixed_int_key += 1,
+            RecordToMixedReason::AmbiguousKey => stats.record_to_mixed_ambiguous_key += 1,
+            RecordToMixedReason::GenericMutation => {
+                stats.record_to_mixed_generic_mutation += 1;
+            }
+        }
+    });
+}
 
 /// Reason-tagged packed-to-mixed conversion recorder.
 #[inline(always)]

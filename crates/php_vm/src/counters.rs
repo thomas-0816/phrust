@@ -239,6 +239,12 @@ pub struct VmCounters {
     pub packed_values_storage_appends: u64,
     pub packed_virtual_key_iterations: u64,
     pub packed_to_mixed_by_reason: BTreeMap<String, u64>,
+    pub record_storage_arrays: u64,
+    pub record_slot_reads: u64,
+    pub record_slot_writes: u64,
+    pub record_shape_promotions: u64,
+    pub record_key_symbol_hits: u64,
+    pub record_to_mixed_by_reason: BTreeMap<String, u64>,
     pub symbolized_call_name_hits: u64,
     pub symbolized_method_name_hits: u64,
     pub symbolized_property_name_hits: u64,
@@ -827,6 +833,23 @@ impl VmCounters {
             if count > 0 {
                 *self
                     .packed_to_mixed_by_reason
+                    .entry(reason.to_owned())
+                    .or_default() += count;
+            }
+        }
+        self.record_storage_arrays += stats.record_storage_arrays;
+        self.record_slot_reads += stats.record_slot_reads;
+        self.record_slot_writes += stats.record_slot_writes;
+        self.record_shape_promotions += stats.record_shape_promotions;
+        self.record_key_symbol_hits += stats.record_key_symbol_hits;
+        for (reason, count) in [
+            ("int_key", stats.record_to_mixed_int_key),
+            ("ambiguous_key", stats.record_to_mixed_ambiguous_key),
+            ("generic_mutation", stats.record_to_mixed_generic_mutation),
+        ] {
+            if count > 0 {
+                *self
+                    .record_to_mixed_by_reason
                     .entry(reason.to_owned())
                     .or_default() += count;
             }
@@ -2609,6 +2632,37 @@ impl VmCounters {
             &mut json,
             "packed_to_mixed_by_reason",
             &self.packed_to_mixed_by_reason,
+            true,
+        );
+        push_field(
+            &mut json,
+            "record_storage_arrays",
+            self.record_storage_arrays,
+            true,
+        );
+        push_field(&mut json, "record_slot_reads", self.record_slot_reads, true);
+        push_field(
+            &mut json,
+            "record_slot_writes",
+            self.record_slot_writes,
+            true,
+        );
+        push_field(
+            &mut json,
+            "record_shape_promotions",
+            self.record_shape_promotions,
+            true,
+        );
+        push_field(
+            &mut json,
+            "record_key_symbol_hits",
+            self.record_key_symbol_hits,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "record_to_mixed_by_reason",
+            &self.record_to_mixed_by_reason,
             true,
         );
         push_field(
@@ -4649,6 +4703,14 @@ mod tests {
             packed_to_mixed_non_sequential_int_key: 103,
             packed_to_mixed_append_key_gap: 107,
             packed_to_mixed_unset_hole: 109,
+            record_storage_arrays: 113,
+            record_shape_promotions: 127,
+            record_slot_reads: 131,
+            record_slot_writes: 137,
+            record_key_symbol_hits: 139,
+            record_to_mixed_int_key: 149,
+            record_to_mixed_ambiguous_key: 151,
+            record_to_mixed_generic_mutation: 157,
         });
         counters.record_autoload();
         counters.record_literal_intern(false);

@@ -1,6 +1,6 @@
 //! Opaque ordered PHP array storage for runtime-semantics.
 
-use crate::layout_stats::PackedToMixedReason;
+use crate::layout_stats::{PackedToMixedReason, RecordToMixedReason};
 use crate::{
     PhpString, Value,
     numeric_string::{
@@ -304,6 +304,7 @@ impl ExactSizeIterator for PackedArrayValues<'_> {}
 /// their sequential integer keys instead of storing them.
 pub enum PhpArrayIter<'a> {
     Packed(std::iter::Enumerate<std::slice::Iter<'a, Value>>),
+    Record(std::iter::Zip<std::slice::Iter<'a, PhpString>, std::slice::Iter<'a, Value>>),
     Mixed(std::slice::Iter<'a, ArrayEntry>),
 }
 
@@ -315,6 +316,9 @@ impl<'a> Iterator for PhpArrayIter<'a> {
             Self::Packed(values) => values
                 .next()
                 .map(|(index, value)| (ArrayKey::Int(index as i64), value)),
+            Self::Record(pairs) => pairs
+                .next()
+                .map(|(key, value)| (ArrayKey::String(key.clone()), value)),
             Self::Mixed(entries) => entries
                 .next()
                 .map(|entry| (entry.key.clone(), &entry.value)),
@@ -324,6 +328,7 @@ impl<'a> Iterator for PhpArrayIter<'a> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Packed(values) => values.size_hint(),
+            Self::Record(pairs) => pairs.size_hint(),
             Self::Mixed(entries) => entries.size_hint(),
         }
     }
@@ -399,9 +404,21 @@ impl ArrayCachedMetadata {
     }
 
     fn from_packed_values_without_counter(values: &[Value]) -> Self {
+        Self::from_record_values_without_counter(values, None)
+    }
+
+    /// Values-only metadata: integer keys when `string_key_count` is `None`,
+    /// otherwise that many interner-shared string keys.
+    fn from_record_values_without_counter(
+        values: &[Value],
+        string_key_count: Option<usize>,
+    ) -> Self {
         let mut metadata = Self::default();
         for value in values {
-            metadata.add_packed_value(value);
+            match string_key_count {
+                Some(_) => metadata.add_record_value(value),
+                None => metadata.add_packed_value(value),
+            }
         }
         metadata
     }
@@ -416,6 +433,20 @@ impl ArrayCachedMetadata {
             self.int_values += 1;
         }
         self.int_keys += 1;
+    }
+
+    /// Record slots carry interned (always-shared) string keys with no
+    /// numeric-string ambiguity, enforced at promotion.
+    fn add_record_value(&mut self, value: &Value) {
+        self.len += 1;
+        if matches!(value, Value::Reference(_)) {
+            self.reference_values += 1;
+        }
+        if matches!(value, Value::Int(_)) {
+            self.int_values += 1;
+        }
+        self.string_keys += 1;
+        self.shared_string_keys += 1;
     }
 
     fn remove_packed_value(&mut self, value: &Value) {
@@ -544,6 +575,96 @@ struct PackedArrayStorage {
     cached_metadata: ArrayCachedMetadata,
 }
 
+/// Shared key layout for record-like string-key maps. Shapes are interned
+/// per thread so repeated map literals (config rows, translation tables,
+/// route parameters) share one key table and slot index.
+struct RecordShape {
+    shape_id: u64,
+    /// Interned string keys in insertion order, slot-index aligned.
+    keys: Vec<PhpString>,
+    /// key -> slot index; probe keys compare by symbol identity or bytes.
+    slot_by_key: HashMap<PhpString, u32>,
+}
+
+impl std::fmt::Debug for RecordShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecordShape")
+            .field("shape_id", &self.shape_id)
+            .field("len", &self.keys.len())
+            .finish()
+    }
+}
+
+thread_local! {
+    static RECORD_SHAPE_CACHE: std::cell::RefCell<HashMap<u64, Vec<Rc<RecordShape>>>> =
+        std::cell::RefCell::new(HashMap::new());
+    static NEXT_RECORD_SHAPE_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+
+fn record_shape_sequence_hash(keys: &[PhpString], appended: Option<&PhpString>) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for key in keys.iter().chain(appended) {
+        hash ^= key.stable_hash();
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Interns the shape for `keys + appended`, reusing an existing shape with
+/// the same key sequence.
+fn record_shape_for(keys: &[PhpString], appended: Option<&PhpString>) -> Rc<RecordShape> {
+    let sequence_hash = record_shape_sequence_hash(keys, appended);
+    RECORD_SHAPE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let candidates = cache.entry(sequence_hash).or_default();
+        if let Some(existing) = candidates.iter().find(|shape| {
+            shape.keys.len() == keys.len() + usize::from(appended.is_some())
+                && shape
+                    .keys
+                    .iter()
+                    .zip(keys.iter().chain(appended))
+                    .all(|(a, b)| a.same_symbol_or_bytes(b))
+        }) {
+            return Rc::clone(existing);
+        }
+        let interned_keys = keys
+            .iter()
+            .chain(appended)
+            .map(|key| PhpString::intern(key.as_bytes()))
+            .collect::<Vec<_>>();
+        #[allow(clippy::mutable_key_type)]
+        let slot_by_key = interned_keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| (key.clone(), index as u32))
+            .collect::<HashMap<_, _>>();
+        let shape_id = NEXT_RECORD_SHAPE_ID.with(|next| {
+            let id = next.get();
+            next.set(id.wrapping_add(1));
+            id
+        });
+        let shape = Rc::new(RecordShape {
+            shape_id,
+            keys: interned_keys,
+            slot_by_key,
+        });
+        candidates.push(Rc::clone(&shape));
+        shape
+    })
+}
+
+/// Record storage: stable string-key maps with a shared key shape and a
+/// values-only slot vector.
+#[derive(Clone, Debug)]
+struct RecordArrayStorage {
+    shape: Rc<RecordShape>,
+    values: Vec<Value>,
+    next_append_key: Option<i64>,
+    internal_pointer: Option<usize>,
+    mutation_epoch: u64,
+    cached_metadata: ArrayCachedMetadata,
+}
+
 /// Mixed array storage for holes, string keys, and non-sequential integer keys.
 #[derive(Clone, Debug)]
 struct MixedArrayStorage {
@@ -562,6 +683,7 @@ struct MixedArrayStorage {
 #[derive(Clone, Debug)]
 enum ArrayStorage {
     Packed(PackedArrayStorage),
+    Record(RecordArrayStorage),
     Mixed(MixedArrayStorage),
 }
 
@@ -588,12 +710,33 @@ impl PartialEq for ArrayStorage {
         match (self, other) {
             (Self::Packed(lhs), Self::Packed(rhs)) => lhs.values == rhs.values,
             (Self::Mixed(lhs), Self::Mixed(rhs)) => lhs.entries == rhs.entries,
+            (Self::Record(lhs), Self::Record(rhs)) => {
+                (Rc::ptr_eq(&lhs.shape, &rhs.shape)
+                    || lhs
+                        .shape
+                        .keys
+                        .iter()
+                        .zip(&rhs.shape.keys)
+                        .all(|(a, b)| a.same_symbol_or_bytes(b)))
+                    && lhs.values == rhs.values
+            }
             (Self::Packed(packed), Self::Mixed(mixed))
             | (Self::Mixed(mixed), Self::Packed(packed)) => {
                 mixed.entries.iter().enumerate().all(|(index, entry)| {
                     matches!(&entry.key, ArrayKey::Int(key) if *key == index as i64)
                         && entry.value == packed.values[index]
                 })
+            }
+            (Self::Record(record), Self::Mixed(mixed))
+            | (Self::Mixed(mixed), Self::Record(record)) => {
+                mixed.entries.iter().enumerate().all(|(index, entry)| {
+                    matches!(&entry.key, ArrayKey::String(key) if key.same_symbol_or_bytes(&record.shape.keys[index]))
+                        && entry.value == record.values[index]
+                })
+            }
+            (Self::Packed(packed), Self::Record(record))
+            | (Self::Record(record), Self::Packed(packed)) => {
+                packed.values.is_empty() && record.values.is_empty()
             }
         }
     }
@@ -605,6 +748,7 @@ impl ArrayStorage {
     fn value_at(&self, index: usize) -> &Value {
         match self {
             Self::Packed(storage) => &storage.values[index],
+            Self::Record(storage) => &storage.values[index],
             Self::Mixed(storage) => &storage.entries[index].value,
         }
     }
@@ -612,6 +756,7 @@ impl ArrayStorage {
     fn value_at_mut(&mut self, index: usize) -> &mut Value {
         match self {
             Self::Packed(storage) => &mut storage.values[index],
+            Self::Record(storage) => &mut storage.values[index],
             Self::Mixed(storage) => &mut storage.entries[index].value,
         }
     }
@@ -619,16 +764,22 @@ impl ArrayStorage {
     fn get_value(&self, index: usize) -> Option<&Value> {
         match self {
             Self::Packed(storage) => storage.values.get(index),
+            Self::Record(storage) => storage.values.get(index),
             Self::Mixed(storage) => storage.entries.get(index).map(ArrayEntry::value),
         }
     }
 
-    /// Key at an index; packed keys are synthesized.
+    /// Key at an index; packed and record keys come from the shape.
     fn key_at(&self, index: usize) -> Option<ArrayKey> {
         match self {
             Self::Packed(storage) => {
                 (index < storage.values.len()).then_some(ArrayKey::Int(index as i64))
             }
+            Self::Record(storage) => storage
+                .shape
+                .keys
+                .get(index)
+                .map(|key| ArrayKey::String(key.clone())),
             Self::Mixed(storage) => storage.entries.get(index).map(|entry| entry.key.clone()),
         }
     }
@@ -639,6 +790,9 @@ impl ArrayStorage {
                 crate::layout_stats::record_packed_virtual_key_iteration();
                 PhpArrayIter::Packed(storage.values.iter().enumerate())
             }
+            Self::Record(storage) => {
+                PhpArrayIter::Record(storage.shape.keys.iter().zip(storage.values.iter()))
+            }
             Self::Mixed(storage) => PhpArrayIter::Mixed(storage.entries.iter()),
         }
     }
@@ -646,6 +800,7 @@ impl ArrayStorage {
     fn metadata(&self) -> ArrayCachedMetadata {
         match self {
             Self::Packed(storage) => storage.cached_metadata,
+            Self::Record(storage) => storage.cached_metadata,
             Self::Mixed(storage) => storage.cached_metadata,
         }
     }
@@ -653,6 +808,7 @@ impl ArrayStorage {
     fn metadata_mut(&mut self) -> &mut ArrayCachedMetadata {
         match self {
             Self::Packed(storage) => &mut storage.cached_metadata,
+            Self::Record(storage) => &mut storage.cached_metadata,
             Self::Mixed(storage) => &mut storage.cached_metadata,
         }
     }
@@ -660,6 +816,7 @@ impl ArrayStorage {
     fn next_append_key(&self) -> Option<i64> {
         match self {
             Self::Packed(storage) => storage.next_append_key,
+            Self::Record(storage) => storage.next_append_key,
             Self::Mixed(storage) => storage.next_append_key,
         }
     }
@@ -667,6 +824,7 @@ impl ArrayStorage {
     fn set_next_append_key(&mut self, value: Option<i64>) {
         match self {
             Self::Packed(storage) => storage.next_append_key = value,
+            Self::Record(storage) => storage.next_append_key = value,
             Self::Mixed(storage) => storage.next_append_key = value,
         }
     }
@@ -674,6 +832,7 @@ impl ArrayStorage {
     fn internal_pointer(&self) -> Option<usize> {
         match self {
             Self::Packed(storage) => storage.internal_pointer,
+            Self::Record(storage) => storage.internal_pointer,
             Self::Mixed(storage) => storage.internal_pointer,
         }
     }
@@ -681,6 +840,7 @@ impl ArrayStorage {
     fn set_internal_pointer(&mut self, value: Option<usize>) {
         match self {
             Self::Packed(storage) => storage.internal_pointer = value,
+            Self::Record(storage) => storage.internal_pointer = value,
             Self::Mixed(storage) => storage.internal_pointer = value,
         }
     }
@@ -688,6 +848,7 @@ impl ArrayStorage {
     fn mutation_epoch(&self) -> u64 {
         match self {
             Self::Packed(storage) => storage.mutation_epoch,
+            Self::Record(storage) => storage.mutation_epoch,
             Self::Mixed(storage) => storage.mutation_epoch,
         }
     }
@@ -695,6 +856,7 @@ impl ArrayStorage {
     fn set_mutation_epoch(&mut self, value: u64) {
         match self {
             Self::Packed(storage) => storage.mutation_epoch = value,
+            Self::Record(storage) => storage.mutation_epoch = value,
             Self::Mixed(storage) => storage.mutation_epoch = value,
         }
     }
@@ -702,6 +864,7 @@ impl ArrayStorage {
     fn len(&self) -> usize {
         match self {
             Self::Packed(storage) => storage.values.len(),
+            Self::Record(storage) => storage.values.len(),
             Self::Mixed(storage) => storage.entries.len(),
         }
     }
@@ -714,7 +877,56 @@ impl ArrayStorage {
         matches!(self, Self::Packed(_))
     }
 
+    fn is_record(&self) -> bool {
+        matches!(self, Self::Record(_))
+    }
+
+    /// Promotes an empty packed array into record storage. The caller has
+    /// verified the incoming key is an unambiguous string key.
+    fn promote_empty_to_record(&mut self) {
+        debug_assert!(self.is_packed() && self.is_empty());
+        crate::layout_stats::record_record_storage_array();
+        crate::layout_stats::record_record_shape_promotion();
+        *self = Self::Record(RecordArrayStorage {
+            shape: record_shape_for(&[], None),
+            values: Vec::new(),
+            next_append_key: self.next_append_key(),
+            internal_pointer: self.internal_pointer(),
+            mutation_epoch: self.mutation_epoch(),
+            cached_metadata: ArrayCachedMetadata::default(),
+        });
+    }
+
+    /// Converts record storage to mixed, synthesizing full entries.
+    fn make_record_mixed(&mut self, reason: RecordToMixedReason) {
+        let Self::Record(storage) = self else {
+            return;
+        };
+        crate::layout_stats::record_record_to_mixed(reason);
+        let keys = storage.shape.keys.clone();
+        let entries = std::mem::take(&mut storage.values)
+            .into_iter()
+            .zip(keys)
+            .map(|(value, key)| ArrayEntry::new(ArrayKey::String(key), value))
+            .collect::<Vec<_>>();
+        #[allow(clippy::mutable_key_type)]
+        let index = build_index(&entries);
+        let mixed = MixedArrayStorage {
+            entries,
+            index,
+            next_append_key: storage.next_append_key,
+            internal_pointer: storage.internal_pointer,
+            mutation_epoch: storage.mutation_epoch,
+            cached_metadata: storage.cached_metadata,
+        };
+        *self = Self::Mixed(mixed);
+    }
+
     fn make_mixed(&mut self, reason: PackedToMixedReason) {
+        if matches!(self, Self::Record(_)) {
+            self.make_record_mixed(RecordToMixedReason::GenericMutation);
+            return;
+        }
         let Self::Packed(storage) = self else {
             return;
         };
@@ -743,12 +955,35 @@ impl ArrayStorage {
     fn find_index(&self, key: &ArrayKey) -> Option<usize> {
         match self {
             Self::Packed(storage) => packed_key_index(storage.values.len(), key),
+            Self::Record(storage) => {
+                let ArrayKey::String(key) = key else {
+                    return None;
+                };
+                if key.symbol_id().is_some() {
+                    crate::layout_stats::record_record_key_symbol_hit();
+                }
+                let slot = storage.shape.slot_by_key.get(key).copied();
+                if slot.is_some() {
+                    crate::layout_stats::record_record_slot_read();
+                }
+                slot.map(|slot| slot as usize)
+            }
             Self::Mixed(storage) => storage.index.get(key).copied(),
         }
     }
 
     fn push_entry(&mut self, entry: ArrayEntry) {
         match self {
+            Self::Record(storage) => {
+                let ArrayKey::String(key) = &entry.key else {
+                    unreachable!("record pushes carry string keys; ints convert to mixed first");
+                };
+                debug_assert!(!storage.shape.slot_by_key.contains_key(key));
+                storage.shape = record_shape_for(&storage.shape.keys, Some(key));
+                crate::layout_stats::record_record_slot_write();
+                storage.cached_metadata.add_record_value(&entry.value);
+                storage.values.push(entry.value);
+            }
             Self::Packed(storage) => {
                 debug_assert!(
                     matches!(&entry.key, ArrayKey::Int(key) if *key as usize == storage.values.len()),
@@ -787,6 +1022,9 @@ impl ArrayStorage {
 
     fn remove_index(&mut self, index: usize) -> (ArrayKey, Value) {
         match self {
+            Self::Record(_) => {
+                unreachable!("record arrays convert to mixed before element removal")
+            }
             Self::Packed(storage) => {
                 let value = storage.values.remove(index);
                 storage.cached_metadata.remove_packed_value(&value);
@@ -814,7 +1052,17 @@ impl ArrayStorage {
             Self::Packed(storage) => {
                 debug_assert_eq!(
                     self.metadata(),
-                    ArrayCachedMetadata::from_packed_values_without_counter(&storage.values)
+                    ArrayCachedMetadata::from_record_values_without_counter(&storage.values, None,)
+                );
+            }
+            Self::Record(storage) => {
+                debug_assert_eq!(storage.shape.keys.len(), storage.values.len());
+                debug_assert_eq!(
+                    self.metadata(),
+                    ArrayCachedMetadata::from_record_values_without_counter(
+                        &storage.values,
+                        Some(storage.shape.keys.len()),
+                    )
                 );
             }
             Self::Mixed(storage) => {
@@ -1104,6 +1352,51 @@ impl PhpArray {
             .map_or(PhpArrayShapeLookup::Miss, PhpArrayShapeLookup::Hit)
     }
 
+    /// Record-storage slot index for a string key, when this array uses
+    /// shaped record storage.
+    #[must_use]
+    pub fn record_slot_for_symbol(&self, key: &PhpString) -> Option<u32> {
+        let ArrayStorage::Record(storage) = self.storage.as_ref() else {
+            return None;
+        };
+        storage.shape.slot_by_key.get(key).copied()
+    }
+
+    /// Direct record-slot read by string key; `None` when the array is not
+    /// record-shaped or the key is absent.
+    #[must_use]
+    pub fn record_get_symbol(&self, key: &PhpString) -> Option<&Value> {
+        let ArrayStorage::Record(storage) = self.storage.as_ref() else {
+            return None;
+        };
+        if key.symbol_id().is_some() {
+            crate::layout_stats::record_record_key_symbol_hit();
+        }
+        let slot = storage.shape.slot_by_key.get(key).copied()?;
+        crate::layout_stats::record_record_slot_read();
+        storage.values.get(slot as usize)
+    }
+
+    /// Direct record-slot overwrite by string key. Returns false when the
+    /// array is not record-shaped or the key is absent; callers fall back
+    /// to the generic insert path.
+    pub fn record_set_symbol(&mut self, key: &PhpString, value: Value) -> bool {
+        if self.record_slot_for_symbol(key).is_none() {
+            return false;
+        }
+        let storage = self.storage_mut_for(PhpArrayWriteIntent::NestedDimensionWrite);
+        let ArrayStorage::Record(record) = &*storage else {
+            return false;
+        };
+        let Some(slot) = record.shape.slot_by_key.get(key).copied() else {
+            return false;
+        };
+        crate::layout_stats::record_record_slot_write();
+        storage.replace_value(slot as usize, value);
+        bump_mutation_epoch(storage);
+        true
+    }
+
     fn string_keys_share_storage_fast(&self) -> bool {
         self.storage.metadata().string_keys_share_storage()
     }
@@ -1192,10 +1485,27 @@ impl PhpArray {
         let remains_packed =
             storage.is_packed() && matches!(key, ArrayKey::Int(value) if value == old_len as i64);
         if !remains_packed {
-            storage.make_mixed(match key {
-                ArrayKey::String(_) => PackedToMixedReason::StringKey,
-                ArrayKey::Int(_) => PackedToMixedReason::NonSequentialIntKey,
-            });
+            if storage.is_record() {
+                match &key {
+                    ArrayKey::Int(_) => {
+                        storage.make_record_mixed(RecordToMixedReason::IntKey);
+                    }
+                    ArrayKey::String(name) if array_key_has_numeric_string_ambiguity(name) => {
+                        storage.make_record_mixed(RecordToMixedReason::AmbiguousKey);
+                    }
+                    ArrayKey::String(_) => {}
+                }
+            } else if storage.is_packed()
+                && old_len == 0
+                && matches!(&key, ArrayKey::String(name) if !array_key_has_numeric_string_ambiguity(name))
+            {
+                storage.promote_empty_to_record();
+            } else {
+                storage.make_mixed(match key {
+                    ArrayKey::String(_) => PackedToMixedReason::StringKey,
+                    ArrayKey::Int(_) => PackedToMixedReason::NonSequentialIntKey,
+                });
+            }
         }
         storage.push_entry(ArrayEntry::new(key, value));
         if storage.internal_pointer().is_none() {
@@ -1213,6 +1523,9 @@ impl PhpArray {
             PhpArrayWriteIntent::Append
         };
         let storage = self.storage_mut_for(intent);
+        if storage.is_record() {
+            storage.make_record_mixed(RecordToMixedReason::IntKey);
+        }
         let key = ArrayKey::Int(storage.next_append_key().unwrap_or(0));
         let old_len = storage.len();
         let remains_packed =
@@ -1254,6 +1567,17 @@ impl PhpArray {
                 crate::layout_stats::record_packed_values_storage_read();
                 storage.values.get(index)
             }
+            ArrayStorage::Record(storage) => {
+                let ArrayKey::String(name) = key else {
+                    return None;
+                };
+                if name.symbol_id().is_some() {
+                    crate::layout_stats::record_record_key_symbol_hit();
+                }
+                let slot = storage.shape.slot_by_key.get(name).copied()?;
+                crate::layout_stats::record_record_slot_read();
+                storage.values.get(slot as usize)
+            }
             ArrayStorage::Mixed(storage) => {
                 let index = storage.index.get(key).copied()?;
                 crate::layout_stats::record_array_mixed_indexed_get();
@@ -1284,8 +1608,11 @@ impl PhpArray {
         let index = storage.find_index(key)?;
         // Removing a non-tail packed element must preserve the remaining
         // keys, so the array leaves values-only storage before the removal
-        // renumbers positions.
-        if storage.is_packed() && index + 1 != storage.len() {
+        // renumbers positions; record storage keeps its shape immutable and
+        // converts for any element removal.
+        if storage.is_record() {
+            storage.make_record_mixed(RecordToMixedReason::GenericMutation);
+        } else if storage.is_packed() && index + 1 != storage.len() {
             storage.make_mixed(PackedToMixedReason::UnsetHole);
         }
         let (_removed_key, value) = storage.remove_index(index);
@@ -1391,11 +1718,10 @@ impl PhpArray {
             return Some(self.packed_values_fast()?.collect());
         }
         crate::layout_stats::record_array_linear_scan_fallback();
-        let ArrayStorage::Mixed(storage) = self.storage.as_ref() else {
-            return Some(match self.storage.as_ref() {
-                ArrayStorage::Packed(storage) => storage.values.iter().collect(),
-                ArrayStorage::Mixed(_) => unreachable!(),
-            });
+        let storage = match self.storage.as_ref() {
+            ArrayStorage::Packed(storage) => return Some(storage.values.iter().collect()),
+            ArrayStorage::Record(_) => return None,
+            ArrayStorage::Mixed(storage) => storage,
         };
         let mut elements = Vec::with_capacity(storage.entries.len());
         for (index, entry) in storage.entries.iter().enumerate() {
@@ -1426,6 +1752,7 @@ impl PhpArray {
         crate::layout_stats::record_array_linear_scan_fallback();
         match self.storage.as_ref() {
             ArrayStorage::Packed(storage) => storage.values.get(index),
+            ArrayStorage::Record(_) => None,
             ArrayStorage::Mixed(storage) => {
                 for (entry_index, entry) in storage.entries.iter().enumerate() {
                     if entry.key != ArrayKey::Int(entry_index as i64) {
@@ -2175,15 +2502,18 @@ mod tests {
         let mut record = PhpArray::new();
         record.insert(ArrayKey::String(PhpString::from("id")), Value::Int(1));
         record.insert(ArrayKey::String(PhpString::from("name")), Value::Int(2));
+        // Record storage interns its shape keys, so string-key maps now
+        // classify as interned records even when built from fresh strings.
         assert_eq!(
             record.shape_metadata().kind,
-            PhpArrayShapeKind::ShapeStableRecordLike
+            PhpArrayShapeKind::InternedStringKeyRecord
         );
 
         let shared_key = PhpString::from("id");
         let mut interned_record = PhpArray::new();
         interned_record.insert(ArrayKey::String(shared_key.clone()), Value::Int(1));
-        assert!(shared_key.is_shared());
+        // The record shape holds an interner-backed copy of the key, so the
+        // caller's handle no longer shares storage with the array itself.
         assert_eq!(
             interned_record.shape_metadata().kind,
             PhpArrayShapeKind::InternedStringKeyRecord
