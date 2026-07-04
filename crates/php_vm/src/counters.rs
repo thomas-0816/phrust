@@ -224,6 +224,12 @@ pub struct VmCounters {
     pub array_metadata_recomputes: u64,
     pub symbol_map_lookups: u64,
     pub symbol_linear_fallbacks: u64,
+    pub symbol_intern_hits: u64,
+    pub symbol_intern_misses: u64,
+    pub string_hash_cache_hits: u64,
+    pub string_hash_cache_misses: u64,
+    pub symbol_eq_fast_hits: u64,
+    pub symbol_eq_byte_fallbacks: u64,
     pub array_dim_fetches: u64,
     pub packed_dim_fast_path_hits: u64,
     pub packed_dim_fast_path_misses: u64,
@@ -758,6 +764,12 @@ impl VmCounters {
         self.array_metadata_recomputes += stats.array_metadata_recomputes;
         self.symbol_map_lookups += stats.symbol_map_lookups;
         self.symbol_linear_fallbacks += stats.symbol_linear_fallbacks;
+        self.symbol_intern_hits += stats.symbol_intern_hits;
+        self.symbol_intern_misses += stats.symbol_intern_misses;
+        self.string_hash_cache_hits += stats.string_hash_cache_hits;
+        self.string_hash_cache_misses += stats.string_hash_cache_misses;
+        self.symbol_eq_fast_hits += stats.symbol_eq_fast_hits;
+        self.symbol_eq_byte_fallbacks += stats.symbol_eq_byte_fallbacks;
     }
 
     pub(crate) fn record_bytecode_lower_attempt(&mut self) {
@@ -2446,6 +2458,42 @@ impl VmCounters {
             &mut json,
             "symbol_linear_fallbacks",
             self.symbol_linear_fallbacks,
+            true,
+        );
+        push_field(
+            &mut json,
+            "symbol_intern_hits",
+            self.symbol_intern_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "symbol_intern_misses",
+            self.symbol_intern_misses,
+            true,
+        );
+        push_field(
+            &mut json,
+            "string_hash_cache_hits",
+            self.string_hash_cache_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "string_hash_cache_misses",
+            self.string_hash_cache_misses,
+            true,
+        );
+        push_field(
+            &mut json,
+            "symbol_eq_fast_hits",
+            self.symbol_eq_fast_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "symbol_eq_byte_fallbacks",
+            self.symbol_eq_byte_fallbacks,
             true,
         );
         push_field(&mut json, "array_dim_fetches", self.array_dim_fetches, true);
@@ -4438,6 +4486,12 @@ mod tests {
             array_metadata_recomputes: 23,
             symbol_map_lookups: 29,
             symbol_linear_fallbacks: 31,
+            symbol_intern_hits: 37,
+            symbol_intern_misses: 41,
+            string_hash_cache_hits: 43,
+            string_hash_cache_misses: 47,
+            symbol_eq_fast_hits: 53,
+            symbol_eq_byte_fallbacks: 59,
         });
         counters.record_autoload();
         counters.record_literal_intern(false);
@@ -4698,6 +4752,12 @@ mod tests {
         assert_eq!(counters.array_metadata_recomputes, 23);
         assert_eq!(counters.symbol_map_lookups, 29);
         assert_eq!(counters.symbol_linear_fallbacks, 31);
+        assert_eq!(counters.symbol_intern_hits, 37);
+        assert_eq!(counters.symbol_intern_misses, 41);
+        assert_eq!(counters.string_hash_cache_hits, 43);
+        assert_eq!(counters.string_hash_cache_misses, 47);
+        assert_eq!(counters.symbol_eq_fast_hits, 53);
+        assert_eq!(counters.symbol_eq_byte_fallbacks, 59);
         assert_eq!(counters.string_concats, 1);
         assert_eq!(counters.packed_dim_fast_path_hits, 1);
         assert_eq!(counters.packed_dim_fast_path_misses, 1);

@@ -14,6 +14,10 @@ pub struct LiteralPool {
 
 impl LiteralPool {
     /// Interns raw PHP string bytes and returns a COW-safe string handle.
+    ///
+    /// Literals go through the thread-local symbol interner, so pooled
+    /// strings carry a symbol identity for fast equality/hashing (array
+    /// string keys from literals, names) in addition to sharing storage.
     pub fn intern_bytes(&mut self, bytes: &[u8]) -> InternedLiteral {
         if let Some(value) = self.strings.get(bytes) {
             self.hits += 1;
@@ -22,7 +26,7 @@ impl LiteralPool {
                 hit: true,
             };
         }
-        let value = PhpString::from_bytes(bytes.to_vec());
+        let value = PhpString::intern(bytes);
         self.strings.insert(bytes.to_vec(), value.clone());
         self.misses += 1;
         InternedLiteral { value, hit: false }

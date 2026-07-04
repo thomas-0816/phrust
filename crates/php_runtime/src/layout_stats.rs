@@ -40,6 +40,18 @@ pub struct RuntimeLayoutStats {
     pub symbol_map_lookups: u64,
     /// Compiled-unit symbol lookups that used a linear fallback.
     pub symbol_linear_fallbacks: u64,
+    /// String interner lookups that reused an existing symbol.
+    pub symbol_intern_hits: u64,
+    /// String interner lookups that created a new symbol.
+    pub symbol_intern_misses: u64,
+    /// String hashes served from the per-storage cache.
+    pub string_hash_cache_hits: u64,
+    /// String hashes computed and cached.
+    pub string_hash_cache_misses: u64,
+    /// String equality decided by paired symbol identity.
+    pub symbol_eq_fast_hits: u64,
+    /// String equality that fell back to byte comparison.
+    pub symbol_eq_byte_fallbacks: u64,
 }
 
 static LAYOUT_STATS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -129,6 +141,36 @@ layout_recorder!(
     pub record_symbol_linear_fallback,
     record_symbol_linear_fallback_slow,
     symbol_linear_fallbacks
+);
+layout_recorder!(
+    pub(crate) record_symbol_intern_hit,
+    record_symbol_intern_hit_slow,
+    symbol_intern_hits
+);
+layout_recorder!(
+    pub(crate) record_symbol_intern_miss,
+    record_symbol_intern_miss_slow,
+    symbol_intern_misses
+);
+layout_recorder!(
+    pub(crate) record_string_hash_cache_hit,
+    record_string_hash_cache_hit_slow,
+    string_hash_cache_hits
+);
+layout_recorder!(
+    pub(crate) record_string_hash_cache_miss,
+    record_string_hash_cache_miss_slow,
+    string_hash_cache_misses
+);
+layout_recorder!(
+    pub(crate) record_symbol_eq_fast_hit,
+    record_symbol_eq_fast_hit_slow,
+    symbol_eq_fast_hits
+);
+layout_recorder!(
+    pub(crate) record_symbol_eq_byte_fallback,
+    record_symbol_eq_byte_fallback_slow,
+    symbol_eq_byte_fallbacks
 );
 
 /// Clears layout counters for deterministic VM executions and enables

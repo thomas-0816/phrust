@@ -50,7 +50,16 @@ FAMILY_SPECS: tuple[FamilySpec, ...] = (
         name="string_allocations",
         description="New string buffer allocations.",
         scalar_keys=("string_allocations",),
-        detail_keys=("string_concats", "concat_prealloc_hits"),
+        detail_keys=(
+            "string_concats",
+            "concat_prealloc_hits",
+            "symbol_intern_hits",
+            "symbol_intern_misses",
+            "string_hash_cache_hits",
+            "string_hash_cache_misses",
+            "symbol_eq_fast_hits",
+            "symbol_eq_byte_fallbacks",
+        ),
     ),
     FamilySpec(
         name="array_handle_clones",

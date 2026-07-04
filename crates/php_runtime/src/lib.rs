@@ -143,7 +143,7 @@ pub mod api {
         SQLITE3_OPEN_READWRITE, SQLITE3_TEXT, SqliteState,
     };
     pub use crate::status::{ExecutionStatus, ExitStatus};
-    pub use crate::string::PhpString;
+    pub use crate::string::{PhpString, SymbolId};
     pub use crate::tokenizer;
     pub use crate::types::{runtime_type_name, value_matches_runtime_type, value_type_name};
     pub use crate::value::{FloatValue, Value};
@@ -288,7 +288,7 @@ pub use sqlite::{
     SQLITE3_OPEN_READWRITE, SQLITE3_TEXT, SqliteState,
 };
 pub use status::{ExecutionStatus, ExitStatus};
-pub use string::PhpString;
+pub use string::{PhpString, SymbolId};
 pub use types::{runtime_type_name, value_matches_runtime_type, value_type_name};
 pub use value::{FloatValue, Value};
 

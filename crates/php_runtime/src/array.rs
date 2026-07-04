@@ -615,6 +615,10 @@ impl ArrayStorage {
             return;
         };
         let entries = std::mem::take(&mut storage.entries);
+        // `ArrayKey` hashing/equality depend only on the key bytes; the
+        // interior cells on `PhpString` memoize the hash and symbol id
+        // without ever changing either relation (see `build_index`).
+        #[allow(clippy::mutable_key_type)]
         let index = build_index(&entries);
         let mixed = MixedArrayStorage {
             entries,
@@ -708,6 +712,12 @@ fn packed_key_index(entries: &[ArrayEntry], key: &ArrayKey) -> Option<usize> {
     (index < entries.len()).then_some(index)
 }
 
+/// `ArrayKey` is a stable map key despite clippy's `mutable_key_type` view:
+/// its `Hash`/`Eq` are pure functions of the key bytes, and the interior
+/// cells on `PhpString` only memoize that hash (and an interned symbol id
+/// that never overrides byte equality). Mutating a string always separates
+/// its storage first, so a key already inside a map can never change.
+#[allow(clippy::mutable_key_type)]
 fn build_index(entries: &[ArrayEntry]) -> HashMap<ArrayKey, usize> {
     let mut index = HashMap::with_capacity(entries.len());
     for (entry_index, entry) in entries.iter().enumerate() {
@@ -1538,6 +1548,31 @@ mod tests {
         let stats = crate::layout_stats::take_layout_stats();
         assert!(stats.array_mixed_indexed_gets >= 4, "{stats:?}");
         assert_eq!(stats.array_linear_scan_fallbacks, 0, "{stats:?}");
+    }
+
+    #[test]
+    fn mixed_lookup_matches_interned_and_uninterned_string_keys() {
+        let mut array = PhpArray::new();
+        array.insert(ArrayKey::String(PhpString::intern(b"alpha")), Value::Int(1));
+        array.insert(
+            ArrayKey::String(PhpString::from_bytes(b"beta".to_vec())),
+            Value::Int(2),
+        );
+
+        // Interned and plain keys with equal bytes must find the same entry
+        // regardless of how the stored key was created.
+        let interned_alpha = ArrayKey::String(PhpString::intern(b"alpha"));
+        let plain_alpha = ArrayKey::String(PhpString::from_bytes(b"alpha".to_vec()));
+        let interned_beta = ArrayKey::String(PhpString::intern(b"beta"));
+        let plain_beta = ArrayKey::String(PhpString::from_bytes(b"beta".to_vec()));
+        assert_eq!(array.get(&interned_alpha), Some(&Value::Int(1)));
+        assert_eq!(array.get(&plain_alpha), Some(&Value::Int(1)));
+        assert_eq!(array.get(&interned_beta), Some(&Value::Int(2)));
+        assert_eq!(array.get(&plain_beta), Some(&Value::Int(2)));
+        assert_eq!(
+            array.get(&ArrayKey::String(PhpString::intern(b"gamma"))),
+            None
+        );
     }
 
     #[test]
