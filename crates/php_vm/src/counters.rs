@@ -442,6 +442,9 @@ pub struct VmCounters {
     pub method_inline_fallback_by_reason: BTreeMap<String, u64>,
     pub constructor_inline_hits: u64,
     pub dto_array_inline_hits: u64,
+    pub sort_callback_resolution_cache_hits: u64,
+    pub sort_callback_direct_call_hits: u64,
+    pub sort_callback_generic_fallback_by_reason: BTreeMap<String, u64>,
     pub method_tiny_inline_rejected_by_reason: BTreeMap<String, u64>,
     pub property_ic_hits: u64,
     pub property_ic_misses: u64,
@@ -3799,6 +3802,24 @@ impl VmCounters {
             &mut json,
             "dto_array_inline_hits",
             self.dto_array_inline_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "sort_callback_resolution_cache_hits",
+            self.sort_callback_resolution_cache_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "sort_callback_direct_call_hits",
+            self.sort_callback_direct_call_hits,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "sort_callback_generic_fallback_by_reason",
+            &self.sort_callback_generic_fallback_by_reason,
             true,
         );
         push_string_u64_map_field(

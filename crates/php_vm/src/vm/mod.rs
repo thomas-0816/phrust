@@ -27574,6 +27574,100 @@ impl Vm {
         Ok(result.return_value.unwrap_or(Value::Null))
     }
 
+    /// Resolves a sort comparator once per builtin call when it is a plain
+    /// function name (string or first-class user-function callable), so the
+    /// per-comparison path can dispatch directly through the shared call
+    /// target executor. Anything else keeps the generic per-comparison
+    /// callable path.
+    fn resolve_sort_callback(
+        &self,
+        compiled: &CompiledUnit,
+        state: &mut ExecutionState,
+        callback: &Value,
+    ) -> Option<FunctionCallCacheTarget> {
+        let name = match callback {
+            Value::String(name) => String::from_utf8_lossy(name.as_bytes()).into_owned(),
+            Value::Callable(callable) => match callable.as_ref() {
+                CallableValue::UserFunction { name } => name.clone(),
+                _ => {
+                    self.record_counter_sort_callback("fallback", Some("closure_or_complex"));
+                    return None;
+                }
+            },
+            _ => {
+                self.record_counter_sort_callback("fallback", Some("closure_or_complex"));
+                return None;
+            }
+        };
+        if name.contains("::") {
+            self.record_counter_sort_callback("fallback", Some("method_callable"));
+            return None;
+        }
+        let lowered = normalize_function_name(&name);
+        let resolved = self.resolve_function_call_target(compiled, state, &lowered);
+        if resolved.is_some() {
+            self.record_counter_sort_callback("resolved", None);
+        } else {
+            self.record_counter_sort_callback("fallback", Some("unresolved_name"));
+        }
+        resolved
+    }
+
+    fn invoke_resolved_sort_callback(
+        &self,
+        compiled: &CompiledUnit,
+        target: &FunctionCallCacheTarget,
+        args: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, ArrayCallbackError> {
+        let call_args = args.into_iter().map(CallArgument::positional).collect();
+        let mut result = self.execute_function_call_target(
+            compiled,
+            target.clone(),
+            call_args,
+            None,
+            None,
+            output,
+            stack,
+            state,
+            &None,
+        );
+        if !result.status.is_success() {
+            return Err(ArrayCallbackError::Runtime(Box::new(result)));
+        }
+        if result.fiber_suspension.is_some() {
+            return Err(ArrayCallbackError::Message(
+                "E_PHP_VM_ARRAY_CALLBACK_FIBER_GAP: suspending inside array callbacks is not implemented"
+                    .to_owned(),
+            ));
+        }
+        self.record_counter_sort_callback("direct", None);
+        state.diagnostics.append(&mut result.diagnostics);
+        Ok(result.return_value.unwrap_or(Value::Null))
+    }
+
+    fn record_counter_sort_callback(&self, kind: &str, reason: Option<&'static str>) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            match kind {
+                "resolved" => counters.sort_callback_resolution_cache_hits += 1,
+                "direct" => counters.sort_callback_direct_call_hits += 1,
+                _ => {
+                    if let Some(reason) = reason {
+                        *counters
+                            .sort_callback_generic_fallback_by_reason
+                            .entry(reason.to_owned())
+                            .or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+
     fn call_array_sort_builtin(
         &self,
         compiled: &CompiledUnit,
@@ -27652,6 +27746,9 @@ impl Vm {
                 .unwrap_or(SORT_REGULAR)
         };
         let descending = matches!(name, "rsort" | "arsort" | "krsort");
+        let resolved_callback = callback
+            .as_ref()
+            .and_then(|callback| self.resolve_sort_callback(compiled, state, callback));
         let mut bool_compare_deprecated = false;
         sort_entries_stable(&mut entries, |left, right| {
             let (left, right) = if descending {
@@ -27662,7 +27759,8 @@ impl Vm {
             self.compare_sort_entries(
                 compiled,
                 name,
-                callback.clone(),
+                callback.as_ref(),
+                resolved_callback.as_ref(),
                 flags,
                 left,
                 right,
@@ -27825,11 +27923,13 @@ impl Vm {
         Ok(Value::Bool(true))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compare_sort_entries(
         &self,
         compiled: &CompiledUnit,
         name: &str,
-        callback: Option<Value>,
+        callback: Option<&Value>,
+        resolved_callback: Option<&FunctionCallCacheTarget>,
         flags: i64,
         left: &(ArrayKey, Value),
         right: &(ArrayKey, Value),
@@ -27839,9 +27939,20 @@ impl Vm {
         bool_compare_deprecated: &mut bool,
     ) -> Result<std::cmp::Ordering, ArrayCallbackError> {
         if let Some(callback) = callback {
-            let result = self.invoke_array_callback(
-                compiled,
-                callback.clone(),
+            let invoke = |vm: &Self,
+                          args: Vec<Value>,
+                          output: &mut OutputBuffer,
+                          stack: &mut CallStack,
+                          state: &mut ExecutionState|
+             -> Result<Value, ArrayCallbackError> {
+                if let Some(target) = resolved_callback {
+                    vm.invoke_resolved_sort_callback(compiled, target, args, output, stack, state)
+                } else {
+                    vm.invoke_array_callback(compiled, callback.clone(), args, output, stack, state)
+                }
+            };
+            let result = invoke(
+                self,
                 sort_callback_args(name, left, right),
                 output,
                 stack,
@@ -27859,9 +27970,8 @@ impl Vm {
                 if value {
                     return Ok(std::cmp::Ordering::Greater);
                 }
-                let reversed = self.invoke_array_callback(
-                    compiled,
-                    callback,
+                let reversed = invoke(
+                    self,
                     sort_callback_args(name, right, left),
                     output,
                     stack,
