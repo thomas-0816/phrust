@@ -241,7 +241,7 @@ impl Vm {
                 .with_this(object.clone())
                 .with_class_context(
                     declaring_class.name.clone(),
-                    object.class_name(),
+                    object.display_name(),
                     declaring_class.name.clone(),
                 ),
             output,

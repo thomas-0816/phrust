@@ -405,6 +405,14 @@ enum ForeachIterator {
         entries: Vec<(ArrayKey, Value)>,
         position: usize,
     },
+    /// By-value array iteration over a shared handle: copy-on-write gives
+    /// snapshot semantics without cloning the elements up front. Arrays
+    /// with top-level reference elements keep the eager snapshot so the
+    /// init-time dereference behavior is unchanged.
+    ArrayHandle {
+        array: PhpArray,
+        position: usize,
+    },
     ObjectProperties {
         object: ObjectRef,
         entries: Vec<ObjectPropertyIterationEntry>,
@@ -1493,6 +1501,7 @@ fn foreach_iterator_candidate_value(iterator: ForeachIterator) -> Option<Value> 
         ForeachIterator::IteratorObject { object, .. }
         | ForeachIterator::ObjectProperties { object, .. } => Some(Value::Object(object)),
         ForeachIterator::Generator { generator, .. } => Some(Value::Generator(generator)),
+        ForeachIterator::ArrayHandle { array, .. } => Some(Value::Array(array)),
         ForeachIterator::Snapshot { .. } | ForeachIterator::ByReference { .. } => None,
     }
 }
@@ -4068,6 +4077,15 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_value_clone_by_reason(reason);
+        }
+    }
+
+    fn record_counter_foreach_no_clone_hit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_foreach_no_clone_hit();
         }
     }
 
@@ -10650,11 +10668,18 @@ impl Vm {
         let Ok(key) = array_key_from_value(key_value) else {
             return None;
         };
-        match array.get(&key) {
+        let result = match array.get(&key) {
             Some(value) => Some(effective_value(value)),
             None if quiet => Some(Value::Null),
             None => None,
+        };
+        if result.is_some()
+            && self.options.collect_counters
+            && let Some(counters) = self.counters.borrow_mut().as_mut()
+        {
+            counters.record_array_read_borrow_hit();
         }
+        result
     }
 
     fn read_dense_dim_operands(
@@ -11409,6 +11434,20 @@ impl Vm {
                     .get(*position)
                     .cloned()
                     .map(|(key, value)| (Some(array_key_to_value(key)), value));
+                if next.is_some() {
+                    *position += 1;
+                    self.record_counter_value_clone_reason("foreach_value");
+                }
+                next
+            }
+            Some(ForeachIterator::ArrayHandle { array, position }) => {
+                let next = array.pair_at(*position).map(|(key, value)| {
+                    let value = match value {
+                        Value::Reference(cell) => cell.get(),
+                        other => other,
+                    };
+                    (Some(array_key_to_value(key)), value)
+                });
                 if next.is_some() {
                     *position += 1;
                     self.record_counter_value_clone_reason("foreach_value");
@@ -21955,6 +21994,20 @@ impl Vm {
                                 }
                                 next
                             }
+                            Some(ForeachIterator::ArrayHandle { array, position }) => {
+                                let next = array.pair_at(*position).map(|(key, value)| {
+                                    let value = match value {
+                                        Value::Reference(cell) => cell.get(),
+                                        other => other,
+                                    };
+                                    (Some(array_key_to_value(key)), value)
+                                });
+                                if next.is_some() {
+                                    *position += 1;
+                                    self.record_counter_value_clone_reason("foreach_value");
+                                }
+                                next
+                            }
                             Some(ForeachIterator::ObjectProperties {
                                 object,
                                 entries,
@@ -29828,18 +29881,15 @@ impl Vm {
     ) -> Result<ForeachIterator, VmResult> {
         match source {
             Value::Array(array) => {
-                if array.is_packed_fast() && array.contains_references_fast() {
-                    self.record_counter_cow_or_reference_fallback();
-                } else if array.is_packed_fast() {
+                // Handle-based iteration: copy-on-write supplies snapshot
+                // semantics for source mutation, and reference elements
+                // dereference at visit time, matching the reference engine
+                // (the previous eager snapshot dereferenced at init).
+                if array.is_packed_fast() {
                     self.record_counter_array_sequential_foreach_fast_path_hit();
                 }
-                Ok(ForeachIterator::Snapshot {
-                    entries: array
-                        .iter()
-                        .map(|(key, value)| (key.clone(), effective_value(value)))
-                        .collect(),
-                    position: 0,
-                })
+                self.record_counter_foreach_no_clone_hit();
+                Ok(ForeachIterator::ArrayHandle { array, position: 0 })
             }
             Value::Generator(generator) => Ok(ForeachIterator::Generator {
                 generator,
@@ -36558,6 +36608,7 @@ fn format_array_key_for_trace(key: &ArrayKey) -> String {
 fn format_foreach_iterator_kind(iterator: &ForeachIterator) -> &'static str {
     match iterator {
         ForeachIterator::Snapshot { .. } => "snapshot",
+        ForeachIterator::ArrayHandle { .. } => "array-handle",
         ForeachIterator::ObjectProperties { .. } => "object-properties",
         ForeachIterator::IteratorObject { .. } => "iterator-object",
         ForeachIterator::Generator { .. } => "generator",
@@ -70721,10 +70772,12 @@ foreach ([new PerfRelationBase(), new PerfRelationOverride(), new PerfRelationBa
         );
 
         assert_eq!(on.status.exit_status(), ExitStatus::RuntimeError);
+        // Readonly violations raise a catchable Error; uncaught at top
+        // level it surfaces through the uncaught-exception path.
         assert!(
-            on.status
-                .message()
-                .is_some_and(|message| message.contains("E_PHP_VM_READONLY_PROPERTY_WRITE")),
+            on.status.message().is_some_and(
+                |message| message.contains("Uncaught Error") && message.contains("is readonly")
+            ),
             "{:?}",
             on.status
         );
@@ -73157,7 +73210,7 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
         assert_eq!(
             events,
             vec![
-                "foreach init iterator=r5 kind=snapshot".to_owned(),
+                "foreach init iterator=r5 kind=array-handle".to_owned(),
                 "foreach next iterator=r5 status=value key=String(\"a\") value=Int(1)".to_owned(),
                 "foreach next iterator=r5 status=value key=String(\"b\") value=Int(2)".to_owned(),
                 "foreach next iterator=r5 status=done".to_owned(),
@@ -77735,7 +77788,8 @@ function dense_supported($seed) {
     return $items[2] + 3;
 }
 function rich_fallback() {
-    $box = new LocalBox();
+    $class = 'LocalBox';
+    $box = new $class();
     return $box->value;
 }
 echo dense_supported(4), "\n", rich_fallback(), "\n";

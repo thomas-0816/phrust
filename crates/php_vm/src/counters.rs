@@ -245,6 +245,9 @@ pub struct VmCounters {
     pub record_shape_promotions: u64,
     pub record_key_symbol_hits: u64,
     pub record_to_mixed_by_reason: BTreeMap<String, u64>,
+    pub foreach_no_clone_hits: u64,
+    pub foreach_clone_required_by_reason: BTreeMap<String, u64>,
+    pub array_read_borrow_hits: u64,
     pub symbolized_call_name_hits: u64,
     pub symbolized_method_name_hits: u64,
     pub symbolized_property_name_hits: u64,
@@ -640,6 +643,14 @@ impl VmCounters {
             .value_clone_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
+    }
+
+    pub(crate) fn record_foreach_no_clone_hit(&mut self) {
+        self.foreach_no_clone_hits += 1;
+    }
+
+    pub(crate) fn record_array_read_borrow_hit(&mut self) {
+        self.array_read_borrow_hits += 1;
     }
 
     pub(crate) fn record_symbolized_call_name_hit(&mut self) {
@@ -2663,6 +2674,24 @@ impl VmCounters {
             &mut json,
             "record_to_mixed_by_reason",
             &self.record_to_mixed_by_reason,
+            true,
+        );
+        push_field(
+            &mut json,
+            "foreach_no_clone_hits",
+            self.foreach_no_clone_hits,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "foreach_clone_required_by_reason",
+            &self.foreach_clone_required_by_reason,
+            true,
+        );
+        push_field(
+            &mut json,
+            "array_read_borrow_hits",
+            self.array_read_borrow_hits,
             true,
         );
         push_field(

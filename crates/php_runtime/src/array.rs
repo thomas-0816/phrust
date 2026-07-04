@@ -1352,6 +1352,15 @@ impl PhpArray {
             .map_or(PhpArrayShapeLookup::Miss, PhpArrayShapeLookup::Hit)
     }
 
+    /// Key/value pair at an insertion-order position; the value is a
+    /// PHP-visible copy. Used by handle-based foreach iteration.
+    #[must_use]
+    pub fn pair_at(&self, index: usize) -> Option<(ArrayKey, Value)> {
+        let key = self.storage.key_at(index)?;
+        let value = self.storage.get_value(index)?.clone();
+        Some((key, value))
+    }
+
     /// Record-storage slot index for a string key, when this array uses
     /// shaped record storage.
     #[must_use]
