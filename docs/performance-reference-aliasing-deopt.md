@@ -103,3 +103,26 @@ Per `docs/performance-optimization-gates.md`:
 
 Future work may specialize `local_only_reference`, but only after reference
 identity and write-through behavior have focused differential fixtures.
+
+## By-Ref Argument Location Coverage
+
+Direct locals are the only by-ref argument shape bound through location
+metadata without materializing a caller value register. The other location
+forms stay materialized deliberately:
+
+- **Array dims**: the element read is observable — an `ArrayAccess` base
+  must call `offsetGet` (and the reference engine then emits the
+  indirect-modification notice; see `E_PHP_VM_BY_REF_OVERLOADED_DIM_GAP`).
+  The base's runtime type is unknown at lowering, so the read cannot be
+  skipped statically.
+- **Object properties**: `__get`, property hooks, and visibility depend on
+  the receiver class, which lowering cannot prove; skipping the
+  `FetchProperty` read would change magic-method observability.
+- **Static properties**: already bound through
+  `BindReferenceFromStaticPropertyDim`, which loads the reference cell
+  itself rather than pinning a copy-on-write value.
+
+The `by_ref_arg_fallback_by_reason` counters attribute each materialized
+form (`dim_value_materialized`, `property_value_materialized`,
+`property_dim_value_materialized`) so future dense-plan guards can be sized
+against real workloads before any of these forms is optimized.
