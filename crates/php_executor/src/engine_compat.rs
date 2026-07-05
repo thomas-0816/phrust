@@ -157,7 +157,12 @@ where
     match result.status.exit_status() {
         ExitStatus::Success => Ok(EXIT_SUCCESS),
         ExitStatus::CompileError => {
-            if write_vm_compile_fatal_line(stderr, &pipeline, &result.diagnostics)? {
+            if write_vm_compile_fatal_line(
+                stderr,
+                &pipeline.path,
+                &pipeline.source,
+                &result.diagnostics,
+            )? {
                 return Ok(EXIT_PHP_ERROR);
             }
             write_runtime_diagnostics(stderr, &input.source_path, &result.diagnostics)?;

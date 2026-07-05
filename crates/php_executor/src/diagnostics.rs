@@ -115,7 +115,8 @@ pub(crate) fn render_frontend_diagnostics(pipeline: &Pipeline) -> Result<String,
 }
 
 pub(crate) fn execution_output_from_vm(
-    pipeline: &Pipeline,
+    path: &str,
+    source: &SourceText,
     result: VmResult,
 ) -> PhpExecutionOutput {
     let status = PhpExecutionStatus::from(result.status.exit_status());
@@ -123,15 +124,11 @@ pub(crate) fn execution_output_from_vm(
     match result.status.exit_status() {
         ExitStatus::Success => {}
         ExitStatus::CompileError => {
-            match write_vm_compile_fatal_line(&mut diagnostics, pipeline, &result.diagnostics) {
+            match write_vm_compile_fatal_line(&mut diagnostics, path, source, &result.diagnostics) {
                 Ok(true) => {}
                 Ok(false) => {
-                    let _ = write_runtime_diagnostics(
-                        &mut diagnostics,
-                        &pipeline.path,
-                        &result.diagnostics,
-                    );
-                    let _ = writeln!(diagnostics, "{}: {}", pipeline.path, result.status);
+                    let _ = write_runtime_diagnostics(&mut diagnostics, path, &result.diagnostics);
+                    let _ = writeln!(diagnostics, "{path}: {}", result.status);
                 }
                 Err(error) => {
                     let _ = writeln!(diagnostics, "{error}");
@@ -139,9 +136,8 @@ pub(crate) fn execution_output_from_vm(
             }
         }
         ExitStatus::RuntimeError | ExitStatus::Fatal | ExitStatus::Unsupported => {
-            let _ =
-                write_runtime_diagnostics(&mut diagnostics, &pipeline.path, &result.diagnostics);
-            let _ = writeln!(diagnostics, "{}: {}", pipeline.path, result.status);
+            let _ = write_runtime_diagnostics(&mut diagnostics, path, &result.diagnostics);
+            let _ = writeln!(diagnostics, "{path}: {}", result.status);
         }
     }
     let diagnostics_text = String::from_utf8(diagnostics).unwrap_or_default();
@@ -162,6 +158,7 @@ pub(crate) fn execution_output_from_vm(
         trace: result.trace,
         counters: result.counters,
         tiering_stats: result.tiering_stats,
+        quickening_feedback: Vec::new(),
     }
 }
 
@@ -281,7 +278,8 @@ pub(crate) fn write_php_fatal_line<W: Write>(
 
 pub(crate) fn write_vm_compile_fatal_line<W: Write>(
     stderr: &mut W,
-    pipeline: &Pipeline,
+    path: &str,
+    source: &SourceText,
     diagnostics: &[RuntimeDiagnostic],
 ) -> Result<bool, String> {
     let Some((payload, span)) =
@@ -302,8 +300,8 @@ pub(crate) fn write_vm_compile_fatal_line<W: Write>(
     }
     write_php_fatal_line(
         stderr,
-        &pipeline.path,
-        &pipeline.source,
+        path,
+        source,
         TextRange::new(span.start as usize, span.end as usize),
         &payload.php_fatal_message(),
     )?;

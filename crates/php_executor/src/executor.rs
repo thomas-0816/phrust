@@ -11,6 +11,7 @@ use crate::pipeline::{
 };
 use crate::request::include_loader_for_request;
 use php_runtime::api::{FilesystemCapabilities, RuntimeHttpResponseState};
+use php_source::SourceText;
 use php_vm::api::{CompiledUnit, Vm, VmOptions};
 
 /// Transport-independent PHP executor.
@@ -62,6 +63,7 @@ impl PhpExecutor {
                 trace: Vec::new(),
                 counters: None,
                 tiering_stats: None,
+                quickening_feedback: Vec::new(),
             })));
         }
         Ok(CompiledPhpScript::new(pipeline))
@@ -104,6 +106,7 @@ impl PhpExecutor {
                 trace: Vec::new(),
                 counters: None,
                 tiering_stats: None,
+                quickening_feedback: Vec::new(),
             })));
         }
         Ok((CompiledPhpScript::new(pipeline), timings))
@@ -135,7 +138,10 @@ impl PhpExecutor {
             ..self.options.vm_options.clone()
         });
         let result = vm.execute(compiled.executable_unit());
-        execution_output_from_vm(&compiled.pipeline, result)
+        let quickening_feedback = vm.export_persistent_quickening();
+        let mut output = execution_output_from_vm(&compiled.path, &compiled.source, result);
+        output.quickening_feedback = quickening_feedback;
+        output
     }
 
     /// Compiles and executes source in one step.
@@ -168,23 +174,47 @@ impl PhpExecutor {
 /// Compiled, reusable PHP script artifact.
 #[derive(Clone, Debug)]
 pub struct CompiledPhpScript {
-    pub(crate) pipeline: Pipeline,
+    pub(crate) path: String,
+    pub(crate) source: SourceText,
     executable: CompiledUnit,
 }
 
 impl CompiledPhpScript {
     fn new(pipeline: Pipeline) -> Self {
-        let executable = CompiledUnit::new(pipeline.lowering.unit.clone());
+        let Pipeline {
+            path,
+            source,
+            lowering,
+            ..
+        } = pipeline;
         Self {
-            pipeline,
-            executable,
+            path,
+            source,
+            executable: CompiledUnit::new(lowering.unit),
+        }
+    }
+
+    /// Rehydrates a compiled script from an externally cached IR unit.
+    ///
+    /// The unit must come from a prior compile of exactly this source;
+    /// cache fingerprint validation is the caller's responsibility.
+    #[must_use]
+    pub fn from_cached_ir_unit(
+        source_path: impl Into<String>,
+        source: impl Into<String>,
+        unit: php_ir::module::IrUnit,
+    ) -> Self {
+        Self {
+            path: source_path.into(),
+            source: SourceText::new(source),
+            executable: CompiledUnit::new(unit),
         }
     }
 
     /// Returns the lowered IR unit for CLI/reporting adapters that need metadata.
     #[must_use]
     pub fn ir_unit(&self) -> &php_ir::module::IrUnit {
-        &self.pipeline.lowering.unit
+        self.executable.unit()
     }
 
     /// Returns the reusable VM-facing executable unit.
