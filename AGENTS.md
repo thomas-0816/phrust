@@ -175,3 +175,12 @@ Do not automatically update the target PHP version without a new ADR.
 - Keep the first line under 72 characters.
 - Use imperative mood.
 - Do not mention development provenance in commit messages.
+
+## Performance branches
+
+Run `just perf-pr-guard` before proposing any performance-labeled change.
+The guard fails measurement theater: docs/report/counter-only diffs, hot-path
+edits without gates, and native/JIT reporting while no native code changed.
+A performance claim needs production Rust changes plus an executable gate
+(`just profiler-overhead-gate`, the WordPress root benchmark, or a focused
+fixture with before/after counters).

@@ -1074,6 +1074,11 @@ wordpress-root-benchmark:
     if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py
 
+# Anti-theater guard: fail performance branches that only add docs, reports,
+# counters, or metric renames without production Rust changes or gates.
+perf-pr-guard *args:
+    scripts/verify/perf_pr_guard.py {{args}}
+
 # Profiler containment: unprofiled requests after a profiled request must stay
 # within 5% of clean unprofiled requests in the same server process.
 profiler-overhead-gate:
