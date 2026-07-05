@@ -429,7 +429,53 @@ fn server_writes_compact_access_log_line() {
 }
 
 #[test]
-fn server_writes_request_profile_for_php_request() {
+fn server_request_profile_alone_stays_in_summary_mode() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("summary.php"),
+        "<?php\necho strtoupper('ok');\n",
+    )
+    .expect("write summary fixture");
+    let profile_dir = temp_docroot();
+    let profile_arg = profile_dir.to_string_lossy().to_string();
+    let mut child = start_server(&docroot, &["--request-profile", &profile_arg]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/summary.php");
+
+    stop_child(child);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_eq!(response_body(&response), "OK");
+    let profile_path = fs::read_dir(&profile_dir)
+        .expect("read profile dir")
+        .map(|entry| entry.expect("profile entry").path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .expect("request profile json");
+    let profile: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
+            .expect("parse profile json");
+    // A request profile alone must not pay VM hot counters or per-clone
+    // source attribution; it still records phase timings.
+    assert_eq!(
+        profile["attribution"]["vm_counters_collected"],
+        serde_json::Value::from(false)
+    );
+    assert_eq!(
+        profile["attribution"]["source_attribution_collected"],
+        serde_json::Value::from(false)
+    );
+    assert!(profile["phases_nanos"].is_object());
+
+    fs::remove_dir_all(profile_dir).expect("remove profile dir");
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+}
+
+#[test]
+fn server_request_profile_source_attribution_mode_collects_attribution() {
     let docroot = temp_docroot();
     fs::write(
         docroot.join("lib.php"),
@@ -443,7 +489,14 @@ fn server_writes_request_profile_for_php_request() {
     .expect("write profile fixture");
     let profile_dir = temp_docroot();
     let profile_arg = profile_dir.to_string_lossy().to_string();
-    let mut child = start_server(&docroot, &["--request-profile", &profile_arg]);
+    let mut child = start_server(
+        &docroot,
+        &[
+            "--request-profile",
+            &profile_arg,
+            "--request-profile-source-attribution",
+        ],
+    );
 
     let address = read_listening_address(&mut child);
     let response = http_request(&address, "GET", "/profile.php");

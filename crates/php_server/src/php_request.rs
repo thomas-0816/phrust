@@ -472,11 +472,13 @@ pub(crate) async fn execute_php_request(
         )]),
     );
     let include_cache_before = state.engine.include_cache.cache_stats();
+    let profile_requested = request_profile_requested(&state, &parts.headers);
     let result = execute_compiled_php_in_blocking_region(
         Arc::clone(&state),
         lookup,
         script_path,
         runtime_context,
+        profile_requested,
     );
     record_phase(
         &state,
@@ -524,6 +526,7 @@ pub(crate) async fn execute_php_request(
             if state.request_profile.is_some() {
                 trace.profile_counters = output.counters.clone();
             }
+            trace.profile_requested = profile_requested;
             let mut execute_end_context = BTreeMap::from([
                 ("status".to_string(), format!("{:?}", output.status)),
                 (
@@ -764,6 +767,7 @@ pub(crate) fn execute_builtin_router_if_configured(
         lookup,
         router_path.clone(),
         runtime_context,
+        true,
     ) {
         Ok(output) => output,
         Err(error) => {
@@ -797,23 +801,85 @@ pub(crate) fn execute_compiled_php_in_blocking_region(
     lookup: CompiledScriptCacheLookup,
     script_path: PathBuf,
     runtime_context: RuntimeContext,
+    profile_requested: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
     task::block_in_place(move || {
-        let collect_counters = collect_vm_counters_for_request(&state);
-        let collect_profile_spans = collect_vm_profile_spans_for_request(&state);
+        let mode = if profile_requested {
+            request_counter_mode(&state)
+        } else {
+            perf_trace_counter_mode(&state)
+        };
+        let collect_profile_spans =
+            profile_requested && collect_vm_profile_spans_for_request(&state);
         execute_compiled_php_with_state(
             &state,
             lookup,
             script_path,
             runtime_context,
-            collect_counters,
+            mode,
             collect_profile_spans,
         )
     })
 }
 
-pub(crate) fn collect_vm_counters_for_request(state: &AppState) -> bool {
-    state.request_profile.is_some() || (state.perf_trace.is_some() && state.perf_trace_vm_counters)
+/// Counter mode for requests that did not ask for a profile (only relevant
+/// with `--request-profile-trigger-header`); perf-trace VM counters still
+/// apply because they are a process-wide policy.
+pub(crate) fn perf_trace_counter_mode(state: &AppState) -> RequestCounterMode {
+    if state.perf_trace.is_some() && state.perf_trace_vm_counters {
+        return RequestCounterMode::VmCounters;
+    }
+    RequestCounterMode::Off
+}
+
+/// True when this request opts into profiling: always when the header
+/// trigger is disabled, otherwise only when `x-phrust-request-profile: 1`
+/// is present.
+pub(crate) fn request_profile_requested(state: &AppState, headers: &HeaderMap) -> bool {
+    if !state.request_profile_trigger_header {
+        return true;
+    }
+    headers
+        .get("x-phrust-request-profile")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "on"))
+}
+
+/// How much VM accounting a request pays. `--request-profile` alone stays in
+/// `Summary` (phase/boundary JSON only); VM hot counters and per-clone source
+/// attribution are explicit opt-ins because they distort the measured request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestCounterMode {
+    Off,
+    Summary,
+    VmCounters,
+    SourceAttributedLayout,
+}
+
+impl RequestCounterMode {
+    pub(crate) fn collects_vm_counters(self) -> bool {
+        matches!(self, Self::VmCounters | Self::SourceAttributedLayout)
+    }
+
+    pub(crate) fn collects_source_attribution(self) -> bool {
+        matches!(self, Self::SourceAttributedLayout)
+    }
+}
+
+pub(crate) fn request_counter_mode(state: &AppState) -> RequestCounterMode {
+    if state.request_profile.is_some() && state.request_profile_source_attribution {
+        return RequestCounterMode::SourceAttributedLayout;
+    }
+    if state.request_profile.is_some() && state.request_profile_vm_counters {
+        return RequestCounterMode::VmCounters;
+    }
+    if state.perf_trace.is_some() && state.perf_trace_vm_counters {
+        return RequestCounterMode::VmCounters;
+    }
+    if state.request_profile.is_some() {
+        return RequestCounterMode::Summary;
+    }
+    RequestCounterMode::Off
 }
 
 pub(crate) fn collect_vm_profile_spans_for_request(state: &AppState) -> bool {
@@ -825,7 +891,7 @@ pub(crate) fn execute_compiled_php_with_state(
     lookup: CompiledScriptCacheLookup,
     script_path: PathBuf,
     runtime_context: RuntimeContext,
-    collect_counters: bool,
+    mode: RequestCounterMode,
     collect_profile_spans: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
     state
@@ -845,8 +911,9 @@ pub(crate) fn execute_compiled_php_with_state(
             cwd: state.route_config.docroot.clone(),
             include_roots: include_roots_for_docroot(&state.route_config.docroot),
             runtime_context,
-            collect_counters,
+            collect_counters: mode.collects_vm_counters(),
             collect_profile_spans,
+            collect_layout_source_attribution: mode.collects_source_attribution(),
         },
     );
     let absorbed = state
@@ -1462,7 +1529,8 @@ fn finish_php_request(
     {
         warn!(%error, path=%writer.path().display(), "perf trace write failed");
     }
-    if let Some(writer) = &state.request_profile
+    if trace.profile_requested
+        && let Some(writer) = &state.request_profile
         && let Err(error) = writer.write(&trace, trace.profile_counters.as_ref())
     {
         warn!(%error, dir=%writer.dir().display(), "request profile write failed");

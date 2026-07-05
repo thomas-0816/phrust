@@ -1074,6 +1074,12 @@ wordpress-root-benchmark:
     if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py
 
+# Profiler containment: unprofiled requests after a profiled request must stay
+# within 5% of clean unprofiled requests in the same server process.
+profiler-overhead-gate:
+    if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/profiler_overhead_gate.py
+
 wordpress-dense-fallback-report:
     scripts/performance/dense_fallback_report.py
 

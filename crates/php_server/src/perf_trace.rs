@@ -58,6 +58,8 @@ pub(crate) struct PerfTraceEvent {
     pub(crate) phases: Vec<(&'static str, u128)>,
     pub(crate) counters: Vec<(&'static str, u64)>,
     pub(crate) profile_counters: Option<VmCounters>,
+    /// Whether this request opted into profile output (header trigger).
+    pub(crate) profile_requested: bool,
 }
 
 impl PerfTraceEvent {

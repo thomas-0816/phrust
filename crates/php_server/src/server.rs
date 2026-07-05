@@ -231,6 +231,9 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         perf_trace,
         perf_trace_vm_counters: config.perf_trace_vm_counters,
         request_profile,
+        request_profile_vm_counters: config.request_profile_vm_counters,
+        request_profile_source_attribution: config.request_profile_source_attribution,
+        request_profile_trigger_header: config.request_profile_trigger_header,
         network_requests_enabled: config.network_requests_enabled,
         env_snapshot: Arc::new(std::env::vars().collect()),
         debug: config.debug,
@@ -266,8 +269,8 @@ mod tests {
         config::ServerPerfAblation,
         perf_trace::{PerfTraceEvent, PerfTraceWriter},
         php_request::{
-            append_vm_counters_to_trace, collect_vm_counters_for_request,
-            execute_compiled_php_with_state, http_runtime_context, php_runtime_context_for_http,
+            RequestCounterMode, append_vm_counters_to_trace, execute_compiled_php_with_state,
+            http_runtime_context, php_runtime_context_for_http, request_counter_mode,
             server_env_for_request,
         },
         request_profile::RequestProfileWriter,
@@ -409,7 +412,7 @@ mod tests {
             lookup,
             fixture.path.clone(),
             runtime_context,
-            true,
+            RequestCounterMode::VmCounters,
             false,
         )
         .expect("server execution should succeed");
@@ -494,25 +497,49 @@ mod tests {
     }
 
     #[test]
-    fn perf_trace_enabled_requests_collect_vm_counters() {
+    fn request_counter_modes_select_by_configuration() {
         let fixture = ServerCacheFixture::new();
         let plain_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        assert!(!collect_vm_counters_for_request(&plain_state));
+        assert_eq!(request_counter_mode(&plain_state), RequestCounterMode::Off);
 
         let mut traced_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
         traced_state.perf_trace = Some(Arc::new(
             PerfTraceWriter::open(fixture.root.join("perf.jsonl")).expect("perf trace"),
         ));
-        assert!(!collect_vm_counters_for_request(&traced_state));
+        assert_eq!(request_counter_mode(&traced_state), RequestCounterMode::Off);
 
         traced_state.perf_trace_vm_counters = true;
-        assert!(collect_vm_counters_for_request(&traced_state));
+        assert_eq!(
+            request_counter_mode(&traced_state),
+            RequestCounterMode::VmCounters
+        );
 
+        // A request profile alone stays in Summary: no VM hot counters and
+        // no per-clone source attribution for ordinary profiled requests.
         let mut profiled_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
         profiled_state.request_profile = Some(Arc::new(
             RequestProfileWriter::open(fixture.root.join("profiles")).expect("request profile"),
         ));
-        assert!(collect_vm_counters_for_request(&profiled_state));
+        assert_eq!(
+            request_counter_mode(&profiled_state),
+            RequestCounterMode::Summary
+        );
+        assert!(!request_counter_mode(&profiled_state).collects_vm_counters());
+
+        profiled_state.request_profile_vm_counters = true;
+        assert_eq!(
+            request_counter_mode(&profiled_state),
+            RequestCounterMode::VmCounters
+        );
+        assert!(!request_counter_mode(&profiled_state).collects_source_attribution());
+
+        profiled_state.request_profile_source_attribution = true;
+        assert_eq!(
+            request_counter_mode(&profiled_state),
+            RequestCounterMode::SourceAttributedLayout
+        );
+        assert!(request_counter_mode(&profiled_state).collects_vm_counters());
+        assert!(request_counter_mode(&profiled_state).collects_source_attribution());
     }
 
     #[test]
@@ -553,7 +580,7 @@ mod tests {
                     lookup,
                     fixture_path,
                     runtime_context,
-                    false,
+                    RequestCounterMode::Off,
                     false,
                 )
                 .expect("request execution");
@@ -910,6 +937,9 @@ mod tests {
             perf_trace: None,
             perf_trace_vm_counters: false,
             request_profile: None,
+            request_profile_vm_counters: false,
+            request_profile_source_attribution: false,
+            request_profile_trigger_header: false,
             network_requests_enabled: false,
             env_snapshot: Arc::new(Vec::new()),
             debug: false,

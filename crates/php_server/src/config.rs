@@ -72,6 +72,9 @@ pub struct ServerConfig {
     pub perf_trace: Option<PathBuf>,
     pub perf_trace_vm_counters: bool,
     pub request_profile: Option<PathBuf>,
+    pub request_profile_vm_counters: bool,
+    pub request_profile_source_attribution: bool,
+    pub request_profile_trigger_header: bool,
     pub network_requests_enabled: bool,
     pub help: bool,
 }
@@ -252,6 +255,15 @@ impl ServerConfig {
         let mut request_profile = file_config
             .path("request_profile")
             .or_else(|| env_request_profile_path(&env_value));
+        let mut request_profile_vm_counters = file_config
+            .bool("request_profile_vm_counters")?
+            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_VM_COUNTERS"));
+        let mut request_profile_source_attribution = file_config
+            .bool("request_profile_source_attribution")?
+            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_SOURCE_ATTRIBUTION"));
+        let mut request_profile_trigger_header = file_config
+            .bool("request_profile_trigger_header")?
+            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_TRIGGER_HEADER"));
         let mut network_requests_enabled = file_config
             .bool("network_requests_enabled")?
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_SERVER_ENABLE_NETWORK_REQUESTS"));
@@ -381,6 +393,9 @@ impl ServerConfig {
                 "--request-profile" => {
                     request_profile = Some(PathBuf::from(required_value(&arg, &mut args)?))
                 }
+                "--request-profile-vm-counters" => request_profile_vm_counters = true,
+                "--request-profile-source-attribution" => request_profile_source_attribution = true,
+                "--request-profile-trigger-header" => request_profile_trigger_header = true,
                 "--enable-network-requests" => network_requests_enabled = true,
                 "--debug" => debug = true,
                 "--error-format" => {
@@ -450,6 +465,9 @@ impl ServerConfig {
                 perf_trace,
                 perf_trace_vm_counters,
                 request_profile,
+                request_profile_vm_counters,
+                request_profile_source_attribution,
+                request_profile_trigger_header,
                 network_requests_enabled,
                 help,
             });
@@ -499,6 +517,9 @@ impl ServerConfig {
             perf_trace,
             perf_trace_vm_counters,
             request_profile,
+            request_profile_vm_counters,
+            request_profile_source_attribution,
+            request_profile_trigger_header,
             network_requests_enabled,
             help,
         })
@@ -569,6 +590,9 @@ impl ServerConfig {
             perf_trace: None,
             perf_trace_vm_counters: false,
             request_profile: None,
+            request_profile_vm_counters: false,
+            request_profile_source_attribution: false,
+            request_profile_trigger_header: false,
             network_requests_enabled: false,
             help: false,
         })
@@ -608,6 +632,9 @@ Options:\n\
   --perf-trace <path>          append per-PHP-request performance trace JSONL\n\
   --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
   --request-profile <dir>      write one JSON request profile per PHP request\n\
+  --request-profile-vm-counters  collect heavy VM counters for profiled requests\n\
+  --request-profile-source-attribution  collect per-clone source attribution (slow)\n\
+  --request-profile-trigger-header  profile only requests sending x-phrust-request-profile: 1\n\
   --enable-network-requests    allow PHP cURL requests to external hosts\n\
   --debug                      emit structured server debug events to stderr\n\
   --error-format <text|json>   render server diagnostics/debug events as text or JSON\n\
