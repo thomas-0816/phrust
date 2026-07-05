@@ -50,13 +50,28 @@ See `docs/performance-app-flow-results.md` (regenerated only by
 timings, compile/execute split, and the `Startup ms` column. Rows failing
 stdout/stderr/status parity never report timings.
 
-At the tranche close, the release fast preset measured a **1.55x geomean**
-against reference PHP CLI across the ten app flows (down from 1.64x at the
-previous tranche close), with every row parity-checked. Scenarios still
-above 1.5x: `collection_transform_pagination` (1.88x),
-`request_validation_errors` (1.87x), `config_bootstrap_merge` (1.86x),
-`middleware_event_pipeline` (1.59x), `model_hydration_json` (1.58x), and
-`front_controller_routing` (1.53x).
+At the runtime-layout tranche close, the release fast preset measured a
+**1.55x geomean** against reference PHP CLI across the ten app flows (down
+from 1.64x at the previous tranche close), with every row parity-checked.
+
+The effective web-app tranche that followed closed at a **1.30x geomean**
+(cold-compile rows; the default-on bytecode cache reduces warm runs
+further). Its structural wins: by-ref local arguments bind through caller
+slots without materialized registers (session pins 225 -> 0), dense
+callers thread method/static/constructor bodies through the request plan
+(container 124/124 and hydration 150/150 dense bodies, zero rich
+instructions), first-class callables and pipes lower dense, two new
+constant fusions retire dispatches, and substr/trim/strict-in_array run
+as exact intrinsic stubs (routing: 100 substr stub hits per request).
+Remaining rows above 1.4x — `config_bootstrap_merge` (1.56x),
+`session_auth_policy` (1.50x), `request_validation_errors` (1.49x),
+`collection_transform_pagination` (1.48x) — share array/COW-dominated
+inner loops: their top counters are `value_clones`,
+`array_handle_clones`, and the residual `cow_separations` attributed by
+`by_ref_arg_cow_separations` to genuine cross-variable sharing, plus
+generic array builtins (`array_map`-style callbacks) that keep the
+sort/comparator machinery hot. Those families are the next tranche's
+targets.
 
 ## Remaining targets
 

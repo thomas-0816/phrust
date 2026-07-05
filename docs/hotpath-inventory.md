@@ -8,10 +8,10 @@ This inventory is derived from Rust VM counters in the performance smoke benchma
 
 | Category | Counter(s) | Total | Top fixture | Coverage |
 | --- | --- | ---: | --- | --- |
-| Dispatch | `instructions_executed` | 1489 | `tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php` (876) | complete_for_current_counter_set |
+| Dispatch | `instructions_executed` | 1452 | `tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php` (876) | complete_for_current_counter_set |
 | Calls | `function_calls, method_calls` | 35 | `tests/fixtures/performance/perf_smoke/call_frames.php` (29) | complete_for_current_counter_set |
 | Arrays | `array_dim_fetches` | 40 | `tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php` (40) | complete_for_current_counter_set |
-| Properties | `property_accesses, property_fetches` | 56 | `tests/fixtures/performance/perf_smoke/properties.php` (24) | complete_for_current_counter_set |
+| Properties | `property_accesses, property_fetches` | 36 | `tests/fixtures/performance/perf_smoke/properties.php` (24) | complete_for_current_counter_set |
 | Strings | `string_concats, concat_prealloc_hits, string_allocations` | 1066 | `tests/fixtures/performance/perf_smoke/stdlib_dispatch.php` (164) | complete_for_current_counter_set |
 | Output | `output_bytes, output_buffer_appends, output_buffer_batch_writes, output_batched_appends, output_batch_bytes, output_buffer_flushes, output_fast_appends` | 1437 | `tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php` (334) | complete_for_current_counter_set |
 | Type Checks | `type_checks` | 0 | none observed | no_events_in_smoke_corpus |
