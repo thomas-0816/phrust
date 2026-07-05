@@ -37,6 +37,8 @@ pub struct VmOptions {
     pub execution_format: ExecutionFormat,
     /// Optional dense-bytecode superinstruction selection pass.
     pub superinstructions: SuperinstructionMode,
+    /// Optional dense-bytecode jump-threading pass over trampoline blocks.
+    pub dense_jump_threading: DenseJumpThreadingMode,
     /// Optional dense-bytecode block layout policy. The default preserves source
     /// block order.
     pub bytecode_layout: BytecodeLayoutMode,
@@ -84,6 +86,7 @@ impl Default for VmOptions {
             collect_counters: false,
             execution_format: ExecutionFormat::Ir,
             superinstructions: SuperinstructionMode::Off,
+            dense_jump_threading: DenseJumpThreadingMode::Off,
             bytecode_layout: BytecodeLayoutMode::Source,
             bytecode_layout_profile: None,
             quickening: QuickeningMode::Off,
@@ -179,6 +182,33 @@ pub enum SuperinstructionMode {
     Off,
     /// Fuse supported adjacent dense bytecode patterns.
     On,
+}
+
+/// Optional dense jump-threading switch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DenseJumpThreadingMode {
+    /// Keep lowered branch targets unchanged.
+    #[default]
+    Off,
+    /// Thread explicit branch edges through bare-jump trampoline blocks.
+    On,
+}
+
+impl DenseJumpThreadingMode {
+    /// Stable CLI/report spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+
+    /// True when the pass may run.
+    #[must_use]
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::On)
+    }
 }
 
 impl SuperinstructionMode {

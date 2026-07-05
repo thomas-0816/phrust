@@ -890,6 +890,23 @@ impl DenseBytecodeUnit {
         verify_dense_unit(self)
     }
 
+    /// Threads explicit branch edges whose target block is a bare
+    /// unconditional jump, so hot paths skip trampoline blocks.
+    ///
+    /// Only explicit targets are rewritten (`Jump`, the taken edge of
+    /// `JumpIfTrue`/`JumpIfFalse`, and both `JumpIfElse` edges); implicit
+    /// fallthroughs keep their block order, and no instruction moves, so
+    /// dense instruction ids, source maps, and adaptive site keys stay
+    /// stable. Chains resolve with a bounded hop count and cycles fall back
+    /// to the original target.
+    pub fn thread_jump_chains(&mut self) -> DenseJumpThreadingReport {
+        let mut report = DenseJumpThreadingReport::default();
+        for function in &mut self.functions {
+            thread_function_jump_chains(function, &mut report);
+        }
+        report
+    }
+
     /// Select conservative producer-plus-echo superinstructions in place.
     pub fn select_superinstructions(&mut self) -> SuperinstructionSelectionReport {
         let mut report = SuperinstructionSelectionReport::default();
@@ -1213,6 +1230,96 @@ fn dense_successors(function: &DenseFunction, block: u32) -> Vec<u32> {
             },
         ) => vec![*if_true, *if_false],
         _ => Vec::new(),
+    }
+}
+
+/// Deterministic report for the dense jump-threading pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DenseJumpThreadingReport {
+    /// Explicit branch edges rewritten to skip bare-jump blocks.
+    pub threaded_edges: u64,
+    /// Bare-jump trampoline blocks observed.
+    pub trampoline_blocks: u64,
+}
+
+fn thread_function_jump_chains(
+    function: &mut DenseFunction,
+    report: &mut DenseJumpThreadingReport,
+) {
+    // A trampoline block contains exactly its unconditional jump terminator.
+    let mut trampoline_target: Vec<Option<u32>> = vec![None; function.blocks.len()];
+    for block in &function.blocks {
+        if block.instruction_len != 1 {
+            continue;
+        }
+        if let Some(instruction) = function.instructions.get(block.terminator as usize)
+            && instruction.opcode == DenseOpcode::Jump
+            && let DenseOperands::Jump { target } = instruction.operands
+            && target != block.id
+        {
+            trampoline_target[block.id as usize] = Some(target);
+            report.trampoline_blocks += 1;
+        }
+    }
+    if report.trampoline_blocks == 0 {
+        return;
+    }
+    let resolve = |mut target: u32| -> u32 {
+        let original = target;
+        for _ in 0..8 {
+            match trampoline_target.get(target as usize).copied().flatten() {
+                Some(next) if next != original => target = next,
+                _ => return target,
+            }
+        }
+        original
+    };
+    let terminators: Vec<u32> = function
+        .blocks
+        .iter()
+        .map(|block| block.terminator)
+        .collect();
+    for terminator in terminators {
+        let Some(instruction) = function.instructions.get_mut(terminator as usize) else {
+            continue;
+        };
+        match (instruction.opcode, &mut instruction.operands) {
+            (DenseOpcode::Jump, DenseOperands::Jump { target }) => {
+                let threaded = resolve(*target);
+                if threaded != *target {
+                    *target = threaded;
+                    report.threaded_edges += 1;
+                }
+            }
+            (
+                DenseOpcode::JumpIfFalse | DenseOpcode::JumpIfTrue,
+                DenseOperands::JumpIf { target, .. },
+            ) => {
+                let threaded = resolve(*target);
+                if threaded != *target {
+                    *target = threaded;
+                    report.threaded_edges += 1;
+                }
+            }
+            (
+                DenseOpcode::JumpIf,
+                DenseOperands::JumpIfElse {
+                    if_true, if_false, ..
+                },
+            ) => {
+                let threaded_true = resolve(*if_true);
+                if threaded_true != *if_true {
+                    *if_true = threaded_true;
+                    report.threaded_edges += 1;
+                }
+                let threaded_false = resolve(*if_false);
+                if threaded_false != *if_false {
+                    *if_false = threaded_false;
+                    report.threaded_edges += 1;
+                }
+            }
+            _ => {}
+        }
     }
 }
 

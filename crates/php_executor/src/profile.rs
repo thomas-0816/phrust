@@ -1,7 +1,7 @@
 use php_optimizer::OptimizationLevel;
 use php_vm::api::{
-    BytecodeLayoutMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode, JitMode,
-    QuickeningMode, SuperinstructionMode, TieringOptions,
+    BytecodeLayoutMode, DenseJumpThreadingMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode,
+    JitMode, QuickeningMode, SuperinstructionMode, TieringOptions,
 };
 use std::{fmt, str::FromStr};
 
@@ -96,6 +96,7 @@ impl EngineProfile {
             EngineProfileName::Baseline => {
                 vm_options.execution_format = ExecutionFormat::Ir;
                 vm_options.superinstructions = SuperinstructionMode::Off;
+                vm_options.dense_jump_threading = DenseJumpThreadingMode::Off;
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::Off;
                 vm_options.inline_caches = InlineCacheMode::Off;
@@ -108,6 +109,7 @@ impl EngineProfile {
             EngineProfileName::Default => {
                 vm_options.execution_format = ExecutionFormat::Auto;
                 vm_options.superinstructions = SuperinstructionMode::On;
+                vm_options.dense_jump_threading = DenseJumpThreadingMode::On;
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;
@@ -121,6 +123,7 @@ impl EngineProfile {
             EngineProfileName::ExperimentalJit => {
                 vm_options.execution_format = ExecutionFormat::Auto;
                 vm_options.superinstructions = SuperinstructionMode::On;
+                vm_options.dense_jump_threading = DenseJumpThreadingMode::On;
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;

@@ -333,6 +333,9 @@ pub struct VmCounters {
     pub dense_method_dispatch_fallbacks: u64,
     pub dense_method_dispatch_fallback_by_reason: BTreeMap<String, u64>,
     pub rich_method_calls_from_dense_callers: u64,
+    pub dense_jump_threading_trampoline_blocks: u64,
+    pub dense_jump_threading_threaded_edges: u64,
+    pub dense_jump_threading_rollbacks: u64,
     pub call_ic_megamorphic_fallbacks: u64,
     pub local_slot_fast_path_hits: u64,
     pub local_slot_fast_path_misses: u64,
@@ -3292,6 +3295,24 @@ impl VmCounters {
             &mut json,
             "rich_method_calls_from_dense_callers",
             self.rich_method_calls_from_dense_callers,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_jump_threading_trampoline_blocks",
+            self.dense_jump_threading_trampoline_blocks,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_jump_threading_threaded_edges",
+            self.dense_jump_threading_threaded_edges,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_jump_threading_rollbacks",
+            self.dense_jump_threading_rollbacks,
             true,
         );
         push_field(

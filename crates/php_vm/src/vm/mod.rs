@@ -15,7 +15,8 @@ mod prelude;
 mod result;
 
 pub use options::{
-    BytecodeLayoutMode, ExecutionFormat, JitBlacklistMode, JitMode, SuperinstructionMode, VmOptions,
+    BytecodeLayoutMode, DenseJumpThreadingMode, ExecutionFormat, JitBlacklistMode, JitMode,
+    SuperinstructionMode, VmOptions,
 };
 pub use result::VmStepLimitDiagnostic;
 pub use result::{VmControlFlow, VmResult};
@@ -2467,6 +2468,24 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_dense_method_dispatch_fallback(reason);
+        }
+    }
+
+    fn record_counter_dense_jump_threading(
+        &self,
+        report: &crate::bytecode::DenseJumpThreadingReport,
+        rolled_back: bool,
+    ) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.dense_jump_threading_trampoline_blocks += report.trampoline_blocks;
+            if rolled_back {
+                counters.dense_jump_threading_rollbacks += 1;
+            } else {
+                counters.dense_jump_threading_threaded_edges += report.threaded_edges;
+            }
         }
     }
 
@@ -5953,6 +5972,19 @@ impl Vm {
                     ));
                 }
             }
+            if self.options.dense_jump_threading.is_enabled() {
+                // Verifier-bracketed with rollback: a threading result that
+                // fails verification restores the pre-pass unit instead of
+                // dropping the whole plan.
+                let snapshot = plan.unit.clone();
+                let report = plan.unit.thread_jump_chains();
+                if report.threaded_edges > 0 && plan.unit.verify().is_err() {
+                    plan.unit = snapshot;
+                    self.record_counter_dense_jump_threading(&report, true);
+                } else {
+                    self.record_counter_dense_jump_threading(&report, false);
+                }
+            }
             self.record_counter_bytecode_lowered_families(&plan.unit);
             self.record_counter_bytecode_lower_success();
             let entry = compiled.unit().entry;
@@ -6032,6 +6064,16 @@ impl Vm {
                     "E_PHP_VM_DENSE_LAYOUT_VERIFY: profiled dense bytecode layout failed verification with {} error(s)",
                     errors.len()
                 ));
+            }
+        }
+        if self.options.dense_jump_threading.is_enabled() {
+            let snapshot = dense.clone();
+            let report = dense.thread_jump_chains();
+            if report.threaded_edges > 0 && dense.verify().is_err() {
+                dense = snapshot;
+                self.record_counter_dense_jump_threading(&report, true);
+            } else {
+                self.record_counter_dense_jump_threading(&report, false);
             }
         }
         self.record_counter_bytecode_lowered_families(&dense);
@@ -69511,6 +69553,46 @@ var_dump(unserialize('O:1:"C":0:{}'));
             "{:?}",
             counters.dense_method_dispatch_fallback_by_reason
         );
+    }
+
+    #[test]
+    fn dense_jump_threading_is_output_identical_and_attributed() {
+        let source = "<?php\n\
+            $total = 0;\n\
+            for ($i = 0; $i < 16; $i++) {\n\
+                if ($i % 2 === 0) { $total += $i; } else { $total -= 1; }\n\
+                while ($total > 40) { $total -= 5; }\n\
+            }\n\
+            echo $total;";
+        let off = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                execution_format: ExecutionFormat::Bytecode,
+                dense_jump_threading: DenseJumpThreadingMode::Off,
+                ..VmOptions::default()
+            },
+        );
+        let on = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                execution_format: ExecutionFormat::Bytecode,
+                dense_jump_threading: DenseJumpThreadingMode::On,
+                ..VmOptions::default()
+            },
+        );
+        assert!(off.status.is_success(), "{:?}", off.status);
+        assert!(on.status.is_success(), "{:?}", on.status);
+        assert_eq!(off.output.as_bytes(), on.output.as_bytes());
+        let off_counters = off.counters.expect("counters");
+        let on_counters = on.counters.expect("counters");
+        assert_eq!(off_counters.dense_jump_threading_trampoline_blocks, 0);
+        assert_eq!(on_counters.dense_jump_threading_rollbacks, 0);
+        // The pass only rewrites explicit edges; whether any thread on this
+        // shape is corpus-dependent, but attribution must always be present
+        // when the pass is enabled and never when disabled.
+        assert_eq!(off_counters.dense_jump_threading_threaded_edges, 0);
     }
 
     #[test]

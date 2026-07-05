@@ -194,6 +194,7 @@ pub(super) struct RunOptions<'a> {
     pub(super) include_opt_level: OptimizationLevel,
     pub(super) execution_format: ExecutionFormat,
     pub(super) superinstructions: SuperinstructionMode,
+    pub(super) dense_jump_threading: DenseJumpThreadingMode,
     pub(super) bytecode_layout: BytecodeLayoutMode,
     pub(super) bytecode_layout_profile: Option<String>,
     pub(super) quickening: QuickeningMode,
@@ -496,6 +497,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
     let mut include_opt_level = default_options.vm_options.include_optimization_level;
     let mut execution_format = default_options.vm_options.execution_format;
     let mut superinstructions = default_options.vm_options.superinstructions;
+    let mut dense_jump_threading = default_options.vm_options.dense_jump_threading;
     let mut bytecode_layout = default_options.vm_options.bytecode_layout;
     let mut bytecode_layout_profile = None;
     let mut quickening = default_options.vm_options.quickening;
@@ -559,6 +561,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 include_opt_level = profile_options.vm_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
                 superinstructions = profile_options.vm_options.superinstructions;
+                dense_jump_threading = profile_options.vm_options.dense_jump_threading;
                 bytecode_layout = profile_options.vm_options.bytecode_layout;
                 quickening = profile_options.vm_options.quickening;
                 inline_caches = profile_options.vm_options.inline_caches;
@@ -581,6 +584,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 include_opt_level = profile_options.vm_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
                 superinstructions = profile_options.vm_options.superinstructions;
+                dense_jump_threading = profile_options.vm_options.dense_jump_threading;
                 bytecode_layout = profile_options.vm_options.bytecode_layout;
                 quickening = profile_options.vm_options.quickening;
                 inline_caches = profile_options.vm_options.inline_caches;
@@ -636,6 +640,16 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
             }
             arg if let Some(value) = arg.strip_prefix("--exec-format=") => {
                 execution_format = parse_execution_format(value)?;
+            }
+            "--dense-jump-threading" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("run --dense-jump-threading requires off or on".to_string());
+                };
+                dense_jump_threading = parse_dense_jump_threading_mode(value)?;
+            }
+            arg if let Some(value) = arg.strip_prefix("--dense-jump-threading=") => {
+                dense_jump_threading = parse_dense_jump_threading_mode(value)?;
             }
             "--superinstructions" => {
                 index += 1;
@@ -940,6 +954,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                     include_opt_level,
                     execution_format,
                     superinstructions,
+                    dense_jump_threading,
                     bytecode_layout,
                     bytecode_layout_profile,
                     quickening,
@@ -988,6 +1003,7 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
         include_opt_level,
         execution_format,
         superinstructions,
+        dense_jump_threading,
         bytecode_layout,
         bytecode_layout_profile,
         quickening,
@@ -1085,6 +1101,16 @@ pub(super) fn parse_superinstruction_mode(value: &str) -> Result<Superinstructio
         "on" => Ok(SuperinstructionMode::On),
         _ => Err(format!(
             "unsupported superinstructions mode `{value}`; expected off or on"
+        )),
+    }
+}
+
+fn parse_dense_jump_threading_mode(value: &str) -> Result<DenseJumpThreadingMode, String> {
+    match value {
+        "off" => Ok(DenseJumpThreadingMode::Off),
+        "on" => Ok(DenseJumpThreadingMode::On),
+        _ => Err(format!(
+            "run --dense-jump-threading has unsupported mode `{value}` (accepted: off, on)"
         )),
     }
 }

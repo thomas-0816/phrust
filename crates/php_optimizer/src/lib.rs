@@ -183,6 +183,8 @@ pub struct PassReport {
     pub changed: bool,
     /// Whether source mapping and file-span counts were preserved.
     pub source_spans_preserved: bool,
+    /// Whether the pass result failed verification and was rolled back.
+    pub rolled_back: bool,
     /// Deterministic pass statistics.
     pub stats: BTreeMap<&'static str, u64>,
 }
@@ -195,7 +197,22 @@ impl PassReport {
             enabled: false,
             changed: false,
             source_spans_preserved: true,
+            rolled_back: false,
             stats: BTreeMap::new(),
+        }
+    }
+
+    fn rolled_back(name: &'static str, phase: PassPhase, verifier_errors: u64) -> Self {
+        let mut stats = BTreeMap::new();
+        stats.insert("verifier_errors", verifier_errors);
+        Self {
+            name,
+            phase,
+            enabled: true,
+            changed: false,
+            source_spans_preserved: true,
+            rolled_back: true,
+            stats,
         }
     }
 }
@@ -393,7 +410,26 @@ impl PassPipeline {
                 reports.push(PassReport::skipped(pass.name(), pass.phase()));
                 continue;
             }
-            reports.push(pass.run(unit, context)?);
+            // Verifier-bracket each mutating pass: a pass whose output fails
+            // verification is rolled back and reported instead of poisoning
+            // the compile, keeping the pipeline fail-safe per pass.
+            let snapshot = unit.clone();
+            let report = pass.run(unit, context)?;
+            if report.changed {
+                match verify_unit(unit) {
+                    Ok(()) => reports.push(report),
+                    Err(errors) => {
+                        *unit = snapshot;
+                        reports.push(PassReport::rolled_back(
+                            pass.name(),
+                            pass.phase(),
+                            errors.len() as u64,
+                        ));
+                    }
+                }
+            } else {
+                reports.push(report);
+            }
         }
         Ok(())
     }
@@ -454,6 +490,7 @@ impl OptimizerPass for NoopPass {
             changed: before != *unit,
             source_spans_preserved: before.files == unit.files
                 && before.source_map == unit.source_map,
+            rolled_back: false,
             stats,
         })
     }
@@ -574,6 +611,7 @@ impl OptimizerPass for ConstantFoldingPass {
             changed: total_folded > 0,
             source_spans_preserved: before_files == unit.files
                 && before_source_map == unit.source_map,
+            rolled_back: false,
             stats: stats.into_report_stats(),
         })
     }
@@ -826,6 +864,7 @@ impl OptimizerPass for LiteralCompactionPass {
             changed: stats.duplicates_removed > 0 && stats.skipped_index_overflow == 0,
             source_spans_preserved: before_files == unit.files
                 && before_source_map == unit.source_map,
+            rolled_back: false,
             stats: stats.into_report_stats(),
         })
     }
@@ -925,6 +964,7 @@ impl OptimizerPass for CopyPropagationPass {
             changed: stats.operands_rewritten > 0,
             source_spans_preserved: before_files == unit.files
                 && before_source_map == unit.source_map,
+            rolled_back: false,
             stats: stats.into_report_stats(),
         })
     }
@@ -1807,6 +1847,7 @@ impl OptimizerPass for PeepholeSimplify {
             changed: total > 0,
             source_spans_preserved: before_files == unit.files
                 && before_source_map == unit.source_map,
+            rolled_back: false,
             stats: stats.into_report_stats(),
         })
     }
@@ -1954,6 +1995,7 @@ impl OptimizerPass for BranchSimplify {
             changed: total > 0,
             source_spans_preserved: before_files == unit.files
                 && before_source_map == unit.source_map,
+            rolled_back: false,
             stats: stats.into_report_stats(),
         })
     }
@@ -2378,13 +2420,15 @@ mod tests {
     use super::{
         ConstantFoldingPass, CopyPropagationPass, LiteralCompactionPass, NoopPass,
         OptimizationLevel, OptimizerPass, PassContext, PassError, PassPhase, PassPipeline,
-        PeepholeSimplify,
+        PassReport, PeepholeSimplify,
     };
     use php_ir::instruction::TerminatorKind;
+    use php_ir::module::IrUnit;
     use php_ir::{
         BinaryOp, CompareOp, FunctionFlags, InstructionKind, IrBuilder, IrConstant, IrSpan,
         Operand, UnaryOp, UnitId, VerificationError, VerificationErrorCode,
     };
+    use std::collections::BTreeMap;
 
     fn simple_unit() -> php_ir::IrUnit {
         let mut builder = IrBuilder::new(UnitId::new(0));
@@ -2550,6 +2594,58 @@ mod tests {
         assert!(report.enabled);
         assert!(!report.changed);
         assert!(report.source_spans_preserved);
+    }
+
+    #[test]
+    fn verifier_failing_pass_is_rolled_back_and_reported() {
+        struct CorruptingPass;
+        impl OptimizerPass for CorruptingPass {
+            fn name(&self) -> &'static str {
+                "test_corrupting_pass"
+            }
+            fn phase(&self) -> PassPhase {
+                PassPhase::PreVerify
+            }
+            fn run(
+                &self,
+                unit: &mut IrUnit,
+                _context: &PassContext,
+            ) -> Result<PassReport, PassError> {
+                // Reference an out-of-range register so the verifier rejects
+                // the pass result.
+                if let Some(function) = unit.functions.first_mut()
+                    && let Some(block) = function.blocks.first_mut()
+                    && let Some(instruction) = block.instructions.first_mut()
+                    && let InstructionKind::LoadConst { dst, .. } = &mut instruction.kind
+                {
+                    *dst = php_ir::RegId::new(4096);
+                }
+                let mut stats = BTreeMap::new();
+                stats.insert("corruptions", 1);
+                Ok(PassReport {
+                    name: self.name(),
+                    phase: self.phase(),
+                    enabled: true,
+                    changed: true,
+                    source_spans_preserved: true,
+                    rolled_back: false,
+                    stats,
+                })
+            }
+        }
+
+        let mut unit = simple_unit();
+        let before = unit.clone();
+        let report = PassPipeline::new(vec![Box::new(CorruptingPass)])
+            .run(&mut unit, &PassContext::new(OptimizationLevel::O1))
+            .expect("rollback keeps the pipeline fail-safe");
+
+        assert_eq!(unit, before, "corrupted pass output must be rolled back");
+        let pass = &report.passes[0];
+        assert_eq!(pass.name, "test_corrupting_pass");
+        assert!(pass.rolled_back);
+        assert!(!pass.changed);
+        assert!(pass.stats["verifier_errors"] >= 1);
     }
 
     #[test]
