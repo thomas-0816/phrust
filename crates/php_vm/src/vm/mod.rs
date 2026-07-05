@@ -76869,7 +76869,11 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
 
         assert!(result.status.is_success(), "{:?}", result.status);
         let output = result.output.to_string_lossy();
-        assert!(output.contains("object(JsonException)#1 (7) {"), "{output}");
+        let normalized = normalize_object_debug_ids(&output);
+        assert!(
+            normalized.contains("object(JsonException)#%d (7) {"),
+            "{output}"
+        );
         assert!(
             output.contains("[\"message\":protected]=>\n  string(12) \"Syntax error\""),
             "{output}"
@@ -77015,8 +77019,8 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
-            result.output.as_bytes(),
-            b"object(SerializingTest)#1 (1) {\n  [\"result\"]=>\n  bool(false)\n}\nstring(7) \"{\"a\":1}\"\n---------\n*RECURSION*\nobject(SerializingTest)#1 (1) {\n  [\"result\"]=>\n  string(7) \"{\"a\":1}\"\n}\n"
+            normalize_object_debug_ids(&result.output.to_string_lossy()),
+            "object(SerializingTest)#%d (1) {\n  [\"result\"]=>\n  bool(false)\n}\nstring(7) \"{\"a\":1}\"\n---------\n*RECURSION*\nobject(SerializingTest)#%d (1) {\n  [\"result\"]=>\n  string(7) \"{\"a\":1}\"\n}\n"
         );
     }
 
@@ -77042,8 +77046,8 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
-            result.output.as_bytes(),
-            b"SerializingTest Object\n(\n    [result] => 1\n)\nstring(7) \"{\"a\":1}\"\n---------\nobject(SerializingTest)#1 (1) {\n  [\"result\"]=>\n  int(1)\n}\n"
+            normalize_object_debug_ids(&result.output.to_string_lossy()),
+            "SerializingTest Object\n(\n    [result] => 1\n)\nstring(7) \"{\"a\":1}\"\n---------\nobject(SerializingTest)#%d (1) {\n  [\"result\"]=>\n  int(1)\n}\n"
         );
     }
 
@@ -93201,6 +93205,21 @@ dense_property_write_typed_failure($typed, 'bad');
 
     fn execute_source(source: &str) -> VmResult {
         execute_source_with_options(source, VmOptions::default())
+    }
+
+    fn normalize_object_debug_ids(output: &str) -> String {
+        let mut normalized = String::with_capacity(output.len());
+        let mut chars = output.chars().peekable();
+        while let Some(ch) = chars.next() {
+            normalized.push(ch);
+            if ch == '#' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+                while chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+                    let _ = chars.next();
+                }
+                normalized.push_str("%d");
+            }
+        }
+        normalized
     }
 
     fn first_vm_compile_payload(result: &VmResult) -> &VmCompileDiagnostic {

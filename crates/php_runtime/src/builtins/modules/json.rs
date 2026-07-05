@@ -12,7 +12,7 @@ use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
-use crate::{Value, to_bool};
+use crate::{ArrayKey, PhpString, Value, to_bool};
 use serde_json::Value as JsonValue;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
@@ -205,7 +205,7 @@ fn json_to_php_value_with_flags(value: JsonValue, associative: bool, flags: i64)
             let mut array = crate::PhpArray::new();
             for (key, value) in values {
                 array.insert(
-                    crate::ArrayKey::String(crate::PhpString::from_test_str(&key)),
+                    ArrayKey::from_php_string(PhpString::from_test_str(&key)),
                     json_to_php_value_with_flags(value, associative, flags),
                 );
             }
@@ -449,4 +449,52 @@ pub(in crate::builtins::modules) fn builtin_json_last_error_msg(
 ) -> BuiltinResult {
     expect_arity("json_last_error_msg", &args, 0)?;
     Ok(Value::string(context.json_last_error().1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{OutputBuffer, builtins::BuiltinContext};
+
+    fn call(name: &str, args: Vec<Value>) -> Value {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        ENTRIES
+            .iter()
+            .find(|entry| entry.name() == name)
+            .expect("entry")
+            .function()(&mut context, args, RuntimeSourceSpan::default())
+        .expect("builtin succeeds")
+    }
+
+    #[test]
+    fn json_decode_associative_normalizes_numeric_object_keys() {
+        let decoded = call(
+            "json_decode",
+            vec![
+                Value::string(r#"{"123":{"456":{"abc":{"789":"def","012":"keep"}}}}"#),
+                Value::Bool(true),
+            ],
+        );
+
+        let Value::Array(root) = decoded else {
+            panic!("expected array");
+        };
+        let Some(Value::Array(nested)) = root.get(&ArrayKey::Int(123)) else {
+            panic!("expected integer key 123");
+        };
+        let Some(Value::Array(inner)) = nested.get(&ArrayKey::Int(456)) else {
+            panic!("expected integer key 456");
+        };
+        let Some(Value::Array(values)) =
+            inner.get(&ArrayKey::String(PhpString::from_test_str("abc")))
+        else {
+            panic!("expected string key abc");
+        };
+        assert_eq!(values.get(&ArrayKey::Int(789)), Some(&Value::string("def")));
+        assert_eq!(
+            values.get(&ArrayKey::String(PhpString::from_test_str("012"))),
+            Some(&Value::string("keep"))
+        );
+    }
 }

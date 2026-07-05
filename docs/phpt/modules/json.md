@@ -2,7 +2,7 @@
 
 - Priority: 17.6 promoted
 - Selected manifest: `tests/phpt/manifests/modules/json.selected.jsonl`
-- the selected close gate: 88 PASS, 3 SKIP, 0 FAIL, 0 BORK from 91 selected fixtures
+- the selected close gate: 90 PASS, 3 SKIP, 0 FAIL, 0 BORK from 93 selected fixtures
 
 ## Scope
 
@@ -29,8 +29,7 @@
 
 ## Non-Scope
 
-- `pass001` literal object-id expectation rows.
-- Complete JSON flag parity beyond the promoted upstream rows
+- Complete JSON flag parity beyond the upstream PHPT corpus
 
 ## Selected PHPT Fixtures
 
@@ -75,7 +74,7 @@
 - `ext/json/tests/bug73113.phpt`
 - `ext/json/tests/serialize.phpt`
 - all additional target-green upstream rows from the latest full `ext/json`
-  target sweep, for 86 selected upstream rows total.
+  target sweep, for all 88 upstream rows total.
 
 ## Relevant Source Areas
 
@@ -150,12 +149,13 @@
   including userland return values, self-return public-property fallback,
   callback exceptions, nested self-encode recursion, and partial recursion
   substitution.
-- Remaining upstream failures are now narrowed to 2 rows:
-  `pass001.1.phpt` and `pass001.1_64bit.phpt`.
-- The `pass001.1` rows still fail because their literal expectations contain
-  `%d` object-id markers while phrust emits concrete `stdClass` object handles.
+- Associative `json_decode` now normalizes canonical decimal object keys to
+  PHP integer array keys while preserving non-canonical numeric strings such as
+  `"012"`.
+- The full upstream `ext/json` corpus is selected: 88 upstream rows plus 5
+  generated fixtures.
 
 ## Next Step
 
-Close the remaining `pass001` literal object-id expectation rows, then rerun
-the full upstream sweep.
+Keep the full upstream `ext/json` corpus green while expanding JSON flag/API
+parity beyond PHPT coverage.

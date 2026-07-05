@@ -84,6 +84,8 @@
 {"path":"ext/json/tests/json_validate_003.phpt"}
 {"path":"ext/json/tests/json_validate_004.phpt"}
 {"path":"ext/json/tests/json_validate_005.phpt"}
+{"path":"ext/json/tests/pass001.1.phpt"}
+{"path":"ext/json/tests/pass001.1_64bit.phpt"}
 {"path":"ext/json/tests/pass001.phpt"}
 {"path":"ext/json/tests/pass002.phpt"}
 {"path":"ext/json/tests/pass003.phpt"}
