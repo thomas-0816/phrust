@@ -184,6 +184,7 @@ impl From<pcre2::Error> for PcreFailure {
     }
 }
 
+#[derive(Debug)]
 struct ParsedPattern {
     body: String,
     modifiers: String,
@@ -204,6 +205,9 @@ fn parse_delimited_pattern(pattern: &[u8]) -> Result<ParsedPattern, PcreFailure>
         ));
     }
 
+    let closing_delimiter = closing_delimiter(delimiter);
+    let paired_delimiter = closing_delimiter != delimiter;
+    let mut nesting_depth = 0usize;
     let mut escaped = false;
     let mut in_class = false;
     for index in 1..pattern.len() {
@@ -216,15 +220,27 @@ fn parse_delimited_pattern(pattern: &[u8]) -> Result<ParsedPattern, PcreFailure>
             escaped = true;
             continue;
         }
+
+        if in_class {
+            if byte == b']' {
+                in_class = false;
+            }
+            continue;
+        }
+
+        if paired_delimiter && byte == delimiter {
+            nesting_depth += 1;
+            continue;
+        }
         if byte == b'[' {
             in_class = true;
             continue;
         }
-        if byte == b']' {
-            in_class = false;
-            continue;
-        }
-        if byte == delimiter && !in_class {
+        if byte == closing_delimiter {
+            if paired_delimiter && nesting_depth > 0 {
+                nesting_depth -= 1;
+                continue;
+            }
             let body = std::str::from_utf8(&pattern[1..index])
                 .map_err(|_| PcreFailure::new(PREG_BAD_UTF8_ERROR, "Pattern is not valid UTF-8"))?;
             let modifiers = std::str::from_utf8(&pattern[index + 1..]).map_err(|_| {
@@ -237,10 +253,30 @@ fn parse_delimited_pattern(pattern: &[u8]) -> Result<ParsedPattern, PcreFailure>
         }
     }
 
+    if paired_delimiter {
+        return Err(PcreFailure::new(
+            PREG_INTERNAL_ERROR,
+            format!(
+                "No ending matching delimiter '{}' found",
+                closing_delimiter as char
+            ),
+        ));
+    }
+
     Err(PcreFailure::new(
         PREG_INTERNAL_ERROR,
         "No ending delimiter found",
     ))
+}
+
+fn closing_delimiter(delimiter: u8) -> u8 {
+    match delimiter {
+        b'(' => b')',
+        b'[' => b']',
+        b'{' => b'}',
+        b'<' => b'>',
+        _ => delimiter,
+    }
 }
 
 fn compile_regex(body: &str, modifiers: &str) -> Result<Regex, PcreFailure> {
@@ -393,5 +429,30 @@ fn classify_pcre_error(error: &pcre2::Error) -> i64 {
         PREG_RECURSION_LIMIT_ERROR
     } else {
         PREG_INTERNAL_ERROR
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed_body(pattern: &[u8]) -> String {
+        parse_delimited_pattern(pattern).unwrap().body
+    }
+
+    #[test]
+    fn parses_php_paired_delimiters_with_nesting() {
+        assert_eq!(parsed_body(b"{a{1,2}}"), "a{1,2}");
+        assert_eq!(parsed_body(b"{[a-z]{1,2}}i"), "[a-z]{1,2}");
+        assert_eq!(parsed_body(b"(a(b)c)"), "a(b)c");
+        assert_eq!(parsed_body(b"[[a-z]]"), "[a-z]");
+        assert_eq!(parsed_body(b"<(?<word>[a-z]+)>"), "(?<word>[a-z]+)");
+    }
+
+    #[test]
+    fn reports_expected_closing_delimiter_for_paired_patterns() {
+        let error = parse_delimited_pattern(b"{abc").unwrap_err();
+        assert_eq!(error.code(), PREG_INTERNAL_ERROR);
+        assert_eq!(error.message(), "No ending matching delimiter '}' found");
     }
 }

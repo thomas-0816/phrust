@@ -2,7 +2,7 @@
 
 - Priority: 18.6 promoted
 - Selected manifest: `tests/phpt/manifests/modules/pcre.selected.jsonl`
-- the selected close gate: 75 PASS, 10 SKIP, 0 FAIL, 0 BORK from 85 selected fixtures
+- the selected close gate: 76 PASS, 10 SKIP, 0 FAIL, 0 BORK from 86 selected fixtures
 - Previous upstream corpus snapshot before this promotion: 69 PASS, 10 SKIP, 86 FAIL, 0 BORK
   from 165 corpus candidates
 
@@ -14,6 +14,8 @@
   nulls
 - `preg_last_error` and `preg_last_error_msg` request-local state across VM
   builtin calls
+- PHP paired pattern delimiters with nested delimiter bytes in groups,
+  quantifiers, character classes, and named captures
 - `preg_replace` simple replacements, backrefs, limits, and by-reference count
 - `preg_split` delimiter capture and no-empty flags
 - `preg_grep` positive matching
@@ -37,7 +39,8 @@
 - `tests/phpt/generated/pcre/preg-replace-split-grep-quote.phpt`
 - `tests/phpt/generated/pcre/preg-replace-callback.phpt`
 - `tests/phpt/generated/pcre/preg-replace-callback-invalid.phpt`
-- 79 target-green upstream rows from `ext/pcre/tests`
+- `tests/phpt/generated/pcre/paired-delimiters.phpt`
+- 80 target-green upstream rows from `ext/pcre/tests`
 - `ext/pcre/tests/preg_match_basic.phpt`
 - `ext/pcre/tests/preg_quote_basic.phpt`
 - `ext/pcre/tests/preg_split_basic.phpt`
@@ -77,13 +80,16 @@
   closures.
 - `preg_filter` now shares the replacement engine while filtering out subjects
   that did not match.
+- The PCRE pattern parser now handles PHP paired delimiters `()`, `[]`, `{}`,
+  and `<>` with nesting, escapes, character classes, and named-capture syntax.
 - The selected upstream PCRE promotion now covers basic `preg_match`,
   `preg_quote`, `preg_split`, `preg_grep`, `preg_filter`, and legacy
   `preg_match_all`-free regex cases that fit the existing runtime surface.
 - The previous full target-only upstream sweep on the PHP 8.5.7 oracle corpus
   measured 69 PASS, 10 SKIP, and 86 FAIL from 165 `ext/pcre/tests` rows. This
   branch promotes `preg_filter.phpt` from that failure set into the selected
-  gate.
+  gate. The selected gate now also includes generated paired-delimiter
+  coverage.
 
 ## Known Gaps
 

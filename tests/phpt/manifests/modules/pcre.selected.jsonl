@@ -3,6 +3,7 @@
 {"path":"tests/phpt/generated/pcre/preg-replace-split-grep-quote.phpt"}
 {"path":"tests/phpt/generated/pcre/preg-replace-callback.phpt"}
 {"path":"tests/phpt/generated/pcre/preg-replace-callback-invalid.phpt"}
+{"path":"tests/phpt/generated/pcre/paired-delimiters.phpt"}
 {"path":"ext/pcre/tests/001.phpt"}
 {"path":"ext/pcre/tests/004.phpt"}
 {"path":"ext/pcre/tests/007.phpt"}
