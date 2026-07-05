@@ -2,14 +2,14 @@
 
 - Strategy: validation and sanitization MVP
 - Selected manifest: `tests/phpt/manifests/modules/filter.selected.jsonl`
-- Selected close gate: 31 PASS, 0 SKIP, 0 FAIL, 0 BORK from 31 selected fixtures
-- Upstream corpus snapshot before the selected gate: 28 PASS, 3 XFAIL, 83 FAIL,
+- Selected close gate: 32 PASS, 0 SKIP, 0 FAIL, 0 BORK from 32 selected fixtures
+- Upstream corpus snapshot before the selected gate: 29 PASS, 3 XFAIL, 82 FAIL,
   0 BORK from 114 corpus candidates
 - Selected fixtures:
   - `tests/phpt/generated/filter/basic.phpt`
   - `tests/phpt/generated/filter/arrays.phpt`
   - `tests/phpt/generated/filter/options-callback.phpt`
-  - 28 target-green upstream rows from `ext/filter/tests`
+  - 29 target-green upstream rows from `ext/filter/tests`
 
 ## Implemented Surface
 
@@ -35,14 +35,17 @@ Unsupported filter identifiers return the normal filter failure value
 (`false` or `null` with `FILTER_NULL_ON_FAILURE`) instead of accepting unknown
 behavior.
 
+The CLI startup path emits the upstream `filter.default` deprecation diagnostic
+when PHPT-style startup error display is enabled.
+
 ## Gaps
 
 The full PHP filter option matrix, missing filter flag constants, request input
 edge cases, VM-dispatched user function and closure callbacks, throw-on-failure
-mode, exact warning/deprecation text, and locale-specific numeric parsing
+mode, remaining exact warning/deprecation text, and locale-specific numeric parsing
 remain out of scope.
 
-The full upstream target sweep measured 28 PASS, 3 XFAIL, and 83 FAIL from 114
+The full upstream target sweep measured 29 PASS, 3 XFAIL, and 82 FAIL from 114
 `ext/filter/tests` rows. The remaining unpromoted rows are dominated by missing
 filter flag constants, stricter PHP URL/email/IP quirks, callback dispatch,
 request/superglobal edge cases, array-to-string conversion behavior, and exact

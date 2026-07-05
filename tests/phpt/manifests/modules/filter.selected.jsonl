@@ -27,5 +27,6 @@
 {"path":"ext/filter/tests/bug81708.phpt"}
 {"path":"ext/filter/tests/bug8315.phpt"}
 {"path":"ext/filter/tests/filter_data.phpt"}
+{"path":"ext/filter/tests/filter_default_deprecation.phpt"}
 {"path":"ext/filter/tests/filter_null_on_failure.phpt"}
 {"path":"ext/filter/tests/gh18309.phpt"}

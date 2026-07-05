@@ -2,7 +2,8 @@ use crate::engine::{CliIniOptions, EngineInput, execute_php, lint_php, read_scri
 use php_diagnostics::DiagnosticOutputFormat;
 use php_runtime::{
     PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,
-    PHP_E_USER_NOTICE, PHP_E_USER_WARNING, PHP_E_WARNING,
+    PHP_E_USER_NOTICE, PHP_E_USER_WARNING, PHP_E_WARNING, PhpDiagnosticChannel,
+    PhpDiagnosticLocation, format_php_diagnostic_line,
 };
 use std::env;
 use std::ffi::OsString;
@@ -120,6 +121,7 @@ where
     let parsed = ParsedCli::parse(&args)?;
     let loaded_ini = load_ini(&parsed)?;
     let merged_defines = merged_ini_defines(&loaded_ini, &parsed.defines);
+    let ini = ini_options(&merged_defines);
     let debug = debug_enabled_from_env();
     let debug_log = env::var("PHRUST_DEBUG_LOG")
         .ok()
@@ -170,7 +172,7 @@ where
                 script_args: args,
                 cwd: current_dir()?,
                 env: collect_env(),
-                ini: ini_options(&merged_defines),
+                ini: ini.clone(),
                 stdin: read_stdin_if_piped(stdin, stdin_is_terminal)?,
                 php_binary: php_binary.clone(),
                 debug,
@@ -181,6 +183,7 @@ where
         }
         CliAction::RunFile { path, args } => {
             let (source, real_path, source_path) = read_script(&path)?;
+            emit_startup_ini_deprecations(stdout, &ini)?;
             let input = EngineInput {
                 source,
                 source_path,
@@ -189,7 +192,7 @@ where
                 script_args: args,
                 cwd: current_dir()?,
                 env: collect_env(),
-                ini: ini_options(&merged_defines),
+                ini: ini.clone(),
                 stdin: read_stdin_if_piped(stdin, stdin_is_terminal)?,
                 php_binary: php_binary.clone(),
                 debug,
@@ -211,7 +214,7 @@ where
                 script_args: args,
                 cwd: current_dir()?,
                 env: collect_env(),
-                ini: ini_options(&merged_defines),
+                ini: ini.clone(),
                 stdin: Vec::new(),
                 php_binary: php_binary.clone(),
                 debug,
@@ -516,7 +519,14 @@ fn parse_ini_directives(contents: &str) -> Vec<(String, String)> {
             continue;
         };
         let name = name.trim();
-        if !matches!(name, "include_path" | "display_errors" | "error_reporting") {
+        if !matches!(
+            name,
+            "include_path"
+                | "display_errors"
+                | "display_startup_errors"
+                | "error_reporting"
+                | "filter.default"
+        ) {
             continue;
         }
         directives.push((name.to_string(), unquote_ini_value(value.trim())));
@@ -637,6 +647,9 @@ fn ini_options(defines: &[(String, String)]) -> CliIniOptions {
             "display_errors" => {
                 options.display_errors = Some(parse_bool_ini(value));
             }
+            "display_startup_errors" => {
+                options.display_startup_errors = Some(parse_bool_ini(value));
+            }
             "error_reporting" => {
                 if let Some(mask) = parse_error_reporting_ini(value) {
                     options.error_reporting = Some(mask);
@@ -647,6 +660,33 @@ fn ini_options(defines: &[(String, String)]) -> CliIniOptions {
         }
     }
     options
+}
+
+fn emit_startup_ini_deprecations<W: Write>(
+    stdout: &mut W,
+    options: &CliIniOptions,
+) -> Result<(), String> {
+    if !options.display_startup_errors.unwrap_or(false) {
+        return Ok(());
+    }
+    if options
+        .overrides
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("filter.default"))
+    {
+        write!(
+            stdout,
+            "{}",
+            format_php_diagnostic_line(
+                PhpDiagnosticChannel::Deprecated,
+                "The filter.default ini setting is deprecated",
+                &PhpDiagnosticLocation::new("Unknown", 0),
+            )
+            .trim_start_matches('\n')
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn parse_error_reporting_ini(value: &str) -> Option<i64> {
@@ -1149,6 +1189,70 @@ mod tests {
 
         assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
         assert_eq!(String::from_utf8(stdout).expect("utf8"), "dep");
+    }
+
+    #[test]
+    fn run_file_emits_filter_default_startup_deprecation() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = temp_root("filter-default-startup-deprecation");
+        fs::create_dir_all(&root).expect("mkdir");
+        let script = root.join("fixture.php");
+        fs::write(&script, "<?php echo \"Done\\n\";").expect("write script");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            [
+                "-n".to_string(),
+                "-d".to_string(),
+                "display_startup_errors=1".to_string(),
+                "-d".to_string(),
+                "filter.default=special_chars".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(
+            String::from_utf8(stdout).expect("utf8"),
+            concat!(
+                "Deprecated: The filter.default ini setting is deprecated in Unknown on line 0\n",
+                "Done\n"
+            )
+        );
+        assert_eq!(stderr, b"");
+    }
+
+    #[test]
+    fn run_file_suppresses_filter_default_startup_deprecation_by_default() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = temp_root("filter-default-startup-deprecation-off");
+        fs::create_dir_all(&root).expect("mkdir");
+        let script = root.join("fixture.php");
+        fs::write(&script, "<?php echo \"Done\\n\";").expect("write script");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            [
+                "-n".to_string(),
+                "-d".to_string(),
+                "filter.default=special_chars".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(String::from_utf8(stdout).expect("utf8"), "Done\n");
+        assert_eq!(stderr, b"");
     }
 
     #[test]

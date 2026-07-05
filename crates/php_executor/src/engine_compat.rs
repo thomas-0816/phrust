@@ -21,6 +21,7 @@ pub(crate) const EXIT_PHP_ERROR: i32 = 255;
 pub struct CliIniOptions {
     pub include_path: Option<Vec<PathBuf>>,
     pub display_errors: Option<bool>,
+    pub display_startup_errors: Option<bool>,
     pub error_reporting: Option<i64>,
     /// Raw `-d name=value` ini overrides forwarded to the runtime registry.
     pub overrides: Vec<(String, String)>,

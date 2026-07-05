@@ -4,23 +4,24 @@
   "priority": "Validation and sanitization MVP",
   "selected_manifest": "tests/phpt/manifests/modules/filter.selected.jsonl",
   "corpus_count": 114,
-  "selected_count": 31,
-  "pass_count": 31,
+  "selected_count": 32,
+  "pass_count": 32,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 86,
+  "known_failure_count": 85,
   "scope": [
     "WordPress-relevant scalar validation and sanitization",
     "Common filter metadata and array helper paths",
     "Int and float min/max range options",
-    "FILTER_CALLBACK metadata and builtin string callback execution"
+    "FILTER_CALLBACK metadata and builtin string callback execution",
+    "Deprecated filter.default startup diagnostic"
   ],
   "non_scope": [
-    "Remaining 86 ext/filter upstream rows",
+    "Remaining 85 ext/filter upstream rows",
     "Full PHP filter option matrix",
     "VM-dispatched user callback and closure filter execution",
-    "Missing filter flag constants and exact warning/deprecation text"
+    "Missing filter flag constants and remaining exact warning/deprecation text"
   ],
   "target_gates": [
     "cargo test -p php_server server_filter_input_array_reads_query_snapshot",
