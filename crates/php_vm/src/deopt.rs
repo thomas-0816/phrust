@@ -1189,6 +1189,7 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
             VmDeoptReason::HelperStatus,
             VmDeoptReason::ReferenceCowIdentity,
         ],
+        DenseOpcode::InstanceOf => vec![VmDeoptReason::GuardFailed],
         DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             vec![VmDeoptReason::ForeachIteratorState]
         }

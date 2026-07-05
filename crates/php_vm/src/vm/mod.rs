@@ -10181,6 +10181,71 @@ impl Vm {
                             }
                         }
                     }
+                    DenseOpcode::InstanceOf => {
+                        let DenseOperands::InstanceOf {
+                            dst,
+                            object,
+                            class_name,
+                        } = &instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(class_name) = dense.names.get(*class_name as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode class name n{class_name}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        // instanceof only inspects the operand; a borrowed
+                        // read avoids cloning object/array handles.
+                        let value = {
+                            let object = match self.read_dense_operand_ref(compiled, stack, *object)
+                            {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            };
+                            match self.object_instanceof_cached(
+                                compiled,
+                                state,
+                                object.as_value(),
+                                class_name,
+                            ) {
+                                Ok(value) => Value::Bool(value),
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(*dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::FetchProperty => {
                         let _profile = self.request_profile_operation_start(
                             RequestProfileOperationCategory::Object,
@@ -74640,6 +74705,7 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::EmptyDim
         | DenseOpcode::UnsetDim => "arrays",
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => "properties",
+        DenseOpcode::InstanceOf => "objects",
         DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             "foreach"
         }
@@ -94533,6 +94599,59 @@ bind_array_dim_reference();
             "{counters:?}"
         );
         assert!(counters.dense_functions_executed >= 2, "{counters:?}");
+    }
+
+    #[test]
+    fn dense_bytecode_auto_executes_instanceof() {
+        let result = execute_source_with_options(
+            r#"<?php
+class InstanceProbe {}
+class InstanceProbeChild extends InstanceProbe {}
+function classify($value) {
+    if ($value instanceof InstanceProbe) {
+        return "probe";
+    }
+    if ($value instanceof Traversable) {
+        return "traversable";
+    }
+    return "other";
+}
+echo classify(new InstanceProbeChild()), "\n";
+echo classify(new InstanceProbe()), "\n";
+echo classify(42), "\n";
+echo classify(null), "\n";
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                collect_layout_source_attribution: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"probe\nprobe\nother\nother\n");
+        let counters = result.counters.expect("counters should be collected");
+        assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+        assert!(
+            counters
+                .opcodes
+                .get("bytecode_instance_of")
+                .copied()
+                .unwrap_or_default()
+                >= 4,
+            "instanceof should execute densely: {counters:?}"
+        );
+        assert_eq!(
+            counters
+                .dense_function_fallback_by_reason
+                .get("instruction_subset")
+                .copied()
+                .unwrap_or_default(),
+            0,
+            "{counters:?}"
+        );
     }
 
     #[test]

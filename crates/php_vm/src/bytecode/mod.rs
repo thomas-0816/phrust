@@ -182,6 +182,8 @@ pub enum DenseOpcode {
     LoadConstArrayInsert = 77,
     /// Bind a local array dimension to another local's reference cell.
     BindReferenceDim = 78,
+    /// `rN = object instanceof Class` for statically named classes.
+    InstanceOf = 79,
 }
 
 impl DenseOpcode {
@@ -281,6 +283,7 @@ impl DenseOpcode {
             Self::LoadConstLoadConst => "load_const_load_const",
             Self::LoadConstArrayInsert => "load_const_array_insert",
             Self::BindReferenceDim => "bind_reference_dim",
+            Self::InstanceOf => "instance_of",
         }
     }
 
@@ -515,6 +518,12 @@ pub enum DenseOperands {
         dims: Vec<DenseOperand>,
         append: bool,
         source: u32,
+    },
+    /// Static instanceof test operands.
+    InstanceOf {
+        dst: u32,
+        object: DenseOperand,
+        class_name: u32,
     },
     /// Local array dimension isset test operands.
     IssetDim {
@@ -1896,6 +1905,7 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
+        | DenseOpcode::InstanceOf
         | DenseOpcode::ForeachInit
         | DenseOpcode::ForeachNext
         | DenseOpcode::ForeachCleanup
@@ -2523,6 +2533,18 @@ fn lower_instruction(
                 dst: dst.raw(),
                 object: lower_operand(*object),
                 property: push_name(names, property).index() as u32,
+            },
+        ),
+        InstructionKind::InstanceOf {
+            dst,
+            object,
+            class_name,
+        } => (
+            DenseOpcode::InstanceOf,
+            DenseOperands::InstanceOf {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                class_name: push_name(names, class_name).index() as u32,
             },
         ),
         InstructionKind::AssignProperty {
@@ -3280,6 +3302,18 @@ fn verify_instruction(
             verify_name(*property, unit, errors);
         }
         (
+            DenseOpcode::InstanceOf,
+            DenseOperands::InstanceOf {
+                dst,
+                object,
+                class_name,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*object, unit, function, errors);
+            verify_name(*class_name, unit, errors);
+        }
+        (
             DenseOpcode::AssignProperty,
             DenseOperands::AssignProperty {
                 dst,
@@ -3769,6 +3803,16 @@ fn render_operands(operands: &DenseOperands) -> String {
                 "r{dst} l{local} [{}] {}",
                 dims.join(", "),
                 render_operand(*value)
+            )
+        }
+        DenseOperands::InstanceOf {
+            dst,
+            object,
+            class_name,
+        } => {
+            format!(
+                "r{dst} = {} instanceof n{class_name}",
+                render_operand(*object)
             )
         }
         DenseOperands::BindReferenceDim {

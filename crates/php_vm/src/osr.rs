@@ -602,6 +602,10 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
             }
             collect_operand_slot(*value, slots);
         }
+        DenseOperands::InstanceOf { dst, object, .. } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            collect_operand_slot(*object, slots);
+        }
         DenseOperands::BindReferenceDim {
             local,
             dims,
