@@ -28,11 +28,13 @@
 {"path":"ext/filter/tests/032.phpt"}
 {"path":"ext/filter/tests/034.phpt"}
 {"path":"ext/filter/tests/036.phpt"}
+{"path":"ext/filter/tests/043.phpt"}
 {"path":"ext/filter/tests/044.phpt"}
 {"path":"ext/filter/tests/045.phpt"}
 {"path":"ext/filter/tests/046.phpt"}
 {"path":"ext/filter/tests/047.phpt"}
 {"path":"ext/filter/tests/048.phpt"}
+{"path":"ext/filter/tests/059.phpt"}
 {"path":"ext/filter/tests/CVE-2007-1900.phpt"}
 {"path":"ext/filter/tests/bug39846.phpt"}
 {"path":"ext/filter/tests/bug44779.phpt"}

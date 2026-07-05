@@ -13,7 +13,7 @@ XFAILs.
 
 | ID | Baseline count | Reference behavior | Current Rust behavior | Fixture or PHPT example | Planned solution layer |
 | --- | ---: | --- | --- | --- | --- |
-| `runtime-error-or-diagnostic` | 11395 | PHP emits the exact warning, notice, fatal, stack, and exit behavior expected by the PHPT oracle. | The target exits or formats diagnostics differently from PHP for this baseline fingerprint. | `Zend/tests/67468.phpt` | php_runtime/php_vm diagnostics and error channel |
+| `runtime-error-or-diagnostic` | 11393 | PHP emits the exact warning, notice, fatal, stack, and exit behavior expected by the PHPT oracle. | The target exits or formats diagnostics differently from PHP for this baseline fingerprint. | `Zend/tests/67468.phpt` | php_runtime/php_vm diagnostics and error channel |
 | `runtime-output-mismatch` | 2314 | PHP stdout and stderr match the PHPT expectation after normal EXPECT/EXPECTF/EXPECTREGEX handling. | The target completes but emits different observable output. | `Zend/tests/access_modifiers/access_modifiers_012.phpt` | php_runtime builtins, php_vm execution semantics, or output buffering |
 | `runtime-unsupported-feature` | 6183 | PHP executes the language or builtin feature covered by the PHPT. | The runtime or VM reports an unsupported/not-implemented diagnostic. | `Zend/tests/ArrayAccess/ArrayAccess_indirect_append.phpt` | php_ir/php_runtime/php_vm feature implementation |
 | `frontend-parse-or-compile` | 187 | PHP accepts the source or reports the same syntax/compile-time diagnostic as the PHPT expects. | The lexer, parser, semantic frontend, or IR lowering rejects or lowers the source differently. | `Zend/tests/backtrace/fatal_error_backtraces_001.phpt` | php_syntax/php_ast/php_semantics/php_ir |

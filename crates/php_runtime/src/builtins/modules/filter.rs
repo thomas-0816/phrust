@@ -840,25 +840,48 @@ fn sanitize_number_float(name: &str, value: &Value, flags: i64) -> BuiltinResult
 
 fn unsafe_raw(name: &str, value: &Value, flags: i64) -> BuiltinResult {
     let input = string_arg(name, value)?;
-    if flags & FILTER_FLAG_ENCODE_AMP == 0 {
+    let relevant_flags = FILTER_FLAG_STRIP_LOW
+        | FILTER_FLAG_STRIP_HIGH
+        | FILTER_FLAG_ENCODE_LOW
+        | FILTER_FLAG_ENCODE_HIGH
+        | FILTER_FLAG_ENCODE_AMP;
+    if flags & relevant_flags == 0 {
         return Ok(Value::String(input));
     }
-    Ok(Value::string(encode_filter_entities(
-        input.as_bytes(),
-        |byte| byte == b'&',
-    )))
+    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+    let encoded = encode_filter_entities(input.as_bytes(), |byte| {
+        (flags & FILTER_FLAG_ENCODE_AMP != 0 && byte == b'&')
+            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
+            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
+    });
+    Ok(Value::string(
+        encoded
+            .into_iter()
+            .filter(|byte| {
+                !(strip_low && is_filter_low(*byte)) && !(strip_high && is_filter_high(*byte))
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 fn sanitize_encoded(name: &str, value: &Value, flags: i64) -> BuiltinResult {
     let input = string_arg(name, value)?;
-    Ok(Value::string(encode_filter_bytes(
-        input.as_bytes(),
-        |byte| {
-            !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-                || (flags & FILTER_FLAG_ENCODE_LOW != 0 && byte < 0x20)
-                || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && byte >= 0x80)
-        },
-    )))
+    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+    let stripped: Vec<u8> = input
+        .as_bytes()
+        .iter()
+        .copied()
+        .filter(|byte| {
+            !(strip_low && is_filter_low(*byte)) && !(strip_high && is_filter_high(*byte))
+        })
+        .collect();
+    Ok(Value::string(encode_filter_bytes(&stripped, |byte| {
+        !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
+            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
+    })))
 }
 
 fn sanitize_string(name: &str, value: &Value, flags: i64) -> BuiltinResult {
@@ -871,11 +894,11 @@ fn sanitize_string(name: &str, value: &Value, flags: i64) -> BuiltinResult {
     let output: Vec<u8> = encode_filter_entities(&stripped, |byte| {
         (encode_amp && byte == b'&')
             || (!no_encode_quotes && matches!(byte, b'\'' | b'"'))
-            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && byte < 0x20)
-            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && byte >= 0x80)
+            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
+            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
     })
     .into_iter()
-    .filter(|byte| !(strip_low && *byte < 0x20) && !(strip_high && *byte >= 0x80))
+    .filter(|byte| !(strip_low && is_filter_low(*byte)) && !(strip_high && is_filter_high(*byte)))
     .collect();
     Ok(Value::string(output))
 }
@@ -913,10 +936,15 @@ fn strip_filter_tags(input: &[u8]) -> Vec<u8> {
 fn sanitize_special_chars(name: &str, value: &Value, flags: i64) -> BuiltinResult {
     let input = string_arg(name, value)?;
     let mut output = Vec::new();
+    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
     for byte in input.as_bytes() {
+        if (strip_low && is_filter_low(*byte)) || (strip_high && is_filter_high(*byte)) {
+            continue;
+        }
         if matches!(*byte, b'<' | b'>' | b'&')
-            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && *byte < 0x20)
-            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && *byte >= 0x80)
+            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(*byte))
+            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(*byte))
         {
             output.extend_from_slice(format!("&#{};", byte).as_bytes());
         } else {
@@ -924,6 +952,14 @@ fn sanitize_special_chars(name: &str, value: &Value, flags: i64) -> BuiltinResul
         }
     }
     Ok(Value::string(output))
+}
+
+fn is_filter_low(byte: u8) -> bool {
+    byte < 0x20
+}
+
+fn is_filter_high(byte: u8) -> bool {
+    byte >= 0x7f
 }
 
 fn encode_filter_entities(input: &[u8], should_encode: impl Fn(u8) -> bool) -> Vec<u8> {
@@ -987,6 +1023,10 @@ mod tests {
 
     fn string(value: &str) -> Value {
         Value::String(PhpString::from_test_str(value))
+    }
+
+    fn bytes(value: &[u8]) -> Value {
+        Value::String(PhpString::from_bytes(value.to_vec()))
     }
 
     fn string_key(value: &str) -> ArrayKey {
@@ -1500,6 +1540,60 @@ mod tests {
                 ],
             ),
             string("a&#38;b&#38;c")
+        );
+    }
+
+    #[test]
+    fn unsafe_raw_encodes_low_and_high_bytes() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    bytes(&[0x00, b'&', 0x7f, 0x80]),
+                    Value::Int(FILTER_UNSAFE_RAW),
+                    Value::Int(
+                        FILTER_FLAG_ENCODE_LOW | FILTER_FLAG_ENCODE_HIGH | FILTER_FLAG_ENCODE_AMP
+                    ),
+                ],
+            ),
+            string("&#0;&#38;&#127;&#128;")
+        );
+    }
+
+    #[test]
+    fn sanitize_filters_strip_high_from_ascii_del() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    bytes(&[0x7f]),
+                    Value::Int(FILTER_UNSAFE_RAW),
+                    Value::Int(FILTER_FLAG_STRIP_HIGH),
+                ],
+            ),
+            string("")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    bytes(&[0x7f]),
+                    Value::Int(FILTER_SANITIZE_ENCODED),
+                    Value::Int(FILTER_FLAG_STRIP_HIGH),
+                ],
+            ),
+            string("")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    bytes(&[0x7f]),
+                    Value::Int(FILTER_SANITIZE_SPECIAL_CHARS),
+                    Value::Int(FILTER_FLAG_STRIP_HIGH),
+                ],
+            ),
+            string("")
         );
     }
 
