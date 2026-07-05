@@ -3,6 +3,7 @@
 {"path":"tests/phpt/generated/filter/options-callback.phpt"}
 {"path":"ext/filter/tests/007.phpt"}
 {"path":"ext/filter/tests/009.phpt"}
+{"path":"ext/filter/tests/013.phpt"}
 {"path":"ext/filter/tests/019.phpt"}
 {"path":"ext/filter/tests/021.phpt"}
 {"path":"ext/filter/tests/022.phpt"}
@@ -10,7 +11,10 @@
 {"path":"ext/filter/tests/034.phpt"}
 {"path":"ext/filter/tests/036.phpt"}
 {"path":"ext/filter/tests/044.phpt"}
+{"path":"ext/filter/tests/045.phpt"}
 {"path":"ext/filter/tests/046.phpt"}
+{"path":"ext/filter/tests/047.phpt"}
+{"path":"ext/filter/tests/048.phpt"}
 {"path":"ext/filter/tests/CVE-2007-1900.phpt"}
 {"path":"ext/filter/tests/bug39846.phpt"}
 {"path":"ext/filter/tests/bug44779.phpt"}
@@ -19,8 +23,10 @@
 {"path":"ext/filter/tests/bug48762.phpt"}
 {"path":"ext/filter/tests/bug49510.phpt"}
 {"path":"ext/filter/tests/bug50158.phpt"}
+{"path":"ext/filter/tests/bug52929.phpt"}
 {"path":"ext/filter/tests/bug55478.phpt"}
 {"path":"ext/filter/tests/bug64441.phpt"}
+{"path":"ext/filter/tests/bug67167.01.phpt"}
 {"path":"ext/filter/tests/bug76366.phpt"}
 {"path":"ext/filter/tests/bug7715.phpt"}
 {"path":"ext/filter/tests/bug7733.phpt"}
@@ -30,3 +36,4 @@
 {"path":"ext/filter/tests/filter_default_deprecation.phpt"}
 {"path":"ext/filter/tests/filter_null_on_failure.phpt"}
 {"path":"ext/filter/tests/gh18309.phpt"}
+{"path":"ext/filter/tests/surprising_integer_literals.phpt"}

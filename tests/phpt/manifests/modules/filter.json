@@ -4,28 +4,31 @@
   "priority": "Validation and sanitization MVP",
   "selected_manifest": "tests/phpt/manifests/modules/filter.selected.jsonl",
   "corpus_count": 114,
-  "selected_count": 32,
-  "pass_count": 32,
+  "selected_count": 39,
+  "pass_count": 39,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 85,
+  "known_failure_count": 78,
   "scope": [
     "WordPress-relevant scalar validation and sanitization",
     "Common filter metadata and array helper paths",
     "Int and float min/max range options",
     "FILTER_CALLBACK metadata and builtin string callback execution",
-    "Deprecated filter.default startup diagnostic"
+    "Deprecated filter.default startup diagnostic",
+    "Registered filter flag constants for upstream option compatibility",
+    "PHP-style FILTER_VALIDATE_INT hex, octal, and unsigned overflow parsing",
+    "FILTER_VALIDATE_EMAIL length limits and boolean failure coercion"
   ],
   "non_scope": [
-    "Remaining 85 ext/filter upstream rows",
+    "Remaining 78 ext/filter upstream rows",
     "Full PHP filter option matrix",
     "VM-dispatched user callback and closure filter execution",
-    "Missing filter flag constants and remaining exact warning/deprecation text"
+    "Remaining exact filter flag behavior matrix and warning/deprecation text"
   ],
   "target_gates": [
     "cargo test -p php_server server_filter_input_array_reads_query_snapshot",
     "just phpt-dev-module MODULE=filter"
   ],
-  "next_step": "Close missing filter flag constants, PHP validator quirks, request input edge cases, and VM-dispatched callback filters before the next upstream promotion."
+  "next_step": "Close remaining PHP validator quirks, request input edge cases, exact filter flag behavior, and VM-dispatched callback filters before the next upstream promotion."
 }

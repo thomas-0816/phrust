@@ -64,6 +64,8 @@ const FILTER_REQUIRE_ARRAY: i64 = 16_777_216;
 const FILTER_REQUIRE_SCALAR: i64 = 33_554_432;
 const FILTER_FORCE_ARRAY: i64 = 67_108_864;
 const FILTER_NULL_ON_FAILURE: i64 = 134_217_728;
+const FILTER_FLAG_ALLOW_OCTAL: i64 = 1;
+const FILTER_FLAG_ALLOW_HEX: i64 = 2;
 const FILTER_FLAG_ALLOW_FRACTION: i64 = 4_096;
 const FILTER_FLAG_ALLOW_THOUSAND: i64 = 8_192;
 const FILTER_FLAG_ALLOW_SCIENTIFIC: i64 = 16_384;
@@ -224,16 +226,9 @@ fn validate_int(
     let input = string_arg(name, value)?;
     let text = input.to_string_lossy();
     let trimmed = text.trim();
-    let Ok(number) = trimmed.parse::<i64>() else {
+    let Some(number) = parse_filter_int(trimmed, options.flags) else {
         return Ok(failure);
     };
-    if !trimmed
-        .bytes()
-        .enumerate()
-        .all(|(index, byte)| byte.is_ascii_digit() || (index == 0 && matches!(byte, b'+' | b'-')))
-    {
-        return Ok(failure);
-    }
     if options
         .min_range_int
         .is_some_and(|minimum| number < minimum)
@@ -244,6 +239,63 @@ fn validate_int(
         return Ok(failure);
     }
     Ok(Value::Int(number))
+}
+
+fn parse_filter_int(trimmed: &str, flags: i64) -> Option<i64> {
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        if flags & FILTER_FLAG_ALLOW_HEX == 0 || hex.is_empty() {
+            return None;
+        }
+        return parse_filter_prefixed_int(hex, 16);
+    }
+
+    if let Some(octal) = trimmed
+        .strip_prefix("0o")
+        .or_else(|| trimmed.strip_prefix("0O"))
+    {
+        if flags & FILTER_FLAG_ALLOW_OCTAL == 0 || octal.is_empty() {
+            return None;
+        }
+        return parse_filter_prefixed_int(octal, 8);
+    }
+
+    if trimmed.starts_with('0') && trimmed.len() > 1 {
+        if flags & FILTER_FLAG_ALLOW_OCTAL == 0 {
+            return None;
+        }
+        return parse_filter_prefixed_int(&trimmed[1..], 8);
+    }
+
+    let unsigned = trimmed
+        .strip_prefix('+')
+        .or_else(|| trimmed.strip_prefix('-'))
+        .unwrap_or(trimmed);
+    if unsigned.starts_with('0') && unsigned.len() > 1 {
+        return None;
+    }
+
+    let number = trimmed.parse::<i64>().ok()?;
+    trimmed
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| byte.is_ascii_digit() || (index == 0 && matches!(byte, b'+' | b'-')))
+        .then_some(number)
+}
+
+fn parse_filter_prefixed_int(digits: &str, radix: u32) -> Option<i64> {
+    if digits.is_empty() {
+        return None;
+    }
+    u64::from_str_radix(digits, radix)
+        .ok()
+        .map(|number| number as i64)
 }
 
 fn validate_float(
@@ -571,6 +623,9 @@ fn invalid_callback_error(name: &str) -> BuiltinError {
 
 fn validate_email(name: &str, value: &Value, failure: Value) -> BuiltinResult {
     let input = string_arg(name, value)?;
+    if input.as_bytes().len() > 320 {
+        return Ok(failure);
+    }
     let string = input.to_string_lossy();
     let mut parts = string.split('@');
     let Some(local) = parts.next() else {
@@ -581,7 +636,11 @@ fn validate_email(name: &str, value: &Value, failure: Value) -> BuiltinResult {
     };
     if parts.next().is_none()
         && !local.is_empty()
+        && local.len() <= 64
         && domain.contains('.')
+        && domain
+            .split('.')
+            .all(|label| !label.is_empty() && label.len() <= 63)
         && !php_source::byte_kernel::contains_ascii_whitespace(input.as_bytes())
     {
         Ok(Value::String(input))
@@ -618,11 +677,11 @@ fn validate_ip(name: &str, value: &Value, flags: i64, failure: Value) -> Builtin
     }
 }
 
-fn validate_bool(name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
-    let string = to_string(value)
-        .map_err(|message| conversion_error(name, message))?
-        .to_string_lossy()
-        .to_ascii_lowercase();
+fn validate_bool(_name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
+    let Ok(string_value) = to_string(value) else {
+        return Ok(failure);
+    };
+    let string = string_value.to_string_lossy().to_ascii_lowercase();
     match string.as_str() {
         "1" | "true" | "on" | "yes" => Ok(Value::Bool(true)),
         "0" | "false" | "off" | "no" | "" => Ok(Value::Bool(false)),
@@ -772,6 +831,123 @@ mod tests {
                     string("2.5"),
                     Value::Int(FILTER_VALIDATE_FLOAT),
                     Value::Array(float_options),
+                ],
+            ),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn filter_validate_int_accepts_php_hex_and_octal_flags() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("0xff"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Int(FILTER_FLAG_ALLOW_HEX),
+                ],
+            ),
+            Value::Int(255)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("0o16"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Int(FILTER_FLAG_ALLOW_OCTAL),
+                ],
+            ),
+            Value::Int(14)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("08"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Int(FILTER_FLAG_ALLOW_OCTAL),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("-0xff"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Int(FILTER_FLAG_ALLOW_HEX),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("-07"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Int(FILTER_FLAG_ALLOW_OCTAL),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("0xffffffffffffffff"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Int(FILTER_FLAG_ALLOW_HEX),
+                ],
+            ),
+            Value::Int(-1)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("0x10000000000000000"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Int(FILTER_FLAG_ALLOW_HEX),
+                ],
+            ),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn filter_validate_email_enforces_php_length_limits() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("valid@email.address"),
+                    Value::Int(FILTER_VALIDATE_EMAIL)
+                ],
+            ),
+            string("valid@email.address")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string(
+                        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@y.zz"
+                    ),
+                    Value::Int(FILTER_VALIDATE_EMAIL),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string(&"x".repeat(8_000)),
+                    Value::Int(FILTER_VALIDATE_EMAIL),
                 ],
             ),
             Value::Bool(false)

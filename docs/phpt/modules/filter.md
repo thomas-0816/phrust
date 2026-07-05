@@ -2,14 +2,14 @@
 
 - Strategy: validation and sanitization MVP
 - Selected manifest: `tests/phpt/manifests/modules/filter.selected.jsonl`
-- Selected close gate: 32 PASS, 0 SKIP, 0 FAIL, 0 BORK from 32 selected fixtures
-- Upstream corpus snapshot before the selected gate: 29 PASS, 3 XFAIL, 82 FAIL,
+- Selected close gate: 39 PASS, 0 SKIP, 0 FAIL, 0 BORK from 39 selected fixtures
+- Upstream corpus snapshot before the selected gate: 36 PASS, 3 XFAIL, 75 FAIL,
   0 BORK from 114 corpus candidates
 - Selected fixtures:
   - `tests/phpt/generated/filter/basic.phpt`
   - `tests/phpt/generated/filter/arrays.phpt`
   - `tests/phpt/generated/filter/options-callback.phpt`
-  - 29 target-green upstream rows from `ext/filter/tests`
+  - 36 target-green upstream rows from `ext/filter/tests`
 
 ## Implemented Surface
 
@@ -26,6 +26,15 @@ The selected slice also includes `filter_has_var`, `filter_input_array`,
 metadata paths. Array filter specs support integer filter IDs plus nested
 `filter`, `flags`, and `options` entries. `FILTER_VALIDATE_INT` and
 `FILTER_VALIDATE_FLOAT` honor `min_range` and `max_range` option arrays.
+`FILTER_VALIDATE_INT` also follows PHP's accepted hexadecimal and octal
+forms, including unsigned-prefixed overflow wrapping for the
+`FILTER_FLAG_ALLOW_HEX` and `FILTER_FLAG_ALLOW_OCTAL` paths. The standard
+registry exposes the php-src filter flag constant surface used by upstream
+PHPT option arrays.
+
+`FILTER_VALIDATE_EMAIL` enforces PHP's local-part, label, and total length
+limits for the promoted fixtures. `FILTER_VALIDATE_BOOLEAN` returns the normal
+failure value when object string conversion is invalid.
 
 `FILTER_CALLBACK` is exposed in `filter_list`, `filter_id`, and the standard
 constant registry. The runtime executes callback filters for registered builtin
@@ -40,16 +49,16 @@ when PHPT-style startup error display is enabled.
 
 ## Gaps
 
-The full PHP filter option matrix, missing filter flag constants, request input
-edge cases, VM-dispatched user function and closure callbacks, throw-on-failure
-mode, remaining exact warning/deprecation text, and locale-specific numeric parsing
-remain out of scope.
+The full PHP filter option matrix, remaining exact filter flag behavior,
+request input edge cases, VM-dispatched user function and closure callbacks,
+throw-on-failure mode, remaining exact warning/deprecation text, and
+locale-specific numeric parsing remain out of scope.
 
-The full upstream target sweep measured 29 PASS, 3 XFAIL, and 82 FAIL from 114
-`ext/filter/tests` rows. The remaining unpromoted rows are dominated by missing
-filter flag constants, stricter PHP URL/email/IP quirks, callback dispatch,
-request/superglobal edge cases, array-to-string conversion behavior, and exact
-warning/deprecation output.
+The full upstream target sweep measured 36 PASS, 3 XFAIL, and 75 FAIL from 114
+`ext/filter/tests` rows. The remaining unpromoted rows are dominated by
+stricter PHP URL/email/IP quirks, remaining filter flag behavior, callback
+dispatch, request/superglobal edge cases, array-to-string conversion behavior,
+and exact warning/deprecation output.
 
 ## Target Gates
 

@@ -19,7 +19,7 @@
 {"kind":"plan","module":"date","corpus_count":687,"pass_count":14,"skip_count":12,"fail_count":661,"bork_count":0,"known_failure_count":675}
 {"kind":"plan","module":"spl","corpus_count":520,"pass_count":39,"skip_count":3,"fail_count":478,"bork_count":0,"known_failure_count":493}
 {"kind":"plan","module":"reflection","corpus_count":304,"pass_count":11,"skip_count":1,"fail_count":292,"bork_count":0,"known_failure_count":295}
-{"kind":"plan","module":"extension.policy","corpus_count":9006,"pass_count":471,"skip_count":525,"fail_count":7754,"bork_count":0,"known_failure_count":8444}
+{"kind":"plan","module":"extension.policy","corpus_count":9006,"pass_count":478,"skip_count":525,"fail_count":7747,"bork_count":0,"known_failure_count":8437}
 {"kind":"raw","module":"zend","corpus_count":5305,"pass_count":598,"skip_count":47,"fail_count":4652,"bork_count":7,"known_failure_count":4916}
 {"kind":"raw","module":"unknown","corpus_count":1419,"pass_count":245,"skip_count":36,"fail_count":1120,"bork_count":17,"known_failure_count":1286}
 {"kind":"raw","module":"standard","corpus_count":1140,"pass_count":99,"skip_count":124,"fail_count":894,"bork_count":23,"known_failure_count":1085}
@@ -51,7 +51,7 @@
 {"kind":"raw","module":"zlib","corpus_count":143,"pass_count":3,"skip_count":5,"fail_count":123,"bork_count":12,"known_failure_count":140}
 {"kind":"raw","module":"pdo","corpus_count":137,"pass_count":0,"skip_count":117,"fail_count":18,"bork_count":2,"known_failure_count":137}
 {"kind":"raw","module":"pcre","corpus_count":165,"pass_count":42,"skip_count":5,"fail_count":116,"bork_count":2,"known_failure_count":127}
-{"kind":"raw","module":"filter","corpus_count":120,"pass_count":0,"skip_count":0,"fail_count":117,"bork_count":0,"known_failure_count":120}
+{"kind":"raw","module":"filter","corpus_count":120,"pass_count":7,"skip_count":0,"fail_count":110,"bork_count":0,"known_failure_count":113}
 {"kind":"raw","module":"sockets","corpus_count":106,"pass_count":0,"skip_count":37,"fail_count":69,"bork_count":0,"known_failure_count":106}
 {"kind":"raw","module":"ffi","corpus_count":106,"pass_count":2,"skip_count":2,"fail_count":102,"bork_count":0,"known_failure_count":105}
 {"kind":"raw","module":"zip","corpus_count":103,"pass_count":3,"skip_count":14,"fail_count":85,"bork_count":1,"known_failure_count":102}

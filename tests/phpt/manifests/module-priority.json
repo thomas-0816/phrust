@@ -260,11 +260,11 @@
       "module":"extension.policy",
       "leverage":58,
       "corpus_count":9006,
-      "pass_count":468,
+      "pass_count":475,
       "skip_count":525,
-      "fail_count":7757,
+      "fail_count":7750,
       "bork_count":0,
-      "known_failure_count":8447,
+      "known_failure_count":8440,
       "next_step":"Classify extension failures without hiding them from full regression."
     }
   ]

@@ -2847,6 +2847,56 @@ pub(super) fn standard_library_filter_extension() -> ExtensionDescriptor {
             ConstantValue::Int(134_217_728),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_ALLOW_OCTAL",
+            "filter",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_ALLOW_HEX",
+            "filter",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_STRIP_LOW",
+            "filter",
+            ConstantValue::Int(4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_STRIP_HIGH",
+            "filter",
+            ConstantValue::Int(8),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_ENCODE_LOW",
+            "filter",
+            ConstantValue::Int(16),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_ENCODE_HIGH",
+            "filter",
+            ConstantValue::Int(32),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_ENCODE_AMP",
+            "filter",
+            ConstantValue::Int(64),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_NO_ENCODE_QUOTES",
+            "filter",
+            ConstantValue::Int(128),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_EMPTY_STRING_NULL",
+            "filter",
+            ConstantValue::Int(256),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_STRIP_BACKTICK",
+            "filter",
+            ConstantValue::Int(512),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "FILTER_FLAG_ALLOW_FRACTION",
             "filter",
             ConstantValue::Int(4_096),
@@ -2870,6 +2920,31 @@ pub(super) fn standard_library_filter_extension() -> ExtensionDescriptor {
             "FILTER_FLAG_IPV6",
             "filter",
             ConstantValue::Int(2_097_152),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_NO_RES_RANGE",
+            "filter",
+            ConstantValue::Int(4_194_304),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_NO_PRIV_RANGE",
+            "filter",
+            ConstantValue::Int(8_388_608),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_GLOBAL_RANGE",
+            "filter",
+            ConstantValue::Int(536_870_912),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_HOSTNAME",
+            "filter",
+            ConstantValue::Int(1_048_576),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILTER_FLAG_EMAIL_UNICODE",
+            "filter",
+            ConstantValue::Int(1_048_576),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "FILTER_FLAG_PATH_REQUIRED",
