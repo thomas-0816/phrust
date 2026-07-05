@@ -21,6 +21,10 @@ REQUIRED_FILES = [
     "crates/php_vm/src/lib.rs",
     "crates/php_vm/src/vm/mod.rs",
     "crates/php_vm/src/vm/arguments.rs",
+    "crates/php_vm/src/vm/builtin_callbacks.rs",
+    "crates/php_vm/src/vm/builtin_intrinsics.rs",
+    "crates/php_vm/src/vm/builtins.rs",
+    "crates/php_vm/src/vm/calls.rs",
     "crates/php_vm/src/vm/dense_method_dispatch.rs",
     "crates/php_vm/src/vm/generator_fiber.rs",
     "crates/php_vm/src/vm/options.rs",
@@ -50,6 +54,10 @@ API_FACADE_ROOT_RE = re.compile(
 
 VM_MOD_REQUIRED_SNIPPETS = [
     "mod arguments;",
+    "mod builtin_callbacks;",
+    "mod builtin_intrinsics;",
+    "mod builtins;",
+    "mod calls;",
     "mod dense_method_dispatch;",
     "mod generator_fiber;",
     "mod options;",
@@ -75,6 +83,10 @@ VM_RESULT_REQUIRED_SNIPPETS = [
 
 VM_SUBMODULE_REQUIRED_SNIPPETS = {
     "crates/php_vm/src/vm/arguments.rs": ["use super::prelude::*;"],
+    "crates/php_vm/src/vm/builtin_callbacks.rs": ["use super::prelude::*;"],
+    "crates/php_vm/src/vm/builtin_intrinsics.rs": ["use super::prelude::*;"],
+    "crates/php_vm/src/vm/builtins.rs": ["use super::prelude::*;"],
+    "crates/php_vm/src/vm/calls.rs": ["use super::prelude::*;"],
     "crates/php_vm/src/vm/dense_method_dispatch.rs": ["use super::prelude::*;"],
     "crates/php_vm/src/vm/generator_fiber.rs": ["use super::prelude::*;"],
     "crates/php_vm/src/vm/prelude.rs": ["pub(super) use super::*;"],
@@ -82,6 +94,10 @@ VM_SUBMODULE_REQUIRED_SNIPPETS = {
 
 VM_SUBMODULE_FORBIDDEN_SNIPPETS = {
     "crates/php_vm/src/vm/arguments.rs": ["use super::*;"],
+    "crates/php_vm/src/vm/builtin_callbacks.rs": ["use super::*;"],
+    "crates/php_vm/src/vm/builtin_intrinsics.rs": ["use super::*;"],
+    "crates/php_vm/src/vm/builtins.rs": ["use super::*;"],
+    "crates/php_vm/src/vm/calls.rs": ["use super::*;"],
     "crates/php_vm/src/vm/dense_method_dispatch.rs": ["use super::*;"],
     "crates/php_vm/src/vm/generator_fiber.rs": ["use super::*;"],
 }
