@@ -4,6 +4,12 @@
 
 Accepted for fastest-engine prerequisite tracking.
 
+Gate class: `HARD_BLOCK` for executable baseline-native code, per
+`docs/performance-optimization-gates.md`. This ADR does not block
+interpreter-side subsets (dense dispatch, inline caches, by-ref argument
+location encoding, optimizer passes); those follow the `SUBSET_ALLOWED` and
+`EVIDENCE_GATE` policies in that document.
+
 ## Context
 
 The fastest-engine track needs a credible Sparkplug/YJIT-style baseline native

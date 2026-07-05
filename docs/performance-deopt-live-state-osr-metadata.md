@@ -94,6 +94,7 @@ The `php_vm` unit fixtures cover:
 
 ## Remaining Boundaries
 
+Gate class: `HARD_BLOCK` (see `docs/performance-optimization-gates.md`).
 This foundation is not a complete OSR implementation. The following remain
 blocked until future focused work:
 

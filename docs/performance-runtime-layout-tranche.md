@@ -61,19 +61,25 @@ above 1.5x: `collection_transform_pagination` (1.88x),
 ## Remaining targets
 
 The scenarios above 1.5x against reference PHP share three known costs, in
-priority order:
+priority order. All three are `SUBSET_ALLOWED` under
+`docs/performance-optimization-gates.md`: narrow guarded implementations that
+reuse the generic semantic helpers and record fallback reasons are in scope
+now.
 
 1. **By-reference call arguments pin an array handle in the caller's
    argument register** for the whole callee, forcing one copy-on-write
    separation per call (session policy: 225/run). The lowering must stop
    materializing a by-ref argument as a register value; the null-placeholder
    argument encoding used for `is_callable` is the starting point, gated on
-   callee-signature knowledge.
+   callee-signature knowledge. (`SUBSET_ALLOWED`: by-ref argument location
+   encoding for proven shapes, generic materialization as fallback.)
 2. **Dense plans do not thread through method dispatch**: method bodies
    invoked from dense callers execute on the rich interpreter (container
    resolution: 41 rich method calls/run). Threading the dense plan through
    `execute_method_call_target` mirrors what the dense `CallFunction` arm
-   already does for same-unit functions.
+   already does for same-unit functions. (`SUBSET_ALLOWED`: IC-resolved
+   concrete non-magic methods with verified dense bodies.)
 3. **First-class callables and pipes stay rich-planned**
    (`ResolveCallable`, `Pipe`): acceptable local fallbacks today, next in
    line for dense coverage after the call-shape work above.
+   (`SUBSET_ALLOWED`: stable guarded callable targets.)

@@ -9,6 +9,15 @@ It is additive to `docs/performance-known-gaps.md` and
 Generated reports under `target/performance/` are local evidence only and must
 not be committed.
 
+Gap wording follows the gate classes in
+`docs/performance-optimization-gates.md` (`HARD_BLOCK`, `SUBSET_ALLOWED`,
+`EVIDENCE_GATE`). Where a row below says an area is blocked, that means the
+broad/generic form: baseline-native and OSR/mid-region resume are
+`HARD_BLOCK`; dense object/method/property subsets and by-ref argument
+location encoding are `SUBSET_ALLOWED`; exact per-builtin stubs and optimizer
+passes are `EVIDENCE_GATE`; process-local compiled-unit caching is
+`SUBSET_ALLOWED`.
+
 | Gap ID | Area | Current evidence | Required before closure |
 | --- | --- | --- | --- |
 | FPE-GAP-REAL-WORKLOAD-REPRESENTATIVENESS | Benchmark corpus | The repo has deterministic smoke and framework-like fixtures plus an acceleration matrix. `docs/performance-fastest-hotpaths.md` now ranks those artifacts but still records them as local counter evidence, not real production workload coverage. | Add broader workload evidence without making wall-clock-only claims. |

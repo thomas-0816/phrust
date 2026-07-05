@@ -85,5 +85,21 @@ The following remain disabled whenever aliasing is observed or uncertain:
 - native/JIT eligibility for by-reference params, returns, captures, and
   reference-producing opcodes.
 
+## Gate Classification
+
+Per `docs/performance-optimization-gates.md`:
+
+- Optimizing through `escaped_reference`, `global_or_superglobal_reference`,
+  `property_or_array_dim_reference`, and `unknown_aliasing` stays blocked
+  (`HARD_BLOCK` for native/JIT consumption, generic-interpreter-only
+  otherwise).
+- `no_references_observed` paths and proven local/location-based interpreter
+  paths are `SUBSET_ALLOWED`.
+- By-ref argument location encoding — binding a callee by-ref parameter to
+  the caller's slot instead of materializing the argument as a value
+  register — is explicitly `SUBSET_ALLOWED` when the binding produces the
+  same reference cells as the generic binder and unsupported shapes fall
+  back with recorded reasons.
+
 Future work may specialize `local_only_reference`, but only after reference
 identity and write-through behavior have focused differential fixtures.

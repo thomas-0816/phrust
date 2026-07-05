@@ -5,6 +5,13 @@ This document is the implementation guide for the model accepted in
 quickening and inline caches should be introduced without changing PHP
 semantics.
 
+Gate class: interpreter-side quickening and inline-cache families are
+`SUBSET_ALLOWED`/`EVIDENCE_GATE` per `docs/performance-optimization-gates.md`
+— new IC families (include/autoload/class-constant/static-property lookup,
+method dispatch, callable targets) may be added with epoch guards, fallback
+reasons, and parity fixtures. Consuming adaptive state from native code
+remains governed by the `HARD_BLOCK` prerequisites.
+
 ## Execution Model
 
 The VM starts every instruction in baseline mode. Baseline mode is the current

@@ -70,7 +70,8 @@ contributors who need to change the implementation.
   [extension coverage](stdlib-extension-coverage.md), and
   [standard library roadmap](stdlib-roadmap.md).
 - Performance: [performance methodology](performance-methodology.md),
-  [performance runtime](performance-runtime.md), and
+  [performance runtime](performance-runtime.md),
+  [optimization gates](performance-optimization-gates.md), and
   [bytecode cache](performance-bytecode-cache.md).
 - Decisions and research: [ADRs](adr/) and [research notes](research/).
 
