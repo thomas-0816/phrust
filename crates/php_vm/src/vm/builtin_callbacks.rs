@@ -149,7 +149,7 @@ impl Vm {
         let Some(return_value) =
             self.call_debug_info_method(compiled, object, output, stack, state)?
         else {
-            return Ok(None);
+            return Ok(spl_internal_debug_info_object(object).map(Value::Object));
         };
         let Value::Array(properties) = return_value else {
             return Err(self.runtime_error(
@@ -397,7 +397,18 @@ impl Vm {
                     }
                 }
                 Ok(None) => return VmResult::success_no_output(Some(Value::Int(count))),
-                Err(result) => return result,
+                Err(result) => {
+                    self.annotate_iterator_builtin_iteration_failure(
+                        &result,
+                        "iterator_apply",
+                        values,
+                        None,
+                        compiled,
+                        stack,
+                        state,
+                    );
+                    return result;
+                }
             }
         }
     }
@@ -463,7 +474,18 @@ impl Vm {
             ) {
                 Ok(Some(_)) => count += 1,
                 Ok(None) => return VmResult::success_no_output(Some(Value::Int(count))),
-                Err(result) => return result,
+                Err(result) => {
+                    self.annotate_iterator_builtin_iteration_failure(
+                        &result,
+                        "iterator_count",
+                        values,
+                        call_span,
+                        compiled,
+                        stack,
+                        state,
+                    );
+                    return result;
+                }
             }
         }
     }
@@ -567,9 +589,51 @@ impl Vm {
                     }
                 }
                 Ok(None) => return VmResult::success_no_output(Some(Value::Array(result))),
-                Err(result) => return result,
+                Err(result) => {
+                    self.annotate_iterator_builtin_iteration_failure(
+                        &result,
+                        "iterator_to_array",
+                        values,
+                        call_span,
+                        compiled,
+                        stack,
+                        state,
+                    );
+                    return result;
+                }
             }
         }
+    }
+
+    fn annotate_iterator_builtin_iteration_failure(
+        &self,
+        result: &VmResult,
+        function: &str,
+        values: &[Value],
+        call_span: Option<php_ir::IrSpan>,
+        compiled: &CompiledUnit,
+        stack: &CallStack,
+        state: &mut ExecutionState,
+    ) {
+        let Some(call_span) = call_span else {
+            return;
+        };
+        let Some(throwable) = state
+            .pending_throw
+            .clone()
+            .or_else(|| runtime_error_throwable(result))
+        else {
+            return;
+        };
+        append_throwable_internal_iterator_trace_arg_frame(
+            &throwable, compiled, function, values, call_span,
+        );
+        state.pending_trace = Some(
+            capture_backtrace_string_with_internal_iterator_builtin_call(
+                compiled, stack, function, values, call_span,
+            ),
+        );
+        state.pending_throw = Some(throwable);
     }
 
     fn validate_iterator_function_iterable_arg(
