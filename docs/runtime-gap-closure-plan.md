@@ -10,8 +10,8 @@ IDs present in the manifest.
 
 ## Summary
 
-- Total runtime gap rows: 97
-- Open rows: 67
+- Total runtime gap rows: 100
+- Open rows: 70
 - Implemented rows retained for historical coverage: 30
 - Machine-readable report: `target/runtime-gap-report/runtime-gap-report.json`
 
@@ -20,12 +20,12 @@ IDs present in the manifest.
 | Class | Total | Open | Implemented |
 | --- | ---: | ---: | ---: |
 | references and Copy-on-Write | 2 | 2 | 0 |
-| arrays and array-key conversion | 20 | 14 | 6 |
+| arrays and array-key conversion | 22 | 16 | 6 |
 | foreach mutation/reference behavior | 7 | 5 | 2 |
 | warning channel and exact warning continuation | 13 | 10 | 3 |
 | Throwable/Error hierarchy and stack traces | 13 | 8 | 5 |
 | weak/strict type coercion | 6 | 5 | 1 |
-| include scope and cross-file declarations | 18 | 10 | 8 |
+| include scope and cross-file declarations | 19 | 11 | 8 |
 | superglobals and $GLOBALS | 1 | 1 | 0 |
 | standard-library/extension routing | 9 | 7 | 2 |
 | runtime object/control-flow compatibility | 8 | 5 | 3 |
