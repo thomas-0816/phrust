@@ -153,6 +153,29 @@ Lifecycle rules:
 - The cache key intentionally covers optimization level and compile/runtime
   configuration that can change semantics or generated IR.
 
+### Warm Worker / Server Compiled-Unit Cache
+
+The HTTP server holds the second cache layer: a process-local, sharded
+compiled-script cache (`php_executor::CompiledScriptCache`) keyed by
+canonical path, file length, mtime, source hash, optimization level,
+executor version, and build kind, with single-flight compilation, bounded
+entries with eviction, freshness rechecks, and stale invalidation. This is
+the OPcache-like warm-worker behavior: repeated requests for the same
+script reuse the compiled unit without touching the frontend. `eval` and
+non-file sources never enter this cache, and include/require compilation
+goes through the separate fingerprinted include cache so once-semantics and
+autoload ordering stay exact.
+
+Evidence lives in the server Prometheus metrics
+(`phrust_server_script_cache_{hits,misses,evictions,...}_total`), the
+`just server-smoke` gate (asserts preload plus repeated-request hits), and
+the cache unit tests covering modification invalidation and option
+mismatches. Warm-worker results must never be presented as the cold CLI
+fairness matrix; the CLI rows in
+`docs/performance-app-flow-results.md` measure the disk bytecode cache
+above, not this in-memory layer. Gate class: `SUBSET_ALLOWED` per
+`docs/performance-optimization-gates.md`.
+
 ### Future Daemon or FPM-Like Process
 
 Performance does not implement a daemon, worker pool, shared-memory cache, FPM SAPI,

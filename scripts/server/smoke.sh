@@ -98,9 +98,20 @@ if [[ "$precompressed_body" != 'static smoke gzip' ]]; then
   exit 1
 fi
 
+# Warm-worker compiled-unit reuse: the same script served repeatedly must
+# hit the process-local compiled-script cache instead of recompiling.
+assert_body '/hello.php' 'hello'
+assert_body '/hello.php' 'hello'
+
 metrics="$(curl -fsS "http://$address/__phrust/metrics")"
 if ! grep -q '^phrust_server_script_cache_preload_successes_total 1$' <<<"$metrics"; then
   printf '%s\n' '[fail] metrics did not report one script-cache preload success'
+  printf '%s\n' "$metrics"
+  exit 1
+fi
+script_cache_hits="$(sed -n 's/^phrust_server_script_cache_hits_total \([0-9][0-9]*\)$/\1/p' <<<"$metrics")"
+if [[ -z "$script_cache_hits" || "$script_cache_hits" -lt 2 ]]; then
+  printf '[fail] expected at least 2 script-cache hits for repeated requests, got %s\n' "${script_cache_hits:-none}"
   printf '%s\n' "$metrics"
   exit 1
 fi
