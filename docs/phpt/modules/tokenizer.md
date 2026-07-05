@@ -13,6 +13,9 @@
   invalid-octal overflow fixture.
 - Promotes selected upstream `ext/tokenizer` `token_get_all` basic and
   variation rows that pass with the current lexer/token mapping.
+- Promotes upstream `PhpToken_constructor.phpt` for constructor public
+  properties, `getTokenName()` nullability, `Stringable` instance checks, and
+  ignorable open-tag classification.
 
 ## Known gaps
 
@@ -22,7 +25,8 @@
   not hardcoded Zend token values.
 - Parser-internal token names are not exposed.
 - Remaining upstream failures cluster around `PhpToken` class methods/magic
-  behavior, legacy token aliases such as `T_PAAMAYIM_NEKUDOTAYIM`,
+  behavior beyond the promoted constructor/core helpers, legacy token aliases
+  such as `T_PAAMAYIM_NEKUDOTAYIM`,
   bad-character token emission, heredoc recovery, and `TOKEN_PARSE`
   context-sensitive keyword reclassification.
 
@@ -32,4 +36,4 @@
 - `nix develop -c cargo test -p php_std tokenizer --no-fail-fast`
 - `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=tokenizer`
 
-Last upstream target sweep before this promotion: 30 PASS, 23 FAIL.
+Last upstream target sweep before this promotion: 31 PASS, 22 FAIL.

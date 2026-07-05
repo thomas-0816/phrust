@@ -15001,6 +15001,38 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_php_token_runtime_class(&class_name) {
+                            let object = match new_php_token_object(values) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if is_date_time_runtime_class(&class_name) {
                             let object = match new_date_time_object(
                                 &class_name,
@@ -15898,6 +15930,46 @@ impl Vm {
                             }
                             let object =
                                 ObjectRef::new_with_display_name(&std_class_entry(), "stdClass");
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_php_token_runtime_class(class_name) {
+                            let values =
+                                match read_call_args_at_frame(unit, stack, frame_index, args) {
+                                    Ok(values) => values,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
+                            let object = match new_php_token_object(values) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame was pushed")
@@ -49251,6 +49323,9 @@ fn object_instanceof(
             {
                 return Ok(result);
             }
+            if let Some(result) = internal_php_token_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
             if let Some(result) = internal_throwable_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
@@ -49339,6 +49414,9 @@ fn object_instanceof_in_state(
         Value::Object(object) => {
             if let Some(result) = internal_hash_context_instanceof(&object.class_name(), class_name)
             {
+                return Ok(result);
+            }
+            if let Some(result) = internal_php_token_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
             if let Some(result) = internal_throwable_instanceof(&object.class_name(), class_name) {
@@ -50143,6 +50221,7 @@ pub(crate) fn dense_new_object_lowering_supported(class_name: &str) -> bool {
         || is_spl_heap_runtime_class(class_name)
         || is_spl_file_runtime_class(class_name)
         || is_std_class_runtime_class(class_name)
+        || is_php_token_runtime_class(class_name)
         || is_imagick_runtime_class(class_name)
         || is_xsl_runtime_class(class_name)
         || is_date_time_runtime_class(class_name))
@@ -50598,6 +50677,13 @@ fn is_php_token_runtime_class(class_name: &str) -> bool {
     normalize_class_name(class_name) == "phptoken"
 }
 
+fn internal_php_token_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
+    is_php_token_runtime_class(object_class).then(|| {
+        is_php_token_runtime_class(target_class)
+            || normalize_class_name(target_class) == "stringable"
+    })
+}
+
 fn php_token_static_method_value(
     class_name: &str,
     method: &str,
@@ -50642,7 +50728,7 @@ fn php_token_method_value(
                     args.len()
                 ));
             }
-            Ok(object.get_property("name").unwrap_or(Value::Bool(false)))
+            Ok(php_token_name_value(object).unwrap_or(Value::Null))
         }
         "isignorable" => {
             if !args.is_empty() {
@@ -50651,9 +50737,18 @@ fn php_token_method_value(
                     args.len()
                 ));
             }
-            Ok(object
-                .get_property("__ignorable")
-                .unwrap_or(Value::Bool(false)))
+            if let Some(value) = object.get_property("__ignorable") {
+                return Ok(value);
+            }
+            Ok(Value::Bool(
+                object
+                    .get_property("id")
+                    .and_then(|value| match value {
+                        Value::Int(id) => Some(php_runtime::tokenizer::is_ignorable_id(id)),
+                        _ => None,
+                    })
+                    .unwrap_or(false),
+            ))
         }
         "is" => {
             if args.len() != 1 {
@@ -50696,8 +50791,7 @@ fn php_token_matches_kind(object: &ObjectRef, kind: &Value) -> Result<bool, Stri
                     _ => None,
                 })
                 .unwrap_or_default();
-            let name = object
-                .get_property("name")
+            let name = php_token_name_value(object)
                 .and_then(|value| match value {
                     Value::String(name) => Some(name.to_string_lossy()),
                     _ => None,
@@ -50720,6 +50814,18 @@ fn php_token_matches_kind(object: &ObjectRef, kind: &Value) -> Result<bool, Stri
     }
 }
 
+fn php_token_name_value(object: &ObjectRef) -> Option<Value> {
+    if let Some(Value::String(name)) = object.get_property("name") {
+        return Some(Value::String(name));
+    }
+    let id = match object.get_property("id") {
+        Some(Value::Int(id)) => id,
+        _ => return None,
+    };
+    php_runtime::tokenizer::token_name_for_id(id)
+        .map(|name| Value::String(PhpString::from_test_str(name)))
+}
+
 fn php_token_object(token: php_runtime::tokenizer::TokenizerToken) -> ObjectRef {
     let object = ObjectRef::new_with_display_name(&php_token_class(), "PhpToken");
     object.set_property("id", Value::Int(token.id));
@@ -50734,13 +50840,56 @@ fn php_token_object(token: php_runtime::tokenizer::TokenizerToken) -> ObjectRef 
     object
 }
 
+fn new_php_token_object(args: Vec<CallArgument>) -> Result<ObjectRef, String> {
+    let values = call_args_to_positional("PhpToken::__construct", args)?;
+    if values.len() < 2 || values.len() > 4 {
+        return Err(format!(
+            "E_PHP_VM_TOKENIZER_ARITY: PhpToken::__construct expects 2 to 4 argument(s), {} given",
+            values.len()
+        ));
+    }
+    let id = to_int(&values[0])?;
+    let text = to_string(&values[1])?;
+    let line = values.get(2).map(to_int).transpose()?.unwrap_or(-1);
+    let pos = values.get(3).map(to_int).transpose()?.unwrap_or(-1);
+    let object = ObjectRef::new_with_display_name(&php_token_class(), "PhpToken");
+    object.set_property("id", Value::Int(id));
+    object.set_property("text", Value::String(text));
+    object.set_property("line", Value::Int(line));
+    object.set_property("pos", Value::Int(pos));
+    Ok(object)
+}
+
+fn php_token_property(name: &str, default: Value, type_: RuntimeType) -> RuntimeClassPropertyEntry {
+    RuntimeClassPropertyEntry {
+        name: name.to_owned(),
+        default,
+        type_: Some(type_),
+        flags: RuntimeClassPropertyFlags {
+            is_typed: true,
+            ..RuntimeClassPropertyFlags::default()
+        },
+        hooks: RuntimeClassPropertyHooks::default(),
+        attributes: Vec::new(),
+    }
+}
+
+fn php_token_properties() -> Vec<RuntimeClassPropertyEntry> {
+    vec![
+        php_token_property("id", Value::Int(0), RuntimeType::Int),
+        php_token_property("text", Value::string(Vec::new()), RuntimeType::String),
+        php_token_property("line", Value::Int(-1), RuntimeType::Int),
+        php_token_property("pos", Value::Int(-1), RuntimeType::Int),
+    ]
+}
+
 fn php_token_class() -> RuntimeClassEntry {
     RuntimeClassEntry {
         name: normalize_class_name("PhpToken"),
         parent: None,
-        interfaces: Vec::new(),
+        interfaces: vec![normalize_class_name("Stringable")],
         methods: Vec::new(),
-        properties: Vec::new(),
+        properties: php_token_properties(),
         constants: Vec::new(),
         enum_cases: Vec::new(),
         attributes: Vec::new(),
@@ -64481,6 +64630,11 @@ fn internal_runtime_class_entry(normalized: &str) -> Option<php_ir::module::Clas
     }
     if is_hash_context_runtime_class(normalized) {
         return Some(empty_internal_class_entry("HashContext", None, None, false));
+    }
+    if is_php_token_runtime_class(normalized) {
+        let mut entry = empty_internal_class_entry("PhpToken", None, None, false);
+        entry.interfaces.push(normalize_class_name("Stringable"));
+        return Some(entry);
     }
     if is_redis_runtime_class(normalized) {
         return Some(empty_internal_class_entry("Redis", None, None, false));
@@ -88106,7 +88260,20 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.as_bytes(),
-            b"PhpToken|T_OPEN_TAG|1:0|I:T_COMMENT|I:T_WHITESPACE|echo|I:T_WHITESPACE|match:1|match:;|"
+            b"PhpToken|T_OPEN_TAG|1:0|I:T_OPEN_TAG|I:T_COMMENT|I:T_WHITESPACE|echo|I:T_WHITESPACE|match:1|match:;|"
+        );
+    }
+
+    #[test]
+    fn tokenizer_php_token_constructor_sets_public_shape_and_stringable() {
+        let result = execute_source(
+            "<?php $token = new PhpToken(T_FUNCTION, 'function', 10, 100); echo get_class($token), '|', $token->id === T_FUNCTION ? 'id' : 'bad-id', '|', $token->text, '|', $token->line, '|', $token->pos, '|'; echo $token instanceof Stringable ? 'stringable|' : 'not-stringable|'; echo $token->__toString(), '|', $token->getTokenName(), '|'; $unknown = new PhpToken(-1, 'custom'); echo is_null($unknown->getTokenName()) ? 'null' : 'name';",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"PhpToken|id|function|10|100|stringable|function|T_FUNCTION|null"
         );
     }
 

@@ -4,12 +4,12 @@
   "priority": "PHP tokenizer extension over phrust lexer",
   "selected_manifest": "tests/phpt/manifests/modules/tokenizer.selected.jsonl",
   "corpus_count": 58,
-  "selected_count": 35,
-  "pass_count": 35,
+  "selected_count": 36,
+  "pass_count": 36,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 23,
+  "known_failure_count": 22,
   "scope": [
     "Selected upstream ext/tokenizer token_get_all variation rows",
     "token_get_all and token_name function visibility",
@@ -17,13 +17,14 @@
     "PHP 8.5 token-name constants from php_lexer",
     "Open tag, whitespace, scalar, variable, punctuation, and inline HTML token output",
     "Token array shape with id, text, and line number",
-    "Selected PHP 8.5 syntax tokens and invalid-octal overflow classification"
+    "Selected PHP 8.5 syntax tokens and invalid-octal overflow classification",
+    "PhpToken constructor public shape, getTokenName nullability, Stringable instance checks, and ignorable token classification"
   ],
   "non_scope": [
     "Parser-internal token names",
     "Full ext/tokenizer upstream PHPT corpus",
     "Token IDs matching raw Zend numeric values",
-    "PhpToken class method/magic behavior",
+    "Remaining PhpToken class method/magic behavior beyond the promoted constructor and core helpers",
     "Heredoc recovery, bad-character token emission, and TOKEN_PARSE context-sensitive keyword reclassification"
   ],
   "target_gates": [
@@ -31,5 +32,5 @@
     "nix develop -c cargo test -p php_std tokenizer --no-fail-fast",
     "nix develop -c just phpt-dev-module MODULE=tokenizer"
   ],
-  "next_step": "Implement PhpToken class semantics and close heredoc/bad-character/TOKEN_PARSE lexer gaps before promoting the remaining upstream rows."
+  "next_step": "Close remaining PhpToken method/magic behavior and heredoc/bad-character/TOKEN_PARSE lexer gaps before promoting the remaining upstream rows."
 }

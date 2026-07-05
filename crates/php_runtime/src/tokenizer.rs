@@ -42,13 +42,23 @@ pub fn token_name_id(name: TokenName) -> i64 {
 /// Resolves a local tokenizer ID to its PHP token name.
 #[must_use]
 pub fn token_name_for_id(id: i64) -> Option<&'static str> {
+    token_name_kind_for_id(id).map(|name| name.as_php_name())
+}
+
+/// Resolves a local tokenizer ID to the lexer token kind.
+#[must_use]
+pub fn token_name_kind_for_id(id: i64) -> Option<TokenName> {
     if id < TOKENIZER_TOKEN_ID_BASE {
         return None;
     }
     let index = (id - TOKENIZER_TOKEN_ID_BASE) as usize;
-    TOKENIZER_TOKEN_NAMES
-        .get(index)
-        .map(|name| name.as_php_name())
+    TOKENIZER_TOKEN_NAMES.get(index).copied()
+}
+
+/// Returns whether a local tokenizer ID is ignorable for `PhpToken::isIgnorable`.
+#[must_use]
+pub fn is_ignorable_id(id: i64) -> bool {
+    is_ignorable_name(token_name_kind_for_id(id))
 }
 
 /// Tokenizes source code with the existing Lexer lexer.
@@ -83,7 +93,9 @@ pub fn token_get_all_value(tokens: Vec<TokenizerToken>) -> Value {
 pub fn is_ignorable_name(name: Option<TokenName>) -> bool {
     matches!(
         name,
-        Some(TokenName::Whitespace | TokenName::Comment | TokenName::DocComment)
+        Some(
+            TokenName::OpenTag | TokenName::Whitespace | TokenName::Comment | TokenName::DocComment
+        )
     )
 }
 
