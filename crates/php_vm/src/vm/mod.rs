@@ -11541,6 +11541,11 @@ impl Vm {
         }
         let key = array_key_from_value(key_value)
             .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+        if let Value::Object(object) = &base
+            && normalize_class_name(&object.class_name()) == "simplexmlelement"
+        {
+            return Ok(php_runtime::xml::simplexml_dimension(object, &key));
+        }
         if let Value::String(string) = &base {
             return match string_offset_for_read(string, &key) {
                 StringOffsetRead::Byte(value) => Ok(value),
@@ -22221,7 +22226,12 @@ impl Vm {
                                                 }
                                             }
                                         };
-                                        if let Value::String(string) = &base {
+                                        if let Value::Object(object) = &base
+                                            && normalize_class_name(&object.class_name())
+                                                == "simplexmlelement"
+                                        {
+                                            php_runtime::xml::simplexml_dimension(object, &key)
+                                        } else if let Value::String(string) = &base {
                                             match string_offset_for_read(string, &key) {
                                                 StringOffsetRead::Byte(value) => value,
                                                 StringOffsetRead::Illegal { value, key_bytes } => {
@@ -55049,6 +55059,10 @@ fn call_xml_runtime_method(
         ("simplexmlelement", "children") => {
             validate_xml_value_count("SimpleXMLElement::children", &args, 0, 0)?;
             Ok(php_runtime::xml::simplexml_children(object))
+        }
+        ("simplexmlelement", "getname") => {
+            validate_xml_value_count("SimpleXMLElement::getName", &args, 0, 0)?;
+            Ok(php_runtime::xml::simplexml_get_name(object))
         }
         ("simplexmlelement", "__tostring") => {
             validate_xml_value_count("SimpleXMLElement::__toString", &args, 0, 0)?;
