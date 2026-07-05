@@ -305,13 +305,19 @@ pub(in crate::builtins::modules) fn builtin_count(
         Value::Array(array) if mode == 1 => count_recursive(&array),
         Value::Array(array) => array.len(),
         Value::Object(object) => {
-            match (
-                object.get_property("__entries"),
-                object.get_property("__storage"),
-            ) {
-                (Some(Value::Array(entries)), _) => entries.len(),
-                (_, Some(Value::Array(entries))) => entries.len(),
-                _ => return Err(type_error("count", "array or Countable", &args[0])),
+            if let Some(Value::Int(count)) =
+                object.get_property(crate::xml::simplexml_count_property())
+            {
+                count.max(0) as usize
+            } else {
+                match (
+                    object.get_property("__entries"),
+                    object.get_property("__storage"),
+                ) {
+                    (Some(Value::Array(entries)), _) => entries.len(),
+                    (_, Some(Value::Array(entries))) => entries.len(),
+                    _ => return Err(type_error("count", "array or Countable", &args[0])),
+                }
             }
         }
         _ => return Err(type_error("count", "array or Countable", &args[0])),

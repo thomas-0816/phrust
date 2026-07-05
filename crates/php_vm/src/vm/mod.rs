@@ -10564,6 +10564,10 @@ impl Vm {
             self.record_counter_dense_property_fallback("internal_runtime_object");
             return Ok(object.get_property(property).unwrap_or(Value::Null));
         }
+        if normalize_class_name(&object.class_name()) == "simplexmlelement" {
+            self.record_counter_dense_property_fallback("simplexml_property");
+            return Ok(php_runtime::xml::simplexml_property(&object, property));
+        }
 
         let class = match lookup_class_in_state(compiled, state, &object.class_name()) {
             Some(class) => class,
@@ -17387,6 +17391,18 @@ impl Vm {
                             }
                             continue;
                         }
+                        if normalize_class_name(&object.class_name()) == "simplexmlelement" {
+                            let value = php_runtime::xml::simplexml_property(&object, property);
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if is_pdo_runtime_class(&object.class_name()) {
                             let value = object.get_property(property).unwrap_or(Value::Null);
                             if let Err(message) = stack
@@ -19060,6 +19076,18 @@ impl Vm {
                                     return self.runtime_error(output, compiled, stack, message);
                                 }
                             };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if normalize_class_name(&object.class_name()) == "simplexmlelement" {
+                            let value = php_runtime::xml::simplexml_property(&object, &property);
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame was pushed")

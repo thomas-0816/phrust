@@ -20,6 +20,7 @@ const XML_WRITER_STACK: &str = "__phrust_xml_writer_stack";
 const XML_WRITER_OPEN_TAG: &str = "__phrust_xml_writer_open_tag";
 const SIMPLEXML_ENTRIES: &str = "__entries";
 const SIMPLEXML_ENTRY_NAMES: &str = "__entry_names";
+const SIMPLEXML_COUNT: &str = "__phrust_simplexml_count";
 
 pub const XML_READER_NONE: i64 = 0;
 pub const XML_READER_ELEMENT: i64 = 1;
@@ -116,10 +117,31 @@ pub fn element_text(element: &XmlElement) -> String {
     out
 }
 
+fn simplexml_element_text(element: &XmlElement) -> String {
+    let mut out = String::new();
+    for child in &element.children {
+        if let XmlNode::Text(text) = child {
+            out.push_str(text);
+        }
+    }
+    out
+}
+
 pub fn reader_events(document: &XmlDocument) -> Vec<XmlReaderEvent> {
     let mut events = Vec::new();
     push_reader_events(&document.root, &mut events);
     events
+}
+
+fn element_element_children(element: &XmlElement) -> Vec<&XmlElement> {
+    element
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            XmlNode::Element(element) => Some(element),
+            XmlNode::Text(_) => None,
+        })
+        .collect()
 }
 
 pub fn empty_internal_class(name: &str) -> ClassEntry {
@@ -202,7 +224,14 @@ pub fn new_simplexml_element(element: &XmlElement) -> ObjectRef {
         &empty_internal_class("SimpleXMLElement"),
         "SimpleXMLElement",
     );
-    object.set_property("__text", Value::string(element_text(element).into_bytes()));
+    object.set_property(
+        SIMPLEXML_COUNT,
+        Value::Int(element_element_children(element).len() as i64),
+    );
+    object.set_property(
+        "__text",
+        Value::string(simplexml_element_text(element).into_bytes()),
+    );
     object.set_property(
         XML_STORAGE,
         document_value(&XmlDocument {
@@ -221,11 +250,10 @@ pub fn new_simplexml_element(element: &XmlElement) -> ObjectRef {
             .push(new_simplexml_element(child));
     }
     for (name, children) in children_by_name {
-        let value = match children.as_slice() {
-            [child] => Value::Object(child.clone()),
-            _ => Value::Object(new_simplexml_element_list(&name, &children)),
-        };
-        object.set_property(name, value);
+        object.set_property(
+            name.clone(),
+            Value::Object(new_simplexml_element_list(&name, &children)),
+        );
     }
     object
 }
@@ -235,6 +263,7 @@ fn new_simplexml_element_list(name: &str, elements: &[ObjectRef]) -> ObjectRef {
         &empty_internal_class("SimpleXMLElement"),
         "SimpleXMLElement",
     );
+    object.set_property(SIMPLEXML_COUNT, Value::Int(elements.len() as i64));
     object.set_property("__text", Value::string(Vec::<u8>::new()));
     let mut entries = PhpArray::new();
     let mut entry_names = PhpArray::new();
@@ -246,6 +275,14 @@ fn new_simplexml_element_list(name: &str, elements: &[ObjectRef]) -> ObjectRef {
             ArrayKey::Int(index as i64),
             Value::string(name.as_bytes().to_vec()),
         );
+    }
+    if let Some(first) = elements.first() {
+        for (property, value) in first.properties_snapshot() {
+            if property.starts_with("__") || property.contains(':') {
+                continue;
+            }
+            object.set_property(property, value);
+        }
     }
     object.set_property(SIMPLEXML_ENTRIES, Value::Array(entries));
     object.set_property(SIMPLEXML_ENTRY_NAMES, Value::Array(entry_names));
@@ -283,12 +320,12 @@ fn new_simplexml_children_list(children: &[XmlNode]) -> ObjectRef {
             .push(child_object);
     }
     for (name, children) in children_by_name {
-        let value = match children.as_slice() {
-            [child] => Value::Object(child.clone()),
-            _ => Value::Object(new_simplexml_element_list(&name, &children)),
-        };
-        object.set_property(name, value);
+        object.set_property(
+            name.clone(),
+            Value::Object(new_simplexml_element_list(&name, &children)),
+        );
     }
+    object.set_property(SIMPLEXML_COUNT, Value::Int(entries.len() as i64));
     object.set_property(SIMPLEXML_ENTRIES, Value::Array(entries));
     object.set_property(SIMPLEXML_ENTRY_NAMES, Value::Array(entry_names));
     object
@@ -475,7 +512,7 @@ pub fn simplexml_as_xml(object: &ObjectRef) -> Value {
 
 pub fn simplexml_text(object: &ObjectRef) -> Value {
     document_from_object(object)
-        .map(|document| Value::string(element_text(&document.root).into_bytes()))
+        .map(|document| Value::string(simplexml_element_text(&document.root).into_bytes()))
         .or_else(|| {
             first_simplexml_entry(object).and_then(|entry| match simplexml_text(&entry) {
                 Value::String(value) => Some(Value::String(value)),
@@ -499,7 +536,18 @@ pub fn simplexml_attributes(object: &ObjectRef) -> Value {
 pub fn simplexml_children(object: &ObjectRef) -> Value {
     document_from_object(object)
         .map(|document| Value::Object(new_simplexml_children_list(&document.root.children)))
+        .or_else(|| first_simplexml_entry(object).map(|entry| simplexml_children(&entry)))
         .unwrap_or_else(|| Value::Object(object.clone()))
+}
+
+pub fn simplexml_property(object: &ObjectRef, property: &str) -> Value {
+    object
+        .get_property(property)
+        .unwrap_or_else(|| Value::Object(new_simplexml_element_list(property, &[])))
+}
+
+pub fn simplexml_count_property() -> &'static str {
+    SIMPLEXML_COUNT
 }
 
 pub fn xml_reader_xml(object: &ObjectRef, xml: &str) -> Result<Value, String> {
