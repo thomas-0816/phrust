@@ -2,7 +2,7 @@
 
 - Priority: 18.6 promoted
 - Selected manifest: `tests/phpt/manifests/modules/pcre.selected.jsonl`
-- the selected close gate: 77 PASS, 10 SKIP, 0 FAIL, 0 BORK from 87 selected fixtures
+- the selected close gate: 82 PASS, 10 SKIP, 0 FAIL, 0 BORK from 92 selected fixtures
 - Previous upstream corpus snapshot before this promotion: 69 PASS, 10 SKIP, 86 FAIL, 0 BORK
   from 165 corpus candidates
 
@@ -17,18 +17,24 @@
 - PHP paired pattern delimiters with nested delimiter bytes in groups,
   quantifiers, character classes, and named captures
 - `preg_replace` simple replacements, backrefs, limits, and by-reference count
+- `preg_replace` PHP replacement-token parsing for `$n`, `\n`, `${n}`,
+  leading-zero tokens, and ambiguous two-digit backreferences
 - `preg_split` delimiter capture and no-empty flags
 - `preg_grep` positive matching
 - `preg_quote` delimiter escaping
 - `preg_replace_callback` named function, closure, and invalid-callable dispatch
+- `preg_replace_callback` `PREG_OFFSET_CAPTURE` and `PREG_UNMATCHED_AS_NULL`
+  callback match-array flags
 - `preg_replace_callback_array` sequential function and closure dispatch, count
   by reference, empty pattern maps, and array subject key preservation
+- `preg_replace_callback_array` `PREG_OFFSET_CAPTURE` and
+  `PREG_UNMATCHED_AS_NULL` callback match-array flags
 - `preg_filter` replacement filtering with scalar `null` no-match behavior and
   array key preservation
 
 ## Non-Scope
 
-- Remaining 85 upstream `ext/pcre` failures
+- Remaining 83 upstream `ext/pcre` failures
 - PCRE JIT, callouts, `(*MARK)`, and every PHP modifier edge
 - `preg_replace_callback_array` array/method callback edge cases
 - Byte-perfect warning text, stack formatting, UTF-8 edge diagnostics, and
@@ -43,9 +49,14 @@
 - `tests/phpt/generated/pcre/preg-replace-callback-invalid.phpt`
 - `tests/phpt/generated/pcre/paired-delimiters.phpt`
 - `tests/phpt/generated/pcre/preg-replace-callback-array.phpt`
-- 80 target-green upstream rows from `ext/pcre/tests`
+- `tests/phpt/generated/pcre/preg-replace-callback-flags.phpt`
+- 84 target-green upstream rows from `ext/pcre/tests`
 - `ext/pcre/tests/preg_match_basic.phpt`
 - `ext/pcre/tests/preg_quote_basic.phpt`
+- `ext/pcre/tests/preg_replace.phpt`
+- `ext/pcre/tests/preg_replace_basic.phpt`
+- `ext/pcre/tests/preg_replace_callback_flags.phpt`
+- `ext/pcre/tests/preg_replace_edit_basic.phpt`
 - `ext/pcre/tests/preg_split_basic.phpt`
 - `ext/pcre/tests/preg_grep_basic.phpt`
 - `ext/pcre/tests/preg_filter.phpt`
@@ -79,10 +90,19 @@
   `preg_match` and `preg_match_all` paths.
 - `preg_replace` count is bound by reference through the VM builtin argument
   bridge.
+- `preg_replace` replacement expansion now follows PHP's one/two-digit
+  backreference token parsing, including `${n}` braced tokens and ambiguous
+  `$103`-style replacements.
 - `preg_replace_callback` uses real VM callable dispatch for named functions and
   closures.
 - `preg_replace_callback_array` is registered in the PCRE runtime/std surface
   and uses the VM callback dispatch path for user functions and closures.
+- `preg_replace_callback` and `preg_replace_callback_array` now accept PHP 8.5's
+  sixth flags argument and pass `PREG_OFFSET_CAPTURE` and
+  `PREG_UNMATCHED_AS_NULL` into callback match arrays.
+- Dense and sparse VM call-argument loading now suppress undefined-variable
+  warnings for uninitialized callback count out-parameters before by-reference
+  builtin calls.
 - `preg_filter` now shares the replacement engine while filtering out subjects
   that did not match.
 - The PCRE pattern parser now handles PHP paired delimiters `()`, `[]`, `{}`,
@@ -92,9 +112,11 @@
   `preg_match_all`-free regex cases that fit the existing runtime surface.
 - The previous full target-only upstream sweep on the PHP 8.5.7 oracle corpus
   measured 69 PASS, 10 SKIP, and 86 FAIL from 165 `ext/pcre/tests` rows. This
-  branch promotes `preg_filter.phpt` from that failure set into the selected
-  gate. The selected gate now also includes generated paired-delimiter and
-  `preg_replace_callback_array` coverage.
+  branch promotes `preg_filter.phpt`, `preg_replace.phpt`,
+  `preg_replace_basic.phpt`, `preg_replace_edit_basic.phpt`, and
+  `preg_replace_callback_flags.phpt` from that failure set into the selected
+  gate. The selected gate now also includes generated paired-delimiter,
+  `preg_replace_callback_array`, and callback-flags coverage.
 
 ## Known Gaps
 

@@ -5,6 +5,7 @@
 {"path":"tests/phpt/generated/pcre/preg-replace-callback-invalid.phpt"}
 {"path":"tests/phpt/generated/pcre/paired-delimiters.phpt"}
 {"path":"tests/phpt/generated/pcre/preg-replace-callback-array.phpt"}
+{"path":"tests/phpt/generated/pcre/preg-replace-callback-flags.phpt"}
 {"path":"ext/pcre/tests/001.phpt"}
 {"path":"ext/pcre/tests/004.phpt"}
 {"path":"ext/pcre/tests/007.phpt"}
@@ -79,9 +80,13 @@
 {"path":"ext/pcre/tests/preg_match_latin.phpt"}
 {"path":"ext/pcre/tests/preg_match_variation1.phpt"}
 {"path":"ext/pcre/tests/preg_quote_basic.phpt"}
+{"path":"ext/pcre/tests/preg_replace.phpt"}
+{"path":"ext/pcre/tests/preg_replace_basic.phpt"}
 {"path":"ext/pcre/tests/preg_replace2.phpt"}
 {"path":"ext/pcre/tests/preg_replace_callback.phpt"}
 {"path":"ext/pcre/tests/preg_replace_callback_basic.phpt"}
+{"path":"ext/pcre/tests/preg_replace_callback_flags.phpt"}
 {"path":"ext/pcre/tests/preg_replace_variation1.phpt"}
+{"path":"ext/pcre/tests/preg_replace_edit_basic.phpt"}
 {"path":"ext/pcre/tests/preg_split_basic.phpt"}
 {"path":"ext/pcre/tests/preg_filter.phpt"}

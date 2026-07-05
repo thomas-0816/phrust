@@ -2787,6 +2787,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_subject(
     callback: BuiltinEntry,
     subject: &Value,
     limit: i64,
+    flags: i64,
     count: &mut i64,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -2802,6 +2803,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_subject(
                     callback,
                     text.as_bytes(),
                     limit,
+                    flags,
                     count,
                     span.clone(),
                 )?;
@@ -2818,6 +2820,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_subject(
                 callback,
                 text.as_bytes(),
                 limit,
+                flags,
                 count,
                 span,
             )
@@ -2832,6 +2835,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
     callback: BuiltinEntry,
     subject: &[u8],
     limit: i64,
+    flags: i64,
     count: &mut i64,
     span: RuntimeSourceSpan,
 ) -> Result<Vec<u8>, BuiltinError> {
@@ -2855,7 +2859,7 @@ pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
             vec![pcre::captures_to_array_with_names(
                 &captures,
                 compiled.capture_names(),
-                0,
+                flags,
                 0,
             )],
             span.clone(),
@@ -2880,13 +2884,19 @@ pub(in crate::builtins::modules) fn expand_preg_replacement(
     while index < replacement.len() {
         let byte = replacement[index];
         if (byte == b'$' || byte == b'\\') && index + 1 < replacement.len() {
-            let next = replacement[index + 1];
-            if next.is_ascii_digit() {
-                let capture_index = (next - b'0') as usize;
-                if let Some(capture) = captures.get(capture_index) {
-                    output.extend_from_slice(capture.as_bytes());
-                }
-                index += 2;
+            if byte == b'$'
+                && let Some((capture_index, consumed)) =
+                    parse_braced_preg_replacement_capture(replacement, index + 1)
+            {
+                append_preg_replacement_capture(&mut output, captures, capture_index);
+                index += consumed + 1;
+                continue;
+            }
+            if let Some((capture_index, consumed)) =
+                parse_unbraced_preg_replacement_capture(replacement, index + 1)
+            {
+                append_preg_replacement_capture(&mut output, captures, capture_index);
+                index += consumed + 1;
                 continue;
             }
         }
@@ -2894,6 +2904,60 @@ pub(in crate::builtins::modules) fn expand_preg_replacement(
         index += 1;
     }
     output
+}
+
+fn parse_unbraced_preg_replacement_capture(
+    replacement: &[u8],
+    start: usize,
+) -> Option<(usize, usize)> {
+    let first = *replacement.get(start)?;
+    if !first.is_ascii_digit() {
+        return None;
+    }
+    let mut capture_index = (first - b'0') as usize;
+    let mut consumed = 1usize;
+    if let Some(second) = replacement.get(start + 1).copied()
+        && second.is_ascii_digit()
+    {
+        capture_index = capture_index * 10 + (second - b'0') as usize;
+        consumed = 2;
+    }
+    Some((capture_index, consumed))
+}
+
+fn parse_braced_preg_replacement_capture(
+    replacement: &[u8],
+    start: usize,
+) -> Option<(usize, usize)> {
+    if replacement.get(start).copied()? != b'{' {
+        return None;
+    }
+    let first = replacement.get(start + 1).copied()?;
+    if !first.is_ascii_digit() {
+        return None;
+    }
+    let mut capture_index = (first - b'0') as usize;
+    let mut digit_count = 1usize;
+    if let Some(second) = replacement.get(start + 2).copied()
+        && second.is_ascii_digit()
+    {
+        capture_index = capture_index * 10 + (second - b'0') as usize;
+        digit_count = 2;
+    }
+    if replacement.get(start + 1 + digit_count).copied() != Some(b'}') {
+        return None;
+    }
+    Some((capture_index, digit_count + 2))
+}
+
+fn append_preg_replacement_capture(
+    output: &mut Vec<u8>,
+    captures: &pcre2::bytes::Captures<'_>,
+    capture_index: usize,
+) {
+    if let Some(capture) = captures.get(capture_index) {
+        output.extend_from_slice(capture.as_bytes());
+    }
 }
 
 pub(in crate::builtins::modules) fn append_split_piece(
@@ -8483,6 +8547,31 @@ mod tests {
             Value::string("a:1 b:22")
         );
         assert_eq!(count.get(), Value::Int(2));
+
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_replace",
+                vec![
+                    Value::string(r#"/(ab)(c)(d)(e)(f)(g)(h)(i)(j)(k)/"#),
+                    Value::string(r#"a${1}2$103"#),
+                    Value::string("zabcdefghijkl"),
+                ],
+            ),
+            Value::string("zaab2k3l")
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_replace",
+                vec![
+                    Value::string(r#"/(a)(b)/"#),
+                    Value::string(r#"\1-$1-${1}-$10-${10}-$99-$001-${001}"#),
+                    Value::string("ab"),
+                ],
+            ),
+            Value::string("a-a-a----ab1-${001}")
+        );
 
         let array_pattern_count = ReferenceCell::new(Value::Null);
         assert_eq!(

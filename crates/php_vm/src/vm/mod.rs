@@ -28940,9 +28940,9 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Result<Value, ArrayCallbackError> {
-        if !(3..=5).contains(&args.len()) {
+        if !(3..=6).contains(&args.len()) {
             return Err(ArrayCallbackError::Message(
-                "E_PHP_VM_BUILTIN_ARITY: preg_replace_callback expects three to five argument(s)"
+                "E_PHP_VM_BUILTIN_ARITY: preg_replace_callback expects three to six argument(s)"
                     .to_owned(),
             ));
         }
@@ -28969,6 +28969,14 @@ impl Vm {
                 ArrayCallbackError::Message(format!("preg_replace_callback: {message}"))
             })?
             .unwrap_or(-1);
+        let flags = args
+            .get(5)
+            .map(to_int)
+            .transpose()
+            .map_err(|message| {
+                ArrayCallbackError::Message(format!("preg_replace_callback: {message}"))
+            })?
+            .unwrap_or(0);
         let mut cache = php_runtime::pcre::PcreCache::default();
         let compiled_pattern = match cache.compile(&pattern) {
             Ok(compiled_pattern) => compiled_pattern,
@@ -28990,6 +28998,7 @@ impl Vm {
                         callback.clone(),
                         text.as_bytes(),
                         limit,
+                        flags,
                         &mut count,
                         output,
                         stack,
@@ -29011,6 +29020,7 @@ impl Vm {
                     callback,
                     text.as_bytes(),
                     limit,
+                    flags,
                     &mut count,
                     output,
                     stack,
@@ -29033,9 +29043,9 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Result<Value, ArrayCallbackError> {
-        if !(2..=5).contains(&args.len()) {
+        if !(2..=6).contains(&args.len()) {
             return Err(ArrayCallbackError::Message(
-                "E_PHP_VM_BUILTIN_ARITY: preg_replace_callback_array expects two to five argument(s)"
+                "E_PHP_VM_BUILTIN_ARITY: preg_replace_callback_array expects two to six argument(s)"
                     .to_owned(),
             ));
         }
@@ -29053,6 +29063,14 @@ impl Vm {
                 ArrayCallbackError::Message(format!("preg_replace_callback_array: {message}"))
             })?
             .unwrap_or(-1);
+        let flags = args
+            .get(4)
+            .map(to_int)
+            .transpose()
+            .map_err(|message| {
+                ArrayCallbackError::Message(format!("preg_replace_callback_array: {message}"))
+            })?
+            .unwrap_or(0);
         let mut compiled_patterns = Vec::new();
         let mut cache = php_runtime::pcre::PcreCache::default();
         for (key, callback) in patterns.iter() {
@@ -29099,6 +29117,7 @@ impl Vm {
                         &compiled_patterns,
                         text.as_bytes(),
                         limit,
+                        flags,
                         &mut count,
                         output,
                         stack,
@@ -29119,6 +29138,7 @@ impl Vm {
                     &compiled_patterns,
                     text.as_bytes(),
                     limit,
+                    flags,
                     &mut count,
                     output,
                     stack,
@@ -29140,6 +29160,7 @@ impl Vm {
         patterns: &[(std::sync::Arc<php_runtime::pcre::CompiledPattern>, Value)],
         subject: &[u8],
         limit: i64,
+        flags: i64,
         count: &mut i64,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
@@ -29153,6 +29174,7 @@ impl Vm {
                 callback.clone(),
                 &current,
                 limit,
+                flags,
                 count,
                 output,
                 stack,
@@ -29170,6 +29192,7 @@ impl Vm {
         callback: Value,
         subject: &[u8],
         limit: i64,
+        flags: i64,
         count: &mut i64,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
@@ -29198,7 +29221,7 @@ impl Vm {
                 vec![php_runtime::pcre::captures_to_array_with_names(
                     &captures,
                     pattern.capture_names(),
-                    0,
+                    flags,
                     0,
                 )],
                 output,
@@ -70970,6 +70993,7 @@ fn dense_load_local_is_pre_call_by_ref_out_param(
             DenseOpcode::Nop => continue,
             DenseOpcode::LoadConst
             | DenseOpcode::LoadConstEcho
+            | DenseOpcode::FetchConst
             | DenseOpcode::Move
             | DenseOpcode::LoadLocal
             | DenseOpcode::LoadLocalEcho => {
@@ -71260,6 +71284,8 @@ fn is_quiet_by_ref_internal_builtin_arg(function: &str, index: usize, arg: &IrCa
         "apcu_dec" | "apcu_inc" => index == 2 || arg.name.as_deref() == Some("success"),
         "is_callable" => index == 2 || arg.name.as_deref() == Some("callable_name"),
         "preg_match" | "preg_match_all" => index == 2 || arg.name.as_deref() == Some("matches"),
+        "preg_replace_callback" => index == 4 || arg.name.as_deref() == Some("count"),
+        "preg_replace_callback_array" => index == 3 || arg.name.as_deref() == Some("count"),
         _ => false,
     }
 }
@@ -71281,6 +71307,8 @@ fn is_quiet_dense_by_ref_internal_builtin_arg(
         "apcu_dec" | "apcu_inc" => index == 2 || arg_name == Some("success"),
         "is_callable" => index == 2 || arg_name == Some("callable_name"),
         "preg_match" | "preg_match_all" => index == 2 || arg_name == Some("matches"),
+        "preg_replace_callback" => index == 4 || arg_name == Some("count"),
+        "preg_replace_callback_array" => index == 3 || arg_name == Some("count"),
         _ => false,
     }
 }
@@ -72490,6 +72518,7 @@ fn internal_builtin_by_ref_param_name(function: &str, index: usize) -> &'static 
         ("parse_str", 1) => "result",
         ("preg_match" | "preg_match_all", 2) => "matches",
         ("preg_replace" | "preg_replace_callback", 4) => "count",
+        ("preg_replace_callback_array", 3) => "count",
         ("apcu_fetch", 1) => "success",
         ("apcu_dec" | "apcu_inc", 2) => "success",
         (_, 0) => "array",

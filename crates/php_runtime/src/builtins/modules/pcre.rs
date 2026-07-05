@@ -273,10 +273,10 @@ pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    if args.len() < 3 || args.len() > 5 {
+    if args.len() < 3 || args.len() > 6 {
         return Err(arity_error(
             "preg_replace_callback",
-            "three to five argument(s)",
+            "three to six argument(s)",
         ));
     }
     let pattern = string_arg("preg_replace_callback", &args[0])?;
@@ -285,6 +285,11 @@ pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
         .map(|value| int_arg("preg_replace_callback", value))
         .transpose()?
         .unwrap_or(-1);
+    let flags = args
+        .get(5)
+        .map(|value| int_arg("preg_replace_callback", value))
+        .transpose()?
+        .unwrap_or(0);
     let callback_name = match deref_value(&args[1]).as_callable() {
         Some(CallableValue::InternalBuiltin { name }) => name.clone(),
         _ => {
@@ -305,7 +310,7 @@ pub(in crate::builtins::modules) fn builtin_preg_replace_callback(
     };
     let mut count = 0;
     let result = preg_replace_callback_subject(
-        context, &compiled, callback, &args[2], limit, &mut count, span,
+        context, &compiled, callback, &args[2], limit, flags, &mut count, span,
     )?;
     assign_reference_arg(args.get(4), Value::Int(count));
     context.clear_preg_last_error();
@@ -317,10 +322,10 @@ pub(in crate::builtins::modules) fn builtin_preg_replace_callback_array(
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    if args.len() < 2 || args.len() > 5 {
+    if args.len() < 2 || args.len() > 6 {
         return Err(arity_error(
             "preg_replace_callback_array",
-            "two to five argument(s)",
+            "two to six argument(s)",
         ));
     }
     Err(BuiltinError::new(
