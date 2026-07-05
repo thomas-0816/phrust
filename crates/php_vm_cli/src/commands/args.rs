@@ -248,17 +248,33 @@ pub(super) struct BytecodeCacheOptions {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct PersistentFeedbackOptions {
     pub(super) read: Option<String>,
+    pub(super) write: Option<String>,
     pub(super) stats_json: Option<String>,
 }
 
 impl Default for BytecodeCacheOptions {
     fn default() -> Self {
         Self {
-            mode: BytecodeCacheMode::Off,
+            mode: default_bytecode_cache_mode(),
             dir: None,
             stats: false,
             clear: false,
         }
+    }
+}
+
+/// The bytecode cache is on by default (like an opcache); the
+/// `PHRUST_BYTECODE_CACHE` environment variable overrides the default and
+/// the `--bytecode-cache` flag overrides both. Unrecognized values keep
+/// the default so a typo cannot silently disable correctness-neutral
+/// caching or invent a mode.
+pub(super) fn default_bytecode_cache_mode() -> BytecodeCacheMode {
+    match std::env::var("PHRUST_BYTECODE_CACHE").as_deref() {
+        Ok("off") => BytecodeCacheMode::Off,
+        Ok("read") => BytecodeCacheMode::Read,
+        Ok("write") => BytecodeCacheMode::Write,
+        Ok("read-write") => BytecodeCacheMode::ReadWrite,
+        _ => BytecodeCacheMode::ReadWrite,
     }
 }
 
@@ -531,8 +547,14 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                         EngineProfileName::accepted_values()
                     ));
                 };
-                let profile_options = PhpExecutorOptions::for_profile(parse_engine_preset(value)?);
-                bytecode_cache.mode = BytecodeCacheMode::Off;
+                let preset = parse_engine_preset(value)?;
+                let profile_options = PhpExecutorOptions::for_profile(preset);
+                // The baseline compatibility oracle stays cache-free; the
+                // managed presets keep the default-on cache unless the
+                // cache flags say otherwise.
+                if preset == EngineProfileName::Baseline {
+                    bytecode_cache.mode = BytecodeCacheMode::Off;
+                }
                 opt_level = profile_options.optimization_level;
                 include_opt_level = profile_options.vm_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
@@ -550,8 +572,11 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
                 tiering_function_threshold_explicit = false;
             }
             arg if let Some(value) = arg.strip_prefix("--engine-preset=") => {
-                let profile_options = PhpExecutorOptions::for_profile(parse_engine_preset(value)?);
-                bytecode_cache.mode = BytecodeCacheMode::Off;
+                let preset = parse_engine_preset(value)?;
+                let profile_options = PhpExecutorOptions::for_profile(preset);
+                if preset == EngineProfileName::Baseline {
+                    bytecode_cache.mode = BytecodeCacheMode::Off;
+                }
                 opt_level = profile_options.optimization_level;
                 include_opt_level = profile_options.vm_options.include_optimization_level;
                 execution_format = profile_options.vm_options.execution_format;
@@ -830,6 +855,16 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
             }
             arg if let Some(value) = arg.strip_prefix("--persistent-feedback-read=") => {
                 persistent_feedback.read = Some(value.to_owned());
+            }
+            "--persistent-feedback-write" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err("run --persistent-feedback-write requires <path>".to_string());
+                };
+                persistent_feedback.write = Some(value.clone());
+            }
+            arg if let Some(value) = arg.strip_prefix("--persistent-feedback-write=") => {
+                persistent_feedback.write = Some(value.to_owned());
             }
             "--persistent-feedback-stats-json" => {
                 index += 1;

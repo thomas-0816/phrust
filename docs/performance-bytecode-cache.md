@@ -55,10 +55,46 @@ misses unless later work items add precise dependency tracking.
 
 ## Request and Cache Lifecycle
 
-The Performance cache lifecycle is request-local at execution time and disk-backed
-only when the CLI is asked to use it. Cache hits may skip frontend-to-IR work,
-but they must not skip current fingerprint checks, target checks, dependency
-checks, payload checksums, or IR verification.
+The Performance cache lifecycle is request-local at execution time and
+disk-backed for `php-vm run` by default (see "Default-On CLI Behavior" below).
+Cache hits may skip frontend-to-IR work, but they must not skip current
+fingerprint checks, target checks, dependency checks, payload checksums, or IR
+verification.
+
+### Default-On CLI Behavior
+
+`php-vm run` defaults to `--bytecode-cache=read-write` with a per-user cache
+directory resolved in this order:
+
+1. `PHRUST_BYTECODE_CACHE_DIR` (empty value disables the default location)
+2. `$XDG_CACHE_HOME/phrust/bytecode`
+3. `$HOME/.cache/phrust/bytecode`
+
+When no writable location resolves, the run behaves as a cache miss with the
+cache disabled. Overrides and escapes:
+
+- `PHRUST_BYTECODE_CACHE=off|read|write|read-write` changes the default mode.
+- Explicit `--bytecode-cache=...` / `--bytecode-cache-dir <path>` always win.
+- `--engine-preset=baseline` runs fully uncached so the compatibility oracle
+  keeps exercising the cold pipeline.
+- Repository gates run with a repo-local cache directory and the
+  persistent-feedback default disabled (exported centrally in the `justfile`)
+  so committed baselines stay deterministic and the user cache is never
+  polluted by gate traffic.
+
+Alongside the cached unit, `php-vm run` maintains an advisory
+persistent-feedback sidecar (`<digest>.pfbk`, format
+`phrust-persistent-feedback-v1`) in the same directory. It records quickening
+sites that finished the run specialized or blacklisted, and the next run with a
+matching feedback fingerprint seeds its quickening table from it. Seeded
+specializations keep the full runtime guard/fallback protocol, so stale or
+wrong feedback can only cause guard misses and dequickening, never a semantic
+change. `PHRUST_PERSISTENT_FEEDBACK=off` disables the sidecar;
+`--persistent-feedback-read`, `--persistent-feedback-write`, and
+`--persistent-feedback-stats-json` give explicit control. Entries are validated
+against source fingerprint, engine version, PHP target, compile options, IR
+fingerprint, epochs, and target before use; anything stale or corrupt falls
+back to a cold start.
 
 ### One-Shot CLI Process
 
@@ -93,7 +129,7 @@ and may write a replacement artifact if the selected mode permits writes.
 flowchart TD
     Start["php-vm run --bytecode-cache=read-write"] --> ReadSource["read current source bytes"]
     ReadSource --> Fingerprint["compute source/compiler/config fingerprint"]
-    Fingerprint --> Lookup["lookup target/performance/bytecode-cache/*.phbc"]
+    Fingerprint --> Lookup["lookup <cache-dir>/*.phbc"]
     Lookup --> Hit{"artifact present and header valid?"}
     Hit -- "no" --> Compile["compile frontend to verified IR"]
     Hit -- "yes" --> Validate["check PHP target, engine, ABI, target triple, config, dependencies"]

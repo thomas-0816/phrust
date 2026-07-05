@@ -3,23 +3,16 @@ use php_bytecode_cache::{
     CacheArtifact, CacheFingerprint, CacheFingerprintInput, CacheHeader, CachedIrArtifact,
     PHP_TARGET_VERSION,
 };
-use php_diagnostics::{
-    DebugEvent, DiagnosticEnvelope, DiagnosticLayer, DiagnosticOutputFormat, DiagnosticPhase,
-};
+use php_diagnostics::{DebugEvent, DiagnosticLayer, DiagnosticOutputFormat, DiagnosticPhase};
 use php_executor::{
-    EngineProfileName, PhpCompileInput, PhpExecutionError, PhpExecutionOutput, PhpExecutionStatus,
-    PhpExecutor, PhpExecutorOptions, PhpRequestExecutionInput, usage_diagnostic,
-    write_diagnostic_envelope,
+    CompiledPhpScript, EngineProfileName, PhpCompileInput, PhpExecutionError, PhpExecutionOutput,
+    PhpExecutionStatus, PhpExecutor, PhpExecutorOptions, PhpRequestExecutionInput,
+    usage_diagnostic, write_diagnostic_envelope,
 };
-use php_ir::{
-    LoweringOptions, VerificationDiagnosticContext, lower::LoweringDiagnosticContext,
-    lower_frontend_result, module::IrUnit, verify_unit,
-};
+use php_ir::{LoweringOptions, lower_frontend_result, module::IrUnit, verify_unit};
 use php_optimizer::{OptimizationLevel, OptimizationReport, PassContext, PassPipeline};
 use php_perf::PhaseTimingReport;
-use php_runtime::api::{
-    ExitStatus, FilesystemCapabilities, RuntimeContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
-};
+use php_runtime::api::{ExitStatus, FilesystemCapabilities, RuntimeContext, RuntimeDiagnostic};
 use php_semantics::{FrontendResult, Severity, analyze_source, diagnostics::DiagnosticId};
 use php_source::{SourceText, TextRange};
 use php_vm::api::{
@@ -29,8 +22,8 @@ use php_vm::api::{
 use php_vm::experimental::{
     BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, JitCompileDescriptor,
     PersistentFeedbackContext, PersistentFeedbackEpochs, PersistentFeedbackLoadReport,
-    PersistentFeedbackStats, PersistentFeedbackStore, RegionProfile, VmCounters,
-    plan_dependency_units,
+    PersistentFeedbackStats, PersistentFeedbackStore, QuickeningSiteSnapshot, RegionProfile,
+    VmCounters, plan_dependency_units,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -794,250 +787,22 @@ where
     if let Some(timings) = timings.as_mut() {
         timings.record_phase("cache_prepare_ms", started);
     }
-    if run_options.bytecode_cache.mode == BytecodeCacheMode::Off {
-        return run_command_with_executor(path, &run_options, cache_stats, timings, stdout, stderr);
-    }
-    // Bytecode-cache read/write still owns a CLI-local serialized IR artifact.
-    // Keep that adapter here until the cache format can store executor artifacts.
-    let started = Instant::now();
-    let cached = try_load_bytecode_cache(&run_options, cache_context.as_ref(), &mut cache_stats);
-    if let Some(timings) = timings.as_mut() {
-        timings.record_phase("cache_load_ms", started);
-    }
-    let (unit, compiled_pipeline) = if let Some(CachedIrArtifact { unit, .. }) = cached {
-        (unit, None)
-    } else {
-        let pipeline = match compile_pipeline_with_optimization_timed(
-            path,
-            run_options.opt_level,
-            timings.as_mut(),
-        ) {
-            Ok(pipeline) => pipeline,
-            Err(error) => {
-                cache_stats.compile_error = true;
-                if run_options.bytecode_cache.stats {
-                    write_cache_stats_json(stderr, &cache_stats)?;
-                }
-                writeln!(stderr, "{error}").map_err(|io| io.to_string())?;
-                if let Some(timings) = timings.as_mut() {
-                    record_cache_counts(timings, &cache_stats);
-                }
-                if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
-                    finish_and_write_timings(path, timings)?;
-                }
-                return Ok(EXIT_COMPILE_ERROR);
-            }
-        };
-        if !pipeline.ok() {
-            cache_stats.compile_error = true;
-            if run_options.bytecode_cache.stats {
-                write_cache_stats_json(stderr, &cache_stats)?;
-            }
-            write_frontend_diagnostics_formatted(stderr, &pipeline, run_options.error_format)?;
-            if let Some(timings) = timings.as_mut() {
-                record_cache_counts(timings, &cache_stats);
-            }
-            if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
-                finish_and_write_timings(path, timings)?;
-            }
-            return Ok(EXIT_COMPILE_ERROR);
-        }
-        emit_debug_event(
-            stderr,
-            &run_options,
-            "D_PHRUST_IR_LOWER_END",
-            "lower",
-            "IR lowering completed",
-            BTreeMap::from([
-                (
-                    "lowering_diagnostic_count".to_string(),
-                    pipeline.lowering.diagnostics.len().to_string(),
-                ),
-                (
-                    "verification_error_count".to_string(),
-                    pipeline
-                        .lowering
-                        .verification
-                        .as_ref()
-                        .err()
-                        .map_or(0, Vec::len)
-                        .to_string(),
-                ),
-            ]),
-        )?;
-        if let Some(context) = cache_context.as_ref()
-            && run_options.bytecode_cache.mode.can_write()
-        {
-            let started = Instant::now();
-            store_bytecode_cache(context, &pipeline, &mut cache_stats);
-            if let Some(timings) = timings.as_mut() {
-                timings.record_phase("cache_store_ms", started);
-            }
-        }
-        let _optimizer_pass_count = pipeline.optimizer_pass_count();
-        (pipeline.lowering.unit.clone(), Some(pipeline))
-    };
-    let include_loader = include_loader_for(path).ok();
-    let cwd = std::env::current_dir().map_err(|error| format!("current directory: {error}"))?;
-    let runtime_context = runtime_context_for(
+    run_command_with_executor(
         path,
-        run_options.script_args.clone(),
-        run_options.env.clone(),
-        cwd.clone(),
-        run_options.stdin.clone(),
-        include_loader.as_ref(),
-    );
-    let jit_eligibility_json = build_jit_eligibility_json(&unit, run_options.jit);
-    let persistent_feedback = load_persistent_feedback(&run_options, path, &unit)?;
-    let bytecode_layout_profile = load_bytecode_layout_profile(&run_options)?;
-    let started = Instant::now();
-    let vm = Vm::with_options(VmOptions {
-        include_loader,
-        runtime_context,
-        include_optimization_level: run_options.include_opt_level,
-        trace: run_options.trace,
-        trace_runtime: run_options.trace_runtime,
-        trace_includes: run_options.trace_includes,
-        collect_counters: run_options.counters_json.is_some()
-            || run_options.jit_stats.is_json()
-            || run_options.region_profile_json.is_some()
-            || run_options.timings_json.is_some(),
-        execution_format: run_options.execution_format,
-        superinstructions: run_options.superinstructions,
-        bytecode_layout: run_options.bytecode_layout,
-        bytecode_layout_profile,
-        quickening: run_options.quickening,
-        inline_caches: run_options.inline_caches,
-        jit: run_options.jit,
-        jit_threshold: run_options.jit_threshold,
-        jit_blacklist: run_options.jit_blacklist,
-        jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
-        tiering: run_options.tiering.clone(),
-        adaptive_tiny_unit_setup_threshold: run_options.adaptive_tiny_unit_setup_threshold,
-        // Real PHP has no step ceiling; the library default (100k) exists for
-        // embedded/test use and would abort real programs run via the CLI.
-        max_steps: usize::MAX,
-        ..VmOptions::default()
-    });
-    if let Some(timings) = timings.as_mut() {
-        timings.record_phase("vm_construct_ms", started);
-    }
-    let region_profile_unit = run_options
-        .region_profile_json
-        .as_ref()
-        .map(|_| unit.clone());
-    emit_debug_event(
-        stderr,
         &run_options,
-        "D_PHRUST_VM_EXECUTE_START",
-        "execute",
-        "VM execution started",
-        BTreeMap::from([("path".to_string(), path.to_string())]),
-    )?;
-    let started = Instant::now();
-    let result = vm.execute(unit);
-    if let Some(timings) = timings.as_mut() {
-        timings.record_phase("execute_ms", started);
-        timings.count("runtime_diagnostic_count", result.diagnostics.len() as u64);
-        if let Some(counters) = result.counters.as_ref() {
-            record_vm_timing_counts(timings, counters);
-        }
-    }
-    emit_debug_event(
+        cache_context,
+        cache_stats,
+        timings,
+        stdout,
         stderr,
-        &run_options,
-        "D_PHRUST_VM_EXECUTE_END",
-        "execute",
-        "VM execution completed",
-        BTreeMap::from([
-            ("status".to_string(), result.status.to_string()),
-            (
-                "runtime_diagnostic_count".to_string(),
-                result.diagnostics.len().to_string(),
-            ),
-        ]),
-    )?;
-    stdout
-        .write_all(result.output.as_bytes())
-        .map_err(|error| error.to_string())?;
-    write_runtime_diagnostics(stderr, path, &result, run_options.error_format)?;
-    if run_options.trace || run_options.trace_runtime || run_options.trace_includes {
-        write_trace(stderr, &result.trace, &run_options)?;
-    }
-    if let Some(path) = &run_options.counters_json {
-        let Some(counters) = &result.counters else {
-            return Err("counters were requested but not collected".to_string());
-        };
-        let started = Instant::now();
-        write_counters_json(path.clone(), counters)?;
-        if let Some(timings) = timings.as_mut() {
-            timings.record_phase("counters_write_ms", started);
-        }
-    }
-    if let Some(path) = &run_options.region_profile_json {
-        let Some(counters) = &result.counters else {
-            return Err("region profile was requested but counters were not collected".to_string());
-        };
-        let Some(unit) = region_profile_unit.as_ref() else {
-            return Err(
-                "region profile was requested but IR metadata was not retained".to_string(),
-            );
-        };
-        let profile = RegionProfile::from_unit_and_counters(unit, counters, run_options.path);
-        write_region_profile_json(path.clone(), &profile)?;
-    }
-    if run_options.jit_stats.is_json()
-        && let Some(counters) = result.counters.as_ref()
-    {
-        write_jit_stats_json(stderr, counters, &run_options, &jit_eligibility_json)?;
-    }
-    if let Some(path) = run_options.tiering_stats_json {
-        let Some(stats) = &result.tiering_stats else {
-            return Err("tiering stats were requested but not collected".to_string());
-        };
-        write_tiering_stats_json(path, stats)?;
-    }
-    if let Some(path) = run_options.persistent_feedback.stats_json {
-        write_persistent_feedback_stats_json(path, &persistent_feedback.stats)?;
-    }
-    if run_options.bytecode_cache.stats {
-        write_cache_stats_json(stderr, &cache_stats)?;
-    }
-    if let Some(timings) = timings.as_mut() {
-        record_cache_counts(timings, &cache_stats);
-    }
-    if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
-        finish_and_write_timings(path, timings)?;
-    }
-    match result.status.exit_status() {
-        ExitStatus::Success => Ok(EXIT_SUCCESS),
-        ExitStatus::CompileError => {
-            if let Some(pipeline) = compiled_pipeline.as_ref()
-                && write_vm_compile_fatal_line(stderr, pipeline, &result.diagnostics)?
-            {
-                return Ok(EXIT_COMPILE_ERROR);
-            }
-            write_status(stderr, path, &result.status)?;
-            Ok(EXIT_COMPILE_ERROR)
-        }
-        ExitStatus::RuntimeError | ExitStatus::Fatal => {
-            if php_fatal_output_was_rendered(&result) {
-                return Ok(EXIT_PHP_FATAL_ERROR);
-            }
-            write_status(stderr, path, &result.status)?;
-            Ok(EXIT_RUNTIME_ERROR)
-        }
-        ExitStatus::Unsupported => {
-            write_status(stderr, path, &result.status)?;
-            Ok(EXIT_UNSUPPORTED)
-        }
-    }
+    )
 }
 
 fn run_command_with_executor<W, E>(
     path: &str,
     run_options: &RunOptions<'_>,
-    cache_stats: BytecodeCacheStats,
+    cache_context: Option<BytecodeCacheContext>,
+    mut cache_stats: BytecodeCacheStats,
     mut timings: Option<PhaseTimingCollector>,
     stdout: &mut W,
     stderr: &mut E,
@@ -1076,68 +841,117 @@ where
             ("bytes".to_string(), source.len().to_string()),
         ]),
     )?;
+    let mut vm_options = VmOptions {
+        trace: run_options.trace,
+        trace_runtime: run_options.trace_runtime,
+        trace_includes: run_options.trace_includes,
+        collect_counters,
+        include_optimization_level: run_options.include_opt_level,
+        execution_format: run_options.execution_format,
+        superinstructions: run_options.superinstructions,
+        bytecode_layout: run_options.bytecode_layout,
+        bytecode_layout_profile,
+        quickening: run_options.quickening,
+        inline_caches: run_options.inline_caches,
+        jit: run_options.jit,
+        jit_threshold: run_options.jit_threshold,
+        jit_blacklist: run_options.jit_blacklist,
+        jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
+        tiering: run_options.tiering.clone(),
+        adaptive_tiny_unit_setup_threshold: run_options.adaptive_tiny_unit_setup_threshold,
+        // CLI runs must not hit the embedded/test step ceiling.
+        max_steps: usize::MAX,
+        ..VmOptions::default()
+    };
     let started = Instant::now();
-    let executor = PhpExecutor::with_options(PhpExecutorOptions {
-        optimization_level: run_options.opt_level,
-        vm_options: VmOptions {
-            trace: run_options.trace,
-            trace_runtime: run_options.trace_runtime,
-            trace_includes: run_options.trace_includes,
-            collect_counters,
-            include_optimization_level: run_options.include_opt_level,
-            execution_format: run_options.execution_format,
-            superinstructions: run_options.superinstructions,
-            bytecode_layout: run_options.bytecode_layout,
-            bytecode_layout_profile,
-            quickening: run_options.quickening,
-            inline_caches: run_options.inline_caches,
-            jit: run_options.jit,
-            jit_threshold: run_options.jit_threshold,
-            jit_blacklist: run_options.jit_blacklist,
-            jit_dump_clif: run_options.jit_dump_clif.as_ref().map(PathBuf::from),
-            tiering: run_options.tiering.clone(),
-            adaptive_tiny_unit_setup_threshold: run_options.adaptive_tiny_unit_setup_threshold,
-            // CLI runs must not hit the embedded/test step ceiling.
-            max_steps: usize::MAX,
-            ..VmOptions::default()
-        },
-    });
+    let cached = try_load_bytecode_cache(run_options, cache_context.as_ref(), &mut cache_stats);
     if let Some(timings) = timings.as_mut() {
-        timings.record_phase("vm_construct_ms", started);
+        timings.record_phase("cache_load_ms", started);
     }
-    emit_debug_event(
-        stderr,
-        run_options,
-        "D_PHRUST_FRONTEND_ANALYZE_START",
-        "frontend",
-        "frontend analysis started",
-        BTreeMap::from([("path".to_string(), source_path.clone())]),
-    )?;
-    let (compiled, compile_timings) = match executor.compile_source_with_timings(PhpCompileInput {
-        source,
-        source_path,
-        optimization_level: Some(run_options.opt_level),
-    }) {
-        Ok(compiled) => compiled,
-        Err(PhpExecutionError::Compile(output)) => {
-            if run_options.bytecode_cache.stats {
-                write_cache_stats_json(stderr, &cache_stats)?;
+    let compiled = if let Some(CachedIrArtifact { unit, .. }) = cached {
+        emit_debug_event(
+            stderr,
+            run_options,
+            "D_PHRUST_BYTECODE_CACHE_HIT",
+            "cache",
+            "bytecode cache hit",
+            BTreeMap::from([("path".to_string(), source_path.clone())]),
+        )?;
+        CompiledPhpScript::from_cached_ir_unit(source_path, source, unit)
+    } else {
+        emit_debug_event(
+            stderr,
+            run_options,
+            "D_PHRUST_FRONTEND_ANALYZE_START",
+            "frontend",
+            "frontend analysis started",
+            BTreeMap::from([("path".to_string(), source_path.clone())]),
+        )?;
+        let (compiled, compile_timings) =
+            match PhpExecutor::new().compile_source_with_timings(PhpCompileInput {
+                source,
+                source_path,
+                optimization_level: Some(run_options.opt_level),
+            }) {
+                Ok(compiled) => compiled,
+                Err(PhpExecutionError::Compile(output)) => {
+                    cache_stats.compile_error = true;
+                    if run_options.bytecode_cache.stats {
+                        write_cache_stats_json(stderr, &cache_stats)?;
+                    }
+                    write_execution_output_diagnostics(
+                        stderr,
+                        path,
+                        &output,
+                        run_options.error_format,
+                    )?;
+                    if let Some(timings) = timings.as_mut() {
+                        record_cache_counts(timings, &cache_stats);
+                    }
+                    if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings)
+                    {
+                        finish_and_write_timings(path, timings)?;
+                    }
+                    return Ok(EXIT_COMPILE_ERROR);
+                }
+                Err(PhpExecutionError::Engine(error)) => return Err(error),
+            };
+        if let Some(timings) = timings.as_mut() {
+            for (phase, elapsed_ms) in compile_timings.phases() {
+                timings.add_phase_ms(phase.clone(), *elapsed_ms);
             }
-            write_execution_output_diagnostics(stderr, path, &output, run_options.error_format)?;
-            if let Some(timings) = timings.as_mut() {
-                record_cache_counts(timings, &cache_stats);
-            }
-            if let (Some(path), Some(timings)) = (run_options.timings_json.clone(), timings) {
-                finish_and_write_timings(path, timings)?;
-            }
-            return Ok(EXIT_COMPILE_ERROR);
         }
-        Err(PhpExecutionError::Engine(error)) => return Err(error),
+        emit_debug_event(
+            stderr,
+            run_options,
+            "D_PHRUST_FRONTEND_ANALYZE_END",
+            "frontend",
+            "frontend analysis completed",
+            BTreeMap::from([("status".to_string(), "ok".to_string())]),
+        )?;
+        emit_debug_event(
+            stderr,
+            run_options,
+            "D_PHRUST_OPTIMIZER_END",
+            "optimize",
+            "optimization completed",
+            BTreeMap::from([(
+                "optimization_level".to_string(),
+                run_options.opt_level.as_str().to_string(),
+            )]),
+        )?;
+        if let Some(context) = cache_context.as_ref()
+            && run_options.bytecode_cache.mode.can_write()
+        {
+            let started = Instant::now();
+            store_bytecode_cache(context, compiled.ir_unit(), &mut cache_stats);
+            if let Some(timings) = timings.as_mut() {
+                timings.record_phase("cache_store_ms", started);
+            }
+        }
+        compiled
     };
     if let Some(timings) = timings.as_mut() {
-        for (phase, elapsed_ms) in compile_timings.phases() {
-            timings.add_phase_ms(phase.clone(), *elapsed_ms);
-        }
         timings.count("functions", compiled.ir_unit().functions.len() as u64);
         timings.count("classes", compiled.ir_unit().classes.len() as u64);
         timings.count("constants", compiled.ir_unit().constants.len() as u64);
@@ -1146,27 +960,22 @@ where
             ir_instruction_count(compiled.ir_unit()),
         );
     }
-    emit_debug_event(
-        stderr,
-        run_options,
-        "D_PHRUST_FRONTEND_ANALYZE_END",
-        "frontend",
-        "frontend analysis completed",
-        BTreeMap::from([("status".to_string(), "ok".to_string())]),
-    )?;
-    emit_debug_event(
-        stderr,
-        run_options,
-        "D_PHRUST_OPTIMIZER_END",
-        "optimize",
-        "optimization completed",
-        BTreeMap::from([(
-            "optimization_level".to_string(),
-            run_options.opt_level.as_str().to_string(),
-        )]),
-    )?;
     let jit_eligibility_json = build_jit_eligibility_json(compiled.ir_unit(), run_options.jit);
-    let persistent_feedback = load_persistent_feedback(run_options, path, compiled.ir_unit())?;
+    let persistent_feedback = prepare_persistent_feedback(
+        run_options,
+        path,
+        compiled.ir_unit(),
+        cache_context.as_ref(),
+    )?;
+    vm_options.quickening_seed = persistent_feedback.quickening_seed();
+    let started = Instant::now();
+    let executor = PhpExecutor::with_options(PhpExecutorOptions {
+        optimization_level: run_options.opt_level,
+        vm_options,
+    });
+    if let Some(timings) = timings.as_mut() {
+        timings.record_phase("vm_construct_ms", started);
+    }
     let cwd = std::env::current_dir().map_err(|error| format!("current directory: {error}"))?;
     let runtime_context = RuntimeContext::controlled_cli(path, run_options.script_args.clone())
         .with_env(run_options.env.clone())
@@ -1265,8 +1074,14 @@ where
         };
         write_tiering_stats_json(path, stats)?;
     }
+    if let (Some(write_path), Some(context)) = (
+        persistent_feedback.write_path.as_deref(),
+        persistent_feedback.context.as_ref(),
+    ) {
+        store_persistent_feedback(write_path, context, &output.quickening_feedback);
+    }
     if let Some(path) = run_options.persistent_feedback.stats_json.clone() {
-        write_persistent_feedback_stats_json(path, &persistent_feedback.stats)?;
+        write_persistent_feedback_stats_json(path, &persistent_feedback.report.stats)?;
     }
     if run_options.bytecode_cache.stats {
         write_cache_stats_json(stderr, &cache_stats)?;
@@ -1400,12 +1215,6 @@ impl Pipeline {
 
     fn compile_json(&self) -> String {
         to_json_string(&CompileJson::from_pipeline(self))
-    }
-
-    fn optimizer_pass_count(&self) -> usize {
-        self.optimizer
-            .as_ref()
-            .map_or(0, OptimizationReport::enabled_pass_count)
     }
 }
 
@@ -1766,45 +1575,6 @@ fn write_frontend_diagnostics<W: Write>(stderr: &mut W, pipeline: &Pipeline) -> 
     Ok(())
 }
 
-fn write_status<W: Write>(
-    stderr: &mut W,
-    path: &str,
-    status: &php_runtime::api::ExecutionStatus,
-) -> Result<(), String> {
-    writeln!(stderr, "{path}: {status}").map_err(|error| error.to_string())
-}
-
-fn write_vm_compile_fatal_line<W: Write>(
-    stderr: &mut W,
-    pipeline: &Pipeline,
-    diagnostics: &[RuntimeDiagnostic],
-) -> Result<bool, String> {
-    let Some((payload, span)) =
-        diagnostics
-            .iter()
-            .find_map(|diagnostic| match diagnostic.payload()? {
-                RuntimeDiagnosticPayload::VmCompile(payload) => {
-                    Some((payload, diagnostic.source_span()))
-                }
-                RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
-                RuntimeDiagnosticPayload::WordPressBringup(_) => None,
-            })
-    else {
-        return Ok(false);
-    };
-    if span.start == span.end {
-        return Ok(false);
-    }
-    write_php_fatal_line(
-        stderr,
-        &pipeline.path,
-        &pipeline.source,
-        TextRange::new(span.start as usize, span.end as usize),
-        &payload.php_fatal_message(),
-    )?;
-    Ok(true)
-}
-
 fn semantic_diagnostic_php_fatal_message(
     id: DiagnosticId,
     message: &str,
@@ -1848,39 +1618,6 @@ fn class_display_name_containing_span(unit: &IrUnit, span: TextRange) -> Option<
         .filter(|class| class.span.start as usize <= start && end <= class.span.end as usize)
         .min_by_key(|class| class.span.end.saturating_sub(class.span.start))
         .map(|class| class.display_name.as_str())
-}
-
-fn write_runtime_diagnostics<W: Write>(
-    stderr: &mut W,
-    path: &str,
-    result: &VmResult,
-    format: DiagnosticOutputFormat,
-) -> Result<(), String> {
-    let php_output = result.output.to_string_lossy();
-    for diagnostic in &result.diagnostics {
-        if runtime_diagnostic_was_rendered(diagnostic, &php_output) {
-            continue;
-        }
-        match format {
-            DiagnosticOutputFormat::Text => {
-                writeln!(
-                    stderr,
-                    "{path}: runtime-diagnostic: {}",
-                    diagnostic.to_json()
-                )
-                .map_err(|error| error.to_string())?;
-            }
-            DiagnosticOutputFormat::Json => {
-                write_diagnostic_envelope(stderr, &diagnostic.to_diagnostic_envelope(), format)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn php_fatal_output_was_rendered(result: &VmResult) -> bool {
-    let php_output = result.output.to_string_lossy();
-    php_output.contains("Fatal error:")
 }
 
 fn runtime_diagnostic_was_rendered(diagnostic: &RuntimeDiagnostic, php_output: &str) -> bool {
@@ -1936,61 +1673,6 @@ fn write_trace<W: Write>(
         writeln!(stderr, "  {line}").map_err(|error| error.to_string())?;
     }
     Ok(())
-}
-
-fn frontend_diagnostic_envelopes(pipeline: &Pipeline) -> Vec<DiagnosticEnvelope> {
-    let source = SourceText::new(&pipeline.source);
-    let mut diagnostics = Vec::new();
-    for diagnostic in pipeline.frontend.parser_diagnostics() {
-        diagnostics.push(diagnostic.to_diagnostic_envelope(
-            Some(&source),
-            None,
-            Some(&pipeline.path),
-        ));
-    }
-    for diagnostic in pipeline.frontend.semantic_diagnostics() {
-        if diagnostic.severity() == Severity::Error {
-            diagnostics.push(diagnostic.to_diagnostic_envelope(
-                Some(&source),
-                None,
-                Some(&pipeline.path),
-            ));
-        }
-    }
-    for diagnostic in &pipeline.lowering.diagnostics {
-        diagnostics.push(
-            diagnostic.to_diagnostic_envelope(
-                Some(&pipeline.path),
-                &LoweringDiagnosticContext::default(),
-            ),
-        );
-    }
-    if let Err(errors) = &pipeline.lowering.verification {
-        let context = VerificationDiagnosticContext {
-            source_path: Some(pipeline.path.clone()),
-            ..VerificationDiagnosticContext::default()
-        };
-        for error in errors {
-            diagnostics.push(error.to_diagnostic_envelope(&context));
-        }
-    }
-    diagnostics
-}
-
-fn write_frontend_diagnostics_formatted<W: Write>(
-    stderr: &mut W,
-    pipeline: &Pipeline,
-    format: DiagnosticOutputFormat,
-) -> Result<(), String> {
-    match format {
-        DiagnosticOutputFormat::Text => write_frontend_diagnostics(stderr, pipeline),
-        DiagnosticOutputFormat::Json => {
-            for diagnostic in frontend_diagnostic_envelopes(pipeline) {
-                write_diagnostic_envelope(stderr, &diagnostic, format)?;
-            }
-            Ok(())
-        }
-    }
 }
 
 fn write_execution_output_diagnostics<W: Write>(
@@ -2214,11 +1896,15 @@ fn prepare_bytecode_cache(
         return Ok(None);
     }
 
-    let cache_dir = run_options
+    let Some(cache_dir) = run_options
         .bytecode_cache
         .dir
         .clone()
-        .unwrap_or_else(default_bytecode_cache_dir);
+        .or_else(default_bytecode_cache_dir)
+    else {
+        stats.miss = true;
+        return Ok(None);
+    };
     if run_options.bytecode_cache.clear {
         clear_bytecode_cache_dir(&cache_dir)?;
         stats.cleared = true;
@@ -2254,34 +1940,124 @@ fn prepare_bytecode_cache(
     }))
 }
 
-fn load_persistent_feedback(
+/// Resolved persistent-feedback plan for one run: the validated store used to
+/// seed adaptive state, plus where (if anywhere) to persist this run's export.
+struct PersistentFeedbackRuntime {
+    report: PersistentFeedbackLoadReport,
+    context: Option<PersistentFeedbackContext>,
+    write_path: Option<PathBuf>,
+}
+
+impl PersistentFeedbackRuntime {
+    fn quickening_seed(&self) -> Vec<QuickeningSiteSnapshot> {
+        self.report
+            .store
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.payload.quickening)
+            .collect()
+    }
+}
+
+/// Persistent feedback follows the bytecode cache by default: it reads and
+/// writes a sidecar next to the cached unit unless disabled by environment.
+fn persistent_feedback_env_enabled() -> bool {
+    !matches!(
+        std::env::var("PHRUST_PERSISTENT_FEEDBACK").as_deref(),
+        Ok("off") | Ok("0") | Ok("false")
+    )
+}
+
+fn prepare_persistent_feedback(
     run_options: &RunOptions<'_>,
     path: &str,
     unit: &IrUnit,
-) -> Result<PersistentFeedbackLoadReport, String> {
-    let Some(feedback_path) = run_options.persistent_feedback.read.as_deref() else {
-        return Ok(PersistentFeedbackLoadReport::new(
+    cache_context: Option<&BytecodeCacheContext>,
+) -> Result<PersistentFeedbackRuntime, String> {
+    let default_enabled = persistent_feedback_env_enabled() && cache_context.is_some();
+    if run_options.persistent_feedback.read.is_none()
+        && run_options.persistent_feedback.write.is_none()
+        && !default_enabled
+    {
+        return Ok(PersistentFeedbackRuntime {
+            report: PersistentFeedbackLoadReport::new(
+                PersistentFeedbackStore::default(),
+                PersistentFeedbackStats::default(),
+            ),
+            context: None,
+            write_path: None,
+        });
+    }
+    let context = persistent_feedback_context(path, run_options, unit)?;
+    let default_path = cache_context.and_then(|cache| {
+        cache
+            .cache_file
+            .parent()
+            .map(|dir| dir.join(format!("{}.pfbk", context.source_fingerprint)))
+    });
+    let mut report = if let Some(feedback_path) = run_options.persistent_feedback.read.as_deref() {
+        // An explicit read path is strict: a missing file is a reported fallback.
+        match fs::read(feedback_path) {
+            Ok(bytes) => context.validate_bytes(&bytes),
+            Err(_) => PersistentFeedbackLoadReport::new(
+                PersistentFeedbackStore::default(),
+                PersistentFeedbackStats {
+                    files_considered: 1,
+                    rejected_corrupt: 1,
+                    fallback_to_baseline: true,
+                    ..PersistentFeedbackStats::default()
+                },
+            ),
+        }
+    } else if default_enabled
+        && let Some(default_path) = default_path.as_ref()
+        && let Ok(bytes) = fs::read(default_path)
+    {
+        // The default sidecar is advisory: a missing file is a cold start.
+        context.validate_bytes(&bytes)
+    } else {
+        PersistentFeedbackLoadReport::new(
             PersistentFeedbackStore::default(),
             PersistentFeedbackStats::default(),
-        ));
+        )
     };
-    let context = persistent_feedback_context(path, run_options, unit)?;
-    let bytes = match fs::read(feedback_path) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            let stats = PersistentFeedbackStats {
-                files_considered: 1,
-                rejected_corrupt: 1,
-                fallback_to_baseline: true,
-                ..PersistentFeedbackStats::default()
-            };
-            return Ok(PersistentFeedbackLoadReport::new(
-                PersistentFeedbackStore::default(),
-                stats,
-            ));
-        }
-    };
-    Ok(context.validate_bytes(&bytes))
+    report.stats.default_enabled = default_enabled;
+    let write_path = run_options
+        .persistent_feedback
+        .write
+        .as_deref()
+        .map(PathBuf::from)
+        .or(if default_enabled { default_path } else { None });
+    Ok(PersistentFeedbackRuntime {
+        report,
+        context: Some(context),
+        write_path,
+    })
+}
+
+/// Persists this run's exported quickening sites. Feedback is advisory, so
+/// persistence failures never affect the run's outcome or output.
+fn store_persistent_feedback(
+    write_path: &Path,
+    context: &PersistentFeedbackContext,
+    sites: &[QuickeningSiteSnapshot],
+) {
+    if sites.is_empty() && !write_path.exists() {
+        return;
+    }
+    let text = context.render_sites(sites);
+    if let Some(parent) = write_path.parent()
+        && fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    // Concurrent processes may share the sidecar location; write via a unique
+    // temp file and rename so readers never observe partial entries.
+    let temp_file = write_path.with_extension(format!("tmp.{}", std::process::id()));
+    if fs::write(&temp_file, text.as_bytes()).is_ok() && fs::rename(&temp_file, write_path).is_err()
+    {
+        let _ = fs::remove_file(&temp_file);
+    }
 }
 
 fn persistent_feedback_context(
@@ -2405,7 +2181,7 @@ fn try_load_bytecode_cache(
 
 fn store_bytecode_cache(
     context: &BytecodeCacheContext,
-    pipeline: &Pipeline,
+    unit: &IrUnit,
     stats: &mut BytecodeCacheStats,
 ) {
     let Some(parent) = context.cache_file.parent() else {
@@ -2422,7 +2198,7 @@ fn store_bytecode_cache(
         rust_target_label(),
         context.fingerprint.clone(),
     );
-    let artifact = match CacheArtifact::from_ir_unit(header, &pipeline.lowering.unit) {
+    let artifact = match CacheArtifact::from_ir_unit(header, unit) {
         Ok(artifact) => artifact,
         Err(error) => {
             stats.store_error = Some(error.to_string());
@@ -2436,16 +2212,52 @@ fn store_bytecode_cache(
             return;
         }
     };
-    match fs::write(&context.cache_file, bytes) {
-        Ok(()) => stats.wrote = true,
+    // Concurrent processes share the default cache directory; write via a
+    // unique temp file and rename so readers never observe partial entries.
+    let temp_file = context
+        .cache_file
+        .with_extension(format!("tmp.{}", std::process::id()));
+    match fs::write(&temp_file, bytes) {
+        Ok(()) => match fs::rename(&temp_file, &context.cache_file) {
+            Ok(()) => stats.wrote = true,
+            Err(error) => {
+                let _ = fs::remove_file(&temp_file);
+                stats.store_error = Some(format!("{}: {error}", context.cache_file.display()));
+            }
+        },
         Err(error) => {
-            stats.store_error = Some(format!("{}: {error}", context.cache_file.display()))
+            stats.store_error = Some(format!("{}: {error}", temp_file.display()));
         }
     }
 }
 
-fn default_bytecode_cache_dir() -> PathBuf {
-    PathBuf::from("target/performance/bytecode-cache")
+/// Default cache directory resolution: explicit environment override,
+/// then the platform user cache directory. `None` disables the cache for
+/// this run (no writable default location).
+fn default_bytecode_cache_dir() -> Option<PathBuf> {
+    // In-process tests must not share (or pollute) the user-level cache and
+    // must stay cold regardless of ambient environment; cache-behavior tests
+    // opt in with an explicit --bytecode-cache-dir.
+    if cfg!(test) {
+        return None;
+    }
+    if let Some(dir) = std::env::var_os("PHRUST_BYTECODE_CACHE_DIR") {
+        if dir.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg).join("phrust/bytecode"));
+    }
+    if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home).join(".cache/phrust/bytecode"));
+    }
+    None
 }
 
 fn cache_file_for(cache_dir: &Path, fingerprint: &CacheFingerprint) -> Result<PathBuf, String> {
@@ -2901,7 +2713,7 @@ fn region_profile_json_from_env() -> Option<String> {
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
+        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nCaching defaults:\n  run uses a read-write bytecode cache plus a persistent-feedback sidecar in the user cache directory\n  (override dir: PHRUST_BYTECODE_CACHE_DIR; disable: PHRUST_BYTECODE_CACHE=off, PHRUST_PERSISTENT_FEEDBACK=off;\n  --engine-preset=baseline runs uncached)\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-write <path> --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
     )
     .map_err(|error| error.to_string())
 }
@@ -4290,9 +4102,9 @@ mod tests {
     use super::{
         BytecodeCacheMode, EXIT_COMPILE_ERROR, EXIT_PHP_FATAL_ERROR, EXIT_RUNTIME_ERROR,
         EXIT_SUCCESS, EXIT_USAGE, JitStatsMode, OptimizationLevel, PersistentFeedbackOptions,
-        QuickeningMode, cache_file_for, compile_pipeline_with_optimization, parse_compile_args,
-        parse_dump_dependency_units_args, parse_dump_rule_selection_args, parse_run_args, run,
-        run_with_stdin,
+        QuickeningMode, cache_file_for, compile_pipeline_with_optimization,
+        default_bytecode_cache_mode, parse_compile_args, parse_dump_dependency_units_args,
+        parse_dump_rule_selection_args, parse_run_args, run, run_with_stdin,
     };
     use php_bytecode_cache::{CacheFingerprint, CacheFingerprintInput};
     use php_runtime::api::RuntimeContext;
@@ -4949,7 +4761,7 @@ mod tests {
 
         let options = parse_run_args(&args).expect("run args should parse");
 
-        assert_eq!(options.bytecode_cache.mode, BytecodeCacheMode::Off);
+        assert_eq!(options.bytecode_cache.mode, default_bytecode_cache_mode());
         assert_eq!(options.opt_level, OptimizationLevel::O2);
         assert_eq!(options.include_opt_level, OptimizationLevel::O0);
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
@@ -5015,7 +4827,7 @@ mod tests {
 
         let options = parse_run_args(&args).expect("run args should parse");
 
-        assert_eq!(options.bytecode_cache.mode, BytecodeCacheMode::Off);
+        assert_eq!(options.bytecode_cache.mode, default_bytecode_cache_mode());
         assert_eq!(options.opt_level, OptimizationLevel::O2);
         assert_eq!(options.include_opt_level, OptimizationLevel::O0);
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
@@ -5515,7 +5327,7 @@ mod tests {
         assert_eq!(options.path, "fixtures/runtime/valid/hello.php");
         assert_eq!(options.script_args, vec!["script-arg"]);
         assert_eq!(options.counters_json, None);
-        assert_eq!(options.bytecode_cache.mode, BytecodeCacheMode::Off);
+        assert_eq!(options.bytecode_cache.mode, default_bytecode_cache_mode());
         assert_eq!(options.opt_level, OptimizationLevel::O2);
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
         assert_eq!(options.superinstructions, SuperinstructionMode::On);
@@ -5698,6 +5510,77 @@ mod tests {
         assert!(json.contains("\"default_enabled\": false"));
         assert!(json.contains("\"rejected_corrupt\": 1"));
         assert!(json.contains("\"fallback_to_baseline\": true"));
+    }
+
+    #[test]
+    fn run_persistent_feedback_write_then_read_seeds_quickening_sites() {
+        let base = std::env::temp_dir().join(format!(
+            "phrust-vm-persistent-feedback-roundtrip-{}",
+            std::process::id()
+        ));
+        let source_path = base.with_extension("php");
+        let feedback_path = base.with_extension("pfbk");
+        let stats_path = base.with_extension("json");
+        std::fs::write(
+            &source_path,
+            "<?php\n$sum = 0;\nfor ($i = 0; $i < 64; $i++) {\n    $sum = $sum + $i;\n}\necho $sum, \"\\n\";\n",
+        )
+        .expect("write temporary PHP source");
+        let _ = std::fs::remove_file(&feedback_path);
+        let _ = std::fs::remove_file(&stats_path);
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            [
+                "run".to_string(),
+                "--persistent-feedback-write".to_string(),
+                feedback_path.display().to_string(),
+                source_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(stdout, b"2016\n");
+        let feedback = std::fs::read_to_string(&feedback_path).expect("feedback file written");
+        assert!(feedback.starts_with("phrust-persistent-feedback-v1"));
+        assert!(feedback.contains("specialization=add_int_int"));
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            [
+                "run".to_string(),
+                "--persistent-feedback-read".to_string(),
+                feedback_path.display().to_string(),
+                "--persistent-feedback-stats-json".to_string(),
+                stats_path.display().to_string(),
+                source_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(stdout, b"2016\n");
+        let json = std::fs::read_to_string(&stats_path).expect("feedback JSON should be written");
+        let _ = std::fs::remove_file(&source_path);
+        let _ = std::fs::remove_file(&feedback_path);
+        let _ = std::fs::remove_file(&stats_path);
+        assert!(json.contains("\"rejected_stale\": 0"));
+        assert!(json.contains("\"rejected_corrupt\": 0"));
+        assert!(json.contains("\"fallback_to_baseline\": false"));
+        let accepted: u64 = json
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("\"entries_accepted\": ")?
+                    .trim_end_matches(',')
+                    .parse()
+                    .ok()
+            })
+            .expect("entries_accepted present");
+        assert!(accepted > 0, "expected accepted entries, got: {json}");
     }
 
     #[test]
