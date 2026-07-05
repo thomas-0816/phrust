@@ -132,12 +132,17 @@ impl Vm {
         compiled: &CompiledUnit,
         transform_state: &mut JsonSerializableEncodeState,
     ) -> Result<Value, VmResult> {
-        if transform_state.active_objects.contains(&object.id()) {
+        if transform_state.active_objects.contains(&object.id())
+            || state
+                .json_serializable_active_objects
+                .contains(&object.id())
+        {
+            transform_state.recursion_error = true;
             if flags & php_runtime::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
-                transform_state.recursion_error = true;
                 return Ok(Value::Null);
             }
-            return Ok(Value::Object(object));
+            state.json_last_error = php_runtime::JSON_ERROR_RECURSION;
+            return Err(VmResult::success_no_output(Some(Value::Bool(false))));
         }
         let implements_jsonserializable = match class_implements_in_state(
             compiled,
@@ -153,6 +158,7 @@ impl Vm {
             return Ok(Value::Object(object));
         }
         transform_state.active_objects.push(object.id());
+        state.json_serializable_active_objects.push(object.id());
         let result = self.call_object_method_callable(
             compiled,
             object.clone(),
@@ -165,12 +171,14 @@ impl Vm {
         );
         if !result.status.is_success() {
             let _ = transform_state.active_objects.pop();
+            let _ = state.json_serializable_active_objects.pop();
             return Err(result);
         }
         let serialized = result.return_value.unwrap_or(Value::Null);
         if matches!(effective_value(&serialized), Value::Object(returned) if returned.id() == object.id())
         {
             let _ = transform_state.active_objects.pop();
+            let _ = state.json_serializable_active_objects.pop();
             return Ok(serialized);
         }
         let transformed = self.prepare_json_serializable_value(
@@ -183,6 +191,7 @@ impl Vm {
             transform_state,
         );
         let _ = transform_state.active_objects.pop();
+        let _ = state.json_serializable_active_objects.pop();
         transformed
     }
 

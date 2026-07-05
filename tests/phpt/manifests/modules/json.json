@@ -4,14 +4,14 @@
   "priority":17,
   "selected_manifest":"tests/phpt/manifests/modules/json.selected.jsonl",
   "corpus_count":88,
-  "selected_count":82,
-  "pass_count":79,
+  "selected_count":86,
+  "pass_count":83,
   "skip_count":3,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":11,
+  "known_failure_count":7,
   "scope":["json_encode basics","json_decode basics","json last-error state","common JSON flags","force-object encoding","Unicode escaping","decode depth diagnostics","bigint-as-string decode","recursive encode diagnostics","json_validate general/error/depth/UTF-8 rows","invalid UTF-8 encode recovery modes","JSON_THROW_ON_ERROR error clearing","JsonSerializable userland method dispatch for selected rows","all currently target-green upstream ext/json rows"],
   "non_scope":["JsonException var_dump shape parity","remaining mutation-heavy JsonSerializable recursion fixtures","complete JSON flag parity beyond the promoted upstream rows"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=json"],
-  "next_step":"Close the remaining JsonSerializable mutation/recursion and JsonException debug-shape rows, then rerun the full upstream sweep."
+  "next_step":"Close the remaining JsonSerializable debug recursion, JsonException debug-shape, and pass001 object-id rows, then rerun the full upstream sweep."
 }

@@ -2,7 +2,7 @@
 
 - Priority: 17.6 promoted
 - Selected manifest: `tests/phpt/manifests/modules/json.selected.jsonl`
-- the selected close gate: 79 PASS, 3 SKIP, 0 FAIL, 0 BORK from 82 selected fixtures
+- the selected close gate: 83 PASS, 3 SKIP, 0 FAIL, 0 BORK from 86 selected fixtures
 
 ## Scope
 
@@ -18,6 +18,8 @@
   `JSON_THROW_ON_ERROR` error-clearing behavior
 - Selected `JsonSerializable` userland dispatch rows, including self-return,
   exception propagation, nested encode, and partial recursion behavior.
+- Selected mutation and recursion-sensitive `JsonSerializable` rows where
+  nested self-encoding reports `JSON_ERROR_RECURSION` without crashing.
 - All upstream `ext/json` rows that are currently target-green in the full
   target sweep, including decode error rows, invalid UTF-8 rows, U+2028/U+2029
   encoding, unsupported-type errors, and selected historical bug rows.
@@ -25,7 +27,7 @@
 ## Non-Scope
 
 - Exact `JsonException` debug/var_dump shape parity.
-- Remaining mutation-heavy `JsonSerializable` recursion fixtures.
+- Remaining debug-output-heavy `JsonSerializable` recursion fixtures.
 - Complete JSON flag parity beyond the promoted upstream rows
 
 ## Selected PHPT Fixtures
@@ -69,7 +71,7 @@
 - `ext/json/tests/bug73113.phpt`
 - `ext/json/tests/serialize.phpt`
 - all additional target-green upstream rows from the latest full `ext/json`
-  target sweep, for 77 selected upstream rows total.
+  target sweep, for 81 selected upstream rows total.
 
 ## Relevant Source Areas
 
@@ -102,7 +104,13 @@
   `bug68992.phpt`, `bug71835.phpt`, `bug72069.phpt`, and `bug73113.phpt`
   reached PASS with reference and target reuse disabled.
 - Latest selected module gate after `JsonSerializable` promotion, with reuse
-  disabled: target 79 PASS / 3 SKIP; reference 82 PASS; 0 non-green outcomes.
+  disabled: target 83 PASS / 3 SKIP; reference 86 PASS; 0 non-green outcomes.
+- Added request-frame recursion tracking for nested `JsonSerializable`
+  `json_encode($this)` calls so recursive re-entry reports
+  `JSON_ERROR_RECURSION` instead of overflowing the Rust stack.
+- Focused probes with target/reuse disabled reached PASS for
+  `bug77843.phpt`, `json_encode_recursion_01.phpt`,
+  `json_encode_recursion_02.phpt`, and `json_encode_recursion_06.phpt`.
 
 ## Known Gaps
 
@@ -123,13 +131,15 @@
   clearing semantics.
 - `JsonSerializable` dispatch is now bridged through the VM for selected rows,
   including userland return values, self-return public-property fallback,
-  callback exceptions, and partial recursion substitution.
-- Remaining upstream failures are now narrowed to 11 rows:
-  `bug77843.phpt`, `json_decode_exceptions.phpt`, `json_encode_exceptions.phpt`,
-  `json_encode_recursion_01.phpt` through `json_encode_recursion_06.phpt`,
+  callback exceptions, nested self-encode recursion, and partial recursion
+  substitution.
+- Remaining upstream failures are now narrowed to 7 rows:
+  `json_decode_exceptions.phpt`, `json_encode_exceptions.phpt`,
+  `json_encode_recursion_03.phpt` through `json_encode_recursion_05.phpt`,
   `pass001.1.phpt`, and `pass001.1_64bit.phpt`.
 
 ## Next Step
 
-Close the remaining mutation-heavy `JsonSerializable` recursion and
-`JsonException` debug-shape rows, then rerun the full upstream sweep.
+Close the remaining debug-output-heavy `JsonSerializable` recursion,
+`JsonException` debug-shape, and `pass001` object-id rows, then rerun the full
+upstream sweep.

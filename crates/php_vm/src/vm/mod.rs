@@ -1026,6 +1026,7 @@ struct ExecutionState {
     mb_internal_encoding: String,
     preg_last_error: php_runtime::pcre::PcreLastErrorState,
     json_last_error: i64,
+    json_serializable_active_objects: Vec<u64>,
     posix_last_error: i32,
     last_error: Option<LastErrorEntry>,
     http_response: RuntimeHttpResponseState,
@@ -76802,6 +76803,28 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), br#"{"value":"x","self":null}|6"#);
+    }
+
+    #[test]
+    fn json_encode_jsonserializable_nested_self_encode_reports_recursion() {
+        let result = execute_source(
+            "<?php
+            class RecursiveEncode implements JsonSerializable {
+                public $a = 1;
+                public function jsonSerialize(): mixed {
+                    var_dump(json_encode($this));
+                    return $this;
+                }
+            }
+            var_dump(json_encode(new RecursiveEncode()));
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"bool(false)\nstring(7) \"{\"a\":1}\"\n"
+        );
     }
 
     #[test]
