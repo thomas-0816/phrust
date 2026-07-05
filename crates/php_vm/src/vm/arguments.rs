@@ -248,15 +248,15 @@ fn bind_arguments(
             .and_then(|span| source_span_file_line(compiled, span))
             .map(|(file, line)| format!(" in {file} on line {line}"))
             .unwrap_or_default();
-        let declaration_site = source_span_file_line(compiled, function.span)
-            .map(|(file, line)| format!(" in {file}:{line}"))
-            .unwrap_or_default();
+        // The reference engine's message ends after the expectation; the
+        // declaration site is the throwable's location and only the uncaught
+        // fatal rendering appends it.
         return Err(VmError::fatal(
             "E_PHP_VM_TOO_FEW_ARGS",
             "arguments",
             format!(
-                "Too few arguments to function {}(), {} passed{} and {}{}",
-                function.name, supplied_count, call_site, requirement, declaration_site
+                "Too few arguments to function {}(), {} passed{} and {}",
+                function.name, supplied_count, call_site, requirement
             ),
         )
         .with_context("function", &function.name)
@@ -294,7 +294,7 @@ fn bind_arguments(
                 Value::Reference(cell) => Some(cell.clone()),
                 _ => None,
             };
-            let value = value_reference
+            let mut value = value_reference
                 .as_ref()
                 .map(ReferenceCell::get)
                 .unwrap_or_else(|| arg.value.clone());
@@ -340,6 +340,13 @@ fn bind_arguments(
             } else {
                 None
             };
+            // A placeholder argument never materialized a caller value: its
+            // observable value is whatever the bound location holds now.
+            if matches!(arg.value_kind, IrCallArgValueKind::ByRefLocationPlaceholder)
+                && let Some(cell) = &reference
+            {
+                value = cell.get();
+            }
             trace_args.push(FrameTraceArgument {
                 name: None,
                 value: if param_is_sensitive(param) {

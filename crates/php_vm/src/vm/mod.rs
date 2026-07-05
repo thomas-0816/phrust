@@ -37211,11 +37211,7 @@ fn uncaught_exception(
     };
     let has_definition_location =
         class_name == "TypeError" && message.contains("called in ") && !file.is_empty() && line > 0;
-    let has_embedded_location = has_definition_location
-        || (class_name == "ArgumentCountError"
-            && message.contains(" expected in ")
-            && !file.is_empty()
-            && line > 0);
+    let has_embedded_location = has_definition_location;
     let heading = if message.is_empty() {
         format!("Uncaught {class_name}")
     } else if has_definition_location {
@@ -69164,19 +69160,23 @@ var_dump(unserialize('O:1:"C":0:{}'));
                 counters.by_ref_arg_location_bindings, 5,
                 "{format:?}: {counters:?}"
             );
-            // Today every by-ref local argument is still materialized as a
-            // caller value register; location encoding will reduce these.
+            // Location encoding binds these calls through the caller local
+            // slot: nothing is materialized, no array handle is pinned, and
+            // every binding avoids a guaranteed copy-on-write separation.
             assert_eq!(
-                counters.by_ref_arg_value_materializations, 5,
+                counters.by_ref_arg_value_materializations, 0,
                 "{format:?}: {counters:?}"
             );
             assert_eq!(
-                counters.by_ref_arg_register_pins, 4,
+                counters.by_ref_arg_register_pins, 0,
                 "{format:?}: {counters:?}"
             );
             assert_eq!(
-                counters.by_ref_arg_cow_separations + counters.by_ref_arg_cow_separations_avoided,
-                5,
+                counters.by_ref_arg_cow_separations, 0,
+                "{format:?}: {counters:?}"
+            );
+            assert_eq!(
+                counters.by_ref_arg_cow_separations_avoided, 5,
                 "{format:?}: {counters:?}"
             );
             assert_eq!(
@@ -69184,7 +69184,7 @@ var_dump(unserialize('O:1:"C":0:{}'));
                     .by_ref_arg_fallback_by_reason
                     .get("local_value_materialized")
                     .copied(),
-                Some(5),
+                None,
                 "{format:?}: {:?}",
                 counters.by_ref_arg_fallback_by_reason
             );
@@ -74182,9 +74182,16 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
             ),
             "{missing_message}"
         );
+        // getMessage() ends after the expectation (reference behavior); the
+        // uncaught fatal rendering appends the declaration site.
         assert!(
-            missing_message.contains(" and exactly 1 expected in /tmp/phrust-test.php:"),
+            missing_message.ends_with(" and exactly 1 expected"),
             "{missing_message}"
+        );
+        let missing_output = missing.output.to_string_lossy();
+        assert!(
+            missing_output.contains(" and exactly 1 expected in /tmp/phrust-test.php:"),
+            "{missing_output}"
         );
 
         let strict_type_before_missing = execute_source(

@@ -4,6 +4,13 @@
 //! handoff shape between Semantic frontend HIR and the runtime VM. This crate does not
 //! lower HIR yet.
 
+/// Monotonic revision of the IR lowering output shape.
+///
+/// Bump this whenever lowering starts emitting different (still-compatible)
+/// IR for the same source, so content-addressed bytecode caches recompile
+/// instead of serving the older lowering forever.
+pub const IR_LOWERING_REVISION: u32 = 2;
+
 pub mod block;
 pub mod builder;
 pub mod constants;

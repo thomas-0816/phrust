@@ -2341,9 +2341,50 @@ impl LoweringContext<'_> {
         function: &str,
         args: &[HirCallArg],
     ) -> Option<(Vec<IrCallArg>, BlockId)> {
+        let placeholder_mask = self.by_ref_local_placeholder_mask(builder, function, args);
         self.lower_call_args_with_value_policy(builder, site, args, |index, arg| {
             is_quiet_by_ref_internal_builtin_arg(function, index, arg)
+                || placeholder_mask
+                    .as_ref()
+                    .is_some_and(|mask| mask.get(index).copied().unwrap_or(false))
         })
+    }
+
+    /// Marks arguments that may bind by reference through the caller local
+    /// slot alone, without materializing a value register that pins the
+    /// argument's copy-on-write handle for the whole call.
+    ///
+    /// Only unconditional same-unit callees qualify: conditional declarations
+    /// never enter the unit function table, so a table hit proves the callee
+    /// signature every execution of this call site can observe (an earlier
+    /// conflicting declaration fatals before the call). The mapping must be
+    /// purely positional and supply every required parameter so the binder's
+    /// too-few-arguments precheck never observes a placeholder value.
+    fn by_ref_local_placeholder_mask(
+        &self,
+        builder: &IrBuilder,
+        function: &str,
+        args: &[HirCallArg],
+    ) -> Option<Vec<bool>> {
+        let callee = builder.registered_function(function)?;
+        let params = builder.function_params(callee);
+        if args.iter().any(|arg| arg.name.is_some() || arg.unpack) {
+            return None;
+        }
+        let required = params.iter().filter(|param| param.required).count();
+        if args.len() < required {
+            return None;
+        }
+        let mask = args
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                params
+                    .get(index)
+                    .is_some_and(|param| param.by_ref && !param.variadic)
+            })
+            .collect::<Vec<_>>();
+        mask.iter().any(|&eligible| eligible).then_some(mask)
     }
 
     pub(super) fn lower_call_args_with_value_policy(
@@ -2591,11 +2632,20 @@ impl LoweringContext<'_> {
                         None,
                     )
                 };
+            // The placeholder branch is the only one pairing a constant
+            // value operand with a by-ref local: mark it so binders and
+            // counters can tell location-only bindings from materialized
+            // arguments.
+            let value_kind = if by_ref_local.is_some() && matches!(value, Operand::Constant(_)) {
+                IrCallArgValueKind::ByRefLocationPlaceholder
+            } else {
+                self.call_arg_value_kind(arg.value)
+            };
             operands.push(IrCallArg {
                 name: arg.name.clone(),
                 value,
                 unpack: arg.unpack,
-                value_kind: self.call_arg_value_kind(arg.value),
+                value_kind,
                 by_ref_local,
                 by_ref_dim,
                 by_ref_property,

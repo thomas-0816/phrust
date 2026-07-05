@@ -1928,6 +1928,10 @@ fn prepare_bytecode_cache(
             .with_source_path(source_path)
             .with_opt_level(run_options.opt_level.as_str())
             .with_feature_flag("bytecode_cache", true)
+            .with_runtime_config(
+                "ir_lowering_revision",
+                php_ir::IR_LOWERING_REVISION.to_string(),
+            )
             .with_runtime_config("script_env_count", run_options.env.len().to_string()),
     )
     .map_err(|error| format!("bytecode cache fingerprint: {error}"))?;

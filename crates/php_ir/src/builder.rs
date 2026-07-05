@@ -138,6 +138,22 @@ impl IrBuilder {
         self.unit.functions[function.index()].flags
     }
 
+    /// Resolves a registered (unconditional) unit function by normalized name.
+    #[must_use]
+    pub fn registered_function(&self, normalized_name: &str) -> Option<FunctionId> {
+        self.unit
+            .function_table
+            .iter()
+            .find(|entry| entry.name == normalized_name)
+            .map(|entry| entry.function)
+    }
+
+    /// Returns the declared parameters for a function.
+    #[must_use]
+    pub fn function_params(&self, function: FunctionId) -> &[IrParam] {
+        &self.unit.functions[function.index()].params
+    }
+
     /// Compatibility helper for early manual IR tests.
     pub fn push_required_param(
         &mut self,
