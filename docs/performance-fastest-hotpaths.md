@@ -9,7 +9,7 @@ This report ranks engine work from VM counters and existing performance artifact
 | `benchmark_smoke` | `ok` | 16 |  |
 | `framework_smoke` | `ok` | 9 |  |
 | `acceleration_matrix` | `ok` | 127 |  |
-| `counter_json` | `ok` | 609 |  |
+| `counter_json` | `ok` | 398 |  |
 
 ## Ranked Areas
 

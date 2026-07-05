@@ -1,3 +1,4 @@
+use crate::config::ServerPerfAblation;
 use crate::{
     access_log::AccessLogger, metrics::ServerMetrics, perf_trace::PerfTraceWriter,
     server::ServerError,
@@ -8,11 +9,16 @@ use php_executor::{
     CompiledScriptCache, CompiledScriptCacheLookup, EngineProfileName, IncludeCache, IncludeLoader,
     OptimizationLevel, PhpExecutionError, PhpExecutor, PhpExecutorOptions, PhpScriptCacheInput,
 };
+use php_vm::api::{
+    DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode, QuickeningMode,
+    QuickeningSiteSnapshot,
+};
 use std::{
+    collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -53,6 +59,9 @@ pub(crate) struct ServerEngineState {
     pub(crate) script_cache: Arc<CompiledScriptCache>,
     pub(crate) include_cache: Arc<IncludeCache>,
     pub(crate) compile_optimization_level: OptimizationLevel,
+    quickening_seed: Arc<Mutex<Vec<QuickeningSiteSnapshot>>>,
+    dense_includes: Option<DenseIncludeMode>,
+    perf_ablation: ServerPerfAblation,
 }
 
 impl ServerEngineState {
@@ -61,23 +70,33 @@ impl ServerEngineState {
         max_vm_steps: usize,
         script_cache: Arc<CompiledScriptCache>,
         include_cache: Arc<IncludeCache>,
+        dense_includes: Option<DenseIncludeMode>,
+        perf_ablation: ServerPerfAblation,
     ) -> Self {
         let base_options = if engine_profile == EngineProfileName::Default {
             PhpExecutorOptions::managed_fast_runtime()
         } else {
             PhpExecutorOptions::for_profile(engine_profile)
         };
+        let compile_optimization_level = if perf_ablation.disable_include_o2 {
+            OptimizationLevel::O0
+        } else {
+            base_options.optimization_level
+        };
         Self {
             engine_profile,
             max_vm_steps,
             script_cache,
             include_cache,
-            compile_optimization_level: base_options.optimization_level,
+            compile_optimization_level,
+            quickening_seed: Arc::new(Mutex::new(Vec::new())),
+            dense_includes,
+            perf_ablation,
         }
     }
 
     pub(crate) fn executor_options(&self) -> PhpExecutorOptions {
-        if self.engine_profile == EngineProfileName::Default {
+        let mut options = if self.engine_profile == EngineProfileName::Default {
             let mut options = PhpExecutorOptions::managed_fast_runtime();
             options.vm_options.max_steps = self.max_vm_steps;
             options
@@ -85,6 +104,41 @@ impl ServerEngineState {
             let mut options = PhpExecutorOptions::for_profile(self.engine_profile);
             options.vm_options.max_steps = self.max_vm_steps;
             options
+        };
+        self.apply_engine_overrides(&mut options);
+        options
+    }
+
+    fn apply_engine_overrides(&self, options: &mut PhpExecutorOptions) {
+        if let Ok(seed) = self.quickening_seed.lock()
+            && !seed.is_empty()
+        {
+            options.vm_options.quickening_seed = seed.clone();
+        }
+        if let Some(mode) = self.dense_includes {
+            options.vm_options.dense_include_execution = mode;
+        }
+        if self.perf_ablation.disable_dense_includes {
+            options.vm_options.dense_include_execution = DenseIncludeMode::Off;
+        }
+        if self.perf_ablation.disable_quickening {
+            options.vm_options.quickening = QuickeningMode::Off;
+        }
+        if self.perf_ablation.disable_inline_caches {
+            options.vm_options.inline_caches = InlineCacheMode::Off;
+        }
+        if self.perf_ablation.disable_builtin_ic {
+            options.vm_options.internal_function_dispatch_cache = false;
+        }
+        if self.perf_ablation.disable_jit {
+            options.vm_options.jit = JitMode::Off;
+            options.vm_options.tiering.enabled = false;
+        }
+        if self.perf_ablation.disable_include_o2 {
+            options.vm_options.include_optimization_level = OptimizationLevel::O0;
+        }
+        if self.perf_ablation.disable_dense_jump_threading {
+            options.vm_options.dense_jump_threading = DenseJumpThreadingMode::Off;
         }
     }
 
@@ -92,6 +146,21 @@ impl ServerEngineState {
         let mut options = self.executor_options();
         options.vm_options.include_cache = Some(Arc::clone(&self.include_cache));
         options
+    }
+
+    pub(crate) fn absorb_quickening_feedback(&self, feedback: Vec<QuickeningSiteSnapshot>) {
+        if feedback.is_empty() {
+            return;
+        }
+        let Ok(mut seed) = self.quickening_seed.lock() else {
+            return;
+        };
+        let merged = seed
+            .iter()
+            .chain(feedback.iter())
+            .map(|snapshot| (snapshot.site, *snapshot))
+            .collect::<BTreeMap<_, _>>();
+        *seed = merged.values().copied().collect();
     }
 
     pub(crate) fn compile_script(

@@ -415,7 +415,10 @@ impl Vm {
         };
         let method_entry = &resolved.method;
         let declaring_class = &resolved.class;
-        if !method_entry.flags.is_static {
+        let is_constructor_call = lowered_method == "__construct";
+        let bound_this_for_scoped_call =
+            scoped_static_call_this_object(compiled, state, stack, declaring_class, method_entry);
+        if !method_entry.flags.is_static && bound_this_for_scoped_call.is_none() {
             return self.runtime_error(
                 output,
                 compiled,
@@ -426,7 +429,8 @@ impl Vm {
                 ),
             );
         }
-        if (method_entry.flags.is_private || method_entry.flags.is_protected)
+        if !is_constructor_call
+            && (method_entry.flags.is_private || method_entry.flags.is_protected)
             && let Err(inaccessible) = validate_method_callable_in_state_scope(
                 compiled,
                 state,
@@ -460,13 +464,24 @@ impl Vm {
                 Err(result) => result,
             };
         }
-        if let Err(message) = validate_method_callable_in_state_scope(
-            compiled,
-            state,
-            current_scope_class(compiled, stack).as_deref(),
-            declaring_class,
-            method_entry,
-        ) {
+        let visibility = if is_constructor_call {
+            validate_scoped_constructor_callable_in_state_scope(
+                compiled,
+                state,
+                scope.as_deref(),
+                declaring_class,
+                method_entry,
+            )
+        } else {
+            validate_method_callable_in_state_scope(
+                compiled,
+                state,
+                current_scope_class(compiled, stack).as_deref(),
+                declaring_class,
+                method_entry,
+            )
+        };
+        if let Err(message) = visibility {
             return self.runtime_error_at_optional_span(
                 compiled, output, stack, state, call_span, message,
             );
@@ -522,14 +537,20 @@ impl Vm {
             &class_owner,
             plan,
             method_entry.function,
-            FunctionCall::new(args, Vec::new())
-                .with_call_site_strict_types(compiled.unit().strict_types)
-                .with_class_context(
-                    declaring_class.name.clone(),
-                    called_class,
-                    declaring_class.name.clone(),
-                )
-                .with_optional_call_span(call_span),
+            {
+                let mut call = FunctionCall::new(args, Vec::new())
+                    .with_call_site_strict_types(compiled.unit().strict_types)
+                    .with_class_context(
+                        declaring_class.name.clone(),
+                        called_class,
+                        declaring_class.name.clone(),
+                    )
+                    .with_optional_call_span(call_span);
+                if let Some(bound_this) = bound_this_for_scoped_call {
+                    call = call.with_this(bound_this);
+                }
+                call
+            },
             output,
             stack,
             state,
@@ -594,7 +615,10 @@ impl Vm {
                 ),
             );
         };
-        if !method_entry.flags.is_static {
+        let is_constructor_call = normalize_method_name(&method_entry.name) == "__construct";
+        let bound_this_for_scoped_call =
+            scoped_static_call_this_object(compiled, state, stack, &declaring_class, &method_entry);
+        if !method_entry.flags.is_static && bound_this_for_scoped_call.is_none() {
             return self.runtime_error(
                 output,
                 compiled,
@@ -605,13 +629,24 @@ impl Vm {
                 ),
             );
         }
-        if let Err(message) = validate_method_callable_in_state_scope(
-            compiled,
-            state,
-            current_scope_class(compiled, stack).as_deref(),
-            &declaring_class,
-            &method_entry,
-        ) {
+        let visibility = if is_constructor_call {
+            validate_scoped_constructor_callable_in_state_scope(
+                compiled,
+                state,
+                current_scope_class(compiled, stack).as_deref(),
+                &declaring_class,
+                &method_entry,
+            )
+        } else {
+            validate_method_callable_in_state_scope(
+                compiled,
+                state,
+                current_scope_class(compiled, stack).as_deref(),
+                &declaring_class,
+                &method_entry,
+            )
+        };
+        if let Err(message) = visibility {
             return self.runtime_error_at_optional_span(
                 compiled, output, stack, state, call_span, message,
             );
@@ -621,14 +656,20 @@ impl Vm {
             &owner,
             plan,
             method_entry.function,
-            FunctionCall::new(args, Vec::new())
-                .with_call_site_strict_types(compiled.unit().strict_types)
-                .with_optional_call_span(call_span)
-                .with_class_context(
-                    declaring_class.name.clone(),
-                    called_class,
-                    declaring_class.name,
-                ),
+            {
+                let mut call = FunctionCall::new(args, Vec::new())
+                    .with_call_site_strict_types(compiled.unit().strict_types)
+                    .with_optional_call_span(call_span)
+                    .with_class_context(
+                        declaring_class.name.clone(),
+                        called_class,
+                        declaring_class.name,
+                    );
+                if let Some(bound_this) = bound_this_for_scoped_call {
+                    call = call.with_this(bound_this);
+                }
+                call
+            },
             output,
             stack,
             state,

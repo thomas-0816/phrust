@@ -35,6 +35,9 @@ pub struct VmOptions {
     /// Optional dense-bytecode execution mode. The default keeps the rich-IR
     /// interpreter as the only execution path.
     pub execution_format: ExecutionFormat,
+    /// Allow include/require entry functions to use dense bytecode when the
+    /// request execution format already attempts dense bytecode.
+    pub dense_include_execution: DenseIncludeMode,
     /// Optional dense-bytecode superinstruction selection pass.
     pub superinstructions: SuperinstructionMode,
     /// Optional dense-bytecode jump-threading pass over trampoline blocks.
@@ -85,6 +88,7 @@ impl Default for VmOptions {
             trace_includes: trace_includes_from_env(),
             collect_counters: false,
             execution_format: ExecutionFormat::Ir,
+            dense_include_execution: DenseIncludeMode::Off,
             superinstructions: SuperinstructionMode::Off,
             dense_jump_threading: DenseJumpThreadingMode::Off,
             bytecode_layout: BytecodeLayoutMode::Source,
@@ -111,6 +115,33 @@ fn trace_includes_from_env() -> bool {
             "1" | "true" | "yes" | "on"
         )
     })
+}
+
+/// Optional dense-bytecode execution for include/require entry functions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DenseIncludeMode {
+    /// Includes execute through the rich-IR interpreter.
+    #[default]
+    Off,
+    /// Includes try the same guarded dense-bytecode entry path as the main unit
+    /// when the request execution format is `auto` or `bytecode`.
+    Auto,
+}
+
+impl DenseIncludeMode {
+    /// Stable CLI/report spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Auto => "auto",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Auto)
+    }
 }
 
 /// Optional VM execution-format switch.

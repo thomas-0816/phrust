@@ -23,7 +23,7 @@ derived from this corpus is local and advisory.
 | Scenario | Fixture | Instructions | Function calls | Method calls | Array fetches | Property access | Builtin calls | Output bytes | Output fast appends |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `attribute_reflection_warm` | `tests/fixtures/performance/framework_smoke/attribute_reflection_warm.php` | 102 | 0 | 12 | 6 | 0 | 0 | 114 | 9 |
-| `composer_autoload_lookup` | `tests/fixtures/performance/framework_smoke/composer_autoload_lookup.php` | 50 | 5 | 0 | 3 | 6 | 5 | 49 | 7 |
+| `composer_autoload_lookup` | `tests/fixtures/performance/framework_smoke/composer_autoload_lookup.php` | 0 | 0 | 0 | 0 | 0 | 5 | 49 | 7 |
 | `di_container_lookup` | `tests/fixtures/performance/framework_smoke/di_container_lookup.php` | 0 | 0 | 0 | 0 | 0 | 4 | 52 | 8 |
 | `dto_hydration` | `tests/fixtures/performance/framework_smoke/dto_hydration.php` | 0 | 0 | 0 | 0 | 0 | 3 | 34 | 6 |
 | `json_api_response` | `tests/fixtures/performance/framework_smoke/json_api_response.php` | 0 | 0 | 0 | 0 | 0 | 2 | 107 | 2 |

@@ -190,6 +190,8 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         config.max_vm_steps,
         script_cache,
         include_cache,
+        config.dense_includes,
+        config.perf_ablation,
     ));
     let state = Arc::new(AppState {
         route_config: RouteConfig {
@@ -251,6 +253,7 @@ pub fn run_blocking(config: ServerConfig) -> Result<(), ServerError> {
 mod tests {
     use super::*;
     use crate::{
+        config::ServerPerfAblation,
         perf_trace::{PerfTraceEvent, PerfTraceWriter},
         php_request::{
             append_vm_counters_to_trace, collect_vm_counters_for_request,
@@ -269,8 +272,11 @@ mod tests {
         http::{HeaderMap, HeaderValue},
     };
     use php_diagnostics::DiagnosticOutputFormat;
-    use php_executor::{EngineProfileName, IncludeLoader, PhpExecutionStatus};
+    use php_executor::{EngineProfileName, IncludeLoader, OptimizationLevel, PhpExecutionStatus};
     use php_runtime::api::{RuntimeContext, RuntimeHttpRequestContext, SessionState};
+    use php_vm::api::{
+        DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode, QuickeningMode,
+    };
     use std::{
         path::PathBuf,
         sync::atomic::Ordering,
@@ -430,6 +436,48 @@ mod tests {
                 .get("vm_inline_cache_hits")
                 .is_some_and(|value| *value > 0),
             "{traced_counters:?}"
+        );
+    }
+
+    #[test]
+    fn engine_perf_ablation_disables_selected_fast_paths() {
+        let ablation = ServerPerfAblation {
+            disable_dense_includes: true,
+            disable_quickening: true,
+            disable_inline_caches: true,
+            disable_builtin_ic: true,
+            disable_jit: true,
+            disable_include_o2: true,
+            disable_dense_jump_threading: true,
+        };
+        let engine = ServerEngineState::new(
+            EngineProfileName::Default,
+            100_000,
+            Arc::new(CompiledScriptCache::new(1)),
+            Arc::new(IncludeCache::new(1)),
+            Some(DenseIncludeMode::Auto),
+            ablation,
+        );
+
+        let options = engine.executor_options();
+
+        assert_eq!(engine.compile_optimization_level, OptimizationLevel::O0);
+        assert_eq!(
+            options.vm_options.dense_include_execution,
+            DenseIncludeMode::Off
+        );
+        assert_eq!(options.vm_options.quickening, QuickeningMode::Off);
+        assert_eq!(options.vm_options.inline_caches, InlineCacheMode::Off);
+        assert!(!options.vm_options.internal_function_dispatch_cache);
+        assert_eq!(options.vm_options.jit, JitMode::Off);
+        assert!(!options.vm_options.tiering.enabled);
+        assert_eq!(
+            options.vm_options.include_optimization_level,
+            OptimizationLevel::O0
+        );
+        assert_eq!(
+            options.vm_options.dense_jump_threading,
+            DenseJumpThreadingMode::Off
         );
     }
 
@@ -835,6 +883,8 @@ mod tests {
                 100_000,
                 cache,
                 Arc::new(IncludeCache::new(1)),
+                None,
+                Default::default(),
             )),
             metrics_token: None,
             access_log: None,

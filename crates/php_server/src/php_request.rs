@@ -841,6 +841,9 @@ pub(crate) fn execute_compiled_php_with_state(
             collect_counters,
         },
     );
+    state
+        .engine
+        .absorb_quickening_feedback(output.quickening_feedback.clone());
     Ok(output)
 }
 
@@ -884,6 +887,50 @@ pub(crate) fn append_vm_counters_to_trace(
         (
             "vm_bytecode_instructions_executed",
             counters.bytecode_instructions_executed,
+        ),
+        (
+            "vm_bytecode_lower_attempts",
+            counters.bytecode_lower_attempts,
+        ),
+        (
+            "vm_bytecode_lower_successes",
+            counters.bytecode_lower_successes,
+        ),
+        (
+            "vm_dense_execution_plan_cache_hits",
+            counters.dense_execution_plan_cache_hits,
+        ),
+        (
+            "vm_dense_execution_plan_cache_misses",
+            counters.dense_execution_plan_cache_misses,
+        ),
+        (
+            "vm_entry_rich_instructions_executed",
+            counters.entry_rich_instructions_executed,
+        ),
+        (
+            "vm_include_rich_instructions_executed",
+            counters.include_rich_instructions_executed,
+        ),
+        (
+            "vm_entry_bytecode_instructions_executed",
+            counters.entry_bytecode_instructions_executed,
+        ),
+        (
+            "vm_include_bytecode_instructions_executed",
+            counters.include_bytecode_instructions_executed,
+        ),
+        (
+            "vm_dense_include_entry_attempts",
+            counters.dense_include_entry_attempts,
+        ),
+        (
+            "vm_dense_include_entry_successes",
+            counters.dense_include_entry_successes,
+        ),
+        (
+            "vm_dense_include_entry_fallbacks",
+            counters.dense_include_entry_fallbacks,
         ),
         // Calls are counted per interpreter tier; the trace reports the
         // tier-agnostic totals so dense growth does not zero the metric.

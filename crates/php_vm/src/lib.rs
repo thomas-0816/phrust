@@ -72,8 +72,8 @@ pub mod api {
     pub use crate::quickening::{QuickeningMode, QuickeningSiteKey, QuickeningSiteSnapshot};
     pub use crate::tiering::{TieringOptions, TieringStats};
     pub use crate::vm::{
-        BytecodeLayoutMode, DenseJumpThreadingMode, ExecutionFormat, JitBlacklistMode, JitMode,
-        SuperinstructionMode, Vm, VmOptions, VmResult,
+        BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat,
+        JitBlacklistMode, JitMode, SuperinstructionMode, Vm, VmOptions, VmResult,
     };
 }
 
@@ -243,6 +243,6 @@ pub use region_profile::{
 pub use tiering::{ExecutionTier, TieringOptions, TieringState, TieringStats};
 #[doc(hidden)]
 pub use vm::{
-    BytecodeLayoutMode, DenseJumpThreadingMode, ExecutionFormat, JitBlacklistMode, JitMode,
-    SuperinstructionMode, Vm, VmOptions, VmResult,
+    BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat,
+    JitBlacklistMode, JitMode, SuperinstructionMode, Vm, VmOptions, VmResult,
 };

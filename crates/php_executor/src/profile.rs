@@ -1,7 +1,7 @@
 use php_optimizer::OptimizationLevel;
 use php_vm::api::{
-    BytecodeLayoutMode, DenseJumpThreadingMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode,
-    JitMode, QuickeningMode, SuperinstructionMode, TieringOptions,
+    BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat, InlineCacheMode,
+    JitBlacklistMode, JitMode, QuickeningMode, SuperinstructionMode, TieringOptions,
 };
 use std::{fmt, str::FromStr};
 
@@ -95,6 +95,7 @@ impl EngineProfile {
         let optimization_level = match name {
             EngineProfileName::Baseline => {
                 vm_options.execution_format = ExecutionFormat::Ir;
+                vm_options.dense_include_execution = DenseIncludeMode::Off;
                 vm_options.superinstructions = SuperinstructionMode::Off;
                 vm_options.dense_jump_threading = DenseJumpThreadingMode::Off;
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
@@ -108,6 +109,7 @@ impl EngineProfile {
             }
             EngineProfileName::Default => {
                 vm_options.execution_format = ExecutionFormat::Auto;
+                vm_options.dense_include_execution = DenseIncludeMode::Auto;
                 vm_options.superinstructions = SuperinstructionMode::On;
                 // Measured at ~zero threaded edges on the corpus while the
                 // rollback snapshot clones the whole dense unit per request;
@@ -125,6 +127,7 @@ impl EngineProfile {
             }
             EngineProfileName::ExperimentalJit => {
                 vm_options.execution_format = ExecutionFormat::Auto;
+                vm_options.dense_include_execution = DenseIncludeMode::Auto;
                 vm_options.superinstructions = SuperinstructionMode::On;
                 // Measured at ~zero threaded edges on the corpus while the
                 // rollback snapshot clones the whole dense unit per request;
@@ -186,8 +189,8 @@ impl PhpExecutorOptions {
 mod tests {
     use super::*;
     use php_vm::api::{
-        BytecodeLayoutMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode, JitMode,
-        QuickeningMode, SuperinstructionMode,
+        BytecodeLayoutMode, DenseIncludeMode, ExecutionFormat, InlineCacheMode, JitBlacklistMode,
+        JitMode, QuickeningMode, SuperinstructionMode,
     };
 
     #[test]
@@ -221,6 +224,10 @@ mod tests {
         );
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Auto);
         assert_eq!(
+            options.vm_options.dense_include_execution,
+            DenseIncludeMode::Auto
+        );
+        assert_eq!(
             options.vm_options.superinstructions,
             SuperinstructionMode::On
         );
@@ -248,6 +255,10 @@ mod tests {
         );
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Ir);
         assert_eq!(
+            options.vm_options.dense_include_execution,
+            DenseIncludeMode::Off
+        );
+        assert_eq!(
             options.vm_options.superinstructions,
             SuperinstructionMode::Off
         );
@@ -267,6 +278,10 @@ mod tests {
             OptimizationLevel::O2
         );
         assert_eq!(options.vm_options.execution_format, ExecutionFormat::Auto);
+        assert_eq!(
+            options.vm_options.dense_include_execution,
+            DenseIncludeMode::Auto
+        );
         assert_eq!(
             options.vm_options.superinstructions,
             SuperinstructionMode::On

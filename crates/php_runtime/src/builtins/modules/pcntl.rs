@@ -198,7 +198,7 @@ fn builtin_pcntl_getpriority(
     let process_id = optional_int("pcntl_getpriority", &args, 0, 0)?;
     let mode = optional_int("pcntl_getpriority", &args, 1, libc::PRIO_PROCESS as i64)?;
     clear_errno();
-    let priority = unsafe { libc::getpriority(mode as libc::c_int, process_id as libc::id_t) };
+    let priority = unsafe { libc::getpriority(mode as _, process_id as libc::id_t) };
     let error = last_errno();
     if priority == -1 && error != 0 {
         context.pcntl_state().set_last_error(error);
@@ -217,13 +217,8 @@ fn builtin_pcntl_setpriority(
     let priority = int_arg("pcntl_setpriority", &args[0])?;
     let process_id = optional_int("pcntl_setpriority", &args, 1, 0)?;
     let mode = optional_int("pcntl_setpriority", &args, 2, libc::PRIO_PROCESS as i64)?;
-    let result = unsafe {
-        libc::setpriority(
-            mode as libc::c_int,
-            process_id as libc::id_t,
-            priority as libc::c_int,
-        )
-    };
+    let result =
+        unsafe { libc::setpriority(mode as _, process_id as libc::id_t, priority as libc::c_int) };
     if result == 0 {
         context.pcntl_state().set_last_error(0);
         Ok(Value::Bool(true))

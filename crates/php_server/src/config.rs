@@ -10,6 +10,7 @@ use php_diagnostics::{
     DiagnosticSeverity, DiagnosticSuggestion,
 };
 use php_executor::EngineProfileName;
+use php_vm::api::DenseIncludeMode;
 
 use crate::routing::RequestRewriteRule;
 
@@ -54,6 +55,8 @@ pub struct ServerConfig {
     pub max_vm_steps: usize,
     pub execution_deadline_enabled: bool,
     pub engine_preset: EngineProfileName,
+    pub dense_includes: Option<DenseIncludeMode>,
+    pub perf_ablation: ServerPerfAblation,
     pub metrics_endpoint_enabled: bool,
     pub metrics_token: Option<String>,
     pub tls_cert: Option<PathBuf>,
@@ -70,6 +73,17 @@ pub struct ServerConfig {
     pub perf_trace_vm_counters: bool,
     pub network_requests_enabled: bool,
     pub help: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServerPerfAblation {
+    pub disable_dense_includes: bool,
+    pub disable_quickening: bool,
+    pub disable_inline_caches: bool,
+    pub disable_builtin_ic: bool,
+    pub disable_jit: bool,
+    pub disable_include_o2: bool,
+    pub disable_dense_jump_threading: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -190,6 +204,22 @@ impl ServerConfig {
             .map(|value| parse_engine_preset("engine_preset", &value))
             .transpose()?
             .unwrap_or_default();
+        let file_dense_includes = file_config
+            .string("dense_includes")
+            .map(|value| parse_dense_includes("dense_includes", &value))
+            .transpose()?;
+        let env_dense_includes = env_value("PHRUST_DENSE_INCLUDES")
+            .map(|value| parse_dense_includes("PHRUST_DENSE_INCLUDES", &value))
+            .transpose()?;
+        let mut dense_includes = file_dense_includes.or(env_dense_includes);
+        let file_perf_ablation = file_config
+            .string("perf_ablation")
+            .map(|value| parse_perf_ablation("perf_ablation", &value))
+            .transpose()?;
+        let env_perf_ablation = env_value("PHRUST_PERF_ABLATION")
+            .map(|value| parse_perf_ablation("PHRUST_PERF_ABLATION", &value))
+            .transpose()?;
+        let mut perf_ablation = file_perf_ablation.or(env_perf_ablation).unwrap_or_default();
         let mut metrics_endpoint_enabled = file_config
             .bool("metrics_endpoint_enabled")?
             .unwrap_or(true);
@@ -298,6 +328,23 @@ impl ServerConfig {
                 "--engine-preset" => {
                     engine_preset = parse_engine_preset(&arg, &required_value(&arg, &mut args)?)?;
                 }
+                "--dense-includes" => {
+                    dense_includes = Some(parse_dense_includes(
+                        &arg,
+                        &required_value(&arg, &mut args)?,
+                    )?);
+                }
+                _ if arg.starts_with("--dense-includes=") => {
+                    let value = arg.trim_start_matches("--dense-includes=");
+                    dense_includes = Some(parse_dense_includes("--dense-includes", value)?);
+                }
+                "--perf-ablation" => {
+                    perf_ablation = parse_perf_ablation(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                _ if arg.starts_with("--perf-ablation=") => {
+                    let value = arg.trim_start_matches("--perf-ablation=");
+                    perf_ablation = parse_perf_ablation("--perf-ablation", value)?;
+                }
                 "--disable-metrics-endpoint" => metrics_endpoint_enabled = false,
                 "--metrics-token" => {
                     metrics_token = Some(required_value(&arg, &mut args)?);
@@ -379,6 +426,8 @@ impl ServerConfig {
                 max_vm_steps,
                 execution_deadline_enabled,
                 engine_preset,
+                dense_includes,
+                perf_ablation,
                 metrics_endpoint_enabled,
                 metrics_token,
                 tls_cert,
@@ -425,6 +474,8 @@ impl ServerConfig {
             max_vm_steps,
             execution_deadline_enabled,
             engine_preset,
+            dense_includes,
+            perf_ablation,
             metrics_endpoint_enabled,
             metrics_token,
             tls_cert,
@@ -492,6 +543,8 @@ impl ServerConfig {
             max_vm_steps: DEFAULT_MAX_VM_STEPS,
             execution_deadline_enabled: true,
             engine_preset: EngineProfileName::default(),
+            dense_includes: env_value_dense_includes()?,
+            perf_ablation: env_value_perf_ablation()?.unwrap_or_default(),
             metrics_endpoint_enabled: false,
             metrics_token: None,
             tls_cert: None,
@@ -535,6 +588,8 @@ Options:\n\
   --max-vm-steps <n>           maximum VM dispatches per request (default: 100000)\n\
   --disable-execution-deadline disable cooperative PHP execution deadline\n\
   --engine-preset <name>       default managed-fast, baseline oracle, fast alias, or experimental-jit diagnostics\n\
+  --dense-includes <off|auto>  override dense-bytecode include execution\n\
+  --perf-ablation <list>       comma-separated disables: dense-includes, quickening, inline-caches, builtin-ic, jit, include-o2, dense-jump-threading, or all\n\
   --disable-metrics-endpoint   disable GET /__phrust/metrics\n\
   --metrics-token <token>      require Authorization: Bearer token for metrics\n\
   --tls-cert <path>            PEM certificate chain for HTTPS\n\
@@ -774,6 +829,64 @@ fn parse_engine_preset(flag: &str, value: &str) -> Result<EngineProfileName, Con
         .map_err(|error| ConfigError::new(format!("invalid {flag}: {error}")))
 }
 
+fn env_value_dense_includes() -> Result<Option<DenseIncludeMode>, ConfigError> {
+    std::env::var("PHRUST_DENSE_INCLUDES")
+        .ok()
+        .map(|value| parse_dense_includes("PHRUST_DENSE_INCLUDES", &value))
+        .transpose()
+}
+
+fn env_value_perf_ablation() -> Result<Option<ServerPerfAblation>, ConfigError> {
+    std::env::var("PHRUST_PERF_ABLATION")
+        .ok()
+        .map(|value| parse_perf_ablation("PHRUST_PERF_ABLATION", &value))
+        .transpose()
+}
+
+fn parse_dense_includes(flag: &str, value: &str) -> Result<DenseIncludeMode, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "0" | "false" | "no" | "off" => Ok(DenseIncludeMode::Off),
+        "1" | "true" | "yes" | "on" | "auto" => Ok(DenseIncludeMode::Auto),
+        _ => Err(ConfigError::new(format!(
+            "invalid {flag} `{value}`; expected off, 0, auto, or 1"
+        ))),
+    }
+}
+
+fn parse_perf_ablation(flag: &str, value: &str) -> Result<ServerPerfAblation, ConfigError> {
+    let mut ablation = ServerPerfAblation::default();
+    for raw_part in value.split(',') {
+        let part = raw_part.trim();
+        if part.is_empty() || matches!(part, "none" | "off" | "0") {
+            continue;
+        }
+        match part.replace('_', "-").as_str() {
+            "all" => {
+                ablation.disable_dense_includes = true;
+                ablation.disable_quickening = true;
+                ablation.disable_inline_caches = true;
+                ablation.disable_builtin_ic = true;
+                ablation.disable_jit = true;
+                ablation.disable_include_o2 = true;
+                ablation.disable_dense_jump_threading = true;
+            }
+            "dense-includes" => ablation.disable_dense_includes = true,
+            "quickening" => ablation.disable_quickening = true,
+            "inline-caches" => ablation.disable_inline_caches = true,
+            "builtin-ic" | "builtin-dispatch-cache" => ablation.disable_builtin_ic = true,
+            "jit" => ablation.disable_jit = true,
+            "include-o2" => ablation.disable_include_o2 = true,
+            "dense-jump-threading" => ablation.disable_dense_jump_threading = true,
+            _ => {
+                return Err(ConfigError::new(format!(
+                    "invalid {flag} entry `{part}`; expected dense-includes, quickening, inline-caches, builtin-ic, jit, include-o2, dense-jump-threading, all, or none"
+                )));
+            }
+        }
+    }
+    Ok(ablation)
+}
+
 fn parse_positive_usize(flag: &str, value: &str) -> Result<usize, ConfigError> {
     let parsed = value
         .parse::<usize>()
@@ -917,6 +1030,7 @@ mod tests {
     use super::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, ServerConfig};
     use php_diagnostics::DiagnosticOutputFormat;
     use php_executor::EngineProfileName;
+    use php_vm::api::DenseIncludeMode;
     use std::{
         collections::HashMap,
         fs,
@@ -959,6 +1073,8 @@ mod tests {
         assert_eq!(config.max_vm_steps, 100_000);
         assert!(config.execution_deadline_enabled);
         assert_eq!(config.engine_preset, EngineProfileName::Default);
+        assert_eq!(config.dense_includes, None);
+        assert_eq!(config.perf_ablation, Default::default());
         assert!(config.metrics_endpoint_enabled);
         assert_eq!(config.metrics_token, None);
         assert_eq!(config.tls_cert, None);
@@ -1019,6 +1135,9 @@ mod tests {
             "--disable-execution-deadline",
             "--engine-preset",
             "experimental-jit",
+            "--dense-includes=off",
+            "--perf-ablation",
+            "quickening,inline-caches,builtin-ic,jit,include-o2,dense-jump-threading",
             "--disable-metrics-endpoint",
             "--metrics-token",
             "secret",
@@ -1071,6 +1190,14 @@ mod tests {
         assert_eq!(config.max_vm_steps, 250_000);
         assert!(!config.execution_deadline_enabled);
         assert_eq!(config.engine_preset, EngineProfileName::ExperimentalJit);
+        assert_eq!(config.dense_includes, Some(DenseIncludeMode::Off));
+        assert!(config.perf_ablation.disable_quickening);
+        assert!(config.perf_ablation.disable_inline_caches);
+        assert!(config.perf_ablation.disable_builtin_ic);
+        assert!(config.perf_ablation.disable_jit);
+        assert!(config.perf_ablation.disable_include_o2);
+        assert!(config.perf_ablation.disable_dense_jump_threading);
+        assert!(!config.perf_ablation.disable_dense_includes);
         assert!(!config.metrics_endpoint_enabled);
         assert_eq!(config.metrics_token, Some("secret".to_string()));
         assert_eq!(config.tls_cert, Some(PathBuf::from("tls/cert.pem")));
@@ -1136,6 +1263,8 @@ tls_key = "key.pem"
 script_cache_max_entries = 12
 strict_preload = true
 engine_preset = "baseline"
+dense_includes = "auto"
+perf_ablation = "dense-includes"
 max_vm_steps = 333000
 network_requests_enabled = true
 rewrite_prefix_query = "/api=route,/legacy=path"
@@ -1153,6 +1282,9 @@ rewrite_prefix_query = "/api=route,/legacy=path"
             "from-cli-token",
             "--engine-preset",
             "fast",
+            "--dense-includes",
+            "off",
+            "--perf-ablation=jit",
         ])
         .unwrap();
 
@@ -1173,6 +1305,9 @@ rewrite_prefix_query = "/api=route,/legacy=path"
         assert!(config.strict_preload);
         assert!(config.network_requests_enabled);
         assert_eq!(config.engine_preset, EngineProfileName::Default);
+        assert_eq!(config.dense_includes, Some(DenseIncludeMode::Off));
+        assert!(config.perf_ablation.disable_jit);
+        assert!(!config.perf_ablation.disable_dense_includes);
         assert_eq!(config.max_vm_steps, 333_000);
         assert_eq!(config.request_rewrites.len(), 2);
         assert_eq!(config.request_rewrites[0].path_prefix, "/api");
@@ -1234,6 +1369,8 @@ index = "../bad.php"
             ("PHRUST_SERVER_ERROR_FORMAT", "json"),
             ("PHRUST_SERVER_DEBUG_LOG", "server-debug.log"),
             ("PHRUST_SERVER_ENABLE_NETWORK_REQUESTS", "1"),
+            ("PHRUST_DENSE_INCLUDES", "1"),
+            ("PHRUST_PERF_ABLATION", "dense-includes,builtin_ic"),
         ]);
         let config = ServerConfig::parse_from_with_env(["--docroot", "public"], |name| {
             env.get(name).map(|value| (*value).to_string())
@@ -1244,6 +1381,9 @@ index = "../bad.php"
         assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
         assert_eq!(config.debug_log, Some(PathBuf::from("server-debug.log")));
         assert!(config.network_requests_enabled);
+        assert_eq!(config.dense_includes, Some(DenseIncludeMode::Auto));
+        assert!(config.perf_ablation.disable_dense_includes);
+        assert!(config.perf_ablation.disable_builtin_ic);
     }
 
     #[test]
@@ -1291,6 +1431,17 @@ index = "../bad.php"
             error.to_string(),
             "invalid --engine-preset: unsupported engine preset `turbo`; expected baseline, default, fast, or experimental-jit"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_perf_toggles() {
+        let error = ServerConfig::parse_from(["--docroot", "public", "--dense-includes", "maybe"])
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid --dense-includes"));
+
+        let error = ServerConfig::parse_from(["--docroot", "public", "--perf-ablation", "unknown"])
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid --perf-ablation entry"));
     }
 
     #[test]

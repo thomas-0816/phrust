@@ -15,8 +15,8 @@ mod prelude;
 mod result;
 
 pub use options::{
-    BytecodeLayoutMode, DenseJumpThreadingMode, ExecutionFormat, JitBlacklistMode, JitMode,
-    SuperinstructionMode, VmOptions,
+    BytecodeLayoutMode, DenseIncludeMode, DenseJumpThreadingMode, ExecutionFormat,
+    JitBlacklistMode, JitMode, SuperinstructionMode, VmOptions,
 };
 pub use result::VmStepLimitDiagnostic;
 pub use result::{VmControlFlow, VmResult};
@@ -27,7 +27,7 @@ use crate::bytecode::{
     DenseFunction, DenseFunctionPlan, DenseInstruction, DenseOpcode, DenseOperand,
     DenseOperandKind, DenseOperands, SuperinstructionSelectionReport,
 };
-use crate::compiled_unit::CompiledUnit;
+use crate::compiled_unit::{CompiledUnit, DenseExecutionArtifactKey, DenseExecutionArtifactMode};
 #[cfg(feature = "jit-cranelift")]
 use crate::counters::JitCompileDescriptor;
 use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
@@ -102,11 +102,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAX_EVAL_DEPTH: usize = 16;
 const EXECUTION_DEADLINE_CHECK_INTERVAL: usize = 64;
 const EXECUTION_TIMEOUT_DIAGNOSTIC_ID: &str = "E_PHP_VM_EXECUTION_TIMEOUT";
+const DENSE_EXECUTION_PLAN_THREAD_CACHE_MAX: usize = 4096;
 const SORT_REGULAR: i64 = 0;
 const SORT_NUMERIC: i64 = 1;
 const SORT_STRING: i64 = 2;
@@ -883,9 +885,36 @@ enum SemanticHelperResult {
     Fallback(&'static str),
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct DenseExecutionPlanThreadCacheKey {
+    compiled_identity: u64,
+    artifact: DenseExecutionArtifactKey,
+}
+
+thread_local! {
+    static DENSE_EXECUTION_PLAN_THREAD_CACHE:
+        RefCell<HashMap<DenseExecutionPlanThreadCacheKey, Arc<DenseExecutionPlan>>> =
+            RefCell::new(HashMap::new());
+}
+
 enum BytecodeEntryAttempt {
     Executed(Box<VmResult>),
     Unsupported(String),
+}
+
+enum BytecodeFunctionAttempt<'a> {
+    Executed(Box<VmResult>, BytecodeFunctionTier),
+    Unsupported(String, FunctionCall<'a>),
+}
+
+enum BytecodeFunctionTier {
+    Dense,
+    RichFallback(String),
+}
+
+enum CachedDenseFunctionDispatch<'a> {
+    Executed(Box<VmResult>),
+    Continue(FunctionCall<'a>),
 }
 
 enum ClassStaticCacheRead {
@@ -2057,6 +2086,7 @@ pub struct Vm {
     /// Memoized per-(unit, function) trivial-method inline plans.
     trivial_method_plans: RefCell<HashMap<(u64, u32), Option<TrivialMethodPlan>>>,
     adaptive_tiny_unit_setup_skipped: Cell<bool>,
+    include_execution_depth: Cell<u32>,
 }
 
 impl Vm {
@@ -2083,6 +2113,7 @@ impl Vm {
             tiering: RefCell::new(tiering),
             internal_function_dispatch_cache: RefCell::new(InternalFunctionDispatchCache::default()),
             adaptive_tiny_unit_setup_skipped: Cell::new(false),
+            include_execution_depth: Cell::new(0),
         }
     }
 
@@ -2108,6 +2139,7 @@ impl Vm {
         *self.jit.borrow_mut() = JitRuntimeState::default();
         *self.tiering.borrow_mut() = TieringState::new(self.options.tiering.clone());
         self.internal_function_dispatch_cache.borrow_mut().clear();
+        self.include_execution_depth.set(0);
         *self.counters.borrow_mut() = self.options.collect_counters.then(|| {
             let mut counters = VmCounters::default();
             counters.set_jit_config(self.options.jit.as_str(), self.options.jit_threshold);
@@ -2341,6 +2373,11 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_instruction(kind);
+            if self.include_execution_depth.get() > 0 {
+                counters.record_include_rich_instruction();
+            } else {
+                counters.record_entry_rich_instruction();
+            }
         }
     }
 
@@ -2349,6 +2386,13 @@ impl Vm {
             .borrow()
             .as_ref()
             .map(|counters| counters.instructions_executed)
+    }
+
+    fn current_bytecode_instructions_executed(&self) -> Option<u64> {
+        self.counters
+            .borrow()
+            .as_ref()
+            .map(|counters| counters.bytecode_instructions_executed)
     }
 
     fn record_counter_bytecode_lower_attempt(&self) {
@@ -2366,6 +2410,24 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_bytecode_lower_success();
+        }
+    }
+
+    fn record_counter_dense_execution_plan_cache_hit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_dense_execution_plan_cache_hit();
+        }
+    }
+
+    fn record_counter_dense_execution_plan_cache_miss(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_dense_execution_plan_cache_miss();
         }
     }
 
@@ -2577,6 +2639,38 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_bytecode_instruction(opcode);
+            if self.include_execution_depth.get() > 0 {
+                counters.record_include_bytecode_instruction();
+            } else {
+                counters.record_entry_bytecode_instruction();
+            }
+        }
+    }
+
+    fn record_counter_dense_include_entry_attempt(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_dense_include_entry_attempt();
+        }
+    }
+
+    fn record_counter_dense_include_entry_success(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_dense_include_entry_success();
+        }
+    }
+
+    fn record_counter_dense_include_entry_fallback(&self, reason: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_dense_include_entry_fallback(reason);
         }
     }
 
@@ -5980,18 +6074,87 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> BytecodeEntryAttempt {
-        if self.options.trace || self.options.trace_runtime {
-            return BytecodeEntryAttempt::Unsupported(
-                "E_PHP_VM_DENSE_BYTECODE_TRACE_UNSUPPORTED: dense bytecode execution does not support tracing yet"
-                    .to_string(),
-            );
+        match self.try_execute_dense_function_entry(
+            compiled,
+            compiled.unit().entry,
+            FunctionCall::new(Vec::new(), Vec::new()),
+            output,
+            stack,
+            state,
+        ) {
+            BytecodeFunctionAttempt::Executed(result, _) => BytecodeEntryAttempt::Executed(result),
+            BytecodeFunctionAttempt::Unsupported(message, _) => {
+                BytecodeEntryAttempt::Unsupported(message)
+            }
         }
+    }
+
+    fn dense_execution_artifact_key(&self) -> DenseExecutionArtifactKey {
+        DenseExecutionArtifactKey {
+            mode: if self.options.execution_format.is_strict_bytecode() {
+                DenseExecutionArtifactMode::Strict
+            } else {
+                DenseExecutionArtifactMode::Mixed
+            },
+            superinstructions: self.options.superinstructions.is_enabled(),
+            profiled_layout: self.options.bytecode_layout.is_profiled(),
+            layout_profile_entries: if self.options.bytecode_layout.is_profiled() {
+                self.options
+                    .bytecode_layout_profile
+                    .as_ref()
+                    .map(|profile| {
+                        profile
+                            .block_entries
+                            .iter()
+                            .map(|(key, value)| (key.clone(), *value))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
+            dense_jump_threading: self.options.dense_jump_threading.is_enabled(),
+        }
+    }
+
+    fn get_or_build_dense_execution_plan(
+        &self,
+        compiled: &CompiledUnit,
+    ) -> Result<Arc<DenseExecutionPlan>, String> {
+        let key = DenseExecutionPlanThreadCacheKey {
+            compiled_identity: compiled.cache_identity(),
+            artifact: self.dense_execution_artifact_key(),
+        };
+        if let Some(plan) =
+            DENSE_EXECUTION_PLAN_THREAD_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+        {
+            self.record_counter_dense_execution_plan_cache_hit();
+            self.record_counter_dense_execution_plan(plan.as_ref());
+            return Ok(plan);
+        }
+
+        let plan = Arc::new(self.build_dense_execution_plan(compiled)?);
+        DENSE_EXECUTION_PLAN_THREAD_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= DENSE_EXECUTION_PLAN_THREAD_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert(key, Arc::clone(&plan));
+        });
+        self.record_counter_dense_execution_plan_cache_miss();
+        self.record_counter_dense_execution_plan(plan.as_ref());
+        Ok(plan)
+    }
+
+    fn build_dense_execution_plan(
+        &self,
+        compiled: &CompiledUnit,
+    ) -> Result<DenseExecutionPlan, String> {
         self.record_counter_bytecode_lower_attempt();
         if !self.options.execution_format.is_strict_bytecode() {
             let mut plan = DenseBytecodeUnit::mixed_plan_from_ir(compiled.unit());
-            self.record_counter_dense_execution_plan(&plan);
             if let Err(errors) = plan.unit.verify() {
-                return BytecodeEntryAttempt::Unsupported(format!(
+                return Err(format!(
                     "E_PHP_VM_DENSE_BYTECODE_VERIFY: mixed dense bytecode verifier rejected unit with {} error(s)",
                     errors.len()
                 ));
@@ -6000,7 +6163,7 @@ impl Vm {
                 let report = plan.unit.select_superinstructions();
                 self.record_counter_superinstruction_selection(&report);
                 if let Err(errors) = plan.unit.verify() {
-                    return BytecodeEntryAttempt::Unsupported(format!(
+                    return Err(format!(
                         "E_PHP_VM_DENSE_SUPERINSTRUCTION_VERIFY: selected mixed dense bytecode failed verification with {} error(s)",
                         errors.len()
                     ));
@@ -6011,7 +6174,7 @@ impl Vm {
                     .unit
                     .apply_profiled_layout(self.options.bytecode_layout_profile.as_ref());
                 if let Err(errors) = plan.unit.verify() {
-                    return BytecodeEntryAttempt::Unsupported(format!(
+                    return Err(format!(
                         "E_PHP_VM_DENSE_LAYOUT_VERIFY: profiled mixed dense bytecode layout failed verification with {} error(s)",
                         errors.len()
                     ));
@@ -6033,61 +6196,13 @@ impl Vm {
             }
             self.record_counter_bytecode_lowered_families(&plan.unit);
             self.record_counter_bytecode_lower_success();
-            let entry = compiled.unit().entry;
-            let Some(ir_function) = compiled.unit().functions.get(entry.index()) else {
-                return BytecodeEntryAttempt::Unsupported(
-                    "E_PHP_VM_DENSE_BYTECODE_ENTRY: IR entry function is missing".to_string(),
-                );
-            };
-            return match plan.function_plan(entry.index()) {
-                Some(DenseFunctionPlan::Dense) => {
-                    let Some(dense_function) = plan.unit.functions.get(entry.index()) else {
-                        return BytecodeEntryAttempt::Unsupported(
-                            "E_PHP_VM_DENSE_BYTECODE_ENTRY: dense bytecode entry function is missing"
-                                .to_string(),
-                        );
-                    };
-                    BytecodeEntryAttempt::Executed(Box::new(self.execute_bytecode_function(
-                        compiled,
-                        &plan.unit,
-                        Some(&plan),
-                        dense_function,
-                        ir_function,
-                        entry,
-                        FunctionCall::new(Vec::new(), Vec::new()),
-                        output,
-                        stack,
-                        state,
-                    )))
-                }
-                Some(DenseFunctionPlan::RichFallback { reason }) => {
-                    self.record_counter_rich_fallback_function_executed(reason);
-                    BytecodeEntryAttempt::Executed(Box::new(self.execute_function(
-                        compiled,
-                        entry,
-                        FunctionCall::new(Vec::new(), Vec::new()),
-                        output,
-                        stack,
-                        state,
-                    )))
-                }
-                None => BytecodeEntryAttempt::Unsupported(
-                    "E_PHP_VM_DENSE_BYTECODE_ENTRY: dense execution plan entry is missing"
-                        .to_string(),
-                ),
-            };
+            return Ok(plan);
         }
-        let mut dense = match DenseBytecodeUnit::lower_from_ir(compiled.unit()) {
-            Ok(dense) => dense,
-            Err(error) => {
-                return BytecodeEntryAttempt::Unsupported(format!(
-                    "E_PHP_VM_DENSE_BYTECODE_UNSUPPORTED: {}",
-                    error.message
-                ));
-            }
-        };
+
+        let mut dense = DenseBytecodeUnit::lower_from_ir(compiled.unit())
+            .map_err(|error| format!("E_PHP_VM_DENSE_BYTECODE_UNSUPPORTED: {}", error.message))?;
         if let Err(errors) = dense.verify() {
-            return BytecodeEntryAttempt::Unsupported(format!(
+            return Err(format!(
                 "E_PHP_VM_DENSE_BYTECODE_VERIFY: dense bytecode verifier rejected unit with {} error(s)",
                 errors.len()
             ));
@@ -6096,7 +6211,7 @@ impl Vm {
             let report = dense.select_superinstructions();
             self.record_counter_superinstruction_selection(&report);
             if let Err(errors) = dense.verify() {
-                return BytecodeEntryAttempt::Unsupported(format!(
+                return Err(format!(
                     "E_PHP_VM_DENSE_SUPERINSTRUCTION_VERIFY: selected dense bytecode failed verification with {} error(s)",
                     errors.len()
                 ));
@@ -6106,7 +6221,7 @@ impl Vm {
             let _report =
                 dense.apply_profiled_layout(self.options.bytecode_layout_profile.as_ref());
             if let Err(errors) = dense.verify() {
-                return BytecodeEntryAttempt::Unsupported(format!(
+                return Err(format!(
                     "E_PHP_VM_DENSE_LAYOUT_VERIFY: profiled dense bytecode layout failed verification with {} error(s)",
                     errors.len()
                 ));
@@ -6124,30 +6239,240 @@ impl Vm {
         }
         self.record_counter_bytecode_lowered_families(&dense);
         self.record_counter_bytecode_lower_success();
-        let entry = compiled.unit().entry;
-        let Some(dense_function) = dense.functions.get(entry.index()) else {
-            return BytecodeEntryAttempt::Unsupported(
-                "E_PHP_VM_DENSE_BYTECODE_ENTRY: dense bytecode entry function is missing"
+        let functions = dense
+            .functions
+            .iter()
+            .map(|_| DenseFunctionPlan::Dense)
+            .collect();
+        Ok(DenseExecutionPlan {
+            unit: dense,
+            functions,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_execute_dense_function_entry<'a>(
+        &self,
+        compiled: &CompiledUnit,
+        function_id: FunctionId,
+        call: FunctionCall<'a>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> BytecodeFunctionAttempt<'a> {
+        let mut call = Some(call);
+        if self.options.trace || self.options.trace_runtime {
+            return BytecodeFunctionAttempt::Unsupported(
+                "E_PHP_VM_DENSE_BYTECODE_TRACE_UNSUPPORTED: dense bytecode execution does not support tracing yet"
                     .to_string(),
+                call.expect("call should be available before execution starts"),
             );
-        };
-        let Some(ir_function) = compiled.unit().functions.get(entry.index()) else {
-            return BytecodeEntryAttempt::Unsupported(
+        }
+        let Some(ir_function) = compiled.unit().functions.get(function_id.index()) else {
+            return BytecodeFunctionAttempt::Unsupported(
                 "E_PHP_VM_DENSE_BYTECODE_ENTRY: IR entry function is missing".to_string(),
+                call.expect("call should be available before execution starts"),
             );
         };
-        BytecodeEntryAttempt::Executed(Box::new(self.execute_bytecode_function(
-            compiled,
-            &dense,
-            None,
-            dense_function,
-            ir_function,
-            entry,
-            FunctionCall::new(Vec::new(), Vec::new()),
-            output,
-            stack,
-            state,
-        )))
+        let plan = match self.get_or_build_dense_execution_plan(compiled) {
+            Ok(plan) => plan,
+            Err(message) => {
+                return BytecodeFunctionAttempt::Unsupported(
+                    message,
+                    call.expect("call should be available before execution starts"),
+                );
+            }
+        };
+        match plan.function_plan(function_id.index()) {
+            Some(DenseFunctionPlan::Dense) => {
+                let Some(dense_function) = plan.unit.functions.get(function_id.index()) else {
+                    return BytecodeFunctionAttempt::Unsupported(
+                        "E_PHP_VM_DENSE_BYTECODE_ENTRY: dense bytecode entry function is missing"
+                            .to_string(),
+                        call.expect("call should be available before execution starts"),
+                    );
+                };
+                BytecodeFunctionAttempt::Executed(
+                    Box::new(self.execute_bytecode_function(
+                        compiled,
+                        &plan.unit,
+                        Some(plan.as_ref()),
+                        dense_function,
+                        ir_function,
+                        function_id,
+                        call.take().expect("call should be consumed exactly once"),
+                        output,
+                        stack,
+                        state,
+                    )),
+                    BytecodeFunctionTier::Dense,
+                )
+            }
+            Some(DenseFunctionPlan::RichFallback { reason }) => {
+                self.record_counter_rich_fallback_function_executed(reason);
+                BytecodeFunctionAttempt::Executed(
+                    Box::new(self.execute_function(
+                        compiled,
+                        function_id,
+                        call.take().expect("call should be consumed exactly once"),
+                        output,
+                        stack,
+                        state,
+                    )),
+                    BytecodeFunctionTier::RichFallback(reason.clone()),
+                )
+            }
+            None => BytecodeFunctionAttempt::Unsupported(
+                "E_PHP_VM_DENSE_BYTECODE_ENTRY: dense execution plan entry is missing".to_string(),
+                call.expect("call should be available before execution starts"),
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_execute_cached_dense_function_dispatch<'a>(
+        &self,
+        compiled: &CompiledUnit,
+        function_id: FunctionId,
+        function: &IrFunction,
+        call: FunctionCall<'a>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> CachedDenseFunctionDispatch<'a> {
+        if !self.options.execution_format.attempts_bytecode()
+            || self.options.trace
+            || self.options.trace_runtime
+            || function.flags.is_generator
+            || call.resume_continuation.is_some()
+            || call.resume_fiber_continuation.is_some()
+            || call.running_generator.is_some()
+            || call.running_fiber.is_some()
+        {
+            return CachedDenseFunctionDispatch::Continue(call);
+        }
+
+        let plan = match self.get_or_build_dense_execution_plan(compiled) {
+            Ok(plan) => plan,
+            Err(message) => {
+                let reason = dense_bytecode_unsupported_reason(&message);
+                self.record_counter_bytecode_unsupported_reason(reason);
+                if self.options.execution_format.is_strict_bytecode() {
+                    return CachedDenseFunctionDispatch::Executed(Box::new(VmResult::unsupported(
+                        output.clone(),
+                        message,
+                    )));
+                }
+                self.record_counter_bytecode_unsupported_fallback();
+                self.record_counter_bytecode_auto_fallback_reason(reason);
+                return CachedDenseFunctionDispatch::Continue(call);
+            }
+        };
+
+        match plan.function_plan(function_id.index()) {
+            Some(DenseFunctionPlan::Dense) => {
+                let Some(dense_function) = plan.unit.functions.get(function_id.index()) else {
+                    let message =
+                        "E_PHP_VM_DENSE_BYTECODE_ENTRY: dense bytecode function is missing"
+                            .to_string();
+                    if self.options.execution_format.is_strict_bytecode() {
+                        return CachedDenseFunctionDispatch::Executed(Box::new(
+                            VmResult::unsupported(output.clone(), message),
+                        ));
+                    }
+                    self.record_counter_bytecode_unsupported_reason(
+                        dense_bytecode_unsupported_reason(&message),
+                    );
+                    return CachedDenseFunctionDispatch::Continue(call);
+                };
+                CachedDenseFunctionDispatch::Executed(Box::new(self.execute_bytecode_function(
+                    compiled,
+                    &plan.unit,
+                    Some(plan.as_ref()),
+                    dense_function,
+                    function,
+                    function_id,
+                    call,
+                    output,
+                    stack,
+                    state,
+                )))
+            }
+            Some(DenseFunctionPlan::RichFallback { .. }) => {
+                CachedDenseFunctionDispatch::Continue(call)
+            }
+            None => {
+                let message =
+                    "E_PHP_VM_DENSE_BYTECODE_ENTRY: dense execution plan entry is missing"
+                        .to_string();
+                if self.options.execution_format.is_strict_bytecode() {
+                    CachedDenseFunctionDispatch::Executed(Box::new(VmResult::unsupported(
+                        output.clone(),
+                        message,
+                    )))
+                } else {
+                    self.record_counter_bytecode_unsupported_reason(
+                        dense_bytecode_unsupported_reason(&message),
+                    );
+                    CachedDenseFunctionDispatch::Continue(call)
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_include_entry(
+        &self,
+        included: &CompiledUnit,
+        call: FunctionCall<'_>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        if self.options.dense_include_execution.is_enabled()
+            && self.options.execution_format.attempts_bytecode()
+        {
+            self.record_counter_dense_include_entry_attempt();
+            match self.try_execute_dense_function_entry(
+                included,
+                included.unit().entry,
+                call,
+                output,
+                stack,
+                state,
+            ) {
+                BytecodeFunctionAttempt::Executed(result, BytecodeFunctionTier::Dense) => {
+                    self.record_counter_dense_include_entry_success();
+                    return *result;
+                }
+                BytecodeFunctionAttempt::Executed(
+                    result,
+                    BytecodeFunctionTier::RichFallback(reason),
+                ) => {
+                    self.record_counter_dense_include_entry_fallback(&reason);
+                    return *result;
+                }
+                BytecodeFunctionAttempt::Unsupported(message, call) => {
+                    let reason = dense_bytecode_unsupported_reason(&message);
+                    self.record_counter_bytecode_unsupported_reason(reason);
+                    self.record_counter_dense_include_entry_fallback(reason);
+                    if self.options.execution_format.is_strict_bytecode() {
+                        return VmResult::unsupported(output.clone(), message);
+                    }
+                    self.record_counter_bytecode_unsupported_fallback();
+                    self.record_counter_bytecode_auto_fallback_reason(reason);
+                    return self.execute_function(
+                        included,
+                        included.unit().entry,
+                        call,
+                        output,
+                        stack,
+                        state,
+                    );
+                }
+            }
+        }
+        self.execute_function(included, included.unit().entry, call, output, stack, state)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6176,6 +6501,8 @@ impl Vm {
             );
         }
         let mut diagnostics = Vec::new();
+        let frame_reuse_call_shape_reason =
+            frame_reuse_call_shape_blocked_reason(ir_function, &call);
         let frame_layout = call_frame_layout_class(ir_function, &call);
         let argument_policy = call.argument_binding_policy(compiled);
         let elide_frame_args = self.frame_args_elidable(compiled, function_id, ir_function);
@@ -6217,19 +6544,44 @@ impl Vm {
                 return result;
             }
         };
+        let frame_reuse_blocked_reason = frame_reuse_call_shape_reason
+            .or_else(|| frame_reuse_prepared_args_blocked_reason(&prepared.args));
         self.record_counter_call_frame_layout(frame_layout);
+        let specialized_frame_fallback = specialized_call_frame_fallback_reason(
+            frame_layout,
+            frame_reuse_blocked_reason,
+            &prepared.args,
+        );
+        let specialized_tiny_frame = specialized_frame_fallback.is_none();
+        if frame_layout == "tiny_leaf_frame" {
+            self.record_counter_tiny_frame_candidate();
+        }
+        if let Some(reason) = specialized_frame_fallback {
+            self.record_counter_generic_frame_fallback(reason);
+        }
         let activation_context = FrameActivationContext {
             scope_class: call.scope_class.take(),
             called_class: call.called_class.take(),
             declaring_class: call.declaring_class.take(),
             call_span: call.call_span,
         };
-        let reused_frame = stack.push_reusable_frame(
-            function_id,
-            dense_function.register_count,
-            dense_function.local_count,
-            activation_context,
-        );
+        let reused_frame = if let Some(reason) = frame_reuse_blocked_reason {
+            self.record_counter_frame_reuse_blocked(reason);
+            stack.push_fresh_frame(
+                function_id,
+                dense_function.register_count,
+                dense_function.local_count,
+                activation_context,
+            );
+            false
+        } else {
+            stack.push_reusable_frame(
+                function_id,
+                dense_function.register_count,
+                dense_function.local_count,
+                activation_context,
+            )
+        };
         let frame_index = stack.len().saturating_sub(1);
         self.record_counter_frame_activation(
             reused_frame,
@@ -6267,8 +6619,18 @@ impl Vm {
         }
         {
             let frame = stack.current_mut().expect("bytecode frame was pushed");
-            frame.arguments = frame_args;
-            frame.trace_arguments = trace_args;
+            if specialized_tiny_frame {
+                self.record_counter_specialized_frame_hit();
+                if !args.is_empty() {
+                    self.record_counter_arg_array_avoided();
+                }
+                if reused_frame {
+                    self.record_counter_heap_frame_avoided();
+                }
+            } else {
+                frame.arguments = frame_args;
+                frame.trace_arguments = trace_args;
+            }
         }
         if let Err(message) = initialize_captures(ir_function, call.captures, stack) {
             let result = self.runtime_error(output, compiled, stack, message);
@@ -7604,7 +7966,9 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let values = match self.read_dense_call_args(dense, compiled, stack, args) {
+                        let values = match self
+                            .read_dense_call_args_for_function(dense, compiled, stack, name, args)
+                        {
                             Ok(values) => values,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -8702,12 +9066,19 @@ impl Vm {
                             .get(instruction.span.index())
                             .copied()
                             .unwrap_or_default();
-                        let array_ref = match self.read_dense_operand_ref(compiled, stack, array) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
+                        let array_ref = if array.kind == DenseOperandKind::Local
+                            && is_globals_local(ir_function, LocalId::new(array.index))
+                        {
+                            DenseOperandRead::Owned(Value::Array(state.globals.globals_array()))
+                        } else {
+                            match self.read_dense_operand_ref(compiled, stack, array) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
                             }
                         };
                         let key_ref = match self.read_dense_operand_ref(compiled, stack, key) {
@@ -9940,6 +10311,9 @@ impl Vm {
                                 return result;
                             }
                         };
+                        if let Some(shared) = call.shared_top_level_locals.as_deref_mut() {
+                            export_shared_locals(ir_function, stack, shared);
+                        }
                         stack.pop_recycle();
                         let mut result =
                             VmResult::success_with_diagnostics_no_output(value, diagnostics);
@@ -10952,10 +11326,39 @@ impl Vm {
         stack: &mut CallStack,
         args: &[DenseCallArg],
     ) -> Result<Vec<CallArgument>, String> {
+        self.read_dense_call_args_with_value_policy(dense, compiled, stack, args, |_, _| false)
+    }
+
+    fn read_dense_call_args_for_function(
+        &self,
+        dense: &DenseBytecodeUnit,
+        compiled: &CompiledUnit,
+        stack: &mut CallStack,
+        function: &str,
+        args: &[DenseCallArg],
+    ) -> Result<Vec<CallArgument>, String> {
+        self.read_dense_call_args_with_value_policy(dense, compiled, stack, args, |index, arg| {
+            is_quiet_dense_by_ref_internal_builtin_arg(dense, function, index, arg)
+        })
+    }
+
+    fn read_dense_call_args_with_value_policy(
+        &self,
+        dense: &DenseBytecodeUnit,
+        compiled: &CompiledUnit,
+        stack: &mut CallStack,
+        args: &[DenseCallArg],
+        mut use_null_placeholder: impl FnMut(usize, &DenseCallArg) -> bool,
+    ) -> Result<Vec<CallArgument>, String> {
         let mut out = Vec::with_capacity(args.len());
-        for arg in args {
-            let value = self.read_dense_operand(compiled, stack, arg.value)?;
-            self.record_counter_value_clone_reason("call_argument_snapshot");
+        for (index, arg) in args.iter().enumerate() {
+            let value = if use_null_placeholder(index, arg) {
+                Value::Null
+            } else {
+                let value = self.read_dense_operand(compiled, stack, arg.value)?;
+                self.record_counter_value_clone_reason("call_argument_snapshot");
+                value
+            };
             let by_ref_dim = arg
                 .by_ref_dim
                 .as_ref()
@@ -11883,6 +12286,18 @@ impl Vm {
         {
             return self.execute_function(&owner, function_id, call, output, stack, state);
         }
+        call = match self.try_execute_cached_dense_function_dispatch(
+            compiled,
+            function_id,
+            function,
+            call,
+            output,
+            stack,
+            state,
+        ) {
+            CachedDenseFunctionDispatch::Executed(result) => return *result,
+            CachedDenseFunctionDispatch::Continue(call) => call,
+        };
         let function_tier = self.tiering.borrow_mut().record_function_entry(
             function_id,
             self.options.quickening,
@@ -37158,7 +37573,10 @@ impl Vm {
         };
         let method_entry = &resolved.method;
         let declaring_class = &resolved.class;
-        if !method_entry.flags.is_static {
+        let is_constructor_call = normalize_method_name(method) == "__construct";
+        let bound_this_for_scoped_call =
+            scoped_static_call_this_object(compiled, state, stack, declaring_class, method_entry);
+        if !method_entry.flags.is_static && bound_this_for_scoped_call.is_none() {
             return self.runtime_error(
                 output,
                 compiled,
@@ -37169,7 +37587,8 @@ impl Vm {
                 ),
             );
         }
-        if (method_entry.flags.is_private || method_entry.flags.is_protected)
+        if !is_constructor_call
+            && (method_entry.flags.is_private || method_entry.flags.is_protected)
             && let Err(inaccessible) = validate_method_callable_in_state_scope(
                 compiled,
                 state,
@@ -37196,18 +37615,29 @@ impl Vm {
                 Err(result) => result,
             };
         }
-        if let Err(message) = validate_method_callable_in_state_scope(
-            compiled,
-            state,
-            current_scope_class(compiled, stack).as_deref(),
-            declaring_class,
-            method_entry,
-        ) {
+        let visibility = if is_constructor_call {
+            validate_scoped_constructor_callable_in_state_scope(
+                compiled,
+                state,
+                scope.as_deref(),
+                declaring_class,
+                method_entry,
+            )
+        } else {
+            validate_method_callable_in_state_scope(
+                compiled,
+                state,
+                current_scope_class(compiled, stack).as_deref(),
+                declaring_class,
+                method_entry,
+            )
+        };
+        if let Err(message) = visibility {
             return self.runtime_error(output, compiled, stack, message);
         }
         let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
-        let call = FunctionCall::new(args, Vec::new())
+        let mut call = FunctionCall::new(args, Vec::new())
             .with_call_site_strict_types(compiled.unit().strict_types)
             .with_class_context(
                 declaring_class.name.clone(),
@@ -37215,6 +37645,9 @@ impl Vm {
                 declaring_class.name.clone(),
             )
             .with_optional_call_span(call_span);
+        if let Some(bound_this) = bound_this_for_scoped_call {
+            call = call.with_this(bound_this);
+        }
         let call = if allow_by_ref_value_warnings {
             call.with_by_ref_value_warnings()
         } else {
@@ -37729,21 +38162,32 @@ impl Vm {
             state.include_stack.len(),
         ));
         let include_instructions_before = self.current_instructions_executed();
-        let mut result =
-            self.execute_function(&included, included.unit().entry, call, output, stack, state);
+        let include_bytecode_before = self.current_bytecode_instructions_executed();
+        let prior_include_depth = self.include_execution_depth.get();
+        self.include_execution_depth
+            .set(prior_include_depth.saturating_add(1));
+        let mut result = self.execute_include_entry(&included, call, output, stack, state);
+        self.include_execution_depth.set(prior_include_depth);
         let include_instructions_after = self.current_instructions_executed();
+        let include_bytecode_after = self.current_bytecode_instructions_executed();
         let include_instructions_executed = include_instructions_before
             .zip(include_instructions_after)
             .map(|(before, after)| after.saturating_sub(before))
             .map(|count| count.to_string())
             .unwrap_or_else(|| "unavailable".to_owned());
+        let include_bytecode_executed = include_bytecode_before
+            .zip(include_bytecode_after)
+            .map(|(before, after)| after.saturating_sub(before))
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned());
         self.record_include_trace_event(format!(
-            "execute-end kind={} canonical={} status={:?} stack_depth={} instructions_executed={}",
+            "execute-end kind={} canonical={} status={:?} stack_depth={} instructions_executed={} bytecode_instructions_executed={}",
             include_kind_function_name(kind),
             included_path.display(),
             result.status.exit_status(),
             state.include_stack.len(),
             include_instructions_executed,
+            include_bytecode_executed,
         ));
         if result.status.is_success()
             && let Some(error) =
@@ -48075,6 +48519,22 @@ fn current_this_object(compiled: &CompiledUnit, stack: &CallStack) -> Option<Obj
         Value::Object(object) => Some(object),
         _ => None,
     }
+}
+
+fn scoped_static_call_this_object(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    stack: &CallStack,
+    declaring_class: &php_ir::module::ClassEntry,
+    method: &php_ir::module::ClassMethodEntry,
+) -> Option<ObjectRef> {
+    if method.flags.is_static {
+        return None;
+    }
+    current_this_object(compiled, stack).filter(|object| {
+        class_is_a_in_state(compiled, state, &object.class_name(), &declaring_class.name)
+            .unwrap_or(false)
+    })
 }
 
 fn current_called_class(compiled: &CompiledUnit, stack: &CallStack) -> Option<String> {
@@ -65763,6 +66223,17 @@ fn export_shared_locals_at_frame(
     }
 }
 
+fn export_shared_locals(
+    function: &IrFunction,
+    stack: &CallStack,
+    shared: &mut HashMap<String, Slot>,
+) {
+    let Some(frame_index) = stack.len().checked_sub(1) else {
+        return;
+    };
+    export_shared_locals_at_frame(function, stack, frame_index, shared);
+}
+
 fn write_shared_locals_to_current_frame(
     compiled: &CompiledUnit,
     stack: &mut CallStack,
@@ -70192,6 +70663,27 @@ fn is_quiet_by_ref_internal_builtin_arg(function: &str, index: usize, arg: &IrCa
         "apcu_dec" | "apcu_inc" => index == 2 || arg.name.as_deref() == Some("success"),
         "is_callable" => index == 2 || arg.name.as_deref() == Some("callable_name"),
         "preg_match" | "preg_match_all" => index == 2 || arg.name.as_deref() == Some("matches"),
+        _ => false,
+    }
+}
+
+fn is_quiet_dense_by_ref_internal_builtin_arg(
+    dense: &DenseBytecodeUnit,
+    function: &str,
+    index: usize,
+    arg: &DenseCallArg,
+) -> bool {
+    if arg.by_ref_local.is_none() {
+        return false;
+    }
+    let arg_name = arg
+        .name
+        .and_then(|name| dense.names.get(name as usize).map(String::as_str));
+
+    match normalize_function_name(function).as_str() {
+        "apcu_dec" | "apcu_inc" => index == 2 || arg_name == Some("success"),
+        "is_callable" => index == 2 || arg_name == Some("callable_name"),
+        "preg_match" | "preg_match_all" => index == 2 || arg_name == Some("matches"),
         _ => false,
     }
 }
@@ -77588,6 +78080,32 @@ good"
     }
 
     #[test]
+    fn dense_pcre_no_match_initializes_undefined_matches_without_warning() {
+        let result = execute_source_with_options(
+            "<?php
+            function probe($file) {
+                if (preg_match_all('#\\.\\./#', $file, $matches, PREG_SET_ORDER) && count($matches) > 1) {
+                    echo 'bad';
+                }
+                echo isset($matches) ? count($matches) : 'missing';
+            }
+            probe('style.css');
+            ",
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.output.to_string_lossy(), "0");
+        let counters = result.counters.expect("counters");
+        assert!(counters.bytecode_instructions_executed > 0, "{counters:?}");
+    }
+
+    #[test]
     fn phar_supported_compression_follows_loaded_capabilities() {
         let result = execute_source(
             "<?php
@@ -82162,6 +82680,41 @@ echo perf_jit_unstable_types_debug(4), "\n";
 
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(result.output.as_bytes(), b"gallery");
+    }
+
+    #[test]
+    fn dense_function_empty_globals_dim_controls_ternary() {
+        let cases = [
+            (
+                "array",
+                "<?php $shortcode_tags = ['gallery' => true]; function f() { echo ! empty($GLOBALS['shortcode_tags']) ? array_keys($GLOBALS['shortcode_tags'])[0] : 'empty'; } f();",
+                b"gallery".as_slice(),
+            ),
+            (
+                "null",
+                "<?php $shortcode_tags = null; function f() { echo ! empty($GLOBALS['shortcode_tags']) ? array_keys($GLOBALS['shortcode_tags'])[0] : 'empty'; } f();",
+                b"empty".as_slice(),
+            ),
+        ];
+
+        for (name, source, expected) in cases {
+            let result = execute_source_with_options(
+                source,
+                VmOptions {
+                    execution_format: ExecutionFormat::Auto,
+                    collect_counters: true,
+                    ..VmOptions::default()
+                },
+            );
+
+            assert!(result.status.is_success(), "{name}: {:?}", result.status);
+            assert_eq!(result.output.as_bytes(), expected, "{name}");
+            let counters = result.counters.expect("counters");
+            assert!(
+                counters.bytecode_instructions_executed > 0,
+                "{name}: {counters:?}"
+            );
+        }
     }
 
     #[test]
@@ -91020,14 +91573,16 @@ echo '|', function_exists('inner_direct_nested') ? 'late' : 'missing';
         std::fs::create_dir_all(&root).expect("temp include root should be created");
         std::fs::write(root.join("lib.php"), "<?php echo 'lib'; return 7;\n")
             .expect("include file should be written");
-        let source = "<?php $value = require 'lib.php'; echo '|', $value;";
+        let source = "<?php $first = require 'lib.php'; $second = require 'lib.php'; echo '|', $first + $second;";
         std::fs::write(root.join("index.php"), source).expect("entry source should be written");
 
         let result = execute_source_with_options_and_path(
             source,
             VmOptions {
                 execution_format: ExecutionFormat::Auto,
+                dense_include_execution: DenseIncludeMode::Auto,
                 include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                include_cache: Some(Arc::new(IncludeCache::new(1))),
                 runtime_context: RuntimeContext::default().with_cwd(root.clone()),
                 collect_counters: true,
                 inline_caches: InlineCacheMode::On,
@@ -91038,12 +91593,31 @@ echo '|', function_exists('inner_direct_nested') ? 'late' : 'missing';
         let _ = std::fs::remove_dir_all(&root);
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(result.output.as_bytes(), b"lib|7");
+        assert_eq!(result.output.as_bytes(), b"liblib|14");
         let counters = result.counters.expect("counters should be collected");
-        assert_eq!(counters.bytecode_lower_attempts, 1, "{counters:?}");
-        assert_eq!(counters.bytecode_lower_successes, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_lower_attempts, 2, "{counters:?}");
+        assert_eq!(counters.bytecode_lower_successes, 2, "{counters:?}");
+        assert!(
+            counters.dense_execution_plan_cache_hits >= 1,
+            "{counters:?}"
+        );
+        assert!(
+            counters.dense_execution_plan_cache_misses >= 2,
+            "{counters:?}"
+        );
         assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
         assert!(counters.bytecode_instructions_executed >= 1, "{counters:?}");
+        assert!(
+            counters.entry_bytecode_instructions_executed >= 1,
+            "{counters:?}"
+        );
+        assert!(
+            counters.include_bytecode_instructions_executed >= 1,
+            "{counters:?}"
+        );
+        assert_eq!(counters.dense_include_entry_attempts, 2, "{counters:?}");
+        assert_eq!(counters.dense_include_entry_successes, 2, "{counters:?}");
+        assert_eq!(counters.dense_include_entry_fallbacks, 0, "{counters:?}");
         assert!(counters.dense_functions_executed >= 1, "{counters:?}");
         assert!(counters.includes >= 1, "{counters:?}");
         assert!(
@@ -91055,6 +91629,52 @@ echo '|', function_exists('inner_direct_nested') ? 'late' : 'missing';
                 >= 1,
             "{counters:?}"
         );
+    }
+
+    #[test]
+    fn dense_include_exports_assigned_locals_to_function_scope() {
+        let root = std::env::temp_dir().join(format!(
+            "phrust-vm-dense-include-function-scope-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp include root should be created");
+        std::fs::write(root.join("version.php"), "<?php $wp_version = '7.0-src';\n")
+            .expect("include file should be written");
+        let source = r#"<?php
+function version_probe() {
+    require 'version.php';
+    echo $wp_version;
+}
+version_probe();
+"#;
+        std::fs::write(root.join("index.php"), source).expect("entry source should be written");
+
+        let result = execute_source_with_options_and_path(
+            source,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                dense_include_execution: DenseIncludeMode::Auto,
+                include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+                include_cache: Some(Arc::new(IncludeCache::new(1))),
+                runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+            root.join("index.php").to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"7.0-src");
+        let counters = result.counters.expect("counters should be collected");
+        assert_eq!(counters.dense_include_entry_attempts, 1, "{counters:?}");
+        assert_eq!(counters.dense_include_entry_successes, 1, "{counters:?}");
+        assert_eq!(counters.dense_include_entry_fallbacks, 0, "{counters:?}");
     }
 
     #[test]
@@ -91464,6 +92084,60 @@ echo dense_call_magic($magic);
                 .unwrap_or_default()
                 >= 8,
             "{counters:?}"
+        );
+    }
+
+    #[test]
+    fn dense_static_scoped_non_static_method_keeps_active_this() {
+        let result = execute_source_with_options(
+            r#"<?php
+class DenseScopedBase {
+    public function __construct() { echo 'base:' . $this->label() . ';'; }
+    public function label() { return 'label'; }
+}
+class DenseScopedChild extends DenseScopedBase {
+    public function __construct() {
+        for ($i = 0; $i < 3; $i++) {
+            parent::__construct();
+            DenseScopedBase::label();
+        }
+    }
+}
+new DenseScopedChild();
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "base:label;base:label;base:label;"
+        );
+        let counters = result.counters.expect("counters should be collected");
+        assert!(counters.dense_static_call_hits >= 3, "{counters:?}");
+        assert!(counters.dense_call_ic_hits > 0, "{counters:?}");
+
+        let global = execute_source_with_options(
+            "<?php class DenseScopedGlobal { public function label() { return 'x'; } } DenseScopedGlobal::label();",
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+        assert_eq!(global.status.exit_status(), ExitStatus::RuntimeError);
+        assert!(
+            global.diagnostics.iter().any(|diagnostic| diagnostic
+                .message()
+                .contains("densescopedglobal::label is not static")),
+            "{:?}",
+            global.diagnostics
         );
     }
 

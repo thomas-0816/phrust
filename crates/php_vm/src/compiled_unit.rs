@@ -7,8 +7,13 @@ use php_ir::source_map::IrSpan;
 use php_ir::{ConstId, IrUnit};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
+
+static NEXT_COMPILED_UNIT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// VM-facing function lookup entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,6 +40,7 @@ pub struct CompiledUnit {
 }
 
 struct CompiledUnitInner {
+    cache_id: u64,
     unit: IrUnit,
     function_table: Vec<CompiledFunctionEntry>,
     constant_table: Vec<CompiledConstantEntry>,
@@ -44,6 +50,30 @@ struct CompiledUnitInner {
     class_lookup: HashMap<String, usize>,
     unit_class_lookup: HashMap<String, usize>,
     source_line_cache: Mutex<Vec<Option<SourceLineIndex>>>,
+}
+
+/// Dense executable artifact kind cached for one compiled unit.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum DenseExecutionArtifactMode {
+    /// Mixed dense/rich plan used by automatic bytecode execution.
+    Mixed,
+    /// Strict fully dense plan used by bytecode-only execution.
+    Strict,
+}
+
+/// Execution options that affect dense bytecode layout and validity.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct DenseExecutionArtifactKey {
+    /// Dense lowering mode.
+    pub mode: DenseExecutionArtifactMode,
+    /// Whether dense superinstructions have been selected.
+    pub superinstructions: bool,
+    /// Whether profiled dense layout has been applied.
+    pub profiled_layout: bool,
+    /// Profile entries used by profiled layout, kept in stable map order.
+    pub layout_profile_entries: Vec<(String, u64)>,
+    /// Whether dense jump threading has been applied.
+    pub dense_jump_threading: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,6 +165,7 @@ impl CompiledUnit {
         );
         Self {
             inner: Arc::new(CompiledUnitInner {
+                cache_id: NEXT_COMPILED_UNIT_CACHE_ID.fetch_add(1, Ordering::Relaxed),
                 unit,
                 function_table,
                 constant_table,
@@ -152,6 +183,12 @@ impl CompiledUnit {
     #[must_use]
     pub fn unit(&self) -> &IrUnit {
         &self.inner.unit
+    }
+
+    /// Stable identity for VM-local artifact caches.
+    #[must_use]
+    pub fn cache_identity(&self) -> u64 {
+        self.inner.cache_id
     }
 
     /// Returns true when two handles point at the same compiled unit allocation.

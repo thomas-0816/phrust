@@ -130,12 +130,22 @@ pub struct VmCounters {
     pub instructions_executed: u64,
     pub bytecode_lower_attempts: u64,
     pub bytecode_lower_successes: u64,
+    pub dense_execution_plan_cache_hits: u64,
+    pub dense_execution_plan_cache_misses: u64,
     pub bytecode_unsupported_fallbacks: u64,
     pub bytecode_unsupported_reasons: BTreeMap<String, u64>,
     pub bytecode_auto_fallback_reasons: BTreeMap<String, u64>,
     pub bytecode_lowered_by_family: BTreeMap<String, u64>,
     pub bytecode_executed_by_family: BTreeMap<String, u64>,
     pub bytecode_instructions_executed: u64,
+    pub entry_rich_instructions_executed: u64,
+    pub include_rich_instructions_executed: u64,
+    pub entry_bytecode_instructions_executed: u64,
+    pub include_bytecode_instructions_executed: u64,
+    pub dense_include_entry_attempts: u64,
+    pub dense_include_entry_successes: u64,
+    pub dense_include_entry_fallbacks: u64,
+    pub dense_include_entry_fallback_by_reason: BTreeMap<String, u64>,
     pub dense_functions_planned: u64,
     pub dense_functions_executed: u64,
     pub rich_fallback_functions_planned: u64,
@@ -596,6 +606,14 @@ impl VmCounters {
         }
     }
 
+    pub(crate) fn record_entry_rich_instruction(&mut self) {
+        self.entry_rich_instructions_executed += 1;
+    }
+
+    pub(crate) fn record_include_rich_instruction(&mut self) {
+        self.include_rich_instructions_executed += 1;
+    }
+
     pub(crate) fn record_autoload(&mut self) {
         self.autoloads += 1;
     }
@@ -953,6 +971,14 @@ impl VmCounters {
         self.bytecode_lower_successes += 1;
     }
 
+    pub(crate) fn record_dense_execution_plan_cache_hit(&mut self) {
+        self.dense_execution_plan_cache_hits += 1;
+    }
+
+    pub(crate) fn record_dense_execution_plan_cache_miss(&mut self) {
+        self.dense_execution_plan_cache_misses += 1;
+    }
+
     pub(crate) fn record_bytecode_unsupported_fallback(&mut self) {
         self.bytecode_unsupported_fallbacks += 1;
     }
@@ -1074,6 +1100,30 @@ impl VmCounters {
                 "DenseOpcode discriminant {index} exceeds DENSE_OPCODE_SLOTS; grow the array"
             );
         }
+    }
+
+    pub(crate) fn record_entry_bytecode_instruction(&mut self) {
+        self.entry_bytecode_instructions_executed += 1;
+    }
+
+    pub(crate) fn record_include_bytecode_instruction(&mut self) {
+        self.include_bytecode_instructions_executed += 1;
+    }
+
+    pub(crate) fn record_dense_include_entry_attempt(&mut self) {
+        self.dense_include_entry_attempts += 1;
+    }
+
+    pub(crate) fn record_dense_include_entry_success(&mut self) {
+        self.dense_include_entry_successes += 1;
+    }
+
+    pub(crate) fn record_dense_include_entry_fallback(&mut self, reason: &str) {
+        self.dense_include_entry_fallbacks += 1;
+        *self
+            .dense_include_entry_fallback_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
     }
 
     pub(crate) fn record_dense_block_entry(&mut self, function: u32, block: u32) {
@@ -2224,6 +2274,18 @@ impl VmCounters {
         );
         push_field(
             &mut json,
+            "dense_execution_plan_cache_hits",
+            self.dense_execution_plan_cache_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_execution_plan_cache_misses",
+            self.dense_execution_plan_cache_misses,
+            true,
+        );
+        push_field(
+            &mut json,
             "bytecode_unsupported_fallbacks",
             self.bytecode_unsupported_fallbacks,
             true,
@@ -2256,6 +2318,54 @@ impl VmCounters {
             &mut json,
             "bytecode_instructions_executed",
             self.bytecode_instructions_executed,
+            true,
+        );
+        push_field(
+            &mut json,
+            "entry_rich_instructions_executed",
+            self.entry_rich_instructions_executed,
+            true,
+        );
+        push_field(
+            &mut json,
+            "include_rich_instructions_executed",
+            self.include_rich_instructions_executed,
+            true,
+        );
+        push_field(
+            &mut json,
+            "entry_bytecode_instructions_executed",
+            self.entry_bytecode_instructions_executed,
+            true,
+        );
+        push_field(
+            &mut json,
+            "include_bytecode_instructions_executed",
+            self.include_bytecode_instructions_executed,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_include_entry_attempts",
+            self.dense_include_entry_attempts,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_include_entry_successes",
+            self.dense_include_entry_successes,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_include_entry_fallbacks",
+            self.dense_include_entry_fallbacks,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "dense_include_entry_fallback_by_reason",
+            &self.dense_include_entry_fallback_by_reason,
             true,
         );
         push_field(
