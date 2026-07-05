@@ -10,8 +10,11 @@ mod builtins;
 mod calls;
 mod dense_method_dispatch;
 mod generator_fiber;
+mod layout_source;
+mod operand_read;
 mod options;
 mod prelude;
+mod request_profile;
 mod result;
 
 pub use options::{
@@ -53,6 +56,9 @@ use crate::inline_cache::{
 use crate::literal_pool::LiteralPool;
 use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
 use crate::tiering::{ExecutionTier, TieringState};
+use operand_read::operand_truthy_at_frame;
+use operand_read::take_consumed_operand_at_frame;
+use operand_read::{DenseOperandRead, read_operand_at_frame, read_operand_ref_at_frame};
 use php_ir::constants::IrConstant;
 use php_ir::function::{IrFunction, IrParam, IrReturnType};
 use php_ir::ids::{BlockId, ClassId, ConstId, FunctionId, InstrId, LocalId, RegId, UnitId};
@@ -97,6 +103,7 @@ use php_runtime::{
     unserialize as unserialize_value, unsupported_feature, value_matches_runtime_type,
     value_type_name,
 };
+use request_profile::{RequestProfileFrame, RequestProfileOperationCategory};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -173,27 +180,6 @@ const JIT_PROPERTY_LOAD_STATUS_LAYOUT_EXIT: i32 = 22;
 const JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT: i32 = 23;
 #[cfg(feature = "jit-cranelift")]
 const JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT: i32 = 24;
-
-enum DenseOperandRead<'a> {
-    Borrowed(&'a Value),
-    Owned(Value),
-}
-
-impl DenseOperandRead<'_> {
-    fn as_value(&self) -> &Value {
-        match self {
-            Self::Borrowed(value) => value,
-            Self::Owned(value) => value,
-        }
-    }
-
-    fn into_owned(self) -> Value {
-        match self {
-            Self::Borrowed(value) => value.clone(),
-            Self::Owned(value) => value,
-        }
-    }
-}
 
 #[cfg(feature = "jit-cranelift")]
 fn jit_guard_kind_for_side_exit(reason: php_jit::SideExitReason) -> Option<GuardKind> {
@@ -2088,6 +2074,7 @@ pub struct Vm {
     trivial_method_plans: RefCell<HashMap<(u64, u32), Option<TrivialMethodPlan>>>,
     adaptive_tiny_unit_setup_skipped: Cell<bool>,
     include_execution_depth: Cell<u32>,
+    request_profile_stack: RefCell<Vec<RequestProfileFrame>>,
 }
 
 impl Vm {
@@ -2115,6 +2102,7 @@ impl Vm {
             internal_function_dispatch_cache: RefCell::new(InternalFunctionDispatchCache::default()),
             adaptive_tiny_unit_setup_skipped: Cell::new(false),
             include_execution_depth: Cell::new(0),
+            request_profile_stack: RefCell::new(Vec::new()),
         }
     }
 
@@ -2337,9 +2325,11 @@ impl Vm {
         if self.options.collect_counters {
             let stats = php_runtime::numeric_string::take_cache_stats();
             let layout_stats = php_runtime::layout_stats::take_layout_stats();
+            let layout_source_stats = php_runtime::layout_stats::take_layout_source_stats();
             if let Some(counters) = self.counters.borrow_mut().as_mut() {
                 counters.record_numeric_string_cache_stats(stats);
                 counters.record_runtime_layout_stats(layout_stats);
+                counters.record_runtime_layout_source_stats(layout_source_stats);
                 counters.record_output_stats(output_len, output_stats);
                 counters.fold_scratch_counters();
             }
@@ -2597,13 +2587,15 @@ impl Vm {
         }
     }
 
-    fn record_counter_rich_fallback_function_executed(&self, reason: &str) {
+    fn record_counter_rich_fallback_function_executed(&self, reason: &str, function_name: &str) {
         if !self.options.collect_counters {
             return;
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            counters
-                .record_rich_fallback_function_executed(dense_bytecode_unsupported_reason(reason));
+            counters.record_rich_fallback_function_executed(
+                dense_bytecode_unsupported_reason(reason),
+                function_name,
+            );
         }
     }
 
@@ -2666,12 +2658,12 @@ impl Vm {
         }
     }
 
-    fn record_counter_dense_include_entry_fallback(&self, reason: &str) {
+    fn record_counter_dense_include_entry_fallback(&self, reason: &str, path: &str) {
         if !self.options.collect_counters {
             return;
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
-            counters.record_dense_include_entry_fallback(reason);
+            counters.record_dense_include_entry_fallback(reason, path);
         }
     }
 
@@ -5353,6 +5345,79 @@ impl Vm {
         }
     }
 
+    fn dense_branch_truthy_from_value(
+        &self,
+        unit_id: UnitId,
+        function_id: FunctionId,
+        instruction_index: u32,
+        value: &Value,
+    ) -> Result<bool, String> {
+        if let Some(value) =
+            self.try_quickened_dense_bool_branch(unit_id, function_id, instruction_index, value)
+        {
+            Ok(value)
+        } else {
+            to_bool(value)
+        }
+    }
+
+    fn read_dense_operand_branch_truthy(
+        &self,
+        compiled: &CompiledUnit,
+        stack: &CallStack,
+        operand: DenseOperand,
+        unit_id: UnitId,
+        function_id: FunctionId,
+        instruction_index: u32,
+    ) -> Result<bool, String> {
+        match operand.kind {
+            DenseOperandKind::Register => {
+                let frame = stack.current().ok_or("no active frame")?;
+                let Some(value) = frame.registers.get(RegId::new(operand.index)) else {
+                    return Err(format!("invalid register r{}", operand.index));
+                };
+                if value.is_uninitialized() {
+                    return Err(format!("read uninitialized register r{}", operand.index));
+                }
+                self.dense_branch_truthy_from_value(unit_id, function_id, instruction_index, value)
+            }
+            DenseOperandKind::Local => {
+                let frame = stack.current().ok_or("no active frame")?;
+                let Some(slot) = frame.locals.get_slot(LocalId::new(operand.index)) else {
+                    return Err(format!("invalid local local:{}", operand.index));
+                };
+                match slot {
+                    Slot::Value(value) if value.is_uninitialized() => self
+                        .dense_branch_truthy_from_value(
+                            unit_id,
+                            function_id,
+                            instruction_index,
+                            &Value::Null,
+                        ),
+                    Slot::Value(value) => self.dense_branch_truthy_from_value(
+                        unit_id,
+                        function_id,
+                        instruction_index,
+                        value,
+                    ),
+                    Slot::Reference(cell) => {
+                        let value = cell.borrow();
+                        self.dense_branch_truthy_from_value(
+                            unit_id,
+                            function_id,
+                            instruction_index,
+                            &value,
+                        )
+                    }
+                }
+            }
+            DenseOperandKind::Constant => {
+                let value = self.constant_value(compiled.unit(), ConstId::new(operand.index))?;
+                self.dense_branch_truthy_from_value(unit_id, function_id, instruction_index, &value)
+            }
+        }
+    }
+
     fn intern_bytes(&self, bytes: &[u8]) -> PhpString {
         let interned = self.literal_pool.borrow_mut().intern_bytes(bytes);
         let hit = interned.hit;
@@ -6310,7 +6375,7 @@ impl Vm {
                 )
             }
             Some(DenseFunctionPlan::RichFallback { reason }) => {
-                self.record_counter_rich_fallback_function_executed(reason);
+                self.record_counter_rich_fallback_function_executed(reason, &ir_function.name);
                 BytecodeFunctionAttempt::Executed(
                     Box::new(self.execute_function(
                         compiled,
@@ -6430,6 +6495,12 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
+        let included_path_label = included
+            .unit()
+            .files
+            .first()
+            .map(|file| file.path.clone())
+            .unwrap_or_default();
         if self.options.dense_include_execution.is_enabled()
             && self.options.execution_format.attempts_bytecode()
         {
@@ -6450,13 +6521,13 @@ impl Vm {
                     result,
                     BytecodeFunctionTier::RichFallback(reason),
                 ) => {
-                    self.record_counter_dense_include_entry_fallback(&reason);
+                    self.record_counter_dense_include_entry_fallback(&reason, &included_path_label);
                     return *result;
                 }
                 BytecodeFunctionAttempt::Unsupported(message, call) => {
                     let reason = dense_bytecode_unsupported_reason(&message);
                     self.record_counter_bytecode_unsupported_reason(reason);
-                    self.record_counter_dense_include_entry_fallback(reason);
+                    self.record_counter_dense_include_entry_fallback(reason, &included_path_label);
                     if self.options.execution_format.is_strict_bytecode() {
                         return VmResult::unsupported(output.clone(), message);
                     }
@@ -6844,6 +6915,10 @@ impl Vm {
                         }
                     }
                     DenseOpcode::LoadConstEcho => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Output,
+                            "echo",
+                        );
                         let DenseOperands::RegConst { dst, constant } = instruction.operands else {
                             let result = self.invalid_bytecode_operand_shape(
                                 output,
@@ -7087,6 +7162,150 @@ impl Vm {
                                 dst,
                                 src.index,
                             );
+                        if fused_const.is_none()
+                            && let Some(next_instruction) = instructions.get(instruction_offset + 1)
+                            && matches!(
+                                next_instruction.opcode,
+                                DenseOpcode::JumpIfFalse
+                                    | DenseOpcode::JumpIfTrue
+                                    | DenseOpcode::JumpIf
+                            )
+                        {
+                            let branch_condition = match next_instruction.operands {
+                                DenseOperands::JumpIf { condition, .. }
+                                | DenseOperands::JumpIfElse { condition, .. } => condition,
+                                _ => {
+                                    let result = self.invalid_bytecode_operand_shape(
+                                        output,
+                                        compiled,
+                                        stack,
+                                        next_instruction,
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            };
+                            if branch_condition.kind == DenseOperandKind::Register
+                                && branch_condition.index == dst
+                            {
+                                let next_dense_instruction_index = start + instruction_offset + 1;
+                                let next_dense_instruction_index = match u32::try_from(
+                                    next_dense_instruction_index,
+                                ) {
+                                    Ok(index) => index,
+                                    Err(_) => {
+                                        let result = self.runtime_error(
+                                                output,
+                                                compiled,
+                                                stack,
+                                                "E_PHP_VM_DENSE_BYTECODE_SITE_INDEX_OVERFLOW: dense instruction index exceeds u32",
+                                            );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                };
+                                self.record_counter_bytecode_instruction(next_instruction.opcode);
+                                self.record_counter_superinstruction_executed(
+                                    next_instruction.opcode,
+                                );
+                                self.observe_dense_quickening(
+                                    unit_id,
+                                    function_id,
+                                    next_dense_instruction_index,
+                                );
+                                let truthy = match self.load_local_branch_truthy(
+                                    compiled,
+                                    ir_function,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut diagnostics,
+                                    LocalId::new(src.index),
+                                    span,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(result) => {
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                };
+                                match next_instruction.opcode {
+                                    DenseOpcode::JumpIfFalse | DenseOpcode::JumpIfTrue => {
+                                        let DenseOperands::JumpIf { target, .. } =
+                                            next_instruction.operands
+                                        else {
+                                            let result = self.invalid_bytecode_operand_shape(
+                                                output,
+                                                compiled,
+                                                stack,
+                                                next_instruction,
+                                            );
+                                            stack.pop_recycle();
+                                            return result;
+                                        };
+                                        let jump = if next_instruction.opcode
+                                            == DenseOpcode::JumpIfFalse
+                                        {
+                                            !truthy
+                                        } else {
+                                            truthy
+                                        };
+                                        let next_block = if jump {
+                                            target
+                                        } else {
+                                            match next_dense_block_index(
+                                                dense_function,
+                                                block_index,
+                                            ) {
+                                                Ok(next) => next,
+                                                Err(message) => {
+                                                    let result = self.runtime_error(
+                                                        output, compiled, stack, message,
+                                                    );
+                                                    stack.pop_recycle();
+                                                    return result;
+                                                }
+                                            }
+                                        };
+                                        self.record_counter_dense_branch(
+                                            function_id.raw(),
+                                            block_index,
+                                            next_block,
+                                            truthy,
+                                            !jump,
+                                        );
+                                        block_index = next_block;
+                                        continue 'dispatch;
+                                    }
+                                    DenseOpcode::JumpIf => {
+                                        let DenseOperands::JumpIfElse {
+                                            if_true, if_false, ..
+                                        } = next_instruction.operands
+                                        else {
+                                            let result = self.invalid_bytecode_operand_shape(
+                                                output,
+                                                compiled,
+                                                stack,
+                                                next_instruction,
+                                            );
+                                            stack.pop_recycle();
+                                            return result;
+                                        };
+                                        let next_block = if truthy { if_true } else { if_false };
+                                        self.record_counter_dense_branch(
+                                            function_id.raw(),
+                                            block_index,
+                                            next_block,
+                                            truthy,
+                                            false,
+                                        );
+                                        block_index = next_block;
+                                        continue 'dispatch;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                         let value = match self.load_local_value(
                             compiled,
                             ir_function,
@@ -7139,6 +7358,10 @@ impl Vm {
                         }
                     }
                     DenseOpcode::LoadLocalEcho => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Output,
+                            "echo",
+                        );
                         let DenseOperands::RegOperand { dst, src } = instruction.operands else {
                             let result = self.invalid_bytecode_operand_shape(
                                 output,
@@ -7511,6 +7734,105 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::BindReferenceDim => {
+                        let DenseOperands::BindReferenceDim {
+                            local,
+                            ref dims,
+                            append,
+                            source,
+                        } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        self.record_counter_alias_state_transition(
+                            AliasState::NoReferencesObserved,
+                            AliasState::PropertyOrArrayDimReference,
+                        );
+                        self.record_counter_fast_path_disabled_by_reference(
+                            AliasState::PropertyOrArrayDimReference,
+                        );
+                        let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let local = LocalId::new(local);
+                        let source = LocalId::new(source);
+                        self.record_counter_local_slot_fast_path(
+                            local_slot_is_in_bounds(stack, local)
+                                && local_slot_is_in_bounds(stack, source),
+                        );
+                        let _source = layout_source::enter(layout_source::BY_REF_ARGUMENT_BINDING);
+                        let cell = match stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .locals
+                            .ensure_reference_cell(source)
+                        {
+                            Ok(cell) => cell,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Some(object) =
+                            spl_array_access_local_object_at_frame(stack, frame_index, local)
+                        {
+                            let span = dense
+                                .spans
+                                .get(instruction.span.index())
+                                .copied()
+                                .unwrap_or_default();
+                            emit_spl_array_access_bind_reference_notice(
+                                compiled, output, stack, state, &object, span,
+                            );
+                            let message =
+                                "Cannot assign by reference to an array dimension of an object"
+                                    .to_owned();
+                            let diagnostic = RuntimeDiagnostic::new(
+                                "E_PHP_VM_ARRAY_ACCESS_BIND_REFERENCE",
+                                RuntimeSeverity::FatalError,
+                                message.clone(),
+                                runtime_source_span(compiled, span),
+                                stack_trace(compiled, stack),
+                                Some(php_runtime::PhpReferenceClassification::Error),
+                            );
+                            stack.pop_recycle();
+                            return VmResult::runtime_error_with_diagnostic(
+                                output.clone(),
+                                message,
+                                diagnostic,
+                            );
+                        }
+                        if let Err(message) =
+                            bind_dim_local_to_reference_cell(stack, local, &dims, append, cell)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        self.record_counter_alias_state(local_alias_state(stack, local));
+                        self.record_lvalue_trace_event(
+                            if append {
+                                "bind-reference-dim-append"
+                            } else {
+                                "bind-reference-dim"
+                            },
+                            local,
+                            &dims,
+                        );
+                    }
                     DenseOpcode::InitStaticLocal => {
                         let DenseOperands::StaticLocal {
                             local,
@@ -7575,6 +7897,10 @@ impl Vm {
                         self.record_counter_alias_state(local_alias_state(stack, local));
                     }
                     DenseOpcode::BinaryConcatEcho => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Output,
+                            "echo",
+                        );
                         let DenseOperands::Binary { dst, lhs, rhs } = instruction.operands else {
                             let result = self.invalid_bytecode_operand_shape(
                                 output,
@@ -8105,7 +8431,16 @@ impl Vm {
                                 }
                                 Some(DenseFunctionPlan::RichFallback { reason }) => {
                                     self.record_counter_dense_call_fallback(reason);
-                                    self.record_counter_rich_fallback_function_executed(reason);
+                                    let function_name = compiled
+                                        .unit()
+                                        .functions
+                                        .get(function.index())
+                                        .map(|function| function.name.as_str())
+                                        .unwrap_or("<missing>");
+                                    self.record_counter_rich_fallback_function_executed(
+                                        reason,
+                                        function_name,
+                                    );
                                     self.execute_function(
                                         compiled,
                                         function,
@@ -8183,8 +8518,11 @@ impl Vm {
                                 kind: DenseOperandKind::Register,
                                 index: dst,
                             };
-                            let value = match self.read_dense_operand(compiled, stack, discard_src)
-                            {
+                            let value = match self.take_consumed_dense_operand(
+                                compiled,
+                                stack,
+                                discard_src,
+                            ) {
                                 Ok(value) => value,
                                 Err(message) => {
                                     let result =
@@ -8193,11 +8531,6 @@ impl Vm {
                                     return result;
                                 }
                             };
-                            if let Err(message) = unset_dense_register_operand(stack, discard_src) {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
                             let mut exception_handlers = Vec::new();
                             let mut pending_control = None;
                             if let Some(outcome) = self.run_destructors_for_unreferenced_value(
@@ -8947,6 +9280,8 @@ impl Vm {
                             None => None,
                         };
                         let value = if let Some(local) = by_ref_local {
+                            let _source =
+                                layout_source::enter(layout_source::BY_REF_ARGUMENT_BINDING);
                             match stack
                                 .current_mut()
                                 .expect("bytecode frame was pushed")
@@ -9001,6 +9336,11 @@ impl Vm {
                         }
                     }
                     DenseOpcode::FetchDim | DenseOpcode::LoadConstFetchDim => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_fetch",
+                        );
+                        let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
                         // The fused form performs the constant key load (same
                         // effect as the LoadConst arm) and then runs this
                         // unchanged dimension-fetch sequence on the key
@@ -9145,6 +9485,11 @@ impl Vm {
                         }
                     }
                     DenseOpcode::IssetDim => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_isset",
+                        );
+                        let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
                         let DenseOperands::IssetDim {
                             dst,
                             local,
@@ -9268,6 +9613,11 @@ impl Vm {
                         }
                     }
                     DenseOpcode::EmptyDim => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_empty",
+                        );
+                        let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
                         let DenseOperands::EmptyDim {
                             dst,
                             local,
@@ -9405,6 +9755,12 @@ impl Vm {
                         }
                     }
                     DenseOpcode::UnsetDim => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_unset",
+                        );
+                        let _clone_source =
+                            layout_source::enter(layout_source::ARRAY_ELEMENT_WRITE);
                         let DenseOperands::UnsetDim { local, ref dims } = instruction.operands
                         else {
                             let result = self.invalid_bytecode_operand_shape(
@@ -9501,6 +9857,16 @@ impl Vm {
                         self.record_lvalue_trace_event("array-unset-dim", local, &dims);
                     }
                     DenseOpcode::AssignDim | DenseOpcode::AppendDim => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            if instruction.opcode == DenseOpcode::AppendDim {
+                                "dim_append"
+                            } else {
+                                "dim_assign"
+                            },
+                        );
+                        let _clone_source =
+                            layout_source::enter(layout_source::ARRAY_ELEMENT_WRITE);
                         let DenseOperands::AssignDim {
                             dst,
                             local,
@@ -9730,6 +10096,10 @@ impl Vm {
                         }
                     }
                     DenseOpcode::ForeachInit => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "foreach_init",
+                        );
                         let DenseOperands::ForeachInit { iterator, source } = instruction.operands
                         else {
                             let result = self.invalid_bytecode_operand_shape(
@@ -9774,6 +10144,10 @@ impl Vm {
                         foreach_iterators.insert(RegId::new(iterator), foreach_iterator);
                     }
                     DenseOpcode::ForeachNext => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "foreach_next",
+                        );
                         let DenseOperands::ForeachNext {
                             has_value,
                             iterator,
@@ -9893,6 +10267,12 @@ impl Vm {
                         }
                     }
                     DenseOpcode::FetchProperty => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Object,
+                            "property_fetch",
+                        );
+                        let _clone_source =
+                            layout_source::enter(layout_source::OBJECT_PROPERTY_READ);
                         let DenseOperands::FetchProperty {
                             dst,
                             object,
@@ -9969,6 +10349,10 @@ impl Vm {
                         }
                     }
                     DenseOpcode::AssignProperty => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Object,
+                            "property_assign",
+                        );
                         let DenseOperands::AssignProperty {
                             dst,
                             object,
@@ -10054,6 +10438,10 @@ impl Vm {
                         }
                     }
                     DenseOpcode::Echo => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Output,
+                            "echo",
+                        );
                         let DenseOperands::Operand { src } = instruction.operands else {
                             let result = self.invalid_bytecode_operand_shape(
                                 output,
@@ -10096,7 +10484,7 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let value = match self.read_dense_operand(compiled, stack, src) {
+                        let value = match self.take_consumed_dense_operand(compiled, stack, src) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -10104,11 +10492,6 @@ impl Vm {
                                 return result;
                             }
                         };
-                        if let Err(message) = unset_dense_register_operand(stack, src) {
-                            let result = self.runtime_error(output, compiled, stack, message);
-                            stack.pop_recycle();
-                            return result;
-                        }
                         let mut exception_handlers = Vec::new();
                         let mut pending_control = None;
                         if let Some(outcome) = self.run_destructors_for_unreferenced_value(
@@ -10164,31 +10547,20 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let value = match self.read_dense_operand(compiled, stack, condition) {
+                        let truthy = match self.read_dense_operand_branch_truthy(
+                            compiled,
+                            stack,
+                            condition,
+                            unit_id,
+                            function_id,
+                            dense_instruction_index,
+                        ) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
                                 stack.pop_recycle();
                                 return result;
                             }
-                        };
-                        let truthy = self.try_quickened_dense_bool_branch(
-                            unit_id,
-                            function_id,
-                            dense_instruction_index,
-                            &value,
-                        );
-                        let truthy = match truthy {
-                            Some(value) => value,
-                            None => match to_bool(&value) {
-                                Ok(value) => value,
-                                Err(message) => {
-                                    let result =
-                                        self.runtime_error(output, compiled, stack, message);
-                                    stack.pop_recycle();
-                                    return result;
-                                }
-                            },
                         };
                         let jump = if instruction.opcode == DenseOpcode::JumpIfFalse {
                             !truthy
@@ -10235,31 +10607,20 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let value = match self.read_dense_operand(compiled, stack, condition) {
+                        let truthy = match self.read_dense_operand_branch_truthy(
+                            compiled,
+                            stack,
+                            condition,
+                            unit_id,
+                            function_id,
+                            dense_instruction_index,
+                        ) {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
                                 stack.pop_recycle();
                                 return result;
                             }
-                        };
-                        let truthy = self.try_quickened_dense_bool_branch(
-                            unit_id,
-                            function_id,
-                            dense_instruction_index,
-                            &value,
-                        );
-                        let truthy = match truthy {
-                            Some(value) => value,
-                            None => match to_bool(&value) {
-                                Ok(value) => value,
-                                Err(message) => {
-                                    let result =
-                                        self.runtime_error(output, compiled, stack, message);
-                                    stack.pop_recycle();
-                                    return result;
-                                }
-                            },
                         };
                         let next_block = if truthy { if_true } else { if_false };
                         self.record_counter_dense_branch(
@@ -10284,9 +10645,16 @@ impl Vm {
                             return result;
                         };
                         let value = match value {
-                            Some(value) => match self.read_dense_operand(compiled, stack, value) {
+                            Some(value) => match self.read_dense_operand_with_source(
+                                compiled,
+                                stack,
+                                value,
+                                layout_source::RETURN_VALUE,
+                            ) {
                                 Ok(value) => {
-                                    self.record_counter_value_clone_reason("return_value");
+                                    self.record_counter_value_clone_reason(
+                                        layout_source::RETURN_VALUE,
+                                    );
                                     Some(value)
                                 }
                                 Err(message) => {
@@ -10455,6 +10823,51 @@ impl Vm {
                 format!("invalid local local:{}", local.raw()),
             )),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn load_local_branch_truthy(
+        &self,
+        compiled: &CompiledUnit,
+        function: &IrFunction,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+        local: LocalId,
+        span: IrSpan,
+    ) -> Result<bool, VmResult> {
+        if !is_globals_local(function, local) {
+            self.record_counter_local_slot_fast_path(local_slot_is_in_bounds(stack, local));
+            let truthy = {
+                let frame = stack.current().expect("frame was pushed");
+                match frame.locals.get_slot(local) {
+                    Some(Slot::Value(value)) if !value.is_uninitialized() => Some(to_bool(value)),
+                    Some(Slot::Reference(cell)) => {
+                        let value = cell.borrow();
+                        Some(to_bool(&value))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(truthy) = truthy {
+                return truthy
+                    .map_err(|message| self.runtime_error(output, compiled, stack, message));
+            }
+        }
+
+        let value = self.load_local_value(
+            compiled,
+            function,
+            output,
+            stack,
+            state,
+            diagnostics,
+            local,
+            span,
+            false,
+        )?;
+        to_bool(&value).map_err(|message| self.runtime_error(output, compiled, stack, message))
     }
 
     fn dense_runtime_error(
@@ -11163,79 +11576,6 @@ impl Vm {
         Ok(value)
     }
 
-    fn read_dense_operand(
-        &self,
-        compiled: &CompiledUnit,
-        stack: &CallStack,
-        operand: DenseOperand,
-    ) -> Result<Value, String> {
-        match operand.kind {
-            DenseOperandKind::Register => {
-                let frame = stack.current().ok_or("no active frame")?;
-                let Some(value) = frame.registers.get(RegId::new(operand.index)) else {
-                    return Err(format!("invalid register r{}", operand.index));
-                };
-                if value.is_uninitialized() {
-                    return Err(format!("read uninitialized register r{}", operand.index));
-                }
-                Ok(value.clone())
-            }
-            DenseOperandKind::Local => {
-                let frame = stack.current().ok_or("no active frame")?;
-                let Some(value) = frame.locals.get(LocalId::new(operand.index)) else {
-                    return Err(format!("invalid local local:{}", operand.index));
-                };
-                Ok(if value.is_uninitialized() {
-                    Value::Null
-                } else {
-                    value
-                })
-            }
-            DenseOperandKind::Constant => {
-                self.constant_value(compiled.unit(), ConstId::new(operand.index))
-            }
-        }
-    }
-
-    fn read_dense_operand_ref<'a>(
-        &self,
-        compiled: &CompiledUnit,
-        stack: &'a CallStack,
-        operand: DenseOperand,
-    ) -> Result<DenseOperandRead<'a>, String> {
-        match operand.kind {
-            DenseOperandKind::Register => {
-                let frame = stack.current().ok_or("no active frame")?;
-                let Some(value) = frame.registers.get(RegId::new(operand.index)) else {
-                    return Err(format!("invalid register r{}", operand.index));
-                };
-                if value.is_uninitialized() {
-                    return Err(format!("read uninitialized register r{}", operand.index));
-                }
-                Ok(DenseOperandRead::Borrowed(value))
-            }
-            DenseOperandKind::Local => {
-                let frame = stack.current().ok_or("no active frame")?;
-                let Some(slot) = frame.locals.get_slot(LocalId::new(operand.index)) else {
-                    return Err(format!("invalid local local:{}", operand.index));
-                };
-                match slot {
-                    Slot::Value(value) if value.is_uninitialized() => {
-                        Ok(DenseOperandRead::Owned(Value::Null))
-                    }
-                    Slot::Value(value) => Ok(DenseOperandRead::Borrowed(value)),
-                    Slot::Reference(cell) => {
-                        self.record_counter_value_clone_reason("reference_or_cow");
-                        Ok(DenseOperandRead::Owned(cell.get()))
-                    }
-                }
-            }
-            DenseOperandKind::Constant => self
-                .constant_value(compiled.unit(), ConstId::new(operand.index))
-                .map(DenseOperandRead::Owned),
-        }
-    }
-
     fn try_dense_array_fetch_dim_borrowed(
         &self,
         array: &Value,
@@ -11249,7 +11589,10 @@ impl Vm {
             return None;
         };
         let result = match array.get(&key) {
-            Some(value) => Some(effective_value(value)),
+            Some(value) => {
+                let _source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
+                Some(effective_value(value))
+            }
             None if quiet => Some(Value::Null),
             None => None,
         };
@@ -11308,6 +11651,7 @@ impl Vm {
                         "E_PHP_VM_BY_REF_CAPTURE_NOT_REFERENCEABLE: closure capture ${name} is not a local variable"
                     ));
                 }
+                let _source = layout_source::enter(layout_source::CLOSURE_CAPTURE_BINDING);
                 let cell = stack
                     .current_mut()
                     .ok_or("no active frame")?
@@ -11360,8 +11704,13 @@ impl Vm {
             let value = if use_null_placeholder(index, arg) {
                 Value::Null
             } else {
-                let value = self.read_dense_operand(compiled, stack, arg.value)?;
-                self.record_counter_value_clone_reason("call_argument_snapshot");
+                let value = self.read_dense_operand_with_source(
+                    compiled,
+                    stack,
+                    arg.value,
+                    layout_source::CALL_ARGUMENT_SNAPSHOT,
+                )?;
+                self.record_counter_value_clone_reason(layout_source::CALL_ARGUMENT_SNAPSHOT);
                 value
             };
             let by_ref_dim = arg
@@ -12082,17 +12431,19 @@ impl Vm {
         // handles so the map borrow ends before nested calls re-enter.
         let next_value = match foreach_iterators.get_mut(&iterator) {
             Some(ForeachIterator::Snapshot { entries, position }) => {
+                let _source = layout_source::enter(layout_source::FOREACH_VALUE);
                 let next = entries
                     .get(*position)
                     .cloned()
                     .map(|(key, value)| (Some(array_key_to_value(key)), value));
                 if next.is_some() {
                     *position += 1;
-                    self.record_counter_value_clone_reason("foreach_value");
+                    self.record_counter_value_clone_reason(layout_source::FOREACH_VALUE);
                 }
                 next
             }
             Some(ForeachIterator::ArrayHandle { array, position }) => {
+                let _source = layout_source::enter(layout_source::FOREACH_VALUE);
                 let next = array.pair_at(*position).map(|(key, value)| {
                     let value = match value {
                         Value::Reference(cell) => cell.get(),
@@ -12102,7 +12453,7 @@ impl Vm {
                 });
                 if next.is_some() {
                     *position += 1;
-                    self.record_counter_value_clone_reason("foreach_value");
+                    self.record_counter_value_clone_reason(layout_source::FOREACH_VALUE);
                 }
                 next
             }
@@ -12111,6 +12462,7 @@ impl Vm {
                 entries,
                 position,
             }) => {
+                let _source = layout_source::enter(layout_source::FOREACH_VALUE);
                 let next = entries.get(*position).map(|entry| {
                     let value = object
                         .get_property(&entry.storage_name)
@@ -12272,6 +12624,29 @@ impl Vm {
     }
 
     fn execute_function(
+        &self,
+        compiled: &CompiledUnit,
+        function_id: FunctionId,
+        call: FunctionCall<'_>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        let function_profile = compiled
+            .unit()
+            .functions
+            .get(function_id.index())
+            .map(|function| (function.name.clone(), function.flags.is_method));
+        let profile_boundary = self.request_profile_boundary_start();
+        let result = self.execute_function_inner(compiled, function_id, call, output, stack, state);
+        if let Some((name, is_method)) = function_profile {
+            self.record_counter_function_profile(&name, is_method, profile_boundary);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_function_inner(
         &self,
         compiled: &CompiledUnit,
         function_id: FunctionId,
@@ -13182,17 +13557,13 @@ impl Vm {
                         }
                     }
                     InstructionKind::Discard { src } => {
-                        let value = match read_operand_at_frame(unit, stack, frame_index, *src) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
-                        if let Err(message) =
-                            unset_register_operand_at_frame(stack, frame_index, *src)
-                        {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
+                        let value =
+                            match take_consumed_operand_at_frame(unit, stack, frame_index, *src) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                         if let Some(outcome) = self.run_destructors_for_unreferenced_value(
                             compiled,
                             output,
@@ -13213,6 +13584,110 @@ impl Vm {
                         release_unrooted_object_handles(&value, stack, state);
                     }
                     InstructionKind::LoadLocal { dst, local } => {
+                        if instruction_index + 1 == block.instructions.len() {
+                            let terminator_kind =
+                                block.terminator.as_ref().map(|terminator| &terminator.kind);
+                            match terminator_kind {
+                                Some(TerminatorKind::JumpIfFalse { condition, target })
+                                    if *condition == Operand::Register(*dst) =>
+                                {
+                                    let truthy = match self.load_local_branch_truthy(
+                                        compiled,
+                                        function,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut diagnostics,
+                                        *local,
+                                        instruction.span,
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(result) => return result,
+                                    };
+                                    if truthy {
+                                        let next = match next_block_id(function, block_id) {
+                                            Ok(block_id) => block_id,
+                                            Err(message) => {
+                                                return self.runtime_error(
+                                                    output, compiled, stack, message,
+                                                );
+                                            }
+                                        };
+                                        self.record_tiering_backedge(function_id, block_id, next);
+                                        block_id = next;
+                                    } else {
+                                        self.record_tiering_backedge(
+                                            function_id,
+                                            block_id,
+                                            *target,
+                                        );
+                                        block_id = *target;
+                                    }
+                                    continue 'dispatch;
+                                }
+                                Some(TerminatorKind::JumpIfTrue { condition, target })
+                                    if *condition == Operand::Register(*dst) =>
+                                {
+                                    let truthy = match self.load_local_branch_truthy(
+                                        compiled,
+                                        function,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut diagnostics,
+                                        *local,
+                                        instruction.span,
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(result) => return result,
+                                    };
+                                    if truthy {
+                                        self.record_tiering_backedge(
+                                            function_id,
+                                            block_id,
+                                            *target,
+                                        );
+                                        block_id = *target;
+                                    } else {
+                                        let next = match next_block_id(function, block_id) {
+                                            Ok(block_id) => block_id,
+                                            Err(message) => {
+                                                return self.runtime_error(
+                                                    output, compiled, stack, message,
+                                                );
+                                            }
+                                        };
+                                        self.record_tiering_backedge(function_id, block_id, next);
+                                        block_id = next;
+                                    }
+                                    continue 'dispatch;
+                                }
+                                Some(TerminatorKind::JumpIf {
+                                    condition,
+                                    if_true,
+                                    if_false,
+                                }) if *condition == Operand::Register(*dst) => {
+                                    let truthy = match self.load_local_branch_truthy(
+                                        compiled,
+                                        function,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut diagnostics,
+                                        *local,
+                                        instruction.span,
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(result) => return result,
+                                    };
+                                    let next = if truthy { *if_true } else { *if_false };
+                                    self.record_tiering_backedge(function_id, block_id, next);
+                                    block_id = next;
+                                    continue 'dispatch;
+                                }
+                                _ => {}
+                            }
+                        }
                         let value = if is_globals_local(function, *local) {
                             self.record_counter_local_slot_fast_path(false);
                             Value::Array(state.globals.globals_array())
@@ -17375,6 +17850,12 @@ impl Vm {
                         object,
                         property,
                     } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Object,
+                            "property_fetch",
+                        );
+                        let _clone_source =
+                            layout_source::enter(layout_source::OBJECT_PROPERTY_READ);
                         let object = match read_operand_at_frame(unit, stack, frame_index, *object)
                         {
                             Ok(Value::Object(object)) => object,
@@ -20127,6 +20608,10 @@ impl Vm {
                         property,
                         value,
                     } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Object,
+                            "property_assign",
+                        );
                         let object = match read_operand_at_frame(unit, stack, frame_index, *object) {
                             Ok(Value::Object(object)) => object,
                             Ok(Value::Callable(_)) => {
@@ -21199,6 +21684,10 @@ impl Vm {
                         append,
                         value,
                     } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Object,
+                            "property_dim_assign",
+                        );
                         let object = match read_operand_at_frame(unit, stack, frame_index, *object)
                         {
                             Ok(Value::Object(object)) => object,
@@ -22099,6 +22588,8 @@ impl Vm {
                             None => None,
                         };
                         let value = if let Some(local) = by_ref_local {
+                            let _source =
+                                layout_source::enter(layout_source::BY_REF_ARGUMENT_BINDING);
                             match stack
                                 .frame_mut(frame_index)
                                 .expect("frame was pushed")
@@ -22184,6 +22675,11 @@ impl Vm {
                         key,
                         quiet,
                     } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_fetch",
+                        );
+                        let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
                         let array_ref = if let Operand::Local(local) = array
                             && is_globals_local(function, *local)
                         {
@@ -22571,6 +23067,12 @@ impl Vm {
                         dims,
                         value,
                     } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_assign",
+                        );
+                        let _clone_source =
+                            layout_source::enter(layout_source::ARRAY_ELEMENT_WRITE);
                         let dim_values = match read_dim_operand_values_at_frame(
                             unit,
                             stack,
@@ -22809,6 +23311,12 @@ impl Vm {
                         dims,
                         value,
                     } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_append",
+                        );
+                        let _clone_source =
+                            layout_source::enter(layout_source::ARRAY_ELEMENT_WRITE);
                         let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims)
                         {
                             Ok(dims) => dims,
@@ -23066,6 +23574,11 @@ impl Vm {
                         release_unrooted_object_handles(&previous, stack, state);
                     }
                     InstructionKind::IssetDim { dst, local, dims } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_isset",
+                        );
+                        let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
                         let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims)
                         {
                             Ok(dims) => dims,
@@ -23174,6 +23687,11 @@ impl Vm {
                         }
                     }
                     InstructionKind::EmptyDim { dst, local, dims } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_empty",
+                        );
+                        let _clone_source = layout_source::enter(layout_source::ARRAY_ELEMENT_READ);
                         let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims)
                         {
                             Ok(dims) => dims,
@@ -23307,6 +23825,12 @@ impl Vm {
                         }
                     }
                     InstructionKind::UnsetDim { local, dims } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "dim_unset",
+                        );
+                        let _clone_source =
+                            layout_source::enter(layout_source::ARRAY_ELEMENT_WRITE);
                         let dims = match read_dim_operands_at_frame(unit, stack, frame_index, dims)
                         {
                             Ok(dims) => dims,
@@ -23468,6 +23992,10 @@ impl Vm {
                         }
                     }
                     InstructionKind::ForeachInit { iterator, source } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "foreach_init",
+                        );
                         let source = match read_operand_at_frame(unit, stack, frame_index, *source)
                         {
                             Ok(value) => value,
@@ -23517,22 +24045,30 @@ impl Vm {
                         key,
                         value,
                     } => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Array,
+                            "foreach_next",
+                        );
                         // Step the iterator in place; see `next_foreach_value`
                         // for the rationale (avoids per-step deep clones of
                         // the snapshot entries).
                         let next_value = match foreach_iterators.get_mut(iterator) {
                             Some(ForeachIterator::Snapshot { entries, position }) => {
+                                let _source = layout_source::enter(layout_source::FOREACH_VALUE);
                                 let next = entries
                                     .get(*position)
                                     .cloned()
                                     .map(|(key, value)| (Some(array_key_to_value(key)), value));
                                 if next.is_some() {
                                     *position += 1;
-                                    self.record_counter_value_clone_reason("foreach_value");
+                                    self.record_counter_value_clone_reason(
+                                        layout_source::FOREACH_VALUE,
+                                    );
                                 }
                                 next
                             }
                             Some(ForeachIterator::ArrayHandle { array, position }) => {
+                                let _source = layout_source::enter(layout_source::FOREACH_VALUE);
                                 let next = array.pair_at(*position).map(|(key, value)| {
                                     let value = match value {
                                         Value::Reference(cell) => cell.get(),
@@ -23542,7 +24078,9 @@ impl Vm {
                                 });
                                 if next.is_some() {
                                     *position += 1;
-                                    self.record_counter_value_clone_reason("foreach_value");
+                                    self.record_counter_value_clone_reason(
+                                        layout_source::FOREACH_VALUE,
+                                    );
                                 }
                                 next
                             }
@@ -23551,6 +24089,7 @@ impl Vm {
                                 entries,
                                 position,
                             }) => {
+                                let _source = layout_source::enter(layout_source::FOREACH_VALUE);
                                 let next = entries.get(*position).map(|entry| {
                                     let value = object
                                         .get_property(&entry.storage_name)
@@ -24007,7 +24546,12 @@ impl Vm {
                         self.record_counter_alias_state(AliasState::PropertyOrArrayDimReference);
                     }
                     InstructionKind::Echo { src } => {
-                        let value = match read_operand_at_frame(unit, stack, frame_index, *src) {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Output,
+                            "echo",
+                        );
+                        let value = match read_operand_ref_at_frame(unit, stack, frame_index, *src)
+                        {
                             Ok(value) => value,
                             Err(message) => {
                                 return self.runtime_error(output, compiled, stack, message);
@@ -24021,7 +24565,7 @@ impl Vm {
                                 frame_index,
                                 &block.instructions,
                                 instruction_index,
-                                value.clone(),
+                                value.as_value(),
                             )
                             && skip_until > instruction_index + 1
                         {
@@ -24029,6 +24573,14 @@ impl Vm {
                             batched_echo_skip_until = skip_until;
                             continue;
                         }
+                        {
+                            let _source =
+                                layout_source::enter(layout_source::OUTPUT_STRING_CONVERSION);
+                            if Self::try_write_echo_fast(output, value.as_value()) {
+                                continue;
+                            }
+                        }
+                        let value = value.into_owned();
                         if let Err(result) = self.write_echo(compiled, output, stack, state, &value)
                         {
                             match self.route_throwable_result(
@@ -27548,6 +28100,7 @@ impl Vm {
                 } => {
                     let value = match value {
                         Some(value) => {
+                            let _source = layout_source::enter(layout_source::RETURN_VALUE);
                             match read_operand_at_frame(unit, stack, frame_index, *value) {
                                 Ok(value) => Some(value),
                                 Err(message) => {
@@ -27604,6 +28157,7 @@ impl Vm {
                             );
                         };
                         let frame = stack.frame_mut(frame_index).expect("frame is active");
+                        let _source = layout_source::enter("return_reference_binding");
                         match frame.locals.ensure_reference_cell(*local) {
                             Ok(reference) => Some(reference),
                             Err(message) => {
@@ -27673,13 +28227,8 @@ impl Vm {
                     block_id = *target;
                 }
                 TerminatorKind::JumpIfFalse { condition, target } => {
-                    let value = match read_operand_at_frame(unit, stack, frame_index, *condition) {
-                        Ok(value) => value,
-                        Err(message) => {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                    };
-                    let truthy = match to_bool(&value) {
+                    let truthy = match operand_truthy_at_frame(unit, stack, frame_index, *condition)
+                    {
                         Ok(value) => value,
                         Err(message) => {
                             return self.runtime_error(output, compiled, stack, message);
@@ -27700,13 +28249,8 @@ impl Vm {
                     }
                 }
                 TerminatorKind::JumpIfTrue { condition, target } => {
-                    let value = match read_operand_at_frame(unit, stack, frame_index, *condition) {
-                        Ok(value) => value,
-                        Err(message) => {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                    };
-                    let truthy = match to_bool(&value) {
+                    let truthy = match operand_truthy_at_frame(unit, stack, frame_index, *condition)
+                    {
                         Ok(value) => value,
                         Err(message) => {
                             return self.runtime_error(output, compiled, stack, message);
@@ -27731,13 +28275,8 @@ impl Vm {
                     if_true,
                     if_false,
                 } => {
-                    let value = match read_operand_at_frame(unit, stack, frame_index, *condition) {
-                        Ok(value) => value,
-                        Err(message) => {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                    };
-                    let truthy = match to_bool(&value) {
+                    let truthy = match operand_truthy_at_frame(unit, stack, frame_index, *condition)
+                    {
                         Ok(value) => value,
                         Err(message) => {
                             return self.runtime_error(output, compiled, stack, message);
@@ -28606,6 +29145,10 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
     ) -> VmResult {
+        let _profile = self.request_profile_operation_start(
+            RequestProfileOperationCategory::Output,
+            "output_buffer_builtin",
+        );
         let values = match call_args_to_positional(name, args) {
             Ok(args) => args,
             Err(message) => return self.runtime_error(output, compiled, stack, message),
@@ -30732,55 +31275,56 @@ impl Vm {
                     state,
                 )
             }
-            FunctionCallCacheTarget::Builtin { kind, name } => match kind {
-                FunctionCallBuiltinKind::AutoloadOrSymbolIntrospection => self
-                    .call_autoload_builtin(
-                        compiled, &name, args, call_site, call_span, output, stack, state,
-                    ),
-                FunctionCallBuiltinKind::Config => {
-                    self.call_config_builtin(compiled, &name, args, output, stack, state)
-                }
-                FunctionCallBuiltinKind::ErrorHandling => {
-                    self.call_error_handling_builtin(compiled, &name, args, output, stack, state)
-                }
-                FunctionCallBuiltinKind::OutputBuffering => {
-                    self.call_output_buffering_builtin(compiled, &name, args, output, stack)
-                }
-                FunctionCallBuiltinKind::Environment => {
-                    self.call_environment_builtin(compiled, &name, args, output, stack, state)
-                }
-                FunctionCallBuiltinKind::Process => {
-                    self.call_process_builtin(compiled, &name, args, output, stack)
-                }
-                FunctionCallBuiltinKind::PcreCallback => {
-                    self.call_pcre_callback_builtin(compiled, &name, args, output, stack, state)
-                }
-                FunctionCallBuiltinKind::ArrayCallback => self.call_array_callback_builtin(
-                    compiled, &name, args, call_span, output, stack, state,
-                ),
-                FunctionCallBuiltinKind::ArraySort => {
-                    self.call_array_sort_builtin(compiled, &name, args, output, stack, state)
-                }
-                FunctionCallBuiltinKind::InternalRegistry => {
-                    let values = match call_builtin_args_to_positional(
-                        compiled, &name, args, call_span, output, stack, state,
-                    ) {
-                        Ok(values) => values,
-                        Err(InternalBuiltinArgError::Message(message)) => {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                        Err(InternalBuiltinArgError::Fatal(result)) => return *result,
-                    };
-                    if let Some(result) = self.try_execute_serialization_builtin(
-                        compiled, &name, &values, call_span, output, stack, state,
-                    ) {
-                        return result;
+            FunctionCallCacheTarget::Builtin { kind, name } => {
+                self.profile_builtin_call(&name, || match kind {
+                    FunctionCallBuiltinKind::AutoloadOrSymbolIntrospection => self
+                        .call_autoload_builtin(
+                            compiled, &name, args, call_site, call_span, output, stack, state,
+                        ),
+                    FunctionCallBuiltinKind::Config => {
+                        self.call_config_builtin(compiled, &name, args, output, stack, state)
                     }
-                    self.execute_internal_registry_builtin(
-                        &name, values, call_span, output, stack, state, compiled,
-                    )
-                }
-            },
+                    FunctionCallBuiltinKind::ErrorHandling => self
+                        .call_error_handling_builtin(compiled, &name, args, output, stack, state),
+                    FunctionCallBuiltinKind::OutputBuffering => {
+                        self.call_output_buffering_builtin(compiled, &name, args, output, stack)
+                    }
+                    FunctionCallBuiltinKind::Environment => {
+                        self.call_environment_builtin(compiled, &name, args, output, stack, state)
+                    }
+                    FunctionCallBuiltinKind::Process => {
+                        self.call_process_builtin(compiled, &name, args, output, stack)
+                    }
+                    FunctionCallBuiltinKind::PcreCallback => {
+                        self.call_pcre_callback_builtin(compiled, &name, args, output, stack, state)
+                    }
+                    FunctionCallBuiltinKind::ArrayCallback => self.call_array_callback_builtin(
+                        compiled, &name, args, call_span, output, stack, state,
+                    ),
+                    FunctionCallBuiltinKind::ArraySort => {
+                        self.call_array_sort_builtin(compiled, &name, args, output, stack, state)
+                    }
+                    FunctionCallBuiltinKind::InternalRegistry => {
+                        let values = match call_builtin_args_to_positional(
+                            compiled, &name, args, call_span, output, stack, state,
+                        ) {
+                            Ok(values) => values,
+                            Err(InternalBuiltinArgError::Message(message)) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            Err(InternalBuiltinArgError::Fatal(result)) => return *result,
+                        };
+                        if let Some(result) = self.try_execute_serialization_builtin(
+                            compiled, &name, &values, call_span, output, stack, state,
+                        ) {
+                            return result;
+                        }
+                        self.execute_internal_registry_builtin(
+                            &name, values, call_span, output, stack, state, compiled,
+                        )
+                    }
+                })
+            }
         }
     }
 
@@ -37460,6 +38004,7 @@ impl Vm {
         state: &mut ExecutionState,
         value: &Value,
     ) -> Result<(), VmResult> {
+        let _source = layout_source::enter(layout_source::OUTPUT_STRING_CONVERSION);
         if Self::try_write_echo_fast(output, value) {
             return Ok(());
         }
@@ -38571,8 +39116,13 @@ impl Vm {
         let prior_include_depth = self.include_execution_depth.get();
         self.include_execution_depth
             .set(prior_include_depth.saturating_add(1));
+        let include_profile_boundary = self.request_profile_boundary_start();
         let mut result = self.execute_include_entry(&included, call, output, stack, state);
         self.include_execution_depth.set(prior_include_depth);
+        self.record_counter_include_profile(
+            &included_path.display().to_string(),
+            include_profile_boundary,
+        );
         let include_instructions_after = self.current_instructions_executed();
         let include_bytecode_after = self.current_bytecode_instructions_executed();
         let include_instructions_executed = include_instructions_before
@@ -48717,15 +49267,14 @@ fn static_property_isset_empty_result(
             static_property_default(compiled, state, stack, &resolved.class, &resolved.property)?;
         state.static_properties.insert(key.clone(), default);
     }
-    let value = state
-        .static_properties
-        .get(&key)
-        .cloned()
-        .unwrap_or(Value::Uninitialized);
+    let value = state.static_properties.get(&key);
     if is_empty {
-        Ok(php_empty(&value)?)
+        Ok(match value {
+            Some(value) => php_empty(value)?,
+            None => true,
+        })
     } else {
-        Ok(!matches!(value, Value::Uninitialized | Value::Null))
+        Ok(value.is_some_and(|value| !effective_is_uninitialized_or_null(value)))
     }
 }
 
@@ -66965,6 +67514,7 @@ fn assign_process_ref_arg(
     let frame = stack.current_mut().ok_or_else(|| {
         "E_PHP_VM_NO_ACTIVE_FRAME: cannot bind process reference argument".to_owned()
     })?;
+    let _source = layout_source::enter(layout_source::BY_REF_ARGUMENT_BINDING);
     frame.locals.ensure_reference_cell(local)?.set(value);
     Ok(())
 }
@@ -69342,6 +69892,7 @@ fn call_argument_reference_cell(
     arg: &CallArgument,
     stack: &mut CallStack,
 ) -> Result<Option<ReferenceCell>, String> {
+    let _source = layout_source::enter(layout_source::BY_REF_ARGUMENT_BINDING);
     if let Some(local) = arg.by_ref_local {
         let frame = stack.current_mut().ok_or("no active frame")?;
         return Ok(frame.locals.ensure_reference_cell(local).map(Some)?);
@@ -69701,6 +70252,7 @@ fn evaluate_closure_captures(
                     capture.name
                 ));
             };
+            let _source = layout_source::enter(layout_source::CLOSURE_CAPTURE_BINDING);
             let cell = stack
                 .current_mut()
                 .ok_or("no active frame")?
@@ -70417,7 +70969,7 @@ fn classify_trivial_method(function: &IrFunction) -> Option<TrivialMethodPlan> {
 
 fn fetch_dim_value(array: &Value, key: &ArrayKey) -> Result<Option<Value>, String> {
     if let Value::Reference(cell) = array {
-        return fetch_dim_value(&cell.get(), key);
+        return fetch_dim_value(&cell.borrow(), key);
     }
     if let Value::Object(object) = array
         && spl_runtime_marker(object).is_some_and(|class| is_spl_caching_iterator_class(&class))
@@ -70453,13 +71005,43 @@ fn quiet_dim_fetch_scalar_returns_null(value: &Value) -> bool {
 
 fn effective_value(value: &Value) -> Value {
     match value {
-        Value::Reference(cell) => cell.get(),
-        value => value.clone(),
+        Value::Reference(cell) => {
+            let _source = layout_source::enter_default(layout_source::REFERENCE_DEREFERENCE);
+            cell.get()
+        }
+        value => {
+            let _source = layout_source::enter_default(layout_source::STACK_REGISTER_LOCAL_MOVE);
+            value.clone()
+        }
+    }
+}
+
+fn effective_is_null_or_false(value: &Value) -> bool {
+    match value {
+        Value::Reference(cell) => effective_is_null_or_false(&cell.borrow()),
+        Value::Null | Value::Bool(false) => true,
+        _ => false,
+    }
+}
+
+fn effective_is_uninitialized_or_null(value: &Value) -> bool {
+    match value {
+        Value::Reference(cell) => effective_is_uninitialized_or_null(&cell.borrow()),
+        Value::Uninitialized | Value::Null => true,
+        _ => false,
+    }
+}
+
+fn effective_is_array(value: &Value) -> bool {
+    match value {
+        Value::Reference(cell) => effective_is_array(&cell.borrow()),
+        Value::Array(_) => true,
+        _ => false,
     }
 }
 
 fn curl_callback_is_enabled(value: &Value) -> bool {
-    !matches!(effective_value(value), Value::Null | Value::Bool(false))
+    !effective_is_null_or_false(value)
 }
 
 fn collect_compact_variable_names(value: &Value, names: &mut Vec<String>) {
@@ -70975,17 +71557,17 @@ fn collect_exact_echo_batch_at_frame(
     frame_index: usize,
     instructions: &[Instruction],
     instruction_index: usize,
-    first_value: Value,
+    first_value: &Value,
 ) -> Option<(Vec<ExactEchoBatchPart>, usize)> {
-    let mut parts = vec![exact_echo_batch_part(&first_value)?];
+    let mut parts = vec![exact_echo_batch_part(first_value)?];
     let mut next_index = instruction_index + 1;
     while let Some(instruction) = instructions.get(next_index) {
         match &instruction.kind {
             InstructionKind::Echo { src } => {
-                let Ok(value) = read_operand_at_frame(unit, stack, frame_index, *src) else {
+                let Ok(value) = read_operand_ref_at_frame(unit, stack, frame_index, *src) else {
                     break;
                 };
-                let Some(part) = exact_echo_batch_part(&value) else {
+                let Some(part) = exact_echo_batch_part(value.as_value()) else {
                     break;
                 };
                 parts.push(part);
@@ -71456,6 +72038,7 @@ fn read_call_args_with_value_policy_at_frame(
 ) -> Result<Vec<CallArgument>, String> {
     let mut out = Vec::new();
     for (index, arg) in args.iter().enumerate() {
+        let _source = layout_source::enter(layout_source::CALL_ARGUMENT_SNAPSHOT);
         let value = if use_null_placeholder(index, arg) {
             Value::Null
         } else {
@@ -72052,13 +72635,9 @@ fn sort_argument_is_array(
     if let Some(cell) = call_argument_reference_cell(compiled, Some(state), arg, stack)
         .map_err(ArrayCallbackError::Message)?
     {
-        return Ok(matches!(cell.get(), Value::Array(_)));
+        return Ok(effective_is_array(&Value::Reference(cell)));
     }
-    Ok(match &arg.value {
-        Value::Array(_) => true,
-        Value::Reference(cell) => matches!(cell.get(), Value::Array(_)),
-        _ => false,
-    })
+    Ok(effective_is_array(&arg.value))
 }
 
 fn multisort_array_entries(
@@ -73402,7 +73981,7 @@ fn unset_dim_value(container: &mut Value, dims: &[ArrayKey]) {
 
 fn php_empty(value: &Value) -> Result<bool, String> {
     match value {
-        Value::Reference(cell) => php_empty(&cell.get()),
+        Value::Reference(cell) => php_empty(&cell.borrow()),
         Value::Uninitialized | Value::Null => Ok(true),
         Value::Bool(value) => Ok(!*value),
         Value::Int(value) => Ok(*value == 0),
@@ -73518,7 +74097,7 @@ fn array_offset_on_scalar_warning(
 
 fn array_offset_scalar_type_name(value: &Value) -> &'static str {
     match value {
-        Value::Reference(cell) => array_offset_scalar_type_name(&cell.get()),
+        Value::Reference(cell) => array_offset_scalar_type_name(&cell.borrow()),
         Value::Null | Value::Uninitialized => "null",
         Value::Bool(false) => "false",
         Value::Bool(true) => "true",
@@ -73568,72 +74147,6 @@ fn read_operand(unit: &IrUnit, stack: &CallStack, operand: Operand) -> Result<Va
             } else {
                 value
             })
-        }
-    }
-}
-
-fn read_operand_at_frame(
-    unit: &IrUnit,
-    stack: &CallStack,
-    frame_index: usize,
-    operand: Operand,
-) -> Result<Value, String> {
-    match operand {
-        Operand::Register(id) => {
-            let frame = stack.frames().get(frame_index).ok_or("no active frame")?;
-            let Some(value) = frame.registers.get(id) else {
-                return Err(format!("invalid register r{}", id.raw()));
-            };
-            if value.is_uninitialized() {
-                return Err(format!("read uninitialized register r{}", id.raw()));
-            }
-            Ok(value.clone())
-        }
-        Operand::Constant(id) => constant_value(unit, id),
-        Operand::Local(id) => {
-            let frame = stack.frames().get(frame_index).ok_or("no active frame")?;
-            let Some(value) = frame.locals.get(id) else {
-                return Err(format!("invalid local local:{}", id.raw()));
-            };
-            Ok(if value.is_uninitialized() {
-                Value::Null
-            } else {
-                value
-            })
-        }
-    }
-}
-
-fn read_operand_ref_at_frame<'a>(
-    unit: &IrUnit,
-    stack: &'a CallStack,
-    frame_index: usize,
-    operand: Operand,
-) -> Result<DenseOperandRead<'a>, String> {
-    match operand {
-        Operand::Register(id) => {
-            let frame = stack.frames().get(frame_index).ok_or("no active frame")?;
-            let Some(value) = frame.registers.get(id) else {
-                return Err(format!("invalid register r{}", id.raw()));
-            };
-            if value.is_uninitialized() {
-                return Err(format!("read uninitialized register r{}", id.raw()));
-            }
-            Ok(DenseOperandRead::Borrowed(value))
-        }
-        Operand::Constant(id) => constant_value(unit, id).map(DenseOperandRead::Owned),
-        Operand::Local(id) => {
-            let frame = stack.frames().get(frame_index).ok_or("no active frame")?;
-            let Some(slot) = frame.locals.get_slot(id) else {
-                return Err(format!("invalid local local:{}", id.raw()));
-            };
-            match slot {
-                Slot::Value(value) if value.is_uninitialized() => {
-                    Ok(DenseOperandRead::Owned(Value::Null))
-                }
-                Slot::Value(value) => Ok(DenseOperandRead::Borrowed(value)),
-                Slot::Reference(cell) => Ok(DenseOperandRead::Owned(cell.get())),
-            }
         }
     }
 }
@@ -73762,6 +74275,7 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::LoadConstFetchDim
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::BindReferenceDim
         | DenseOpcode::IssetDim
         | DenseOpcode::EmptyDim
         | DenseOpcode::UnsetDim => "arrays",
@@ -74421,9 +74935,9 @@ mod tests {
     #[test]
     fn pdo_mysql_dsn_parser_accepts_common_tcp_options() {
         let (options, charset) = pdo_mysql_connect_options_from_dsn(
-            "mysql:host=127.0.0.1;port=3307;dbname=wordpress;charset=utf8mb4",
-            "wp_user",
-            "wp_pass",
+            "mysql:host=127.0.0.1;port=3307;dbname=app;charset=utf8mb4",
+            "app_user",
+            "app_pass",
         )
         .expect("common PDO MySQL DSN should parse");
 
@@ -74453,17 +74967,17 @@ mod tests {
     #[test]
     fn pdo_pgsql_dsn_parser_accepts_common_tcp_options() {
         let options = pdo_pgsql_connect_options_from_dsn(
-            "pgsql:host=127.0.0.1;port=5433;dbname=wordpress;sslmode=disable",
-            "wp_user",
-            "wp_pass",
+            "pgsql:host=127.0.0.1;port=5433;dbname=app;sslmode=disable",
+            "app_user",
+            "app_pass",
         )
         .expect("common PDO PostgreSQL DSN should parse");
 
         let rendered = format!("{options:?}");
         assert!(rendered.contains("host=127.0.0.1"));
         assert!(rendered.contains("port=5433"));
-        assert!(rendered.contains("dbname=wordpress"));
-        assert!(rendered.contains("user=wp_user"));
+        assert!(rendered.contains("dbname=app"));
+        assert!(rendered.contains("user=app_user"));
     }
 
     #[test]
@@ -76484,7 +76998,7 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
         std::fs::write(
             root.join("Requests/Hooks.php"),
             "<?php
-            namespace WpOrg\\Requests;
+            namespace Vendor\\Requests;
             class Hooks {}
             ",
         )
@@ -76492,11 +77006,11 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
         let source = r#"<?php
             spl_autoload_register(function ($class) {
                 echo "autoload:$class|";
-                if ($class === 'WpOrg\Requests\Hooks') {
+                if ($class === 'Vendor\Requests\Hooks') {
                     require __DIR__ . '/Requests/Hooks.php';
                 }
             });
-            class WP_HTTP_Requests_Hooks extends WpOrg\Requests\Hooks {}
+            class HttpRequestsHooks extends Vendor\Requests\Hooks {}
             echo 'ok';
         "#;
         std::fs::write(root.join("index.php"), source).expect("entry source should be written");
@@ -76514,12 +77028,12 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
         assert!(result.status.is_success(), "{:?}", result.status);
         let output = result.output.to_string_lossy();
         assert!(
-            output.contains("autoload:WpOrg\\Requests\\Hooks|"),
+            output.contains("autoload:Vendor\\Requests\\Hooks|"),
             "{output}"
         );
         assert!(output.contains("ok"), "{output}");
         assert!(
-            !output.contains("autoload:wporg\\requests\\hooks|"),
+            !output.contains("autoload:vendor\\requests\\hooks|"),
             "{output}"
         );
     }
@@ -76539,16 +77053,16 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
         std::fs::write(
             discovery_dir.join("ClassDiscovery.php"),
             "<?php
-            namespace WordPress\\AiClientDependencies\\Http\\Discovery;
+            namespace Vendor\\Package\\Http\\Discovery;
             class ClassDiscovery {}
             ",
         )
         .expect("parent class target should be written");
         let source = r#"<?php
-            namespace WordPress\AiClientDependencies\Http\Discovery;
+            namespace Vendor\Package\Http\Discovery;
             spl_autoload_register(function ($class) {
                 echo "autoload:$class|";
-                if ($class === 'WordPress\AiClientDependencies\Http\Discovery\ClassDiscovery') {
+                if ($class === 'Vendor\Package\Http\Discovery\ClassDiscovery') {
                     require __DIR__ . '/Http/Discovery/ClassDiscovery.php';
                 }
             });
@@ -76570,16 +77084,12 @@ class BadDateTimeInterfaceImplementation implements DateTimeInterface {}
         assert!(result.status.is_success(), "{:?}", result.status);
         let output = result.output.to_string_lossy();
         assert!(
-            output.contains(
-                "autoload:WordPress\\AiClientDependencies\\Http\\Discovery\\ClassDiscovery|"
-            ),
+            output.contains("autoload:Vendor\\Package\\Http\\Discovery\\ClassDiscovery|"),
             "{output}"
         );
         assert!(output.contains("ok"), "{output}");
         assert!(
-            !output.contains(
-                "autoload:wordpress\\aiclientdependencies\\http\\discovery\\classdiscovery|"
-            ),
+            !output.contains("autoload:vendor\\package\\http\\discovery\\classdiscovery|"),
             "{output}"
         );
     }
@@ -77930,10 +78440,10 @@ good"
                     php_runtime::RuntimeHttpRequestContext::new(
                         "GET",
                         "127.0.0.1:18080",
-                        "/wp-admin/install.php?step=0",
-                        "/wp-admin/install.php",
-                        "/private/tmp/phrust-wp-live/docroot/wp-admin/install.php",
-                        "/private/tmp/phrust-wp-live/docroot",
+                        "/admin/install.php?step=0",
+                        "/admin/install.php",
+                        "/private/tmp/phrust-app-live/docroot/admin/install.php",
+                        "/private/tmp/phrust-app-live/docroot",
                     ),
                 ),
                 ..VmOptions::default()
@@ -77941,10 +78451,7 @@ good"
         );
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(
-            result.output.to_string_lossy(),
-            "/wp-admin/install.php?step=0"
-        );
+        assert_eq!(result.output.to_string_lossy(), "/admin/install.php?step=0");
     }
 
     #[test]
@@ -78059,7 +78566,7 @@ good"
     }
 
     #[test]
-    fn include_preserves_global_reference_slots_for_wordpress_bootstrap() {
+    fn include_preserves_global_reference_slots_for_bootstrap_files() {
         let root = std::env::temp_dir().join(format!(
             "phrust-vm-include-global-slots-{}",
             std::process::id()
@@ -78073,11 +78580,11 @@ good"
         std::fs::write(
             root.join("load.php"),
             "<?php
-            function wp_check_php_mysql_versions() {
+            function check_runtime_versions() {
                 global $required_php_version;
                 echo $required_php_version, '|';
             }
-            function wp_redirect_if_needed() {
+            function redirect_if_needed() {
                 echo $_SERVER['REQUEST_URI'];
             }
             ",
@@ -78086,8 +78593,8 @@ good"
         let source = "<?php
             require_once __DIR__ . '/version.php';
             require_once __DIR__ . '/load.php';
-            wp_check_php_mysql_versions();
-            wp_redirect_if_needed();
+            check_runtime_versions();
+            redirect_if_needed();
         ";
         let result = execute_source_with_options_and_path(
             source,
@@ -78097,8 +78604,8 @@ good"
                     php_runtime::RuntimeHttpRequestContext::new(
                         "POST",
                         "127.0.0.1:18080",
-                        "/wp-admin/install.php?step=2",
-                        "/wp-admin/install.php",
+                        "/admin/install.php?step=2",
+                        "/admin/install.php",
                         root.join("index.php").to_string_lossy(),
                         root.to_string_lossy(),
                     ),
@@ -78111,10 +78618,7 @@ good"
         let _ = std::fs::remove_dir_all(&root);
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(
-            result.output.as_bytes(),
-            b"7.4|/wp-admin/install.php?step=2"
-        );
+        assert_eq!(result.output.as_bytes(), b"7.4|/admin/install.php?step=2");
     }
 
     #[test]
@@ -78127,8 +78631,8 @@ good"
         std::fs::write(
             root.join("plugin.php"),
             "<?php
-            global $wp_filter;
-            echo $wp_filter ? 'truthy' : 'falsey';
+            global $plugin_filter;
+            echo $plugin_filter ? 'truthy' : 'falsey';
             ",
         )
         .expect("plugin include should be written");
@@ -78158,7 +78662,7 @@ good"
         std::fs::write(
             root.join("hook.php"),
             "<?php
-            class WP_Like_Hook {
+            class AppHook {
                 public static function run($callback) {
                     $callback();
                 }
@@ -78168,7 +78672,7 @@ good"
         .expect("hook include should be written");
         let source = "<?php
             include 'hook.php';
-            WP_Like_Hook::run('later_entry_callback');
+            AppHook::run('later_entry_callback');
             function later_entry_callback() {
                 echo 'ok';
             }
@@ -80042,11 +80546,11 @@ good"
     fn logical_not_binds_after_instanceof_but_before_comparison() {
         let result = execute_source(
             "<?php
-            class WP_Post { public $filter = 'raw'; }
+            class ContentPost { public $filter = 'raw'; }
             $post = 123;
-            echo (! $post instanceof WP_Post || ! isset($post->filter)) ? 'short|' : 'bad|';
-            $post = new WP_Post();
-            echo (! $post instanceof WP_Post || ! isset($post->filter)) ? 'bad|' : 'object|';
+            echo (! $post instanceof ContentPost || ! isset($post->filter)) ? 'short|' : 'bad|';
+            $post = new ContentPost();
+            echo (! $post instanceof ContentPost || ! isset($post->filter)) ? 'bad|' : 'object|';
             echo (! 1 < 2) ? 'comparison' : 'bad';
             ",
         );
@@ -80242,7 +80746,7 @@ good"
         let dependency_path = root.join("dep.php");
         std::fs::write(
             &dependency_path,
-            "<?php class WP_Post { public $x; } return unserialize('O:7:\"wp_post\":1:{s:1:\"x\";i:4;}');",
+            "<?php class BlogPost { public $x; } return unserialize('O:8:\"blogpost\":1:{s:1:\"x\";i:4;}');",
         )
         .expect("dependency should be writable");
         let main_path = root.join("main.php");
@@ -80264,7 +80768,7 @@ good"
         let _ = std::fs::remove_dir(root);
 
         assert!(result.status.is_success(), "{:?}", result.status);
-        assert_eq!(result.output.as_bytes(), b"WP_Post|4");
+        assert_eq!(result.output.as_bytes(), b"BlogPost|4");
     }
 
     #[test]
@@ -80327,17 +80831,17 @@ good"
         let parent_path = root.join("parent.php");
         std::fs::write(
             &parent_path,
-            "<?php class WP_REST_Controller { protected function add_additional_fields_schema($schema) { return $schema . '|parent'; } }",
+            "<?php class RestControllerBase { protected function add_additional_fields_schema($schema) { return $schema . '|parent'; } }",
         )
         .expect("parent source should be writable");
         let child_path = root.join("child.php");
         std::fs::write(
             &child_path,
-            "<?php require_once __DIR__ . '/parent.php'; class WP_REST_Posts_Controller extends WP_REST_Controller { public function get_item_schema() { return $this->add_additional_fields_schema('schema'); } }",
+            "<?php require_once __DIR__ . '/parent.php'; class RestPostsController extends RestControllerBase { public function get_item_schema() { return $this->add_additional_fields_schema('schema'); } }",
         )
         .expect("child source should be writable");
         let main_path = root.join("main.php");
-        let source = "<?php require_once __DIR__ . '/child.php'; $controller = new wp_rest_posts_controller(); echo $controller->get_item_schema();";
+        let source = "<?php require_once __DIR__ . '/child.php'; $controller = new restpostscontroller(); echo $controller->get_item_schema();";
         std::fs::write(&main_path, source).expect("main source should be writable");
         let loader = IncludeLoader::for_root(root.clone()).expect("include loader");
 
@@ -80373,19 +80877,19 @@ good"
         let parent_path = root.join("parent.php");
         std::fs::write(
             &parent_path,
-            "<?php class WP_REST_Controller { protected function add_additional_fields_schema($schema) { return $schema . '|parent'; } }",
+            "<?php class RestControllerBase { protected function add_additional_fields_schema($schema) { return $schema . '|parent'; } }",
         )
         .expect("parent source should be writable");
         let child_path = root.join("child.php");
         std::fs::write(
             &child_path,
-            "<?php require_once __DIR__ . '/parent.php'; class WP_REST_Posts_Controller extends WP_REST_Controller { public function get_item_schema($schema) { return $this->add_additional_fields_schema($schema); } }",
+            "<?php require_once __DIR__ . '/parent.php'; class RestPostsController extends RestControllerBase { public function get_item_schema($schema) { return $this->add_additional_fields_schema($schema); } }",
         )
         .expect("child source should be writable");
         let main_path = root.join("main.php");
         let source = "<?php
             require_once __DIR__ . '/child.php';
-            $controller = new wp_rest_posts_controller();
+            $controller = new restpostscontroller();
             for ($i = 0; $i < 16; $i++) {
                 echo $controller->get_item_schema('schema'), ';';
             }
@@ -82137,12 +82641,120 @@ var_dump(unserialize('O:1:"C":0:{}'));
                 counters.value_clones
             );
             assert_eq!(
-                counters.value_clone_by_reason.get("foreach_value").copied(),
+                counters
+                    .value_clone_by_reason
+                    .get(layout_source::FOREACH_VALUE)
+                    .copied(),
                 Some(64),
                 "{format:?}: {:?}",
                 counters.value_clone_by_reason
             );
         }
+    }
+
+    #[test]
+    fn discarded_register_values_are_consumed_without_array_handle_clone() {
+        let source = "<?php
+            function discard_source() { return [1, 2, 3]; }
+            for ($i = 0; $i < 32; $i++) { discard_source(); }
+            echo 'ok';
+        ";
+        for format in [ExecutionFormat::Ir, ExecutionFormat::Bytecode] {
+            let result = execute_source_with_options(
+                source,
+                VmOptions {
+                    collect_counters: true,
+                    execution_format: format,
+                    ..VmOptions::default()
+                },
+            );
+            assert!(
+                result.status.is_success(),
+                "{format:?}: {:?}",
+                result.status
+            );
+            assert_eq!(result.output.as_bytes(), b"ok", "{format:?}");
+            let counters = result.counters.expect("counters");
+            assert!(
+                counters.array_handle_clones < 48,
+                "{format:?}: discarded array returns should not clone their register value: {}",
+                counters.array_handle_clones
+            );
+        }
+    }
+
+    #[test]
+    fn branch_conditions_borrow_array_operands_without_handle_clone() {
+        let source = "<?php
+            $items = [1, 2, 3];
+            $hits = 0;
+            for ($i = 0; $i < 32; $i++) {
+                if ($items) {
+                    $hits++;
+                }
+            }
+            echo $hits;
+        ";
+        for format in [ExecutionFormat::Ir, ExecutionFormat::Bytecode] {
+            let result = execute_source_with_options(
+                source,
+                VmOptions {
+                    collect_counters: true,
+                    execution_format: format,
+                    ..VmOptions::default()
+                },
+            );
+            assert!(
+                result.status.is_success(),
+                "{format:?}: {:?}",
+                result.status
+            );
+            assert_eq!(result.output.as_bytes(), b"32", "{format:?}");
+            let counters = result.counters.expect("counters");
+            let reference_dereference_array_clones = counters
+                .array_handle_clone_by_source_family
+                .get(layout_source::REFERENCE_DEREFERENCE)
+                .copied()
+                .unwrap_or_default();
+            assert!(
+                counters.array_handle_clones <= 4,
+                "{format:?}: branch truthiness should not clone array operands per iteration: {} {:?}",
+                counters.array_handle_clones,
+                counters.array_handle_clone_by_source_family
+            );
+            assert!(
+                reference_dereference_array_clones <= 1,
+                "{format:?}: branch truthiness should not dereference-clone array operands per iteration: {} {:?}",
+                reference_dereference_array_clones,
+                counters.array_handle_clone_by_source_family
+            );
+        }
+    }
+
+    #[test]
+    fn rich_echo_borrows_register_operand_for_fast_scalar_output() {
+        let result = Vm::with_options(VmOptions {
+            collect_counters: true,
+            execution_format: ExecutionFormat::Ir,
+            verify_ir: false,
+            ..VmOptions::default()
+        })
+        .execute(manual_echo_unit(IrConstant::String(
+            "borrowed echo".to_string(),
+        )));
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"borrowed echo");
+        let counters = result.counters.expect("counters");
+        assert_eq!(
+            counters
+                .value_clone_by_source_family
+                .get(layout_source::STACK_REGISTER_LOCAL_MOVE)
+                .copied()
+                .unwrap_or_default(),
+            0,
+            "{counters:?}"
+        );
     }
 
     #[test]
@@ -87151,25 +87763,25 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
     fn switch_without_default_exits_after_unmatched_grouped_cases() {
         let result = execute_source(
             r#"<?php
-            class SwitchFallbackWpdbProbe {
-                public $options = 'wp_options';
+            class SwitchFallbackDatabaseProbe {
+                public $options = 'app_options';
                 public function strip_invalid_text_for_column($table, $column, $value) {
                     echo 'wrong';
                     return $value;
                 }
             }
-            $wpdb = new SwitchFallbackWpdbProbe();
-            function switch_fallback_is_wp_error($value) { return false; }
+            $database = new SwitchFallbackDatabaseProbe();
+            function switch_fallback_is_error($value) { return false; }
             function switch_fallback_sanitize_email($email) { echo 'email'; return $email; }
             function switch_fallback_sanitize_option($option, $value) {
-                global $wpdb;
+                global $database;
                 $original_value = $value;
                 $error = null;
                 switch ($option) {
                     case 'admin_email':
                     case 'new_admin_email':
-                        $value = $wpdb->strip_invalid_text_for_column($wpdb->options, 'option_value', $value);
-                        if (switch_fallback_is_wp_error($value)) {
+                        $value = $database->strip_invalid_text_for_column($database->options, 'option_value', $value);
+                        if (switch_fallback_is_error($value)) {
                             $error = 'err';
                         } else {
                             $value = switch_fallback_sanitize_email($value);
@@ -90749,7 +91361,7 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
     }
 
     #[test]
-    fn redis_fake_backend_covers_core_wordpress_probe_surface() {
+    fn redis_fake_backend_covers_core_cache_probe_surface() {
         let result = execute_source(
             r#"<?php
             $redis = new Redis();
@@ -92645,6 +93257,13 @@ echo dense_supported(4), "\n", rich_fallback(), "\n";
             Some(&1),
             "{counters:?}"
         );
+        assert_eq!(
+            counters
+                .rich_fallback_functions_by_name
+                .get("rich_fallback"),
+            Some(&1),
+            "{counters:?}"
+        );
         assert!(
             counters
                 .dense_instruction_families_executed
@@ -92780,12 +93399,15 @@ echo '|', function_exists('inner_direct_nested') ? 'late' : 'missing';
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("temp include root should be created");
-        std::fs::write(root.join("version.php"), "<?php $wp_version = '7.0-src';\n")
-            .expect("include file should be written");
+        std::fs::write(
+            root.join("version.php"),
+            "<?php $app_version = '7.0-src';\n",
+        )
+        .expect("include file should be written");
         let source = r#"<?php
 function version_probe() {
     require 'version.php';
-    echo $wp_version;
+    echo $app_version;
 }
 version_probe();
 "#;
@@ -92980,6 +93602,42 @@ echo isset($items['missing']) ? '1' : '0';
                 >= 3,
             "{counters:?}"
         );
+    }
+
+    #[test]
+    fn dense_bytecode_auto_executes_array_dim_reference_binding() {
+        let result = execute_source_with_options(
+            r#"<?php
+function bind_array_dim_reference() {
+    $items = [];
+    $value = 7;
+    $items['key'] =& $value;
+    $value = 9;
+    echo $items['key'], "\n";
+    $items['key'] = 11;
+    echo $value, "\n";
+}
+bind_array_dim_reference();
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(result.output.as_bytes(), b"9\n11\n");
+        let counters = result.counters.expect("counters should be collected");
+        assert_eq!(counters.bytecode_lower_attempts, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_lower_successes, 1, "{counters:?}");
+        assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+        assert_eq!(
+            counters.dense_bytecode_fallback_by_reference, 0,
+            "{counters:?}"
+        );
+        assert!(counters.dense_functions_executed >= 2, "{counters:?}");
     }
 
     #[test]

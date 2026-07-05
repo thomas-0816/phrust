@@ -1,10 +1,10 @@
 <?php
-function wp_like_template($view) {
+function app_template($view) {
     ob_start();
-    echo "wordpress-like|route=", $view->route;
-    echo "|class=", class_exists("WpLikePost") ? "yes" : "no";
+    echo "front-controller-hotpath|route=", $view->route;
+    echo "|class=", class_exists("HotpathPost") ? "yes" : "no";
     echo "|function=", function_exists("apply_filters") ? "yes" : "no";
-    echo "|cookie=", $_COOKIE["wp_like"] ?? "none";
+    echo "|cookie=", $_COOKIE["app_hotpath"] ?? "none";
     foreach ($view->posts as $post) {
         echo "|post=", $post->id, ":", $post->title, ":", $post->meta["views"];
     }

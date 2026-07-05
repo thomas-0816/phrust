@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the deterministic WordPress-like server hot path."""
+"""Exercise the deterministic front-controller server hot path."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import time
@@ -16,8 +17,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SERVER = ROOT / "target/debug/phrust-server"
-DEFAULT_DOCROOT = ROOT / "fixtures/server/apps/wordpress-like/public"
-DEFAULT_OUT = ROOT / "target/performance/wordpress-like/report.json"
+DEFAULT_DOCROOT = ROOT / "fixtures/server/apps/front-controller-hotpath/public"
+DEFAULT_OUT = ROOT / "target/performance/front-controller-hotpath/report.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,9 +26,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--server", type=Path, default=DEFAULT_SERVER)
     parser.add_argument("--docroot", type=Path, default=DEFAULT_DOCROOT)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    parser.add_argument("--warmups", type=int, default=int(os.getenv("PHRUST_WORDPRESS_LIKE_WARMUPS", "2")))
-    parser.add_argument("--measurements", type=int, default=int(os.getenv("PHRUST_WORDPRESS_LIKE_MEASUREMENTS", "2")))
-    parser.add_argument("--timeout", type=float, default=float(os.getenv("PHRUST_WORDPRESS_LIKE_TIMEOUT", "10.0")))
+    parser.add_argument(
+        "--warmups",
+        type=int,
+        default=int(os.getenv("PHRUST_FRONT_CONTROLLER_HOTPATH_WARMUPS", "2")),
+    )
+    parser.add_argument(
+        "--measurements",
+        type=int,
+        default=int(os.getenv("PHRUST_FRONT_CONTROLLER_HOTPATH_MEASUREMENTS", "2")),
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=float(os.getenv("PHRUST_FRONT_CONTROLLER_HOTPATH_TIMEOUT", "10.0")),
+    )
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 
@@ -57,19 +70,23 @@ def start_server(server: Path, docroot: Path, log_path: Path, trace_path: Path) 
         ],
         cwd=ROOT,
         text=True,
-        stdout=log,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.PIPE,
+        stderr=log,
     )
+    if process.stdout is None:
+        raise RuntimeError("server stdout pipe was not available")
     for _ in range(200):
         if process.poll() is not None:
             log.seek(0)
             raise RuntimeError(f"server exited early:\n{log.read()}")
-        log.flush()
-        log.seek(0)
-        text = log.read()
-        matches = re.findall(r"^listening http://(.+)$", text, flags=re.MULTILINE)
-        if matches:
-            return process, matches[-1].strip()
+        readable, _, _ = select.select([process.stdout], [], [], 0.05)
+        if readable:
+            line = process.stdout.readline()
+            log.write(line)
+            log.flush()
+            match = re.match(r"^listening http://(.+)$", line.strip())
+            if match:
+                return process, match.group(1).strip()
         time.sleep(0.05)
     process.terminate()
     raise RuntimeError("server did not print listening address")
@@ -90,7 +107,7 @@ def request(address: str, path: str, timeout: float) -> dict[str, Any]:
     host, port_text = address.rsplit(":", 1)
     started = time.perf_counter_ns()
     conn = http.client.HTTPConnection(host, int(port_text), timeout=timeout)
-    conn.request("GET", path, headers={"Cookie": "wp_like=cookie-hit"})
+    conn.request("GET", path, headers={"Cookie": "app_hotpath=cookie-hit"})
     response = conn.getresponse()
     body = response.read()
     headers = dict(response.getheaders())
@@ -162,7 +179,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             body = sample["body"]
             if sample["status"] != 200:
                 report["failures"].append(f"warm request status {sample['status']}")
-            if "wordpress-like|alpha=1|route=single" not in body:
+            if "front-controller-hotpath|alpha=1|route=single" not in body:
                 report["failures"].append("warm response body did not contain expected route output")
             if "beta=1" not in body:
                 report["failures"].append("warm response body did not pass through filter chain")
@@ -194,13 +211,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     markdown = out.with_suffix(".md")
     markdown.write_text(render_markdown(report), encoding="utf-8")
-    print(f"[{report['status']}] wordpress-like hotpath wrote {rel(out)}")
+    print(f"[{report['status']}] front-controller hotpath wrote {rel(out)}")
     return report
 
 
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
-        "# WordPress-like Hotpath Smoke",
+        "# Front-Controller Hotpath Smoke",
         "",
         f"Status: {report['status']}",
         "",
@@ -221,7 +238,7 @@ def run_self_test() -> int:
     require_metric(report, "x", 1.0)
     require_metric(report, "missing", 1.0)
     assert report["failures"]
-    print("[pass] wordpress_like_hotpath_smoke self-test")
+    print("[pass] front_controller_hotpath_smoke self-test")
     return 0
 
 

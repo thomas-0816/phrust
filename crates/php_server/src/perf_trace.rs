@@ -1,3 +1,4 @@
+use php_vm::api::VmCounters;
 use serde_json::{Map, Value};
 use std::{
     fs::{File, OpenOptions},
@@ -56,6 +57,7 @@ pub(crate) struct PerfTraceEvent {
     pub(crate) runtime_diagnostics: u64,
     pub(crate) phases: Vec<(&'static str, u128)>,
     pub(crate) counters: Vec<(&'static str, u64)>,
+    pub(crate) profile_counters: Option<VmCounters>,
 }
 
 impl PerfTraceEvent {

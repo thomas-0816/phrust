@@ -602,6 +602,18 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
             }
             collect_operand_slot(*value, slots);
         }
+        DenseOperands::BindReferenceDim {
+            local,
+            dims,
+            source,
+            ..
+        } => {
+            slots.insert(OsrVmSlot::Local(*local));
+            slots.insert(OsrVmSlot::Local(*source));
+            for dim in dims {
+                collect_operand_slot(*dim, slots);
+            }
+        }
         DenseOperands::ForeachInit { iterator, source } => {
             slots.insert(OsrVmSlot::Iterator(*iterator));
             collect_operand_slot(*source, slots);

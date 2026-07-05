@@ -76,11 +76,11 @@ execution, response headers/status, `php://input`, stream output,
 request-local filesystem CWD behavior, a focused execution-deadline timeout
 check, and loopback cache invalidation.
 
-`fixtures/integration/wp_plugin_theme_synthetic/` provides a small
-WordPress-shaped fixture for plugin/theme activation smoke checks. It includes a
-hook-like callback registry, plugin and theme files, docroot-adjacent
-filesystem reads/writes, output-buffered template rendering, headers/cookies,
-redirects, and optional multipart package upload handling.
+`fixtures/integration/plugin_theme_synthetic/` provides a small fixture for
+plugin/theme activation smoke checks. It includes a hook-like callback registry,
+plugin and theme files, docroot-adjacent filesystem reads/writes,
+output-buffered template rendering, headers/cookies, redirects, and optional
+multipart package upload handling.
 
 ## Persistent Web Sessions
 

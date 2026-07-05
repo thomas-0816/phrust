@@ -7,10 +7,10 @@ include_once __DIR__ . "/plugin-alpha.php";
 include_once __DIR__ . "/plugin-beta.php";
 include_once __DIR__ . "/plugin-alpha.php";
 
-function wp_like_render_request($path, $preview) {
-    $route = wp_like_resolve_route($path);
-    $posts = wp_like_query_posts($route, $preview);
-    $view = new WpLikeView($route, $posts);
-    $html = wp_like_template($view);
+function app_render_request($path, $preview) {
+    $route = app_resolve_route($path);
+    $posts = app_query_posts($route, $preview);
+    $view = new HotpathView($route, $posts);
+    $html = app_template($view);
     return apply_filters("the_content", $html);
 }

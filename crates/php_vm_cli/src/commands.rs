@@ -2943,6 +2943,7 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         | DenseOpcode::EmptyDim
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => BaselineStencilClass {
             helper_calls: 1,
             deopt_slots: 1,
@@ -3266,6 +3267,7 @@ fn classify_copy_patch_stencil_instruction(
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => unsupported_copy_patch_class(
             "array_mutation_requires_reference_cow_and_allocator_state",
         ),
@@ -3508,6 +3510,7 @@ fn classify_mid_tier_instruction(
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => {
             push_unique(&mut plan.rejection_reasons, "cow_mutation_ambiguity");
             push_unique(

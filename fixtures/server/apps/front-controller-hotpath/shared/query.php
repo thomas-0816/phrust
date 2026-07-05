@@ -1,5 +1,5 @@
 <?php
-function wp_like_query_posts($route, $preview) {
+function app_query_posts($route, $preview) {
     $rows = [
         ["id" => 42, "title" => "Hello Hotpath", "views" => 7],
         ["id" => 43, "title" => "Cache Warm", "views" => 11],
@@ -9,7 +9,7 @@ function wp_like_query_posts($route, $preview) {
     foreach ($rows as $row) {
         $row["route"] = $route;
         $row["preview"] = $preview;
-        $posts[] = new WpLikePost($row["id"], $row["title"], $row);
+        $posts[] = new HotpathPost($row["id"], $row["title"], $row);
     }
     return $posts;
 }

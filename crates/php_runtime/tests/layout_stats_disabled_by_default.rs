@@ -1,8 +1,8 @@
 //! Layout stats recording must be a no-op until a collector opts in.
 //!
-//! This lives in an integration test so it runs in its own process: the
-//! enable flag is process-global and sticky, and unit tests elsewhere in the
-//! crate legitimately enable it via `reset_layout_stats`.
+//! This lives in an integration test so it runs in its own process: unit tests
+//! elsewhere in the crate legitimately enable recording via
+//! `reset_layout_stats`.
 
 use php_runtime::layout_stats::{RuntimeLayoutStats, reset_layout_stats, take_layout_stats};
 use php_runtime::{PhpArray, PhpString, Value};
@@ -29,4 +29,12 @@ fn recorders_are_noops_until_reset_enables_recording() {
     let stats = take_layout_stats();
     assert!(stats.value_clones >= 1, "{stats:?}");
     assert!(stats.string_allocations >= 1, "{stats:?}");
+
+    let string = PhpString::from("layout-stats-disabled-again");
+    let _value_clone = Value::String(string).clone();
+    assert_eq!(
+        take_layout_stats(),
+        RuntimeLayoutStats::default(),
+        "taking layout stats must end recording for later uninstrumented work"
+    );
 }

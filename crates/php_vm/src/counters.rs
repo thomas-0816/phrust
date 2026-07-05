@@ -122,6 +122,23 @@ pub struct MethodCallProfile {
     pub non_eligible_reasons: BTreeSet<String>,
 }
 
+/// Aggregated request-profile timing for one VM execution boundary.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BoundaryProfile {
+    pub count: u64,
+    pub inclusive_nanos: u64,
+    pub exclusive_nanos: u64,
+    pub rich_instructions: u64,
+    pub dense_instructions: u64,
+}
+
+/// Aggregated request-profile timing for one operation family.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OperationProfile {
+    pub count: u64,
+    pub inclusive_nanos: u64,
+}
+
 /// Lightweight counters collected only when explicitly enabled.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VmCounters {
@@ -142,15 +159,18 @@ pub struct VmCounters {
     pub include_rich_instructions_executed: u64,
     pub entry_bytecode_instructions_executed: u64,
     pub include_bytecode_instructions_executed: u64,
+    pub include_profiles_by_path: BTreeMap<String, BoundaryProfile>,
     pub dense_include_entry_attempts: u64,
     pub dense_include_entry_successes: u64,
     pub dense_include_entry_fallbacks: u64,
     pub dense_include_entry_fallback_by_reason: BTreeMap<String, u64>,
+    pub dense_include_entry_fallback_by_path: BTreeMap<String, u64>,
     pub dense_functions_planned: u64,
     pub dense_functions_executed: u64,
     pub rich_fallback_functions_planned: u64,
     pub rich_fallback_functions_executed: u64,
     pub dense_function_fallback_by_reason: BTreeMap<String, u64>,
+    pub rich_fallback_functions_by_name: BTreeMap<String, u64>,
     pub dense_instruction_families_executed: BTreeMap<String, u64>,
     pub dense_property_fetch_hits: u64,
     pub dense_property_assignment_hits: u64,
@@ -197,6 +217,9 @@ pub struct VmCounters {
     pub opcodes: BTreeMap<String, u64>,
     pub function_calls: u64,
     pub method_calls: u64,
+    pub function_profiles_by_name: BTreeMap<String, BoundaryProfile>,
+    pub method_profiles_by_name: BTreeMap<String, BoundaryProfile>,
+    pub builtin_profiles_by_name: BTreeMap<String, BoundaryProfile>,
     pub frame_allocations: u64,
     pub frame_reuses: u64,
     pub frames_allocated: u64,
@@ -228,6 +251,10 @@ pub struct VmCounters {
     pub array_handle_clones: u64,
     pub cow_separations: u64,
     pub reference_cell_creations: u64,
+    pub value_clone_by_source_family: BTreeMap<String, u64>,
+    pub array_handle_clone_by_source_family: BTreeMap<String, u64>,
+    pub cow_separation_by_source_family: BTreeMap<String, u64>,
+    pub reference_cell_creation_by_source_family: BTreeMap<String, u64>,
     pub object_allocations: u64,
     pub array_packed_direct_gets: u64,
     pub array_mixed_indexed_gets: u64,
@@ -296,6 +323,7 @@ pub struct VmCounters {
     pub numeric_string_specialization_hits: u64,
     pub numeric_string_warning_sensitive_fallbacks: u64,
     pub numeric_string_overflow_precision_fallbacks: u64,
+    pub array_operation_profiles_by_family: BTreeMap<String, OperationProfile>,
     pub typecheck_fast_path_hits: u64,
     pub typecheck_fast_path_misses: u64,
     pub output_bytes: u64,
@@ -306,6 +334,7 @@ pub struct VmCounters {
     pub output_buffer_flushes: u64,
     pub output_fast_appends: u64,
     pub output_slow_appends_by_reason: BTreeMap<String, u64>,
+    pub output_operation_profiles_by_family: BTreeMap<String, OperationProfile>,
     pub internal_function_dispatches: u64,
     pub internal_function_dispatch_cache_hits: u64,
     pub internal_function_dispatch_cache_misses: u64,
@@ -497,6 +526,7 @@ pub struct VmCounters {
     pub property_assign_ic_reference_exits: u64,
     pub property_assign_ic_dynamic_exits: u64,
     pub property_assign_ic_fallback_reasons: BTreeMap<String, u64>,
+    pub object_operation_profiles_by_family: BTreeMap<String, OperationProfile>,
     pub class_static_ic_hits: u64,
     pub class_static_ic_misses: u64,
     pub class_static_ic_guard_failures: u64,
@@ -643,6 +673,24 @@ impl VmCounters {
             .include_fallback_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
+    }
+
+    pub(crate) fn record_include_profile(
+        &mut self,
+        path: &str,
+        inclusive_nanos: u64,
+        exclusive_nanos: u64,
+        rich_instructions: u64,
+        dense_instructions: u64,
+    ) {
+        record_boundary_profile(
+            &mut self.include_profiles_by_path,
+            path,
+            inclusive_nanos,
+            exclusive_nanos,
+            rich_instructions,
+            dense_instructions,
+        );
     }
 
     pub(crate) fn record_include_stale_invalidation_by_reason(&mut self, reason: &str) {
@@ -822,6 +870,72 @@ impl VmCounters {
             .or_default() += 1;
     }
 
+    pub(crate) fn record_function_profile(
+        &mut self,
+        name: &str,
+        is_method: bool,
+        inclusive_nanos: u64,
+        exclusive_nanos: u64,
+        rich_instructions: u64,
+        dense_instructions: u64,
+    ) {
+        let profiles = if is_method {
+            &mut self.method_profiles_by_name
+        } else {
+            &mut self.function_profiles_by_name
+        };
+        record_boundary_profile(
+            profiles,
+            name,
+            inclusive_nanos,
+            exclusive_nanos,
+            rich_instructions,
+            dense_instructions,
+        );
+    }
+
+    pub(crate) fn record_builtin_profile(
+        &mut self,
+        name: &str,
+        inclusive_nanos: u64,
+        exclusive_nanos: u64,
+        rich_instructions: u64,
+        dense_instructions: u64,
+    ) {
+        record_boundary_profile(
+            &mut self.builtin_profiles_by_name,
+            name,
+            inclusive_nanos,
+            exclusive_nanos,
+            rich_instructions,
+            dense_instructions,
+        );
+    }
+
+    pub(crate) fn record_array_operation_profile(&mut self, family: &str, inclusive_nanos: u64) {
+        record_operation_profile(
+            &mut self.array_operation_profiles_by_family,
+            family,
+            inclusive_nanos,
+        );
+    }
+
+    pub(crate) fn record_object_operation_profile(&mut self, family: &str, inclusive_nanos: u64) {
+        record_operation_profile(
+            &mut self.object_operation_profiles_by_family,
+            family,
+            inclusive_nanos,
+        );
+    }
+
+    pub(crate) fn record_output_operation_profile(&mut self, family: &str, inclusive_nanos: u64) {
+        record_operation_profile(
+            &mut self.output_operation_profiles_by_family,
+            family,
+            inclusive_nanos,
+        );
+    }
+
     pub(crate) fn record_tiny_frame_candidate(&mut self) {
         self.tiny_frame_candidates += 1;
     }
@@ -963,6 +1077,28 @@ impl VmCounters {
         }
     }
 
+    pub(crate) fn record_runtime_layout_source_stats(
+        &mut self,
+        stats: php_runtime::layout_stats::RuntimeLayoutSourceStats,
+    ) {
+        merge_counter_map(
+            &mut self.value_clone_by_source_family,
+            stats.value_clone_by_family,
+        );
+        merge_counter_map(
+            &mut self.array_handle_clone_by_source_family,
+            stats.array_handle_clone_by_family,
+        );
+        merge_counter_map(
+            &mut self.cow_separation_by_source_family,
+            stats.cow_separation_by_family,
+        );
+        merge_counter_map(
+            &mut self.reference_cell_creation_by_source_family,
+            stats.reference_cell_creation_by_family,
+        );
+    }
+
     pub(crate) fn record_bytecode_lower_attempt(&mut self) {
         self.bytecode_lower_attempts += 1;
     }
@@ -1073,11 +1209,15 @@ impl VmCounters {
             .or_default() += 1;
     }
 
-    pub(crate) fn record_rich_fallback_function_executed(&mut self, reason: &str) {
+    pub(crate) fn record_rich_fallback_function_executed(&mut self, reason: &str, name: &str) {
         self.rich_fallback_functions_executed += 1;
         *self
             .dense_function_fallback_by_reason
             .entry(reason.to_owned())
+            .or_default() += 1;
+        *self
+            .rich_fallback_functions_by_name
+            .entry(name.to_owned())
             .or_default() += 1;
     }
 
@@ -1118,11 +1258,15 @@ impl VmCounters {
         self.dense_include_entry_successes += 1;
     }
 
-    pub(crate) fn record_dense_include_entry_fallback(&mut self, reason: &str) {
+    pub(crate) fn record_dense_include_entry_fallback(&mut self, reason: &str, path: &str) {
         self.dense_include_entry_fallbacks += 1;
         *self
             .dense_include_entry_fallback_by_reason
             .entry(reason.to_owned())
+            .or_default() += 1;
+        *self
+            .dense_include_entry_fallback_by_path
+            .entry(path.to_owned())
             .or_default() += 1;
     }
 
@@ -2368,6 +2512,12 @@ impl VmCounters {
             &self.dense_include_entry_fallback_by_reason,
             true,
         );
+        push_string_u64_map_field(
+            &mut json,
+            "dense_include_entry_fallback_by_path",
+            &self.dense_include_entry_fallback_by_path,
+            true,
+        );
         push_field(
             &mut json,
             "dense_functions_planned",
@@ -2396,6 +2546,12 @@ impl VmCounters {
             &mut json,
             "dense_function_fallback_by_reason",
             &self.dense_function_fallback_by_reason,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "rich_fallback_functions_by_name",
+            &self.rich_fallback_functions_by_name,
             true,
         );
         push_string_u64_map_field(
@@ -2738,6 +2894,12 @@ impl VmCounters {
             true,
         );
         push_field(&mut json, "value_clones", self.value_clones, true);
+        push_string_u64_map_field(
+            &mut json,
+            "value_clone_by_source_family",
+            &self.value_clone_by_source_family,
+            true,
+        );
         push_field(
             &mut json,
             "string_allocations",
@@ -2750,11 +2912,29 @@ impl VmCounters {
             self.array_handle_clones,
             true,
         );
+        push_string_u64_map_field(
+            &mut json,
+            "array_handle_clone_by_source_family",
+            &self.array_handle_clone_by_source_family,
+            true,
+        );
         push_field(&mut json, "cow_separations", self.cow_separations, true);
+        push_string_u64_map_field(
+            &mut json,
+            "cow_separation_by_source_family",
+            &self.cow_separation_by_source_family,
+            true,
+        );
         push_field(
             &mut json,
             "reference_cell_creations",
             self.reference_cell_creations,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "reference_cell_creation_by_source_family",
+            &self.reference_cell_creation_by_source_family,
             true,
         );
         push_field(
@@ -4394,6 +4574,34 @@ fn request_frame_allocation_bytes(register_count: u32, local_count: u32) -> usiz
         + local_count as usize * std::mem::size_of::<Slot>()
 }
 
+fn record_boundary_profile(
+    profiles: &mut BTreeMap<String, BoundaryProfile>,
+    name: &str,
+    inclusive_nanos: u64,
+    exclusive_nanos: u64,
+    rich_instructions: u64,
+    dense_instructions: u64,
+) {
+    let profile = profiles.entry(name.to_owned()).or_default();
+    profile.count = profile.count.saturating_add(1);
+    profile.inclusive_nanos = profile.inclusive_nanos.saturating_add(inclusive_nanos);
+    profile.exclusive_nanos = profile.exclusive_nanos.saturating_add(exclusive_nanos);
+    profile.rich_instructions = profile.rich_instructions.saturating_add(rich_instructions);
+    profile.dense_instructions = profile
+        .dense_instructions
+        .saturating_add(dense_instructions);
+}
+
+fn record_operation_profile(
+    profiles: &mut BTreeMap<String, OperationProfile>,
+    family: &str,
+    inclusive_nanos: u64,
+) {
+    let profile = profiles.entry(family.to_owned()).or_default();
+    profile.count = profile.count.saturating_add(1);
+    profile.inclusive_nanos = profile.inclusive_nanos.saturating_add(inclusive_nanos);
+}
+
 fn alias_sensitive_reason(reason: &str) -> bool {
     reason.contains("reference") || reason.contains("by_ref") || reason.contains("cow")
 }
@@ -5133,6 +5341,12 @@ fn escape_json(value: &str) -> String {
     escaped
 }
 
+fn merge_counter_map(target: &mut BTreeMap<String, u64>, source: BTreeMap<String, u64>) {
+    for (key, count) in source {
+        *target.entry(key).or_default() += count;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{AliasState, InlineCacheKind, InlineCacheObservation, QuickeningObservation};
@@ -5219,6 +5433,26 @@ mod tests {
             record_to_mixed_ambiguous_key: 151,
             record_to_mixed_generic_mutation: 157,
         });
+        counters.record_runtime_layout_source_stats(
+            php_runtime::layout_stats::RuntimeLayoutSourceStats {
+                value_clone_by_family: BTreeMap::from([
+                    ("stack_register_local_move".to_string(), 5),
+                    ("return_value".to_string(), 2),
+                ]),
+                array_handle_clone_by_family: BTreeMap::from([(
+                    "array_element_read".to_string(),
+                    3,
+                )]),
+                cow_separation_by_family: BTreeMap::from([(
+                    "by_ref_argument_binding".to_string(),
+                    2,
+                )]),
+                reference_cell_creation_by_family: BTreeMap::from([(
+                    "by_ref_argument_binding".to_string(),
+                    1,
+                )]),
+            },
+        );
         counters.record_autoload();
         counters.record_literal_intern(false);
         counters.record_literal_intern(true);
@@ -5471,6 +5705,34 @@ mod tests {
         assert_eq!(counters.array_handle_clones, 5);
         assert_eq!(counters.cow_separations, 3);
         assert_eq!(counters.reference_cell_creations, 2);
+        assert_eq!(
+            counters
+                .value_clone_by_source_family
+                .get("stack_register_local_move"),
+            Some(&5)
+        );
+        assert_eq!(
+            counters.value_clone_by_source_family.get("return_value"),
+            Some(&2)
+        );
+        assert_eq!(
+            counters
+                .array_handle_clone_by_source_family
+                .get("array_element_read"),
+            Some(&3)
+        );
+        assert_eq!(
+            counters
+                .cow_separation_by_source_family
+                .get("by_ref_argument_binding"),
+            Some(&2)
+        );
+        assert_eq!(
+            counters
+                .reference_cell_creation_by_source_family
+                .get("by_ref_argument_binding"),
+            Some(&1)
+        );
         assert_eq!(counters.object_allocations, 1);
         assert_eq!(counters.array_packed_direct_gets, 13);
         assert_eq!(counters.array_mixed_indexed_gets, 17);

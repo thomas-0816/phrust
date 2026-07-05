@@ -1,5 +1,5 @@
 <?php
-class WpLikePost {
+class HotpathPost {
     public $id;
     public $title;
     public $meta;
@@ -11,7 +11,7 @@ class WpLikePost {
     }
 }
 
-class WpLikeView {
+class HotpathView {
     public $route;
     public $posts;
 

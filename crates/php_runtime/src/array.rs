@@ -1,6 +1,9 @@
 //! Opaque ordered PHP array storage for runtime-semantics.
 
-use crate::layout_stats::{PackedToMixedReason, RecordToMixedReason};
+use crate::layout_stats::{
+    PackedToMixedReason, RecordToMixedReason, SOURCE_FOREACH_VALUE,
+    enter_default_layout_source_family,
+};
 use crate::{
     PhpString, Value,
     numeric_string::{
@@ -1357,6 +1360,7 @@ impl PhpArray {
     #[must_use]
     pub fn pair_at(&self, index: usize) -> Option<(ArrayKey, Value)> {
         let key = self.storage.key_at(index)?;
+        let _source = enter_default_layout_source_family(SOURCE_FOREACH_VALUE);
         let value = self.storage.get_value(index)?.clone();
         Some((key, value))
     }

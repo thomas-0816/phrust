@@ -313,6 +313,18 @@ fn server_exposes_internal_metrics() {
         "{response}"
     );
     assert!(
+        response.contains("phrust_server_persistent_engine_feedback_templates"),
+        "{response}"
+    );
+    assert!(
+        response.contains("phrust_server_persistent_engine_feedback_template_instantiations_total"),
+        "{response}"
+    );
+    assert!(
+        response.contains("phrust_server_persistent_engine_feedback_template_absorptions_total"),
+        "{response}"
+    );
+    assert!(
         response.contains(
             "phrust_server_persistent_engine_rejected_persistence_total{reason=\"request_local_state\"}"
         ),
@@ -358,7 +370,7 @@ fn server_reuses_compiled_script_cache_for_repeated_php_requests() {
     );
     assert!(
         metrics.contains(
-            "phrust_server_persistent_engine_rejected_persistence_total{reason=\"request_local_state\"} 2\n"
+            "phrust_server_persistent_engine_rejected_persistence_total{reason=\"request_local_state\"} 0\n"
         ),
         "{metrics}"
     );
@@ -414,6 +426,96 @@ fn server_writes_compact_access_log_line() {
     assert!(log.contains("bytes=13"), "{log}");
     assert!(log.contains("route=static"), "{log}");
     assert!(log.contains("cache=-"), "{log}");
+}
+
+#[test]
+fn server_writes_request_profile_for_php_request() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("lib.php"),
+        "<?php\nfunction profile_helper(array $items) { return count($items); }\nclass ProfileThing { public $name = 'thing'; public function name() { return $this->name; } }\n",
+    )
+    .expect("write include fixture");
+    fs::write(
+        docroot.join("profile.php"),
+        "<?php\ninclude __DIR__ . '/lib.php';\nob_start();\n$items = ['a' => 1, 'b' => 2];\n$thing = new ProfileThing();\necho profile_helper($items) + $items['a'];\necho $thing->name();\necho strtoupper('x');\necho ob_get_clean();\n",
+    )
+    .expect("write profile fixture");
+    let profile_dir = temp_docroot();
+    let profile_arg = profile_dir.to_string_lossy().to_string();
+    let mut child = start_server(&docroot, &["--request-profile", &profile_arg]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/profile.php");
+
+    stop_child(child);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_eq!(response_body(&response), "3thingX");
+    let profile_path = fs::read_dir(&profile_dir)
+        .expect("read profile dir")
+        .map(|entry| entry.expect("profile entry").path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .expect("request profile json");
+    let profile: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(profile_path).expect("read profile json"))
+            .expect("parse profile json");
+    assert_eq!(profile["schema_version"], serde_json::Value::from(1));
+    assert_eq!(
+        profile["attribution"]["vm_counters_collected"],
+        serde_json::Value::from(true)
+    );
+    assert!(profile["attribution"]["calls"].is_object());
+    assert!(profile["attribution"]["arrays"].is_object());
+    assert!(profile["attribution"]["objects"].is_object());
+    assert!(profile["attribution"]["clones"].is_object());
+    assert!(profile["attribution"]["output"].is_object());
+    assert_named_profile_contains(
+        &profile["attribution"]["includes"]["include_profiles_by_path"],
+        "lib.php",
+    );
+    assert_named_profile_contains(
+        &profile["attribution"]["calls"]["function_profiles_by_name"],
+        "profile_helper",
+    );
+    assert_named_profile_contains(
+        &profile["attribution"]["calls"]["method_profiles_by_name"],
+        "ProfileThing::name",
+    );
+    assert_named_profile_contains(
+        &profile["attribution"]["calls"]["builtin_profiles_by_name"],
+        "strtoupper",
+    );
+    assert_operation_profile_contains(
+        &profile["attribution"]["arrays"]["operation_profiles_by_family"],
+        "dim_fetch",
+    );
+    assert_operation_profile_contains(
+        &profile["attribution"]["objects"]["operation_profiles_by_family"],
+        "property_fetch",
+    );
+    assert_operation_profile_contains(
+        &profile["attribution"]["output"]["operation_profiles_by_family"],
+        "echo",
+    );
+    assert_operation_profile_contains(
+        &profile["attribution"]["output"]["operation_profiles_by_family"],
+        "output_buffer_builtin",
+    );
+    assert_counter_profile_contains(
+        &profile["attribution"]["clones"]["value_clone_by_source_family"],
+        "call_argument_snapshot",
+    );
+    assert_counter_profile_contains(
+        &profile["attribution"]["clones"]["value_clone_by_source_family"],
+        "array_element_read",
+    );
+
+    fs::remove_dir_all(profile_dir).expect("remove profile dir");
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
 }
 
 #[test]
@@ -1227,15 +1329,15 @@ fn server_front_controller_app_fixture_dispatches_from_path_info() {
 }
 
 #[test]
-fn server_wordpress_like_entrypoints_map_request_environment() {
-    let docroot = fixture_docroot("fixtures/server/apps/wordpress-like/public");
+fn server_front_controller_hotpath_maps_request_environment() {
+    let docroot = fixture_docroot("fixtures/server/apps/front-controller-hotpath/public");
     let mut child = start_server(&docroot, &["--front-controller", "index.php"]);
 
     let address = read_listening_address(&mut child);
     let home = http_request(&address, "GET", "/");
     let index = http_request(&address, "GET", "/index.php?preview=1");
-    let install = http_request(&address, "GET", "/wp-admin/install.php?step=2");
-    let admin = http_request(&address, "GET", "/wp-admin/");
+    let install = http_request(&address, "GET", "/admin/install.php?step=2");
+    let admin = http_request(&address, "GET", "/admin/");
     let pretty = http_request(&address, "GET", "/category/news?paged=2");
     let encoded = http_request(&address, "GET", "/index.php/wp%20admin/setup?ok=1");
 
@@ -1244,38 +1346,38 @@ fn server_wordpress_like_entrypoints_map_request_environment() {
     assert!(home.starts_with("HTTP/1.1 200 OK"), "{home}");
     assert_eq!(
         response_body(&home),
-        "wordpress-like|alpha=1|route=home|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
+        "front-controller-hotpath|alpha=1|route=home|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
     assert!(index.starts_with("HTTP/1.1 200 OK"), "{index}");
     assert_eq!(
         response_body(&index),
-        "wordpress-like|alpha=1|route=home|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
+        "front-controller-hotpath|alpha=1|route=home|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
     assert!(install.starts_with("HTTP/1.1 200 OK"), "{install}");
     assert_eq!(
         response_body(&install),
-        "install|/wp-admin/install.php?step=2|/wp-admin/install.php|/wp-admin/install.php|/wp-admin/install.php||step=2|wordpress-like-loader\n"
+        "install|/admin/install.php?step=2|/admin/install.php|/admin/install.php|/admin/install.php||step=2|front-controller-loader\n"
     );
     assert!(admin.starts_with("HTTP/1.1 200 OK"), "{admin}");
     assert_eq!(
         response_body(&admin),
-        "admin-index|/wp-admin/|/wp-admin/index.php|/wp-admin/index.php|\n"
+        "admin-index|/admin/|/admin/index.php|/admin/index.php|\n"
     );
     assert!(pretty.starts_with("HTTP/1.1 200 OK"), "{pretty}");
     assert_eq!(
         response_body(&pretty),
-        "wordpress-like|alpha=1|route=archive|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
+        "front-controller-hotpath|alpha=1|route=archive|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
     assert!(encoded.starts_with("HTTP/1.1 200 OK"), "{encoded}");
     assert_eq!(
         response_body(&encoded),
-        "wordpress-like|alpha=1|route=archive|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
+        "front-controller-hotpath|alpha=1|route=archive|class=yes|function=yes|cookie=none|post=42:Hello Hotpath:7|post=43:Cache Warm:11|post=44:Array Lookup:13|beta=1\n"
     );
 }
 
 #[test]
 fn server_synthetic_plugin_theme_fixture_runs() {
-    let docroot = fixture_docroot("fixtures/integration/wp_plugin_theme_synthetic/public");
+    let docroot = fixture_docroot("fixtures/integration/plugin_theme_synthetic/public");
     let mut child = start_server(&docroot, &["--front-controller", "index.php"]);
 
     let address = read_listening_address(&mut child);
@@ -1839,6 +1941,80 @@ fn response_header_values<'a>(response: &'a str, expected_name: &str) -> Vec<&'a
 
 fn response_body(response: &str) -> &str {
     response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+}
+
+fn assert_named_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
+    let entry = find_profile_entry(profiles, expected_name_fragment);
+    assert_profile_count_and_inclusive_nanos(entry);
+    let exclusive = entry
+        .get("exclusive_nanos")
+        .and_then(serde_json::Value::as_u64)
+        .expect("profile exclusive_nanos");
+    let inclusive = entry
+        .get("inclusive_nanos")
+        .and_then(serde_json::Value::as_u64)
+        .expect("profile inclusive_nanos");
+    assert!(
+        exclusive <= inclusive,
+        "profile exclusive_nanos should not exceed inclusive_nanos: {entry}"
+    );
+    assert!(
+        entry.get("rich_instructions").is_some(),
+        "profile rich_instructions should be present: {entry}"
+    );
+    assert!(
+        entry.get("dense_instructions").is_some(),
+        "profile dense_instructions should be present: {entry}"
+    );
+}
+
+fn assert_operation_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
+    let entry = find_profile_entry(profiles, expected_name_fragment);
+    assert_profile_count_and_inclusive_nanos(entry);
+}
+
+fn assert_counter_profile_contains(profiles: &serde_json::Value, expected_name_fragment: &str) {
+    let entry = find_profile_entry(profiles, expected_name_fragment);
+    let count = entry
+        .get("count")
+        .and_then(serde_json::Value::as_u64)
+        .expect("profile count");
+    assert!(count > 0, "profile count should be positive: {entry}");
+}
+
+fn find_profile_entry<'a>(
+    profiles: &'a serde_json::Value,
+    expected_name_fragment: &str,
+) -> &'a serde_json::Value {
+    let entries = profiles.as_array().expect("profile entries array");
+    let Some(entry) = entries.iter().find(|entry| {
+        entry
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| name.contains(expected_name_fragment))
+    }) else {
+        panic!("missing profile entry containing {expected_name_fragment}: {profiles}");
+    };
+    entry
+}
+
+fn assert_profile_count_and_inclusive_nanos(entry: &serde_json::Value) {
+    assert!(
+        entry
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            > 0,
+        "profile count should be nonzero: {entry}"
+    );
+    assert!(
+        entry
+            .get("inclusive_nanos")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            > 0,
+        "profile inclusive_nanos should be nonzero: {entry}"
+    );
 }
 
 fn header_line_matches(line: &str, expected_name: &str, expected_value: &str) -> bool {

@@ -72,16 +72,21 @@ show how many incoming headers were seen, carried into the runtime context, or
 skipped because an equivalent direct PHP server value already exists. The server
 snapshots process environment variables at startup for normal request contexts;
 restart the server to expose changed process environment values to PHP requests.
+Persistent-engine metrics distinguish immutable metadata reuse from request
+state. Script/include cache hits and quickening feedback templates may persist
+across requests; PHP globals, request context, output buffers, sessions, and
+runtime values are reset per request. A request-local reset is therefore counted
+as a reset, not as rejected persistence.
 
-For deterministic WordPress-shaped request overhead checks, run:
+For deterministic front-controller request overhead checks, run:
 
 ```bash
-nix develop -c just wordpress-like-hotpath-smoke
+nix develop -c just front-controller-hotpath-smoke
 ```
 
 The smoke starts `phrust-server`, warms a local front-controller fixture, asserts
 structural cache/phase counters instead of wall-clock thresholds, and writes a
-local report under `target/performance/wordpress-like/`.
+local report under `target/performance/front-controller-hotpath/`.
 
 For an optional local real-WordPress diagnostic report, set
 `PHRUST_WORDPRESS_DIR` and optionally `PHRUST_MYSQL_TEST_DSN`, then run:
@@ -94,9 +99,46 @@ Missing WordPress or database prerequisites are reported as skips. Reports land
 under `target/wordpress-real/` and treat latency numbers as advisory local
 measurements.
 
+For a real WordPress root request-profile JSON plus markdown summary, set
+`PHRUST_WORDPRESS_DIR` and run:
+
+```bash
+nix develop -c just wordpress-root-profile
+```
+
+For an optional root-page benchmark gate, either point at an already running
+Phrust WordPress server:
+
+```bash
+PHRUST_WORDPRESS_URL=http://127.0.0.1:18080 \
+  nix develop -c just wordpress-root-benchmark
+```
+
+or set `PHRUST_WORDPRESS_DIR`/`PHRUST_WORDPRESS_DOCROOT` and let the helper
+start `phrust-server`. Reports land under
+`target/performance/wordpress-root/` and include root latency, response hash
+stability, controls, metrics deltas, and request-profile attribution when
+available.
+
+See [WordPress root request profiling](wordpress-root-profiling.md) for the
+profile schema and how to interpret clone, fallback, dense/rich, array, object,
+builtin, include, output, and native attribution families.
+
+To focus specifically on value churn after a profile exists, run:
+
+```bash
+nix develop -c just wordpress-clone-churn-report
+```
+
+The report lands under `target/performance/clone-churn/` and ranks value clone,
+array-handle clone, COW separation, reference-cell creation, and by-reference
+fallback source families. Set `PHRUST_CLONE_CHURN_BASELINE` to an earlier
+request-profile JSON to include before/after clone counter deltas.
+
 ## Related Docs
 
 - [Server functionality](server-functionality.md)
+- [WordPress root request profiling](wordpress-root-profiling.md)
 - [PHP user interface matrix](php-user-interface-matrix.md)
 - [Switching from PHP](switching-from-php.md)
 - [Server architecture](server-architecture.md)

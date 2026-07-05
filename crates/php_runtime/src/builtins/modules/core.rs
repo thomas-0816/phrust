@@ -20,6 +20,7 @@ mod password;
 mod serialization;
 
 use crate::convert::float_to_php_string;
+use crate::layout_stats;
 use crate::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 use crate::{
     ArrayKey, ClassEntry, ClassFlags, NumericValue, ObjectRef, OutputBuffer, PhpArray, PhpString,
@@ -4644,6 +4645,36 @@ pub(in crate::builtins::modules) fn array_value_matches(
     }
 }
 
+pub(in crate::builtins::modules) fn materialize_array_builtin_value(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::Null,
+        Value::Bool(value) => Value::Bool(*value),
+        Value::Int(value) => Value::Int(*value),
+        Value::Float(value) => Value::Float(*value),
+        Value::Uninitialized => Value::Uninitialized,
+        Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_)
+        | Value::Resource(_)
+        | Value::Fiber(_)
+        | Value::Generator(_)
+        | Value::Callable(_)
+        | Value::Reference(_) => {
+            let _source = layout_stats::enter_layout_source_family(
+                layout_stats::SOURCE_ARRAY_BUILTIN_OUTPUT_MATERIALIZATION,
+            );
+            value.clone()
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn materialize_array_builtin_array(array: &PhpArray) -> Value {
+    let _source = layout_stats::enter_layout_source_family(
+        layout_stats::SOURCE_ARRAY_BUILTIN_OUTPUT_MATERIALIZATION,
+    );
+    Value::Array(array.clone())
+}
+
 pub(in crate::builtins::modules) fn array_diff_by_value(
     first: &crate::PhpArray,
     others: &[crate::PhpArray],
@@ -4657,7 +4688,7 @@ pub(in crate::builtins::modules) fn array_diff_by_value(
                     .is_ok_and(|candidate| candidate == needle)
             })
         }) {
-            output.insert(key.clone(), value.clone());
+            output.insert(key.clone(), materialize_array_builtin_value(value));
         }
     }
     Ok(output)
@@ -4676,7 +4707,7 @@ pub(in crate::builtins::modules) fn array_diff_by_key_and_value(
                     .is_ok_and(|candidate| candidate == needle)
             })
         }) {
-            output.insert(key.clone(), value.clone());
+            output.insert(key.clone(), materialize_array_builtin_value(value));
         }
     }
     Ok(output)
@@ -4695,7 +4726,7 @@ pub(in crate::builtins::modules) fn array_intersect_by_value(
                     .is_ok_and(|candidate| candidate == needle)
             })
         }) {
-            output.insert(key.clone(), value.clone());
+            output.insert(key.clone(), materialize_array_builtin_value(value));
         }
     }
     Ok(output)
@@ -4714,7 +4745,7 @@ pub(in crate::builtins::modules) fn array_intersect_by_key_and_value(
                     .is_ok_and(|candidate| candidate == needle)
             })
         }) {
-            output.insert(key.clone(), value.clone());
+            output.insert(key.clone(), materialize_array_builtin_value(value));
         }
     }
     Ok(output)
@@ -5411,7 +5442,7 @@ pub(in crate::builtins::modules) fn array_entries(
 ) -> Vec<(ArrayKey, Value)> {
     array
         .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
+        .map(|(key, value)| (key.clone(), materialize_array_builtin_value(value)))
         .collect()
 }
 
@@ -5478,7 +5509,10 @@ pub(in crate::builtins::modules) fn slice_entries(
     length: Option<i64>,
 ) -> Vec<(ArrayKey, Value)> {
     let (start, end) = slice_bounds(entries.len(), offset, length);
-    entries[start..end].to_vec()
+    entries[start..end]
+        .iter()
+        .map(|(key, value)| (key.clone(), materialize_array_builtin_value(value)))
+        .collect()
 }
 
 pub(in crate::builtins::modules) fn splice_length(
@@ -5500,7 +5534,10 @@ pub(in crate::builtins::modules) fn splice_replacement_values(
     value: &Value,
 ) -> Result<Vec<Value>, BuiltinError> {
     match deref_value(value) {
-        Value::Array(array) => Ok(array.iter().map(|(_, value)| value.clone()).collect()),
+        Value::Array(array) => Ok(array
+            .iter()
+            .map(|(_, value)| materialize_array_builtin_value(value))
+            .collect()),
         value => Ok(vec![string_arg(name, &value).map(Value::String)?]),
     }
 }
@@ -5512,15 +5549,16 @@ pub(in crate::builtins::modules) fn merge_recursive_into(
     for (key, value) in input.iter() {
         match key {
             ArrayKey::Int(_) => {
-                output.append(value.clone());
+                output.append(materialize_array_builtin_value(value));
             }
             ArrayKey::String(key) => {
                 let out_key = ArrayKey::String(key.clone());
-                if let Some(existing) = output.get(&out_key).cloned() {
-                    let merged = merge_recursive_values(existing, value.clone());
+                if let Some(existing) = output.get(&out_key).map(materialize_array_builtin_value) {
+                    let merged =
+                        merge_recursive_values(existing, materialize_array_builtin_value(value));
                     output.insert(out_key, merged);
                 } else {
-                    output.insert(out_key, value.clone());
+                    output.insert(out_key, materialize_array_builtin_value(value));
                 }
             }
         }
@@ -5542,11 +5580,12 @@ pub(in crate::builtins::modules) fn replace_recursive_into(
     input: &crate::PhpArray,
 ) {
     for (key, value) in input.iter() {
-        let replacement = if let Some(existing) = output.get(&key).cloned() {
-            replace_recursive_values(existing, value.clone())
-        } else {
-            value.clone()
-        };
+        let replacement =
+            if let Some(existing) = output.get(&key).map(materialize_array_builtin_value) {
+                replace_recursive_values(existing, materialize_array_builtin_value(value))
+            } else {
+                materialize_array_builtin_value(value)
+            };
         output.insert(key.clone(), replacement);
     }
 }
@@ -6200,7 +6239,7 @@ mod tests {
         ArrayKey, BuiltinRegistry, ClassEntry, ClassFlags, ClosurePayload, FilesystemCapabilities,
         ObjectRef, OutputBuffer, PhpArray, PhpString, ReferenceCell, ResourceTable,
         RuntimeHttpResponseState, StreamFlags, StreamMetadata, StrtokState, Value, datetime,
-        normalize_class_name, pcre,
+        layout_stats, normalize_class_name, pcre,
     };
     use std::path::PathBuf;
 
@@ -6217,6 +6256,49 @@ mod tests {
             .expect_err("builtin should fail")
             .message()
             .to_owned()
+    }
+
+    #[test]
+    fn array_builtin_materialization_copies_scalars_without_clones() {
+        layout_stats::reset_layout_stats();
+        let materialized = super::materialize_array_builtin_value(&Value::Int(12));
+        let stats = layout_stats::take_layout_stats();
+        let source_stats = layout_stats::take_layout_source_stats();
+
+        assert_eq!(materialized, Value::Int(12));
+        assert_eq!(stats.value_clones, 0, "{stats:?}");
+        assert!(
+            source_stats.value_clone_by_family.is_empty(),
+            "{source_stats:?}"
+        );
+    }
+
+    #[test]
+    fn array_builtin_materialization_attributes_non_scalar_clones() {
+        let nested = Value::Array(PhpArray::from_packed(vec![Value::Int(1)]));
+
+        layout_stats::reset_layout_stats();
+        let materialized = super::materialize_array_builtin_value(&nested);
+        let stats = layout_stats::take_layout_stats();
+        let source_stats = layout_stats::take_layout_source_stats();
+
+        assert_eq!(materialized, nested);
+        assert_eq!(stats.value_clones, 1, "{stats:?}");
+        assert_eq!(stats.array_handle_clones, 1, "{stats:?}");
+        assert_eq!(
+            source_stats
+                .value_clone_by_family
+                .get(layout_stats::SOURCE_ARRAY_BUILTIN_OUTPUT_MATERIALIZATION),
+            Some(&1),
+            "{source_stats:?}"
+        );
+        assert_eq!(
+            source_stats
+                .array_handle_clone_by_family
+                .get(layout_stats::SOURCE_ARRAY_BUILTIN_OUTPUT_MATERIALIZATION),
+            Some(&1),
+            "{source_stats:?}"
+        );
     }
 
     #[test]

@@ -61,7 +61,8 @@ pub mod api {
     pub use crate::bytecode::BytecodeLayoutProfile;
     pub use crate::compiled_unit::CompiledUnit;
     pub use crate::counters::{
-        JitCompileDescriptor, MethodCallProfile, PropertyFetchProfile, VmCounters,
+        BoundaryProfile, JitCompileDescriptor, MethodCallProfile, OperationProfile,
+        PropertyFetchProfile, VmCounters,
     };
     pub use crate::error::{VmError, VmErrorSeverity};
     pub use crate::include::{
@@ -93,7 +94,9 @@ pub mod experimental {
         dense_block_key,
     };
     #[doc(hidden)]
-    pub use crate::counters::{JitCompileDescriptor, VmCounters};
+    pub use crate::counters::{
+        BoundaryProfile, JitCompileDescriptor, OperationProfile, VmCounters,
+    };
     #[doc(hidden)]
     pub use crate::deopt::{
         ControlStateMarker, DeoptMetadata, DeoptMetadataError, DeoptRegionMetadata,
@@ -175,7 +178,7 @@ pub use bytecode::{
 #[doc(hidden)]
 pub use compiled_unit::CompiledUnit;
 #[doc(hidden)]
-pub use counters::{JitCompileDescriptor, VmCounters};
+pub use counters::{BoundaryProfile, JitCompileDescriptor, OperationProfile, VmCounters};
 #[doc(hidden)]
 pub use deopt::{
     ControlStateMarker, DeoptMetadata, DeoptMetadataError, DeoptRegionMetadata, DeoptResumePoint,

@@ -71,6 +71,7 @@ pub struct ServerConfig {
     pub access_log: Option<String>,
     pub perf_trace: Option<PathBuf>,
     pub perf_trace_vm_counters: bool,
+    pub request_profile: Option<PathBuf>,
     pub network_requests_enabled: bool,
     pub help: bool,
 }
@@ -248,6 +249,9 @@ impl ServerConfig {
         let mut perf_trace_vm_counters = file_config
             .bool("perf_trace_vm_counters")?
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_SERVER_PERF_TRACE_VM_COUNTERS"));
+        let mut request_profile = file_config
+            .path("request_profile")
+            .or_else(|| env_request_profile_path(&env_value));
         let mut network_requests_enabled = file_config
             .bool("network_requests_enabled")?
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_SERVER_ENABLE_NETWORK_REQUESTS"));
@@ -374,6 +378,9 @@ impl ServerConfig {
                     perf_trace = Some(PathBuf::from(required_value(&arg, &mut args)?))
                 }
                 "--perf-trace-vm-counters" => perf_trace_vm_counters = true,
+                "--request-profile" => {
+                    request_profile = Some(PathBuf::from(required_value(&arg, &mut args)?))
+                }
                 "--enable-network-requests" => network_requests_enabled = true,
                 "--debug" => debug = true,
                 "--error-format" => {
@@ -442,6 +449,7 @@ impl ServerConfig {
                 access_log,
                 perf_trace,
                 perf_trace_vm_counters,
+                request_profile,
                 network_requests_enabled,
                 help,
             });
@@ -490,6 +498,7 @@ impl ServerConfig {
             access_log,
             perf_trace,
             perf_trace_vm_counters,
+            request_profile,
             network_requests_enabled,
             help,
         })
@@ -559,6 +568,7 @@ impl ServerConfig {
             access_log: None,
             perf_trace: None,
             perf_trace_vm_counters: false,
+            request_profile: None,
             network_requests_enabled: false,
             help: false,
         })
@@ -597,6 +607,7 @@ Options:\n\
   --access-log <path|->        write compact access logs to file or stdout\n\
   --perf-trace <path>          append per-PHP-request performance trace JSONL\n\
   --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
+  --request-profile <dir>      write one JSON request profile per PHP request\n\
   --enable-network-requests    allow PHP cURL requests to external hosts\n\
   --debug                      emit structured server debug events to stderr\n\
   --error-format <text|json>   render server diagnostics/debug events as text or JSON\n\
@@ -799,6 +810,18 @@ fn env_perf_trace_path(env_value: &impl Fn(&str) -> Option<String>) -> Option<Pa
         None
     } else if matches!(value, "1" | "true" | "TRUE" | "yes" | "on") {
         Some(PathBuf::from("target/performance/server/perf-trace.jsonl"))
+    } else {
+        Some(PathBuf::from(value))
+    }
+}
+
+fn env_request_profile_path(env_value: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let value = env_value("PHRUST_REQUEST_PROFILE")?;
+    let value = value.trim();
+    if value.is_empty() || matches!(value, "0" | "false" | "FALSE" | "off") {
+        None
+    } else if matches!(value, "1" | "true" | "TRUE" | "yes" | "on") {
+        Some(PathBuf::from("target/performance/server/request-profile"))
     } else {
         Some(PathBuf::from(value))
     }
@@ -1082,6 +1105,7 @@ mod tests {
         assert_eq!(config.access_log, None);
         assert_eq!(config.perf_trace, None);
         assert!(!config.perf_trace_vm_counters);
+        assert_eq!(config.request_profile, None);
         assert!(!config.network_requests_enabled);
         assert!(config.script_cache_enabled);
         assert_eq!(config.script_cache_shards, 16);
@@ -1150,6 +1174,8 @@ mod tests {
             "--perf-trace",
             "perf.jsonl",
             "--perf-trace-vm-counters",
+            "--request-profile",
+            "profiles",
             "--enable-network-requests",
             "--debug",
             "--error-format",
@@ -1205,6 +1231,7 @@ mod tests {
         assert_eq!(config.access_log, Some("-".to_string()));
         assert_eq!(config.perf_trace, Some(PathBuf::from("perf.jsonl")));
         assert!(config.perf_trace_vm_counters);
+        assert_eq!(config.request_profile, Some(PathBuf::from("profiles")));
         assert!(config.network_requests_enabled);
         assert!(config.debug);
         assert_eq!(config.error_format, DiagnosticOutputFormat::Json);
@@ -1371,6 +1398,7 @@ index = "../bad.php"
             ("PHRUST_SERVER_ENABLE_NETWORK_REQUESTS", "1"),
             ("PHRUST_DENSE_INCLUDES", "1"),
             ("PHRUST_PERF_ABLATION", "dense-includes,builtin_ic"),
+            ("PHRUST_REQUEST_PROFILE", "1"),
         ]);
         let config = ServerConfig::parse_from_with_env(["--docroot", "public"], |name| {
             env.get(name).map(|value| (*value).to_string())
@@ -1384,6 +1412,10 @@ index = "../bad.php"
         assert_eq!(config.dense_includes, Some(DenseIncludeMode::Auto));
         assert!(config.perf_ablation.disable_dense_includes);
         assert!(config.perf_ablation.disable_builtin_ic);
+        assert_eq!(
+            config.request_profile,
+            Some(PathBuf::from("target/performance/server/request-profile"))
+        );
     }
 
     #[test]

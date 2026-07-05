@@ -1180,6 +1180,7 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         | DenseOpcode::LoadConstFetchDim
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::BindReferenceDim
         | DenseOpcode::EmptyDim
         | DenseOpcode::UnsetDim
         | DenseOpcode::InitStaticLocal => vec![VmDeoptReason::ReferenceCowIdentity],
@@ -1238,7 +1239,6 @@ fn rejection_for_ir_instruction(kind: &InstructionKind) -> Option<VmDeoptReason>
     match kind {
         InstructionKind::BindReference { .. }
         | InstructionKind::BindGlobal { .. }
-        | InstructionKind::BindReferenceDim { .. }
         | InstructionKind::BindReferenceFromDim { .. }
         | InstructionKind::BindReferenceFromProperty { .. }
         | InstructionKind::BindReferenceFromCall { .. }

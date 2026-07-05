@@ -1,0 +1,29 @@
+.git
+.gitignore
+.dockerignore
+
+# Rust build outputs and generated performance artifacts are large and are
+# recreated inside the image.
+target
+
+# Local editor, OS, and tool caches.
+.DS_Store
+.idea
+.vscode
+.cache
+.direnv
+.devenv
+.nix-gc-roots
+.playwright-mcp
+
+# Local environment and transient run output.
+.env
+.env.*
+*.log
+*.tmp
+
+# Local third-party checkouts must not be copied into image builds.
+third_party
+
+# Ad-hoc local screenshots are not build inputs.
+/phrustwordpress-after-style-fallback.png

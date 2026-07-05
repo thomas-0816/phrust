@@ -74,7 +74,7 @@ pub fn to_bool(value: &Value) -> Result<bool, String> {
         Value::Array(array) => Ok(!array.is_empty()),
         Value::Object(_) | Value::Resource(_) | Value::Fiber(_) | Value::Generator(_) => Ok(true),
         Value::Callable(_) => Err("callable truthiness is not implemented".to_owned()),
-        Value::Reference(cell) => to_bool(&cell.get()),
+        Value::Reference(cell) => to_bool(&cell.borrow()),
     }
 }
 
@@ -102,7 +102,7 @@ pub fn to_string(value: &Value) -> Result<PhpString, String> {
             resource.id().get()
         ))),
         Value::Callable(_) => Err("callable to string conversion is not implemented".to_owned()),
-        Value::Reference(cell) => to_string(&cell.get()),
+        Value::Reference(cell) => to_string(&cell.borrow()),
     }
 }
 
@@ -213,7 +213,7 @@ pub fn to_int(value: &Value) -> Result<i64, String> {
         }
         Value::Resource(resource) => Ok(resource.id().get() as i64),
         Value::Callable(_) => Err("callable to int conversion is not implemented".to_owned()),
-        Value::Reference(cell) => to_int(&cell.get()),
+        Value::Reference(cell) => to_int(&cell.borrow()),
     }
 }
 
@@ -234,7 +234,7 @@ pub fn to_float(value: &Value) -> Result<f64, String> {
         }
         Value::Resource(resource) => Ok(resource.id().get() as f64),
         Value::Callable(_) => Err("callable to float conversion is not implemented".to_owned()),
-        Value::Reference(cell) => to_float(&cell.get()),
+        Value::Reference(cell) => to_float(&cell.borrow()),
     }
 }
 
@@ -253,7 +253,7 @@ pub fn to_number(value: &Value) -> Result<NumericValue, String> {
         }
         Value::Resource(resource) => Ok(NumericValue::Int(resource.id().get() as i64)),
         Value::Callable(_) => Err("callable to number conversion is not implemented".to_owned()),
-        Value::Reference(cell) => to_number(&cell.get()),
+        Value::Reference(cell) => to_number(&cell.borrow()),
     }
 }
 
@@ -262,7 +262,7 @@ pub fn to_number(value: &Value) -> Result<NumericValue, String> {
 pub fn to_arithmetic_number(value: &Value) -> Result<ArithmeticNumber, String> {
     match value {
         Value::String(value) => arithmetic_numeric_string_with_warning(value),
-        Value::Reference(cell) => to_arithmetic_number(&cell.get()),
+        Value::Reference(cell) => to_arithmetic_number(&cell.borrow()),
         _ => to_number(value).map(|value| ArithmeticNumber {
             value,
             leading_numeric_string: false,
@@ -305,7 +305,7 @@ pub fn to_array_php(value: &Value) -> Result<PhpArray, String> {
     match value {
         Value::Null => Ok(PhpArray::new()),
         Value::Array(array) => Ok(array.clone()),
-        Value::Reference(cell) => to_array_php(&cell.get()),
+        Value::Reference(cell) => to_array_php(&cell.borrow()),
         Value::Object(_) | Value::Fiber(_) | Value::Generator(_) => Err(
             "E_PHP_RUNTIME_OBJECT_TO_ARRAY_GAP: object to array conversion is not implemented"
                 .to_owned(),
@@ -324,7 +324,7 @@ pub fn to_array_php(value: &Value) -> Result<PhpArray, String> {
 pub fn to_object_php(value: &Value) -> Result<Value, String> {
     match value {
         Value::Object(_) => Ok(value.clone()),
-        Value::Reference(cell) => to_object_php(&cell.get()),
+        Value::Reference(cell) => to_object_php(&cell.borrow()),
         _ => Err(
             "E_PHP_RUNTIME_OBJECT_CAST_GAP: object cast conversion is not implemented".to_owned(),
         ),

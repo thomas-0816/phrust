@@ -1,5 +1,5 @@
 <?php
-require __DIR__ . "/../../shared/wp-load.php";
+require __DIR__ . "/../../shared/app-load.php";
 
 echo implode("|", [
     "install",
@@ -9,5 +9,5 @@ echo implode("|", [
     $_SERVER["PHP_SELF"],
     $_SERVER["PATH_INFO"] ?? "",
     $_SERVER["QUERY_STRING"],
-    "wordpress-like-loader",
+    "front-controller-loader",
 ]) . "\n";

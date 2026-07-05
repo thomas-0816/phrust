@@ -1,12 +1,15 @@
 //! Arginfo, parameter validation, and builtin coercion support.
 
 use crate::generated::arginfo as generated_arginfo;
-use php_runtime::api::{
-    CallableValue, PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
-    to_bool, to_float, to_int, to_string,
-};
 use php_runtime::experimental::numeric_string::{
     NumericStringKind, NumericStringValue, classify_php_string,
+};
+use php_runtime::{
+    api::{
+        CallableValue, PhpString, RuntimeDiagnostic, RuntimeSeverity, RuntimeSourceSpan, Value,
+        to_bool, to_float, to_int, to_string,
+    },
+    experimental::layout_stats,
 };
 
 /// PHP builtin coercion mode.
@@ -603,23 +606,48 @@ fn parse_generated_type(type_decl: &str) -> Option<TypeSpec> {
 
 fn match_exact(atom: ArgType, value: &Value) -> Option<Value> {
     match (atom, value) {
-        (ArgType::Mixed, value) => Some(value.clone()),
+        (ArgType::Mixed, value) => Some(materialize_builtin_argument(value)),
         (ArgType::Null, Value::Null) => Some(Value::Null),
-        (ArgType::Bool, Value::Bool(_)) => Some(value.clone()),
-        (ArgType::Int, Value::Int(_)) => Some(value.clone()),
-        (ArgType::Float, Value::Float(_)) => Some(value.clone()),
-        (ArgType::String, Value::String(_)) => Some(value.clone()),
-        (ArgType::Array, Value::Array(_)) => Some(value.clone()),
+        (ArgType::Bool, Value::Bool(value)) => Some(Value::Bool(*value)),
+        (ArgType::Int, Value::Int(value)) => Some(Value::Int(*value)),
+        (ArgType::Float, Value::Float(value)) => Some(Value::Float(*value)),
+        (ArgType::String, Value::String(_)) => Some(materialize_builtin_argument(value)),
+        (ArgType::Array, Value::Array(_)) => Some(materialize_builtin_argument(value)),
         (ArgType::Object, Value::Object(_))
         | (ArgType::Object, Value::Fiber(_))
-        | (ArgType::Object, Value::Generator(_)) => Some(value.clone()),
+        | (ArgType::Object, Value::Generator(_)) => Some(materialize_builtin_argument(value)),
         (ArgType::Object, Value::Callable(callable))
             if matches!(callable.as_ref(), CallableValue::Closure(_)) =>
         {
-            Some(value.clone())
+            Some(materialize_builtin_argument(value))
         }
-        (ArgType::Callable, Value::Callable(_) | Value::String(_)) => Some(value.clone()),
+        (ArgType::Callable, Value::Callable(_) | Value::String(_)) => {
+            Some(materialize_builtin_argument(value))
+        }
         _ => None,
+    }
+}
+
+fn materialize_builtin_argument(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::Null,
+        Value::Bool(value) => Value::Bool(*value),
+        Value::Int(value) => Value::Int(*value),
+        Value::Float(value) => Value::Float(*value),
+        Value::Uninitialized => Value::Uninitialized,
+        Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_)
+        | Value::Resource(_)
+        | Value::Fiber(_)
+        | Value::Generator(_)
+        | Value::Callable(_)
+        | Value::Reference(_) => {
+            let _source = layout_stats::enter_layout_source_family(
+                layout_stats::SOURCE_BUILTIN_ARGUMENT_MATERIALIZATION,
+            );
+            value.clone()
+        }
     }
 }
 
@@ -689,7 +717,7 @@ fn value_type(value: &Value) -> String {
 mod tests {
     use super::*;
     use php_runtime::api::{
-        ClassEntry, ClassFlags, ClosurePayload, ObjectRef, ResourceTable, StreamFlags,
+        ClassEntry, ClassFlags, ClosurePayload, ObjectRef, PhpArray, ResourceTable, StreamFlags,
         StreamMetadata,
     };
 
@@ -876,6 +904,80 @@ mod tests {
             .expect("string callback validates");
 
         assert_eq!(validated.values(), &[callback]);
+    }
+
+    #[test]
+    fn exact_scalar_arguments_materialize_without_value_clones() {
+        let info = FunctionArgInfo::new(
+            "scalar_sample",
+            vec![
+                ParameterInfo::required("flag", TypeSpec::one(ArgType::Bool)),
+                ParameterInfo::required("count", TypeSpec::one(ArgType::Int)),
+                ParameterInfo::required("ratio", TypeSpec::one(ArgType::Float)),
+            ],
+            TypeSpec::one(ArgType::Mixed),
+        );
+
+        layout_stats::reset_layout_stats();
+        let validated = ArgumentValidator::new(CoercionMode::Strict)
+            .validate(
+                &info,
+                &[Value::Bool(true), Value::Int(12), Value::float(1.5)],
+                span(),
+            )
+            .expect("scalar arguments validate");
+        let stats = layout_stats::take_layout_stats();
+        let source_stats = layout_stats::take_layout_source_stats();
+
+        assert_eq!(
+            validated.values(),
+            &[Value::Bool(true), Value::Int(12), Value::float(1.5)]
+        );
+        assert_eq!(stats.value_clones, 0, "{stats:?}");
+        assert!(
+            source_stats.value_clone_by_family.is_empty(),
+            "{source_stats:?}"
+        );
+    }
+
+    #[test]
+    fn array_arguments_are_attributed_as_builtin_materialization() {
+        let info = FunctionArgInfo::new(
+            "array_sample",
+            vec![ParameterInfo::required(
+                "items",
+                TypeSpec::one(ArgType::Array),
+            )],
+            TypeSpec::one(ArgType::Mixed),
+        );
+        let mut items = PhpArray::new();
+        items.append(Value::Int(1));
+        let argument = Value::Array(items);
+
+        layout_stats::reset_layout_stats();
+        let validated = ArgumentValidator::new(CoercionMode::Strict)
+            .validate(&info, std::slice::from_ref(&argument), span())
+            .expect("array argument validates");
+        let stats = layout_stats::take_layout_stats();
+        let source_stats = layout_stats::take_layout_source_stats();
+
+        assert_eq!(validated.values(), &[argument]);
+        assert_eq!(stats.value_clones, 1, "{stats:?}");
+        assert_eq!(stats.array_handle_clones, 1, "{stats:?}");
+        assert_eq!(
+            source_stats
+                .value_clone_by_family
+                .get(layout_stats::SOURCE_BUILTIN_ARGUMENT_MATERIALIZATION),
+            Some(&1),
+            "{source_stats:?}"
+        );
+        assert_eq!(
+            source_stats
+                .array_handle_clone_by_family
+                .get(layout_stats::SOURCE_BUILTIN_ARGUMENT_MATERIALIZATION),
+            Some(&1),
+            "{source_stats:?}"
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::persistent_metadata::PersistentMetadataStats;
 use hyper::StatusCode;
 use php_executor::IncludeCacheStats;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +29,8 @@ pub(crate) struct ServerMetrics {
     pub(crate) persistent_engine_misses: AtomicU64,
     pub(crate) persistent_engine_request_local_resets: AtomicU64,
     pub(crate) persistent_engine_request_local_rejections: AtomicU64,
+    pub(crate) persistent_engine_feedback_template_instantiations: AtomicU64,
+    pub(crate) persistent_engine_feedback_template_absorptions: AtomicU64,
     pub(crate) response_output_bytes: AtomicU64,
     pub(crate) runtime_diagnostics: AtomicU64,
     pub(crate) session_seed_attempts: AtomicU64,
@@ -109,6 +112,7 @@ impl ServerMetrics {
         in_flight: u64,
         cache: php_executor::CompiledScriptCacheStats,
         include_cache: IncludeCacheStats,
+        persistent_metadata: PersistentMetadataStats,
     ) -> String {
         let shard_entries = cache
             .entries_by_shard
@@ -195,7 +199,10 @@ phrust_server_persistent_engine_policy_reuses_total {}\n\
 phrust_server_persistent_engine_immutable_metadata_reuses_total {}\n\
 phrust_server_persistent_engine_misses_total {}\n\
 phrust_server_persistent_engine_request_local_resets_total {}\n\
-phrust_server_persistent_engine_rejected_persistence_total{{reason=\"request_local_state\"}} {}\n",
+phrust_server_persistent_engine_rejected_persistence_total{{reason=\"request_local_state\"}} {}\n\
+phrust_server_persistent_engine_feedback_templates {}\n\
+phrust_server_persistent_engine_feedback_template_instantiations_total {}\n\
+phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             self.requests_total.load(Ordering::Relaxed),
             self.static_responses.load(Ordering::Relaxed),
             self.php_responses.load(Ordering::Relaxed),
@@ -276,6 +283,11 @@ phrust_server_persistent_engine_rejected_persistence_total{{reason=\"request_loc
                 .load(Ordering::Relaxed),
             self.persistent_engine_request_local_rejections
                 .load(Ordering::Relaxed),
+            persistent_metadata.feedback_templates,
+            self.persistent_engine_feedback_template_instantiations
+                .load(Ordering::Relaxed),
+            self.persistent_engine_feedback_template_absorptions
+                .load(Ordering::Relaxed),
         )
     }
 }
@@ -313,6 +325,7 @@ pub(crate) fn metrics_response(state: &AppState, parts: &Parts) -> Response<Resp
                 .saturating_sub(state.in_flight.available_permits()) as u64,
             state.engine.script_cache.cache_stats(),
             state.engine.include_cache.cache_stats(),
+            state.engine.persistent_metadata_stats(),
         ),
         "text/plain; charset=UTF-8",
     )

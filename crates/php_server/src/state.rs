@@ -1,6 +1,10 @@
 use crate::config::ServerPerfAblation;
 use crate::{
-    access_log::AccessLogger, metrics::ServerMetrics, perf_trace::PerfTraceWriter,
+    access_log::AccessLogger,
+    metrics::ServerMetrics,
+    perf_trace::PerfTraceWriter,
+    persistent_metadata::{PersistentMetadataStats, PersistentMetadataStore},
+    request_profile::RequestProfileWriter,
     server::ServerError,
 };
 use crate::{multipart::MultipartConfig, routing::RouteConfig, session_store::SessionStore};
@@ -14,11 +18,10 @@ use php_vm::api::{
     QuickeningSiteSnapshot,
 };
 use std::{
-    collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -41,6 +44,7 @@ pub(crate) struct AppState {
     pub(crate) access_log: Option<Arc<AccessLogger>>,
     pub(crate) perf_trace: Option<Arc<PerfTraceWriter>>,
     pub(crate) perf_trace_vm_counters: bool,
+    pub(crate) request_profile: Option<Arc<RequestProfileWriter>>,
     pub(crate) network_requests_enabled: bool,
     pub(crate) env_snapshot: Arc<Vec<(String, String)>>,
     pub(crate) debug: bool,
@@ -59,7 +63,7 @@ pub(crate) struct ServerEngineState {
     pub(crate) script_cache: Arc<CompiledScriptCache>,
     pub(crate) include_cache: Arc<IncludeCache>,
     pub(crate) compile_optimization_level: OptimizationLevel,
-    quickening_seed: Arc<Mutex<Vec<QuickeningSiteSnapshot>>>,
+    persistent_metadata: Arc<PersistentMetadataStore>,
     dense_includes: Option<DenseIncludeMode>,
     perf_ablation: ServerPerfAblation,
 }
@@ -89,7 +93,7 @@ impl ServerEngineState {
             script_cache,
             include_cache,
             compile_optimization_level,
-            quickening_seed: Arc::new(Mutex::new(Vec::new())),
+            persistent_metadata: Arc::new(PersistentMetadataStore::default()),
             dense_includes,
             perf_ablation,
         }
@@ -110,10 +114,9 @@ impl ServerEngineState {
     }
 
     fn apply_engine_overrides(&self, options: &mut PhpExecutorOptions) {
-        if let Ok(seed) = self.quickening_seed.lock()
-            && !seed.is_empty()
-        {
-            options.vm_options.quickening_seed = seed.clone();
+        let quickening_seed = self.persistent_metadata.quickening_templates();
+        if !quickening_seed.is_empty() {
+            options.vm_options.quickening_seed = quickening_seed;
         }
         if let Some(mode) = self.dense_includes {
             options.vm_options.dense_include_execution = mode;
@@ -148,19 +151,30 @@ impl ServerEngineState {
         options
     }
 
-    pub(crate) fn absorb_quickening_feedback(&self, feedback: Vec<QuickeningSiteSnapshot>) {
-        if feedback.is_empty() {
-            return;
+    pub(crate) fn executor_options_for_request(
+        &self,
+        metrics: &ServerMetrics,
+    ) -> PhpExecutorOptions {
+        let options = self.executor_options_with_include_cache();
+        let instantiated = options.vm_options.quickening_seed.len() as u64;
+        if instantiated > 0 {
+            metrics
+                .persistent_engine_feedback_template_instantiations
+                .fetch_add(instantiated, Ordering::Relaxed);
         }
-        let Ok(mut seed) = self.quickening_seed.lock() else {
-            return;
-        };
-        let merged = seed
-            .iter()
-            .chain(feedback.iter())
-            .map(|snapshot| (snapshot.site, *snapshot))
-            .collect::<BTreeMap<_, _>>();
-        *seed = merged.values().copied().collect();
+        options
+    }
+
+    pub(crate) fn absorb_quickening_feedback(
+        &self,
+        feedback: Vec<QuickeningSiteSnapshot>,
+    ) -> usize {
+        self.persistent_metadata
+            .absorb_quickening_feedback(feedback)
+    }
+
+    pub(crate) fn persistent_metadata_stats(&self) -> PersistentMetadataStats {
+        self.persistent_metadata.stats()
     }
 
     pub(crate) fn compile_script(

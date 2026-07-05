@@ -368,7 +368,7 @@ pub(in crate::builtins::modules) fn builtin_array_change_key_case(
                 value.to_string_lossy().to_lowercase().into_bytes(),
             )),
         };
-        output.insert(key, value.clone());
+        output.insert(key, materialize_array_builtin_value(value));
     }
     Ok(Value::Array(output))
 }
@@ -412,7 +412,10 @@ pub(in crate::builtins::modules) fn builtin_array_values(
         return Err(type_error("array_values", "array", &args[0]));
     };
     Ok(Value::packed_array(
-        array.iter().map(|(_, value)| value.clone()).collect(),
+        array
+            .iter()
+            .map(|(_, value)| materialize_array_builtin_value(value))
+            .collect(),
     ))
 }
 
@@ -482,7 +485,7 @@ pub(in crate::builtins::modules) fn builtin_array_combine(
         let Some(key) = ArrayKey::from_value(key) else {
             return Err(type_error("array_combine", "array key", key));
         };
-        output.insert(key, value.clone());
+        output.insert(key, materialize_array_builtin_value(value));
     }
     Ok(Value::Array(output))
 }
@@ -632,10 +635,10 @@ pub(in crate::builtins::modules) fn builtin_array_column(
         let Value::Array(row) = deref_value(row) else {
             continue;
         };
-        let Some(value) = column_key
-            .as_ref()
-            .map_or(Some(Value::Array(row.clone())), |key| row.get(key).cloned())
-        else {
+        let Some(value) = column_key.as_ref().map_or_else(
+            || Some(materialize_array_builtin_array(&row)),
+            |key| row.get(key).map(materialize_array_builtin_value),
+        ) else {
             continue;
         };
         if let Some(index_key) = &index_key
@@ -689,7 +692,7 @@ pub(in crate::builtins::modules) fn builtin_array_diff_key(
     let mut output = PhpArray::new();
     for (key, value) in first.iter() {
         if others.iter().all(|array| array.get(&key).is_none()) {
-            output.insert(key.clone(), value.clone());
+            output.insert(key.clone(), materialize_array_builtin_value(value));
         }
     }
     Ok(Value::Array(output))
@@ -733,7 +736,10 @@ pub(in crate::builtins::modules) fn builtin_array_fill(
                 "The supplied range exceeds the maximum array size",
             )
         })?;
-        output.insert(ArrayKey::Int(key), args[2].clone());
+        output.insert(
+            ArrayKey::Int(key),
+            materialize_array_builtin_value(&args[2]),
+        );
     }
     Ok(Value::Array(output))
 }
@@ -754,7 +760,7 @@ pub(in crate::builtins::modules) fn builtin_array_fill_keys(
         let key = crate::convert::to_string(key)
             .map(ArrayKey::from_php_string)
             .map_err(|message| conversion_error("array_fill_keys", message))?;
-        output.insert(key, args[1].clone());
+        output.insert(key, materialize_array_builtin_value(&args[1]));
     }
     Ok(Value::Array(output))
 }
@@ -806,7 +812,7 @@ pub(in crate::builtins::modules) fn builtin_array_intersect_key(
     let mut output = PhpArray::new();
     for (key, value) in first.iter() {
         if others.iter().all(|array| array.get(&key).is_some()) {
-            output.insert(key.clone(), value.clone());
+            output.insert(key.clone(), materialize_array_builtin_value(value));
         }
     }
     Ok(Value::Array(output))
@@ -855,7 +861,7 @@ pub(in crate::builtins::modules) fn builtin_array_push(
     let cell = array_reference_cell("array_push", &args[0])?;
     let mut array = array_from_reference_cell("array_push", &cell)?;
     for value in args.iter().skip(1) {
-        array.append(value.clone());
+        array.append(materialize_array_builtin_value(value));
     }
     let len = array.len() as i64;
     cell.set(Value::Array(array));
@@ -915,7 +921,7 @@ pub(in crate::builtins::modules) fn builtin_shuffle(
     let array = array_from_reference_cell("shuffle", &cell)?;
     let mut values = array
         .iter()
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| materialize_array_builtin_value(value))
         .collect::<Vec<_>>();
     for index in 0..values.len() {
         let offset = random_bounded_usize("shuffle", values.len() - index)?;
@@ -1042,15 +1048,18 @@ pub(in crate::builtins::modules) fn builtin_array_unshift(
     let array = array_from_reference_cell("array_unshift", &cell)?;
     let mut output = crate::PhpArray::new();
     for value in args.iter().skip(1) {
-        output.append(value.clone());
+        output.append(materialize_array_builtin_value(value));
     }
     for (key, value) in array.iter() {
         match key {
             ArrayKey::Int(_) => {
-                output.append(value.clone());
+                output.append(materialize_array_builtin_value(value));
             }
             ArrayKey::String(key) => {
-                output.insert(ArrayKey::String(key.clone()), value.clone());
+                output.insert(
+                    ArrayKey::String(key.clone()),
+                    materialize_array_builtin_value(value),
+                );
             }
         }
     }
@@ -1112,14 +1121,21 @@ pub(in crate::builtins::modules) fn builtin_array_splice(
         .transpose()?
         .unwrap_or_default();
 
-    let removed = entries[start..start + delete_len].to_vec();
+    let removed = entries[start..start + delete_len]
+        .iter()
+        .map(|(key, value)| (key.clone(), materialize_array_builtin_value(value)))
+        .collect::<Vec<_>>();
     let mut result_values = Vec::new();
-    result_values.extend(entries[..start].iter().map(|(_, value)| value.clone()));
+    result_values.extend(
+        entries[..start]
+            .iter()
+            .map(|(_, value)| materialize_array_builtin_value(value)),
+    );
     result_values.extend(replacement);
     result_values.extend(
         entries[start + delete_len..]
             .iter()
-            .map(|(_, value)| value.clone()),
+            .map(|(_, value)| materialize_array_builtin_value(value)),
     );
     cell.set(Value::packed_array(result_values));
     Ok(Value::Array(array_from_entries_reindex_ints(removed)))
@@ -1151,7 +1167,7 @@ pub(in crate::builtins::modules) fn builtin_array_unique(
             continue;
         }
         unique.push(candidate);
-        output.insert(key.clone(), value.clone());
+        output.insert(key.clone(), materialize_array_builtin_value(value));
     }
 
     Ok(Value::Array(output))
@@ -1168,10 +1184,13 @@ pub(in crate::builtins::modules) fn builtin_array_merge(
         for (key, value) in array.iter() {
             match key {
                 ArrayKey::Int(_) => {
-                    output.append(value.clone());
+                    output.append(materialize_array_builtin_value(value));
                 }
                 ArrayKey::String(key) => {
-                    output.insert(ArrayKey::String(key.clone()), value.clone());
+                    output.insert(
+                        ArrayKey::String(key.clone()),
+                        materialize_array_builtin_value(value),
+                    );
                 }
             }
         }
@@ -1204,7 +1223,7 @@ pub(in crate::builtins::modules) fn builtin_array_replace(
     for arg in args.iter().skip(1) {
         let array = array_value_arg("array_replace", arg)?;
         for (key, value) in array.iter() {
-            output.insert(key.clone(), value.clone());
+            output.insert(key.clone(), materialize_array_builtin_value(value));
         }
     }
     Ok(Value::Array(output))
@@ -1260,10 +1279,10 @@ pub(in crate::builtins::modules) fn builtin_array_pad(
     expect_arity("array_pad", &args, 3)?;
     let array = array_value_arg("array_pad", &args[0])?;
     let target = int_arg("array_pad", &args[1])?;
-    let pad_value = args[2].clone();
+    let pad_value = materialize_array_builtin_value(&args[2]);
     let mut values = array
         .iter()
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| materialize_array_builtin_value(value))
         .collect::<Vec<_>>();
     let target_len = target.unsigned_abs() as usize;
     if target_len > values.len() {
@@ -1304,7 +1323,10 @@ pub(in crate::builtins::modules) fn builtin_array_chunk(
     let entries = array_entries(&array);
     let mut chunks = Vec::new();
     for chunk in entries.chunks(length as usize) {
-        let chunk_entries = chunk.to_vec();
+        let chunk_entries = chunk
+            .iter()
+            .map(|(key, value)| (key.clone(), materialize_array_builtin_value(value)))
+            .collect::<Vec<_>>();
         let chunk_array = if preserve_keys {
             array_from_entries_preserve(chunk_entries)
         } else {

@@ -220,6 +220,14 @@ impl RegisterFile {
         Ok(())
     }
 
+    /// Consumes a dead temporary register and marks it uninitialized.
+    pub fn take(&mut self, id: RegId) -> Result<Value, VmError> {
+        let Some(slot) = self.registers.get_mut(id.index()) else {
+            return Err(invalid_register_error(id, "take"));
+        };
+        Ok(std::mem::replace(slot, TempValue::uninitialized()).into_value())
+    }
+
     /// Writes a register and attaches source context to any VM access error.
     pub fn set_with_span(
         &mut self,

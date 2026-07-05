@@ -504,8 +504,8 @@ mod tests {
     fn maps_path_info_after_existing_php_script_before_front_controller() {
         let fixture = Fixture::new();
         fixture.write("index.php", "<?php echo \"index\";");
-        fixture.create_dir("wp-admin");
-        fixture.write("wp-admin/install.php", "<?php echo \"install\";");
+        fixture.create_dir("admin");
+        fixture.write("admin/install.php", "<?php echo \"install\";");
         let mut config = fixture.config("index.php");
         config.front_controller = Some(PathBuf::from("index.php"));
 
@@ -529,7 +529,7 @@ mod tests {
         let ResolvedRoute::PhpScript {
             script_path,
             path_info,
-        } = resolve_route("GET", "/wp-admin/install.php/step/1", &config)
+        } = resolve_route("GET", "/admin/install.php/step/1", &config)
         else {
             panic!("expected install.php script");
         };
@@ -537,7 +537,7 @@ mod tests {
             script_path,
             fixture
                 .root
-                .join("wp-admin/install.php")
+                .join("admin/install.php")
                 .canonicalize()
                 .expect("canonical install")
         );

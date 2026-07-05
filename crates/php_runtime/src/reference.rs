@@ -5,7 +5,14 @@
 //! aliasing explicit through `Slot`. Temporaries are represented by `TempValue`
 //! so register values cannot accidentally become reference aliases.
 
-use crate::{Value, object::ObjectRef};
+use crate::{
+    Value,
+    layout_stats::{
+        SOURCE_BY_REF_ARGUMENT_BINDING, SOURCE_REFERENCE_DEREFERENCE,
+        SOURCE_STACK_REGISTER_LOCAL_MOVE, enter_default_layout_source_family,
+    },
+    object::ObjectRef,
+};
 use std::cell::{BorrowError, BorrowMutError, Ref, RefCell};
 use std::rc::{Rc, Weak};
 
@@ -55,6 +62,7 @@ impl ReferenceCell {
     /// Reads the contained value by cloning it.
     #[must_use]
     pub fn get(&self) -> Value {
+        let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
         self.inner.borrow().clone()
     }
 
@@ -63,6 +71,7 @@ impl ReferenceCell {
     /// This checked accessor is preferred outside low-level runtime internals.
     /// It returns `Err` if another caller currently holds a mutable borrow.
     pub fn try_get(&self) -> Result<Value, BorrowError> {
+        let _source = enter_default_layout_source_family(SOURCE_REFERENCE_DEREFERENCE);
         self.inner.try_borrow().map(|value| value.clone())
     }
 
@@ -188,7 +197,10 @@ impl Slot {
     #[must_use]
     pub fn read(&self) -> Value {
         match self {
-            Self::Value(value) => value.clone(),
+            Self::Value(value) => {
+                let _source = enter_default_layout_source_family(SOURCE_STACK_REGISTER_LOCAL_MOVE);
+                value.clone()
+            }
             Self::Reference(cell) => cell.get(),
         }
     }
@@ -242,6 +254,7 @@ impl Slot {
     pub fn ensure_reference_cell(&mut self) -> ReferenceCell {
         match self {
             Self::Value(value) => {
+                let _source = enter_default_layout_source_family(SOURCE_BY_REF_ARGUMENT_BINDING);
                 let cell = ReferenceCell::new(value.clone());
                 *self = Self::Reference(cell.clone());
                 cell
@@ -463,7 +476,10 @@ impl std::error::Error for LvalueError {}
 fn deref_value_for_read(value: &Value) -> Value {
     match value {
         Value::Reference(cell) => cell.get(),
-        value => value.clone(),
+        value => {
+            let _source = enter_default_layout_source_family(SOURCE_STACK_REGISTER_LOCAL_MOVE);
+            value.clone()
+        }
     }
 }
 
@@ -485,6 +501,7 @@ fn ensure_value_reference_cell(value: &mut Value) -> ReferenceCell {
     match value {
         Value::Reference(cell) => cell.clone(),
         value => {
+            let _source = enter_default_layout_source_family(SOURCE_BY_REF_ARGUMENT_BINDING);
             let cell = ReferenceCell::new(value.clone());
             *value = Value::Reference(cell.clone());
             cell

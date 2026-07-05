@@ -180,6 +180,8 @@ pub enum DenseOpcode {
     LoadConstLoadConst = 76,
     /// Fused constant value load and array insert.
     LoadConstArrayInsert = 77,
+    /// Bind a local array dimension to another local's reference cell.
+    BindReferenceDim = 78,
 }
 
 impl DenseOpcode {
@@ -278,6 +280,7 @@ impl DenseOpcode {
             Self::Pipe => "pipe",
             Self::LoadConstLoadConst => "load_const_load_const",
             Self::LoadConstArrayInsert => "load_const_array_insert",
+            Self::BindReferenceDim => "bind_reference_dim",
         }
     }
 
@@ -505,6 +508,13 @@ pub enum DenseOperands {
         local: u32,
         dims: Vec<DenseOperand>,
         value: DenseOperand,
+    },
+    /// Local array dimension by-reference binding operands.
+    BindReferenceDim {
+        local: u32,
+        dims: Vec<DenseOperand>,
+        append: bool,
+        source: u32,
     },
     /// Local array dimension isset test operands.
     IssetDim {
@@ -1885,6 +1895,7 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::AssignProperty
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::BindReferenceDim
         | DenseOpcode::ForeachInit
         | DenseOpcode::ForeachNext
         | DenseOpcode::ForeachCleanup
@@ -1943,6 +1954,7 @@ fn dense_skip_reason(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
         | DenseOpcode::AppendDim
+        | DenseOpcode::BindReferenceDim
         | DenseOpcode::ForeachInit
         | DenseOpcode::ForeachNext => "php_value_or_memory_semantics",
         _ => "unsupported_shape",
@@ -2435,6 +2447,20 @@ fn lower_instruction(
                 local: local.raw(),
                 dims: dims.iter().copied().map(lower_operand).collect(),
                 value: lower_operand(*value),
+            },
+        ),
+        InstructionKind::BindReferenceDim {
+            local,
+            dims,
+            append,
+            source,
+        } => (
+            DenseOpcode::BindReferenceDim,
+            DenseOperands::BindReferenceDim {
+                local: local.raw(),
+                dims: dims.iter().copied().map(lower_operand).collect(),
+                append: *append,
+                source: source.raw(),
             },
         ),
         InstructionKind::IssetDim { dst, local, dims } => (
@@ -3183,6 +3209,21 @@ fn verify_instruction(
             }
             verify_operand(*value, unit, function, errors);
         }
+        (
+            DenseOpcode::BindReferenceDim,
+            DenseOperands::BindReferenceDim {
+                local,
+                dims,
+                source,
+                ..
+            },
+        ) => {
+            verify_local(*local, function, errors);
+            for dim in dims {
+                verify_operand(*dim, unit, function, errors);
+            }
+            verify_local(*source, function, errors);
+        }
         (DenseOpcode::IssetDim, DenseOperands::IssetDim { dst, local, dims }) => {
             verify_register(*dst, function, errors);
             verify_local(*local, function, errors);
@@ -3730,6 +3771,18 @@ fn render_operands(operands: &DenseOperands) -> String {
                 render_operand(*value)
             )
         }
+        DenseOperands::BindReferenceDim {
+            local,
+            dims,
+            append,
+            source,
+        } => {
+            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
+            format!(
+                "l{local} [{}] append={append} =& l{source}",
+                dims.join(", ")
+            )
+        }
         DenseOperands::IssetDim { dst, local, dims } => {
             let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
             format!("r{dst} l{local} [{}]", dims.join(", "))
@@ -3986,6 +4039,38 @@ echo count($items), ":", $sum, "\n";
         assert!(opcodes.contains(&DenseOpcode::ForeachNext));
         assert!(opcodes.contains(&DenseOpcode::CallFunction));
         assert!(dense.names.iter().any(|name| name == "count"));
+    }
+
+    #[test]
+    fn bytecode_lowering_covers_array_dim_reference_binding() {
+        let frontend = analyze_source(
+            r#"<?php
+$items = [];
+$value = 7;
+$items['key'] =& $value;
+echo $items['key'];
+"#,
+        );
+        let result = php_ir::lower_frontend_result(
+            &frontend,
+            php_ir::LoweringOptions {
+                source_path: "fixtures/runtime/valid/arrays/reference-dim.php".to_string(),
+                ..php_ir::LoweringOptions::default()
+            },
+        );
+        result
+            .verification
+            .expect("reference-dim IR verifies before dense lowering");
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let dense =
+            DenseBytecodeUnit::lower_from_ir(&result.unit).expect("reference-dim lowers to dense");
+        let opcodes: Vec<_> = dense.functions[0]
+            .instructions
+            .iter()
+            .map(|item| item.opcode)
+            .collect();
+        assert!(opcodes.contains(&DenseOpcode::BindReferenceDim));
+        assert!(opcodes.contains(&DenseOpcode::FetchDim));
     }
 
     #[test]

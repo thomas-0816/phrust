@@ -131,6 +131,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let startup_metrics_token_enabled = config.metrics_token.is_some();
     let startup_access_log = config.access_log.clone();
     let startup_perf_trace = config.perf_trace.clone();
+    let startup_request_profile = config.request_profile.clone();
     let startup_tls_enabled = config.tls_cert.is_some();
     let engine_profile = config.engine_preset;
     let tls_acceptor = build_tls_acceptor(config.tls_cert.as_deref(), config.tls_key.as_deref())?;
@@ -145,6 +146,11 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         .map(crate::perf_trace::PerfTraceWriter::open)
         .transpose()?
         .map(Arc::new);
+    let request_profile = config
+        .request_profile
+        .map(crate::request_profile::RequestProfileWriter::open)
+        .transpose()?
+        .map(Arc::new);
     let session_store = Arc::new(SessionStore::new(config.session_save_path));
     if config.sessions_enabled {
         session_store
@@ -154,7 +160,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let startup_scheme = if startup_tls_enabled { "https" } else { "http" };
     println!("listening {startup_scheme}://{local_addr}");
     eprintln!(
-        "startup docroot={} front_controller={} engine_preset={} script_cache={} script_cache_shards={} script_cache_max_entries={} upload_temp_dir={} session_save_path={} metrics_endpoint={} metrics_token={} access_log={} perf_trace={} tls={} tls_alpn={}",
+        "startup docroot={} front_controller={} engine_preset={} script_cache={} script_cache_shards={} script_cache_max_entries={} upload_temp_dir={} session_save_path={} metrics_endpoint={} metrics_token={} access_log={} perf_trace={} request_profile={} tls={} tls_alpn={}",
         docroot.display(),
         startup_front_controller
             .as_ref()
@@ -169,6 +175,9 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         startup_metrics_token_enabled,
         startup_access_log.as_deref().unwrap_or("-"),
         startup_perf_trace
+            .as_ref()
+            .map_or("-", |path| path.to_str().unwrap_or("<non-utf8>")),
+        startup_request_profile
             .as_ref()
             .map_or("-", |path| path.to_str().unwrap_or("<non-utf8>")),
         startup_tls_enabled,
@@ -221,6 +230,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         access_log,
         perf_trace,
         perf_trace_vm_counters: config.perf_trace_vm_counters,
+        request_profile,
         network_requests_enabled: config.network_requests_enabled,
         env_snapshot: Arc::new(std::env::vars().collect()),
         debug: config.debug,
@@ -260,6 +270,7 @@ mod tests {
             execute_compiled_php_with_state, http_runtime_context, php_runtime_context_for_http,
             server_env_for_request,
         },
+        request_profile::RequestProfileWriter,
         routing::RequestRewriteRule,
         serve::clear_cache_response,
         static_files::{
@@ -495,6 +506,12 @@ mod tests {
 
         traced_state.perf_trace_vm_counters = true;
         assert!(collect_vm_counters_for_request(&traced_state));
+
+        let mut profiled_state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        profiled_state.request_profile = Some(Arc::new(
+            RequestProfileWriter::open(fixture.root.join("profiles")).expect("request profile"),
+        ));
+        assert!(collect_vm_counters_for_request(&profiled_state));
     }
 
     #[test]
@@ -573,7 +590,7 @@ mod tests {
                 .metrics
                 .persistent_engine_request_local_rejections
                 .load(Ordering::Relaxed),
-            2
+            0
         );
         assert_eq!(
             state
@@ -890,6 +907,7 @@ mod tests {
             access_log: None,
             perf_trace: None,
             perf_trace_vm_counters: false,
+            request_profile: None,
             network_requests_enabled: false,
             env_snapshot: Arc::new(Vec::new()),
             debug: false,

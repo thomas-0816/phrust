@@ -85,6 +85,14 @@ help:
       '  just wordpress-real-smoke Run no-DB real WordPress frontpage smoke' \
       '  just wordpress-real-install-smoke Run DB-backed real WordPress install smoke' \
       '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
+      '  just wordpress-root-profile Run optional local real WordPress request profile' \
+      '  just wordpress-root-benchmark Run optional real WordPress root benchmark gate' \
+      '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
+      '  just wordpress-clone-churn-report Summarize clone/COW attribution from latest request profile' \
+      '  just wordpress-array-hotpath-report Summarize array hotpath attribution from latest request profile' \
+      '  just wordpress-call-hotpath-report Summarize call/frame attribution from latest request profile' \
+      '  just wordpress-persistent-metadata-report Summarize persistent metadata attribution from latest request profile' \
+      '  just wordpress-native-region-report Summarize native-region attribution from latest request profile' \
       '  just mysqli-integration   Run explicit live MySQLi integration gate' \
       '  just wordpress-smoke-report Generate web/db diagnostics report' \
       '' \
@@ -124,7 +132,7 @@ help:
       '  just inline-cache-smoke   Run inline-cache smoke gate' \
       '  just jit-smoke            Run default-off JIT smoke gate' \
       '  just framework-smoke      Run offline framework-like performance smoke' \
-      '  just wordpress-like-hotpath-smoke Run deterministic server hotpath smoke' \
+      '  just front-controller-hotpath-smoke Run deterministic server hotpath smoke' \
       '  just app-flow-smoke      Run CI-safe app-flow engine comparison smoke' \
       '  just runtime-layout-performance-smoke Run runtime-layout tranche counter gate' \
       '  just app-flow-matrix     Run full application-flow Phrust/reference matrix' \
@@ -1058,6 +1066,32 @@ wordpress-real-perf-report:
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/real_perf_report.py
 
+wordpress-root-profile:
+    cargo build -p php_server --bin phrust-server
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/root_profile.py
+
+wordpress-root-benchmark:
+    if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py
+
+wordpress-dense-fallback-report:
+    scripts/performance/dense_fallback_report.py
+
+wordpress-clone-churn-report:
+    scripts/performance/clone_churn_report.py
+
+wordpress-array-hotpath-report:
+    scripts/performance/array_hotpath_report.py
+
+wordpress-call-hotpath-report:
+    scripts/performance/call_hotpath_report.py
+
+wordpress-persistent-metadata-report:
+    scripts/performance/persistent_metadata_report.py
+
+wordpress-native-region-report:
+    scripts/performance/native_region_report.py
+
 wordpress-real-extract-first-failure:
     scripts/wordpress/extract_failure.py --failure "${PHRUST_WORDPRESS_FIRST_FAILURE:-}"
 
@@ -1101,7 +1135,15 @@ performance-tests:
     scripts/performance/bench_matrix.py --self-test
     scripts/performance/perf_report.py --self-test
     scripts/performance/app_flow_matrix.py --self-test
-    scripts/performance/wordpress_like_hotpath_smoke.py --self-test
+    scripts/performance/array_hotpath_report.py --self-test
+    scripts/performance/call_hotpath_report.py --self-test
+    scripts/performance/clone_churn_report.py --self-test
+    scripts/performance/dense_fallback_report.py --self-test
+    scripts/performance/front_controller_hotpath_smoke.py --self-test
+    scripts/performance/native_region_report.py --self-test
+    scripts/performance/persistent_metadata_report.py --self-test
+    scripts/performance/wordpress_root_benchmark.py --self-test
+    scripts/wordpress/root_profile.py --self-test
     scripts/performance/decision_baseline.py --self-test
     scripts/performance/startup_matrix.py --self-test
 
@@ -1185,9 +1227,9 @@ framework-smoke:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/framework_micro_smoke.py
 
-wordpress-like-hotpath-smoke:
+front-controller-hotpath-smoke:
     cargo build -p php_server --bin phrust-server
-    scripts/performance/wordpress_like_hotpath_smoke.py --server "${CARGO_TARGET_DIR:-target}/debug/phrust-server" --out target/performance/wordpress-like/report.json
+    scripts/performance/front_controller_hotpath_smoke.py --server "${CARGO_TARGET_DIR:-target}/debug/phrust-server" --out target/performance/front-controller-hotpath/report.json
 
 app-flow-smoke:
     cargo build -p php_vm_cli --bin php-vm

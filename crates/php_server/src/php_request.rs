@@ -521,6 +521,9 @@ pub(crate) async fn execute_php_request(
     match result {
         Ok(mut output) => {
             append_vm_counters_to_trace(&mut trace, output.counters.as_ref());
+            if state.request_profile.is_some() {
+                trace.profile_counters = output.counters.clone();
+            }
             let mut execute_end_context = BTreeMap::from([
                 ("status".to_string(), format!("{:?}", output.status)),
                 (
@@ -808,7 +811,7 @@ pub(crate) fn execute_compiled_php_in_blocking_region(
 }
 
 pub(crate) fn collect_vm_counters_for_request(state: &AppState) -> bool {
-    state.perf_trace.is_some() && state.perf_trace_vm_counters
+    state.request_profile.is_some() || (state.perf_trace.is_some() && state.perf_trace_vm_counters)
 }
 
 pub(crate) fn execute_compiled_php_with_state(
@@ -824,13 +827,10 @@ pub(crate) fn execute_compiled_php_with_state(
         .fetch_add(1, Ordering::Relaxed);
     state
         .metrics
-        .persistent_engine_request_local_rejections
-        .fetch_add(1, Ordering::Relaxed);
-    state
-        .metrics
         .persistent_engine_policy_reuses
         .fetch_add(1, Ordering::Relaxed);
-    let executor = PhpExecutor::with_options(state.engine.executor_options_with_include_cache());
+    let executor =
+        PhpExecutor::with_options(state.engine.executor_options_for_request(&state.metrics));
     let output = executor.execute_compiled(
         &lookup.compiled,
         PhpRequestExecutionInput {
@@ -841,9 +841,15 @@ pub(crate) fn execute_compiled_php_with_state(
             collect_counters,
         },
     );
-    state
+    let absorbed = state
         .engine
         .absorb_quickening_feedback(output.quickening_feedback.clone());
+    if absorbed > 0 {
+        state
+            .metrics
+            .persistent_engine_feedback_template_absorptions
+            .fetch_add(absorbed as u64, Ordering::Relaxed);
+    }
     Ok(output)
 }
 
@@ -1447,6 +1453,11 @@ fn finish_php_request(
         && let Err(error) = writer.write(&trace)
     {
         warn!(%error, path=%writer.path().display(), "perf trace write failed");
+    }
+    if let Some(writer) = &state.request_profile
+        && let Err(error) = writer.write(&trace, trace.profile_counters.as_ref())
+    {
+        warn!(%error, dir=%writer.dir().display(), "request profile write failed");
     }
     (response, cache_hit)
 }
