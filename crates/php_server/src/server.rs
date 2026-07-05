@@ -406,12 +406,17 @@ mod tests {
         let mut trace = PerfTraceEvent::default();
         append_vm_counters_to_trace(&mut trace, Some(&counters));
         let traced_counters = trace.counters.iter().copied().collect::<BTreeMap<_, _>>();
-        assert!(
-            traced_counters
-                .get("vm_instructions_executed")
-                .is_some_and(|value| *value > 0),
-            "{traced_counters:?}"
-        );
+        // Dense-plan threading can execute the whole request as dense
+        // bytecode, so instruction evidence is tier-agnostic.
+        let executed_instructions = traced_counters
+            .get("vm_instructions_executed")
+            .copied()
+            .unwrap_or_default()
+            + traced_counters
+                .get("vm_bytecode_instructions_executed")
+                .copied()
+                .unwrap_or_default();
+        assert!(executed_instructions > 0, "{traced_counters:?}");
         assert!(
             traced_counters
                 .get("vm_function_calls")
