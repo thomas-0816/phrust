@@ -4,14 +4,14 @@
   "priority":16,
   "selected_manifest":"tests/phpt/manifests/modules/standard.url-html.selected.jsonl",
   "corpus_count":69,
-  "selected_count":22,
-  "pass_count":22,
+  "selected_count":23,
+  "pass_count":23,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":50,
-  "scope":["URL encoding helpers","http_build_query arrays, references, null separator defaults, and RFC3986 encoding","basic parse_url component extraction and PHP_URL constant ordering","HTML escaping helpers"],
-  "non_scope":["complete entity tables","non-default charsets","object query encoding","parse_url edge cases beyond the basic upstream corpus","full parse_str parity"],
+  "known_failure_count":49,
+  "scope":["URL encoding helpers","http_build_query arrays, references, null separator defaults, and RFC3986 encoding","basic parse_url component extraction and PHP_URL constant ordering","malformed parse_str key recovery and invalid percent preservation","HTML escaping helpers"],
+  "non_scope":["complete entity tables","non-default charsets","object query encoding","parse_url edge cases beyond the basic upstream corpus","parse_str edge cases beyond malformed-query coverage"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.url-html","nix develop -c just verify-stdlib"],
-  "next_step":"selected URL/HTML contracts are broader and green; keep full charset/entity tables, object query encoding, parse_url edge cases beyond the basic corpus, and parse_str edge cases as documented gaps."
+  "next_step":"selected URL/HTML contracts are broader and green; keep full charset/entity tables, object query encoding, parse_url edge cases beyond the basic corpus, and remaining parse_str edge cases as documented gaps."
 }

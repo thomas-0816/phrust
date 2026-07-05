@@ -3,7 +3,7 @@
 - Priority: 16.8
 - Selected manifest: `tests/phpt/manifests/modules/standard.url-html.selected.jsonl`
 - Derived corpus baseline: 1 PASS, 0 SKIP, 63 FAIL, 5 BORK from 69 path-filtered candidates
-- focused gate: 22 PASS, 0 FAIL, 0 BORK
+- focused gate: 23 PASS, 0 FAIL, 0 BORK
 
 ## Scope
 
@@ -12,6 +12,7 @@
 - `http_build_query` null separator defaults, references, and RFC3986
   `encoding_type` coverage
 - Basic `parse_url` component extraction and `PHP_URL_*` constant ordering
+- Malformed `parse_str` key recovery and invalid percent preservation
 - Default `htmlspecialchars` / `htmlentities` coverage
 
 ## Non-Scope
@@ -20,7 +21,7 @@
 - Non-default charsets and flags
 - Object query encoding
 - `parse_url` edge cases beyond the basic upstream corpus
-- Full `parse_str` and URL/HTML upstream corpus
+- Remaining `parse_str` edge cases and URL/HTML upstream corpus
 
 ## Relevant PHPT Paths
 
@@ -43,6 +44,7 @@
 - `ext/standard/tests/url/parse_url_basic_010.phpt`
 - `ext/standard/tests/url/parse_url_basic_011.phpt`
 - `ext/standard/tests/url/parse_url_relative_scheme.phpt`
+- `ext/standard/tests/strings/parse_str_basic4.phpt`
 - `tests/phpt/generated/standard.url-html/url-encode-decode-smoke.phpt`
 - `tests/phpt/generated/standard.url-html/http-build-query-smoke.phpt`
 - `tests/phpt/generated/standard.url-html/htmlspecialchars-htmlentities-smoke.phpt`
@@ -70,10 +72,13 @@
 - `parse_url()` covers the basic upstream component extraction set, including
   partial numeric ports and `PHP_URL_*` iteration order through
   `get_defined_constants()`.
-- Latest focused target run: PASS, 22 selected PHPTs.
+- `parse_str()` now matches PHP malformed bracket-key recovery for the selected
+  upstream query fixture, including root dot/space normalization and invalid
+  percent escape preservation.
+- Latest focused target run: PASS, 23 selected PHPTs.
 
 ## Known Gaps
 
 - Full entity-table, charset, flag, object-query, `parse_url` edge-case,
-  `parse_str`, and URL edge-case behavior remains outside the selected focused
-  gate.
+  remaining `parse_str`, and URL edge-case behavior remains outside the
+  selected focused gate.

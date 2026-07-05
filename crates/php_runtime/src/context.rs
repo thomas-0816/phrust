@@ -875,6 +875,17 @@ fn input_key(value: &str) -> ArrayKey {
     ArrayKey::from_php_string(PhpString::from_test_str(value))
 }
 
+fn input_root_key(value: &str) -> ArrayKey {
+    let normalized = value
+        .chars()
+        .map(|ch| match ch {
+            ' ' | '.' | '[' => '_',
+            _ => ch,
+        })
+        .collect::<String>();
+    input_key(&normalized)
+}
+
 fn http_server_array(request: &RuntimeHttpRequestContext) -> PhpArray {
     let mut array = PhpArray::new();
     insert_string(&mut array, "REQUEST_METHOD", &request.method);
@@ -1032,20 +1043,23 @@ fn parse_input_key_segments(key: &str, max_nesting_level: usize) -> Option<Vec<I
         return None;
     }
     let Some(first_bracket) = key.find('[') else {
-        return Some(vec![InputKeySegment::Key(input_key(key))]);
+        return Some(vec![InputKeySegment::Key(input_root_key(key))]);
     };
     if first_bracket == 0 {
-        return Some(vec![InputKeySegment::Key(input_key(key))]);
+        return None;
     }
 
-    let mut segments = vec![InputKeySegment::Key(input_key(&key[..first_bracket]))];
+    let mut segments = vec![InputKeySegment::Key(input_root_key(&key[..first_bracket]))];
     let mut rest = &key[first_bracket..];
     while !rest.is_empty() {
         if !rest.starts_with('[') {
-            return Some(vec![InputKeySegment::Key(input_key(key))]);
+            return Some(segments);
         }
         let Some(close) = rest.find(']') else {
-            return Some(vec![InputKeySegment::Key(input_key(key))]);
+            if segments.len() == 1 {
+                return Some(vec![InputKeySegment::Key(input_root_key(key))]);
+            }
+            return Some(segments);
         };
         let part = &rest[1..close];
         segments.push(if part.is_empty() {
@@ -1316,10 +1330,15 @@ fn decode_component(input: &[u8]) -> Option<String> {
                 index += 1;
             }
             b'%' => {
-                let high = *input.get(index + 1)?;
-                let low = *input.get(index + 2)?;
-                output.push(hex_value(high)? << 4 | hex_value(low)?);
-                index += 3;
+                if let (Some(high), Some(low)) = (input.get(index + 1), input.get(index + 2))
+                    && let (Some(high), Some(low)) = (hex_value(*high), hex_value(*low))
+                {
+                    output.push(high << 4 | low);
+                    index += 3;
+                } else {
+                    output.push(input[index]);
+                    index += 1;
+                }
             }
             byte => {
                 output.push(byte);
@@ -1817,6 +1836,30 @@ mod tests {
     }
 
     #[test]
+    fn input_array_builder_matches_php_malformed_key_recovery() {
+        let pairs = parse_query_string(
+            "arr[1=sid&arr[4][2=fred&arr1]=ok&arr[4]2]=bill&arr.test[1]=dot&arr test[4][two]=space",
+        );
+        let array = input_pairs_array(&pairs, &RuntimeIniOptions::default());
+
+        assert_string(&array, "arr_1", "sid");
+        assert_string(&array, "arr1]", "ok");
+        assert_path_string(&array, &[str_key("arr"), int_key(4)], "bill");
+        assert_path_string(&array, &[str_key("arr_test"), int_key(1)], "dot");
+        assert_path_string(
+            &array,
+            &[str_key("arr_test"), int_key(4), str_key("two")],
+            "space",
+        );
+
+        let invalid_root = input_pairs_array(
+            &parse_query_string("[a]=ignored"),
+            &RuntimeIniOptions::default(),
+        );
+        assert!(invalid_root.is_empty());
+    }
+
+    #[test]
     fn input_array_builder_applies_explicit_limits() {
         let ini = RuntimeIniOptions {
             max_input_vars: 2,
@@ -1851,7 +1894,18 @@ mod tests {
     fn malformed_percent_encoding_does_not_panic() {
         assert_eq!(
             parse_query_string("bad=%xx&ok=yes"),
-            vec![("ok".to_string(), "yes".to_string())]
+            vec![
+                ("bad".to_string(), "%xx".to_string()),
+                ("ok".to_string(), "yes".to_string())
+            ]
+        );
+        assert_eq!(
+            parse_query_string("second=%a&third=%b&decoded=%41"),
+            vec![
+                ("second".to_string(), "%a".to_string()),
+                ("third".to_string(), "%b".to_string()),
+                ("decoded".to_string(), "A".to_string())
+            ]
         );
     }
 
