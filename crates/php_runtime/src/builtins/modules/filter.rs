@@ -891,20 +891,16 @@ fn sanitize_encoded(name: &str, value: &Value, flags: i64) -> BuiltinResult {
 
 fn sanitize_string(name: &str, value: &Value, flags: i64) -> BuiltinResult {
     let input = string_arg(name, value)?;
-    let stripped = strip_filter_tags(input.as_bytes());
-    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
-    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+    let stripped = strip_filter_control_bytes(input.as_bytes(), flags);
     let encode_amp = flags & FILTER_FLAG_ENCODE_AMP != 0;
     let no_encode_quotes = flags & FILTER_FLAG_NO_ENCODE_QUOTES != 0;
-    let output: Vec<u8> = encode_filter_entities(&stripped, |byte| {
+    let encoded = encode_filter_entities(&stripped, |byte| {
         (encode_amp && byte == b'&')
             || (!no_encode_quotes && matches!(byte, b'\'' | b'"'))
             || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
             || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
-    })
-    .into_iter()
-    .filter(|byte| !(strip_low && is_filter_low(*byte)) && !(strip_high && is_filter_high(*byte)))
-    .collect();
+    });
+    let output = strip_filter_tags(&encoded);
     Ok(Value::string(output))
 }
 
@@ -924,17 +920,60 @@ fn sanitize_add_slashes(name: &str, value: &Value) -> BuiltinResult {
     Ok(Value::string(output))
 }
 
+fn strip_filter_control_bytes(input: &[u8], flags: i64) -> Vec<u8> {
+    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+    let strip_backtick = flags & FILTER_FLAG_STRIP_BACKTICK != 0;
+    input
+        .iter()
+        .copied()
+        .filter(|byte| {
+            !(strip_low && is_filter_low(*byte))
+                && !(strip_high && is_filter_high(*byte))
+                && !(strip_backtick && *byte == b'`')
+        })
+        .collect()
+}
+
 fn strip_filter_tags(input: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input.len());
     let mut in_tag = false;
-    for byte in input {
-        match *byte {
-            b'<' => in_tag = true,
-            b'>' if in_tag => in_tag = false,
-            _ if !in_tag => output.push(*byte),
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+
+    for (index, byte) in input.iter().copied().enumerate() {
+        if byte == b'\0' {
+            continue;
+        }
+        if !in_tag {
+            if byte == b'<' {
+                in_tag = true;
+                depth = 0;
+                quote = None;
+            } else {
+                output.push(byte);
+            }
+            continue;
+        }
+
+        match byte {
+            b'<' if quote.is_none() => depth += 1,
+            b'>' if quote.is_none() => {
+                if depth == 0 {
+                    in_tag = false;
+                } else {
+                    depth -= 1;
+                }
+            }
+            b'\'' | b'"' if index != 0 => match quote {
+                Some(open) if open == byte => quote = None,
+                None => quote = Some(byte),
+                _ => {}
+            },
             _ => {}
         }
     }
+
     output
 }
 
@@ -1599,6 +1638,20 @@ mod tests {
                 ],
             ),
             string("")
+        );
+    }
+
+    #[test]
+    fn sanitize_string_strips_nested_legacy_tags() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("!@#$%^&*()><<>+_\"'<br><p /><li />"),
+                    Value::Int(FILTER_SANITIZE_STRING),
+                ],
+            ),
+            string("!@#$%^&*()>")
         );
     }
 
