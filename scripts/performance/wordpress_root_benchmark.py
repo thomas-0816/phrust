@@ -46,6 +46,9 @@ def main() -> int:
     args = parse_args()
     if args.self_test:
         return self_test()
+    if args.compare:
+        args.baseline = args.compare
+        args.strict = True
     out_dir = output_dir(args)
     out_dir.mkdir(parents=True, exist_ok=True)
     report = run(args, out_dir)
@@ -53,7 +56,13 @@ def main() -> int:
     write_markdown(report, out_dir / "summary.md")
     print(f"[{report['status']}] wordpress root benchmark wrote {rel(out_dir / 'summary.md')}")
     if report["status"] == "skip":
-        return 0
+        # Missing WordPress must never look like a pass in strict/compare mode.
+        return 2 if (args.strict and args.compare) else 0
+    if report["status"] == "pass" and args.record_baseline:
+        baseline_path = repo_path(args.record_baseline)
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(report, baseline_path)
+        print(f"[ok] recorded baseline at {rel(baseline_path)}")
     if report["status"] == "fail":
         return 1 if args.strict else 0
     return 0
@@ -74,6 +83,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--out-dir", default="")
     parser.add_argument("--baseline", default=os.environ.get("PHRUST_WORDPRESS_ROOT_BASELINE", ""))
+    parser.add_argument(
+        "--record-baseline",
+        default=os.environ.get("PHRUST_WORDPRESS_ROOT_RECORD_BASELINE", ""),
+        help="write this run's summary.json to the given path as the new baseline",
+    )
+    parser.add_argument(
+        "--compare",
+        default=os.environ.get("PHRUST_WORDPRESS_ROOT_COMPARE", ""),
+        help="compare against a recorded baseline and fail on regression (implies --strict)",
+    )
     parser.add_argument(
         "--samples",
         type=int,
@@ -487,6 +506,51 @@ def compare_baseline(
                 f"root latency regressed by {delta_pct:.1f}% "
                 f"(current {current:.3f} ms, baseline {previous:.3f} ms)"
             )
+    baseline_summary_dict = as_dict(baseline.get("summary"))
+
+    def metric_regression(
+        label: str,
+        current_value: Any,
+        previous_value: Any,
+        threshold_pct: float,
+    ) -> None:
+        if (
+            isinstance(current_value, (int, float))
+            and isinstance(previous_value, (int, float))
+            and previous_value > 0
+        ):
+            delta = ((current_value - previous_value) / previous_value) * 100.0
+            if delta > threshold_pct:
+                failures.append(
+                    f"{label} regressed by {delta:.1f}% "
+                    f"(current {current_value}, baseline {previous_value})"
+                )
+
+    current_phases = as_dict(summary.get("phases_nanos"))
+    previous_phases = as_dict(baseline_summary_dict.get("phases_nanos"))
+    metric_regression(
+        "php_vm_execution phase",
+        current_phases.get("vm_execution"),
+        previous_phases.get("vm_execution"),
+        max_latency_regression_pct,
+    )
+    current_counters = as_dict(summary.get("core_counters"))
+    previous_counters = as_dict(baseline_summary_dict.get("core_counters"))
+    for counter in (
+        "vm_value_clones",
+        "vm_array_handle_clones",
+        "vm_include_rich_instructions_executed",
+        "vm_bytecode_instructions_executed",
+        "vm_internal_function_dispatches",
+    ):
+        # Clone/dispatch counters are only meaningful when both runs
+        # collected them (nonzero on both sides).
+        metric_regression(
+            counter,
+            current_counters.get(counter),
+            previous_counters.get(counter),
+            10.0,
+        )
     return failures
 
 

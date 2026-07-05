@@ -1074,6 +1074,12 @@ wordpress-root-benchmark:
     if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py
 
+# Regression gate: compare a WordPress root run against a recorded baseline;
+# fails on >5% latency / >10% clone-counter regressions, SKIPs without WordPress.
+wordpress-root-regression-gate *args:
+    if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
+
 # Anti-theater guard: fail performance branches that only add docs, reports,
 # counters, or metric renames without production Rust changes or gates.
 perf-pr-guard *args:
