@@ -20,6 +20,12 @@ fi
 work_dir="$repo_root/target/diagnostics-smoke"
 mkdir -p "$work_dir"
 
+# The smoke asserts full-pipeline debug events (frontend analyze, optimizer),
+# so keep every run cold: isolate the default bytecode cache into this run's
+# work dir and clear it up front.
+export PHRUST_BYTECODE_CACHE_DIR="$work_dir/bytecode-cache"
+rm -rf "$PHRUST_BYTECODE_CACHE_DIR"
+
 cd "$repo_root"
 cargo build -p php_vm_cli -p php_server >/dev/null
 
@@ -147,7 +153,10 @@ run_diagnostics_smoke() {
 
   printf '<?php require "missing.php";\n' > "$tmp/include.php"
   expect_failure "$bin_dir/php-vm" run "$tmp/include.php" >"$tmp/include.out" 2>"$tmp/include.err"
-  grep -q 'E_PHP_VM_INCLUDE_MISSING' "$tmp/include.err"
+  # Missing requires render php-src-accurate Warning + Fatal error output on
+  # stdout (matching the reference oracle) instead of an internal envelope.
+  grep -q "Failed opening required 'missing.php'" "$tmp/include.out"
+  assert_no_vague_text "$tmp/include.out"
   assert_no_vague_text "$tmp/include.err"
 
   cargo test -p php_vm vm_step_limit_has_shared_envelope_context --quiet >/dev/null

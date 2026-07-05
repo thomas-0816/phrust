@@ -1,5 +1,13 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Gates must be hermetic and deterministic under php-vm's default-on caching:
+# keep the bytecode cache repo-local (never the user cache directory) and
+# disable the default persistent-feedback sidecar, whose seeding shifts
+# adaptive counters between otherwise identical runs. Explicit per-gate flags
+# and pre-set environment values still win.
+export PHRUST_BYTECODE_CACHE_DIR := env_var_or_default("PHRUST_BYTECODE_CACHE_DIR", justfile_directory() / "target" / "gate-bytecode-cache")
+export PHRUST_PERSISTENT_FEEDBACK := env_var_or_default("PHRUST_PERSISTENT_FEEDBACK", "off")
+
 help:
     @printf '%s\n' \
       'Available commands:' \
