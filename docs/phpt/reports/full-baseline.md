@@ -7,8 +7,8 @@ Generated: `20260624T210848Z`
 | Outcome | Count |
 | --- | ---: |
 | BORK | 455 |
-| FAIL | 19955 |
-| PASS | 1074 |
+| FAIL | 19950 |
+| PASS | 1079 |
 | SKIP | 64 |
 
 ## Top Failure Clusters
@@ -17,7 +17,7 @@ Generated: `20260624T210848Z`
 | --- | ---: |
 | runtime-error-or-diagnostic | 11387 |
 | runtime-unsupported-feature | 6183 |
-| runtime-output-mismatch | 2314 |
+| runtime-output-mismatch | 2309 |
 | needs-triage | 320 |
 | frontend-parse-or-compile | 187 |
 | runtime-timeout | 19 |

@@ -2,14 +2,14 @@
 
 - Strategy: validation and sanitization MVP
 - Selected manifest: `tests/phpt/manifests/modules/filter.selected.jsonl`
-- Selected close gate: 46 PASS, 0 SKIP, 0 FAIL, 0 BORK from 46 selected fixtures
-- Upstream corpus snapshot before the selected gate: 43 PASS, 3 XFAIL, 68 FAIL,
+- Selected close gate: 51 PASS, 0 SKIP, 0 FAIL, 0 BORK from 51 selected fixtures
+- Upstream corpus snapshot before the selected gate: 48 PASS, 3 XFAIL, 63 FAIL,
   0 BORK from 114 corpus candidates
 - Selected fixtures:
   - `tests/phpt/generated/filter/basic.phpt`
   - `tests/phpt/generated/filter/arrays.phpt`
   - `tests/phpt/generated/filter/options-callback.phpt`
-  - 43 target-green upstream rows from `ext/filter/tests`
+  - 48 target-green upstream rows from `ext/filter/tests`
 
 ## Implemented Surface
 
@@ -55,17 +55,23 @@ return the normal filter failure value (`false` or `null` with
 The CLI startup path emits the upstream `filter.default` deprecation diagnostic
 when PHPT-style startup error display is enabled.
 
+PHPT CLI request fixtures populate `$_GET`, `$_POST`, `$_COOKIE`, and
+`$_REQUEST` from the harness environment, including `filter.default` request
+input handling for promoted `special_chars` and stripped cases. The startup
+deprecation for `filter.default` is suppressed when `error_reporting` masks
+`E_DEPRECATED`, matching the promoted php-src rows.
+
 ## Gaps
 
 The full PHP filter option matrix, remaining exact filter flag behavior,
-request input edge cases, VM-dispatched user function and closure callbacks,
+remaining request input edge cases, VM-dispatched user function and closure callbacks,
 throw-on-failure mode, remaining exact warning/deprecation text, and
 locale-specific numeric parsing remain out of scope.
 
-The full upstream target sweep measured 43 PASS, 3 XFAIL, and 68 FAIL from 114
+The full upstream target sweep measured 48 PASS, 3 XFAIL, and 63 FAIL from 114
 `ext/filter/tests` rows. The remaining unpromoted rows are dominated by
 stricter PHP URL/email/IP quirks, remaining filter flag behavior, callback
-dispatch, request/superglobal edge cases, array-to-string conversion behavior,
+dispatch, deeper request/superglobal edge cases, array-to-string conversion behavior,
 and exact warning/deprecation output.
 
 ## Target Gates

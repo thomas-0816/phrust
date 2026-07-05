@@ -3,7 +3,8 @@ use php_diagnostics::DiagnosticOutputFormat;
 use php_runtime::{
     PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,
     PHP_E_USER_NOTICE, PHP_E_USER_WARNING, PHP_E_WARNING, PhpDiagnosticChannel,
-    PhpDiagnosticLocation, format_php_diagnostic_line,
+    PhpDiagnosticLocation, RuntimeInputFilter, error_reporting_allows_level,
+    format_php_diagnostic_line,
 };
 use std::env;
 use std::ffi::OsString;
@@ -655,6 +656,9 @@ fn ini_options(defines: &[(String, String)]) -> CliIniOptions {
                     options.error_reporting = Some(mask);
                 }
             }
+            "filter.default" => {
+                options.default_input_filter = RuntimeInputFilter::from_ini_value(value);
+            }
             _ if name.starts_with("opcache.") => {}
             _ => {}
         }
@@ -667,6 +671,11 @@ fn emit_startup_ini_deprecations<W: Write>(
     options: &CliIniOptions,
 ) -> Result<(), String> {
     if !options.display_startup_errors.unwrap_or(false) {
+        return Ok(());
+    }
+    if let Some(mask) = options.error_reporting
+        && !error_reporting_allows_level(mask, PHP_E_DEPRECATED)
+    {
         return Ok(());
     }
     if options
@@ -958,6 +967,16 @@ mod tests {
     }
 
     #[test]
+    fn ini_options_parse_filter_default() {
+        let options = ini_options(&[("filter.default".to_string(), "special_chars".to_string())]);
+
+        assert_eq!(
+            options.default_input_filter,
+            Some(RuntimeInputFilter::SpecialChars)
+        );
+    }
+
+    #[test]
     fn run_code_prints_php_version() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let mut stdin = TestInput(Cursor::new(Vec::new()));
@@ -1241,6 +1260,38 @@ mod tests {
         let status = run(
             [
                 "-n".to_string(),
+                "-d".to_string(),
+                "filter.default=special_chars".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(String::from_utf8(stdout).expect("utf8"), "Done\n");
+        assert_eq!(stderr, b"");
+    }
+
+    #[test]
+    fn run_file_honors_error_reporting_for_filter_default_startup_deprecation() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = temp_root("filter-default-startup-deprecation-masked");
+        fs::create_dir_all(&root).expect("mkdir");
+        let script = root.join("fixture.php");
+        fs::write(&script, "<?php echo \"Done\\n\";").expect("write script");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            [
+                "-n".to_string(),
+                "-d".to_string(),
+                "display_startup_errors=1".to_string(),
+                "-d".to_string(),
+                "error_reporting=E_ALL&~E_DEPRECATED".to_string(),
                 "-d".to_string(),
                 "filter.default=special_chars".to_string(),
                 script.to_string_lossy().into_owned(),

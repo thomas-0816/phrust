@@ -1,6 +1,11 @@
 {"path":"tests/phpt/generated/filter/basic.phpt"}
 {"path":"tests/phpt/generated/filter/arrays.phpt"}
 {"path":"tests/phpt/generated/filter/options-callback.phpt"}
+{"path":"ext/filter/tests/001.phpt"}
+{"path":"ext/filter/tests/002.phpt"}
+{"path":"ext/filter/tests/003.phpt"}
+{"path":"ext/filter/tests/004.phpt"}
+{"path":"ext/filter/tests/005.phpt"}
 {"path":"ext/filter/tests/006.phpt"}
 {"path":"ext/filter/tests/007.phpt"}
 {"path":"ext/filter/tests/008.phpt"}

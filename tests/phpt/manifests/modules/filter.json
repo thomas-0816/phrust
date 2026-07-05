@@ -4,12 +4,12 @@
   "priority": "Validation and sanitization MVP",
   "selected_manifest": "tests/phpt/manifests/modules/filter.selected.jsonl",
   "corpus_count": 114,
-  "selected_count": 46,
-  "pass_count": 46,
+  "selected_count": 51,
+  "pass_count": 51,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 71,
+  "known_failure_count": 66,
   "scope": [
     "WordPress-relevant scalar validation and sanitization",
     "Common filter metadata and array helper paths",
@@ -22,10 +22,13 @@
     "Recursive FILTER_REQUIRE_ARRAY scalar validation",
     "FILTER_SANITIZE_SPECIAL_CHARS decimal entity escaping",
     "Missing filter_input NULL_ON_FAILURE return mode",
-    "php-src filter_list ordering"
+    "php-src filter_list ordering",
+    "CLI PHPT request superglobal seeding for GET, POST, COOKIE, and REQUEST",
+    "filter.default request input filtering for promoted special_chars and stripped rows",
+    "E_DEPRECATED-masked filter.default startup diagnostic suppression"
   ],
   "non_scope": [
-    "Remaining 71 ext/filter upstream rows",
+    "Remaining 66 ext/filter upstream rows",
     "Full PHP filter option matrix",
     "VM-dispatched user callback and closure filter execution",
     "Remaining exact filter flag behavior matrix and warning/deprecation text"

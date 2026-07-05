@@ -15,6 +15,8 @@ pub struct RuntimeIniOptions {
     pub error_reporting: ErrorReporting,
     /// Placeholder for display_errors-style behavior.
     pub display_errors: bool,
+    /// Default input filter applied while materializing request superglobals.
+    pub default_input_filter: RuntimeInputFilter,
     /// Maximum decoded input variables materialized into each superglobal.
     pub max_input_vars: usize,
     /// Maximum PHP-style bracket nesting materialized for input names.
@@ -26,8 +28,34 @@ impl Default for RuntimeIniOptions {
         Self {
             error_reporting: ErrorReporting::default(),
             display_errors: true,
+            default_input_filter: RuntimeInputFilter::UnsafeRaw,
             max_input_vars: 1000,
             max_input_nesting_level: 64,
+        }
+    }
+}
+
+/// Runtime subset of PHP's `filter.default` INI directive for request input.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RuntimeInputFilter {
+    /// Preserve decoded input values without additional filtering.
+    #[default]
+    UnsafeRaw,
+    /// Strip simple HTML/XML tags from decoded input values.
+    Stripped,
+    /// Encode special characters using decimal HTML entities.
+    SpecialChars,
+}
+
+impl RuntimeInputFilter {
+    /// Parses the stable filter names accepted by PHP's `filter.default`.
+    #[must_use]
+    pub fn from_ini_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "unsafe_raw" => Some(Self::UnsafeRaw),
+            "string" | "stripped" => Some(Self::Stripped),
+            "special_chars" | "full_special_chars" => Some(Self::SpecialChars),
+            _ => None,
         }
     }
 }
@@ -538,6 +566,14 @@ impl RuntimeContext {
             "display_errors",
             if self.ini.display_errors { "1" } else { "0" },
         );
+        let _ = registry.set(
+            "filter.default",
+            match self.ini.default_input_filter {
+                RuntimeInputFilter::UnsafeRaw => "unsafe_raw",
+                RuntimeInputFilter::Stripped => "stripped",
+                RuntimeInputFilter::SpecialChars => "special_chars",
+            },
+        );
         let _ = registry.set("max_input_vars", self.ini.max_input_vars.to_string());
         let _ = registry.set(
             "max_input_nesting_level",
@@ -762,14 +798,22 @@ impl RuntimeContext {
     fn get_array(&self) -> PhpArray {
         match &self.request_mode {
             RuntimeRequestMode::Http(request) => input_pairs_array(&request.parsed_get, &self.ini),
-            RuntimeRequestMode::Cli => PhpArray::new(),
+            RuntimeRequestMode::Cli => self
+                .env_value("QUERY_STRING")
+                .map_or_else(PhpArray::new, |query| {
+                    input_pairs_array(&parse_query_string(query), &self.ini)
+                }),
         }
     }
 
     fn post_array(&self) -> PhpArray {
         match &self.request_mode {
             RuntimeRequestMode::Http(request) => input_pairs_array(&request.parsed_post, &self.ini),
-            RuntimeRequestMode::Cli => PhpArray::new(),
+            RuntimeRequestMode::Cli => self
+                .env_value("PHPT_REQUEST_BODY")
+                .map_or_else(PhpArray::new, |body| {
+                    input_pairs_array(&parse_form_urlencoded_body(body.as_bytes()), &self.ini)
+                }),
         }
     }
 
@@ -778,7 +822,11 @@ impl RuntimeContext {
             RuntimeRequestMode::Http(request) => {
                 flat_pairs_array(&request.parsed_cookie, &self.ini)
             }
-            RuntimeRequestMode::Cli => PhpArray::new(),
+            RuntimeRequestMode::Cli => self
+                .env_value("HTTP_COOKIE")
+                .map_or_else(PhpArray::new, |cookie| {
+                    flat_pairs_array(&parse_cookie_header(cookie), &self.ini)
+                }),
         }
     }
 
@@ -792,7 +840,20 @@ impl RuntimeContext {
                 builder.insert_flat_pairs(&mut array, &request.parsed_cookie);
                 array
             }
-            RuntimeRequestMode::Cli => PhpArray::new(),
+            RuntimeRequestMode::Cli => {
+                let mut array = PhpArray::new();
+                let mut builder = InputArrayBuilder::new(&self.ini);
+                if let Some(query) = self.env_value("QUERY_STRING") {
+                    builder.insert_pairs(&mut array, &parse_query_string(query));
+                }
+                if let Some(body) = self.env_value("PHPT_REQUEST_BODY") {
+                    builder.insert_pairs(&mut array, &parse_form_urlencoded_body(body.as_bytes()));
+                }
+                if let Some(cookie) = self.env_value("HTTP_COOKIE") {
+                    builder.insert_flat_pairs(&mut array, &parse_cookie_header(cookie));
+                }
+                array
+            }
         }
     }
 
@@ -912,6 +973,7 @@ enum InputKeySegment {
 struct InputArrayBuilder {
     remaining_vars: usize,
     max_input_nesting_level: usize,
+    default_filter: RuntimeInputFilter,
 }
 
 impl InputArrayBuilder {
@@ -919,6 +981,7 @@ impl InputArrayBuilder {
         Self {
             remaining_vars: ini.max_input_vars,
             max_input_nesting_level: ini.max_input_nesting_level,
+            default_filter: ini.default_input_filter,
         }
     }
 
@@ -930,7 +993,7 @@ impl InputArrayBuilder {
             let Some(segments) = parse_input_key_segments(key, self.max_input_nesting_level) else {
                 continue;
             };
-            insert_input_value(array, &segments, value);
+            insert_input_value(array, &segments, self.filter_value(value));
         }
     }
 
@@ -939,7 +1002,7 @@ impl InputArrayBuilder {
             if !self.consume_var() {
                 break;
             }
-            insert_string(array, key, value);
+            array.insert(string_key(key), self.filter_value(value));
         }
     }
 
@@ -949,6 +1012,14 @@ impl InputArrayBuilder {
         }
         self.remaining_vars -= 1;
         true
+    }
+
+    fn filter_value(&self, value: &str) -> Value {
+        match self.default_filter {
+            RuntimeInputFilter::UnsafeRaw => Value::string(value.as_bytes().to_vec()),
+            RuntimeInputFilter::Stripped => Value::string(strip_input_tags(value)),
+            RuntimeInputFilter::SpecialChars => Value::string(encode_input_special_chars(value)),
+        }
     }
 }
 
@@ -990,8 +1061,35 @@ fn parse_input_key_segments(key: &str, max_nesting_level: usize) -> Option<Vec<I
     Some(segments)
 }
 
-fn insert_input_value(array: &mut PhpArray, segments: &[InputKeySegment], value: &str) {
-    insert_input_at(array, segments, Value::string(value.as_bytes().to_vec()));
+fn insert_input_value(array: &mut PhpArray, segments: &[InputKeySegment], value: Value) {
+    insert_input_at(array, segments, value);
+}
+
+fn strip_input_tags(value: &str) -> Vec<u8> {
+    let mut output = Vec::with_capacity(value.len());
+    let mut in_tag = false;
+    for byte in value.bytes() {
+        match byte {
+            b'<' => in_tag = true,
+            b'>' if in_tag => in_tag = false,
+            _ if !in_tag => output.push(byte),
+            _ => {}
+        }
+    }
+    output
+}
+
+fn encode_input_special_chars(value: &str) -> Vec<u8> {
+    let mut output = Vec::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'"' | b'\'' | b'<' | b'>' | b'&' => {
+                output.extend_from_slice(format!("&#{};", byte).as_bytes());
+            }
+            _ => output.push(byte),
+        }
+    }
+    output
 }
 
 fn insert_input_at(array: &mut PhpArray, segments: &[InputKeySegment], value: Value) {
@@ -1245,8 +1343,8 @@ fn hex_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::{
         RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions,
-        RuntimeUploadedFile, StrictTypesInfo, UploadRegistry, input_pairs_array,
-        parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
+        RuntimeInputFilter, RuntimeUploadedFile, StrictTypesInfo, UploadRegistry,
+        input_pairs_array, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
     };
     use crate::{ArrayKey, PhpString, Value};
 
@@ -1554,6 +1652,65 @@ mod tests {
         assert!(global_array(&context, "_COOKIE").is_empty());
         assert!(global_array(&context, "_REQUEST").is_empty());
         assert!(global_array(&context, "_FILES").is_empty());
+    }
+
+    #[test]
+    fn cli_phpt_environment_populates_input_superglobals() {
+        let context = RuntimeContext::controlled_cli("script.php", Vec::new()).with_env(vec![
+            ("QUERY_STRING".to_string(), "a=1&b=&c=3".to_string()),
+            ("REQUEST_METHOD".to_string(), "POST".to_string()),
+            ("PHPT_REQUEST_BODY".to_string(), "d=4&e=5".to_string()),
+            ("HTTP_COOKIE".to_string(), "sid=abc".to_string()),
+        ]);
+
+        let get = global_array(&context, "_GET");
+        assert_string(&get, "a", "1");
+        assert_string(&get, "b", "");
+        assert_string(&get, "c", "3");
+
+        let post = global_array(&context, "_POST");
+        assert_string(&post, "d", "4");
+        assert_string(&post, "e", "5");
+
+        let cookie = global_array(&context, "_COOKIE");
+        assert_string(&cookie, "sid", "abc");
+
+        let request = global_array(&context, "_REQUEST");
+        assert_string(&request, "a", "1");
+        assert_string(&request, "b", "");
+        assert_string(&request, "c", "3");
+        assert_string(&request, "d", "4");
+        assert_string(&request, "e", "5");
+        assert_string(&request, "sid", "abc");
+    }
+
+    #[test]
+    fn cli_input_superglobals_apply_filter_default_special_chars() {
+        let mut context = RuntimeContext::controlled_cli("script.php", Vec::new()).with_env(vec![
+            (
+                "QUERY_STRING".to_string(),
+                "a=O%27Henry&c=%3Cb%3EBold%3C%2Fb%3E".to_string(),
+            ),
+            (
+                "PHPT_REQUEST_BODY".to_string(),
+                "d=%22quotes%22&e=%5Cslash".to_string(),
+            ),
+        ]);
+        context.ini.default_input_filter = RuntimeInputFilter::SpecialChars;
+
+        let get = global_array(&context, "_GET");
+        assert_string(&get, "a", "O&#39;Henry");
+        assert_string(&get, "c", "&#60;b&#62;Bold&#60;/b&#62;");
+
+        let post = global_array(&context, "_POST");
+        assert_string(&post, "d", "&#34;quotes&#34;");
+        assert_string(&post, "e", "\\slash");
+
+        let request = global_array(&context, "_REQUEST");
+        assert_string(&request, "a", "O&#39;Henry");
+        assert_string(&request, "c", "&#60;b&#62;Bold&#60;/b&#62;");
+        assert_string(&request, "d", "&#34;quotes&#34;");
+        assert_string(&request, "e", "\\slash");
     }
 
     #[test]

@@ -85,6 +85,9 @@ pub(crate) fn runtime_context_for(
     if let Some(display_errors) = input.ini.display_errors {
         context.ini.display_errors = display_errors;
     }
+    if let Some(default_input_filter) = input.ini.default_input_filter {
+        context.ini.default_input_filter = default_input_filter;
+    }
     let mut capabilities = FilesystemCapabilities::none().with_stdio(true);
     if let Some(loader) = include_loader {
         capabilities = capabilities.with_allowed_roots(loader.allowed_roots().to_vec());

@@ -23,6 +23,7 @@ pub struct CliIniOptions {
     pub display_errors: Option<bool>,
     pub display_startup_errors: Option<bool>,
     pub error_reporting: Option<i64>,
+    pub default_input_filter: Option<php_runtime::api::RuntimeInputFilter>,
     /// Raw `-d name=value` ini overrides forwarded to the runtime registry.
     pub overrides: Vec<(String, String)>,
 }

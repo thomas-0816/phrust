@@ -74,9 +74,10 @@ pub mod api {
     };
     pub use crate::context::{
         ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
-        RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeRequestMode,
-        RuntimeUploadedFile, SessionLoadCallback, StrictTypesInfo, UploadRegistry,
-        UploadRegistryEntry, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
+        RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeInputFilter,
+        RuntimeRequestMode, RuntimeUploadedFile, SessionLoadCallback, StrictTypesInfo,
+        UploadRegistry, UploadRegistryEntry, parse_cookie_header, parse_form_urlencoded_body,
+        parse_query_string,
     };
     pub use crate::convert::{
         ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, identical,
@@ -223,9 +224,9 @@ pub use callable::{
 };
 pub use context::{
     ErrorReporting, ProcessCapability, RuntimeContext, RuntimeHttpHeader,
-    RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeRequestMode,
-    RuntimeUploadedFile, SessionLoadCallback, StrictTypesInfo, UploadRegistry, UploadRegistryEntry,
-    parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
+    RuntimeHttpRequestContext, RuntimeHttpResponseState, RuntimeIniOptions, RuntimeInputFilter,
+    RuntimeRequestMode, RuntimeUploadedFile, SessionLoadCallback, StrictTypesInfo, UploadRegistry,
+    UploadRegistryEntry, parse_cookie_header, parse_form_urlencoded_body, parse_query_string,
 };
 pub use convert::{
     ArithmeticNumber, NumericValue, compare, compare_php, equal, equal_php, identical,

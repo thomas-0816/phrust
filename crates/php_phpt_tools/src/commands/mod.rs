@@ -2174,7 +2174,12 @@ fn env_args(sections: &[PhptSection]) -> Vec<(String, String)> {
                         "REQUEST_METHOD".to_string(),
                         section_name.replace("_RAW", ""),
                     ));
-                    env.push(("PHPT_REQUEST_BODY".to_string(), section.body.clone()));
+                    let body = if section_name == "POST" {
+                        section.body.trim_end_matches(['\r', '\n']).to_string()
+                    } else {
+                        section.body.clone()
+                    };
+                    env.push(("PHPT_REQUEST_BODY".to_string(), body));
                 }
                 "COOKIE" => env.push(("HTTP_COOKIE".to_string(), section.body.trim().to_string())),
                 "ENV" => {
@@ -6108,6 +6113,20 @@ mod tests {
         let sections =
             parse_phpt("--TEST--\nt\n--SKIPIF--\n<?php\n--FILE--\n<?php\n--EXPECT--\n").sections;
         assert!(skipif_env_args_for_stdio(&sections, false).is_empty());
+    }
+
+    #[test]
+    fn env_args_trim_urlencoded_post_section_trailing_newline() {
+        let sections =
+            parse_phpt("--TEST--\nt\n--POST--\nd=4&e=5\n--FILE--\n<?php\n--EXPECT--\n").sections;
+
+        assert_eq!(
+            env_args(&sections),
+            vec![
+                ("REQUEST_METHOD".to_string(), "POST".to_string()),
+                ("PHPT_REQUEST_BODY".to_string(), "d=4&e=5".to_string())
+            ]
+        );
     }
 
     #[test]
