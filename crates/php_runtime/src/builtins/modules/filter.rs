@@ -66,6 +66,8 @@ const FILTER_FORCE_ARRAY: i64 = 67_108_864;
 const FILTER_NULL_ON_FAILURE: i64 = 134_217_728;
 const FILTER_FLAG_ALLOW_OCTAL: i64 = 1;
 const FILTER_FLAG_ALLOW_HEX: i64 = 2;
+const FILTER_FLAG_ENCODE_LOW: i64 = 16;
+const FILTER_FLAG_ENCODE_HIGH: i64 = 32;
 const FILTER_FLAG_ALLOW_FRACTION: i64 = 4_096;
 const FILTER_FLAG_ALLOW_THOUSAND: i64 = 8_192;
 const FILTER_FLAG_ALLOW_SCIENTIFIC: i64 = 16_384;
@@ -79,11 +81,11 @@ const FILTER_NAMES: &[(&str, i64)] = &[
     ("boolean", FILTER_VALIDATE_BOOL),
     ("float", FILTER_VALIDATE_FLOAT),
     ("validate_regexp", FILTER_VALIDATE_REGEXP),
+    ("validate_domain", FILTER_VALIDATE_DOMAIN),
     ("validate_url", FILTER_VALIDATE_URL),
     ("validate_email", FILTER_VALIDATE_EMAIL),
     ("validate_ip", FILTER_VALIDATE_IP),
     ("validate_mac", FILTER_VALIDATE_MAC),
-    ("validate_domain", FILTER_VALIDATE_DOMAIN),
     ("string", FILTER_SANITIZE_STRING),
     ("stripped", FILTER_SANITIZE_STRING),
     ("encoded", FILTER_SANITIZE_ENCODED),
@@ -160,7 +162,7 @@ fn apply_filter(
         for (key, value) in array.iter() {
             output.insert(
                 key.clone(),
-                apply_filter_scalar(context, name, value, filter, options, span.clone())?,
+                apply_filter_array_value(context, name, value, filter, options, span.clone())?,
             );
         }
         return Ok(Value::Array(output));
@@ -175,6 +177,28 @@ fn apply_filter(
         return Ok(Value::Array(PhpArray::from_packed(vec![filtered])));
     }
     Ok(filtered)
+}
+
+fn apply_filter_array_value(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    value: &Value,
+    filter: i64,
+    options: &FilterOptions,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    let Value::Array(array) = deref_value(value) else {
+        return apply_filter_scalar(context, name, value, filter, options, span);
+    };
+
+    let mut output = PhpArray::new();
+    for (key, value) in array.iter() {
+        output.insert(
+            key.clone(),
+            apply_filter_array_value(context, name, value, filter, options, span.clone())?,
+        );
+    }
+    Ok(Value::Array(output))
 }
 
 fn apply_filter_scalar(
@@ -200,13 +224,28 @@ fn apply_filter_scalar(
         FILTER_VALIDATE_BOOL => validate_bool(name, value, options.flags, failure),
         FILTER_SANITIZE_EMAIL => sanitize(name, value, is_email_sanitize_byte),
         FILTER_SANITIZE_URL => sanitize(name, value, is_url_sanitize_byte),
+        FILTER_SANITIZE_SPECIAL_CHARS | FILTER_SANITIZE_FULL_SPECIAL_CHARS => {
+            sanitize_special_chars(name, value, options.flags)
+        }
         FILTER_SANITIZE_NUMBER_INT => sanitize(name, value, |byte| {
             byte.is_ascii_digit() || byte == b'+' || byte == b'-'
         }),
         FILTER_SANITIZE_NUMBER_FLOAT => sanitize_number_float(name, value, options.flags),
         FILTER_CALLBACK => apply_callback_filter(context, name, value, options, span),
-        _ => Ok(failure),
+        _ if is_known_filter_id(filter) => Ok(failure),
+        _ => {
+            context.php_warning(
+                "E_PHP_RUNTIME_FILTER_UNKNOWN_ID",
+                format!("{name}(): Unknown filter with ID {filter}"),
+                span,
+            );
+            Ok(failure)
+        }
     }
+}
+
+fn is_known_filter_id(filter: i64) -> bool {
+    FILTER_NAMES.iter().any(|(_, id)| *id == filter)
 }
 
 fn filter_failure(flags: i64) -> Value {
@@ -333,9 +372,6 @@ fn builtin_filter_input(
     }
     let source = int_arg("filter_input", &args[0])?;
     let name = string_arg("filter_input", &args[1])?.to_string_lossy();
-    let Some(value) = context.filter_input_value(source, &name) else {
-        return Ok(Value::Null);
-    };
     let filter = args
         .get(2)
         .map(|value| int_arg("filter_input", value))
@@ -346,6 +382,13 @@ fn builtin_filter_input(
         .map(|value| filter_options("filter_input", value))
         .transpose()?
         .unwrap_or_default();
+    let Some(value) = context.filter_input_value(source, &name) else {
+        return Ok(if options.flags & FILTER_NULL_ON_FAILURE != 0 {
+            Value::Bool(false)
+        } else {
+            Value::Null
+        });
+    };
     apply_filter(context, "filter_input", &value, filter, &options, span)
 }
 
@@ -712,6 +755,22 @@ fn sanitize_number_float(name: &str, value: &Value, flags: i64) -> BuiltinResult
     })
 }
 
+fn sanitize_special_chars(name: &str, value: &Value, flags: i64) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    let mut output = Vec::new();
+    for byte in input.as_bytes() {
+        if matches!(*byte, b'<' | b'>' | b'&')
+            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && *byte < 0x20)
+            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && *byte >= 0x80)
+        {
+            output.extend_from_slice(format!("&#{};", byte).as_bytes());
+        } else {
+            output.push(*byte);
+        }
+    }
+    Ok(Value::string(output))
+}
+
 fn is_email_sanitize_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"!#$%&'*+-=?^_`{|}~@.[]".contains(&byte)
 }
@@ -763,6 +822,39 @@ mod tests {
         let Value::Array(filters) = call("filter_list", vec![]) else {
             panic!("filter_list should return an array");
         };
+        let names = filters
+            .iter()
+            .map(|(_, value)| match value {
+                Value::String(name) => name.to_string_lossy(),
+                other => panic!("expected string filter name, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "int",
+                "boolean",
+                "float",
+                "validate_regexp",
+                "validate_domain",
+                "validate_url",
+                "validate_email",
+                "validate_ip",
+                "validate_mac",
+                "string",
+                "stripped",
+                "encoded",
+                "special_chars",
+                "full_special_chars",
+                "unsafe_raw",
+                "email",
+                "url",
+                "number_int",
+                "number_float",
+                "add_slashes",
+                "callback",
+            ]
+        );
         assert!(filters.iter().any(|(_, value)| value == &string("int")));
         assert!(
             filters
@@ -1029,6 +1121,57 @@ mod tests {
     }
 
     #[test]
+    fn filter_require_array_recurses_into_nested_arrays() {
+        let input = Value::packed_array(vec![
+            string("1"),
+            Value::packed_array(vec![string("2"), string("x")]),
+        ]);
+        let Value::Array(result) = call(
+            "filter_var",
+            vec![
+                input,
+                Value::Int(FILTER_VALIDATE_INT),
+                Value::Int(FILTER_REQUIRE_ARRAY),
+            ],
+        ) else {
+            panic!("FILTER_REQUIRE_ARRAY should map arrays");
+        };
+        assert_eq!(result.get(&ArrayKey::Int(0)), Some(&Value::Int(1)));
+        let Some(Value::Array(nested)) = result.get(&ArrayKey::Int(1)) else {
+            panic!("nested arrays should be preserved");
+        };
+        assert_eq!(nested.get(&ArrayKey::Int(0)), Some(&Value::Int(2)));
+        assert_eq!(nested.get(&ArrayKey::Int(1)), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn sanitize_special_chars_uses_decimal_entities() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("<data&sons>"),
+                    Value::Int(FILTER_SANITIZE_SPECIAL_CHARS),
+                ],
+            ),
+            string("&#60;data&#38;sons&#62;")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("кириллица"),
+                    Value::Int(FILTER_SANITIZE_SPECIAL_CHARS),
+                    Value::Int(FILTER_FLAG_ENCODE_HIGH),
+                ],
+            ),
+            string(
+                "&#208;&#186;&#208;&#184;&#209;&#128;&#208;&#184;&#208;&#187;&#208;&#187;&#208;&#184;&#209;&#134;&#208;&#176;"
+            )
+        );
+    }
+
+    #[test]
     fn sanitize_number_float_respects_flags() {
         assert_eq!(
             call(
@@ -1078,5 +1221,42 @@ mod tests {
             panic!("filter_input_array should return an array");
         };
         assert_eq!(result.get(&string_key("id")), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn filter_input_missing_value_respects_null_on_failure() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let result = ENTRIES
+            .iter()
+            .find(|entry| entry.name() == "filter_input")
+            .expect("filter_input entry")
+            .function()(
+            &mut context,
+            vec![
+                Value::Int(1),
+                string("missing"),
+                Value::Int(FILTER_VALIDATE_INT),
+                Value::Int(FILTER_NULL_ON_FAILURE),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("filter_input succeeds");
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn known_unimplemented_filter_ids_fail_without_unknown_filter_warning() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("example.com"),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_NULL_ON_FAILURE),
+                ],
+            ),
+            Value::Null
+        );
     }
 }
