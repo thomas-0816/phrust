@@ -6363,16 +6363,31 @@ impl Vm {
                 self.observe_dense_quickening(unit_id, function_id, dense_instruction_index);
                 match instruction.opcode {
                     DenseOpcode::Nop => {}
-                    DenseOpcode::LoadConst => {
-                        let DenseOperands::RegConst { dst, constant } = instruction.operands else {
-                            let result = self.invalid_bytecode_operand_shape(
-                                output,
-                                compiled,
-                                stack,
-                                instruction,
-                            );
-                            stack.pop_recycle();
-                            return result;
+                    DenseOpcode::LoadConst | DenseOpcode::LoadConstLoadConst => {
+                        // The fused form appends a second constant load into
+                        // another register after the unchanged first load.
+                        let (dst, constant, fused_const) = match instruction.operands {
+                            DenseOperands::RegConst { dst, constant } => (dst, constant, None),
+                            DenseOperands::LoadConstPair {
+                                first_dst,
+                                first_constant,
+                                second_dst,
+                                second_constant,
+                            } => (
+                                first_dst,
+                                first_constant,
+                                Some((second_dst, second_constant)),
+                            ),
+                            _ => {
+                                let result = self.invalid_bytecode_operand_shape(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    instruction,
+                                );
+                                stack.pop_recycle();
+                                return result;
+                            }
                         };
                         let value = match self
                             .constant_value(compiled.unit(), ConstId::new(constant))
@@ -6393,6 +6408,29 @@ impl Vm {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
                             return result;
+                        }
+                        if let Some((second_dst, second_constant)) = fused_const {
+                            let value = match self
+                                .constant_value(compiled.unit(), ConstId::new(second_constant))
+                            {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            };
+                            if let Err(message) = stack
+                                .current_mut()
+                                .expect("bytecode frame was pushed")
+                                .registers
+                                .set(RegId::new(second_dst), value)
+                            {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
                         }
                     }
                     DenseOpcode::LoadConstEcho => {
@@ -8420,22 +8458,64 @@ impl Vm {
                             return result;
                         }
                     }
-                    DenseOpcode::ArrayInsert => {
-                        let DenseOperands::ArrayInsert {
-                            array,
-                            key,
-                            value,
-                            by_ref_local,
-                        } = instruction.operands
-                        else {
-                            let result = self.invalid_bytecode_operand_shape(
-                                output,
-                                compiled,
-                                stack,
-                                instruction,
-                            );
-                            stack.pop_recycle();
-                            return result;
+                    DenseOpcode::ArrayInsert | DenseOpcode::LoadConstArrayInsert => {
+                        // The fused form writes the constant value register
+                        // first and then runs the unchanged insert sequence.
+                        let (array, key, value, by_ref_local) = match instruction.operands {
+                            DenseOperands::ArrayInsert {
+                                array,
+                                key,
+                                value,
+                                by_ref_local,
+                            } => (array, key, value, by_ref_local),
+                            DenseOperands::LoadConstArrayInsert {
+                                value_dst,
+                                value_constant,
+                                array,
+                                key,
+                            } => {
+                                let constant = match self
+                                    .constant_value(compiled.unit(), ConstId::new(value_constant))
+                                {
+                                    Ok(value) => value,
+                                    Err(message) => {
+                                        let result =
+                                            self.runtime_error(output, compiled, stack, message);
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                };
+                                if let Err(message) = stack
+                                    .current_mut()
+                                    .expect("bytecode frame was pushed")
+                                    .registers
+                                    .set(RegId::new(value_dst), constant)
+                                {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                (
+                                    array,
+                                    key,
+                                    DenseOperand {
+                                        kind: DenseOperandKind::Register,
+                                        index: value_dst,
+                                    },
+                                    None,
+                                )
+                            }
+                            _ => {
+                                let result = self.invalid_bytecode_operand_shape(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    instruction,
+                                );
+                                stack.pop_recycle();
+                                return result;
+                            }
                         };
                         let key = match key {
                             Some(key) => match self
@@ -61410,9 +61490,10 @@ fn dense_binary_op(opcode: DenseOpcode) -> Option<BinaryOp> {
 
 fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
     match opcode {
-        DenseOpcode::LoadConst | DenseOpcode::LoadConstEcho | DenseOpcode::FetchConst => {
-            "constants"
-        }
+        DenseOpcode::LoadConst
+        | DenseOpcode::LoadConstEcho
+        | DenseOpcode::LoadConstLoadConst
+        | DenseOpcode::FetchConst => "constants",
         DenseOpcode::Move
         | DenseOpcode::LoadLocal
         | DenseOpcode::LoadLocalEcho
@@ -61464,6 +61545,7 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         DenseOpcode::LoadLocalLoadConst => "locals",
         DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert
+        | DenseOpcode::LoadConstArrayInsert
         | DenseOpcode::FetchDim
         | DenseOpcode::LoadConstFetchDim
         | DenseOpcode::AssignDim
@@ -69593,6 +69675,71 @@ var_dump(unserialize('O:1:"C":0:{}'));
         // shape is corpus-dependent, but attribution must always be present
         // when the pass is enabled and never when disabled.
         assert_eq!(off_counters.dense_jump_threading_threaded_edges, 0);
+    }
+
+    #[test]
+    fn const_pair_and_const_array_insert_fusions_are_output_identical() {
+        let source = "<?php\n\
+            $total = 0;\n\
+            $rows = [];\n\
+            for ($i = 0; $i < 12; $i++) {\n\
+                $a = 3;\n\
+                $b = 7;\n\
+                $row = ['fixed', 42, 'tail'];\n\
+                $rows['k' . $i] = 42;\n\
+                $total += $a + $b + $row[1];\n\
+            }\n\
+            echo $total, ':', count($rows);";
+        let unfused = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                execution_format: ExecutionFormat::Bytecode,
+                superinstructions: SuperinstructionMode::Off,
+                ..VmOptions::default()
+            },
+        );
+        let fused = execute_source_with_options(
+            source,
+            VmOptions {
+                collect_counters: true,
+                execution_format: ExecutionFormat::Bytecode,
+                superinstructions: SuperinstructionMode::On,
+                ..VmOptions::default()
+            },
+        );
+        assert!(unfused.status.is_success(), "{:?}", unfused.status);
+        assert!(fused.status.is_success(), "{:?}", fused.status);
+        assert_eq!(unfused.output.as_bytes(), fused.output.as_bytes());
+        let counters = fused.counters.expect("counters");
+        assert!(
+            counters
+                .superinstructions_executed
+                .get("load_const_load_const")
+                .copied()
+                .unwrap_or_default()
+                > 0,
+            "{:?}",
+            counters.superinstructions_executed
+        );
+        assert!(
+            counters
+                .superinstructions_executed
+                .get("load_const_array_insert")
+                .copied()
+                .unwrap_or_default()
+                > 0,
+            "{:?}",
+            counters.superinstructions_executed
+        );
+        let unfused_counters = unfused.counters.expect("counters");
+        assert!(
+            counters.bytecode_instructions_executed
+                < unfused_counters.bytecode_instructions_executed,
+            "fusions must retire dispatches: {} vs {}",
+            counters.bytecode_instructions_executed,
+            unfused_counters.bytecode_instructions_executed
+        );
     }
 
     #[test]

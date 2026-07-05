@@ -1123,7 +1123,9 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         DenseOpcode::LoadLocal
         | DenseOpcode::LoadLocalEcho
         | DenseOpcode::LoadLocalQuiet
-        | DenseOpcode::LoadLocalLoadConst => {
+        | DenseOpcode::LoadLocalLoadConst
+        | DenseOpcode::LoadConstLoadConst
+        | DenseOpcode::LoadConstArrayInsert => {
             vec![VmDeoptReason::UnsupportedValue]
         }
         DenseOpcode::BinaryAdd

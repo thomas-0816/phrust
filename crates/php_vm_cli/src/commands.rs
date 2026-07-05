@@ -2913,6 +2913,8 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::Include
         | DenseOpcode::LoadConstFetchDim
+        | DenseOpcode::LoadConstLoadConst
+        | DenseOpcode::LoadConstArrayInsert
         | DenseOpcode::LoadLocalLoadConst => BaselineStencilClass {
             helper_calls: 1,
             deopt_slots: 1,
@@ -3247,6 +3249,8 @@ fn classify_copy_patch_stencil_instruction(
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::LoadConstFetchDim
+        | DenseOpcode::LoadConstLoadConst
+        | DenseOpcode::LoadConstArrayInsert
         | DenseOpcode::LoadLocalLoadConst => {
             unsupported_copy_patch_class("dynamic_or_userland_call_requires_frame_and_symbol_state")
         }
@@ -3481,6 +3485,8 @@ fn classify_mid_tier_instruction(
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::Include
         | DenseOpcode::LoadConstFetchDim
+        | DenseOpcode::LoadConstLoadConst
+        | DenseOpcode::LoadConstArrayInsert
         | DenseOpcode::LoadLocalLoadConst => {
             push_unique(&mut plan.rejection_reasons, "magic_hooks_or_dynamic_calls");
             plan.deopt_points += 1;

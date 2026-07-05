@@ -30,6 +30,8 @@ fixtures=(
   "tests/fixtures/performance/superinstructions/const-key-dim-fetch.php"
   "tests/fixtures/performance/superinstructions/load-chain-const.php"
   "tests/fixtures/performance/superinstructions/call-discard.php"
+  "tests/fixtures/performance/superinstructions/const-pair-load.php"
+  "tests/fixtures/performance/superinstructions/const-array-insert.php"
 )
 
 json_escape() {

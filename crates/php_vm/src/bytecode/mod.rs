@@ -176,6 +176,10 @@ pub enum DenseOpcode {
     ResolveCallable = 74,
     /// Pipe the input value into a callable and store its return value.
     Pipe = 75,
+    /// Fused pair of constant loads into two registers.
+    LoadConstLoadConst = 76,
+    /// Fused constant value load and array insert.
+    LoadConstArrayInsert = 77,
 }
 
 impl DenseOpcode {
@@ -272,6 +276,8 @@ impl DenseOpcode {
             Self::CallFunctionDiscard => "call_function_discard",
             Self::ResolveCallable => "resolve_callable",
             Self::Pipe => "pipe",
+            Self::LoadConstLoadConst => "load_const_load_const",
+            Self::LoadConstArrayInsert => "load_const_array_insert",
         }
     }
 
@@ -287,6 +293,8 @@ impl DenseOpcode {
                 | Self::LoadConstFetchDim
                 | Self::LoadLocalLoadConst
                 | Self::CallFunctionDiscard
+                | Self::LoadConstLoadConst
+                | Self::LoadConstArrayInsert
         )
     }
 }
@@ -422,6 +430,18 @@ pub enum DenseOperands {
         dst: u32,
         kind: DenseCallableKind,
         target: u32,
+    },
+    LoadConstPair {
+        first_dst: u32,
+        first_constant: u32,
+        second_dst: u32,
+        second_constant: u32,
+    },
+    LoadConstArrayInsert {
+        value_dst: u32,
+        value_constant: u32,
+        array: u32,
+        key: Option<DenseOperand>,
     },
     Pipe {
         dst: u32,
@@ -1448,8 +1468,59 @@ fn select_pair_fusion(
         DenseOpcode::Discard => select_discard_fusion(opcode, operands, next_operands),
         DenseOpcode::FetchDim => select_fetch_dim_fusion(opcode, operands, next_operands),
         DenseOpcode::LoadConst => select_load_chain_fusion(opcode, operands, next_operands),
+        DenseOpcode::ArrayInsert => select_array_insert_fusion(opcode, operands, next_operands),
         _ => None,
     }
+}
+
+/// `LoadConst value; ArrayInsert array, key, value` fuses when the insert
+/// consumes exactly the constant-loaded value register and requests no
+/// by-ref binding. The fused arm still writes the value register before
+/// running the unchanged insert sequence.
+fn select_array_insert_fusion(
+    opcode: DenseOpcode,
+    operands: &DenseOperands,
+    next_operands: &DenseOperands,
+) -> Option<(DenseOpcode, Option<DenseOperands>)> {
+    let (
+        DenseOpcode::LoadConst,
+        DenseOperands::RegConst {
+            dst: value_dst,
+            constant,
+        },
+    ) = (opcode, operands)
+    else {
+        return None;
+    };
+    let DenseOperands::ArrayInsert {
+        array,
+        key,
+        value,
+        by_ref_local,
+    } = next_operands
+    else {
+        return None;
+    };
+    if by_ref_local.is_some() {
+        return None;
+    }
+    if value.kind != DenseOperandKind::Register || value.index != *value_dst {
+        return None;
+    }
+    // A key reading the value register would still observe the constant we
+    // write first, but keep the fused shape simple and reject that overlap.
+    if key.is_some_and(|key| key.kind == DenseOperandKind::Register && key.index == *value_dst) {
+        return None;
+    }
+    Some((
+        DenseOpcode::LoadConstArrayInsert,
+        Some(DenseOperands::LoadConstArrayInsert {
+            value_dst: *value_dst,
+            value_constant: *constant,
+            array: *array,
+            key: *key,
+        }),
+    ))
 }
 
 /// `LoadConst key; FetchDim dst, array, key` fuses when the fetch consumes
@@ -1498,6 +1569,33 @@ fn select_load_chain_fusion(
     operands: &DenseOperands,
     next_operands: &DenseOperands,
 ) -> Option<(DenseOpcode, Option<DenseOperands>)> {
+    if let (
+        DenseOpcode::LoadConst,
+        DenseOperands::RegConst {
+            dst: first_dst,
+            constant: first_constant,
+        },
+        DenseOperands::RegConst {
+            dst: second_dst,
+            constant: second_constant,
+        },
+    ) = (opcode, operands, next_operands)
+    {
+        // Two adjacent constant loads collapse into one dispatch writing
+        // both registers; each half keeps plain LoadConst semantics.
+        if first_dst == second_dst {
+            return None;
+        }
+        return Some((
+            DenseOpcode::LoadConstLoadConst,
+            Some(DenseOperands::LoadConstPair {
+                first_dst: *first_dst,
+                first_constant: *first_constant,
+                second_dst: *second_dst,
+                second_constant: *second_constant,
+            }),
+        ));
+    }
     let (
         DenseOpcode::LoadLocal,
         DenseOperands::RegOperand {
@@ -1733,6 +1831,8 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::InitStaticLocal
         | DenseOpcode::LoadConstFetchDim
+        | DenseOpcode::LoadConstLoadConst
+        | DenseOpcode::LoadConstArrayInsert
         | DenseOpcode::LoadLocalLoadConst
         | DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert
@@ -1789,6 +1889,8 @@ fn dense_skip_reason(opcode: DenseOpcode) -> &'static str {
         DenseOpcode::MakeClosure => "effectful_closure_construction",
         DenseOpcode::LoadConstFetchDim
         | DenseOpcode::LoadLocalLoadConst
+        | DenseOpcode::LoadConstLoadConst
+        | DenseOpcode::LoadConstArrayInsert
         | DenseOpcode::CallFunctionDiscard => "fused_superinstruction",
         DenseOpcode::CallMethod => "effectful_method_call",
         DenseOpcode::CallStaticMethod => "effectful_static_method_call",
@@ -2904,6 +3006,36 @@ fn verify_instruction(
             verify_operand(*input, unit, function, errors);
             verify_operand(*callable, unit, function, errors);
         }
+        (
+            DenseOpcode::LoadConstLoadConst,
+            DenseOperands::LoadConstPair {
+                first_dst,
+                first_constant,
+                second_dst,
+                second_constant,
+            },
+        ) => {
+            verify_register(*first_dst, function, errors);
+            verify_constant(*first_constant, unit, errors);
+            verify_register(*second_dst, function, errors);
+            verify_constant(*second_constant, unit, errors);
+        }
+        (
+            DenseOpcode::LoadConstArrayInsert,
+            DenseOperands::LoadConstArrayInsert {
+                value_dst,
+                value_constant,
+                array,
+                key,
+            },
+        ) => {
+            verify_register(*value_dst, function, errors);
+            verify_constant(*value_constant, unit, errors);
+            verify_register(*array, function, errors);
+            if let Some(key) = key {
+                verify_operand(*key, unit, function, errors);
+            }
+        }
         (DenseOpcode::MakeClosure, DenseOperands::MakeClosure { dst, captures, .. }) => {
             verify_register(*dst, function, errors);
             for capture in captures {
@@ -3444,6 +3576,23 @@ fn render_operands(operands: &DenseOperands) -> String {
                 DenseCallableKind::UnresolvedDynamic => "unresolved_dynamic",
             };
             format!("r{dst} {kind} n{target}")
+        }
+        DenseOperands::LoadConstPair {
+            first_dst,
+            first_constant,
+            second_dst,
+            second_constant,
+        } => {
+            format!("r{first_dst} c{first_constant}; r{second_dst} c{second_constant}")
+        }
+        DenseOperands::LoadConstArrayInsert {
+            value_dst,
+            value_constant,
+            array,
+            key,
+        } => {
+            let key = key.map_or("-".to_string(), render_operand);
+            format!("r{value_dst} c{value_constant}; r{array} key={key}")
         }
         DenseOperands::Pipe {
             dst,

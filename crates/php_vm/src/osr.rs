@@ -494,6 +494,26 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
         DenseOperands::ResolveCallable { dst, .. } => {
             slots.insert(OsrVmSlot::Register(*dst));
         }
+        DenseOperands::LoadConstPair {
+            first_dst,
+            second_dst,
+            ..
+        } => {
+            slots.insert(OsrVmSlot::Register(*first_dst));
+            slots.insert(OsrVmSlot::Register(*second_dst));
+        }
+        DenseOperands::LoadConstArrayInsert {
+            value_dst,
+            array,
+            key,
+            ..
+        } => {
+            slots.insert(OsrVmSlot::Register(*value_dst));
+            slots.insert(OsrVmSlot::Register(*array));
+            if let Some(key) = key {
+                collect_operand_slot(*key, slots);
+            }
+        }
         DenseOperands::Pipe {
             dst,
             input,

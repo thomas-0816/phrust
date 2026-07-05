@@ -60,6 +60,8 @@ block, so patterns never cross branch or return boundaries.
 | `load_const fetch_dim` | `load_const_fetch_dim` | 1 | single-block producer immediately consumed by the fused successor, executed through the unfused arm's helper sequence |
 | `load_local load_const` | `load_local_load_const` | 6 | single-block producer immediately consumed by the fused successor, executed through the unfused arm's helper sequence |
 | `call_function discard` | `call_function_discard` | 0 | single-block producer immediately consumed by the fused successor, executed through the unfused arm's helper sequence |
+| `load_const load_const` | `load_const_load_const` | 9 | single-block producer immediately consumed by the fused successor, executed through the unfused arm's helper sequence |
+| `load_const array_insert` | `load_const_array_insert` | 7 | single-block producer immediately consumed by the fused successor, executed through the unfused arm's helper sequence |
 
 ## Deferred Families
 

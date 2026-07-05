@@ -36,6 +36,8 @@ CHOSEN_FUSIONS = {
     "load_const fetch_dim": "load_const_fetch_dim",
     "load_local load_const": "load_local_load_const",
     "call_function discard": "call_function_discard",
+    "load_const load_const": "load_const_load_const",
+    "load_const array_insert": "load_const_array_insert",
 }
 
 
