@@ -139,6 +139,36 @@ Do not automatically update the target PHP version without a new ADR.
 - Keep work vertical and auditable: requirement mapping, implementation,
   focused tests, then the relevant `nix develop -c just ...` gate.
 
+## Performance Profiling
+
+- Profile the dedicated `profiling` cargo profile, never the debug build:
+  `nix develop -c cargo build --profile profiling -p php_vm_cli --bin php-vm`
+  produces `target/profiling/php-vm` (release-equivalent codegen with
+  line-table debug info for samplers).
+- Host tools: `samply` (sampling CPU profiler, opens the Firefox Profiler UI),
+  `oha` (HTTP load generation with latency histograms), `hyperfine` (available
+  in the nix shell), and `xctrace`/Instruments on macOS for allocation traces.
+  Install missing ones on macOS with `brew install samply oha`.
+- Measure real applications in this order, so each step tells you where to
+  point the next one:
+  1. Phase and counter split with the built-in flags:
+     `php-vm run --timings-json t.json --counters-json c.json <entry.php>`.
+     Phases `frontend_analyze_ms`, `ir_lower_ms`, `execute_ms`, and
+     `cache_load_ms` separate compile from execute; counters such as
+     `includes`, `include_compile_misses`, and
+     `rich_fallback_functions_executed` quantify how much application code
+     runs uncached or outside dense dispatch.
+  2. Single-request CPU profile:
+     `samply record target/profiling/php-vm run <entry.php>`.
+  3. Server under load: start the server, attach with
+     `samply record -p <pid>`, then drive it with
+     `oha -n 200 -c 4 <url>` for latency percentiles.
+  4. Allocation breakdown when the sampler shows allocator dominance:
+     `xctrace record --template 'Allocations' --launch -- <php-vm run ...>`.
+- Instrumented runs (`--timings-json`/`--counters-json`) distort wall time;
+  take timed comparisons from clean, uninstrumented runs and collect
+  counters in a separate sample.
+
 ## Commit Message Rules
 
 - Use conventional commits: `type(scope): description`.
