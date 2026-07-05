@@ -9,14 +9,14 @@ This report ranks engine work from VM counters and existing performance artifact
 | `benchmark_smoke` | `ok` | 16 |  |
 | `framework_smoke` | `ok` | 9 |  |
 | `acceleration_matrix` | `ok` | 127 |  |
-| `counter_json` | `ok` | 408 |  |
+| `counter_json` | `ok` | 609 |  |
 
 ## Ranked Areas
 
 | Rank | Area | Counter events | Class | Top evidence | Next evidence |
 | ---: | --- | ---: | --- | --- | --- |
-| 1 | Optimizer And Runtime Allocation | 2135549 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-release-fast/iter-instrumented.counters.json` via `counter-json` (185754) | Destructor, reference, COW, output-order, and verifier-bracketed optimizer fixtures. |
-| 2 | Dispatch | 736799 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-release-fast/iter-instrumented.counters.json` via `counter-json` (53160) | Dense opcode, quickening, and superinstruction A/B fixtures. |
+| 1 | Optimizer And Runtime Allocation | 2135519 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-release-fast/iter-instrumented.counters.json` via `counter-json` (185754) | Destructor, reference, COW, output-order, and verifier-bracketed optimizer fixtures. |
+| 2 | Dispatch | 736811 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-release-fast/iter-instrumented.counters.json` via `counter-json` (53160) | Dense opcode, quickening, and superinstruction A/B fixtures. |
 | 3 | Calls And Builtins | 112584 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-release-fast/iter-instrumented.counters.json` via `counter-json` (12299) | Call-shape, by-reference, named-argument, method visibility, and stdlib diffs. |
 | 4 | Strings And Output | 83093 | `very_high` | `target/performance/app-flows/runs/template_render_escape/phrust-release-fast/iter-instrumented.counters.json` via `counter-json` (4179) | Output-buffer callback, object conversion, binary string, and diagnostic-order fixtures. |
 | 5 | Arrays And Foreach | 61696 | `very_high` | `target/performance/app-flows/runs/collection_transform_pagination/phrust-release-fast/iter-instrumented.counters.json` via `counter-json` (11808) | Packed, mixed, numeric-string key, by-ref foreach, COW, mutation, and order fixtures. |
