@@ -22,9 +22,9 @@ pub use result::{VmControlFlow, VmResult};
 
 use crate::aliasing::{AliasState, slot_alias_state};
 use crate::bytecode::{
-    DenseBytecodeUnit, DenseCallArg, DenseClosureCapture, DenseExecutionPlan, DenseFunction,
-    DenseFunctionPlan, DenseInstruction, DenseOpcode, DenseOperand, DenseOperandKind,
-    DenseOperands, SuperinstructionSelectionReport,
+    DenseBytecodeUnit, DenseCallArg, DenseCallableKind, DenseClosureCapture, DenseExecutionPlan,
+    DenseFunction, DenseFunctionPlan, DenseInstruction, DenseOpcode, DenseOperand,
+    DenseOperandKind, DenseOperands, SuperinstructionSelectionReport,
 };
 use crate::compiled_unit::CompiledUnit;
 #[cfg(feature = "jit-cranelift")]
@@ -8001,6 +8001,166 @@ impl Vm {
                             let result = VmResult::unsupported(
                                 output.clone(),
                                 "E_PHP_VM_DENSE_BYTECODE_CALL_FIBER_UNSUPPORTED: dense bytecode callable calls do not support fiber suspension yet",
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        self.record_counter_dense_callable_call_hit();
+                        let value = result.return_value.unwrap_or(Value::Null);
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode caller frame is active")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::ResolveCallable => {
+                        let DenseOperands::ResolveCallable { dst, kind, target } =
+                            instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(target_name) = dense.names.get(target as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode callable name n{target}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let callable = match kind {
+                            DenseCallableKind::FunctionName => {
+                                php_ir::instruction::CallableKind::FunctionName {
+                                    name: target_name.clone(),
+                                }
+                            }
+                            DenseCallableKind::MethodPlaceholder => {
+                                php_ir::instruction::CallableKind::MethodPlaceholder {
+                                    target: target_name.clone(),
+                                }
+                            }
+                            DenseCallableKind::UnresolvedDynamic => {
+                                php_ir::instruction::CallableKind::UnresolvedDynamic {
+                                    target: target_name.clone(),
+                                }
+                            }
+                        };
+                        let value = match resolve_callable(compiled, state, &callable) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                // Same raise contract as the rich arm: the
+                                // error is a catchable throwable that
+                                // propagates out of the dense body.
+                                let result = self.runtime_error_at_optional_span(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    dense.spans.get(instruction.span.index()).copied(),
+                                    message,
+                                );
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::Pipe => {
+                        let DenseOperands::Pipe {
+                            dst,
+                            input,
+                            callable,
+                        } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let input = match self.read_dense_operand(compiled, stack, input) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let callee = match self.read_dense_operand(compiled, stack, callable) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        // Pipe calls share the callable-call site machinery,
+                        // including its inline caches (mirrors CallCallable).
+                        self.observe_dense_call_inline_cache(
+                            compiled,
+                            function_id,
+                            BlockId::new(block_index),
+                            InstrId::new(dense_instruction_index),
+                            InlineCacheKind::FunctionCall,
+                        );
+                        let result = self.execute_callable_value_call(
+                            compiled,
+                            callee,
+                            vec![CallArgument::positional(input)],
+                            function_id,
+                            BlockId::new(block_index),
+                            InstrId::new(dense_instruction_index),
+                            dense.spans.get(instruction.span.index()).copied(),
+                            output,
+                            stack,
+                            state,
+                            &None,
+                        );
+                        if !result.status.is_success() {
+                            self.record_counter_dense_call_fallback("dispatch_error");
+                            if let Some(throwable) = state
+                                .pending_throw
+                                .take()
+                                .or_else(|| runtime_error_throwable(&result))
+                            {
+                                let result =
+                                    self.propagate_exception(output, stack, state, throwable);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        if result.fiber_suspension.is_some() {
+                            self.record_counter_dense_call_fallback("fiber_suspension");
+                            let result = VmResult::unsupported(
+                                output.clone(),
+                                "E_PHP_VM_DENSE_BYTECODE_CALL_FIBER_UNSUPPORTED: dense bytecode pipe calls do not support fiber suspension yet",
                             );
                             stack.pop_recycle();
                             return result;
@@ -57058,11 +57218,23 @@ fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
         | "E_PHP_VM_ABSTRACT_CLASS_INSTANTIATION"
         | "E_PHP_VM_METHOD_CALL_NON_OBJECT" => "Error",
         "E_PHP_VM_PROPERTY_TYPE_MISMATCH" => "TypeError",
+        // The reference engine throws plain Error for first-class callable
+        // acquisition failures, but Closure::fromCallable wraps the same
+        // failures as TypeError with its own message prefix.
         "E_PHP_VM_FIRST_CLASS_CALLABLE_NOT_CALLABLE"
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNDEFINED_FUNCTION"
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNDEFINED_METHOD"
         | "E_PHP_VM_FIRST_CLASS_CALLABLE_NON_STATIC_METHOD"
-        | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNRESOLVED_DYNAMIC" => "TypeError",
+        | "E_PHP_VM_FIRST_CLASS_CALLABLE_UNRESOLVED_DYNAMIC" => {
+            if diagnostic
+                .message()
+                .contains("Failed to create closure from callable")
+            {
+                "TypeError"
+            } else {
+                "Error"
+            }
+        }
         "E_PHP_VM_REFLECTION_UNKNOWN_CLASS"
         | "E_PHP_VM_REFLECTION_UNKNOWN_METHOD"
         | "E_PHP_VM_REFLECTION_UNKNOWN_PROPERTY" => "ReflectionException",
@@ -61244,7 +61416,9 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::CallFunctionDiscard
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
-        | DenseOpcode::CallCallable => "function_calls",
+        | DenseOpcode::CallCallable
+        | DenseOpcode::ResolveCallable
+        | DenseOpcode::Pipe => "function_calls",
         DenseOpcode::LoadLocalLoadConst => "locals",
         DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert

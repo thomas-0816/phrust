@@ -2903,6 +2903,8 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         | DenseOpcode::CallFunctionDiscard
         | DenseOpcode::NewObject
         | DenseOpcode::CallCallable
+        | DenseOpcode::ResolveCallable
+        | DenseOpcode::Pipe
         | DenseOpcode::AcquireCallable
         | DenseOpcode::MakeClosure
         | DenseOpcode::CallMethod
@@ -3236,6 +3238,8 @@ fn classify_copy_patch_stencil_instruction(
         | DenseOpcode::CallFunctionDiscard
         | DenseOpcode::NewObject
         | DenseOpcode::CallCallable
+        | DenseOpcode::ResolveCallable
+        | DenseOpcode::Pipe
         | DenseOpcode::AcquireCallable
         | DenseOpcode::MakeClosure
         | DenseOpcode::CallMethod
@@ -3467,6 +3471,8 @@ fn classify_mid_tier_instruction(
         | DenseOpcode::CallFunctionDiscard
         | DenseOpcode::NewObject
         | DenseOpcode::CallCallable
+        | DenseOpcode::ResolveCallable
+        | DenseOpcode::Pipe
         | DenseOpcode::AcquireCallable
         | DenseOpcode::MakeClosure
         | DenseOpcode::CallMethod

@@ -491,6 +491,18 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
                 collect_operand_slot(capture.src, slots);
             }
         }
+        DenseOperands::ResolveCallable { dst, .. } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+        }
+        DenseOperands::Pipe {
+            dst,
+            input,
+            callable,
+        } => {
+            slots.insert(OsrVmSlot::Register(*dst));
+            collect_operand_slot(*input, slots);
+            collect_operand_slot(*callable, slots);
+        }
         DenseOperands::LoadConstFetchDim {
             key_dst,
             dst,

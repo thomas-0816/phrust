@@ -172,6 +172,10 @@ pub enum DenseOpcode {
     LoadLocalLoadConst = 72,
     /// Fused known function call whose result is immediately discarded.
     CallFunctionDiscard = 73,
+    /// Resolve a first-class callable target into a callable value.
+    ResolveCallable = 74,
+    /// Pipe the input value into a callable and store its return value.
+    Pipe = 75,
 }
 
 impl DenseOpcode {
@@ -266,6 +270,8 @@ impl DenseOpcode {
             Self::LoadConstFetchDim => "load_const_fetch_dim",
             Self::LoadLocalLoadConst => "load_local_load_const",
             Self::CallFunctionDiscard => "call_function_discard",
+            Self::ResolveCallable => "resolve_callable",
+            Self::Pipe => "pipe",
         }
     }
 
@@ -412,6 +418,16 @@ pub enum DenseOperands {
         callee: DenseOperand,
         args: Vec<DenseCallArg>,
     },
+    ResolveCallable {
+        dst: u32,
+        kind: DenseCallableKind,
+        target: u32,
+    },
+    Pipe {
+        dst: u32,
+        input: DenseOperand,
+        callable: DenseOperand,
+    },
     /// Closure construction from a synthesized function and captures.
     MakeClosure {
         dst: u32,
@@ -542,6 +558,14 @@ pub struct DenseClosureCapture {
     pub name: u32,
     pub src: DenseOperand,
     pub by_ref: bool,
+}
+
+/// First-class callable resolution kind mirrored from the IR.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DenseCallableKind {
+    FunctionName,
+    MethodPlaceholder,
+    UnresolvedDynamic,
 }
 
 /// One dense function-call argument with call-shape metadata preserved.
@@ -1594,6 +1618,8 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::CallFunctionDiscard
         | DenseOpcode::NewObject
         | DenseOpcode::CallCallable
+        | DenseOpcode::ResolveCallable
+        | DenseOpcode::Pipe
         | DenseOpcode::AcquireCallable
         | DenseOpcode::MakeClosure
         | DenseOpcode::CallMethod
@@ -1650,6 +1676,8 @@ fn dense_skip_reason(opcode: DenseOpcode) -> &'static str {
         DenseOpcode::CallFunction => "effectful_call",
         DenseOpcode::NewObject => "effectful_object_instantiation",
         DenseOpcode::CallCallable => "effectful_callable_call",
+        DenseOpcode::ResolveCallable => "effectful_callable_resolution",
+        DenseOpcode::Pipe => "effectful_pipe_call",
         DenseOpcode::AcquireCallable => "effectful_callable_acquisition",
         DenseOpcode::MakeClosure => "effectful_closure_construction",
         DenseOpcode::LoadConstFetchDim
@@ -2011,6 +2039,39 @@ fn lower_instruction(
             DenseOperands::RegOperand {
                 dst: dst.raw(),
                 src: lower_operand(*value),
+            },
+        ),
+        InstructionKind::ResolveCallable { dst, callable } => {
+            let (kind, target) = match callable {
+                php_ir::instruction::CallableKind::FunctionName { name } => {
+                    (DenseCallableKind::FunctionName, name)
+                }
+                php_ir::instruction::CallableKind::MethodPlaceholder { target } => {
+                    (DenseCallableKind::MethodPlaceholder, target)
+                }
+                php_ir::instruction::CallableKind::UnresolvedDynamic { target } => {
+                    (DenseCallableKind::UnresolvedDynamic, target)
+                }
+            };
+            (
+                DenseOpcode::ResolveCallable,
+                DenseOperands::ResolveCallable {
+                    dst: dst.raw(),
+                    kind,
+                    target: push_name(names, target).index() as u32,
+                },
+            )
+        }
+        InstructionKind::Pipe {
+            dst,
+            input,
+            callable,
+        } => (
+            DenseOpcode::Pipe,
+            DenseOperands::Pipe {
+                dst: dst.raw(),
+                input: lower_operand(*input),
+                callable: lower_operand(*callable),
             },
         ),
         InstructionKind::MakeClosure {
@@ -2720,6 +2781,22 @@ fn verify_instruction(
                 verify_call_arg(arg, unit, function, errors);
             }
         }
+        (DenseOpcode::ResolveCallable, DenseOperands::ResolveCallable { dst, target, .. }) => {
+            verify_register(*dst, function, errors);
+            verify_name(*target, unit, errors);
+        }
+        (
+            DenseOpcode::Pipe,
+            DenseOperands::Pipe {
+                dst,
+                input,
+                callable,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*input, unit, function, errors);
+            verify_operand(*callable, unit, function, errors);
+        }
         (DenseOpcode::MakeClosure, DenseOperands::MakeClosure { dst, captures, .. }) => {
             verify_register(*dst, function, errors);
             for capture in captures {
@@ -3251,6 +3328,25 @@ fn render_operands(operands: &DenseOperands) -> String {
                 "r{dst} callable {} ({})",
                 render_operand(*callee),
                 rendered_args.join(", ")
+            )
+        }
+        DenseOperands::ResolveCallable { dst, kind, target } => {
+            let kind = match kind {
+                DenseCallableKind::FunctionName => "function",
+                DenseCallableKind::MethodPlaceholder => "method_placeholder",
+                DenseCallableKind::UnresolvedDynamic => "unresolved_dynamic",
+            };
+            format!("r{dst} {kind} n{target}")
+        }
+        DenseOperands::Pipe {
+            dst,
+            input,
+            callable,
+        } => {
+            format!(
+                "r{dst} {} |> {}",
+                render_operand(*input),
+                render_operand(*callable)
             )
         }
         DenseOperands::MakeClosure {

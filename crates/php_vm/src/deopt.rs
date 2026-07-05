@@ -1161,6 +1161,8 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         | DenseOpcode::CallFunctionDiscard
         | DenseOpcode::NewObject
         | DenseOpcode::CallCallable
+        | DenseOpcode::ResolveCallable
+        | DenseOpcode::Pipe
         | DenseOpcode::AcquireCallable
         | DenseOpcode::MakeClosure
         | DenseOpcode::CallMethod
