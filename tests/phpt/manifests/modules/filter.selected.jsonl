@@ -15,11 +15,17 @@
 {"path":"ext/filter/tests/012.phpt"}
 {"path":"ext/filter/tests/013.phpt"}
 {"path":"ext/filter/tests/014.phpt"}
+{"path":"ext/filter/tests/017.phpt"}
 {"path":"ext/filter/tests/019.phpt"}
 {"path":"ext/filter/tests/021.phpt"}
 {"path":"ext/filter/tests/022.phpt"}
+{"path":"ext/filter/tests/023.phpt"}
+{"path":"ext/filter/tests/024.phpt"}
+{"path":"ext/filter/tests/027.phpt"}
 {"path":"ext/filter/tests/028.phpt"}
 {"path":"ext/filter/tests/030.phpt"}
+{"path":"ext/filter/tests/031.phpt"}
+{"path":"ext/filter/tests/032.phpt"}
 {"path":"ext/filter/tests/034.phpt"}
 {"path":"ext/filter/tests/036.phpt"}
 {"path":"ext/filter/tests/044.phpt"}

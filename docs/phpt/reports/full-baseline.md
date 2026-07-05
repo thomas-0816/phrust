@@ -7,15 +7,15 @@ Generated: `20260624T210848Z`
 | Outcome | Count |
 | --- | ---: |
 | BORK | 455 |
-| FAIL | 19950 |
-| PASS | 1079 |
+| FAIL | 19944 |
+| PASS | 1085 |
 | SKIP | 64 |
 
 ## Top Failure Clusters
 
 | Cluster | Count |
 | --- | ---: |
-| runtime-error-or-diagnostic | 11387 |
+| runtime-error-or-diagnostic | 11381 |
 | runtime-unsupported-feature | 6183 |
 | runtime-output-mismatch | 2309 |
 | needs-triage | 320 |

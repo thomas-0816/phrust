@@ -5,7 +5,7 @@ use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
     BuiltinResult, RuntimeSourceSpan,
 };
-use crate::{ArrayKey, PhpArray, PhpString, Value, to_bool, to_string};
+use crate::{ArrayKey, PhpArray, PhpString, Value, pcre, to_bool, to_string};
 use std::net::IpAddr;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
@@ -66,8 +66,12 @@ const FILTER_FORCE_ARRAY: i64 = 67_108_864;
 const FILTER_NULL_ON_FAILURE: i64 = 134_217_728;
 const FILTER_FLAG_ALLOW_OCTAL: i64 = 1;
 const FILTER_FLAG_ALLOW_HEX: i64 = 2;
+const FILTER_FLAG_STRIP_LOW: i64 = 4;
+const FILTER_FLAG_STRIP_HIGH: i64 = 8;
 const FILTER_FLAG_ENCODE_LOW: i64 = 16;
 const FILTER_FLAG_ENCODE_HIGH: i64 = 32;
+const FILTER_FLAG_ENCODE_AMP: i64 = 64;
+const FILTER_FLAG_NO_ENCODE_QUOTES: i64 = 128;
 const FILTER_FLAG_ALLOW_FRACTION: i64 = 4_096;
 const FILTER_FLAG_ALLOW_THOUSAND: i64 = 8_192;
 const FILTER_FLAG_ALLOW_SCIENTIFIC: i64 = 16_384;
@@ -108,6 +112,8 @@ struct FilterOptions {
     min_range_float: Option<f64>,
     max_range_float: Option<f64>,
     callback: Option<String>,
+    decimal: Option<String>,
+    regexp: Option<PhpString>,
 }
 
 impl Default for FilterOptions {
@@ -119,6 +125,8 @@ impl Default for FilterOptions {
             min_range_float: None,
             max_range_float: None,
             callback: None,
+            decimal: None,
+            regexp: None,
         }
     }
 }
@@ -215,13 +223,16 @@ fn apply_filter_scalar(
         Value::Bool(false)
     };
     match filter {
-        FILTER_DEFAULT => Ok(value.clone()),
+        FILTER_DEFAULT => unsafe_raw(name, value, options.flags),
         FILTER_VALIDATE_EMAIL => validate_email(name, value, failure),
         FILTER_VALIDATE_INT => validate_int(name, value, options, failure),
         FILTER_VALIDATE_FLOAT => validate_float(name, value, options, failure),
+        FILTER_VALIDATE_REGEXP => validate_regexp(context, name, value, options, failure),
         FILTER_VALIDATE_URL => validate_url(name, value, options.flags, failure),
         FILTER_VALIDATE_IP => validate_ip(name, value, options.flags, failure),
         FILTER_VALIDATE_BOOL => validate_bool(name, value, options.flags, failure),
+        FILTER_SANITIZE_STRING => sanitize_string(name, value, options.flags),
+        FILTER_SANITIZE_ENCODED => sanitize_encoded(name, value, options.flags),
         FILTER_SANITIZE_EMAIL => sanitize(name, value, is_email_sanitize_byte),
         FILTER_SANITIZE_URL => sanitize(name, value, is_url_sanitize_byte),
         FILTER_SANITIZE_SPECIAL_CHARS | FILTER_SANITIZE_FULL_SPECIAL_CHARS => {
@@ -231,6 +242,7 @@ fn apply_filter_scalar(
             byte.is_ascii_digit() || byte == b'+' || byte == b'-'
         }),
         FILTER_SANITIZE_NUMBER_FLOAT => sanitize_number_float(name, value, options.flags),
+        FILTER_SANITIZE_ADD_SLASHES => sanitize_add_slashes(name, value),
         FILTER_CALLBACK => apply_callback_filter(context, name, value, options, span),
         _ if is_known_filter_id(filter) => Ok(failure),
         _ => {
@@ -346,7 +358,8 @@ fn validate_float(
     let input = string_arg(name, value)?;
     let text = input.to_string_lossy();
     let trimmed = text.trim();
-    match trimmed.parse::<f64>() {
+    let normalized = normalize_filter_float_decimal(name, trimmed, options.decimal.as_deref())?;
+    match normalized.parse::<f64>() {
         Ok(number)
             if number.is_finite()
                 && !options
@@ -360,6 +373,34 @@ fn validate_float(
         }
         _ => Ok(failure),
     }
+}
+
+fn normalize_filter_float_decimal(
+    name: &str,
+    trimmed: &str,
+    decimal: Option<&str>,
+) -> Result<String, BuiltinError> {
+    let Some(decimal) = decimal else {
+        return Ok(trimmed.to_owned());
+    };
+    let mut chars = decimal.chars();
+    let Some(decimal_char) = chars.next() else {
+        return Err(filter_value_error(format!(
+            "{name}(): \"decimal\" option must be one character long"
+        )));
+    };
+    if chars.next().is_some() {
+        return Err(filter_value_error(format!(
+            "{name}(): \"decimal\" option must be one character long"
+        )));
+    }
+    if decimal_char == '.' {
+        return Ok(trimmed.to_owned());
+    }
+    if trimmed.contains('.') {
+        return Ok(String::new());
+    }
+    Ok(trimmed.replace(decimal_char, "."))
 }
 
 fn builtin_filter_input(
@@ -626,6 +667,14 @@ fn parse_filter_option_payload(
                 options.max_range_int = Some(int_arg(name, value)?);
                 options.max_range_float = Some(float_arg(name, value)?);
             }
+            let decimal_key = ArrayKey::String(PhpString::from_test_str("decimal"));
+            if let Some(value) = array.get(&decimal_key) {
+                options.decimal = Some(string_arg(name, value)?.to_string_lossy());
+            }
+            let regexp_key = ArrayKey::String(PhpString::from_test_str("regexp"));
+            if let Some(value) = array.get(&regexp_key) {
+                options.regexp = Some(string_arg(name, value)?);
+            }
         }
         Value::String(value) => {
             options.callback = Some(value.to_string_lossy());
@@ -662,6 +711,40 @@ fn invalid_callback_error(name: &str) -> BuiltinError {
         "E_PHP_RUNTIME_FILTER_CALLBACK",
         format!("{name}(): Option must be a valid callback"),
     )
+}
+
+fn filter_value_error(message: impl Into<String>) -> BuiltinError {
+    BuiltinError::new("E_PHP_RUNTIME_BUILTIN_VALUE", message.into())
+}
+
+fn validate_regexp(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    value: &Value,
+    options: &FilterOptions,
+    failure: Value,
+) -> BuiltinResult {
+    let Some(regexp) = options.regexp.as_ref() else {
+        return Err(filter_value_error(format!(
+            "{name}(): \"regexp\" option is missing"
+        )));
+    };
+    let input = string_arg(name, value)?;
+    let compiled = match context.pcre_cache().compile(regexp) {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
+            return Ok(failure);
+        }
+    };
+    match compiled.is_match(input.as_bytes()) {
+        Ok(true) => Ok(Value::String(input)),
+        Ok(false) => Ok(failure),
+        Err(error) => {
+            context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
+            Ok(failure)
+        }
+    }
 }
 
 fn validate_email(name: &str, value: &Value, failure: Value) -> BuiltinResult {
@@ -755,6 +838,78 @@ fn sanitize_number_float(name: &str, value: &Value, flags: i64) -> BuiltinResult
     })
 }
 
+fn unsafe_raw(name: &str, value: &Value, flags: i64) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    if flags & FILTER_FLAG_ENCODE_AMP == 0 {
+        return Ok(Value::String(input));
+    }
+    Ok(Value::string(encode_filter_entities(
+        input.as_bytes(),
+        |byte| byte == b'&',
+    )))
+}
+
+fn sanitize_encoded(name: &str, value: &Value, flags: i64) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    Ok(Value::string(encode_filter_bytes(
+        input.as_bytes(),
+        |byte| {
+            !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+                || (flags & FILTER_FLAG_ENCODE_LOW != 0 && byte < 0x20)
+                || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && byte >= 0x80)
+        },
+    )))
+}
+
+fn sanitize_string(name: &str, value: &Value, flags: i64) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    let stripped = strip_filter_tags(input.as_bytes());
+    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+    let encode_amp = flags & FILTER_FLAG_ENCODE_AMP != 0;
+    let no_encode_quotes = flags & FILTER_FLAG_NO_ENCODE_QUOTES != 0;
+    let output: Vec<u8> = encode_filter_entities(&stripped, |byte| {
+        (encode_amp && byte == b'&')
+            || (!no_encode_quotes && matches!(byte, b'\'' | b'"'))
+            || (flags & FILTER_FLAG_ENCODE_LOW != 0 && byte < 0x20)
+            || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && byte >= 0x80)
+    })
+    .into_iter()
+    .filter(|byte| !(strip_low && *byte < 0x20) && !(strip_high && *byte >= 0x80))
+    .collect();
+    Ok(Value::string(output))
+}
+
+fn sanitize_add_slashes(name: &str, value: &Value) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    let mut output = Vec::with_capacity(input.as_bytes().len());
+    for byte in input.as_bytes() {
+        match *byte {
+            b'\0' => output.extend_from_slice(br"\0"),
+            b'\'' | b'"' | b'\\' => {
+                output.push(b'\\');
+                output.push(*byte);
+            }
+            _ => output.push(*byte),
+        }
+    }
+    Ok(Value::string(output))
+}
+
+fn strip_filter_tags(input: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len());
+    let mut in_tag = false;
+    for byte in input {
+        match *byte {
+            b'<' => in_tag = true,
+            b'>' if in_tag => in_tag = false,
+            _ if !in_tag => output.push(*byte),
+            _ => {}
+        }
+    }
+    output
+}
+
 fn sanitize_special_chars(name: &str, value: &Value, flags: i64) -> BuiltinResult {
     let input = string_arg(name, value)?;
     let mut output = Vec::new();
@@ -769,6 +924,30 @@ fn sanitize_special_chars(name: &str, value: &Value, flags: i64) -> BuiltinResul
         }
     }
     Ok(Value::string(output))
+}
+
+fn encode_filter_entities(input: &[u8], should_encode: impl Fn(u8) -> bool) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len());
+    for byte in input {
+        if should_encode(*byte) {
+            output.extend_from_slice(format!("&#{};", byte).as_bytes());
+        } else {
+            output.push(*byte);
+        }
+    }
+    output
+}
+
+fn encode_filter_bytes(input: &[u8], should_encode: impl Fn(u8) -> bool) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len());
+    for byte in input {
+        if should_encode(*byte) {
+            output.extend_from_slice(format!("%{byte:02X}").as_bytes());
+        } else {
+            output.push(*byte);
+        }
+    }
+    output
 }
 
 fn is_email_sanitize_byte(byte: u8) -> bool {
@@ -793,6 +972,17 @@ mod tests {
             .expect("filter entry")
             .function()(&mut context, args, RuntimeSourceSpan::default())
         .expect("filter succeeds")
+    }
+
+    fn call_error(name: &str, args: Vec<Value>) -> BuiltinError {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        ENTRIES
+            .iter()
+            .find(|entry| entry.name() == name)
+            .expect("filter entry")
+            .function()(&mut context, args, RuntimeSourceSpan::default())
+        .expect_err("filter should fail")
     }
 
     fn string(value: &str) -> Value {
@@ -926,6 +1116,101 @@ mod tests {
                 ],
             ),
             Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn filter_validate_float_respects_decimal_option() {
+        let mut comma_payload = PhpArray::new();
+        comma_payload.insert(string_key("decimal"), string(","));
+        let mut comma_options = PhpArray::new();
+        comma_options.insert(string_key("options"), Value::Array(comma_payload));
+
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("1,234"),
+                    Value::Int(FILTER_VALIDATE_FLOAT),
+                    Value::Array(comma_options.clone()),
+                ],
+            ),
+            Value::float(1.234)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("1.234"),
+                    Value::Int(FILTER_VALIDATE_FLOAT),
+                    Value::Array(comma_options),
+                ],
+            ),
+            Value::Bool(false)
+        );
+
+        let mut invalid_payload = PhpArray::new();
+        invalid_payload.insert(string_key("decimal"), string(".."));
+        let mut invalid_options = PhpArray::new();
+        invalid_options.insert(string_key("options"), Value::Array(invalid_payload));
+        let error = call_error(
+            "filter_var",
+            vec![
+                string("1.234"),
+                Value::Int(FILTER_VALIDATE_FLOAT),
+                Value::Array(invalid_options),
+            ],
+        );
+        assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_VALUE");
+        assert_eq!(
+            error.message(),
+            "filter_var(): \"decimal\" option must be one character long"
+        );
+    }
+
+    #[test]
+    fn filter_validate_regexp_uses_options_pattern() {
+        let mut regexp_payload = PhpArray::new();
+        regexp_payload.insert(string_key("regexp"), string("/^d(.*)/"));
+        let mut regexp_options = PhpArray::new();
+        regexp_options.insert(string_key("options"), Value::Array(regexp_payload));
+
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("data"),
+                    Value::Int(FILTER_VALIDATE_REGEXP),
+                    Value::Array(regexp_options),
+                ],
+            ),
+            string("data")
+        );
+
+        let mut miss_payload = PhpArray::new();
+        miss_payload.insert(string_key("regexp"), string("/^b(.*)/"));
+        let mut miss_options = PhpArray::new();
+        miss_options.insert(string_key("options"), Value::Array(miss_payload));
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("data"),
+                    Value::Int(FILTER_VALIDATE_REGEXP),
+                    Value::Array(miss_options),
+                ],
+            ),
+            Value::Bool(false)
+        );
+
+        let error = call_error(
+            "filter_var",
+            vec![string("data"), Value::Int(FILTER_VALIDATE_REGEXP)],
+        );
+        assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_VALUE");
+        assert_eq!(
+            error.message(),
+            "filter_var(): \"regexp\" option is missing"
         );
     }
 
@@ -1168,6 +1453,53 @@ mod tests {
             string(
                 "&#208;&#186;&#208;&#184;&#209;&#128;&#208;&#184;&#208;&#187;&#208;&#187;&#208;&#184;&#209;&#134;&#208;&#176;"
             )
+        );
+    }
+
+    #[test]
+    fn sanitize_encoded_percent_encodes_non_alnum_bytes() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("\"<br>blah</ph>"),
+                    Value::Int(FILTER_SANITIZE_ENCODED),
+                ],
+            ),
+            string("%22%3Cbr%3Eblah%3C%2Fph%3E")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("<data&sons>"),
+                    Value::Int(FILTER_SANITIZE_ENCODED),
+                    Value::Int(FILTER_FLAG_ENCODE_LOW),
+                ],
+            ),
+            string("%3Cdata%26sons%3E")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("2.0.33"), Value::Int(FILTER_SANITIZE_ENCODED)],
+            ),
+            string("2.0.33")
+        );
+    }
+
+    #[test]
+    fn unsafe_raw_can_encode_ampersands() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("a&b&c"),
+                    Value::Int(FILTER_UNSAFE_RAW),
+                    Value::Int(FILTER_FLAG_ENCODE_AMP),
+                ],
+            ),
+            string("a&#38;b&#38;c")
         );
     }
 

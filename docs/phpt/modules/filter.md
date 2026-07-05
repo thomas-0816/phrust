@@ -2,14 +2,14 @@
 
 - Strategy: validation and sanitization MVP
 - Selected manifest: `tests/phpt/manifests/modules/filter.selected.jsonl`
-- Selected close gate: 51 PASS, 0 SKIP, 0 FAIL, 0 BORK from 51 selected fixtures
-- Upstream corpus snapshot before the selected gate: 48 PASS, 3 XFAIL, 63 FAIL,
+- Selected close gate: 57 PASS, 0 SKIP, 0 FAIL, 0 BORK from 57 selected fixtures
+- Upstream corpus snapshot before the selected gate: 54 PASS, 3 XFAIL, 57 FAIL,
   0 BORK from 114 corpus candidates
 - Selected fixtures:
   - `tests/phpt/generated/filter/basic.phpt`
   - `tests/phpt/generated/filter/arrays.phpt`
   - `tests/phpt/generated/filter/options-callback.phpt`
-  - 48 target-green upstream rows from `ext/filter/tests`
+  - 54 target-green upstream rows from `ext/filter/tests`
 
 ## Implemented Surface
 
@@ -36,6 +36,21 @@ PHPT option arrays.
 `FILTER_VALIDATE_EMAIL` enforces PHP's local-part, label, and total length
 limits for the promoted fixtures. `FILTER_VALIDATE_BOOLEAN` returns the normal
 failure value when object string conversion is invalid.
+
+`FILTER_VALIDATE_REGEXP` compiles php-src style PCRE patterns from the
+`options["regexp"]` array entry, returns the original string on match, returns
+the filter failure value on mismatch or invalid pattern, and raises the
+PHP-compatible `ValueError` message when the regexp option is missing.
+
+`FILTER_VALIDATE_FLOAT` supports the promoted custom `decimal` option,
+including comma decimal parsing, rejection when the input still uses `.`, and
+the PHP-compatible `ValueError` for multi-character decimal separators.
+
+`FILTER_UNSAFE_RAW` preserves scalar input while honoring
+`FILTER_FLAG_ENCODE_AMP`. `FILTER_SANITIZE_ENCODED` percent-encodes non-safe
+bytes using PHP's promoted safe byte set, preserving ASCII alphanumerics plus
+`-`, `_`, and `.`. `filter_var_array` covers the promoted encoded sanitizer
+and scalar/array shape interactions.
 
 `filter_input` preserves the PHP missing-input distinction for the promoted
 fixtures, including returning `false` for absent values when
@@ -65,10 +80,11 @@ deprecation for `filter.default` is suppressed when `error_reporting` masks
 
 The full PHP filter option matrix, remaining exact filter flag behavior,
 remaining request input edge cases, VM-dispatched user function and closure callbacks,
-throw-on-failure mode, remaining exact warning/deprecation text, and
-locale-specific numeric parsing remain out of scope.
+throw-on-failure mode, remaining exact warning/deprecation text, remaining
+legacy string sanitizer deprecation output, and locale-specific numeric parsing
+remain out of scope.
 
-The full upstream target sweep measured 48 PASS, 3 XFAIL, and 63 FAIL from 114
+The full upstream target sweep measured 54 PASS, 3 XFAIL, and 57 FAIL from 114
 `ext/filter/tests` rows. The remaining unpromoted rows are dominated by
 stricter PHP URL/email/IP quirks, remaining filter flag behavior, callback
 dispatch, deeper request/superglobal edge cases, array-to-string conversion behavior,
