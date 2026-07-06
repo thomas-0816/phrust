@@ -3,15 +3,15 @@
   "module":"standard.url-html",
   "priority":16,
   "selected_manifest":"tests/phpt/manifests/modules/standard.url-html.selected.jsonl",
-  "corpus_count":74,
-  "selected_count":47,
-  "pass_count":47,
+  "corpus_count":81,
+  "selected_count":54,
+  "pass_count":54,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":28,
-  "scope":["URL encoding helpers","http_build_query arrays, references, null/output separator defaults, resources, and RFC3986 encoding","basic parse_url component extraction, negative component fallback, invalid component diagnostics, and PHP_URL constant ordering","parse_str basics, custom arg_separator.input, malformed key recovery, and invalid percent preservation","HTML escaping helpers, quote-flag-sensitive and numeric-basic htmlspecialchars_decode variations, default htmlspecialchars basics, html_entity_decode document-type/numeric entity filtering, get_html_translation_table special/basic entity tables, and getenv/putenv request-environment mutation semantics"],
-  "non_scope":["complete HTML4/HTML5/XHTML entity tables","non-default charsets beyond selected UTF-8 and SJIS basic-entity coverage","object query encoding","parse_url edge cases beyond the selected upstream corpus","parse_str edge cases beyond malformed-query coverage"],
+  "known_failure_count":21,
+  "scope":["URL encoding helpers","http_build_query arrays, objects with visible properties, references, null/output separator defaults, resources, recursion suppression, and RFC3986 encoding","basic parse_url component extraction, negative component fallback, invalid component diagnostics, and PHP_URL constant ordering","parse_str basics, custom arg_separator.input, malformed key recovery, and invalid percent preservation","HTML escaping helpers, quote-flag-sensitive and numeric-basic htmlspecialchars_decode variations, default htmlspecialchars basics, html_entity_decode document-type/numeric entity filtering, get_html_translation_table special/basic entity tables, and getenv/putenv request-environment mutation semantics"],
+  "non_scope":["complete HTML4/HTML5/XHTML entity tables","non-default charsets beyond selected UTF-8 and SJIS basic-entity coverage","parse_url edge cases beyond the selected upstream corpus","parse_str edge cases beyond malformed-query coverage"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=standard.url-html","nix develop -c just verify-stdlib"],
-  "next_step":"selected URL/HTML/environment contracts are broader and green; keep full HTML4/HTML5/XHTML entity tables, object query encoding/property visibility, parse_url edge cases beyond the selected corpus, and remaining parse_str edge cases such as startup filter.default deprecation output as documented gaps."
+  "next_step":"selected URL/HTML/environment contracts are broader and green; keep full HTML4/HTML5/XHTML entity tables, parse_url edge cases beyond the selected corpus, and remaining parse_str edge cases such as startup filter.default deprecation output as documented gaps."
 }

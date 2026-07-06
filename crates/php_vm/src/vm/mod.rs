@@ -75558,6 +75558,40 @@ mod tests {
     }
 
     #[test]
+    fn http_build_query_encodes_visible_object_properties() {
+        let result = execute_source(
+            "<?php
+            class KeyVal {
+                public $public = 'input';
+                protected $protected = 'hello';
+                private $private = 'world';
+
+                public function scoped() {
+                    return http_build_query($this);
+                }
+            }
+
+            $object = new KeyVal();
+            var_dump(http_build_query($object));
+            var_dump($object->scoped());
+
+            $nested = new KeyVal();
+            $object->public = $nested;
+            var_dump(http_build_query($object));
+
+            $object->public = $object;
+            var_dump(http_build_query($object));
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"string(12) \"public=input\"\nstring(42) \"public=input&protected=hello&private=world\"\nstring(24) \"public%5Bpublic%5D=input\"\nstring(0) \"\"\n"
+        );
+    }
+
+    #[test]
     fn constants_execute_namespaced_global_fallback_for_lexical_fetch() {
         let result = execute_source(
             "<?php namespace WpOrg\\Requests\\Transport; echo CURLOPT_HEADER, '|', \\CURLOPT_HEADER, '|', CURL_HTTP_VERSION_1_1, '|', CURLOPT_HEADERFUNCTION;",

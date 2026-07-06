@@ -2,6 +2,7 @@ use super::*;
 use md5::{Digest, Md5};
 use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
+use std::collections::HashSet;
 
 pub(in crate::builtins::modules) fn format_array_values(
     name: &str,
@@ -603,6 +604,25 @@ pub(in crate::builtins::modules) fn build_query_pairs(
     value: &Value,
     pairs: &mut Vec<String>,
 ) -> Result<(), BuiltinError> {
+    let mut seen_objects = HashSet::new();
+    build_query_pairs_inner(
+        prefix,
+        numeric_prefix,
+        raw_encoding,
+        value,
+        pairs,
+        &mut seen_objects,
+    )
+}
+
+fn build_query_pairs_inner(
+    prefix: Option<String>,
+    numeric_prefix: Option<&str>,
+    raw_encoding: bool,
+    value: &Value,
+    pairs: &mut Vec<String>,
+    seen_objects: &mut HashSet<u64>,
+) -> Result<(), BuiltinError> {
     match deref_value(value) {
         Value::Array(array) => {
             for (key, value) in array.iter() {
@@ -616,8 +636,37 @@ pub(in crate::builtins::modules) fn build_query_pairs(
                 let name = prefix
                     .as_ref()
                     .map_or(key.clone(), |prefix| format!("{prefix}[{key}]"));
-                build_query_pairs(Some(name), numeric_prefix, raw_encoding, value, pairs)?;
+                build_query_pairs_inner(
+                    Some(name),
+                    numeric_prefix,
+                    raw_encoding,
+                    value,
+                    pairs,
+                    seen_objects,
+                )?;
             }
+        }
+        Value::Object(object) => {
+            if !seen_objects.insert(object.id()) {
+                return Ok(());
+            }
+            for (key, value) in object.properties_snapshot() {
+                if !http_build_query_object_property_is_public(&object, &key) {
+                    continue;
+                }
+                let name = prefix
+                    .as_ref()
+                    .map_or(key.clone(), |prefix| format!("{prefix}[{key}]"));
+                build_query_pairs_inner(
+                    Some(name),
+                    numeric_prefix,
+                    raw_encoding,
+                    &value,
+                    pairs,
+                    seen_objects,
+                )?;
+            }
+            seen_objects.remove(&object.id());
         }
         Value::Null | Value::Resource(_) => {}
         scalar => {
@@ -637,4 +686,12 @@ pub(in crate::builtins::modules) fn build_query_pairs(
         }
     }
     Ok(())
+}
+
+fn http_build_query_object_property_is_public(
+    object: &crate::ObjectRef,
+    storage_name: &str,
+) -> bool {
+    let label = object.property_debug_label(storage_name);
+    !(label.ends_with(":protected") || label.ends_with(":private"))
 }

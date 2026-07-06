@@ -21,7 +21,7 @@ manifests.
 | `standard.variables` | 348 / 0 | 26 PASS, 1 SKIP | 0 / 0 | Full `var_dump`/`print_r` matrix, magic/object visibility edges, and reference formatting remain outside the focused selected gate. |
 | `standard.output` | 63 / 20 | 11 PASS | 0 / 0 | Output-buffer callbacks, chunk sizes, flag combinations, and handler-list APIs remain beyond the selected stack-backed buffer slice. |
 | `standard.serialization` | 107 / 0 | 5 PASS | 0 / 0 | PHP `R`/`r` reference identity records, `allowed_classes`, magic hooks, resources, and deep object/reference serialization remain known gaps. |
-| `standard.url-html` | 33 / 5 | 47 PASS | 0 / 0 | Complete HTML4/HTML5/XHTML entity tables, non-default charsets beyond selected UTF-8 and SJIS basic-entity coverage, object query encoding/property visibility, parse_url edge cases beyond the selected corpus, remaining parse_str edge cases including startup filter.default deprecation output, and broader URL behavior remain outside the selected gate. |
+| `standard.url-html` | 40 / 5 | 54 PASS | 0 / 0 | Complete HTML4/HTML5/XHTML entity tables, non-default charsets beyond selected UTF-8 and SJIS basic-entity coverage, parse_url edge cases beyond the selected corpus, remaining parse_str edge cases including startup filter.default deprecation output, and broader URL behavior remain outside the selected gate. |
 
 ## Validation
 

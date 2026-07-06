@@ -2,15 +2,16 @@
 
 - Priority: 16.8
 - Selected manifest: `tests/phpt/manifests/modules/standard.url-html.selected.jsonl`
-- Derived corpus baseline: 1 PASS, 0 SKIP, 61 FAIL, 5 BORK from 74 path-filtered candidates
-- focused gate: 47 PASS, 0 FAIL, 0 BORK
+- Derived corpus baseline: 1 PASS, 0 SKIP, 68 FAIL, 5 BORK from 81 path-filtered candidates
+- focused gate: 54 PASS, 0 FAIL, 0 BORK
 
 ## Scope
 
 - URL encode/decode smoke coverage
-- `http_build_query` array MVP coverage
-- `http_build_query` null/output separator defaults, references, resources, and
-  RFC3986 `encoding_type` coverage
+- `http_build_query` array and visible-object property coverage
+- `http_build_query` null/output separator defaults, references, resources,
+  recursive object suppression, scoped property visibility, and RFC3986
+  `encoding_type` coverage
 - Basic `parse_url` component extraction, negative component fallback, invalid
   component diagnostics, and `PHP_URL_*` constant ordering
 - `parse_str` basics, custom `arg_separator.input`, malformed key recovery, and
@@ -28,7 +29,6 @@
 
 - Complete HTML4/HTML5/XHTML entity tables
 - Non-default charsets beyond selected UTF-8 and SJIS basic-entity coverage
-- Object query encoding
 - `parse_url` edge cases beyond the basic upstream corpus
 - Remaining `parse_str` edge cases and URL/HTML upstream corpus
 
@@ -43,6 +43,13 @@
 - `ext/standard/tests/http/http_build_query/gh12745.phpt`
 - `ext/standard/tests/http/http_build_query/http_build_query_variation3.phpt`
 - `ext/standard/tests/http/http_build_query/http_build_query_with_resource.phpt`
+- `ext/standard/tests/http/http_build_query/bug26817.phpt`
+- `ext/standard/tests/http/http_build_query/http_build_query_object_basic.phpt`
+- `ext/standard/tests/http/http_build_query/http_build_query_object_empty.phpt`
+- `ext/standard/tests/http/http_build_query/http_build_query_object_just_stringable.phpt`
+- `ext/standard/tests/http/http_build_query/http_build_query_object_key_val_stringable.phpt`
+- `ext/standard/tests/http/http_build_query/http_build_query_object_nested.phpt`
+- `ext/standard/tests/http/http_build_query/http_build_query_object_recursif.phpt`
 - `ext/standard/tests/url/parse_url_basic_001.phpt`
 - `ext/standard/tests/url/parse_url_basic_002.phpt`
 - `ext/standard/tests/url/parse_url_basic_003.phpt`
@@ -103,6 +110,10 @@
 - `http_build_query()` now keeps `null` separators on the PHP default `&`
   path, reads `arg_separator.output` through the shared INI registry, omits
   resource leaves, and honors RFC3986 encoding for named `encoding_type` calls.
+- `http_build_query()` now accepts object input, emits caller-visible
+  properties with PHP visibility rules at the top level, handles nested public
+  object properties, treats stringable objects as property containers, preserves
+  empty-object output, and suppresses recursive object cycles.
 - `parse_url()` covers the selected upstream component extraction set,
   including partial numeric ports, negative component fallback to the full
   array, invalid positive component `ValueError` messages, and `PHP_URL_*`
@@ -124,11 +135,11 @@
 - `getenv()` and `putenv()` now cover request-local environment mutation,
   array snapshots after mutation, empty-string values, unsetting, local-only
   lookup, UTF-8 values, and catchable `ValueError` invalid assignment syntax.
-- Latest focused target run: PASS, 47 selected PHPTs.
+- Latest focused target run: PASS, 54 selected PHPTs.
 
 ## Known Gaps
 
-- Full HTML4/HTML5/XHTML entity-table, charset, object-query/property visibility,
-  `parse_url` edge-case, remaining `parse_str`, including the separate startup
-  `filter.default` deprecation-output mismatch in `parse_str_basic3.phpt`, and
-  URL edge-case behavior remains outside the selected focused gate.
+- Full HTML4/HTML5/XHTML entity-table, charset, `parse_url` edge-case,
+  remaining `parse_str`, including the separate startup `filter.default`
+  deprecation-output mismatch in `parse_str_basic3.phpt`, and URL edge-case
+  behavior remains outside the selected focused gate.

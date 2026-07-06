@@ -48,6 +48,12 @@ impl Vm {
             Ok(values) => values,
             Err(result) => return result,
         };
+        let values = match self
+            .prepare_http_build_query_values(name, values, compiled, output, stack, state)
+        {
+            Ok(values) => values,
+            Err(result) => return result,
+        };
         let values = match validate_internal_builtin_args(
             name, values, compiled, call_span, output, state,
         ) {
@@ -104,6 +110,43 @@ impl Vm {
             compiled,
         );
         result
+    }
+
+    fn prepare_http_build_query_values(
+        &self,
+        name: &str,
+        mut values: Vec<Value>,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+        state: &ExecutionState,
+    ) -> Result<Vec<Value>, VmResult> {
+        if name != "http_build_query" {
+            return Ok(values);
+        }
+        let Some(first) = values.first().cloned() else {
+            return Ok(values);
+        };
+        let Value::Object(object) = effective_value(&first) else {
+            return Ok(values);
+        };
+        let scope = current_scope_class(compiled, stack);
+        let entries =
+            match object_property_iteration_entries(compiled, state, &object, scope.as_deref()) {
+                Ok(entries) => entries,
+                Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+            };
+        let mut array = PhpArray::new();
+        for entry in entries {
+            if let Some(value) = object.get_property(&entry.storage_name) {
+                array.insert(
+                    ArrayKey::String(PhpString::from_bytes(entry.key.into_bytes())),
+                    value,
+                );
+            }
+        }
+        values[0] = Value::Array(array);
+        Ok(values)
     }
 
     fn coerce_internal_builtin_string_args(

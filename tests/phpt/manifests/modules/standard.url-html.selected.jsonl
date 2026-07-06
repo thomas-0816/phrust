@@ -7,6 +7,13 @@
 {"path":"ext/standard/tests/http/http_build_query/gh12745.phpt"}
 {"path":"ext/standard/tests/http/http_build_query/http_build_query_variation3.phpt"}
 {"path":"ext/standard/tests/http/http_build_query/http_build_query_with_resource.phpt"}
+{"path":"ext/standard/tests/http/http_build_query/bug26817.phpt"}
+{"path":"ext/standard/tests/http/http_build_query/http_build_query_object_basic.phpt"}
+{"path":"ext/standard/tests/http/http_build_query/http_build_query_object_empty.phpt"}
+{"path":"ext/standard/tests/http/http_build_query/http_build_query_object_just_stringable.phpt"}
+{"path":"ext/standard/tests/http/http_build_query/http_build_query_object_key_val_stringable.phpt"}
+{"path":"ext/standard/tests/http/http_build_query/http_build_query_object_nested.phpt"}
+{"path":"ext/standard/tests/http/http_build_query/http_build_query_object_recursif.phpt"}
 {"path":"ext/standard/tests/url/parse_url_basic_001.phpt"}
 {"path":"ext/standard/tests/url/parse_url_basic_002.phpt"}
 {"path":"ext/standard/tests/url/parse_url_basic_003.phpt"}
