@@ -1098,8 +1098,8 @@ pub(in crate::builtins::modules) fn builtin_hash(
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    if !(2..=3).contains(&args.len()) {
-        return Err(arity_error("hash", "two or three argument(s)"));
+    if !(2..=4).contains(&args.len()) {
+        return Err(arity_error("hash", "two to four argument(s)"));
     }
     let algorithm = string_arg("hash", &args[0])?.to_string_lossy();
     let input = string_arg("hash", &args[1])?;
@@ -1109,7 +1109,8 @@ pub(in crate::builtins::modules) fn builtin_hash(
         .transpose()
         .map_err(|message| conversion_error("hash", message))?
         .unwrap_or(false);
-    let digest = hash_digest_bytes("hash", &algorithm, input.as_bytes())?;
+    let options = parse_hash_options("hash", &algorithm, args.get(3))?;
+    let digest = hash_digest_bytes_with_options("hash", &algorithm, input.as_bytes(), &options)?;
     Ok(if binary {
         Value::string(digest)
     } else {

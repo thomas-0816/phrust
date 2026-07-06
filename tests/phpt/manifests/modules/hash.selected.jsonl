@@ -34,3 +34,4 @@
 {"path":"ext/hash/tests/sha512-256.phpt"}
 {"path":"ext/hash/tests/sha512.phpt"}
 {"path":"ext/hash/tests/whirlpool.phpt"}
+{"path":"ext/hash/tests/xxhash_seed.phpt"}

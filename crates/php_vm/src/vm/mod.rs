@@ -73432,6 +73432,9 @@ fn internal_builtin_generated_named_args_supported(function: &str) -> bool {
         "array_key_exists"
             | "count"
             | "explode"
+            | "hash"
+            | "hash_file"
+            | "hash_init"
             | "http_build_query"
             | "in_array"
             | "substr"
@@ -73537,6 +73540,9 @@ fn generated_default_value_for_call(default: Option<&str>) -> Option<Value> {
     }
     if default.eq_ignore_ascii_case("false") {
         return Some(Value::Bool(false));
+    }
+    if default == "[]" {
+        return Some(Value::Array(PhpArray::new()));
     }
     if default.eq_ignore_ascii_case("true") {
         return Some(Value::Bool(true));
@@ -89056,6 +89062,10 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
             echo '|', strtolower(\"A\\0Z!\");
             echo '|', str_contains(\"abc\", 2) ? 'coerced' : 'not';
             echo '|', str_contains(needle: 'z', haystack: 'abc') ? 'bad' : 'named';
+            echo '|', hash('xxh32', 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.', options: ['seed' => 42]);
+            $hash_ctx = hash_init('xxh64', options: ['seed' => 42]);
+            hash_update($hash_ctx, 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.');
+            echo '|', hash_final($hash_ctx);
             $shape = ['answer' => 42, 3 => 'three'];
             echo '|', array_key_exists('answer', $shape) ? 'ake-hit' : 'bad';
             echo '|', array_key_exists('missing', $shape) ? 'bad' : 'ake-miss';
@@ -89085,7 +89095,7 @@ echo "dynamic=", call_user_func('tiny_frame_add', 2, 3), "\n";
         assert_eq!(on.output, off.output);
         assert_eq!(
             on.output.as_bytes(),
-            b"contains|empty|start|end|a\0z!|not|named|ake-hit|ake-miss|ake-type"
+            b"contains|empty|start|end|a\0z!|not|named|3d0cc7e5|9c9aa071b5d22a15|ake-hit|ake-miss|ake-type"
         );
         let off_counters = off.counters.expect("off counters");
         let on_counters = on.counters.expect("on counters");

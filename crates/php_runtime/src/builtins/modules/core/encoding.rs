@@ -10,6 +10,75 @@ use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use std::collections::HashSet;
 use whirlpool::Whirlpool;
+use xxhash_rust::{
+    xxh3::{
+        xxh3_64, xxh3_64_with_secret, xxh3_64_with_seed, xxh3_128, xxh3_128_with_secret,
+        xxh3_128_with_seed,
+    },
+    xxh32::xxh32,
+    xxh64::xxh64,
+};
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(in crate::builtins::modules) struct HashOptions {
+    pub seed: Option<u64>,
+    pub secret: Option<Vec<u8>>,
+}
+
+pub(in crate::builtins::modules) fn parse_hash_options(
+    name: &str,
+    algorithm: &str,
+    value: Option<&Value>,
+) -> Result<HashOptions, BuiltinError> {
+    let Some(value) = value else {
+        return Ok(HashOptions::default());
+    };
+    let Value::Array(array) = deref_value(value) else {
+        return Err(argument_type_error(name, "#4 ($options)", "array", value));
+    };
+    let mut options = HashOptions::default();
+    if let Some(seed) = array.get(&ArrayKey::String(PhpString::from("seed"))) {
+        options.seed = Some(int_arg(name, seed)? as u64);
+    }
+    if let Some(secret) = array.get(&ArrayKey::String(PhpString::from("secret"))) {
+        let secret = string_arg(name, secret)?.as_bytes().to_vec();
+        if secret.len() < 136 {
+            return Err(BuiltinError::new(
+                "E_PHP_RUNTIME_BUILTIN_VALUE",
+                format!(
+                    "{algorithm}: Secret length must be >= 136 bytes, {} bytes passed",
+                    secret.len()
+                ),
+            ));
+        }
+        options.secret = Some(secret);
+    }
+    validate_hash_options(name, algorithm, &options)?;
+    Ok(options)
+}
+
+fn validate_hash_options(
+    name: &str,
+    algorithm: &str,
+    options: &HashOptions,
+) -> Result<(), BuiltinError> {
+    match normalized_hash_algorithm(algorithm).as_deref() {
+        Some("xxh3" | "xxh128") if options.seed.is_some() && options.secret.is_some() => {
+            Err(BuiltinError::new(
+                "E_PHP_RUNTIME_BUILTIN_VALUE",
+                format!(
+                    "{algorithm}: Only one of seed or secret is to be passed for initialization"
+                ),
+            ))
+        }
+        Some("xxh3" | "xxh128" | "xxh32" | "xxh64") => Ok(()),
+        _ if options.seed.is_some() || options.secret.is_some() => Err(value_error(
+            name,
+            "hash options are only supported for xxHash algorithms",
+        )),
+        _ => Ok(()),
+    }
+}
 
 pub(in crate::builtins::modules) fn format_array_values(
     name: &str,
@@ -36,6 +105,15 @@ pub(in crate::builtins::modules) fn hash_digest_bytes(
     name: &str,
     algorithm: &str,
     input: &[u8],
+) -> Result<Vec<u8>, BuiltinError> {
+    hash_digest_bytes_with_options(name, algorithm, input, &HashOptions::default())
+}
+
+pub(in crate::builtins::modules) fn hash_digest_bytes_with_options(
+    name: &str,
+    algorithm: &str,
+    input: &[u8],
+    options: &HashOptions,
 ) -> Result<Vec<u8>, BuiltinError> {
     match normalized_hash_algorithm(algorithm).as_deref() {
         Some("md2") => Ok(Md2::digest(input).to_vec()),
@@ -77,6 +155,32 @@ pub(in crate::builtins::modules) fn hash_digest_bytes(
             .into_iter()
             .flat_map(u64::to_be_bytes)
             .collect()),
+        Some("xxh32") => Ok(xxh32(input, options.seed.unwrap_or(0) as u32)
+            .to_be_bytes()
+            .to_vec()),
+        Some("xxh64") => Ok(xxh64(input, options.seed.unwrap_or(0))
+            .to_be_bytes()
+            .to_vec()),
+        Some("xxh3") => {
+            let digest = if let Some(secret) = &options.secret {
+                xxh3_64_with_secret(input, secret)
+            } else if let Some(seed) = options.seed {
+                xxh3_64_with_seed(input, seed)
+            } else {
+                xxh3_64(input)
+            };
+            Ok(digest.to_be_bytes().to_vec())
+        }
+        Some("xxh128") => {
+            let digest = if let Some(secret) = &options.secret {
+                xxh3_128_with_secret(input, secret)
+            } else if let Some(seed) = options.seed {
+                xxh3_128_with_seed(input, seed)
+            } else {
+                xxh3_128(input)
+            };
+            Ok(digest.to_be_bytes().to_vec())
+        }
         _ => Err(value_error(name, "unsupported hash algorithm")),
     }
 }
@@ -415,6 +519,7 @@ pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -
         }
         "fnv132" | "fnv1a32" | "fnv164" | "fnv1a64" | "joaat" => Some(normalized),
         "murmur3a" | "murmur3c" | "murmur3f" => Some(normalized),
+        "xxh32" | "xxh64" | "xxh3" | "xxh128" => Some(normalized),
         "sha224" | "sha256" | "sha384" | "sha512" => Some(normalized),
         "sha3224" | "sha3256" | "sha3384" | "sha3512" => Some(normalized),
         "ripemd128" | "ripemd160" | "ripemd256" | "ripemd320" => Some(normalized),

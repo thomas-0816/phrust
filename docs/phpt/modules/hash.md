@@ -7,7 +7,8 @@
   - `tests/phpt/generated/hash/context.phpt`
   - selected `ext/hash/tests/*.phpt` rows for adler32, CRC/FNV/JOOAT,
     MD2/MD4, md5, MurmurHash3, RIPEMD, sha1, SHA-2/SHA3, Whirlpool,
-    HMAC-md5, file hashing, HKDF, PBKDF2, and stream updates
+    xxHash seed options, HMAC-md5, file hashing, HKDF, PBKDF2, and stream
+    updates
 
 ## Implemented Surface
 
@@ -22,23 +23,25 @@ Supported digest/HMAC algorithms in this slice are `md2`, `md4`, `md5`,
 `ripemd256`, `ripemd320`, `whirlpool`, `gost`, and `gost-crypto`;
 digest-only coverage also includes `adler32`, `crc32`, `crc32b`, `crc32c`,
 `fnv132`, `fnv1a32`, `fnv164`, `fnv1a64`, `joaat`, `murmur3a`, `murmur3c`,
-and `murmur3f`.
+`murmur3f`, `xxh32`, `xxh64`, `xxh3`, and `xxh128`.
 
 The selected rows cover SHA-256 file digests, SHA-256 file HMACs, raw binary
 file digest output, upstream adler32/CRC/FNV/JOOAT/MD2/MD4/md5/MurmurHash3,
-GOST, RIPEMD, sha1/SHA-2/SHA3/Whirlpool digest vectors, HMAC-md5, upstream
-file hashing, `hash_update_file`, `hash_update_stream`, `hash_pbkdf2`, and
-RFC5869 `hash_hkdf` vectors. The context row covers `HashContext` visibility,
+GOST, RIPEMD, sha1/SHA-2/SHA3/Whirlpool digest vectors, xxHash seeded
+one-shot and incremental vectors, HMAC-md5, upstream file hashing,
+`hash_update_file`, `hash_update_stream`, `hash_pbkdf2`, and RFC5869
+`hash_hkdf` vectors. The context row covers `HashContext` visibility,
 incremental SHA-256 hashing, copying a partially updated context, HMAC contexts,
 and finalized context rejection.
 
 ## Gaps
 
 The full php-src hash algorithm inventory remains out of scope for this slice:
-`xxh*`, `haval*`, `tiger*`, and `snefru*` are still unsupported.
-HashContext magic serialization/debug-info parity is also not complete.
-Murmur/xxHash seed and options-array rows remain unpromoted until the `hash`
-and `hash_init` options parameter is implemented.
+`haval*`, `tiger*`, and `snefru*` are still unsupported. HashContext magic
+serialization/debug-info parity is also not complete. The xxHash
+secret/deprecation and serialization rows remain unpromoted until non-string
+secret conversion diagnostics and HashContext serialized state parity match
+php-src.
 
 ## Target Gates
 
@@ -48,4 +51,5 @@ and `hash_init` options parameter is implemented.
 
 Last upstream target sweep before this promotion: 14 PASS, 6 SKIP, 60 FAIL.
 After adding Adler-32, CRC32/CRC32C, FNV, JOAAT, SHA3, RIPEMD, MD2, MD4,
-MurmurHash3, Whirlpool, and GOST, the selected manifest contains 36 green rows.
+MurmurHash3, Whirlpool, GOST, and xxHash seed support, the selected manifest
+contains 37 green rows.

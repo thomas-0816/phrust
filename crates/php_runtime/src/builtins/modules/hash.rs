@@ -1,8 +1,9 @@
 //! Hash extension builtins for common integrity and keyed-digest flows.
 
 use super::core::{
-    arity_error, conversion_error, deref_value, expect_arity, hash_digest_bytes, hex_encode,
-    hmac_digest_bytes, int_arg, read_file_value, resource_arg, string_arg, type_error, value_error,
+    HashOptions, arity_error, conversion_error, deref_value, expect_arity, hash_digest_bytes,
+    hash_digest_bytes_with_options, hex_encode, hmac_digest_bytes, int_arg, parse_hash_options,
+    read_file_value, resource_arg, string_arg, type_error, value_error,
 };
 use super::strings::{builtin_hash, builtin_hash_hmac};
 use crate::builtins::{
@@ -90,6 +91,10 @@ const HASH_ALGOS: &[&str] = &[
     "murmur3a",
     "murmur3c",
     "murmur3f",
+    "xxh32",
+    "xxh64",
+    "xxh3",
+    "xxh128",
 ];
 
 const HASH_HMAC_ALGOS: &[&str] = &[
@@ -122,6 +127,8 @@ const HASH_CONTEXT_FLAGS: &str = "__phrust_hash_flags";
 const HASH_CONTEXT_KEY: &str = "__phrust_hash_key";
 const HASH_CONTEXT_DATA: &str = "__phrust_hash_data";
 const HASH_CONTEXT_FINALIZED: &str = "__phrust_hash_finalized";
+const HASH_CONTEXT_SEED: &str = "__phrust_hash_seed";
+const HASH_CONTEXT_SECRET: &str = "__phrust_hash_secret";
 
 fn builtin_hash_init(
     _context: &mut BuiltinContext<'_>,
@@ -142,6 +149,7 @@ fn builtin_hash_init(
         .map(|value| string_arg("hash_init", value))
         .transpose()?
         .unwrap_or_default();
+    let options = parse_hash_options("hash_init", &algorithm, args.get(3))?;
 
     if flags & !HASH_HMAC_FLAG != 0 {
         return Err(value_error("hash_init", "unsupported hash flags"));
@@ -149,10 +157,17 @@ fn builtin_hash_init(
     if flags & HASH_HMAC_FLAG != 0 && !HASH_HMAC_ALGOS.contains(&algorithm.as_ref()) {
         hmac_digest_bytes("hash_init", &algorithm, key.as_bytes(), b"")?;
     } else {
-        hash_digest_bytes("hash_init", &algorithm, b"")?;
+        hash_digest_bytes_with_options("hash_init", &algorithm, b"", &options)?;
     }
 
-    let object = hash_context_object(&algorithm, flags, key.as_bytes(), Vec::new(), false);
+    let object = hash_context_object(
+        &algorithm,
+        flags,
+        key.as_bytes(),
+        Vec::new(),
+        false,
+        &options,
+    );
     Ok(Value::Object(object))
 }
 
@@ -237,10 +252,11 @@ fn builtin_hash_final(
     let flags = hash_context_int(&object, HASH_CONTEXT_FLAGS)?;
     let key = hash_context_string(&object, HASH_CONTEXT_KEY)?;
     let data = hash_context_data(&object)?;
+    let options = hash_context_options(&object)?;
     let digest = if flags & HASH_HMAC_FLAG != 0 {
         hmac_digest_bytes("hash_final", &algorithm, key.as_bytes(), &data)?
     } else {
-        hash_digest_bytes("hash_final", &algorithm, &data)?
+        hash_digest_bytes_with_options("hash_final", &algorithm, &data, &options)?
     };
     object.set_property(HASH_CONTEXT_FINALIZED, Value::Bool(true));
     Ok(hash_output(digest, binary))
@@ -259,6 +275,7 @@ fn builtin_hash_copy(
         hash_context_string(&object, HASH_CONTEXT_KEY)?.as_bytes(),
         hash_context_data(&object)?,
         false,
+        &hash_context_options(&object)?,
     )))
 }
 
@@ -308,8 +325,8 @@ fn builtin_hash_file(
     args: Vec<Value>,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    if !(2..=3).contains(&args.len()) {
-        return Err(arity_error("hash_file", "two or three argument(s)"));
+    if !(2..=4).contains(&args.len()) {
+        return Err(arity_error("hash_file", "two to four argument(s)"));
     }
     let algorithm = string_arg("hash_file", &args[0])?.to_string_lossy();
     let path = string_arg("hash_file", &args[1])?.to_string_lossy();
@@ -319,10 +336,12 @@ fn builtin_hash_file(
         .transpose()
         .map_err(|message| conversion_error("hash_file", message))?
         .unwrap_or(false);
+    let options = parse_hash_options("hash_file", &algorithm, args.get(3))?;
     let Value::String(input) = read_file_value(context, "hash_file", &path, span)? else {
         return Ok(Value::Bool(false));
     };
-    let digest = hash_digest_bytes("hash_file", &algorithm, input.as_bytes())?;
+    let digest =
+        hash_digest_bytes_with_options("hash_file", &algorithm, input.as_bytes(), &options)?;
     Ok(hash_output(digest, binary))
 }
 
@@ -481,6 +500,7 @@ fn hash_context_object(
     key: &[u8],
     data: Vec<u8>,
     finalized: bool,
+    options: &HashOptions,
 ) -> ObjectRef {
     let object = ObjectRef::new_with_display_name(&hash_context_class(), HASH_CONTEXT_CLASS);
     object.set_property(HASH_CONTEXT_ALGORITHM, Value::string(algorithm));
@@ -488,6 +508,21 @@ fn hash_context_object(
     object.set_property(HASH_CONTEXT_KEY, Value::string(key));
     object.set_property(HASH_CONTEXT_DATA, Value::string(data));
     object.set_property(HASH_CONTEXT_FINALIZED, Value::Bool(finalized));
+    object.set_property(
+        HASH_CONTEXT_SEED,
+        options
+            .seed
+            .map(|seed| Value::Int(seed as i64))
+            .unwrap_or(Value::Null),
+    );
+    object.set_property(
+        HASH_CONTEXT_SECRET,
+        options
+            .secret
+            .as_ref()
+            .map(|secret| Value::string(secret.clone()))
+            .unwrap_or(Value::Null),
+    );
     object
 }
 
@@ -521,6 +556,20 @@ fn hash_context_data(object: &ObjectRef) -> Result<Vec<u8>, crate::builtins::Bui
         return Err(value_error("hash", "invalid HashContext state"));
     };
     Ok(value.as_bytes().to_vec())
+}
+
+fn hash_context_options(object: &ObjectRef) -> Result<HashOptions, crate::builtins::BuiltinError> {
+    let seed = match object.get_property(HASH_CONTEXT_SEED) {
+        Some(Value::Int(seed)) => Some(seed as u64),
+        Some(Value::Null) | None => None,
+        _ => return Err(value_error("hash", "invalid HashContext state")),
+    };
+    let secret = match object.get_property(HASH_CONTEXT_SECRET) {
+        Some(Value::String(secret)) => Some(secret.as_bytes().to_vec()),
+        Some(Value::Null) | None => None,
+        _ => return Err(value_error("hash", "invalid HashContext state")),
+    };
+    Ok(HashOptions { seed, secret })
 }
 
 fn hash_context_append(
@@ -630,7 +679,10 @@ fn hash_context_class() -> ClassEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FilesystemCapabilities, OutputBuffer, builtins::BuiltinContext};
+    use crate::{
+        ArrayKey, FilesystemCapabilities, OutputBuffer, PhpArray, PhpString,
+        builtins::BuiltinContext,
+    };
 
     fn call(name: &str, args: Vec<Value>) -> Value {
         let mut output = OutputBuffer::default();
@@ -664,6 +716,10 @@ mod tests {
         assert!(values.iter().any(|value| value.contains("murmur3f")));
         assert!(values.iter().any(|value| value.contains("gost")));
         assert!(values.iter().any(|value| value.contains("gost-crypto")));
+        assert!(values.iter().any(|value| value.contains("xxh32")));
+        assert!(values.iter().any(|value| value.contains("xxh64")));
+        assert!(values.iter().any(|value| value.contains("xxh3")));
+        assert!(values.iter().any(|value| value.contains("xxh128")));
 
         let Value::Array(hmac_algos) = call("hash_hmac_algos", vec![]) else {
             panic!("expected HMAC algorithm array");
@@ -993,6 +1049,59 @@ mod tests {
             ),
             Value::string("c43668294e89db0ba5772846e5804467")
         );
+    }
+
+    #[test]
+    fn hash_supports_xxhash_seed_vectors() {
+        let mut options = PhpArray::new();
+        options.insert(ArrayKey::String(PhpString::from("seed")), Value::Int(42));
+        let options = Value::Array(options);
+        let input = Value::string("Lorem ipsum dolor sit amet, consectetur adipiscing elit.");
+
+        for (algorithm, expected) in [
+            ("xxh32", "3d0cc7e5"),
+            ("xxh64", "9c9aa071b5d22a15"),
+            ("xxh3", "366409913c16b70d"),
+            ("xxh128", "f87856a7589354e92aeca886c71ed7fb"),
+        ] {
+            assert_eq!(
+                call(
+                    "hash",
+                    vec![
+                        Value::string(algorithm),
+                        input.clone(),
+                        Value::Bool(false),
+                        options.clone(),
+                    ],
+                ),
+                Value::string(expected)
+            );
+
+            let context = call(
+                "hash_init",
+                vec![
+                    Value::string(algorithm),
+                    Value::Int(0),
+                    Value::string(""),
+                    options.clone(),
+                ],
+            );
+            call(
+                "hash_update",
+                vec![
+                    context.clone(),
+                    Value::string("Lorem ipsum dolor sit amet,"),
+                ],
+            );
+            call(
+                "hash_update",
+                vec![
+                    context.clone(),
+                    Value::string(" consectetur adipiscing elit."),
+                ],
+            );
+            assert_eq!(call("hash_final", vec![context]), Value::string(expected));
+        }
     }
 
     #[test]
