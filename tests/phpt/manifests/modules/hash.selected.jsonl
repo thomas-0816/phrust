@@ -3,6 +3,11 @@
 {"path":"ext/hash/tests/adler32.phpt"}
 {"path":"ext/hash/tests/bug52240.phpt"}
 {"path":"ext/hash/tests/bug64745.phpt"}
+{"path":"ext/hash/tests/crc32.phpt"}
+{"path":"ext/hash/tests/fnv132.phpt"}
+{"path":"ext/hash/tests/fnv164.phpt"}
+{"path":"ext/hash/tests/fnv1a32.phpt"}
+{"path":"ext/hash/tests/fnv1a64.phpt"}
 {"path":"ext/hash/tests/hash_file_basic.phpt"}
 {"path":"ext/hash/tests/hash_hkdf_rfc5869.phpt"}
 {"path":"ext/hash/tests/hash_pbkdf2_basic.phpt"}
@@ -10,6 +15,7 @@
 {"path":"ext/hash/tests/hash_update_stream.phpt"}
 {"path":"ext/hash/tests/hash_update_stream_basic_001.phpt"}
 {"path":"ext/hash/tests/hmac-md5.phpt"}
+{"path":"ext/hash/tests/joaat.phpt"}
 {"path":"ext/hash/tests/md5.phpt"}
 {"path":"ext/hash/tests/sha1.phpt"}
 {"path":"ext/hash/tests/sha224.phpt"}

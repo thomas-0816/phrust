@@ -5,8 +5,8 @@
 - Selected fixtures:
   - `tests/phpt/generated/hash/file.phpt`
   - `tests/phpt/generated/hash/context.phpt`
-  - selected `ext/hash/tests/*.phpt` rows for adler32, md5, sha1, SHA-2, HMAC-md5,
-    file hashing, HKDF, PBKDF2, and stream updates
+  - selected `ext/hash/tests/*.phpt` rows for adler32, CRC/FNV/JOOAT, md5, sha1,
+    SHA-2, HMAC-md5, file hashing, HKDF, PBKDF2, and stream updates
 
 ## Implemented Surface
 
@@ -17,14 +17,16 @@ The metadata registry exposes `HashContext` and `HASH_HMAC`.
 
 Supported digest/HMAC algorithms in this slice are `md5`, `sha1`, `sha224`,
 `sha256`, `sha384`, `sha512/224`, `sha512/256`, and `sha512`; digest-only
-coverage also includes `adler32`, `crc32`, and `crc32b`.
+coverage also includes `adler32`, `crc32`, `crc32b`, `crc32c`, `fnv132`,
+`fnv1a32`, `fnv164`, `fnv1a64`, and `joaat`.
 
 The selected rows cover SHA-256 file digests, SHA-256 file HMACs, raw binary
-file digest output, upstream adler32/md5/sha1/SHA-2 digest vectors, HMAC-md5,
-upstream file hashing, `hash_update_file`, `hash_update_stream`,
-`hash_pbkdf2`, and RFC5869 `hash_hkdf` vectors. The context row covers
-`HashContext` visibility, incremental SHA-256 hashing, copying a partially
-updated context, HMAC contexts, and finalized context rejection.
+file digest output, upstream adler32/CRC/FNV/JOOAT/md5/sha1/SHA-2 digest
+vectors, HMAC-md5, upstream file hashing, `hash_update_file`,
+`hash_update_stream`, `hash_pbkdf2`, and RFC5869 `hash_hkdf` vectors. The
+context row covers `HashContext` visibility, incremental SHA-256 hashing,
+copying a partially updated context, HMAC contexts, and finalized context
+rejection.
 
 ## Gaps
 
@@ -40,4 +42,5 @@ serialization/debug-info parity is also not complete.
 - `nix develop -c just phpt-dev-module MODULE=hash`
 
 Last upstream target sweep before this promotion: 14 PASS, 6 SKIP, 60 FAIL.
-After adding Adler-32, the selected manifest contains 20 green rows.
+After adding Adler-32, CRC32/CRC32C, FNV, and JOAAT, the selected manifest
+contains 26 green rows.

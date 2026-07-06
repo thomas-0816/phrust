@@ -40,7 +40,14 @@ pub(in crate::builtins::modules) fn hash_digest_bytes(
         Some("sha512256") => Ok(Sha512_256::digest(input).to_vec()),
         Some("sha512") => Ok(Sha512::digest(input).to_vec()),
         Some("adler32") => Ok(adler32(input).to_be_bytes().to_vec()),
-        Some("crc32") | Some("crc32b") => Ok(crc32fast::hash(input).to_be_bytes().to_vec()),
+        Some("crc32") => Ok(crc32_bzip2(input).to_le_bytes().to_vec()),
+        Some("crc32b") => Ok(crc32fast::hash(input).to_be_bytes().to_vec()),
+        Some("crc32c") => Ok(crc32c(input).to_be_bytes().to_vec()),
+        Some("fnv132") => Ok(fnv1_32(input).to_be_bytes().to_vec()),
+        Some("fnv1a32") => Ok(fnv1a_32(input).to_be_bytes().to_vec()),
+        Some("fnv164") => Ok(fnv1_64(input).to_be_bytes().to_vec()),
+        Some("fnv1a64") => Ok(fnv1a_64(input).to_be_bytes().to_vec()),
+        Some("joaat") => Ok(joaat(input).to_be_bytes().to_vec()),
         _ => Err(value_error(name, "unsupported hash algorithm")),
     }
 }
@@ -54,6 +61,84 @@ fn adler32(input: &[u8]) -> u32 {
         b = (b + a) % MOD_ADLER;
     }
     (b << 16) | a
+}
+
+fn crc32_bzip2(input: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff_u32;
+    for byte in input {
+        crc ^= u32::from(*byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04c1_1db7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    !crc
+}
+
+fn crc32c(input: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff_u32;
+    for byte in input {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82f6_3b78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn fnv1_32(input: &[u8]) -> u32 {
+    let mut hash = 0x811c_9dc5_u32;
+    for byte in input {
+        hash = hash.wrapping_mul(0x0100_0193);
+        hash ^= u32::from(*byte);
+    }
+    hash
+}
+
+fn fnv1a_32(input: &[u8]) -> u32 {
+    let mut hash = 0x811c_9dc5_u32;
+    for byte in input {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+fn fnv1_64(input: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in input {
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        hash ^= u64::from(*byte);
+    }
+    hash
+}
+
+fn fnv1a_64(input: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in input {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn joaat(input: &[u8]) -> u32 {
+    let mut hash = 0_u32;
+    for byte in input {
+        hash = hash.wrapping_add(u32::from(*byte));
+        hash = hash.wrapping_add(hash << 10);
+        hash ^= hash >> 6;
+    }
+    hash = hash.wrapping_add(hash << 3);
+    hash ^= hash >> 11;
+    hash.wrapping_add(hash << 15)
 }
 
 pub(in crate::builtins::modules) fn hmac_digest_bytes(
@@ -172,7 +257,8 @@ pub(in crate::builtins::modules) fn hmac_with_block(
 pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -> Option<String> {
     let normalized = algorithm.to_ascii_lowercase().replace('-', "");
     match normalized.as_str() {
-        "md5" | "sha1" | "adler32" | "crc32" | "crc32b" => Some(normalized),
+        "md5" | "sha1" | "adler32" | "crc32" | "crc32b" | "crc32c" => Some(normalized),
+        "fnv132" | "fnv1a32" | "fnv164" | "fnv1a64" | "joaat" => Some(normalized),
         "sha224" | "sha256" | "sha384" | "sha512" => Some(normalized),
         "sha512/224" => Some("sha512224".to_owned()),
         "sha512/256" => Some("sha512256".to_owned()),

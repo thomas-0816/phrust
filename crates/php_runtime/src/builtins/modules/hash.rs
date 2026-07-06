@@ -68,6 +68,12 @@ const HASH_ALGOS: &[&str] = &[
     "adler32",
     "crc32",
     "crc32b",
+    "crc32c",
+    "fnv132",
+    "fnv1a32",
+    "fnv164",
+    "fnv1a64",
+    "joaat",
 ];
 
 const HASH_HMAC_ALGOS: &[&str] = &[
@@ -722,6 +728,63 @@ mod tests {
                 ]
             ),
             Value::string("8adb150c")
+        );
+    }
+
+    #[test]
+    fn hash_supports_crc_fnv_and_joaat_vectors() {
+        assert_eq!(
+            call("hash", vec![Value::string("crc32"), Value::string("abc")]),
+            Value::string("73bb8c64")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("crc32b"), Value::string("abc")]),
+            Value::string("352441c2")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("crc32c"), Value::string("abc")]),
+            Value::string("364b3fb7")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("fnv132"), Value::string("")]),
+            Value::string("811c9dc5")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("fnv132"), Value::string("foobar")]
+            ),
+            Value::string("31f0b262")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("fnv1a32"), Value::string("l")]),
+            Value::string("e90c310b")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("fnv164"), Value::string("")]),
+            Value::string("cbf29ce484222325")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("fnv164"), Value::string("foobar")]
+            ),
+            Value::string("340d8765a4dda9c2")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("fnv1a64"), Value::string("9")]),
+            Value::string("af63b44c8601a894")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("joaat"), Value::string("hello world")]
+            ),
+            Value::string("3e4a5a57")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("joaat"), Value::string("a")]),
+            Value::string("ca2e9442")
         );
     }
 
