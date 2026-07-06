@@ -3050,17 +3050,6 @@ fn collect_copy_patch_stencils(
             }
         }
     }
-    if !dense
-        .functions
-        .iter()
-        .flat_map(|function| &function.instructions)
-        .any(|instruction| matches!(instruction.opcode, DenseOpcode::FetchProperty))
-    {
-        report
-            .unsupported_by_reason
-            .entry("object_shape_property_load_dense_opcode_absent".to_string())
-            .or_insert(1);
-    }
     report
 }
 
@@ -4658,6 +4647,65 @@ mod tests {
             json["dense_bytecode_version"]
         );
         assert!(json["code_cache_key"]["target_arch_config"].is_string());
+    }
+
+    #[test]
+    fn copy_patch_stencils_emit_property_load_and_store_candidates() {
+        // Object property fetch/assign now have dense opcodes, so the stencil
+        // tier classifies them into guarded property stencils instead of
+        // reporting the (now stale) `object_shape_property_load_dense_opcode_absent`
+        // gap. This keeps the report a truthful mirror of the dense ISA.
+        let path = std::env::temp_dir().join(format!(
+            "phrust_p8_stencil_property_{}.php",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "<?php\n\
+             class Point { public $x = 3; public $y = 4; }\n\
+             $p = new Point();\n\
+             $p->x = $p->x + $p->y;\n\
+             echo $p->x;\n",
+        )
+        .unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            [
+                "dump-copy-patch-stencils".to_string(),
+                path_str,
+                "--json".to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+        let json: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+        // No-exec invariant still holds.
+        assert_eq!(json["native_execution"], false);
+        assert_eq!(json["executable_memory"], false);
+        // Property fetch and assign are classified into guarded property stencils.
+        let kinds = &json["stencil_kinds"];
+        assert!(
+            kinds["guarded_property_fetch"].as_u64().unwrap_or_default() >= 1,
+            "expected a guarded_property_fetch stencil: {json}"
+        );
+        assert!(
+            kinds["guarded_property_assignment"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1,
+            "expected a guarded_property_assignment stencil: {json}"
+        );
+        // The stale ISA-absence gap must not reappear now that the opcode exists.
+        assert!(
+            json["unsupported_by_reason"]["object_shape_property_load_dense_opcode_absent"]
+                .is_null(),
+            "stale property-load absence gap should be gone: {json}"
+        );
     }
 
     #[test]

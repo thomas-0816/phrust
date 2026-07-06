@@ -82,19 +82,20 @@ bytecode, applies conservative superinstruction selection metadata, verifies
 dense bytecode, then maps a tiny quickening-compatible dense subset to
 stencils. It never allocates executable memory.
 
-The current smoke summary covers four fixtures and produced:
+The current smoke summary covers five fixtures (including the `properties.php`
+fixture that exercises the guarded property fetch/assign stencils) and produced:
 
 | Metric | Value |
 | --- | ---: |
-| Dense instructions | 313 |
-| Stencils | 276 |
-| Patch sites | 414 |
-| Helper calls | 27 |
-| Live-state slots | 425 |
-| Deopt points | 41 |
-| Estimated code size | 3016 bytes |
-| Compile-cost units | 394 |
-| Work-to-compile ratio | 0.701 |
+| Dense instructions | 354 |
+| Stencils | 285 |
+| Patch sites | 428 |
+| Helper calls | 32 |
+| Live-state slots | 440 |
+| Deopt points | 48 |
+| Estimated code size | 3280 bytes |
+| Compile-cost units | 454 |
+| Work-to-compile ratio | 0.628 |
 
 ## Candidate Stencils
 
@@ -104,7 +105,7 @@ The current smoke summary covers four fixtures and produced:
 | Guard int/string/bool | Represented through guarded arithmetic, known builtin calls, and branch guards. | Exact value class feedback, source span, resume instruction, guard failure reason. |
 | Int add/sub/mul with overflow exit | `guarded_int_arithmetic` over `binary_add`, `binary_sub`, and `binary_mul`. | Operand registers, destination register, overflow exit, type exit, checked helper/inline op identity. |
 | Packed array guard/fetch | `packed_array_guard_fetch` over dense `fetch_dim`. | Packed-array guard, integer key guard, OOB exit, warning/diagnostic ordering, no by-reference element state. |
-| Object shape guard/property slot load | Documented candidate, currently reported as `object_shape_property_load_dense_opcode_absent` because dense bytecode has no property-load opcode yet. | Receiver class/layout epoch, property slot, visibility scope, magic/get/hook rejection, uninitialized typed-property exit. |
+| Object shape guard/property slot load | `guarded_property_fetch` over dense `fetch_property`, and `guarded_property_assignment` over dense `assign_property`. Dense bytecode now exposes property fetch/assign opcodes, so the stencil tier classifies them instead of reporting `object_shape_property_load_dense_opcode_absent`. | Receiver class/layout epoch, property slot, visibility scope, magic/get/hook rejection, uninitialized typed-property exit. |
 | Known builtin call | `known_builtin_call` for dense direct calls to `strlen` and `count`. | Function-table epoch, builtin identity, argument shape, helper return-status exit, diagnostics order. |
 | Branch guard | `branch_guard` over conditional dense jumps. | Boolean condition guard, branch-bias metadata, taken/fallthrough patch sites, resume block. |
 | Return | `return` over dense `return`. | Return value, caller frame, destructor order, slow return exit. |
@@ -120,10 +121,15 @@ The prototype rejects or records gaps for:
   by-reference arguments need exact live-state maps;
 - foreach, because iterator position, mutation epoch, by-reference mode, and
   resume state are not native-representable yet;
-- property loads, because dense bytecode does not expose an object property-load
-  opcode for this tier yet;
 - string, comparison, division, modulo, bitwise, unary, and concat opcodes that
   still need PHP-semantic helper contracts or string/allocation state.
+
+Object property fetch and assign are now supported candidates
+(`guarded_property_fetch` / `guarded_property_assignment`) once dense bytecode
+gained property opcodes; they still require the receiver class/layout-epoch
+guards, visibility scope, magic/`__get`/hook rejection, and uninitialized
+typed-property exits listed in the candidate table before an executable tier
+can emit them.
 
 ## Required Deopt Metadata
 
@@ -204,10 +210,11 @@ fails. This is the guard that keeps stencil research non-executable.
 
 The prototype makes stencil-library research concrete enough to compare against
 the current Cranelift no-exec/reporting flow. It does not justify native
-execution. The next useful work is prerequisite closure: property dense opcodes,
-typed live-state/deopt maps, helper status contracts, frame identity maps,
-reference/COW materialization, invalidation epochs, and executable-memory/W^X
-policy.
+execution. Property dense opcodes now exist, so the property fetch/assign
+stencil candidates are classified rather than reported absent. The next useful
+work is the remaining prerequisite closure: typed live-state/deopt maps, helper
+status contracts, frame identity maps, reference/COW materialization,
+invalidation epochs, and executable-memory/W^X policy.
 
 The PHP-aware mid-tier design in `docs/research/php-mid-tier-compiler.md` is the
 next higher research layer. It consumes the same dense bytecode, feedback, and

@@ -17,6 +17,7 @@ FIXTURES = (
     ROOT / "tests/fixtures/performance/perf_smoke/arithmetic.php",
     ROOT / "tests/fixtures/performance/perf_smoke/arrays_packed.php",
     ROOT / "tests/fixtures/performance/perf_smoke/stdlib_dispatch.php",
+    ROOT / "tests/fixtures/performance/perf_smoke/properties.php",
     ROOT / "tests/fixtures/performance/framework_smoke/packed_mixed_array_traversal.php",
 )
 
@@ -98,6 +99,8 @@ def main() -> int:
         "known_builtin_call",
         "branch_guard",
         "return",
+        "guarded_property_fetch",
+        "guarded_property_assignment",
     }
     missing = sorted(required_kinds.difference(stencil_kinds))
     if missing:
