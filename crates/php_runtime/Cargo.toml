@@ -38,6 +38,7 @@ sha3 = "0.10"
 whirlpool = "0.10.4"
 xxhash-rust = { version = "0.8.16", features = ["xxh3", "xxh32", "xxh64"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tiger = "0.3.0"
 
 [dev-dependencies]
 php_testkit = { path = "../php_testkit", version = "0.0.0" }

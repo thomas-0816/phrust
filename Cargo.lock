@@ -1732,6 +1732,7 @@ dependencies = [
  "sha1",
  "sha2 0.10.9",
  "sha3",
+ "tiger",
  "whirlpool",
  "xxhash-rust",
  "zip",
@@ -2411,6 +2412,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tiger"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ad6ecb56d435fa53bca61a6b7c9019bf1f18b56760150e2e97afd97290ff401"
+dependencies = [
+ "digest 0.11.3",
 ]
 
 [[package]]

@@ -77,6 +77,9 @@ const HASH_ALGOS: &[&str] = &[
     "ripemd256",
     "ripemd320",
     "whirlpool",
+    "tiger128,3",
+    "tiger160,3",
+    "tiger192,3",
     "gost",
     "gost-crypto",
     "adler32",
@@ -117,6 +120,9 @@ const HASH_HMAC_ALGOS: &[&str] = &[
     "ripemd256",
     "ripemd320",
     "whirlpool",
+    "tiger128,3",
+    "tiger160,3",
+    "tiger192,3",
     "gost",
     "gost-crypto",
 ];
@@ -714,6 +720,9 @@ mod tests {
         assert!(values.iter().any(|value| value.contains("murmur3a")));
         assert!(values.iter().any(|value| value.contains("murmur3c")));
         assert!(values.iter().any(|value| value.contains("murmur3f")));
+        assert!(values.iter().any(|value| value.contains("tiger128,3")));
+        assert!(values.iter().any(|value| value.contains("tiger160,3")));
+        assert!(values.iter().any(|value| value.contains("tiger192,3")));
         assert!(values.iter().any(|value| value.contains("gost")));
         assert!(values.iter().any(|value| value.contains("gost-crypto")));
         assert!(values.iter().any(|value| value.contains("xxh32")));
@@ -748,6 +757,9 @@ mod tests {
             "ripemd256",
             "ripemd320",
             "whirlpool",
+            "tiger128,3",
+            "tiger160,3",
+            "tiger192,3",
             "gost",
             "gost-crypto",
         ] {
@@ -1052,6 +1064,47 @@ mod tests {
     }
 
     #[test]
+    fn hash_supports_murmur3_seed_vectors() {
+        for (algorithm, seed, expected) in [
+            ("murmur3f", 42, "95855f9be0db784a5c37e878c4a4dcee"),
+            ("murmur3c", 106, "f64c9eb40287fa686575163893e283b2"),
+            ("murmur3a", 2345, "7f7ec59b"),
+        ] {
+            let mut options = PhpArray::new();
+            options.insert(ArrayKey::String(PhpString::from("seed")), Value::Int(seed));
+            let options = Value::Array(options);
+            let input = Value::string("Two hashes meet in a bar.");
+
+            assert_eq!(
+                call(
+                    "hash",
+                    vec![
+                        Value::string(algorithm),
+                        input.clone(),
+                        Value::Bool(false),
+                        options.clone(),
+                    ],
+                ),
+                Value::string(expected)
+            );
+
+            let context = call(
+                "hash_init",
+                vec![
+                    Value::string(algorithm),
+                    Value::Int(0),
+                    Value::string(""),
+                    options.clone(),
+                ],
+            );
+            for chunk in ["Two", " hashes", " meet", " in", " a", " bar."] {
+                call("hash_update", vec![context.clone(), Value::string(chunk)]);
+            }
+            assert_eq!(call("hash_final", vec![context]), Value::string(expected));
+        }
+    }
+
+    #[test]
     fn hash_supports_xxhash_seed_vectors() {
         let mut options = PhpArray::new();
         options.insert(ArrayKey::String(PhpString::from("seed")), Value::Int(42));
@@ -1101,6 +1154,43 @@ mod tests {
                 ],
             );
             assert_eq!(call("hash_final", vec![context]), Value::string(expected));
+        }
+    }
+
+    #[test]
+    fn hash_supports_tiger3_vectors_and_hmac() {
+        for (algorithm, digest, hmac) in [
+            (
+                "tiger128,3",
+                "2aab1484e8c158f2bfb8c5ff41b57a52",
+                "6a1402befd9f3a1b82416fb4bd49f178",
+            ),
+            (
+                "tiger160,3",
+                "2aab1484e8c158f2bfb8c5ff41b57a525129131c",
+                "afe24c5aaf426f9527df0655f8a8f5661c421420",
+            ),
+            (
+                "tiger192,3",
+                "2aab1484e8c158f2bfb8c5ff41b57a525129131c957b5f93",
+                "2612c8b754b60c65610dc5837c3fbce4cd2d846e35884800",
+            ),
+        ] {
+            assert_eq!(
+                call("hash", vec![Value::string(algorithm), Value::string("abc")]),
+                Value::string(digest)
+            );
+            assert_eq!(
+                call(
+                    "hash_hmac",
+                    vec![
+                        Value::string(algorithm),
+                        Value::string("payload"),
+                        Value::string("key"),
+                    ],
+                ),
+                Value::string(hmac)
+            );
         }
     }
 

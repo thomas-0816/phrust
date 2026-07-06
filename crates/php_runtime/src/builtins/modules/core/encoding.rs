@@ -9,6 +9,7 @@ use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use std::collections::HashSet;
+use tiger::{Digest as TigerDigest, Tiger};
 use whirlpool::Whirlpool;
 use xxhash_rust::{
     xxh3::{
@@ -71,6 +72,11 @@ fn validate_hash_options(
                 ),
             ))
         }
+        Some("murmur3a" | "murmur3c" | "murmur3f") if options.secret.is_some() => Err(value_error(
+            name,
+            "hash secret is only supported for xxh3 and xxh128",
+        )),
+        Some("murmur3a" | "murmur3c" | "murmur3f") => Ok(()),
         Some("xxh3" | "xxh128" | "xxh32" | "xxh64") => Ok(()),
         _ if options.seed.is_some() || options.secret.is_some() => Err(value_error(
             name,
@@ -135,6 +141,9 @@ pub(in crate::builtins::modules) fn hash_digest_bytes_with_options(
         Some("ripemd256") => Ok(Ripemd256::digest(input).to_vec()),
         Some("ripemd320") => Ok(Ripemd320::digest(input).to_vec()),
         Some("whirlpool") => Ok(Whirlpool::digest(input).to_vec()),
+        Some("tiger128,3") => Ok(tiger_digest(input, 16)),
+        Some("tiger160,3") => Ok(tiger_digest(input, 20)),
+        Some("tiger192,3") => Ok(tiger_digest(input, 24)),
         Some("gost") => Ok(<Gost94Test as GostDigest>::digest(input).to_vec()),
         Some("gostcrypto") => Ok(<Gost94CryptoPro as GostDigest>::digest(input).to_vec()),
         Some("adler32") => Ok(adler32(input).to_be_bytes().to_vec()),
@@ -146,12 +155,14 @@ pub(in crate::builtins::modules) fn hash_digest_bytes_with_options(
         Some("fnv164") => Ok(fnv1_64(input).to_be_bytes().to_vec()),
         Some("fnv1a64") => Ok(fnv1a_64(input).to_be_bytes().to_vec()),
         Some("joaat") => Ok(joaat(input).to_be_bytes().to_vec()),
-        Some("murmur3a") => Ok(murmur3_x86_32(input, 0).to_be_bytes().to_vec()),
-        Some("murmur3c") => Ok(murmur3_x86_128(input, 0)
+        Some("murmur3a") => Ok(murmur3_x86_32(input, options.seed.unwrap_or(0) as u32)
+            .to_be_bytes()
+            .to_vec()),
+        Some("murmur3c") => Ok(murmur3_x86_128(input, options.seed.unwrap_or(0) as u32)
             .into_iter()
             .flat_map(u32::to_be_bytes)
             .collect()),
-        Some("murmur3f") => Ok(murmur3_x64_128(input, 0)
+        Some("murmur3f") => Ok(murmur3_x64_128(input, options.seed.unwrap_or(0) as u32)
             .into_iter()
             .flat_map(u64::to_be_bytes)
             .collect()),
@@ -272,6 +283,12 @@ fn joaat(input: &[u8]) -> u32 {
     hash = hash.wrapping_add(hash << 3);
     hash ^= hash >> 11;
     hash.wrapping_add(hash << 15)
+}
+
+fn tiger_digest(input: &[u8], length: usize) -> Vec<u8> {
+    let mut digest = <Tiger as TigerDigest>::digest(input).to_vec();
+    digest.truncate(length);
+    digest
 }
 
 pub(in crate::builtins::modules) fn hmac_digest_bytes(
@@ -463,6 +480,33 @@ pub(in crate::builtins::modules) fn hmac_digest_bytes(
             input,
             |bytes| Whirlpool::digest(bytes).to_vec(),
         )),
+        Some("tiger128,3") => Ok(hmac_with_block_64(
+            if key.len() > 64 {
+                tiger_digest(key, 16)
+            } else {
+                key.to_vec()
+            },
+            input,
+            |bytes| tiger_digest(bytes, 16),
+        )),
+        Some("tiger160,3") => Ok(hmac_with_block_64(
+            if key.len() > 64 {
+                tiger_digest(key, 20)
+            } else {
+                key.to_vec()
+            },
+            input,
+            |bytes| tiger_digest(bytes, 20),
+        )),
+        Some("tiger192,3") => Ok(hmac_with_block_64(
+            if key.len() > 64 {
+                tiger_digest(key, 24)
+            } else {
+                key.to_vec()
+            },
+            input,
+            |bytes| tiger_digest(bytes, 24),
+        )),
         Some("gost") => Ok(hmac_with_block(
             if key.len() > 32 {
                 <Gost94Test as GostDigest>::digest(key).to_vec()
@@ -524,6 +568,7 @@ pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -
         "sha3224" | "sha3256" | "sha3384" | "sha3512" => Some(normalized),
         "ripemd128" | "ripemd160" | "ripemd256" | "ripemd320" => Some(normalized),
         "whirlpool" | "gost" | "gostcrypto" => Some(normalized),
+        "tiger128,3" | "tiger160,3" | "tiger192,3" => Some(normalized),
         "sha512/224" => Some("sha512224".to_owned()),
         "sha512/256" => Some("sha512256".to_owned()),
         "sha512224" | "sha512256" => Some(normalized),
