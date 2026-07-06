@@ -1,4 +1,4 @@
-# ADR 0007: Token Oracle Normalization
+# ADR 0031: Token Oracle Normalization
 
 ## Status
 

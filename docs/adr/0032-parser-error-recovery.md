@@ -1,4 +1,4 @@
-# ADR 0008: Parser Error Recovery
+# ADR 0032: Parser Error Recovery
 
 ## Status
 

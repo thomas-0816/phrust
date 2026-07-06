@@ -198,7 +198,7 @@ Runtime decisions are captured in these ADRs:
 | --- | --- |
 | IR style | `docs/adr/0017-runtime-register-ir.md` |
 | VM dispatch | `docs/adr/0018-runtime-vm-dispatch.md` |
-| Value representation | `docs/adr/0019-runtime-runtime-value-representation.md` |
+| Value representation | `docs/adr/0019-runtime-value-representation.md` |
 | Array model | `docs/adr/0020-runtime-array-mvp.md` |
 | Object model | `docs/adr/0021-runtime-object-mvp.md` |
 | Exception model | `docs/adr/0022-runtime-exception-model.md` |

@@ -1,10 +1,8 @@
-# ADR-0025: Runtime semantics Destructor Queue MVP
+# ADR 0025: Runtime semantics Destructor Queue MVP
 
-Status: accepted
+## Status
 
-Work item asks for ADR-009 coverage of destructor queue invariants. This
-repository already uses ADR-0009 for Pratt expression parsing, so this ADR is
-the Runtime semantics destructor-queue record.
+Accepted for Runtime semantics.
 
 ## Context
 
