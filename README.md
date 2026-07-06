@@ -1,7 +1,5 @@
-# phrust
-
 <p align="center">
-  <img src="assets/elephrant-black.png" alt="phrust elephrant logo" width="180">
+  <img src="assets/elephrant-black.png" alt="phrust elephrant logo" width="400">
 </p>
 
 `phrust` is an experiment in recreating an existing program, PHP, by extracting
