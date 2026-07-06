@@ -18,7 +18,7 @@ required_files=(
   "docs/foundation/license-and-copying-policy.md"
   "docs/foundation/risk-register.md"
   "docs/foundation/definition-of-done.md"
-  "docs/foundation/final-audit.md"
+  "docs/foundation/validation-summary.md"
   "docs/adr/0001-target-php-version.md"
   "docs/adr/0002-nix-dev-environment.md"
   "docs/adr/0003-reference-oracle.md"

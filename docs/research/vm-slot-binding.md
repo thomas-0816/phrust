@@ -18,7 +18,7 @@ to runtime storage internals.
 | `local` | PHP compiled local slot |
 | `register` | VM temporary register |
 | `temporary` | Region-local temporary spill target |
-| `return_value` | Return-value handoff slot |
+| `return_value` | Return-value follow-up slot |
 | `call_arg` | Normalized call argument slot |
 | `foreach_iterator` | Foreach iterator state |
 | `foreach_key` | Foreach key state |

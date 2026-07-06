@@ -32,9 +32,9 @@ primitives. It does not introduce a full encoding database, mbregex, Oniguruma,
 locale data, or broad upstream `ext/mbstring` parity.
 
 The default project oracle at
-`/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php` was built
+`$REFERENCE_PHP` was built
 without mbstring. A previous temporary read-only PHP 8.5.7 clone at
-`/tmp/php-src-mbstring-oracle/sapi/cli/php` is currently absent in this
+`$REFERENCE_PHP` is currently absent in this
 checkout, so the upstream promotion evidence here is target-only. The normal
 `phpt-dev-module` reference phase fails on the four generated mbstring fixtures
 until that oracle is rebuilt.
@@ -117,5 +117,5 @@ Out of scope for this MVP:
 ## Target Gates
 
 - `nix develop -c cargo test -p php_runtime`
-- `PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-module-target MODULE=mbstring`
+- `PHP_SRC_DIR=$PHP_SRC_DIR PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-module-target MODULE=mbstring`
 - `nix develop -c cargo test -p php_std mbstring`

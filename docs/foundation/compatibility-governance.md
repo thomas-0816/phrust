@@ -1,7 +1,7 @@
 # Compatibility Governance
 
 Compatibility gaps must be explicit, executable, sortable, and reviewable. The
-runtime and PHPT harnesses share one mismatch taxonomy so Wave 1 work can triage
+runtime and PHPT harnesses share one mismatch taxonomy so Batch 1 work can triage
 failures without hiding them behind ad hoc text.
 
 ## Mismatch Categories
@@ -44,8 +44,8 @@ nix develop -c just runtime-diff
 - `target/runtime/runtime-diff/runtime-report.json`
 - `target/runtime/runtime-diff/runtime-results.jsonl`
 - `target/runtime/runtime-diff/runtime-report.md`
-- `docs/runtime/reports/runtime-diff-results.jsonl`
-- `docs/runtime/reports/runtime-diff-report.md`
+- `target/runtime/reports/runtime-diff-results.jsonl`
+- `target/runtime/reports/runtime-diff-report.md`
 - one per-fixture JSON file for direct inspection
 
 The grouped reports include category, feature area, diagnostic ID, fixture path,
@@ -101,10 +101,10 @@ nix develop -c just runtime-diff
 Do not delete known-gap metadata until the proof fixture is checked in and the
 documentation explains the implemented behavior or the narrower remaining gap.
 
-## Wave 1B and 1C Workflow
+## Batch 1B and 1C Workflow
 
-Wave 1B should add executable fixtures for the highest-count categories from
+Batch 1B should add executable fixtures for the highest-count categories from
 `runtime-report.md`, then move matching JSONL rows from planned prose into
-fixture-backed known gaps. Wave 1C should retire `UnexpectedPass` entries and
+fixture-backed known gaps. Batch 1C should retire `UnexpectedPass` entries and
 split broad rows when one feature area now has mixed implemented and deferred
 behavior.

@@ -169,9 +169,9 @@ current command behavior, generated summaries, and known gaps:
 - `docs/performance/methodology.md`: measurement and reporting policy.
 - `docs/performance/runtime.md`: runtime and VM optimization contracts.
 - `docs/performance/bytecode-cache.md`: CLI bytecode cache behavior.
-- `docs/performance/results.md`: committed local benchmark summary.
+- `docs/reference/performance-status.md`: committed local benchmark summary.
 - `docs/performance/framework-corpus.md`: generated framework-smoke summary.
-- `docs/performance/fastest-engine-results.md`: generated fastest-engine matrix
+- `target/performance/fastest/matrix.md`: generated fastest-engine matrix
   summary.
 - `docs/performance/known-gaps.md` and
   `docs/known_gaps/performance.jsonl`: human and machine-readable gap catalogs.
@@ -227,7 +227,7 @@ inline-cache, JIT, safety, matrix, and reporting gates.
 | `pgo-benchmark-smoke` | Optional PGO flow. Without `PHRUST_RUN_PGO=1` or `llvm-profdata`, writes a skip report under `target/performance/release/`; when enabled, builds profile-generate/profile-use release binaries and reruns the corpora. |
 | `bolt-benchmark-smoke` | Optional Linux-only BOLT flow. It writes a skip report outside Linux or without `PHRUST_RUN_BOLT=1`, `PHRUST_BOLT_PERF_DATA`, `perf2bolt`, and `llvm-bolt`; enabled runs consume perf data and benchmark the optimized binary. |
 | `callgrind-smoke` | Optional Callgrind smoke; skips cleanly outside Linux or without `valgrind`, otherwise writes `target/performance/callgrind/summary.json`. |
-| `fastest-hotpath-report` | Builds or reuses the VM, consumes benchmark smoke, framework smoke, acceleration matrix, standalone counter JSON, and optional profiler artifacts, writes `target/performance/fastest/hotpath-report.{json,md}`, and refreshes `docs/performance/fastest-hotpaths.md`. |
+| `fastest-hotpath-report` | Builds or reuses the VM, consumes benchmark smoke, framework smoke, acceleration matrix, standalone counter JSON, and optional profiler artifacts, writes `target/performance/fastest/hotpath-report.{json,md}`, and refreshes `target/performance/fastest/hotpath-report.md`. |
 | `rust-hotpath-bench` | Runs Criterion benchmarks from the benchmark-only, workspace-excluded `php_bench` package for Rust hot paths. |
 | `benchmark-suite` | Runs the deterministic CLI benchmark matrix and then `rust-hotpath-bench`. |
 | `perf-baseline` | Builds the VM and writes a local host-specific baseline to `target/performance/baseline.json`. |

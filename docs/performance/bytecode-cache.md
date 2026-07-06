@@ -172,7 +172,7 @@ Evidence lives in the server Prometheus metrics
 the cache unit tests covering modification invalidation and option
 mismatches. Warm-worker results must never be presented as the cold CLI
 fairness matrix; the CLI rows in
-`docs/performance/app-flow-results.md` measure the disk bytecode cache
+`target/performance/app-flow-results.md` measure the disk bytecode cache
 above, not this in-memory layer. Gate class: `SUBSET_ALLOWED` per
 `docs/performance/optimization-gates.md`.
 

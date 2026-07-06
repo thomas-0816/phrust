@@ -26,9 +26,9 @@ semantics documentation.
 - [Runtime semantics status](semantics-status.md)
 - [Runtime semantics known gaps](semantics-known-gaps.md)
 - [Runtime semantics coverage matrix](semantics-coverage-matrix.md)
-- [Runtime semantics final audit](semantics-final-audit.md)
+- [Runtime semantics validation](semantics-validation.md)
 
-## Reports
+## Local Reports
 
-Committed runtime summaries live under [reports/](reports/). Raw diff outputs
-and local run artifacts stay under `target/`.
+Runtime diff reports and local run artifacts are generated under
+`target/runtime/reports/`.

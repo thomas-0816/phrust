@@ -29,6 +29,6 @@ Extension PHPTs remain in the corpus and full-regression baseline. Policy classi
 ## Invariants
 
 - Extension PHPT counts come from `tests/phpt/manifests/phpt-corpus.jsonl` and the committed known-failure baseline.
-- Extension failures are still present in `docs/phpt/reports/triage.md` and `docs/phpt/reports/full-baseline.md`.
+- Extension failures are still present in `target/phpt-work/reports/triage.md` and `target/phpt-work/reports/full-baseline.md`.
 - Out-of-scope means not required for strict core progress; it does not mean silently skipped or deleted.
 - Stub or implementation work must be added in the owning functional module, not as generated implementation-history artifacts.

@@ -15,8 +15,8 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO_ROOT / "target/oracle/gap-report.json"
-DEFAULT_DOC = REPO_ROOT / "docs/oracle/gap-report-summary.md"
-DEFAULT_BASELINE = REPO_ROOT / "docs/oracle/gap-report-baseline.json"
+DEFAULT_DOC = REPO_ROOT / "target/oracle/gap-report-summary.md"
+DEFAULT_BASELINE = REPO_ROOT / "tests/oracle/gap-report-baseline.json"
 API_JSONL = REPO_ROOT / "target/oracle/api/php-source-api-symbols.jsonl"
 PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
 

@@ -19,7 +19,7 @@ DEFAULT_ACCELERATION = ROOT / "target/performance/acceleration/summary.json"
 DEFAULT_COUNTER_ROOT = ROOT / "target/performance"
 DEFAULT_OUT = ROOT / "target/performance/fastest/hotpath-report.json"
 DEFAULT_MARKDOWN = ROOT / "target/performance/fastest/hotpath-report.md"
-DEFAULT_SUMMARY_DOC = ROOT / "docs/performance/fastest-hotpaths.md"
+DEFAULT_SUMMARY_DOC = ROOT / "target/performance/fastest/hotpath-report.md"
 DEFAULT_CALLGRIND = ROOT / "target/performance/callgrind/summary.json"
 
 

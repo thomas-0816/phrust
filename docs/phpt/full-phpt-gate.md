@@ -34,8 +34,9 @@ Final strict green:
 ## Artifact Policy
 
 Full-run machine artifacts are written under `target/phpt-work/full-runs/`.
-Committed files are limited to manifests, stable generated PHPTs, concise docs,
-and summary reports under `docs/phpt/reports/`.
+Committed files are limited to manifests, stable generated PHPTs, and concise
+workflow/status docs. Local markdown reports are generated under
+`target/phpt-work/reports/`.
 
 ## PHPT Command
 
@@ -46,13 +47,13 @@ PHPT_RUN_FULL=1 nix develop -c just phpt-full-regression
 The command runs the complete discovered PHPT corpus from
 `tests/phpt/manifests/phpt-corpus.jsonl`, writes machine results to
 `target/phpt-work/full-runs/<timestamp>/results.jsonl`, and updates the
-committed baseline files:
+committed baseline files plus a local markdown report:
 
 - `tests/phpt/manifests/full-baseline-metadata.json`
 - `tests/phpt/manifests/full-baseline-module-counts.jsonl`
 - `tests/phpt/manifests/full-known-failures.jsonl`
 - `tests/phpt/manifests/known-gap-catalog.jsonl`
-- `docs/phpt/reports/full-baseline.md`
+- `target/phpt-work/reports/full-baseline.md`
 
 The default target is `target/debug/phrust-php` in `php-cli` mode. This is the
 PHP-compatible PHPT target binary. Set
@@ -243,8 +244,9 @@ Every `primary_missing_feature_guess` in `full-known-failures.jsonl` and every
 BORK subclass in `full-baseline-module-counts.jsonl` must have a row here.
 `docs/phpt/known-gaps.md` is the human-readable rendering of the same catalog.
 
-`docs/phpt/reports/full-baseline.md` is the concise human report for the same
-baseline. It must agree with the metadata and machine manifest.
+`target/phpt-work/reports/full-baseline.md` is the generated local human report
+for the same baseline. It must agree with the metadata and machine manifest
+when it is present.
 
 ## Fresh Checkout Check
 

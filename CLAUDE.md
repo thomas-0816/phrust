@@ -151,7 +151,7 @@ the module docs are rendered summaries — never hand-edit their counts.**
    - `tests/phpt/manifests/full-baseline-module-counts.jsonl` — per-module PASS/SKIP/FAIL/BORK
      (lets a fresh checkout reproduce module status without `target/`)
    - `tests/phpt/manifests/known-gap-catalog.jsonl`
-   - `docs/phpt/reports/full-baseline.md` — the human report
+   - `target/phpt-work/reports/full-baseline.md` — the human report
 
    **Contract:** if the Markdown report shows any non-green outcome, the machine
    known-failure manifest must contain the matching fingerprints (a non-green
@@ -162,7 +162,7 @@ the module docs are rendered summaries — never hand-edit their counts.**
    `docs/phpt/modules/{README,<module>}.md`,
    `tests/phpt/manifests/module-priority.json`,
    `tests/phpt/manifests/modules/<module>.{json,selected.jsonl}`,
-   `docs/phpt/reports/triage.md`, `docs/phpt/extension-policy.md`, and
+   `target/phpt-work/reports/triage.md`, `docs/phpt/extension-policy.md`, and
    `docs/phpt/known-gaps.md`. All derived from layer 1 — regenerate, don't edit.
 
 3. **Verification** — `just verify-phpt` runs `php-phpt-tools verify-baseline`

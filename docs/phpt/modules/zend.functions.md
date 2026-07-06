@@ -44,19 +44,19 @@
 - The selected contract gate is green at 29 PASS for both reference
   and target.
 - The broader 200-row php-src blocker slice remains documented in
-  `docs/phpt/reports/zend.functions-current.md` and is kept as backlog
+  `target/phpt-work/reports/zend.functions-current.md` and is kept as backlog
   analysis, not the module close gate.
 - Remaining corpus gaps include constant-expression closure/property
   initializers, by-reference returns, relative type contexts, direct invalid
   callable-array parity, and wider Closure metadata/output parity.
 
-## Wave 4 Closeout
+## Batch 4 Validation
 
 The core language/object promotion branch did not need new `zend.functions`
-manifest rows. The closeout gate remains green:
+manifest rows. The validation gate remains green:
 
 - Gate:
-  `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=zend.functions`
+  `REFERENCE_PHP=$REFERENCE_PHP PHP_SRC_DIR=$PHP_SRC_DIR PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=zend.functions`
 - Reference: 29 PASS, 0 non-green.
 - Target: 29 PASS, 0 non-green.
 - Source integrity: 24475 php-src manifest entries checked, 0 skipped.

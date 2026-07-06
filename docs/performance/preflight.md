@@ -104,7 +104,7 @@ Current performance entry points include:
 
 - `docs/performance/methodology.md`
 - `docs/performance/runtime.md`
-- `docs/performance/results.md`
+- `docs/reference/performance-status.md`
 - `docs/performance/known-gaps.md`
 - `docs/performance/bytecode-cache.md`
 - `docs/performance/quickening-inline-caches.md`

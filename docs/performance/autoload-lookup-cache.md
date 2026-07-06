@@ -62,7 +62,7 @@ The Performance counter JSON includes:
 
 The `inline-cache-smoke` gate requires visible autoload lookup hits and misses.
 
-## Bootstrap Lookup Coverage (tranche evidence)
+## Bootstrap Lookup Coverage (status evidence)
 
 The web-bootstrap lookup families the optimization gates mark
 `EVIDENCE_GATE` are implemented and epoch-guarded end to end:

@@ -16,7 +16,7 @@ Generated artifacts:
 - `tests/oracle/manifests/generated-probes.jsonl`
 - `target/oracle/probes/{smoke,full}/runtime-semantics-diff-report.json`
 - `target/oracle/gap-report.json`
-- `docs/oracle/gap-report-summary.md`
+- `target/oracle/gap-report-summary.md`
 
 Commands:
 
@@ -42,8 +42,7 @@ family-level implementation prompt for the highest-priority open gap family.
 
 Use `PHP_SRC_DIR` and `REFERENCE_PHP` to point at the read-only pinned PHP
 oracle. For local development in this workspace, the intended source oracle is
-`/Volumes/CrucialMusic/src/phrust/third_party/php-src`.
+`$PHP_SRC_DIR`.
 
-Current committed summary:
-
-- [Oracle gap report summary](gap-report-summary.md)
+The generated markdown summary is written to
+`target/oracle/gap-report-summary.md`.

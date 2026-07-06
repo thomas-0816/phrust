@@ -44,8 +44,8 @@ Use this template when starting a focused PHPT extension or module loop.
 
 ## php-src Oracle Paths
 
-- PHPTs: `/Volumes/CrucialMusic/src/phrust/third_party/php-src/<php-src-path>`
-- Stubs or arginfo: `/Volumes/CrucialMusic/src/phrust/third_party/php-src/ext/<extension>/...`
+- PHPTs: `$PHP_SRC_DIR/<php-src-path>`
+- Stubs or arginfo: `$PHP_SRC_DIR/ext/<extension>/...`
 - Source lookup notes: `tests/phpt/manifests/php-src-symbols.jsonl`
 
 Use php-src only as a read-only oracle. Do not copy C implementation into Rust.

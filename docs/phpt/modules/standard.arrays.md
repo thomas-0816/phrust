@@ -67,7 +67,7 @@
   `array_intersect`, and `array_intersect_assoc` PHPTs.
 - Latest focused target run: PASS, 35 selected PHPTs.
 - Latest oracle-backed stdlib verification: PASS, `verify-stdlib` with
-  `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php`.
+  `REFERENCE_PHP=$REFERENCE_PHP`.
 
 ## Known Gaps
 

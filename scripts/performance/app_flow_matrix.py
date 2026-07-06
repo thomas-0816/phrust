@@ -35,7 +35,7 @@ DEFAULT_ENGINE = ROOT / "target/debug/php-vm"
 DEFAULT_RELEASE_ENGINE = ROOT / "target/release/php-vm"
 DEFAULT_REFERENCE = ROOT / "third_party/php-src/sapi/cli/php"
 DEFAULT_OUT_DIR = ROOT / "target/performance/app-flows"
-SUMMARY_DOC = ROOT / "docs/performance/app-flow-results.md"
+SUMMARY_DOC = ROOT / "target/performance/app-flow-results.md"
 
 
 @dataclass(frozen=True)
@@ -511,7 +511,7 @@ def should_write_summary_doc(mode: str) -> bool:
     """Only the full matrix refreshes the committed summary doc.
 
     Smoke runs use scale 1, one iteration, and the debug binary; letting them
-    overwrite `docs/performance/app-flow-results.md` replaced the committed
+    overwrite `target/performance/app-flow-results.md` replaced the committed
     full-matrix numbers with debug-build noise.
     """
     return mode == "full"

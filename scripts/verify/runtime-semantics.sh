@@ -19,7 +19,7 @@ just runtime-known-gaps
 just runtime-semantics-fixtures
 just runtime-semantics-diff
 just vm-semantics-oracle
-test -f docs/runtime/semantics-final-audit.md
+test -f docs/runtime/semantics-validation.md
 test -f docs/runtime/semantics-coverage-matrix.md
 test -f docs/stdlib/roadmap.md
 grep -q 'runtime-semantics Coverage Matrix' docs/runtime/semantics-coverage-matrix.md
@@ -29,7 +29,7 @@ grep -q 'Standard Library Topics' docs/stdlib/roadmap.md
 grep -q 'SPL and Reflection expansion' docs/stdlib/roadmap.md
 grep -q 'Bytecode cache' docs/stdlib/roadmap.md
 grep -q 'Extension API' docs/stdlib/roadmap.md
-grep -q 'runtime-semantics Final Audit' docs/runtime/semantics-final-audit.md
+grep -q 'Runtime semantics validation' docs/runtime/semantics-validation.md
 test -f fixtures/runtime_semantics/phpt_allowlist.toml
 grep -q 'category = "references_cow"' fixtures/runtime_semantics/phpt_allowlist.toml
 grep -q 'category = "foreach"' fixtures/runtime_semantics/phpt_allowlist.toml

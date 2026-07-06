@@ -111,9 +111,9 @@ third_party/php-src/            # current local checkout name, accepted by tools
 target/phpt-work/               # generated run artifacts only
 tests/phpt/generated/           # derived and minimized PHPTs
 tests/phpt/manifests/           # indexes, module manifests, baselines
-docs/phpt/modules/            # module plans and notes
-docs/phpt/php-src-behavior/   # behavior notes from source lookup
-docs/phpt/reports/            # committed summary reports
+docs/phpt/modules/              # module plans and notes
+docs/phpt/php-src-behavior/     # behavior notes from source lookup
+target/phpt-work/reports/       # generated local reports
 ```
 
 Generated run artifacts belong under `target/phpt-work/` and must not be

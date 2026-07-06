@@ -90,7 +90,7 @@
   method aliasing
 - enum contracts pass unit cases, backed cases, `cases`, `from`,
   `tryFrom`, and enum instance methods
-- closeout passes `nix develop -c just verify-runtime`
+- validation passes `nix develop -c just verify-runtime`
 - focused module gate passes
   `PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=zend.objects`
 - full regression was run with `nix develop -c just

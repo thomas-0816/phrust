@@ -1,7 +1,7 @@
 # Performance Documentation
 
 This directory owns performance methodology, optimization contracts, benchmark
-fixtures, and committed performance summaries.
+fixtures, and performance gate contracts.
 
 ## Stable Contracts
 
@@ -23,16 +23,12 @@ fixtures, and committed performance summaries.
 - [Output buffer fast paths](output-buffer-fast-paths.md)
 - [SIMD byte kernels](simd-byte-kernels.md)
 
-## Reports
+## Local Reports
 
-Committed summaries live here when they are part of the reviewable project
-state. Raw counters, JSON, profiler captures, and benchmark outputs stay under
-`target/`.
+Generated counters, JSON, profiler captures, benchmark matrices, and local
+markdown reports stay under `target/performance/`. The public status summary is
+[Performance status](../reference/performance-status.md).
 
-- [Benchmark results](results.md)
-- [Application flow results](app-flow-results.md)
-- [Fastest engine results](fastest-engine-results.md)
-- [Fastest hot paths](fastest-hotpaths.md)
 - [Hot path inventory](reports/hotpath-inventory.md)
 
 ## Native Tier

@@ -637,14 +637,14 @@ fn write_results_jsonl(out_dir: &Path, results: &[RuntimeComparisonResult]) -> R
 }
 
 fn write_docs_reports(report: &RuntimeReport) -> Result<(), String> {
-    let docs_dir = Path::new("docs/runtime/reports");
+    let docs_dir = Path::new("target/runtime/reports");
     fs::create_dir_all(docs_dir)
-        .map_err(|error| format!("failed to create docs report directory: {error}"))?;
+        .map_err(|error| format!("failed to create runtime report directory: {error}"))?;
     fs::write(
         docs_dir.join("runtime-diff-report.md"),
         render_markdown_report(report),
     )
-    .map_err(|error| format!("failed to write docs runtime markdown report: {error}"))?;
+    .map_err(|error| format!("failed to write runtime markdown report: {error}"))?;
 
     let mut lines = String::new();
     for result in &report.results {
@@ -653,7 +653,7 @@ fn write_docs_reports(report: &RuntimeReport) -> Result<(), String> {
         lines.push('\n');
     }
     fs::write(docs_dir.join("runtime-diff-results.jsonl"), lines)
-        .map_err(|error| format!("failed to write docs runtime JSONL report: {error}"))
+        .map_err(|error| format!("failed to write runtime JSONL report: {error}"))
 }
 
 fn output_summary(side: &RuntimeSideResult) -> RuntimeOutputSummary {

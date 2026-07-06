@@ -206,7 +206,7 @@ Validation:
 Blocker report: no blockers in the focused local include/require harness.
 Remote wrappers, PHAR, and user stream wrappers remain outside scope.
 
-## Closeout Report
+## Validation Report
 
 The selected gate closed with the focused `filesystem.streams` harness at 11 selected
 fixtures, all passing on both the reference PHP binary and the target VM. The
@@ -243,7 +243,7 @@ Validation:
 
 - `nix develop -c cargo test -p php_runtime path_helpers --no-fail-fast`: PASS, 1 test
 - `nix develop -c cargo test -p php_runtime filesystem --no-fail-fast`: PASS, 6 tests
-- `PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_MANIFEST=/tmp/phrust-filesystem-path-helpers.jsonl PHPT_REUSE_LAST=0 PHPT_TIMEOUT_SECONDS=10 nix develop -c just phpt-module-target MODULE=filesystem.streams`: PASS, 10 PASS, 10 SKIP
+- `PHP_SRC_DIR=$PHP_SRC_DIR PHPT_MANIFEST=/tmp/phrust-filesystem-path-helpers.jsonl PHPT_REUSE_LAST=0 PHPT_TIMEOUT_SECONDS=10 nix develop -c just phpt-module-target MODULE=filesystem.streams`: PASS, 10 PASS, 10 SKIP
 
 Blocker report: no non-green outcomes remain in the focused
 `basename`/`dirname`/`pathinfo` upstream subset. The 10 SKIP rows are

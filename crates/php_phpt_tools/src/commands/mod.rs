@@ -26,11 +26,11 @@ pub(crate) mod verify;
 const DEFAULT_MANIFEST: &str = "tests/phpt/manifests/php-src-hashes.jsonl";
 const DEFAULT_SYMBOLS: &str = "tests/phpt/manifests/php-src-symbols.jsonl";
 const DEFAULT_PHPT_CORPUS: &str = "tests/phpt/manifests/phpt-corpus.jsonl";
-const DEFAULT_PHPT_REPORT: &str = "docs/phpt/reports/phpt-corpus-summary.md";
+const DEFAULT_PHPT_REPORT: &str = "target/phpt-work/reports/phpt-corpus-summary.md";
 const DEFAULT_PHPT_BASELINE_METADATA: &str = "tests/phpt/manifests/full-baseline-metadata.json";
 const DEFAULT_PHPT_BASELINE_MODULE_COUNTS: &str =
     "tests/phpt/manifests/full-baseline-module-counts.jsonl";
-const DEFAULT_PHPT_TRIAGE_REPORT: &str = "docs/phpt/reports/triage.md";
+const DEFAULT_PHPT_TRIAGE_REPORT: &str = "target/phpt-work/reports/triage.md";
 const DEFAULT_PHPT_EXTENSION_POLICY_REPORT: &str = "docs/phpt/extension-policy.md";
 const DEFAULT_PHPT_KNOWN_GAP_REPORT: &str = "docs/phpt/known-gaps.md";
 const DEFAULT_PHPT_KNOWN_GAP_CATALOG: &str = "tests/phpt/manifests/known-gap-catalog.jsonl";
@@ -573,7 +573,8 @@ impl BaselineOptions {
             metadata: metadata.unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_METADATA)),
             module_counts: module_counts
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_MODULE_COUNTS)),
-            report: report.unwrap_or_else(|| PathBuf::from("docs/phpt/reports/full-baseline.md")),
+            report: report
+                .unwrap_or_else(|| PathBuf::from("target/phpt-work/reports/full-baseline.md")),
             previous_known_failures,
             previous_results,
             timestamp: timestamp
@@ -671,7 +672,8 @@ impl VerifyBaselineOptions {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_BASELINE_MODULE_COUNTS)),
             known_gap_catalog: known_gap_catalog
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_PHPT_KNOWN_GAP_CATALOG)),
-            report: report.unwrap_or_else(|| PathBuf::from("docs/phpt/reports/full-baseline.md")),
+            report: report
+                .unwrap_or_else(|| PathBuf::from("target/phpt-work/reports/full-baseline.md")),
         })
     }
 }
@@ -3662,7 +3664,7 @@ fn render_extension_policy_report(metadata: &BaselineMetadata, triage: &PhptTria
     render_extension_policy_table(&mut out, triage);
     out.push_str("\n## Invariants\n\n");
     out.push_str("- Extension PHPT counts come from `tests/phpt/manifests/phpt-corpus.jsonl` and the committed known-failure baseline.\n");
-    out.push_str("- Extension failures are still present in `docs/phpt/reports/triage.md` and `docs/phpt/reports/full-baseline.md`.\n");
+    out.push_str("- Extension failures are still present in `target/phpt-work/reports/triage.md` and `target/phpt-work/reports/full-baseline.md`.\n");
     out.push_str("- Out-of-scope means not required for strict core progress; it does not mean silently skipped or deleted.\n");
     out.push_str("- Stub or implementation work must be added in the owning functional module, not as generated implementation-history artifacts.\n");
     out

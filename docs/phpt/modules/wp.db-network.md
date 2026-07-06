@@ -85,5 +85,5 @@ non-throwing failure path.
 
 ## Next Step
 
-Run closeout gates and keep live MySQL/cURL PHPTs gated by explicit local
+Run validation gates and keep live MySQL/cURL PHPTs gated by explicit local
 environment variables.

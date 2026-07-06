@@ -11,7 +11,7 @@ source-string execution path.
 - Reference-backed coverage snapshot: `docs/runtime/semantics-coverage-matrix.md`
 - Known-gap catalog: `docs/runtime/semantics-known-gaps.md`
 - Runtime contract: `docs/runtime/semantics-contract.md`
-- Hardening audit: `docs/runtime/semantics-unsafe-audit.md`
+- Hardening audit: `docs/runtime/semantics-hardening.md`
 
 ## Standard Library Topics
 

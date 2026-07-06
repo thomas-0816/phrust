@@ -22,7 +22,7 @@ DEFAULT_DEBUG_ENGINE = ROOT / "target/debug/php-vm"
 DEFAULT_RELEASE_ENGINE = ROOT / "target/release/php-vm"
 DEFAULT_PGO_ENGINE = ROOT / "target/pgo/php-vm"
 DEFAULT_OUT_DIR = ROOT / "target/performance/fastest"
-DEFAULT_SUMMARY_DOC = ROOT / "docs/performance/fastest-engine-results.md"
+DEFAULT_SUMMARY_DOC = ROOT / "target/performance/fastest/matrix.md"
 DEFAULT_FIXTURES: tuple[tuple[str, Path], ...] = (
     ("perf-smoke", ROOT / "tests/fixtures/performance/perf_smoke/arithmetic.php"),
     ("arrays-foreach", ROOT / "tests/fixtures/performance/perf_smoke/array_fast_paths_v2.php"),

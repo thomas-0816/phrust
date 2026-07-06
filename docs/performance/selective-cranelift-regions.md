@@ -22,7 +22,7 @@ Current region eligibility is intentionally narrow and reportable through
 | Stable packed int fetch | Keep experimental | `PackedArrayFetchCandidate` covers required by-value array and int params, helper-owned layout and bounds checks, and packed-fetch exit counters. |
 | Exact known `strlen`/`count` calls | Keep experimental only | Current rows are helper-backed and mostly parity/noise. No broader builtin-loop expansion is justified until counters prove helper overhead is lower than interpreter dispatch. |
 
-The current decision matrix in `docs/performance/cranelift/results.md` limits
+The current decision matrix in `target/performance/cranelift/results.md` limits
 real performance-win language to all-int packed foreach reduction. Other
 families remain correctness infrastructure, metadata groundwork, or
 experimental rows.
@@ -69,7 +69,7 @@ or function blacklisting. No persistent native cache is enabled.
 
 The selective Cranelift gate is evaluated through these committed surfaces:
 
-- `docs/performance/cranelift/results.md` for feature classification,
+- `target/performance/cranelift/results.md` for feature classification,
   compile/execution split, side-exit rates, default status, and recommendation;
 - `docs/performance/cranelift/benchmark-methodology.md` for required row families and
   report contracts;

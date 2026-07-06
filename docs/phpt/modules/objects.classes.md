@@ -82,7 +82,7 @@ On `phpt/closure-core-runtime-semantics`, after the closure runtime semantics
 work plus selected class-output/declaration dependency/serialization/autoload
 fixes:
 
-- `TMPDIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-serializable-final REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_WORK_DIR=/Volumes/CrucialMusic/tmp/phrust-phpt-objects-serializable-final PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
+- `TMPDIR=$PHPT_WORK_DIR REFERENCE_PHP=$REFERENCE_PHP PHP_SRC_DIR=$PHP_SRC_DIR PHPT_WORK_DIR=$PHPT_WORK_DIR PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
 - reference: 200 PASS
 - target: 197 PASS, 3 FAIL
 
@@ -105,14 +105,14 @@ legacy `Serializable` deprecation, `Serializable::serialize()` and
 `Serializable::unserialize()` hooks, the `C:<class>:{payload}` wire format,
 NULL serialization, and the catchable non-string return exception path.
 
-## Wave 4 Core Language Object Promotion
+## Batch 4 Core Language Object Promotion
 
-On `phpt/wave4-core-language-object-promotion`, the selected manifest expanded
+On `phpt/batch4-core-language-object-promotion`, the selected manifest expanded
 from 200 to 246 upstream rows.
 
 - Promoted rows: 46 upstream `tests/classes/*.phpt` cases.
 - Current selected gate:
-  `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
+  `REFERENCE_PHP=$REFERENCE_PHP PHP_SRC_DIR=$PHP_SRC_DIR PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=objects.classes`
 - Reference: 246 PASS, 0 non-green.
 - Target: 183 PASS, 63 FAIL.
 - Source integrity: 24475 php-src manifest entries checked, 0 skipped.
@@ -149,7 +149,7 @@ static-as-instance edge cases, and broader object/reference COW behavior.
 - `runtime-timeout`: 1
 
 Current selected `objects.classes` is green for all 246 selected rows. The
-Wave 4A follow-up moved `tests/classes/autoload_021.phpt` and
+Batch 4A follow-up moved `tests/classes/autoload_021.phpt` and
 `tests/classes/constants_error_003.phpt` to target PASS without adding new known
 gaps.
 

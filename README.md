@@ -227,8 +227,8 @@ nix develop -c just phpt-verify-source-integrity
 ```
 
 Run artifacts belong under `target/phpt-work/` and must not be committed.
-Generated reports committed under `docs/phpt/reports/` should be concise
-summaries, not raw upstream output dumps.
+Generated local reports under `target/phpt-work/reports/` should be concise
+summaries, not raw upstream output dumps, and should stay uncommitted.
 
 ## Continuous Integration
 

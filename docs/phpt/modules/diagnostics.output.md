@@ -40,7 +40,7 @@
 Last focused run on 2026-06-29:
 
 - Selected module gate:
-  `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src TARGET_PHP=target/debug/phrust-php PHPT_TARGET_MODE=php-cli PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=diagnostics.output`
+  `REFERENCE_PHP=$REFERENCE_PHP PHP_SRC_DIR=$PHP_SRC_DIR TARGET_PHP=target/debug/phrust-php PHPT_TARGET_MODE=php-cli PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=diagnostics.output`
   - Reference: 6 PASS, 0 SKIP, 0 FAIL, 0 BORK
   - Target: 6 PASS, 0 SKIP, 0 FAIL, 0 BORK
 - Related selected gates:

@@ -57,7 +57,7 @@ PHPT_RUN_FULL=1 nix develop -c just phpt-full-regression
 - Generated or minimized committed fixtures live under `tests/phpt/generated/`.
 - Manifests and baselines live under `tests/phpt/manifests/`.
 - Run artifacts live under `target/phpt-work/` and must not be committed.
-- Committed reports under `docs/phpt/reports/` should be concise summaries, not
+- Committed reports under `target/phpt-work/reports/` should be concise summaries, not
   raw runner output.
 
 ## Related Docs

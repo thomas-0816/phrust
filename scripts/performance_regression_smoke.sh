@@ -18,12 +18,12 @@ do
   test -x "$script"
 done
 
-test -f docs/foundation/final-audit.md
-test -f docs/lexer/final-audit.md
-test -f docs/parser/final-audit.md
-test -f docs/frontend/final-audit.md
+test -f docs/foundation/validation-summary.md
+test -f docs/lexer/validation-summary.md
+test -f docs/parser/validation-summary.md
+test -f docs/frontend/validation-summary.md
 test -f docs/runtime/known-gaps.md
-test -f docs/runtime/semantics-final-audit.md
+test -f docs/runtime/semantics-validation.md
 test -f docs/stdlib/roadmap.md
 
 printf '%s\n' '[pass] performance regression baseline smoke complete'

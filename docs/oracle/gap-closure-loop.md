@@ -8,10 +8,10 @@ gap queue. Use it as the discovery path before relying on WordPress smoke.
 
 1. Run the cheap oracle gate:
    ```bash
-   REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php \
+   REFERENCE_PHP=$REFERENCE_PHP \
      nix develop -c just oracle-smoke
    ```
-2. Inspect the top gap family in `docs/oracle/gap-report-summary.md` or
+2. Inspect the top gap family in `target/oracle/gap-report-summary.md` or
    `target/oracle/gap-report.json`.
 3. Generate the next family-level prompt:
    ```bash
@@ -40,7 +40,7 @@ that live under `target/`.
 - `oracle-smoke` fails on unclassified oracle failures.
 - `oracle-gap-report --check` fails known-gap rows that lack fixture, source,
   layer, priority, or reason.
-- P0/P1 open counts cannot exceed `docs/oracle/gap-report-baseline.json`
+- P0/P1 open counts cannot exceed `tests/oracle/gap-report-baseline.json`
   unless the baseline is updated explicitly with reviewed evidence.
 - WordPress smoke is final compatibility evidence. Source/reference probes are
   the primary discovery mechanism.

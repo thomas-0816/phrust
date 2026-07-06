@@ -3,7 +3,7 @@
 Status: research note, not an accepted project contract.
 
 Current focused `zend.functions` status is tracked in
-`docs/phpt/reports/zend.functions-current.md`. This document keeps the
+`target/phpt-work/reports/zend.functions-current.md`. This document keeps the
 implementation notes for functions, callables, arity, and type coercion.
 
 > Line numbers drift as you edit `crates/php_vm/src/vm/mod.rs` and the
@@ -212,7 +212,7 @@ include the caller location. ~9 `execute_function` call sites to thread through.
 ## 5. Repo non-negotiables (read before committing)
 
 - **Commit messages**: conventional commits, imperative, < 72 chars first line.
-  **Never** mention AI/assistant/Codex/Claude/Anthropic or development tooling.
+  **Never** mention development provenance or development tooling.
 - **Single pipeline** (`AGENTS.md`/`CLAUDE.md`): never add a second lexer/parser/
   AST/semantic frontend or a source-string-matching execution path. Fix bugs in
   the owning layer (lexer/parser → `php_lexer`/`php_syntax`; typed views/metadata

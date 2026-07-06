@@ -8,7 +8,7 @@ work. It composes the existing arginfo, stdlib diff, runtime semantics, PHPT,
 known-gap, and WordPress smoke tooling instead of replacing it.
 
 The oracle source checkout is read-only input. Local runs may point
-`PHP_SRC_DIR` at `/Volumes/CrucialMusic/src/phrust/third_party/php-src` and
+`PHP_SRC_DIR` at `$PHP_SRC_DIR` and
 `REFERENCE_PHP` at its `sapi/cli/php` binary. Repository defaults may still use
 `third_party/php-src` or `third_party/php-src-8.5.7` when present. No tool in
 this workflow may vendor, edit, or copy raw upstream tests from `php-src` into
@@ -71,7 +71,7 @@ The complete loop produces these normalized artifacts:
 - Merged gap report:
   `target/oracle/gap-report.json`.
 - Committed concise gap summary:
-  `docs/oracle/gap-report-summary.md`.
+  `target/oracle/gap-report-summary.md`.
 - Optional symbol heatmap:
   `target/oracle/symbol-heatmap.json` or a reused
   `target/wordpress-bringup/` heatmap when the input is WordPress-specific.
@@ -217,7 +217,7 @@ Inputs are optional and composable:
 Outputs:
 
 - `target/oracle/gap-report.json`
-- `docs/oracle/gap-report-summary.md`
+- `target/oracle/gap-report-summary.md`
 
 Classification fields:
 
@@ -259,10 +259,10 @@ Targets:
 
 Once OP-1A through OP-1C exist, the normal compatibility workflow is:
 
-1. `PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src
-   REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php
+1. `PHP_SRC_DIR=$PHP_SRC_DIR
+   REFERENCE_PHP=$REFERENCE_PHP
    nix develop -c just oracle-smoke`
-2. Inspect the top family in `docs/oracle/gap-report-summary.md`.
+2. Inspect the top family in `target/oracle/gap-report-summary.md`.
 3. Generate a family-level prompt with `scripts/oracle/next_gap_prompt.py`.
 4. Implement the generic layer fix using the existing engine pipeline.
 5. Add or promote reduced fixtures/probes with source provenance.

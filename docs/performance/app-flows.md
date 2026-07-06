@@ -77,7 +77,7 @@ target/performance/app-flows/
 Committed summary output is:
 
 ```text
-docs/performance/app-flow-results.md
+target/performance/app-flow-results.md
 ```
 
 Raw stdout, stderr, status, command lines, counters, and phase timing sidecars

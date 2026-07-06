@@ -50,7 +50,7 @@ for a PHP 8.5 compatible core engine in Rust.
   completion criteria.
 - `docs/foundation/license-and-copying-policy.md` documents how the project uses
   `php-src` without committing a vendored source copy.
-- `docs/foundation/final-audit.md` records the Foundation audit result.
+- `docs/foundation/validation-summary.md` records the Foundation audit result.
 - `.github/workflows/ci.yml` runs the shared Nix-based repository gates in CI;
   foundation-specific changes should still pass `just verify-foundation`.
 - `references/php-src.lock.example.toml` exists.

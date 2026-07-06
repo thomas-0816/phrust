@@ -105,10 +105,10 @@ shell scripts as thin orchestration wrappers.
 | `nix develop -c cargo test --workspace` | pass | Workspace tests and doctests passed. |
 | `nix develop -c just source-integrity` | pass | Source-integrity script passed. |
 | `nix develop -c just verify-server` | pass | Executor/server tests and server smoke passed. |
-| `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php nix develop -c just verify-runtime` | pass | Runtime semantics diff: 280 total, 230 pass, 0 fail, 0 skip, 50 known gaps. |
-| `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php nix develop -c just verify-stdlib` | pass | Stdlib diffs had 0 skips with the pinned PHP 8.5.7 reference. |
-| `REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php nix develop -c just verify-performance` | pass | Callgrind skipped on Darwin; Miri smoke skipped because cargo-miri is not usable for the active toolchain; optional JIT/persistent-feedback rows remain opt-in. |
-| `PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src nix develop -c just verify-phpt` | pass | Verified 21,548 baseline entries, 20,428 known non-green fingerprints, and 24,475 php-src manifest entries. |
+| `REFERENCE_PHP=$REFERENCE_PHP nix develop -c just verify-runtime` | pass | Runtime semantics diff: 280 total, 230 pass, 0 fail, 0 skip, 50 known gaps. |
+| `REFERENCE_PHP=$REFERENCE_PHP nix develop -c just verify-stdlib` | pass | Stdlib diffs had 0 skips with the pinned PHP 8.5.7 reference. |
+| `REFERENCE_PHP=$REFERENCE_PHP nix develop -c just verify-performance` | pass | Callgrind skipped on Darwin; Miri smoke skipped because cargo-miri is not usable for the active toolchain; optional JIT/persistent-feedback rows remain opt-in. |
+| `PHP_SRC_DIR=$PHP_SRC_DIR nix develop -c just verify-phpt` | pass | Verified 21,548 baseline entries, 20,428 known non-green fingerprints, and 24,475 php-src manifest entries. |
 | `nix develop -c just quality-fast` | pass | Source integrity, known gaps, dependency policy, unused deps, all-features compile, rustdoc, and doctests passed. |
 | `nix develop -c just quality-docs` | pass | Rustdoc warnings denied and doctests passed for docs changes. |
 
@@ -125,8 +125,8 @@ updated by verified gates are concise committed summaries, not raw run output:
 
 - `docs/stdlib/function-coverage.md`
 - `docs/performance/reports/hotpath-inventory.md`
-- `docs/performance/fastest-hotpaths.md`
-- `docs/performance/fastest-engine-results.md`
+- `target/performance/fastest/hotpath-report.md`
+- `target/performance/fastest/matrix.md`
 
 ## Known Risks
 
@@ -138,7 +138,7 @@ updated by verified gates are concise committed summaries, not raw run output:
 - Optional JIT helpers are feature-gated enough for tests but still produce
   all-features dead-code warnings.
 - Reference-sensitive gates depend on a local PHP 8.5.7 binary or php-src tree.
-  This audit used the sibling checkout under `/Volumes/CrucialMusic/src/phrust/third_party/php-src`.
+  This audit used the sibling checkout under `$PHP_SRC_DIR`.
 
 ## Recommended Next Work
 

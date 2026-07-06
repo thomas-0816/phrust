@@ -46,7 +46,7 @@ fixtures against `REFERENCE_PHP` when configured. The runner records
 includes exit code, stdout, normalized stderr/diagnostics, diagnostic IDs,
 known-gap IDs, mismatch category, output summaries, first differing line,
 feature area, and owner area. It also writes `runtime-results.jsonl`,
-`runtime-report.md`, and canonical copies under `docs/runtime/reports/` for
+`runtime-report.md`, and canonical copies under `target/runtime/reports/` for
 grouped triage by category, diagnostic ID, feature area, and owner stream.
 
 Optional per-fixture metadata can be placed near the top of a fixture:

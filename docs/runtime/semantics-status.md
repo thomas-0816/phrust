@@ -1,6 +1,6 @@
 # Runtime Semantics Status
 
-For the final Runtime semantics closure state, use `docs/runtime/semantics-final-audit.md`,
+For the final Runtime semantics closure state, use `docs/runtime/semantics-validation.md`,
 `docs/runtime/semantics-coverage-matrix.md`, `docs/runtime/gap-closure-plan.md`,
 and `docs/stdlib/roadmap.md`.
 

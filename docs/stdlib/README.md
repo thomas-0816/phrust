@@ -17,7 +17,7 @@ function coverage summaries, and standard-library known gaps.
 - [Function coverage](function-coverage.md)
 - [PHPT extension smoke](phpt-extension-smoke.md)
 - [Regression corpus](regression-corpus.md)
-- [Final audit](final-audit.md)
+- [Validation summary](validation-summary.md)
 
 ## Implemented Areas
 

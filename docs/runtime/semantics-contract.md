@@ -520,9 +520,9 @@ Runtime semantics behavior is split across these topic documents:
   metadata handles;
 - `docs/runtime/semantics-known-gaps.md` for every unsupported or deferred runtime
   behavior that remains visible to users or tests;
-- `docs/runtime/semantics-unsafe-audit.md` for hardening, unsafe-code, Miri, and
+- `docs/runtime/semantics-hardening.md` for hardening, unsafe-code, Miri, and
   sanitizer status;
-- `docs/runtime/semantics-coverage-matrix.md` and `docs/runtime/semantics-final-audit.md` for the
+- `docs/runtime/semantics-coverage-matrix.md` and `docs/runtime/semantics-validation.md` for the
   final Runtime semantics gate and coverage closure state;
 - `docs/runtime/semantics-status.md` for the Runtime-to-Runtime semantics working follow-up record;
 - `docs/stdlib/roadmap.md` for the concrete standard library backlog.
@@ -636,7 +636,7 @@ known-gap behavior, it needs a fixture and an updated ADR or topic document.
 
 ## Hardening and Unsafe Audit
 
-Runtime semantics runtime hardening is tracked in `docs/runtime/semantics-unsafe-audit.md`.
+Runtime semantics runtime hardening is tracked in `docs/runtime/semantics-hardening.md`.
 `verify-runtime` includes:
 
 - `just runtime-hardening-lints`, which runs Clippy for `php_runtime` and

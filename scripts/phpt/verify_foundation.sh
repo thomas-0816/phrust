@@ -15,7 +15,6 @@ required_files=(
 required_dirs=(
   "docs/phpt/modules"
   "docs/phpt/php-src-behavior"
-  "docs/phpt/reports"
   "tests/phpt/generated"
   "tests/phpt/manifests"
 )
@@ -79,7 +78,7 @@ if [[ ! -s tests/phpt/manifests/known-gap-catalog.jsonl ]]; then
   exit 1
 fi
 
-if [[ -f docs/phpt/reports/phpt-corpus-summary.md && ! -s docs/phpt/reports/phpt-corpus-summary.md ]]; then
+if [[ -f target/phpt-work/reports/phpt-corpus-summary.md && ! -s target/phpt-work/reports/phpt-corpus-summary.md ]]; then
   printf '%s\n' 'PHPT corpus summary exists but is empty.' >&2
   exit 1
 fi

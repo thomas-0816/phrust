@@ -14,7 +14,7 @@ optimization gates.
 ## Reports And Tooling
 
 - [Benchmark methodology](benchmark-methodology.md)
-- [Results](results.md)
+- Generated results: `target/performance/cranelift/results.md`
 - [JIT report schema](jit-report-schema.md)
 - [CLIF dumps](clif-dump.md)
 - [Disassembly dumps](disassembly-dumps.md)
