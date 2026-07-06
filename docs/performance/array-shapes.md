@@ -31,12 +31,19 @@ reimplementing array layout checks.
 
 ## Guarded Reads
 
-The VM currently uses the helpers for exact, fail-closed `FetchDim` and
-one-dimensional `IssetDim` cases:
+The VM currently uses the helpers for exact, fail-closed `FetchDim`,
+one-dimensional `IssetDim`, and one-dimensional dense `EmptyDim`
+(`empty($arr[$key])`) cases:
 
 - interned-string-key and shape-stable record-like array reads
 - small inline map reads
 - numeric-string-key, insertion-order, mixed-hash, COW, and reference fallbacks
+
+The dense `EmptyDim` consumer is behavior-preserving: the helper returns the
+same value the generic path would (the element on a hit, or the uninitialized
+sentinel for an absent key) and returns a fallback for any ambiguous, COW, or
+reference shape, so `empty()`'s falsy check is unchanged and only proven
+record-like/small-map shapes are accelerated.
 
 Shared immutable literal arrays are observed for future work, but generic reads
 still use the existing array lookup path. Packed arrays continue to use the

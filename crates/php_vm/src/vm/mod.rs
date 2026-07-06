@@ -9655,11 +9655,35 @@ impl Vm {
                                 Value::Uninitialized
                             }
                         } else {
-                            local_value
-                                .and_then(|value| {
-                                    fetch_dim_path_value(&value, &dims).ok().flatten()
-                                })
-                                .unwrap_or(Value::Uninitialized)
+                            // Fail-closed record-like / small-map fast path for
+                            // `empty($arr[$key])`. try_array_shape_lookup returns
+                            // Some(Some(v)) for a hit, Some(None) for an absent
+                            // key, and None for any ambiguous / COW / reference
+                            // shape, so this produces exactly the same value the
+                            // generic path would (present element or
+                            // Uninitialized) and only accelerates proven shapes.
+                            // Shape hit/miss/fallback counters are recorded by
+                            // the helper.
+                            let shape_fast_path = if let (Some(base_value), [key]) =
+                                (local_value.as_ref(), dims.as_slice())
+                            {
+                                let base = effective_value(base_value);
+                                if let Value::Array(array) = &base {
+                                    self.try_array_shape_lookup(array, key)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            match shape_fast_path {
+                                Some(shape_value) => shape_value.unwrap_or(Value::Uninitialized),
+                                None => local_value
+                                    .and_then(|value| {
+                                        fetch_dim_path_value(&value, &dims).ok().flatten()
+                                    })
+                                    .unwrap_or(Value::Uninitialized),
+                            }
                         };
                         let result = match php_empty_access_value(&value) {
                             Ok(value) => value,
@@ -79267,6 +79291,36 @@ good"
             ),
             "{:?}",
             result.status
+        );
+    }
+
+    #[test]
+    fn empty_dim_uses_record_shape_fast_path_and_preserves_semantics() {
+        let result = execute_source_with_options(
+            "<?php\n\
+             $a = ['x' => 1, 'y' => 0, 'z' => 'hi', 'w' => ''];\n\
+             var_dump(empty($a['x']));\n\
+             var_dump(empty($a['y']));\n\
+             var_dump(empty($a['z']));\n\
+             var_dump(empty($a['w']));\n\
+             var_dump(empty($a['missing']));\n",
+            VmOptions {
+                collect_counters: true,
+                execution_format: ExecutionFormat::Bytecode,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.to_string_lossy(),
+            "bool(false)\nbool(true)\nbool(false)\nbool(true)\nbool(true)\n"
+        );
+        let counters = result.counters.expect("counters should be collected");
+        assert!(
+            counters.record_shape_hits + counters.small_map_hits > 0,
+            "empty() on a record-like/small-map array should consume the \
+             fail-closed shape fast path: {counters:?}"
         );
     }
 
