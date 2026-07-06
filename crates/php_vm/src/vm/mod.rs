@@ -32194,7 +32194,15 @@ impl Vm {
                             unit.unit().functions.get(function.index()),
                         ) {
                             self.record_counter_dense_method_dispatch_hit();
-                            return self.execute_bytecode_function(
+                            // Record the request-profile boundary here too:
+                            // the dense path bypasses `execute_function`, so
+                            // without this a densely executed function/method
+                            // would silently vanish from the profiler's
+                            // per-name attribution.
+                            let function_profile =
+                                Some((ir_function.name.clone(), ir_function.flags.is_method));
+                            let profile_boundary = self.request_profile_boundary_start();
+                            let result = self.execute_bytecode_function(
                                 unit,
                                 &active_plan.unit,
                                 Some(active_plan),
@@ -32206,6 +32214,14 @@ impl Vm {
                                 stack,
                                 state,
                             );
+                            if let Some((name, is_method)) = function_profile {
+                                self.record_counter_function_profile(
+                                    &name,
+                                    is_method,
+                                    profile_boundary,
+                                );
+                            }
+                            return result;
                         }
                         Some("dense_body_missing")
                     }
