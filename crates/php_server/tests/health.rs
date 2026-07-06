@@ -534,9 +534,9 @@ fn server_request_profile_source_attribution_mode_collects_attribution() {
         &profile["attribution"]["calls"]["function_profiles_by_name"],
         "profile_helper",
     );
-    assert!(
-        profile["attribution"]["calls"]["method_profiles_by_name"].is_array(),
-        "method profile collection should be represented"
+    assert_named_profile_contains(
+        &profile["attribution"]["calls"]["method_profiles_by_name"],
+        "ProfileThing::name",
     );
     assert_named_profile_contains(
         &profile["attribution"]["calls"]["builtin_profiles_by_name"],
