@@ -5372,6 +5372,7 @@ fn bytecode_opcode_family(opcode: &str) -> &'static str {
         "jump" | "jump_if_false" | "jump_if_true" | "jump_if" => "control_flow",
         "return" => "returns",
         "declare_function" | "declare_class" => "declarations",
+        "fetch_class_constant" => "objects",
         "discard" | "nop" => "bookkeeping",
         _ => "other",
     }

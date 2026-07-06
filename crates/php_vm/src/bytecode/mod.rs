@@ -192,6 +192,8 @@ pub enum DenseOpcode {
     DeclareFunction = 82,
     /// Conditionally declare a runtime class at the point of execution.
     DeclareClass = 83,
+    /// `rN = Class::CONSTANT` (or `Class::class`).
+    FetchClassConstant = 84,
 }
 
 impl DenseOpcode {
@@ -296,6 +298,7 @@ impl DenseOpcode {
             Self::EmptyPropertyDim => "empty_property_dim",
             Self::DeclareFunction => "declare_function",
             Self::DeclareClass => "declare_class",
+            Self::FetchClassConstant => "fetch_class_constant",
         }
     }
 
@@ -611,6 +614,12 @@ pub enum DenseOperands {
     DeclareFunction { name: u32, function: u32 },
     /// Conditional class declaration: name side-table index.
     DeclareClass { name: u32 },
+    /// Class-constant fetch: register destination and class/constant name indexes.
+    FetchClassConstant {
+        dst: u32,
+        class_name: u32,
+        constant: u32,
+    },
 }
 
 /// One dense closure capture: name side-table index, source operand, and
@@ -1950,7 +1959,8 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::UnaryBitNot
         | DenseOpcode::BinaryPow
         | DenseOpcode::DeclareFunction
-        | DenseOpcode::DeclareClass => None,
+        | DenseOpcode::DeclareClass
+        | DenseOpcode::FetchClassConstant => None,
     }
 }
 
@@ -2672,6 +2682,18 @@ fn lower_instruction(
             DenseOpcode::DeclareClass,
             DenseOperands::DeclareClass {
                 name: push_name(names, name).index() as u32,
+            },
+        ),
+        InstructionKind::FetchClassConstant {
+            dst,
+            class_name,
+            constant,
+        } => (
+            DenseOpcode::FetchClassConstant,
+            DenseOperands::FetchClassConstant {
+                dst: dst.raw(),
+                class_name: push_name(names, class_name).index() as u32,
+                constant: push_name(names, constant).index() as u32,
             },
         ),
         other => return unsupported_instruction(instruction, format!("{other:?}")),
@@ -3475,6 +3497,18 @@ fn verify_instruction(
         (DenseOpcode::DeclareClass, DenseOperands::DeclareClass { name }) => {
             verify_name(*name, unit, errors);
         }
+        (
+            DenseOpcode::FetchClassConstant,
+            DenseOperands::FetchClassConstant {
+                dst,
+                class_name,
+                constant,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_name(*class_name, unit, errors);
+            verify_name(*constant, unit, errors);
+        }
         _ => errors.push(error(
             DenseVerifyErrorCode::InvalidOperandShape,
             format!(
@@ -4005,6 +4039,11 @@ fn render_operands(operands: &DenseOperands) -> String {
             format!("n{name} fn{function}")
         }
         DenseOperands::DeclareClass { name } => format!("n{name}"),
+        DenseOperands::FetchClassConstant {
+            dst,
+            class_name,
+            constant,
+        } => format!("r{dst} n{class_name} n{constant}"),
     }
 }
 

@@ -2938,6 +2938,7 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         | DenseOpcode::Include
         | DenseOpcode::DeclareFunction
         | DenseOpcode::DeclareClass
+        | DenseOpcode::FetchClassConstant
         | DenseOpcode::LoadConstFetchDim
         | DenseOpcode::LoadConstLoadConst
         | DenseOpcode::LoadConstArrayInsert
@@ -3289,6 +3290,9 @@ fn classify_copy_patch_stencil_instruction(
         DenseOpcode::DeclareFunction | DenseOpcode::DeclareClass => {
             unsupported_copy_patch_class("declaration_mutates_runtime_symbol_table")
         }
+        DenseOpcode::FetchClassConstant => {
+            unsupported_copy_patch_class("class_constant_requires_class_resolution_and_autoload")
+        }
         DenseOpcode::NewArray
         | DenseOpcode::ArrayInsert
         | DenseOpcode::AssignDim
@@ -3611,6 +3615,13 @@ fn classify_mid_tier_instruction(
             push_unique(
                 &mut plan.rejection_reasons,
                 "declaration_mutates_runtime_symbol_table",
+            );
+            plan.deopt_points += 1;
+        }
+        DenseOpcode::FetchClassConstant => {
+            push_unique(
+                &mut plan.rejection_reasons,
+                "class_constant_requires_class_resolution_and_autoload",
             );
             plan.deopt_points += 1;
         }

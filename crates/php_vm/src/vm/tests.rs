@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{IncludeCache, IncludeLoader, InlineCacheMode, QuickeningMode, TieringOptions};
 use php_ir::{
@@ -19519,6 +19518,56 @@ echo $o->a, '|', $o->b, '|', $o->d;
     );
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.to_string_lossy(), "x|3|9");
+}
+
+#[test]
+fn dense_bytecode_auto_executes_fetch_class_constant() {
+    // Class-constant fetches (Class::CONST, inherited constants, self::-referencing
+    // const-expr defaults, ::class, and enum cases) now execute on the dense
+    // bytecode path via the shared fetch_class_constant_value helper instead of
+    // deopting the whole function to the rich interpreter.
+    let result = execute_source_with_options(
+        r#"<?php
+class DenseConstBase { const S = 7; }
+class DenseConst extends DenseConstBase {
+    const X = 42;
+    const Y = self::X + 1;
+    public const Z = 'z';
+}
+enum DenseSuit: string { case Hearts = 'H'; }
+function dense_const_probe() {
+    return DenseConst::X . '|' . DenseConst::Y . '|' . DenseConst::Z . '|' . DenseConst::S
+        . '|' . DenseConst::class . '|' . DenseSuit::Hearts->value . '|' . DenseSuit::class;
+}
+echo dense_const_probe();
+"#,
+        VmOptions {
+            execution_format: ExecutionFormat::Auto,
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "42|43|z|7|DenseConst|H|DenseSuit"
+    );
+    let counters = result.counters.expect("counters should be collected");
+    assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+    assert_eq!(counters.rich_fallback_functions_executed, 0, "{counters:?}");
+    assert!(
+        counters
+            .opcodes
+            .get("bytecode_fetch_class_constant")
+            .copied()
+            .unwrap_or_default()
+            >= 5,
+        "{counters:?}"
+    );
 }
 
 #[test]

@@ -408,6 +408,7 @@ fn collect_instruction_slots(instruction: &DenseInstruction, slots: &mut BTreeSe
         | DenseOperands::DeclareClass { .. } => {}
         DenseOperands::RegConst { dst, .. }
         | DenseOperands::RegName { dst, .. }
+        | DenseOperands::FetchClassConstant { dst, .. }
         | DenseOperands::Dst { dst } => {
             slots.insert(OsrVmSlot::Register(*dst));
         }

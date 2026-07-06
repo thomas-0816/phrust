@@ -6981,6 +6981,121 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::FetchClassConstant => {
+                        let DenseOperands::FetchClassConstant {
+                            dst,
+                            class_name,
+                            constant,
+                        } = &instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let dst = *dst;
+                        let Some(class_name) = dense.names.get(*class_name as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode class name n{class_name}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let Some(constant) = dense.names.get(*constant as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode class constant name n{constant}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let class_name = class_name.clone();
+                        let constant = constant.clone();
+                        let span = dense_instruction_span(dense, instruction);
+                        // Dense functions carry no local exception handlers
+                        // (try/catch keeps a function on the rich plan), so a
+                        // raised \Error / autoload throwable propagates to outer
+                        // frames rather than routing in-frame.
+                        let value = match self.fetch_class_constant_value(
+                            compiled,
+                            &class_name,
+                            &constant,
+                            None,
+                            span,
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            Ok(value) => value,
+                            Err(ClassConstantFetch::Throwable(result)) => {
+                                let result = *result;
+                                if let Some(throwable) = state
+                                    .pending_throw
+                                    .take()
+                                    .or_else(|| runtime_error_throwable(&result))
+                                {
+                                    stack.pop_recycle();
+                                    return self
+                                        .propagate_exception(output, stack, state, throwable);
+                                }
+                                stack.pop_recycle();
+                                return result;
+                            }
+                            Err(ClassConstantFetch::Raise(span, message)) => {
+                                let mut exception_handlers = Vec::new();
+                                let mut pending_control = None;
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(_) => {
+                                        let result = self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            "E_PHP_VM_DENSE_FETCH_CLASS_CONSTANT_HANDLER: dense functions have no local exception handlers".to_string(),
+                                        );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                    RaiseOutcome::Done(result) => {
+                                        stack.pop_recycle();
+                                        return *result;
+                                    }
+                                }
+                            }
+                            Err(ClassConstantFetch::Fatal(message)) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::LoadConst | DenseOpcode::LoadConstLoadConst => {
                         // The fused form appends a second constant load into
                         // another register after the unchanged first load.
@@ -60004,7 +60119,7 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::EmptyDim
         | DenseOpcode::UnsetDim => "arrays",
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => "properties",
-        DenseOpcode::InstanceOf => "objects",
+        DenseOpcode::InstanceOf | DenseOpcode::FetchClassConstant => "objects",
         DenseOpcode::IssetPropertyDim | DenseOpcode::EmptyPropertyDim => "properties",
         DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             "foreach"
