@@ -21,6 +21,7 @@
 {"path":"ext/hash/tests/md2.phpt"}
 {"path":"ext/hash/tests/md4.phpt"}
 {"path":"ext/hash/tests/md5.phpt"}
+{"path":"ext/hash/tests/murmur_seed_deprecation.phpt"}
 {"path":"ext/hash/tests/murmurhash3.phpt"}
 {"path":"ext/hash/tests/murmurhash3_seed.phpt"}
 {"path":"ext/hash/tests/ripemd128.phpt"}
@@ -38,3 +39,4 @@
 {"path":"ext/hash/tests/tiger.phpt"}
 {"path":"ext/hash/tests/whirlpool.phpt"}
 {"path":"ext/hash/tests/xxhash_seed.phpt"}
+{"path":"ext/hash/tests/xxhash_seed_deprecation.phpt"}

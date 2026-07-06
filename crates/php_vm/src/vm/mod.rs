@@ -69865,7 +69865,15 @@ fn arginfo_error_result(error: php_std::arginfo::ArginfoError, output: &OutputBu
 }
 
 fn runtime_error_throwable(result: &VmResult) -> Option<Value> {
-    let diagnostic = result.diagnostics.first()?;
+    for diagnostic in &result.diagnostics {
+        if let Some(throwable) = runtime_diagnostic_throwable(diagnostic) {
+            return Some(throwable);
+        }
+    }
+    None
+}
+
+fn runtime_diagnostic_throwable(diagnostic: &RuntimeDiagnostic) -> Option<Value> {
     let class_name = match diagnostic.id() {
         "E_PHP_RUNTIME_BUILTIN_ARITY" => "ArgumentCountError",
         "E_PHP_RUNTIME_BUILTIN_TYPE" => "TypeError",
@@ -78572,6 +78580,32 @@ good"
         assert_eq!(
             result.output.to_string_lossy(),
             "x|strrpos(): Argument #3 ($offset) must be of type int, float given|hash_equals(): Argument #1 ($known_string) must be of type string, int given|vprintf(): Argument #2 ($values) must be of type array, true given"
+        );
+    }
+
+    #[test]
+    fn builtin_deprecation_before_value_error_remains_catchable() {
+        let result = execute_source(
+            "<?php
+            try {
+                hash_init('xxh3', 0, '', ['secret' => 42]);
+            } catch (ValueError $e) {
+                echo '|', $e->getMessage();
+            }
+            ",
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        let output = result.output.to_string_lossy();
+        assert!(
+            output.contains(
+                "Deprecated: hash_init(): Passing a secret of a type other than string is deprecated"
+            ),
+            "{output}"
+        );
+        assert!(
+            output.contains("|xxh3: Secret length must be >= 136 bytes, 2 bytes passed"),
+            "{output}"
         );
     }
 

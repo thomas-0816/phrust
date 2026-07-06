@@ -138,9 +138,9 @@ const HASH_CONTEXT_SEED: &str = "__phrust_hash_seed";
 const HASH_CONTEXT_SECRET: &str = "__phrust_hash_secret";
 
 fn builtin_hash_init(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=4).contains(&args.len()) {
         return Err(arity_error("hash_init", "one to four argument(s)"));
@@ -156,7 +156,7 @@ fn builtin_hash_init(
         .map(|value| string_arg("hash_init", value))
         .transpose()?
         .unwrap_or_default();
-    let options = parse_hash_options("hash_init", &algorithm, args.get(3))?;
+    let options = parse_hash_options(context, "hash_init", &algorithm, args.get(3), span)?;
 
     if flags & !HASH_HMAC_FLAG != 0 {
         return Err(value_error("hash_init", "unsupported hash flags"));
@@ -355,7 +355,7 @@ fn builtin_hash_file(
         .transpose()
         .map_err(|message| conversion_error("hash_file", message))?
         .unwrap_or(false);
-    let options = parse_hash_options("hash_file", &algorithm, args.get(3))?;
+    let options = parse_hash_options(context, "hash_file", &algorithm, args.get(3), span.clone())?;
     let Value::String(input) = read_file_value(context, "hash_file", &path, span)? else {
         return Ok(Value::Bool(false));
     };
@@ -720,12 +720,19 @@ mod tests {
     }
 
     fn call_with_context(name: &str, args: Vec<Value>, context: &mut BuiltinContext<'_>) -> Value {
+        call_with_context_result(name, args, context).expect("builtin succeeds")
+    }
+
+    fn call_with_context_result(
+        name: &str,
+        args: Vec<Value>,
+        context: &mut BuiltinContext<'_>,
+    ) -> Result<Value, crate::builtins::BuiltinError> {
         ENTRIES
             .iter()
             .find(|entry| entry.name() == name)
             .expect("entry")
             .function()(context, args, RuntimeSourceSpan::default())
-        .expect("builtin succeeds")
     }
 
     #[test]
@@ -1204,6 +1211,91 @@ mod tests {
             );
             assert_eq!(call("hash_final", vec![context]), Value::string(expected));
         }
+    }
+
+    #[test]
+    fn hash_seed_and_secret_option_type_deprecations_match_php() {
+        let input = Value::string("Lorem ipsum dolor sit amet, consectetur adipiscing elit.");
+
+        let mut murmur_options = PhpArray::new();
+        murmur_options.insert(
+            ArrayKey::String(PhpString::from("seed")),
+            Value::string("42"),
+        );
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        assert_eq!(
+            call_with_context(
+                "hash",
+                vec![
+                    Value::string("murmur3a"),
+                    input.clone(),
+                    Value::Bool(false),
+                    Value::Array(murmur_options),
+                ],
+                &mut context,
+            ),
+            call("hash", vec![Value::string("murmur3a"), input.clone()])
+        );
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].message(),
+            "hash(): Passing a seed of a type other than int is deprecated because it is the same as setting the seed to 0"
+        );
+
+        let mut xxh3_options = PhpArray::new();
+        xxh3_options.insert(
+            ArrayKey::String(PhpString::from("seed")),
+            Value::string("42"),
+        );
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        assert_eq!(
+            call_with_context(
+                "hash",
+                vec![
+                    Value::string("xxh3"),
+                    input.clone(),
+                    Value::Bool(false),
+                    Value::Array(xxh3_options),
+                ],
+                &mut context,
+            ),
+            call("hash", vec![Value::string("xxh3"), input])
+        );
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].message(),
+            "hash(): Passing a seed of a type other than int is deprecated because it is ignored"
+        );
+
+        let mut secret_options = PhpArray::new();
+        secret_options.insert(ArrayKey::String(PhpString::from("secret")), Value::Int(4));
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let error = call_with_context_result(
+            "hash_init",
+            vec![
+                Value::string("xxh3"),
+                Value::Int(0),
+                Value::string(""),
+                Value::Array(secret_options),
+            ],
+            &mut context,
+        )
+        .expect_err("short converted secret is rejected after deprecation");
+        assert_eq!(
+            error.message(),
+            "xxh3: Secret length must be >= 136 bytes, 1 bytes passed"
+        );
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].message(),
+            "hash_init(): Passing a secret of a type other than string is deprecated because it implicitly converts to a string, potentially hiding bugs"
+        );
     }
 
     #[test]

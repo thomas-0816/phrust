@@ -27,9 +27,11 @@ pub(in crate::builtins::modules) struct HashOptions {
 }
 
 pub(in crate::builtins::modules) fn parse_hash_options(
+    context: &mut BuiltinContext<'_>,
     name: &str,
     algorithm: &str,
     value: Option<&Value>,
+    span: RuntimeSourceSpan,
 ) -> Result<HashOptions, BuiltinError> {
     let Some(value) = value else {
         return Ok(HashOptions::default());
@@ -39,9 +41,18 @@ pub(in crate::builtins::modules) fn parse_hash_options(
     };
     let mut options = HashOptions::default();
     if let Some(seed) = array.get(&ArrayKey::String(PhpString::from("seed"))) {
-        options.seed = Some(int_arg(name, seed)? as u64);
+        options.seed = hash_seed_option(context, name, algorithm, seed, span.clone())?;
     }
     if let Some(secret) = array.get(&ArrayKey::String(PhpString::from("secret"))) {
+        if !matches!(deref_value(secret), Value::String(_)) {
+            context.php_deprecation(
+                "E_PHP_HASH_SECRET_TYPE_DEPRECATED",
+                format!(
+                    "{name}(): Passing a secret of a type other than string is deprecated because it implicitly converts to a string, potentially hiding bugs"
+                ),
+                span,
+            );
+        }
         let secret = string_arg(name, secret)?.as_bytes().to_vec();
         if secret.len() < 136 {
             return Err(BuiltinError::new(
@@ -56,6 +67,39 @@ pub(in crate::builtins::modules) fn parse_hash_options(
     }
     validate_hash_options(name, algorithm, &options)?;
     Ok(options)
+}
+
+fn hash_seed_option(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    algorithm: &str,
+    value: &Value,
+    span: RuntimeSourceSpan,
+) -> Result<Option<u64>, BuiltinError> {
+    if let Value::Int(seed) = deref_value(value) {
+        return Ok(Some(seed as u64));
+    }
+
+    let normalized = normalized_hash_algorithm(algorithm);
+    let behavior = match normalized.as_deref() {
+        Some("murmur3a" | "murmur3c" | "murmur3f" | "xxh32" | "xxh64") => {
+            Some(("the same as setting the seed to 0", Some(0)))
+        }
+        Some("xxh3" | "xxh128") => Some(("ignored", None)),
+        _ => None,
+    };
+    if let Some((message, seed)) = behavior {
+        context.php_deprecation(
+            "E_PHP_HASH_SEED_TYPE_DEPRECATED",
+            format!(
+                "{name}(): Passing a seed of a type other than int is deprecated because it is {message}"
+            ),
+            span,
+        );
+        return Ok(seed);
+    }
+
+    Ok(Some(int_arg(name, value)? as u64))
 }
 
 fn validate_hash_options(

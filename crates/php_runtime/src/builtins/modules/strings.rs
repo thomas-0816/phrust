@@ -1094,9 +1094,9 @@ pub(in crate::builtins::modules) fn builtin_crc32(
 }
 
 pub(in crate::builtins::modules) fn builtin_hash(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(2..=4).contains(&args.len()) {
         return Err(arity_error("hash", "two to four argument(s)"));
@@ -1109,7 +1109,7 @@ pub(in crate::builtins::modules) fn builtin_hash(
         .transpose()
         .map_err(|message| conversion_error("hash", message))?
         .unwrap_or(false);
-    let options = parse_hash_options("hash", &algorithm, args.get(3))?;
+    let options = parse_hash_options(context, "hash", &algorithm, args.get(3), span)?;
     let digest = hash_digest_bytes_with_options("hash", &algorithm, input.as_bytes(), &options)?;
     Ok(if binary {
         Value::string(digest)
