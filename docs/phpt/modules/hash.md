@@ -7,8 +7,8 @@
   - `tests/phpt/generated/hash/context.phpt`
   - selected `ext/hash/tests/*.phpt` rows for adler32, CRC/FNV/JOOAT,
     MD2/MD4, md5, MurmurHash3, RIPEMD, sha1, SHA-2/SHA3, Tiger 3-pass,
-    Whirlpool, MurmurHash3/xxHash seed options, HMAC-md5, file hashing, HKDF,
-    PBKDF2, and stream updates
+    Whirlpool, MurmurHash3/xxHash seed options, hash_equals, HMAC-md5, file
+    hashing, HKDF, PBKDF2, and stream updates
 
 ## Implemented Surface
 
@@ -32,9 +32,11 @@ GOST, RIPEMD, sha1/SHA-2/SHA3/Tiger 3-pass/Whirlpool digest vectors,
 MurmurHash3/xxHash seeded one-shot and incremental vectors, HMAC-md5,
 upstream file hashing,
 `hash_update_file`, `hash_update_stream`, `hash_pbkdf2`, and RFC5869
-`hash_hkdf` vectors. The context row covers `HashContext` visibility,
-incremental SHA-256 hashing, copying a partially updated context, HMAC contexts,
-and finalized context rejection.
+`hash_hkdf` vectors. The promoted `hash_equals` row covers constant-time
+string comparison behavior plus strict TypeError reporting for non-string
+arguments. The context row covers `HashContext` visibility, incremental SHA-256
+hashing, copying a partially updated context, HMAC contexts, and finalized
+context rejection.
 
 ## Gaps
 
@@ -53,5 +55,6 @@ diagnostics, and HashContext serialized state parity match php-src.
 
 Last upstream target sweep before this promotion: 14 PASS, 6 SKIP, 60 FAIL.
 After adding Adler-32, CRC32/CRC32C, FNV, JOAAT, SHA3, RIPEMD, MD2, MD4,
-MurmurHash3, Whirlpool, GOST, MurmurHash3/xxHash seed support, and Tiger
-3-pass support, the selected manifest contains 39 green rows.
+MurmurHash3, Whirlpool, GOST, MurmurHash3/xxHash seed support, Tiger 3-pass
+support, and strict hash_equals argument validation, the selected manifest
+contains 40 green rows.

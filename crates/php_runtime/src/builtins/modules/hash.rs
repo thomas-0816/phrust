@@ -1,13 +1,14 @@
 //! Hash extension builtins for common integrity and keyed-digest flows.
 
 use super::core::{
-    HashOptions, arity_error, conversion_error, deref_value, expect_arity, hash_digest_bytes,
-    hash_digest_bytes_with_options, hex_encode, hmac_digest_bytes, int_arg, parse_hash_options,
-    read_file_value, resource_arg, string_arg, type_error, value_error,
+    HashOptions, argument_type_error, arity_error, conversion_error, deref_value, expect_arity,
+    hash_digest_bytes, hash_digest_bytes_with_options, hex_encode, hmac_digest_bytes, int_arg,
+    parse_hash_options, read_file_value, resource_arg, string_arg, type_error, value_error,
 };
 use super::strings::{builtin_hash, builtin_hash_hmac};
 use crate::builtins::{
-    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
+    RuntimeSourceSpan,
 };
 use crate::{ClassEntry, ClassFlags, ObjectRef, Value, normalize_class_name, to_bool};
 
@@ -313,8 +314,8 @@ fn builtin_hash_equals(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("hash_equals", &args, 2)?;
-    let known = string_arg("hash_equals", &args[0])?;
-    let user = string_arg("hash_equals", &args[1])?;
+    let known = hash_equals_string_arg("#1 ($known_string)", &args[0])?;
+    let user = hash_equals_string_arg("#2 ($user_string)", &args[1])?;
     if known.len() != user.len() {
         return Ok(Value::Bool(false));
     }
@@ -324,6 +325,18 @@ fn builtin_hash_equals(
         .zip(user.as_bytes())
         .fold(0_u8, |acc, (left, right)| acc | (left ^ right));
     Ok(Value::Bool(diff == 0))
+}
+
+fn hash_equals_string_arg(argument: &str, value: &Value) -> Result<crate::PhpString, BuiltinError> {
+    match deref_value(value) {
+        Value::String(value) => Ok(value),
+        other => Err(argument_type_error(
+            "hash_equals",
+            argument,
+            "string",
+            &other,
+        )),
+    }
 }
 
 fn builtin_hash_file(
@@ -696,6 +709,16 @@ mod tests {
         call_with_context(name, args, &mut context)
     }
 
+    fn call_result(name: &str, args: Vec<Value>) -> Result<Value, crate::builtins::BuiltinError> {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        ENTRIES
+            .iter()
+            .find(|entry| entry.name() == name)
+            .expect("entry")
+            .function()(&mut context, args, RuntimeSourceSpan::default())
+    }
+
     fn call_with_context(name: &str, args: Vec<Value>, context: &mut BuiltinContext<'_>) -> Value {
         ENTRIES
             .iter()
@@ -787,6 +810,32 @@ mod tests {
                 ]
             ),
             Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn hash_equals_requires_strict_string_arguments() {
+        let first = call_result("hash_equals", vec![Value::Int(123), Value::string("NaN")])
+            .expect_err("non-string known string is rejected");
+        assert_eq!(first.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_TYPE");
+        assert_eq!(
+            first.message(),
+            "hash_equals(): Argument #1 ($known_string) must be of type string, int given"
+        );
+
+        let second = call_result("hash_equals", vec![Value::string("NaN"), Value::Int(123)])
+            .expect_err("non-string user string is rejected");
+        assert_eq!(second.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_TYPE");
+        assert_eq!(
+            second.message(),
+            "hash_equals(): Argument #2 ($user_string) must be of type string, int given"
+        );
+
+        let null = call_result("hash_equals", vec![Value::Null, Value::string("")])
+            .expect_err("null known string is rejected");
+        assert_eq!(
+            null.message(),
+            "hash_equals(): Argument #1 ($known_string) must be of type string, null given"
         );
     }
 

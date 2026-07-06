@@ -69839,6 +69839,7 @@ fn builtin_uses_custom_argument_validation(name: &str) -> bool {
         "decbin"
             | "dechex"
             | "decoct"
+            | "hash_equals"
             | "number_format"
             | "range"
             | "round"
@@ -78555,6 +78556,11 @@ good"
                 echo $e->getMessage(), '|';
             }
             try {
+                hash_equals(123, 'NaN');
+            } catch (TypeError $e) {
+                echo $e->getMessage(), '|';
+            }
+            try {
                 vprintf('%s', true);
             } catch (TypeError $e) {
                 echo $e->getMessage();
@@ -78565,7 +78571,7 @@ good"
         assert!(result.status.is_success(), "{:?}", result.status);
         assert_eq!(
             result.output.to_string_lossy(),
-            "x|strrpos(): Argument #3 ($offset) must be of type int, float given|vprintf(): Argument #2 ($values) must be of type array, true given"
+            "x|strrpos(): Argument #3 ($offset) must be of type int, float given|hash_equals(): Argument #1 ($known_string) must be of type string, int given|vprintf(): Argument #2 ($values) must be of type array, true given"
         );
     }
 
