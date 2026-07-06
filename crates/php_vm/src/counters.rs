@@ -1017,6 +1017,17 @@ impl VmCounters {
         self.request_arena_bytes += bytes as u64;
     }
 
+    /// Records the persistent immutable engine-metadata heap footprint as a
+    /// snapshot: `entries` interned immutable names totalling `bytes`. This is
+    /// engine-owned data that survives across requests and never holds userland
+    /// values, so it is the one class currently safe to account here. Setting
+    /// (not accumulating) keeps the field a footprint rather than a per-call
+    /// delta.
+    pub(crate) fn record_persistent_engine_footprint(&mut self, entries: u64, bytes: u64) {
+        self.persistent_engine_allocations = entries;
+        self.persistent_engine_bytes = bytes;
+    }
+
     pub(crate) fn record_runtime_layout_stats(
         &mut self,
         stats: php_runtime::layout_stats::RuntimeLayoutStats,

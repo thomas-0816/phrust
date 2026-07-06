@@ -73,6 +73,9 @@ thread_local! {
 struct SymbolInterner {
     map: HashMap<Vec<u8>, PhpString>,
     next: u32,
+    /// Total interned name bytes owned by this interner. Tracked so the engine
+    /// can account the persistent immutable-name heap without walking the map.
+    total_bytes: u64,
 }
 
 impl SymbolInterner {
@@ -86,9 +89,27 @@ impl SymbolInterner {
         self.next = self.next.wrapping_add(1);
         let string = PhpString::from_bytes(bytes.to_vec());
         string.storage.symbol.set(Some(symbol));
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len() as u64);
         self.map.insert(bytes.to_vec(), string.clone());
         string
     }
+}
+
+/// Snapshot of the process-thread-local immutable-name interner as
+/// `(entries, bytes)`.
+///
+/// This interner is the one concrete persistent immutable engine-metadata heap
+/// that already survives across requests: it owns only interned immutable name
+/// bytes (never userland `Value`s, handles, arrays, resources, or request
+/// strings) and is never reset per request. Exposing its footprint lets the VM
+/// account `persistent_engine_allocations`/`persistent_engine_bytes` for a
+/// class that is proven immutable and engine-owned.
+#[must_use]
+pub fn symbol_interner_footprint() -> (u64, u64) {
+    SYMBOL_INTERNER.with(|interner| {
+        let interner = interner.borrow();
+        (interner.map.len() as u64, interner.total_bytes)
+    })
 }
 
 /// PHP string bytes without an implicit UTF-8 invariant.
@@ -303,6 +324,28 @@ mod tests {
     use super::PhpString;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
+
+    #[test]
+    fn symbol_interner_footprint_grows_with_new_names_and_ignores_repeats() {
+        use super::symbol_interner_footprint;
+        let (before_count, before_bytes) = symbol_interner_footprint();
+        let name = format!("phrust_p4_footprint_probe_{}", std::process::id());
+        let _first = PhpString::intern(name.as_bytes());
+        let (after_count, after_bytes) = symbol_interner_footprint();
+        assert!(
+            after_count > before_count,
+            "interning a new immutable name grows the persistent heap count"
+        );
+        assert!(
+            after_bytes >= before_bytes + name.len() as u64,
+            "persistent heap bytes include the new name"
+        );
+        // Re-interning the same name is a hit and must not grow the footprint.
+        let _repeat = PhpString::intern(name.as_bytes());
+        let (repeat_count, repeat_bytes) = symbol_interner_footprint();
+        assert_eq!(repeat_count, after_count);
+        assert_eq!(repeat_bytes, after_bytes);
+    }
 
     fn std_hash(value: &PhpString) -> u64 {
         let mut hasher = DefaultHasher::new();

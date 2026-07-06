@@ -2339,11 +2339,14 @@ impl Vm {
             let stats = php_runtime::numeric_string::take_cache_stats();
             let layout_stats = php_runtime::layout_stats::take_layout_stats();
             let layout_source_stats = php_runtime::layout_stats::take_layout_source_stats();
+            let (interned_names, interned_name_bytes) =
+                php_runtime::string::symbol_interner_footprint();
             if let Some(counters) = self.counters.borrow_mut().as_mut() {
                 counters.record_numeric_string_cache_stats(stats);
                 counters.record_runtime_layout_stats(layout_stats);
                 counters.record_runtime_layout_source_stats(layout_source_stats);
                 counters.record_output_stats(output_len, output_stats);
+                counters.record_persistent_engine_footprint(interned_names, interned_name_bytes);
                 counters.fold_scratch_counters();
             }
             result.counters = self.counters.borrow().clone();
@@ -88004,8 +88007,17 @@ foreach ([new PerfRelationBase(), new PerfRelationOverride(), new PerfRelationBa
         );
         assert!(counters.request_arena_bytes > 0, "{counters:?}");
         assert_eq!(counters.request_pool_resets, counters.frames_reused);
-        assert_eq!(counters.persistent_engine_allocations, 0);
-        assert_eq!(counters.persistent_engine_bytes, 0);
+        // The persistent immutable engine heap (interned names) is now
+        // accounted as a footprint; a program that declares and calls
+        // functions interns at least those names, so both are non-zero.
+        assert!(
+            counters.persistent_engine_allocations > 0,
+            "persistent engine names should be accounted: {counters:?}"
+        );
+        assert!(
+            counters.persistent_engine_bytes > 0,
+            "persistent engine bytes should be accounted: {counters:?}"
+        );
     }
 
     #[test]

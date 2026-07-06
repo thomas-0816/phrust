@@ -65,10 +65,18 @@ estimate based on register and local slot storage; reused frames increment
 closure, class-context, generator/fiber, try/finally, shared-top-level, and
 destructor-sensitive blockers.
 
-`persistent_engine_allocations` and `persistent_engine_bytes` remain zero in the
-current runtime. FPE-20 adds the advisory persistent-feedback metadata contract,
-but no cache writer or persistent heap allocation owner consumes that metadata
-yet.
+`persistent_engine_allocations` and `persistent_engine_bytes` are now populated
+from the one concrete persistent immutable engine-metadata heap that already
+survives across requests: the process-thread-local immutable-name interner
+(`php_runtime::string::symbol_interner_footprint`). When counters are collected
+the VM records the interner's footprint — the number of interned immutable names
+and their total bytes — as a snapshot (set, not accumulated), so the counters
+report the persistent heap size rather than a per-request delta. This heap owns
+only interned immutable name bytes; it never holds userland `Value`s, handles,
+arrays, resources, request strings, globals, superglobals, output buffers, or
+sessions, so accounting it is safe. Broader persistent metadata classes
+(compiled-unit metadata handles, source maps, validated feedback descriptors)
+remain future owners of these counters.
 
 ## Blockers
 
