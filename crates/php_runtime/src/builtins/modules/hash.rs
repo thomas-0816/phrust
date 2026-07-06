@@ -76,6 +76,8 @@ const HASH_ALGOS: &[&str] = &[
     "ripemd256",
     "ripemd320",
     "whirlpool",
+    "gost",
+    "gost-crypto",
     "adler32",
     "crc32",
     "crc32b",
@@ -110,6 +112,8 @@ const HASH_HMAC_ALGOS: &[&str] = &[
     "ripemd256",
     "ripemd320",
     "whirlpool",
+    "gost",
+    "gost-crypto",
 ];
 const HASH_HMAC_FLAG: i64 = 1;
 const HASH_CONTEXT_CLASS: &str = "HashContext";
@@ -658,6 +662,8 @@ mod tests {
         assert!(values.iter().any(|value| value.contains("murmur3a")));
         assert!(values.iter().any(|value| value.contains("murmur3c")));
         assert!(values.iter().any(|value| value.contains("murmur3f")));
+        assert!(values.iter().any(|value| value.contains("gost")));
+        assert!(values.iter().any(|value| value.contains("gost-crypto")));
 
         let Value::Array(hmac_algos) = call("hash_hmac_algos", vec![]) else {
             panic!("expected HMAC algorithm array");
@@ -686,6 +692,8 @@ mod tests {
             "ripemd256",
             "ripemd320",
             "whirlpool",
+            "gost",
+            "gost-crypto",
         ] {
             assert!(
                 hmac_values.iter().any(|value| value.contains(algorithm)),
@@ -1022,6 +1030,63 @@ mod tests {
                  7c77af7aee6156ec00b34673ae7ef1090ff7874c822eca828d030c4a15681b66"
                     .replace(' ', "")
             )
+        );
+    }
+
+    #[test]
+    fn hash_supports_gost_vectors_and_hmac() {
+        assert_eq!(
+            call("hash", vec![Value::string("gost"), Value::string("")]),
+            Value::string("ce85b99cc46752fffee35cab9a7b0278abb4c2d2055cff685af4912c49490f8d")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![
+                    Value::string("gost"),
+                    Value::string("The quick brown fox jumps over the lazy dog")
+                ]
+            ),
+            Value::string("77b7fa410c9ac58a25f49bca7d0468c9296529315eaca76bd1a10f376d1f4294")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("gost-crypto"), Value::string("")]
+            ),
+            Value::string("981e5f3ca30c841487830f84fb433e13ac1101569b9c13584ac483234cd656c0")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![
+                    Value::string("gost-crypto"),
+                    Value::string("The quick brown fox jumps over the lazy dog")
+                ]
+            ),
+            Value::string("9004294a361a508c586fe53d1f1b02746765e71b765472786e4770d565830a76")
+        );
+        assert_eq!(
+            call(
+                "hash_hmac",
+                vec![
+                    Value::string("gost"),
+                    Value::string("payload"),
+                    Value::string("key")
+                ]
+            ),
+            Value::string("ec9938d7c9445db93969926b616da3a7ccef4b616782599b5577db73261de99c")
+        );
+        assert_eq!(
+            call(
+                "hash_hmac",
+                vec![
+                    Value::string("gost-crypto"),
+                    Value::string("payload"),
+                    Value::string("key")
+                ]
+            ),
+            Value::string("55d662833d81f4fbc02c98634f873c0cd9e2426da2981a3b1f942bd41179e979")
         );
     }
 

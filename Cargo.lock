@@ -839,6 +839,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gost94"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd90a0cc9be7048dc09512f9a07e1fc59622e68dc804e455915072d8fe79cc88"
+dependencies = [
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1700,6 +1709,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
+ "gost94",
  "image",
  "libc",
  "md-5 0.10.6",

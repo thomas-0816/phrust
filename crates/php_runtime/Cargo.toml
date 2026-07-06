@@ -13,6 +13,7 @@ crc32fast = "1.4"
 ed25519-dalek = "2"
 flate2 = "1"
 getrandom = "0.3"
+gost94 = "0.11.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
 md2 = "0.10.2"
