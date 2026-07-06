@@ -19,6 +19,7 @@
 {"path":"ext/hash/tests/md2.phpt"}
 {"path":"ext/hash/tests/md4.phpt"}
 {"path":"ext/hash/tests/md5.phpt"}
+{"path":"ext/hash/tests/murmurhash3.phpt"}
 {"path":"ext/hash/tests/ripemd128.phpt"}
 {"path":"ext/hash/tests/ripemd160.phpt"}
 {"path":"ext/hash/tests/ripemd256.phpt"}
@@ -31,3 +32,4 @@
 {"path":"ext/hash/tests/sha512-224.phpt"}
 {"path":"ext/hash/tests/sha512-256.phpt"}
 {"path":"ext/hash/tests/sha512.phpt"}
+{"path":"ext/hash/tests/whirlpool.phpt"}

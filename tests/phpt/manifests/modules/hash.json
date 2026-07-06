@@ -4,24 +4,24 @@
   "priority": "Digest, HMAC, and streaming context parity",
   "selected_manifest": "tests/phpt/manifests/modules/hash.selected.jsonl",
   "corpus_count": 82,
-  "selected_count": 33,
-  "pass_count": 33,
+  "selected_count": 35,
+  "pass_count": 35,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 49,
+  "known_failure_count": 47,
   "scope": [
-    "Selected upstream ext/hash rows for md2, md4, md5, sha1, SHA-2/SHA3 digests, HMAC-md5, file hashing, HKDF, PBKDF2, and stream updates",
+    "Selected upstream ext/hash rows for md2, md4, md5, MurmurHash3, sha1, SHA-2/SHA3, Whirlpool digests, HMAC-md5, file hashing, HKDF, PBKDF2, and stream updates",
     "hash_file and hash_hmac_file over local files",
     "raw binary output for file digests",
     "HashContext visibility, HASH_HMAC, hash_init/update/copy/final lifecycle",
     "finalized HashContext rejection",
     "hash_update_file and hash_update_stream digest accumulation",
     "hash_pbkdf2 and hash_hkdf SHA-256 derivation",
-    "MD2, MD4, sha224, SHA3, RIPEMD, sha512/224, and sha512/256 digest/HMAC backends",
-    "Adler-32, CRC32, CRC32B, CRC32C, FNV, and JOAAT digest backends"
+    "MD2, MD4, sha224, SHA3, RIPEMD, Whirlpool, sha512/224, and sha512/256 digest/HMAC backends",
+    "Adler-32, CRC32, CRC32B, CRC32C, FNV, JOAAT, and MurmurHash3 digest backends"
   ],
   "non_scope": ["Full php-src hash algorithm inventory", "HashContext magic serialization/debug-info parity"],
   "target_gates": ["just phpt-dev-module MODULE=hash"],
-  "next_step": "Add remaining hash algorithms such as xxhash, murmur, haval, tiger, snefru, gost, and whirlpool before promoting the full upstream corpus."
+  "next_step": "Add remaining hash algorithms such as xxhash, haval, tiger, snefru, and gost before promoting the full upstream corpus."
 }

@@ -75,6 +75,7 @@ const HASH_ALGOS: &[&str] = &[
     "ripemd160",
     "ripemd256",
     "ripemd320",
+    "whirlpool",
     "adler32",
     "crc32",
     "crc32b",
@@ -84,6 +85,9 @@ const HASH_ALGOS: &[&str] = &[
     "fnv164",
     "fnv1a64",
     "joaat",
+    "murmur3a",
+    "murmur3c",
+    "murmur3f",
 ];
 
 const HASH_HMAC_ALGOS: &[&str] = &[
@@ -105,6 +109,7 @@ const HASH_HMAC_ALGOS: &[&str] = &[
     "ripemd160",
     "ripemd256",
     "ripemd320",
+    "whirlpool",
 ];
 const HASH_HMAC_FLAG: i64 = 1;
 const HASH_CONTEXT_CLASS: &str = "HashContext";
@@ -650,6 +655,9 @@ mod tests {
         assert!(values.iter().any(|value| value.contains("sha256")));
         assert!(values.iter().any(|value| value.contains("adler32")));
         assert!(values.iter().any(|value| value.contains("crc32")));
+        assert!(values.iter().any(|value| value.contains("murmur3a")));
+        assert!(values.iter().any(|value| value.contains("murmur3c")));
+        assert!(values.iter().any(|value| value.contains("murmur3f")));
 
         let Value::Array(hmac_algos) = call("hash_hmac_algos", vec![]) else {
             panic!("expected HMAC algorithm array");
@@ -677,6 +685,7 @@ mod tests {
             "ripemd160",
             "ripemd256",
             "ripemd320",
+            "whirlpool",
         ] {
             assert!(
                 hmac_values.iter().any(|value| value.contains(algorithm)),
@@ -684,6 +693,7 @@ mod tests {
             );
         }
         assert!(!hmac_values.iter().any(|value| value.contains("crc32")));
+        assert!(!hmac_values.iter().any(|value| value.contains("murmur3")));
 
         assert_eq!(
             call(
@@ -925,6 +935,93 @@ mod tests {
                 ]
             ),
             Value::string("09c186d814e523835f522cd8de87b965")
+        );
+    }
+
+    #[test]
+    fn hash_supports_murmur3_vectors() {
+        assert_eq!(
+            call("hash", vec![Value::string("murmur3a"), Value::string("")]),
+            Value::string("00000000")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("murmur3a"), Value::string("foo")]
+            ),
+            Value::string("f6a5c420")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![
+                    Value::string("murmur3c"),
+                    Value::string("Two hashes meet in a bar")
+                ]
+            ),
+            Value::string("8036c2707453c6f37348142be7eaf75c")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("murmur3c"), Value::string("hash me!")]
+            ),
+            Value::string("c7009299985a5627a9280372a9280372")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![
+                    Value::string("murmur3f"),
+                    Value::string("Two hashes meet in a bar")
+                ]
+            ),
+            Value::string("40256ed26fa6ece7785092ed33c8b659")
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("murmur3f"), Value::string("hash me!")]
+            ),
+            Value::string("c43668294e89db0ba5772846e5804467")
+        );
+    }
+
+    #[test]
+    fn hash_supports_whirlpool_vectors_and_hmac() {
+        assert_eq!(
+            call("hash", vec![Value::string("whirlpool"), Value::string("")]),
+            Value::string(
+                "19fa61d75522a4669b44e39c1d2e1726c530232130d407f89afee0964997f7a7\
+                 3e83be698b288febcf88e3e03c4f0757ea8964e59b63d93708b138cc42a66eb3"
+                    .replace(' ', "")
+            )
+        );
+        assert_eq!(
+            call(
+                "hash",
+                vec![Value::string("whirlpool"), Value::string("abc")]
+            ),
+            Value::string(
+                "4e2448a4c6f486bb16b6562c73b4020bf3043e3a731bce721ae1b303d97e6d4c\
+                 7181eebdb6c57e277d0e34957114cbd6c797fc9d95d8b582d225292076d4eef5"
+                    .replace(' ', "")
+            )
+        );
+        assert_eq!(
+            call(
+                "hash_hmac",
+                vec![
+                    Value::string("whirlpool"),
+                    Value::string("payload"),
+                    Value::string("key")
+                ]
+            ),
+            Value::string(
+                "6f2491caf3e6d9f854bc818ec2aa5b2783fca804377192ef59c4402357468195\
+                 7c77af7aee6156ec00b34673ae7ef1090ff7874c822eca828d030c4a15681b66"
+                    .replace(' ', "")
+            )
         );
     }
 
