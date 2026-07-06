@@ -594,13 +594,13 @@ struct RecordShape {
     /// Interned string keys in insertion order, slot-index aligned.
     keys: Vec<PhpString>,
     /// key -> slot index; probe keys compare by symbol identity or bytes.
-    slot_by_key: HashMap<PhpString, u32>,
+    slot_by_key: StableKeyMap<PhpString, u32>,
     /// Memoized `shape + key -> extended shape` transitions. Growing a
     /// string-key map appends one key per insert; without this cache every
     /// insert re-interns and re-hashes the entire key sequence, making
     /// registry-style array growth quadratic in the number of keys.
     #[allow(clippy::mutable_key_type)] // PhpString hash/eq are byte-pure.
-    transitions: std::cell::RefCell<HashMap<PhpString, std::rc::Weak<RecordShape>>>,
+    transitions: std::cell::RefCell<StableKeyMap<PhpString, Rc<RecordShape>>>,
 }
 
 impl std::fmt::Debug for RecordShape {
@@ -613,7 +613,7 @@ impl std::fmt::Debug for RecordShape {
 }
 
 thread_local! {
-    static RECORD_SHAPE_CACHE: std::cell::RefCell<HashMap<u64, Vec<std::rc::Weak<RecordShape>>>> =
+    static RECORD_SHAPE_CACHE: std::cell::RefCell<HashMap<u64, Vec<Rc<RecordShape>>>> =
         std::cell::RefCell::new(HashMap::new());
     static NEXT_RECORD_SHAPE_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
@@ -628,30 +628,24 @@ fn record_shape_sequence_hash(keys: &[PhpString], appended: Option<&PhpString>) 
 }
 
 /// Interns the shape for `keys + appended`, reusing an existing shape with
-/// the same key sequence. The cache holds weak handles so shapes owned by a
-/// single growing array can be extended in place ([`push_entry`]'s record
-/// arm); stale cache entries are pruned on lookup and, because candidates
-/// are re-verified key-by-key, a shape mutated after its cache registration
-/// simply stops matching its old sequence.
+/// the same key sequence. Interned shapes are held strongly (they are never
+/// extended in place; only private, unregistered shapes qualify for
+/// `Rc::get_mut`), so rebuilt-per-request maps reuse their chains instead of
+/// re-interning every key sequence.
 fn record_shape_for(keys: &[PhpString], appended: Option<&PhpString>) -> Rc<RecordShape> {
     let sequence_hash = record_shape_sequence_hash(keys, appended);
     RECORD_SHAPE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let candidates = cache.entry(sequence_hash).or_default();
-        candidates.retain(|shape| shape.strong_count() > 0);
-        if let Some(existing) = candidates
-            .iter()
-            .filter_map(std::rc::Weak::upgrade)
-            .find(|shape| {
-                shape.keys.len() == keys.len() + usize::from(appended.is_some())
-                    && shape
-                        .keys
-                        .iter()
-                        .zip(keys.iter().chain(appended))
-                        .all(|(a, b)| a.same_symbol_or_bytes(b))
-            })
-        {
-            return existing;
+        if let Some(existing) = candidates.iter().find(|shape| {
+            shape.keys.len() == keys.len() + usize::from(appended.is_some())
+                && shape
+                    .keys
+                    .iter()
+                    .zip(keys.iter().chain(appended))
+                    .all(|(a, b)| a.same_symbol_or_bytes(b))
+        }) {
+            return Rc::clone(existing);
         }
         let interned_keys = keys
             .iter()
@@ -663,7 +657,7 @@ fn record_shape_for(keys: &[PhpString], appended: Option<&PhpString>) -> Rc<Reco
             .iter()
             .enumerate()
             .map(|(index, key)| (key.clone(), index as u32))
-            .collect::<HashMap<_, _>>();
+            .collect::<StableKeyMap<_, _>>();
         let shape_id = NEXT_RECORD_SHAPE_ID.with(|next| {
             let id = next.get();
             next.set(id.wrapping_add(1));
@@ -673,9 +667,9 @@ fn record_shape_for(keys: &[PhpString], appended: Option<&PhpString>) -> Rc<Reco
             shape_id,
             keys: interned_keys,
             slot_by_key,
-            transitions: std::cell::RefCell::new(HashMap::new()),
+            transitions: std::cell::RefCell::new(StableKeyMap::default()),
         });
-        candidates.push(Rc::downgrade(&shape));
+        candidates.push(Rc::clone(&shape));
         shape
     })
 }
@@ -707,7 +701,7 @@ fn record_shape_private_extended(shape: &RecordShape, key: &PhpString) -> Rc<Rec
         shape_id,
         keys,
         slot_by_key,
-        transitions: std::cell::RefCell::new(HashMap::new()),
+        transitions: std::cell::RefCell::new(StableKeyMap::default()),
     })
 }
 
@@ -715,28 +709,24 @@ fn record_shape_private_extended(shape: &RecordShape, key: &PhpString) -> Rc<Rec
 /// parent shape so repeated growth of the same key sequence is O(1) per
 /// insert instead of re-interning the whole sequence.
 ///
-/// A memoized target that was later extended in place by its sole owner no
-/// longer represents `parent + key`; the length check rejects it (prefixes
-/// are immutable, shapes only ever append), and a fresh shape is interned.
+/// Interned shapes are immutable (in-place extension is reserved for
+/// private, unregistered shapes), so memoized targets always represent
+/// `parent + key`; the length/last-key check stays as a cheap guard.
 fn record_shape_extended(shape: &Rc<RecordShape>, key: &PhpString) -> Rc<RecordShape> {
-    if let Some(next) = shape
-        .transitions
-        .borrow()
-        .get(key)
-        .and_then(std::rc::Weak::upgrade)
+    if let Some(next) = shape.transitions.borrow().get(key)
         && next.keys.len() == shape.keys.len() + 1
         && next
             .keys
             .last()
             .is_some_and(|last| last.same_symbol_or_bytes(key))
     {
-        return next;
+        return Rc::clone(next);
     }
     let next = record_shape_for(&shape.keys, Some(key));
     shape
         .transitions
         .borrow_mut()
-        .insert(next.keys[shape.keys.len()].clone(), Rc::downgrade(&next));
+        .insert(next.keys[shape.keys.len()].clone(), Rc::clone(&next));
     next
 }
 
@@ -756,7 +746,7 @@ struct RecordArrayStorage {
 #[derive(Clone, Debug)]
 struct MixedArrayStorage {
     entries: Vec<ArrayEntry>,
-    index: HashMap<ArrayKey, usize>,
+    index: StableKeyMap<ArrayKey, usize>,
     next_append_key: Option<i64>,
     internal_pointer: Option<usize>,
     mutation_epoch: u64,
@@ -1196,8 +1186,60 @@ fn packed_key_index(len: usize, key: &ArrayKey) -> Option<usize> {
 /// that never overrides byte equality). Mutating a string always separates
 /// its storage first, so a key already inside a map can never change.
 #[allow(clippy::mutable_key_type)]
-fn build_index(entries: &[ArrayEntry]) -> HashMap<ArrayKey, usize> {
-    let mut index = HashMap::with_capacity(entries.len());
+/// Finishing hasher for keys that already carry a cached stable 64-bit hash
+/// (`PhpString`, `ArrayKey`). The default SipHash re-mixes those 8 bytes per
+/// map operation, which dominates registry-style insert loops; one
+/// multiply-xor round keeps bucket distribution without that cost. The inner
+/// FNV-1a byte hash is unseeded either way, so this changes no collision
+/// resistance properties.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct StableKeyHasher(u64);
+
+impl std::hash::Hasher for StableKeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Fallback for non-u64 writes (i64 int keys write via write_i64).
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        let mixed = value.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+
+    #[inline]
+    fn write_i64(&mut self, value: i64) {
+        self.write_u64(value as u64);
+    }
+}
+
+/// `BuildHasher` for [`StableKeyHasher`].
+#[derive(Clone, Copy, Default)]
+pub(crate) struct StableKeyState;
+
+impl std::hash::BuildHasher for StableKeyState {
+    type Hasher = StableKeyHasher;
+
+    #[inline]
+    fn build_hasher(&self) -> Self::Hasher {
+        StableKeyHasher::default()
+    }
+}
+
+/// Hash map keyed by stable-hash-carrying keys.
+pub(crate) type StableKeyMap<K, V> = HashMap<K, V, StableKeyState>;
+
+#[allow(clippy::mutable_key_type)] // ArrayKey hash/eq are byte-pure.
+fn build_index(entries: &[ArrayEntry]) -> StableKeyMap<ArrayKey, usize> {
+    let mut index = StableKeyMap::with_capacity_and_hasher(entries.len(), StableKeyState);
     for (entry_index, entry) in entries.iter().enumerate() {
         let old = index.insert(entry.key.clone(), entry_index);
         debug_assert!(old.is_none(), "mixed array contains duplicate key");

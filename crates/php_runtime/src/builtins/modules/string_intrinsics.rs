@@ -119,6 +119,37 @@ pub fn trim_ascii_default(string: &PhpString) -> PhpString {
     PhpString::from(&bytes[start..end])
 }
 
+/// Joins all-string array parts with an exact-capacity byte buffer. Returns
+/// `None` when any element is not already a string, letting the caller fall
+/// back to the generic conversion-aware implode.
+#[must_use]
+pub fn implode_string_parts(separator: &PhpString, parts: &PhpArray) -> Option<PhpString> {
+    let mut total = 0usize;
+    let mut count = 0usize;
+    for (_, value) in parts.iter() {
+        let Value::String(part) = value else {
+            return None;
+        };
+        total += part.len();
+        count += 1;
+    }
+    if count == 0 {
+        return Some(PhpString::from_bytes(Vec::new()));
+    }
+    total += separator.len() * (count - 1);
+    let mut joined = Vec::with_capacity(total);
+    for (index, (_, value)) in parts.iter().enumerate() {
+        let Value::String(part) = value else {
+            return None;
+        };
+        if index > 0 {
+            joined.extend_from_slice(separator.as_bytes());
+        }
+        joined.extend_from_slice(part.as_bytes());
+    }
+    Some(PhpString::from_bytes(joined))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::core::split_bytes;

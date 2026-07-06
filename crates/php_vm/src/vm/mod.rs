@@ -32032,26 +32032,45 @@ impl Vm {
     ) -> VmResult {
         if let Some(plan) = plan {
             self.record_counter_dense_method_dispatch_attempt();
-            let fallback_reason = if !owner.ptr_eq(compiled) {
-                Some("not_current_unit")
-            } else if call.resume_continuation.is_some()
+            // Bodies defined in another unit (an include) execute through
+            // that unit's memoized plan; every warmed include already has
+            // one in the thread cache, so cross-unit methods stop dropping
+            // whole bodies to the rich interpreter.
+            let owner_plan_arc;
+            let (unit, active_plan) = if owner.ptr_eq(compiled) {
+                (compiled, plan)
+            } else {
+                match self.get_or_build_dense_execution_plan(owner) {
+                    Ok(owner_plan) => {
+                        owner_plan_arc = owner_plan;
+                        (owner, owner_plan_arc.as_ref())
+                    }
+                    Err(_) => {
+                        self.record_counter_dense_method_dispatch_fallback(
+                            "owner_plan_unavailable",
+                        );
+                        return self.execute_function(owner, function, call, output, stack, state);
+                    }
+                }
+            };
+            let fallback_reason = if call.resume_continuation.is_some()
                 || call.resume_fiber_continuation.is_some()
                 || call.running_generator.is_some()
                 || call.running_fiber.is_some()
             {
                 Some("generator_or_fiber_context")
             } else {
-                match plan.function_plan(function.index()) {
+                match active_plan.function_plan(function.index()) {
                     Some(DenseFunctionPlan::Dense) => {
                         if let (Some(dense_function), Some(ir_function)) = (
-                            plan.unit.functions.get(function.index()),
-                            compiled.unit().functions.get(function.index()),
+                            active_plan.unit.functions.get(function.index()),
+                            unit.unit().functions.get(function.index()),
                         ) {
                             self.record_counter_dense_method_dispatch_hit();
                             return self.execute_bytecode_function(
-                                compiled,
-                                &plan.unit,
-                                Some(plan),
+                                unit,
+                                &active_plan.unit,
+                                Some(active_plan),
                                 dense_function,
                                 ir_function,
                                 function,
@@ -69177,8 +69196,17 @@ enum BuiltinIntrinsicKind {
     ExplodeSingleByte,
     HtmlSpecialCharsDefault,
     IsArray,
+    IsBool,
+    IsFloat,
     IsInt,
+    IsNull,
+    IsObject,
+    IsScalar,
     IsString,
+    PointerCurrent,
+    PointerKey,
+    ArrayKeysAll,
+    ImplodeStringParts,
     StrContains,
     StrEndsWith,
     StrLen,
@@ -69394,6 +69422,48 @@ const INTRINSIC_IN_ARRAY_PARAMS: &[BuiltinIntrinsicParam] = &[
         by_ref: false,
     },
 ];
+const INTRINSIC_POINTER_ARRAY_PARAM: &[BuiltinIntrinsicParam] = &[BuiltinIntrinsicParam {
+    name: "array",
+    type_decl: "array|object",
+    optional: false,
+    by_ref: false,
+}];
+
+const INTRINSIC_ARRAY_KEYS_PARAMS: &[BuiltinIntrinsicParam] = &[
+    BuiltinIntrinsicParam {
+        name: "array",
+        type_decl: "array",
+        optional: false,
+        by_ref: false,
+    },
+    BuiltinIntrinsicParam {
+        name: "filter_value",
+        type_decl: "mixed",
+        optional: true,
+        by_ref: false,
+    },
+    BuiltinIntrinsicParam {
+        name: "strict",
+        type_decl: "bool",
+        optional: true,
+        by_ref: false,
+    },
+];
+const INTRINSIC_IMPLODE_PARAMS: &[BuiltinIntrinsicParam] = &[
+    BuiltinIntrinsicParam {
+        name: "separator",
+        type_decl: "string|array",
+        optional: false,
+        by_ref: false,
+    },
+    BuiltinIntrinsicParam {
+        name: "array",
+        type_decl: "?array",
+        optional: true,
+        by_ref: false,
+    },
+];
+
 const BUILTIN_INTRINSICS: &[BuiltinIntrinsicSpec] = &[
     BuiltinIntrinsicSpec {
         name: "substr",
@@ -69548,6 +69618,87 @@ const BUILTIN_INTRINSICS: &[BuiltinIntrinsicSpec] = &[
         exact_arity: 1,
         kind: BuiltinIntrinsicKind::StrToUpper,
     },
+    BuiltinIntrinsicSpec {
+        name: "is_bool",
+        counter_name: "is_bool",
+        return_type: "bool",
+        params: INTRINSIC_VALUE_PARAM,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::IsBool,
+    },
+    BuiltinIntrinsicSpec {
+        name: "is_float",
+        counter_name: "is_float",
+        return_type: "bool",
+        params: INTRINSIC_VALUE_PARAM,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::IsFloat,
+    },
+    BuiltinIntrinsicSpec {
+        name: "is_null",
+        counter_name: "is_null",
+        return_type: "bool",
+        params: INTRINSIC_VALUE_PARAM,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::IsNull,
+    },
+    BuiltinIntrinsicSpec {
+        name: "is_object",
+        counter_name: "is_object",
+        return_type: "bool",
+        params: INTRINSIC_VALUE_PARAM,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::IsObject,
+    },
+    BuiltinIntrinsicSpec {
+        name: "is_scalar",
+        counter_name: "is_scalar",
+        return_type: "bool",
+        params: INTRINSIC_VALUE_PARAM,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::IsScalar,
+    },
+    BuiltinIntrinsicSpec {
+        name: "current",
+        counter_name: "current_array_pointer",
+        return_type: "mixed",
+        params: INTRINSIC_POINTER_ARRAY_PARAM,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::PointerCurrent,
+    },
+    BuiltinIntrinsicSpec {
+        name: "key",
+        counter_name: "key_array_pointer",
+        return_type: "int|string|null",
+        params: INTRINSIC_POINTER_ARRAY_PARAM,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::PointerKey,
+    },
+    BuiltinIntrinsicSpec {
+        name: "array_keys",
+        counter_name: "array_keys_all",
+        return_type: "array",
+        params: INTRINSIC_ARRAY_KEYS_PARAMS,
+        min_arity: 1,
+        exact_arity: 1,
+        kind: BuiltinIntrinsicKind::ArrayKeysAll,
+    },
+    BuiltinIntrinsicSpec {
+        name: "implode",
+        counter_name: "implode_string_parts",
+        return_type: "string",
+        params: INTRINSIC_IMPLODE_PARAMS,
+        min_arity: 2,
+        exact_arity: 2,
+        kind: BuiltinIntrinsicKind::ImplodeStringParts,
+    },
 ];
 
 fn fast_builtin_stub_result_for_spec(
@@ -69570,6 +69721,39 @@ fn fast_builtin_stub_result_for_spec(
             Some(Value::Bool(matches!(value, Value::Array(_))))
         }
         (BuiltinIntrinsicKind::IsInt, [value]) => Some(Value::Bool(matches!(value, Value::Int(_)))),
+        (BuiltinIntrinsicKind::IsBool, [value]) => {
+            Some(Value::Bool(matches!(value, Value::Bool(_))))
+        }
+        (BuiltinIntrinsicKind::IsFloat, [value]) => {
+            Some(Value::Bool(matches!(value, Value::Float(_))))
+        }
+        (BuiltinIntrinsicKind::IsNull, [value]) => Some(Value::Bool(matches!(value, Value::Null))),
+        (BuiltinIntrinsicKind::IsObject, [value]) => Some(Value::Bool(matches!(
+            value,
+            Value::Object(_) | Value::Fiber(_) | Value::Generator(_) | Value::Callable(_)
+        ))),
+        (BuiltinIntrinsicKind::IsScalar, [value]) => Some(Value::Bool(matches!(
+            value,
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_)
+        ))),
+        (BuiltinIntrinsicKind::PointerCurrent, [Value::Array(array)]) => {
+            Some(array.pointer_value().unwrap_or(Value::Bool(false)))
+        }
+        (BuiltinIntrinsicKind::PointerKey, [Value::Array(array)]) => {
+            Some(array.pointer_key().map_or(Value::Null, array_key_to_value))
+        }
+        (BuiltinIntrinsicKind::ArrayKeysAll, [Value::Array(array)]) => {
+            let keys = array
+                .iter()
+                .map(|(key, _)| array_key_to_value(key))
+                .collect::<Vec<_>>();
+            Some(Value::Array(PhpArray::from_packed(keys)))
+        }
+        (
+            BuiltinIntrinsicKind::ImplodeStringParts,
+            [Value::String(separator), Value::Array(parts)],
+        ) => php_runtime::builtins::string_intrinsics::implode_string_parts(separator, parts)
+            .map(Value::String),
         (BuiltinIntrinsicKind::IsString, [value]) => {
             Some(Value::Bool(matches!(value, Value::String(_))))
         }
@@ -69746,10 +69930,31 @@ fn builtin_intrinsic_type_fallback(
         )
         | (
             BuiltinIntrinsicKind::IsArray
+            | BuiltinIntrinsicKind::IsBool
+            | BuiltinIntrinsicKind::IsFloat
             | BuiltinIntrinsicKind::IsInt
+            | BuiltinIntrinsicKind::IsNull
+            | BuiltinIntrinsicKind::IsObject
+            | BuiltinIntrinsicKind::IsScalar
             | BuiltinIntrinsicKind::IsString,
             [_],
+        )
+        | (
+            BuiltinIntrinsicKind::PointerCurrent
+            | BuiltinIntrinsicKind::PointerKey
+            | BuiltinIntrinsicKind::ArrayKeysAll,
+            [Value::Array(_)],
         ) => None,
+        (BuiltinIntrinsicKind::ImplodeStringParts, [Value::String(_), Value::Array(parts)]) => {
+            if parts
+                .iter()
+                .all(|(_, value)| matches!(value, Value::String(_)))
+            {
+                None
+            } else {
+                Some("non_string_parts")
+            }
+        }
         (BuiltinIntrinsicKind::ExplodeSingleByte, [Value::String(separator), Value::String(_)]) => {
             match separator.len() {
                 0 => Some("empty_separator"),
