@@ -26,6 +26,11 @@
 {"path":"ext/standard/tests/strings/parse_str_memory_error.phpt"}
 {"path":"ext/standard/tests/strings/htmlspecialchars_basic.phpt"}
 {"path":"ext/standard/tests/strings/htmlspecialchars_decode_basic.phpt"}
+{"path":"ext/standard/tests/strings/htmlspecialchars_decode_variation4.phpt"}
+{"path":"ext/standard/tests/strings/htmlspecialchars_decode_variation5.phpt"}
+{"path":"ext/standard/tests/strings/htmlspecialchars.phpt"}
+{"path":"ext/standard/tests/strings/html_entity_decode2.phpt"}
+{"path":"ext/standard/tests/strings/html_entity_decode3.phpt"}
 {"path":"tests/phpt/generated/standard.url-html/url-encode-decode-smoke.phpt"}
 {"path":"tests/phpt/generated/standard.url-html/http-build-query-smoke.phpt"}
 {"path":"tests/phpt/generated/standard.url-html/htmlspecialchars-htmlentities-smoke.phpt"}

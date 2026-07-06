@@ -204,6 +204,9 @@ pub(in crate::builtins::modules) fn hex_nibble(byte: u8) -> Option<u8> {
 /// kinds (`ENT_QUOTES`); substitution/doctype bits are not modeled byte-wise.
 pub(in crate::builtins::modules) const HTML_ESCAPE_DEFAULT_FLAGS: i64 = 3;
 pub(in crate::builtins::modules) const PHP_QUERY_RFC3986: i64 = 2;
+const ENT_XML1: i64 = 16;
+const ENT_XHTML: i64 = 32;
+const ENT_HTML5: i64 = 48;
 
 pub(in crate::builtins::modules) fn html_escape_with_options(
     bytes: &[u8],
@@ -278,14 +281,135 @@ fn valid_html_entity_len(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-pub(in crate::builtins::modules) fn html_decode(text: &str) -> Vec<u8> {
-    text.replace("&quot;", "\"")
-        .replace("&#039;", "'")
-        .replace("&#x27;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .into_bytes()
+pub(in crate::builtins::modules) fn html_entity_decode_with_flags(
+    text: &str,
+    flags: i64,
+) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let remaining = &bytes[index..];
+        let decoded = if remaining.starts_with(b"&lt;") {
+            Some((b"<".as_slice(), 4))
+        } else if remaining.starts_with(b"&gt;") {
+            Some((b">".as_slice(), 4))
+        } else if remaining.starts_with(b"&amp;") {
+            Some((b"&".as_slice(), 5))
+        } else if flags & 2 != 0 && remaining.starts_with(b"&quot;") {
+            Some((b"\"".as_slice(), 6))
+        } else if flags & 1 != 0 && remaining.starts_with(b"&#039;") {
+            Some((b"'".as_slice(), 6))
+        } else if flags & 1 != 0 && remaining.starts_with(b"&#x27;") {
+            Some((b"'".as_slice(), 6))
+        } else if flags & 1 != 0
+            && html_document_type(flags) != HtmlDocumentType::Html401
+            && remaining.starts_with(b"&apos;")
+        {
+            Some((b"'".as_slice(), 6))
+        } else if remaining.starts_with(b"&#")
+            && let Some((decoded, len)) = decode_numeric_html_entity(remaining, flags)
+        {
+            let mut buffer = [0_u8; 4];
+            output.extend_from_slice(decoded.encode_utf8(&mut buffer).as_bytes());
+            index += len;
+            continue;
+        } else {
+            None
+        };
+        if let Some((entity, len)) = decoded {
+            output.extend_from_slice(entity);
+            index += len;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    output
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HtmlDocumentType {
+    Html401,
+    Xml1,
+    Xhtml,
+    Html5,
+}
+
+fn html_document_type(flags: i64) -> HtmlDocumentType {
+    match flags & ENT_HTML5 {
+        ENT_XML1 => HtmlDocumentType::Xml1,
+        ENT_XHTML => HtmlDocumentType::Xhtml,
+        ENT_HTML5 => HtmlDocumentType::Html5,
+        _ => HtmlDocumentType::Html401,
+    }
+}
+
+fn decode_numeric_html_entity(bytes: &[u8], flags: i64) -> Option<(char, usize)> {
+    debug_assert_eq!(bytes.first(), Some(&b'&'));
+    let semicolon = php_source::byte_kernel::find_byte(bytes, b';')?;
+    let entity = &bytes[1..semicolon];
+    let codepoint = if let Some(decimal) = entity.strip_prefix(b"#")
+        && !decimal.is_empty()
+        && php_source::byte_kernel::all_ascii_digits(decimal)
+    {
+        parse_entity_codepoint(decimal, 10)?
+    } else if let Some(hex) = entity
+        .strip_prefix(b"#x")
+        .or_else(|| entity.strip_prefix(b"#X"))
+        && !hex.is_empty()
+        && hex.iter().all(u8::is_ascii_hexdigit)
+    {
+        parse_entity_codepoint(hex, 16)?
+    } else {
+        return None;
+    };
+    if codepoint == 0x27 && flags & 1 == 0 {
+        return None;
+    }
+    let document_type = html_document_type(flags);
+    if !html_entity_codepoint_allowed(codepoint, document_type) {
+        return None;
+    }
+    Some((char::from_u32(codepoint)?, semicolon + 1))
+}
+
+fn parse_entity_codepoint(bytes: &[u8], radix: u32) -> Option<u32> {
+    let mut value = 0_u32;
+    for byte in bytes {
+        value = value
+            .checked_mul(radix)?
+            .checked_add((*byte as char).to_digit(radix)?)?;
+    }
+    Some(value)
+}
+
+fn html_entity_codepoint_allowed(codepoint: u32, document_type: HtmlDocumentType) -> bool {
+    if codepoint > 0x10ffff || (0xd800..=0xdfff).contains(&codepoint) {
+        return false;
+    }
+    match document_type {
+        HtmlDocumentType::Html401 => {
+            matches!(codepoint, 0x09 | 0x0a | 0x0d)
+                || (0x20..=0x7e).contains(&codepoint)
+                || codepoint >= 0xa0
+        }
+        HtmlDocumentType::Xml1 | HtmlDocumentType::Xhtml => {
+            matches!(codepoint, 0x09 | 0x0a | 0x0d)
+                || (0x20..=0xd7ff).contains(&codepoint)
+                || (0xe000..=0xfffd).contains(&codepoint)
+                || (0x10000..=0x10ffff).contains(&codepoint)
+        }
+        HtmlDocumentType::Html5 => {
+            matches!(codepoint, 0x09 | 0x0a | 0x0c)
+                || (0x20..=0x7e).contains(&codepoint)
+                || (codepoint >= 0xa0 && !is_html5_noncharacter(codepoint))
+        }
+    }
+}
+
+fn is_html5_noncharacter(codepoint: u32) -> bool {
+    (0xfdd0..=0xfdef).contains(&codepoint) || matches!(codepoint & 0xffff, 0xfffe | 0xffff)
 }
 
 pub(in crate::builtins::modules) fn htmlspecialchars_decode_with_flags(

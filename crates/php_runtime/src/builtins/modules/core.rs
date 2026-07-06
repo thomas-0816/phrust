@@ -30,8 +30,9 @@ use crate::{
 };
 pub(in crate::builtins::modules) use encoding::{
     HTML_ESCAPE_DEFAULT_FLAGS, PHP_QUERY_RFC3986, build_query_pairs, format_array_values,
-    hash_digest_bytes, hex_decode, hex_encode, hex_nibble, hmac_digest_bytes, html_decode,
-    html_escape_with_options, htmlspecialchars_decode_with_flags, url_decode, url_encode,
+    hash_digest_bytes, hex_decode, hex_encode, hex_nibble, hmac_digest_bytes,
+    html_entity_decode_with_flags, html_escape_with_options, htmlspecialchars_decode_with_flags,
+    url_decode, url_encode,
 };
 use http::{
     builtin_header, builtin_header_remove, builtin_headers_list, builtin_headers_sent,
@@ -10994,6 +10995,54 @@ mod tests {
                 &mut output
             ),
             Value::string("<a&\"'>")
+        );
+        assert_eq!(
+            call(
+                "html_entity_decode",
+                vec![
+                    Value::string("&apos;"),
+                    Value::Int(3),
+                    Value::string("UTF-8")
+                ],
+                &mut output
+            ),
+            Value::string("&apos;")
+        );
+        assert_eq!(
+            call(
+                "html_entity_decode",
+                vec![
+                    Value::string("&apos;"),
+                    Value::Int(3 | 48),
+                    Value::string("UTF-8")
+                ],
+                &mut output
+            ),
+            Value::string("'")
+        );
+        assert_eq!(
+            call(
+                "html_entity_decode",
+                vec![
+                    Value::string("&#x09;|&#x0B;|&#x0D;|&#xD800;"),
+                    Value::Int(3),
+                    Value::string("UTF-8")
+                ],
+                &mut output
+            ),
+            Value::string("\t|&#x0B;|\r|&#xD800;")
+        );
+        assert_eq!(
+            call(
+                "html_entity_decode",
+                vec![
+                    Value::string("&#x0C;|&#x0D;|&#xFDD0;|&#x2FFFF;"),
+                    Value::Int(3 | 48),
+                    Value::string("UTF-8")
+                ],
+                &mut output
+            ),
+            Value::string("\x0c|&#x0D;|&#xFDD0;|&#x2FFFF;")
         );
         assert_eq!(
             call("htmlentities", vec![Value::string("<a&>")], &mut output),

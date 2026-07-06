@@ -1236,8 +1236,12 @@ pub(in crate::builtins::modules) fn builtin_html_entity_decode(
             "builtin html_entity_decode expects one to three argument(s)",
         ));
     }
-    Ok(Value::string(html_decode(
+    let flags = args.get(1).map_or(Ok(HTML_ESCAPE_DEFAULT_FLAGS), |value| {
+        int_arg("html_entity_decode", value)
+    })?;
+    Ok(Value::string(html_entity_decode_with_flags(
         &string_arg("html_entity_decode", &args[0])?.to_string_lossy(),
+        flags,
     )))
 }
 

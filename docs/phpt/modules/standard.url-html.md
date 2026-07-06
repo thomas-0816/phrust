@@ -3,7 +3,7 @@
 - Priority: 16.8
 - Selected manifest: `tests/phpt/manifests/modules/standard.url-html.selected.jsonl`
 - Derived corpus baseline: 1 PASS, 0 SKIP, 63 FAIL, 5 BORK from 69 path-filtered candidates
-- focused gate: 31 PASS, 0 FAIL, 0 BORK
+- focused gate: 36 PASS, 0 FAIL, 0 BORK
 
 ## Scope
 
@@ -15,13 +15,14 @@
   component diagnostics, and `PHP_URL_*` constant ordering
 - `parse_str` basics, custom `arg_separator.input`, malformed key recovery, and
   invalid percent preservation
-- Default `htmlspecialchars` / `htmlentities` coverage and quote-flag-sensitive
-  `htmlspecialchars_decode`
+- Default `htmlspecialchars` / `htmlentities` coverage, quote-flag-sensitive
+  `htmlspecialchars_decode`, and selected `html_entity_decode` document-type
+  and numeric entity filtering
 
 ## Non-Scope
 
 - Complete entity tables
-- Non-default charsets and flags
+- Non-default charsets beyond selected UTF-8 coverage
 - Object query encoding
 - `parse_url` edge cases beyond the basic upstream corpus
 - Remaining `parse_str` edge cases and URL/HTML upstream corpus
@@ -56,6 +57,11 @@
 - `ext/standard/tests/strings/parse_str_memory_error.phpt`
 - `ext/standard/tests/strings/htmlspecialchars_basic.phpt`
 - `ext/standard/tests/strings/htmlspecialchars_decode_basic.phpt`
+- `ext/standard/tests/strings/htmlspecialchars_decode_variation4.phpt`
+- `ext/standard/tests/strings/htmlspecialchars_decode_variation5.phpt`
+- `ext/standard/tests/strings/htmlspecialchars.phpt`
+- `ext/standard/tests/strings/html_entity_decode2.phpt`
+- `ext/standard/tests/strings/html_entity_decode3.phpt`
 - `tests/phpt/generated/standard.url-html/url-encode-decode-smoke.phpt`
 - `tests/phpt/generated/standard.url-html/http-build-query-smoke.phpt`
 - `tests/phpt/generated/standard.url-html/htmlspecialchars-htmlentities-smoke.phpt`
@@ -90,12 +96,16 @@
   selected upstream query fixture, root dot/space normalization, invalid
   percent escape preservation, and the selected memory-safety regression.
 - `htmlspecialchars_decode()` now honors `ENT_COMPAT`, `ENT_NOQUOTES`, and
-  `ENT_QUOTES` quote decoding for the selected upstream basic PHPT.
-- Latest focused target run: PASS, 31 selected PHPTs.
+  `ENT_QUOTES` quote decoding for the selected upstream basic and variation
+  PHPTs.
+- `html_entity_decode()` now honors quote and document-type flags for `&apos;`
+  and decodes numeric entities only when the selected HTML 4.01, XHTML, HTML5,
+  XML 1.0, and default UTF-8 contracts allow the code point.
+- Latest focused target run: PASS, 36 selected PHPTs.
 
 ## Known Gaps
 
-- Full entity-table, charset, broader flag, object-query/property visibility,
+- Full entity-table, charset, object-query/property visibility,
   `parse_url` edge-case, remaining `parse_str`, including the separate startup
   `filter.default` deprecation-output mismatch in `parse_str_basic3.phpt`, and
   URL edge-case behavior remains outside the selected focused gate.
