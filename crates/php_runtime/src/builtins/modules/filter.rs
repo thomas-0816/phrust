@@ -78,6 +78,7 @@ const FILTER_FLAG_ALLOW_THOUSAND: i64 = 8_192;
 const FILTER_FLAG_ALLOW_SCIENTIFIC: i64 = 16_384;
 const FILTER_FLAG_IPV4: i64 = 1_048_576;
 const FILTER_FLAG_IPV6: i64 = 2_097_152;
+const FILTER_FLAG_HOSTNAME: i64 = 1_048_576;
 const FILTER_FLAG_PATH_REQUIRED: i64 = 262_144;
 const FILTER_FLAG_QUERY_REQUIRED: i64 = 524_288;
 
@@ -114,6 +115,7 @@ struct FilterOptions {
     max_range_float: Option<f64>,
     callback: Option<String>,
     decimal: Option<String>,
+    separator: Option<String>,
     regexp: Option<PhpString>,
 }
 
@@ -127,6 +129,7 @@ impl Default for FilterOptions {
             max_range_float: None,
             callback: None,
             decimal: None,
+            separator: None,
             regexp: None,
         }
     }
@@ -231,6 +234,8 @@ fn apply_filter_scalar(
         FILTER_VALIDATE_REGEXP => validate_regexp(context, name, value, options, failure),
         FILTER_VALIDATE_URL => validate_url(name, value, options.flags, failure),
         FILTER_VALIDATE_IP => validate_ip(name, value, options.flags, failure),
+        FILTER_VALIDATE_MAC => validate_mac(name, value, options, failure),
+        FILTER_VALIDATE_DOMAIN => validate_domain(name, value, options.flags, failure),
         FILTER_VALIDATE_BOOL => validate_bool(name, value, options.flags, failure),
         FILTER_SANITIZE_STRING => sanitize_string(name, value, options.flags),
         FILTER_SANITIZE_ENCODED => sanitize_encoded(name, value, options.flags),
@@ -676,6 +681,10 @@ fn parse_filter_option_payload(
             if let Some(value) = array.get(&regexp_key) {
                 options.regexp = Some(string_arg(name, value)?);
             }
+            let separator_key = ArrayKey::String(PhpString::from_test_str("separator"));
+            if let Some(value) = array.get(&separator_key) {
+                options.separator = Some(string_arg(name, value)?.to_string_lossy());
+            }
         }
         Value::String(value) => {
             options.callback = Some(value.to_string_lossy());
@@ -802,6 +811,105 @@ fn validate_ip(name: &str, value: &Value, flags: i64, failure: Value) -> Builtin
         Ok(_) => Ok(failure),
         Err(_) => Ok(failure),
     }
+}
+
+fn validate_mac(
+    name: &str,
+    value: &Value,
+    options: &FilterOptions,
+    failure: Value,
+) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    let bytes = input.as_bytes();
+    let Some((tokens, token_len, separator)) = mac_shape(bytes) else {
+        return Ok(failure);
+    };
+    if let Some(expected) = options.separator.as_deref() {
+        let mut chars = expected.chars();
+        let Some(expected_separator) = chars.next() else {
+            return Err(filter_value_error(format!(
+                "{name}(): \"separator\" option must be one character long"
+            )));
+        };
+        if chars.next().is_some() {
+            return Err(filter_value_error(format!(
+                "{name}(): \"separator\" option must be one character long"
+            )));
+        }
+        if !expected_separator.is_ascii() || separator != expected_separator as u8 {
+            return Ok(failure);
+        }
+    }
+    for token in 0..tokens {
+        let offset = token * (token_len + 1);
+        if token < tokens - 1 && bytes[offset + token_len] != separator {
+            return Ok(failure);
+        }
+        if !bytes[offset..offset + token_len]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Ok(failure);
+        }
+    }
+    Ok(Value::String(input))
+}
+
+fn mac_shape(bytes: &[u8]) -> Option<(usize, usize, u8)> {
+    match bytes {
+        [_, _, b'-', ..] if bytes.len() == 17 => Some((6, 2, b'-')),
+        [_, _, b':', ..] if bytes.len() == 17 => Some((6, 2, b':')),
+        [_, _, _, _, b'.', ..] if bytes.len() == 14 => Some((3, 4, b'.')),
+        _ => None,
+    }
+}
+
+fn validate_domain(name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    if is_valid_domain(input.as_bytes(), flags & FILTER_FLAG_HOSTNAME != 0) {
+        Ok(Value::String(input))
+    } else {
+        Ok(failure)
+    }
+}
+
+fn is_valid_domain(bytes: &[u8], hostname: bool) -> bool {
+    let bytes = bytes.strip_suffix(b".").unwrap_or(bytes);
+    if bytes.is_empty() || bytes.len() > 253 || bytes[0] == b'.' {
+        return false;
+    }
+    if hostname && !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+
+    let mut label_len = 1usize;
+    for index in 0..bytes.len() {
+        let byte = bytes[index];
+        if byte == b'.' {
+            if bytes.get(index + 1) == Some(&b'.') {
+                return false;
+            }
+            if hostname
+                && (!bytes[index - 1].is_ascii_alphanumeric()
+                    || !bytes.get(index + 1).is_some_and(u8::is_ascii_alphanumeric))
+            {
+                return false;
+            }
+            label_len = 1;
+        } else {
+            if label_len > 63 {
+                return false;
+            }
+            if hostname
+                && (byte != b'-' || index + 1 == bytes.len())
+                && !byte.is_ascii_alphanumeric()
+            {
+                return false;
+            }
+            label_len += 1;
+        }
+    }
+    true
 }
 
 fn validate_bool(_name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
@@ -1299,6 +1407,193 @@ mod tests {
     }
 
     #[test]
+    fn filter_validate_mac_respects_separator_option() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("01-23-45-67-89-ab"), Value::Int(FILTER_VALIDATE_MAC),],
+            ),
+            string("01-23-45-67-89-ab")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("01:23:45:67:89:AB"), Value::Int(FILTER_VALIDATE_MAC),],
+            ),
+            string("01:23:45:67:89:AB")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("0123.4567.89ab"), Value::Int(FILTER_VALIDATE_MAC),],
+            ),
+            string("0123.4567.89ab")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("01:23:45-67:89:aB"), Value::Int(FILTER_VALIDATE_MAC),],
+            ),
+            Value::Bool(false)
+        );
+
+        let mut matching_payload = PhpArray::new();
+        matching_payload.insert(string_key("separator"), string("-"));
+        let mut matching_options = PhpArray::new();
+        matching_options.insert(string_key("options"), Value::Array(matching_payload));
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("01-23-45-67-89-ab"),
+                    Value::Int(FILTER_VALIDATE_MAC),
+                    Value::Array(matching_options),
+                ],
+            ),
+            string("01-23-45-67-89-ab")
+        );
+
+        let mut mismatch_payload = PhpArray::new();
+        mismatch_payload.insert(string_key("separator"), string(":"));
+        let mut mismatch_options = PhpArray::new();
+        mismatch_options.insert(string_key("options"), Value::Array(mismatch_payload));
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("01-23-45-67-89-ab"),
+                    Value::Int(FILTER_VALIDATE_MAC),
+                    Value::Array(mismatch_options),
+                ],
+            ),
+            Value::Bool(false)
+        );
+
+        let mut invalid_payload = PhpArray::new();
+        invalid_payload.insert(string_key("separator"), string("--"));
+        let mut invalid_options = PhpArray::new();
+        invalid_options.insert(string_key("options"), Value::Array(invalid_payload));
+        let error = call_error(
+            "filter_var",
+            vec![
+                string("01-23-45-67-89-ab"),
+                Value::Int(FILTER_VALIDATE_MAC),
+                Value::Array(invalid_options),
+            ],
+        );
+        assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_VALUE");
+        assert_eq!(
+            error.message(),
+            "filter_var(): \"separator\" option must be one character long"
+        );
+    }
+
+    #[test]
+    fn filter_validate_domain_respects_hostname_flag() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("example.com"),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_FLAG_HOSTNAME),
+                ],
+            ),
+            string("example.com")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("cont-ains.h-yph-en-s.com"),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_FLAG_HOSTNAME),
+                ],
+            ),
+            string("cont-ains.h-yph-en-s.com")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string(
+                        "kDTvHt1PPDgX5EiP2MwiXjcoWNOhhTuOVAUWJ3TmpBYCC9QoJV114LMYrV3Zl58.kDTvHt1PPDgX5EiP2MwiXjcoWNOhhTuOVAUWJ3TmpBYCC9QoJV114LMYrV3Zl58.kDTvHt1PPDgX5EiP2MwiXjcoWNOhhTuOVAUWJ3TmpBYCC9QoJV114LMYrV3Zl58.CQ1oT5Uq3jJt6Uhy3VH9u3Gi5YhfZCvZVKgLlaXNFhVKB1zJxvunR7SJa.com."
+                    ),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_FLAG_HOSTNAME),
+                ],
+            ),
+            string(
+                "kDTvHt1PPDgX5EiP2MwiXjcoWNOhhTuOVAUWJ3TmpBYCC9QoJV114LMYrV3Zl58.kDTvHt1PPDgX5EiP2MwiXjcoWNOhhTuOVAUWJ3TmpBYCC9QoJV114LMYrV3Zl58.kDTvHt1PPDgX5EiP2MwiXjcoWNOhhTuOVAUWJ3TmpBYCC9QoJV114LMYrV3Zl58.CQ1oT5Uq3jJt6Uhy3VH9u3Gi5YhfZCvZVKgLlaXNFhVKB1zJxvunR7SJa.com."
+            )
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string(
+                        "toolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolong.com"
+                    ),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_FLAG_HOSTNAME),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("a.-bc.com"),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_FLAG_HOSTNAME),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("ab.cd-.com"),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_FLAG_HOSTNAME),
+                ],
+            ),
+            Value::Bool(false)
+        );
+
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("_example.com"), Value::Int(FILTER_VALIDATE_DOMAIN),],
+            ),
+            string("_example.com")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("_example.com"),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                    Value::Int(FILTER_FLAG_HOSTNAME),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("test._example.com"),
+                    Value::Int(FILTER_VALIDATE_DOMAIN),
+                ],
+            ),
+            string("test._example.com")
+        );
+    }
+
+    #[test]
     fn filter_validate_int_accepts_php_hex_and_octal_flags() {
         assert_eq!(
             call(
@@ -1767,17 +2062,24 @@ mod tests {
     }
 
     #[test]
-    fn known_unimplemented_filter_ids_fail_without_unknown_filter_warning() {
-        assert_eq!(
-            call(
-                "filter_var",
-                vec![
-                    string("example.com"),
-                    Value::Int(FILTER_VALIDATE_DOMAIN),
-                    Value::Int(FILTER_NULL_ON_FAILURE),
-                ],
-            ),
-            Value::Null
-        );
+    fn filter_validate_domain_does_not_emit_unknown_filter_warning() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let result = ENTRIES
+            .iter()
+            .find(|entry| entry.name() == "filter_var")
+            .expect("filter_var entry")
+            .function()(
+            &mut context,
+            vec![
+                string("example.com"),
+                Value::Int(FILTER_VALIDATE_DOMAIN),
+                Value::Int(FILTER_NULL_ON_FAILURE),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("filter_var succeeds");
+        assert_eq!(result, string("example.com"));
+        assert!(context.take_diagnostics().is_empty());
     }
 }

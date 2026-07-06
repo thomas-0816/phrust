@@ -4,13 +4,13 @@
   "priority": "Validation and sanitization MVP",
   "selected_manifest": "tests/phpt/manifests/modules/filter.selected.jsonl",
   "corpus_count": 114,
-  "selected_count": 73,
-  "pass_count": 70,
+  "selected_count": 75,
+  "pass_count": 72,
   "xfail_count": 3,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 44,
+  "known_failure_count": 42,
   "scope": [
     "WordPress-relevant scalar validation and sanitization",
     "Common filter metadata and array helper paths",
@@ -39,10 +39,12 @@
     "FILTER_SANITIZE_STRING strip-high, strip-low, and tag-stripping combinations covered by promoted upstream rows",
     "FILTER_SANITIZE_STRIPPED nested tag-depth stripping covered by promoted upstream rows",
     "FILTER_VALIDATE_INT request input and array/scalar flag combinations covered by promoted upstream rows",
-    "Additional URL, email, and scalar filter regression rows already covered by the selected implementation"
+    "Additional URL, email, and scalar filter regression rows already covered by the selected implementation",
+    "FILTER_VALIDATE_MAC hyphen, colon, dotted EUI-64, and separator-option validation",
+    "FILTER_VALIDATE_DOMAIN hostname flag, trailing-dot, label length, and underscore semantics"
   ],
   "non_scope": [
-    "Remaining 44 ext/filter upstream rows",
+    "Remaining 42 ext/filter upstream rows",
     "Full PHP filter option matrix",
     "VM-dispatched user callback and closure filter execution",
     "Remaining exact filter flag behavior matrix"
@@ -51,5 +53,5 @@
     "cargo test -p php_server server_filter_input_array_reads_query_snapshot",
     "just phpt-dev-module MODULE=filter"
   ],
-  "next_step": "Close remaining PHP validator quirks, request input edge cases, exact filter flag behavior, and VM-dispatched callback filters before the next upstream promotion."
+  "next_step": "Close remaining PHP validator quirks outside the promoted MAC/domain rows, request input edge cases, exact filter flag behavior, and VM-dispatched callback filters before the next upstream promotion."
 }

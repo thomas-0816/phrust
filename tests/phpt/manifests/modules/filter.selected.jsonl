@@ -40,6 +40,8 @@
 {"path":"ext/filter/tests/047.phpt"}
 {"path":"ext/filter/tests/048.phpt"}
 {"path":"ext/filter/tests/054.phpt"}
+{"path":"ext/filter/tests/055.phpt"}
+{"path":"ext/filter/tests/056.phpt"}
 {"path":"ext/filter/tests/059.phpt"}
 {"path":"ext/filter/tests/061.phpt"}
 {"path":"ext/filter/tests/CVE-2007-1900.phpt"}

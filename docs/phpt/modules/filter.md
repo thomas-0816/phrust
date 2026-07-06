@@ -2,17 +2,17 @@
 
 - Strategy: validation and sanitization MVP
 - Selected manifest: `tests/phpt/manifests/modules/filter.selected.jsonl`
-- Selected target close gate: 70 PASS, 3 XFAIL, 0 SKIP, 0 FAIL, 0 BORK from
-  73 selected fixtures
-- Reference close gate: 73 SKIP because the sibling oracle binary does not load
+- Selected target close gate: 72 PASS, 3 XFAIL, 0 SKIP, 0 FAIL, 0 BORK from
+  75 selected fixtures
+- Reference close gate: 75 SKIP because the sibling oracle binary does not load
   ext/filter
-- Upstream corpus snapshot before the selected gate: 70 PASS, 3 XFAIL, 41 FAIL,
+- Full upstream target sweep: 69 PASS, 3 XFAIL, 42 FAIL,
   0 BORK from 114 corpus candidates
 - Selected fixtures:
   - `tests/phpt/generated/filter/basic.phpt`
   - `tests/phpt/generated/filter/arrays.phpt`
   - `tests/phpt/generated/filter/options-callback.phpt`
-  - 70 target-green upstream rows from `ext/filter/tests`
+  - 72 selected upstream rows from `ext/filter/tests`
 
 ## Implemented Surface
 
@@ -44,6 +44,17 @@ failure value when object string conversion is invalid.
 `options["regexp"]` array entry, returns the original string on match, returns
 the filter failure value on mismatch or invalid pattern, and raises the
 PHP-compatible `ValueError` message when the regexp option is missing.
+
+`FILTER_VALIDATE_MAC` accepts the promoted hyphen, colon, and dotted EUI-64
+forms, rejects mixed separators and non-hex tokens, honors
+`options["separator"]`, and raises the PHP-compatible `ValueError` message for
+empty or multi-character separators.
+
+`FILTER_VALIDATE_DOMAIN` accepts the promoted hostname and non-hostname domain
+forms, ignores a final root-label dot for length validation, enforces the
+253-byte total domain limit and 63-byte label limit, applies
+`FILTER_FLAG_HOSTNAME` alphanumeric edge rules, and preserves PHP's non-hostname
+underscore acceptance.
 
 `FILTER_VALIDATE_FLOAT` supports the promoted custom `decimal` option,
 including comma decimal parsing, rejection when the input still uses `.`, and
@@ -103,11 +114,11 @@ remaining request input edge cases, VM-dispatched user function and closure
 callbacks, throw-on-failure mode, and locale-specific numeric parsing remain
 out of scope.
 
-The full upstream target sweep measured 70 PASS, 3 XFAIL, and 41 FAIL from 114
+The full upstream target sweep measured 69 PASS, 3 XFAIL, and 42 FAIL from 114
 `ext/filter/tests` rows. The remaining unpromoted rows are dominated by
 stricter PHP URL/email/IP quirks, remaining filter flag behavior, callback
-dispatch, deeper request/superglobal edge cases, array-to-string conversion behavior,
-and exact sanitizer edge-case behavior.
+dispatch, deeper request/superglobal edge cases, array-to-string conversion
+behavior, and exact sanitizer edge-case behavior.
 
 ## Target Gates
 
