@@ -194,6 +194,10 @@ pub enum DenseOpcode {
     DeclareClass = 83,
     /// `rN = Class::CONSTANT` (or `Class::class`).
     FetchClassConstant = 84,
+    /// `rN = isset(object->property)` (no dimensions).
+    IssetProperty = 85,
+    /// `rN = empty(object->property)` (no dimensions).
+    EmptyProperty = 86,
 }
 
 impl DenseOpcode {
@@ -299,6 +303,8 @@ impl DenseOpcode {
             Self::DeclareFunction => "declare_function",
             Self::DeclareClass => "declare_class",
             Self::FetchClassConstant => "fetch_class_constant",
+            Self::IssetProperty => "isset_property",
+            Self::EmptyProperty => "empty_property",
         }
     }
 
@@ -1960,7 +1966,9 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::BinaryPow
         | DenseOpcode::DeclareFunction
         | DenseOpcode::DeclareClass
-        | DenseOpcode::FetchClassConstant => None,
+        | DenseOpcode::FetchClassConstant
+        | DenseOpcode::IssetProperty
+        | DenseOpcode::EmptyProperty => None,
     }
 }
 
@@ -2696,6 +2704,30 @@ fn lower_instruction(
                 constant: push_name(names, constant).index() as u32,
             },
         ),
+        InstructionKind::IssetProperty {
+            dst,
+            object,
+            property,
+        } => (
+            DenseOpcode::IssetProperty,
+            DenseOperands::FetchProperty {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                property: push_name(names, property).index() as u32,
+            },
+        ),
+        InstructionKind::EmptyProperty {
+            dst,
+            object,
+            property,
+        } => (
+            DenseOpcode::EmptyProperty,
+            DenseOperands::FetchProperty {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                property: push_name(names, property).index() as u32,
+            },
+        ),
         other => return unsupported_instruction(instruction, format!("{other:?}")),
     };
     Ok(DenseInstruction {
@@ -3396,7 +3428,7 @@ fn verify_instruction(
             verify_register(*iterator, function, errors);
         }
         (
-            DenseOpcode::FetchProperty,
+            DenseOpcode::FetchProperty | DenseOpcode::IssetProperty | DenseOpcode::EmptyProperty,
             DenseOperands::FetchProperty {
                 dst,
                 object,

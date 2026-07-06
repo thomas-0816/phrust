@@ -19521,6 +19521,60 @@ echo $o->a, '|', $o->b, '|', $o->d;
 }
 
 #[test]
+fn dense_bytecode_auto_executes_property_isset_empty() {
+    // isset($obj->prop) / empty($obj->prop) (no dimensions) now execute on the
+    // dense bytecode path via the shared isset_property_value/empty_property_value
+    // helpers instead of deopting the enclosing function to the rich interpreter.
+    let result = execute_source_with_options(
+        r#"<?php
+class DenseProbe { public $set = 1; public $nullp = null; }
+function dense_probe_props() {
+    $o = new DenseProbe();
+    return (isset($o->set) ? '1' : '0')
+        . (isset($o->nullp) ? '1' : '0')
+        . (isset($o->missing) ? '1' : '0')
+        . '|'
+        . (empty($o->set) ? '1' : '0')
+        . (empty($o->missing) ? '1' : '0');
+}
+echo dense_probe_props();
+"#,
+        VmOptions {
+            execution_format: ExecutionFormat::Auto,
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.to_string_lossy(), "100|01");
+    let counters = result.counters.expect("counters should be collected");
+    assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+    assert_eq!(counters.rich_fallback_functions_executed, 0, "{counters:?}");
+    assert!(
+        counters
+            .opcodes
+            .get("bytecode_isset_property")
+            .copied()
+            .unwrap_or_default()
+            >= 3,
+        "{counters:?}"
+    );
+    assert!(
+        counters
+            .opcodes
+            .get("bytecode_empty_property")
+            .copied()
+            .unwrap_or_default()
+            >= 2,
+        "{counters:?}"
+    );
+}
+
+#[test]
 fn dense_bytecode_auto_executes_fetch_class_constant() {
     // Class-constant fetches (Class::CONST, inherited constants, self::-referencing
     // const-expr defaults, ::class, and enum cases) now execute on the dense

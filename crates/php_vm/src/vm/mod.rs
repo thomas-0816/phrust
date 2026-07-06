@@ -7096,6 +7096,70 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::IssetProperty | DenseOpcode::EmptyProperty => {
+                        let DenseOperands::FetchProperty {
+                            dst,
+                            object,
+                            property,
+                        } = &instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let dst = *dst;
+                        let object = *object;
+                        let Some(property) = dense.names.get(*property as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode property name n{property}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let property = property.clone();
+                        let object = match self.read_dense_operand(compiled, stack, object) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let probe = if instruction.opcode == DenseOpcode::IssetProperty {
+                            self.isset_property_value(
+                                compiled, &object, &property, output, stack, state,
+                            )
+                        } else {
+                            self.empty_property_value(
+                                compiled, &object, &property, output, stack, state,
+                            )
+                        };
+                        let value = match probe {
+                            Ok(value) => value,
+                            Err(result) => {
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::LoadConst | DenseOpcode::LoadConstLoadConst => {
                         // The fused form appends a second constant load into
                         // another register after the unchanged first load.
@@ -19701,55 +19765,22 @@ impl Vm {
                     } => {
                         let object = match read_operand_at_frame(unit, stack, frame_index, *object)
                         {
-                            Ok(Value::Object(object)) => object,
-                            Ok(other) => {
-                                if let Err(message) = stack
-                                    .frame_mut(frame_index)
-                                    .expect("frame was pushed")
-                                    .registers
-                                    .set(*dst, Value::Bool(false))
-                                {
-                                    return self.runtime_error(output, compiled, stack, message);
-                                }
-                                let _ = other;
-                                continue;
-                            }
+                            Ok(value) => value,
                             Err(message) => {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        let value = property_state_value(compiled, state, stack, &object, property);
-                        let result = if let Some(value) = value {
-                            !matches!(value, Value::Uninitialized | Value::Null)
-                        } else {
-                            match self.call_magic_property_method(
-                                compiled,
-                                object.clone(),
-                                "__isset",
-                                property,
-                                vec![CallArgument::positional(Value::String(
-                                    PhpString::from_test_str(property),
-                                ))],
-                                output,
-                                stack,
-                                state,
-                            ) {
-                                Ok(Some(value)) => match to_bool(&value) {
-                                    Ok(value) => value,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                },
-                                Ok(None) => false,
-                                Err(result) => return result,
-                            }
+                        let value = match self
+                            .isset_property_value(compiled, &object, property, output, stack, state)
+                        {
+                            Ok(value) => value,
+                            Err(result) => return result,
                         };
                         if let Err(message) = stack
                             .frame_mut(frame_index)
                             .expect("frame was pushed")
                             .registers
-                            .set(*dst, Value::Bool(result))
+                            .set(*dst, value)
                         {
                             return self.runtime_error(output, compiled, stack, message);
                         }
@@ -19834,91 +19865,22 @@ impl Vm {
                     } => {
                         let object = match read_operand_at_frame(unit, stack, frame_index, *object)
                         {
-                            Ok(Value::Object(object)) => object,
-                            Ok(other) => {
-                                if let Err(message) = stack
-                                    .frame_mut(frame_index)
-                                    .expect("frame was pushed")
-                                    .registers
-                                    .set(*dst, Value::Bool(true))
-                                {
-                                    return self.runtime_error(output, compiled, stack, message);
-                                }
-                                let _ = other;
-                                continue;
-                            }
+                            Ok(value) => value,
                             Err(message) => {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        let result =
-                            match property_state_value(compiled, state, stack, &object, property) {
-                                Some(value) => match php_empty_access_value(&value) {
-                                    Ok(value) => value,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                },
-                                None => {
-                                    let isset = match self.call_magic_property_method(
-                                        compiled,
-                                        object.clone(),
-                                        "__isset",
-                                        property,
-                                        vec![CallArgument::positional(Value::String(
-                                            PhpString::from_test_str(property),
-                                        ))],
-                                        output,
-                                        stack,
-                                        state,
-                                    ) {
-                                        Ok(Some(value)) => match to_bool(&value) {
-                                            Ok(value) => value,
-                                            Err(message) => {
-                                                return self.runtime_error(
-                                                    output, compiled, stack, message,
-                                                );
-                                            }
-                                        },
-                                        Ok(None) => false,
-                                        Err(result) => return result,
-                                    };
-                                    if !isset {
-                                        true
-                                    } else {
-                                        match self.call_magic_property_method(
-                                            compiled,
-                                            object.clone(),
-                                            "__get",
-                                            property,
-                                            vec![CallArgument::positional(Value::String(
-                                                PhpString::from_test_str(property),
-                                            ))],
-                                            output,
-                                            stack,
-                                            state,
-                                        ) {
-                                            Ok(Some(value)) => match php_empty_access_value(&value)
-                                            {
-                                                Ok(value) => value,
-                                                Err(message) => {
-                                                    return self.runtime_error(
-                                                        output, compiled, stack, message,
-                                                    );
-                                                }
-                                            },
-                                            Ok(None) => true,
-                                            Err(result) => return result,
-                                        }
-                                    }
-                                }
-                            };
+                        let value = match self
+                            .empty_property_value(compiled, &object, property, output, stack, state)
+                        {
+                            Ok(value) => value,
+                            Err(result) => return result,
+                        };
                         if let Err(message) = stack
                             .frame_mut(frame_index)
                             .expect("frame was pushed")
                             .registers
-                            .set(*dst, Value::Bool(result))
+                            .set(*dst, value)
                         {
                             return self.runtime_error(output, compiled, stack, message);
                         }
@@ -38723,6 +38685,123 @@ impl Vm {
             value
         };
         Ok(value)
+    }
+
+    /// `isset($object->property)` for a declared/dynamic property, shared by the
+    /// rich and dense executors. Returns `Ok(Value::Bool(_))`; a `__isset` magic
+    /// method that throws (or an internal error) is returned as `Err` for the
+    /// caller to propagate. Non-objects are not set, so they yield `false`.
+    fn isset_property_value(
+        &self,
+        compiled: &CompiledUnit,
+        object: &Value,
+        property: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, VmResult> {
+        let Value::Object(object) = object else {
+            return Ok(Value::Bool(false));
+        };
+        let value = property_state_value(compiled, state, stack, object, property);
+        let result = if let Some(value) = value {
+            !matches!(value, Value::Uninitialized | Value::Null)
+        } else {
+            match self.call_magic_property_method(
+                compiled,
+                object.clone(),
+                "__isset",
+                property,
+                vec![CallArgument::positional(Value::String(
+                    PhpString::from_test_str(property),
+                ))],
+                output,
+                stack,
+                state,
+            ) {
+                Ok(Some(value)) => match to_bool(&value) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        return Err(self.runtime_error(output, compiled, stack, message));
+                    }
+                },
+                Ok(None) => false,
+                Err(result) => return Err(result),
+            }
+        };
+        Ok(Value::Bool(result))
+    }
+
+    /// `empty($object->property)` for a declared/dynamic property, shared by the
+    /// rich and dense executors. Returns `Ok(Value::Bool(_))`; a throwing magic
+    /// method (or an internal error) is returned as `Err`. Non-objects are empty.
+    fn empty_property_value(
+        &self,
+        compiled: &CompiledUnit,
+        object: &Value,
+        property: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, VmResult> {
+        let Value::Object(object) = object else {
+            return Ok(Value::Bool(true));
+        };
+        let result = match property_state_value(compiled, state, stack, object, property) {
+            Some(value) => match php_empty_access_value(&value) {
+                Ok(value) => value,
+                Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+            },
+            None => {
+                let isset = match self.call_magic_property_method(
+                    compiled,
+                    object.clone(),
+                    "__isset",
+                    property,
+                    vec![CallArgument::positional(Value::String(
+                        PhpString::from_test_str(property),
+                    ))],
+                    output,
+                    stack,
+                    state,
+                ) {
+                    Ok(Some(value)) => match to_bool(&value) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            return Err(self.runtime_error(output, compiled, stack, message));
+                        }
+                    },
+                    Ok(None) => false,
+                    Err(result) => return Err(result),
+                };
+                if !isset {
+                    true
+                } else {
+                    match self.call_magic_property_method(
+                        compiled,
+                        object.clone(),
+                        "__get",
+                        property,
+                        vec![CallArgument::positional(Value::String(
+                            PhpString::from_test_str(property),
+                        ))],
+                        output,
+                        stack,
+                        state,
+                    ) {
+                        Ok(Some(value)) => match php_empty_access_value(&value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return Err(self.runtime_error(output, compiled, stack, message));
+                            }
+                        },
+                        Ok(None) => true,
+                        Err(result) => return Err(result),
+                    }
+                }
+            }
+        };
+        Ok(Value::Bool(result))
     }
 
     fn execute_cast(
@@ -60120,7 +60199,10 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::UnsetDim => "arrays",
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => "properties",
         DenseOpcode::InstanceOf | DenseOpcode::FetchClassConstant => "objects",
-        DenseOpcode::IssetPropertyDim | DenseOpcode::EmptyPropertyDim => "properties",
+        DenseOpcode::IssetPropertyDim
+        | DenseOpcode::EmptyPropertyDim
+        | DenseOpcode::IssetProperty
+        | DenseOpcode::EmptyProperty => "properties",
         DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             "foreach"
         }

@@ -5373,6 +5373,7 @@ fn bytecode_opcode_family(opcode: &str) -> &'static str {
         "return" => "returns",
         "declare_function" | "declare_class" => "declarations",
         "fetch_class_constant" => "objects",
+        "isset_property" | "empty_property" => "properties",
         "discard" | "nop" => "bookkeeping",
         _ => "other",
     }
