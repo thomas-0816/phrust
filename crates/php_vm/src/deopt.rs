@@ -7,6 +7,7 @@
 use php_ir::instruction::{InstructionKind, IrCallArg, TerminatorKind};
 use php_ir::{IrSpan, IrUnit};
 
+use crate::aliasing::AliasState;
 use crate::bytecode::{
     DENSE_BYTECODE_VERSION, DenseBlock, DenseBytecodeUnit, DenseFunction, DenseInstruction,
     DenseLowerError, DenseOpcode,
@@ -158,6 +159,12 @@ pub struct LiveValueSlot {
     pub initialized: Option<bool>,
     /// Reference/COW identity marker.
     pub identity: LiveIdentityMarker,
+    /// Fine-grained alias class, aligned with the VM's reference-aliasing
+    /// model (`AliasState`). Reported so a future tier can distinguish
+    /// no-reference, local-only, escaped, global/superglobal,
+    /// property/array-dim, and unknown aliasing. Current dense regions
+    /// classify conservatively per region rather than per slot.
+    pub alias_class: AliasState,
 }
 
 /// How a snapshot represents PHP control-flow state.
@@ -314,6 +321,37 @@ impl LiveStateSnapshot {
         families.sort();
         families.dedup();
         families
+    }
+
+    /// Coarsest alias class across all live slots, aligned with the VM's
+    /// reference-aliasing model. `NoReferencesObserved` means no live slot in
+    /// the region carries reference/COW identity.
+    #[must_use]
+    pub fn reference_alias_summary(&self) -> AliasState {
+        self.registers
+            .iter()
+            .chain(self.locals.iter())
+            .chain(self.operand_stack.iter())
+            .map(|slot| slot.alias_class)
+            .max()
+            .unwrap_or(AliasState::NoReferencesObserved)
+    }
+
+    /// Verifier rule for the alias-class metadata: a region that reports no
+    /// reference/COW control state must not carry any reference-sensitive slot.
+    /// Keeps the alias summary honest before a future tier consumes it.
+    #[must_use]
+    pub fn alias_metadata_consistent(&self) -> bool {
+        let any_reference_sensitive = self
+            .registers
+            .iter()
+            .chain(self.locals.iter())
+            .chain(self.operand_stack.iter())
+            .any(|slot| slot.alias_class.is_reference_sensitive());
+        match self.reference_cow {
+            ControlStateMarker::None => !any_reference_sensitive,
+            ControlStateMarker::Represented | ControlStateMarker::Rejected => true,
+        }
     }
 }
 
@@ -1064,6 +1102,13 @@ fn snapshot_for_instruction(
     } else {
         LiveIdentityMarker::Plain
     };
+    // Conservative per-region alias class: a reference/COW deopt reason means
+    // aliasing is not summarized precisely enough to trust, so report the
+    // unknown class; every other supported region has no observed references.
+    let region_alias_class = match reason {
+        VmDeoptReason::ReferenceCowIdentity => AliasState::UnknownAliasing,
+        _ => AliasState::NoReferencesObserved,
+    };
     LiveStateSnapshot {
         resume,
         span,
@@ -1073,6 +1118,7 @@ fn snapshot_for_instruction(
                 index,
                 initialized: None,
                 identity: value_identity,
+                alias_class: region_alias_class,
             })
             .collect(),
         locals: (0..function.local_count)
@@ -1081,6 +1127,7 @@ fn snapshot_for_instruction(
                 index,
                 initialized: None,
                 identity: value_identity,
+                alias_class: region_alias_class,
             })
             .collect(),
         operand_stack: Vec::new(),
@@ -1513,12 +1560,14 @@ mod tests {
                 index: 0,
                 initialized: Some(true),
                 identity: LiveIdentityMarker::MaybeReferenceOrCow,
+                alias_class: AliasState::UnknownAliasing,
             }],
             locals: vec![LiveValueSlot {
                 class: LiveValueClass::Local,
                 index: 0,
                 initialized: Some(true),
                 identity: LiveIdentityMarker::MaybeReferenceOrCow,
+                alias_class: AliasState::UnknownAliasing,
             }],
             operand_stack: Vec::new(),
             pending_exception: ControlStateMarker::Represented,
@@ -1560,6 +1609,73 @@ mod tests {
     }
 
     #[test]
+    fn alias_class_metadata_is_reported_and_verified() {
+        // End-to-end: a straight-line scalar region observes no references, so
+        // every generated side-exit snapshot summarizes as no-reference and
+        // stays consistent with its reference/COW control state.
+        let metadata = metadata_from_source("<?php $x = 1 + 2; echo $x;")
+            .expect("straight-line scalar metadata");
+        let snapshots: Vec<&LiveStateSnapshot> = metadata
+            .regions
+            .iter()
+            .flat_map(|region| region.side_exits.iter())
+            .map(|exit| &exit.snapshot)
+            .collect();
+        assert!(
+            !snapshots.is_empty(),
+            "region should carry side-exit snapshots"
+        );
+        for snapshot in &snapshots {
+            assert!(
+                snapshot.alias_metadata_consistent(),
+                "generated snapshot alias metadata must be consistent: {snapshot:?}"
+            );
+            assert_eq!(
+                snapshot.reference_alias_summary(),
+                AliasState::NoReferencesObserved,
+                "a scalar region observes no references"
+            );
+        }
+
+        // The verifier rule catches a snapshot that reports no reference/COW
+        // control state yet carries a reference-sensitive slot.
+        let inconsistent = LiveStateSnapshot {
+            resume: DeoptResumePoint {
+                function: 0,
+                block: 0,
+                instruction: 0,
+            },
+            span: IrSpan::default(),
+            registers: vec![LiveValueSlot {
+                class: LiveValueClass::Register,
+                index: 0,
+                initialized: Some(true),
+                identity: LiveIdentityMarker::Plain,
+                alias_class: AliasState::EscapedReference,
+            }],
+            locals: Vec::new(),
+            operand_stack: Vec::new(),
+            pending_exception: ControlStateMarker::None,
+            pending_finally: ControlStateMarker::None,
+            foreach_iterator: ControlStateMarker::None,
+            reference_cow: ControlStateMarker::None,
+            output_buffer: ControlStateMarker::None,
+            call_frame_identity: ControlStateMarker::None,
+            include_stack: ControlStateMarker::None,
+            pending_diagnostics: ControlStateMarker::None,
+            source_trace: ControlStateMarker::None,
+        };
+        assert!(
+            !inconsistent.alias_metadata_consistent(),
+            "a reference-sensitive slot with no reference/COW state is inconsistent"
+        );
+        assert_eq!(
+            inconsistent.reference_alias_summary(),
+            AliasState::EscapedReference
+        );
+    }
+
+    #[test]
     fn live_state_snapshot_rejects_only_missing_state_family() {
         let snapshot = LiveStateSnapshot {
             resume: DeoptResumePoint {
@@ -1573,12 +1689,14 @@ mod tests {
                 index: 0,
                 initialized: Some(true),
                 identity: LiveIdentityMarker::Plain,
+                alias_class: AliasState::NoReferencesObserved,
             }],
             locals: vec![LiveValueSlot {
                 class: LiveValueClass::Local,
                 index: 0,
                 initialized: Some(true),
                 identity: LiveIdentityMarker::Plain,
+                alias_class: AliasState::NoReferencesObserved,
             }],
             operand_stack: Vec::new(),
             pending_exception: ControlStateMarker::None,
@@ -1734,6 +1852,7 @@ mod tests {
                 index,
                 initialized: Some(true),
                 identity: LiveIdentityMarker::Plain,
+                alias_class: AliasState::NoReferencesObserved,
             },
             value_class: "i64",
         }

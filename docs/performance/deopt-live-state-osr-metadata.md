@@ -112,6 +112,20 @@ to classify future candidate regions, but they do not add the missing resume
 state above. Their exception, `try`/`finally`, generator, and fiber entries are
 rejection metadata, not executable deopt support.
 
+## Alias-Class Markers
+
+Each `LiveValueSlot` now carries an `alias_class` field aligned with the VM's
+reference-aliasing model (`AliasState`): `no_references_observed`,
+`local_only_reference`, `escaped_reference`, `global_or_superglobal_reference`,
+`property_or_array_dim_reference`, or `unknown_aliasing`. Current dense regions
+classify conservatively per region — a reference/COW deopt reason reports
+`unknown_aliasing`; every other supported region reports `no_references_observed`
+— pending precise per-slot alias analysis. `LiveStateSnapshot::reference_alias_summary`
+returns the coarsest class across live slots, and the verifier rule
+`alias_metadata_consistent` rejects a snapshot that reports no reference/COW
+control state yet carries a reference-sensitive slot, keeping the summary honest
+before a future tier consumes it.
+
 Future Cranelift, baseline-native, quickening, or trace-JIT work must consume
 this VM-owned metadata or extend it with equivalent tests before it can claim a
 safe mid-region resume.
