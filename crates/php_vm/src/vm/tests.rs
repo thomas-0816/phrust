@@ -19445,15 +19445,18 @@ echo probe(null, 1), "\n";
             >= 3,
         "{counters:?}"
     );
-    // The top-level still falls back for the property-dim assignment
-    // seeding the fixture; the probe function itself runs dense.
-    assert_eq!(
+    // The `$h->callbacks[5]["cb"] = true` setup (a property-dimension
+    // assignment) now also executes on the dense bytecode path, so the entry no
+    // longer deopts to the rich interpreter for it — the whole program runs
+    // dense with no unsupported-opcode fallback.
+    assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+    assert!(
         counters
-            .dense_function_fallback_by_reason
-            .get("instruction_subset")
+            .opcodes
+            .get("bytecode_assign_property_dim")
             .copied()
-            .unwrap_or_default(),
-        1,
+            .unwrap_or_default()
+            >= 1,
         "{counters:?}"
     );
 }
@@ -19518,6 +19521,56 @@ echo $o->a, '|', $o->b, '|', $o->d;
     );
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.to_string_lossy(), "x|3|9");
+}
+
+#[test]
+fn dense_bytecode_auto_executes_property_dim_assign() {
+    // $obj->prop[$k] = $v (and [] append, nested dims, typed properties) now
+    // execute on the dense bytecode path via the shared assign_property_dim_value
+    // helper. Crucially, COW is preserved: a dimension write through a shared
+    // array copy must leave the original array untouched.
+    let result = execute_source_with_options(
+        r#"<?php
+class DenseBag { public $data = []; public array $typed = []; }
+function dense_dim_probe() {
+    $o = new DenseBag();
+    $o->data['a'] = 1;
+    $o->data['b'][] = 2;
+    $o->typed['y']['z'] = 20;
+    $shared = ['p' => 1];
+    $o->data['shared'] = $shared;
+    $o->data['shared']['p'] = 999;
+    return json_encode($o->data) . '|' . $shared['p'];
+}
+echo dense_dim_probe();
+"#,
+        VmOptions {
+            execution_format: ExecutionFormat::Auto,
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        r#"{"a":1,"b":[2],"shared":{"p":999}}|1"#
+    );
+    let counters = result.counters.expect("counters should be collected");
+    assert_eq!(counters.bytecode_unsupported_fallbacks, 0, "{counters:?}");
+    assert_eq!(counters.rich_fallback_functions_executed, 0, "{counters:?}");
+    assert!(
+        counters
+            .opcodes
+            .get("bytecode_assign_property_dim")
+            .copied()
+            .unwrap_or_default()
+            >= 4,
+        "{counters:?}"
+    );
 }
 
 #[test]

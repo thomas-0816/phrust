@@ -7393,6 +7393,144 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::AssignPropertyDim => {
+                        let DenseOperands::AssignPropertyDim {
+                            dst,
+                            object,
+                            property,
+                            dims,
+                            append,
+                            value,
+                        } = &instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let dst = *dst;
+                        let append = *append;
+                        let object_operand = *object;
+                        let value_operand = *value;
+                        let Some(property) = dense.names.get(*property as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode property name n{property}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let property = property.clone();
+                        let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let object = match self.read_dense_operand(compiled, stack, object_operand)
+                        {
+                            Ok(Value::Object(object)) => object,
+                            Ok(other) => {
+                                let result = self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    format!(
+                                        "E_PHP_VM_PROPERTY_DIM_ASSIGN_NON_OBJECT: cannot assign property dimension {property} on {}",
+                                        value_type_name(&other)
+                                    ),
+                                );
+                                stack.pop_recycle();
+                                return result;
+                            }
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let assigned = match self.read_dense_operand(compiled, stack, value_operand)
+                        {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let span = dense_instruction_span(dense, instruction);
+                        let value = match self.assign_property_dim_value(
+                            compiled,
+                            object,
+                            &property,
+                            &dims,
+                            append,
+                            assigned,
+                            span,
+                            &mut diagnostics,
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            Ok(value) => value,
+                            Err(PropertyDimAssign::Raise(span, message)) => {
+                                let mut exception_handlers = Vec::new();
+                                let mut pending_control = None;
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(_) => {
+                                        let result = self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            "E_PHP_VM_DENSE_PROPERTY_DIM_ASSIGN_HANDLER: dense functions have no local exception handlers".to_string(),
+                                        );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                    RaiseOutcome::Done(result) => {
+                                        stack.pop_recycle();
+                                        return *result;
+                                    }
+                                }
+                            }
+                            Err(PropertyDimAssign::Fatal(message)) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                            Err(PropertyDimAssign::Return(result)) => {
+                                stack.pop_recycle();
+                                return *result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::LoadConst | DenseOpcode::LoadConstLoadConst => {
                         // The fused form appends a second constant load into
                         // another register after the unchanged first load.
@@ -38630,12 +38768,7 @@ impl Vm {
                     return Err(PropertyDimAssign::Raise(span, message));
                 }
                 if let Some(diagnostic) = dynamic_property_deprecation_diagnostic(
-                    compiled,
-                    state,
-                    &class,
-                    &object,
-                    property,
-                    stack,
+                    compiled, state, &class, &object, property, stack,
                 ) {
                     diagnostics.push(diagnostic);
                 }
@@ -60183,7 +60316,9 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::IssetDim
         | DenseOpcode::EmptyDim
         | DenseOpcode::UnsetDim => "arrays",
-        DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => "properties",
+        DenseOpcode::FetchProperty
+        | DenseOpcode::AssignProperty
+        | DenseOpcode::AssignPropertyDim => "properties",
         DenseOpcode::InstanceOf
         | DenseOpcode::FetchClassConstant
         | DenseOpcode::FetchStaticProperty

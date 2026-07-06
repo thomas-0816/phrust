@@ -202,6 +202,8 @@ pub enum DenseOpcode {
     FetchStaticProperty = 87,
     /// `rN = clone object`.
     CloneObject = 88,
+    /// `object->property[dims...] = value` (or `[] =` append).
+    AssignPropertyDim = 89,
 }
 
 impl DenseOpcode {
@@ -311,6 +313,7 @@ impl DenseOpcode {
             Self::EmptyProperty => "empty_property",
             Self::FetchStaticProperty => "fetch_static_property",
             Self::CloneObject => "clone_object",
+            Self::AssignPropertyDim => "assign_property_dim",
         }
     }
 
@@ -551,6 +554,15 @@ pub enum DenseOperands {
         dst: u32,
         object: DenseOperand,
         class_name: u32,
+    },
+    /// Instance property array-dimension assignment/append operands.
+    AssignPropertyDim {
+        dst: u32,
+        object: DenseOperand,
+        property: u32,
+        dims: Vec<DenseOperand>,
+        append: bool,
+        value: DenseOperand,
     },
     /// Property dimension isset/empty probe operands.
     PropertyDimProbe {
@@ -1976,7 +1988,8 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::IssetProperty
         | DenseOpcode::EmptyProperty
         | DenseOpcode::FetchStaticProperty
-        | DenseOpcode::CloneObject => None,
+        | DenseOpcode::CloneObject
+        | DenseOpcode::AssignPropertyDim => None,
     }
 }
 
@@ -2658,12 +2671,24 @@ fn lower_instruction(
                 value: lower_operand(*value),
             },
         ),
-        InstructionKind::AssignPropertyDim { .. } => {
-            return unsupported_instruction(
-                instruction,
-                "property dimension assignment".to_owned(),
-            );
-        }
+        InstructionKind::AssignPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+            value,
+            append,
+        } => (
+            DenseOpcode::AssignPropertyDim,
+            DenseOperands::AssignPropertyDim {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                property: push_name(names, property).index() as u32,
+                dims: dims.iter().copied().map(lower_operand).collect(),
+                append: *append,
+                value: lower_operand(*value),
+            },
+        ),
         InstructionKind::UnsetPropertyDim { .. } => {
             return unsupported_instruction(instruction, "property dimension unset".to_owned());
         }
@@ -3397,6 +3422,25 @@ fn verify_instruction(
             verify_operand(*value, unit, function, errors);
         }
         (
+            DenseOpcode::AssignPropertyDim,
+            DenseOperands::AssignPropertyDim {
+                dst,
+                object,
+                property,
+                dims,
+                value,
+                ..
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*object, unit, function, errors);
+            verify_name(*property, unit, errors);
+            for dim in dims {
+                verify_operand(*dim, unit, function, errors);
+            }
+            verify_operand(*value, unit, function, errors);
+        }
+        (
             DenseOpcode::BindReferenceDim,
             DenseOperands::BindReferenceDim {
                 local,
@@ -4001,6 +4045,23 @@ fn render_operands(operands: &DenseOperands) -> String {
             format!(
                 "r{dst} l{local} [{}] {}",
                 dims.join(", "),
+                render_operand(*value)
+            )
+        }
+        DenseOperands::AssignPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+            append,
+            value,
+        } => {
+            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
+            format!(
+                "r{dst} {} n{property} [{}]{} {}",
+                render_operand(*object),
+                dims.join(", "),
+                if *append { " append" } else { "" },
                 render_operand(*value)
             )
         }
