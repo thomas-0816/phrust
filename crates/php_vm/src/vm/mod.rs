@@ -1809,9 +1809,23 @@ impl FunctionCall<'_> {
     }
 }
 
+/// Function-invariant frame-shape properties derived from a single body scan.
+/// Classifying a call frame otherwise re-scans the whole callee body on every
+/// call; these flags are memoized per (unit, function) so repeated calls reuse
+/// the scan result. Field semantics mirror `function_has_try_or_finally`,
+/// `function_may_hold_destructor_sensitive_value`, and
+/// `method_body_has_inline_blocker`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FrameShapeFlags {
+    has_try_or_finally: bool,
+    may_hold_destructor_sensitive_value: bool,
+    has_inline_blocker: bool,
+}
+
 fn frame_reuse_call_shape_blocked_reason(
     function: &IrFunction,
     call: &FunctionCall<'_>,
+    shape: FrameShapeFlags,
 ) -> Option<&'static str> {
     if function.flags.is_generator {
         return Some("generator");
@@ -1848,10 +1862,10 @@ fn frame_reuse_call_shape_blocked_reason(
     if call.shared_top_level_locals.is_some() {
         return Some("shared_top_level_locals");
     }
-    if function_has_try_or_finally(function) {
+    if shape.has_try_or_finally {
         return Some("try_finally");
     }
-    if function_may_hold_destructor_sensitive_value(function) {
+    if shape.may_hold_destructor_sensitive_value {
         return Some("destructor_sensitive_value");
     }
     None
@@ -1864,7 +1878,11 @@ fn frame_reuse_prepared_args_blocked_reason(prepared_args: &[PreparedArg]) -> Op
         .then_some("by_ref_argument")
 }
 
-fn call_frame_layout_class(function: &IrFunction, call: &FunctionCall<'_>) -> &'static str {
+fn call_frame_layout_class(
+    function: &IrFunction,
+    call: &FunctionCall<'_>,
+    shape: FrameShapeFlags,
+) -> &'static str {
     if function.flags.is_generator
         || call.running_generator.is_some()
         || call.resume_continuation.is_some()
@@ -1896,7 +1914,7 @@ fn call_frame_layout_class(function: &IrFunction, call: &FunctionCall<'_>) -> &'
     {
         return "known_method_frame";
     }
-    if function_is_specialized_tiny_leaf_candidate(function, call.args.len()) {
+    if function_is_specialized_tiny_leaf_candidate(function, call.args.len(), shape) {
         return "tiny_leaf_frame";
     }
     "known_function_frame"
@@ -1905,6 +1923,7 @@ fn call_frame_layout_class(function: &IrFunction, call: &FunctionCall<'_>) -> &'
 fn function_is_specialized_tiny_leaf_candidate(
     function: &IrFunction,
     supplied_arg_count: usize,
+    shape: FrameShapeFlags,
 ) -> bool {
     !function.flags.is_top_level
         && !function.flags.is_method
@@ -1918,9 +1937,9 @@ fn function_is_specialized_tiny_leaf_candidate(
             .params
             .iter()
             .all(|param| !param.by_ref && !param.variadic && param.type_.is_none())
-        && !function_has_try_or_finally(function)
-        && !function_may_hold_destructor_sensitive_value(function)
-        && !method_body_has_inline_blocker(function)
+        && !shape.has_try_or_finally
+        && !shape.may_hold_destructor_sensitive_value
+        && !shape.has_inline_blocker
 }
 
 fn specialized_call_frame_fallback_reason(
@@ -2112,6 +2131,10 @@ pub struct Vm {
     argument_vector_observers: RefCell<HashMap<(u64, u32), bool>>,
     /// Memoized per-(unit, function) trivial-method inline plans.
     trivial_method_plans: RefCell<HashMap<(u64, u32), Option<TrivialMethodPlan>>>,
+    /// Memoized per-(unit, function) frame-shape flags derived from a single
+    /// body scan, so repeated calls to the same function do not re-scan its
+    /// whole body on every invocation to classify the call frame.
+    frame_shape_flags: RefCell<HashMap<(u64, u32), FrameShapeFlags>>,
     adaptive_tiny_unit_setup_skipped: Cell<bool>,
     include_execution_depth: Cell<u32>,
     request_profile_stack: RefCell<Vec<RequestProfileFrame>>,
@@ -2135,6 +2158,7 @@ impl Vm {
             literal_pool: RefCell::new(LiteralPool::default()),
             argument_vector_observers: RefCell::new(HashMap::new()),
             trivial_method_plans: RefCell::new(HashMap::new()),
+            frame_shape_flags: RefCell::new(HashMap::new()),
             quickening: RefCell::new(QuickeningTable::default()),
             inline_caches: RefCell::new(InlineCacheTable::default()),
             jit: RefCell::new(JitRuntimeState::default()),
@@ -2158,6 +2182,7 @@ impl Vm {
         *self.literal_pool.borrow_mut() = LiteralPool::default();
         self.argument_vector_observers.borrow_mut().clear();
         self.trivial_method_plans.borrow_mut().clear();
+        self.frame_shape_flags.borrow_mut().clear();
         *self.quickening.borrow_mut() = QuickeningTable::default();
         if self.options.quickening.enabled() && !self.options.quickening_seed.is_empty() {
             self.quickening
@@ -4418,6 +4443,30 @@ impl Vm {
         !observes
     }
 
+    /// Returns the memoized frame-shape flags for a callee, scanning its body
+    /// only on the first call to each (unit, function). Subsequent calls reuse
+    /// the cached result instead of re-scanning the whole body per invocation.
+    fn frame_shape_flags(
+        &self,
+        compiled: &CompiledUnit,
+        function_id: FunctionId,
+        function: &IrFunction,
+    ) -> FrameShapeFlags {
+        let key = (compiled_unit_cache_key(compiled), function_id.raw());
+        if let Some(shape) = self.frame_shape_flags.borrow().get(&key) {
+            return *shape;
+        }
+        let shape = FrameShapeFlags {
+            has_try_or_finally: function_has_try_or_finally(function),
+            may_hold_destructor_sensitive_value: function_may_hold_destructor_sensitive_value(
+                function,
+            ),
+            has_inline_blocker: method_body_has_inline_blocker(function),
+        };
+        self.frame_shape_flags.borrow_mut().insert(key, shape);
+        shape
+    }
+
     fn record_counter_direct_frame(&self, layout: &str, function: &IrFunction, elided: bool) {
         if !self.options.collect_counters {
             return;
@@ -6660,9 +6709,10 @@ impl Vm {
             );
         }
         let mut diagnostics = Vec::new();
+        let frame_shape = self.frame_shape_flags(compiled, function_id, ir_function);
         let frame_reuse_call_shape_reason =
-            frame_reuse_call_shape_blocked_reason(ir_function, &call);
-        let frame_layout = call_frame_layout_class(ir_function, &call);
+            frame_reuse_call_shape_blocked_reason(ir_function, &call, frame_shape);
+        let frame_layout = call_frame_layout_class(ir_function, &call, frame_shape);
         let argument_policy = call.argument_binding_policy(compiled);
         let elide_frame_args = self.frame_args_elidable(compiled, function_id, ir_function);
         self.record_counter_direct_frame(frame_layout, ir_function, elide_frame_args);
@@ -13532,9 +13582,10 @@ impl Vm {
                 && call.shared_top_level_locals.is_none()
                 && call.running_generator.is_none()
                 && call.running_fiber.is_none();
+            let frame_shape = self.frame_shape_flags(compiled, function_id, function);
             let frame_reuse_call_shape_reason =
-                frame_reuse_call_shape_blocked_reason(function, &call);
-            let frame_layout = call_frame_layout_class(function, &call);
+                frame_reuse_call_shape_blocked_reason(function, &call, frame_shape);
+            let frame_layout = call_frame_layout_class(function, &call, frame_shape);
             let argument_policy = call.argument_binding_policy(compiled);
             let elide_frame_args = self.frame_args_elidable(compiled, function_id, function);
             self.record_counter_direct_frame(frame_layout, function, elide_frame_args);
