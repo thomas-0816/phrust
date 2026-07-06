@@ -69,6 +69,10 @@ const HASH_ALGOS: &[&str] = &[
     "sha3-256",
     "sha3-384",
     "sha3-512",
+    "ripemd128",
+    "ripemd160",
+    "ripemd256",
+    "ripemd320",
     "adler32",
     "crc32",
     "crc32b",
@@ -93,6 +97,10 @@ const HASH_HMAC_ALGOS: &[&str] = &[
     "sha3-256",
     "sha3-384",
     "sha3-512",
+    "ripemd128",
+    "ripemd160",
+    "ripemd256",
+    "ripemd320",
 ];
 const HASH_HMAC_FLAG: i64 = 1;
 const HASH_CONTEXT_CLASS: &str = "HashContext";
@@ -659,6 +667,10 @@ mod tests {
             "sha3-256",
             "sha3-384",
             "sha3-512",
+            "ripemd128",
+            "ripemd160",
+            "ripemd256",
+            "ripemd320",
         ] {
             assert!(
                 hmac_values.iter().any(|value| value.contains(algorithm)),
@@ -832,6 +844,39 @@ mod tests {
                 ]
             ),
             Value::string("fe8fae51320c42433aa330c1eec41e63cc9c6d307c2eb4f2dd6cf09f4a5e812b")
+        );
+    }
+
+    #[test]
+    fn hash_supports_ripemd_vectors_and_hmac() {
+        assert_eq!(
+            call("hash", vec![Value::string("ripemd128"), Value::string("")]),
+            Value::string("cdf26213a150dc3ecb610f18f6b38b46")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("ripemd160"), Value::string("")]),
+            Value::string("9c1185a5c5e9fc54612808977ee8f548b2258d31")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("ripemd256"), Value::string("")]),
+            Value::string("02ba4c4e5f8ecd1877fc52d64d30e37a2d9774fb1e5d026380ae0168e3c5522d")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("ripemd320"), Value::string("")]),
+            Value::string(
+                "22d65d5661536cdc75c1fdf5c6de7b41b9f27325ebc61e8557177d705a0ec880151c3a32a00899b8"
+            )
+        );
+        assert_eq!(
+            call(
+                "hash_hmac",
+                vec![
+                    Value::string("ripemd160"),
+                    Value::string("payload"),
+                    Value::string("key")
+                ]
+            ),
+            Value::string("b89bad7ab6f5ada8ab77f806aa7cbdb58cf053fc")
         );
     }
 
