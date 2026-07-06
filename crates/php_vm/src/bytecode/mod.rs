@@ -184,6 +184,10 @@ pub enum DenseOpcode {
     BindReferenceDim = 78,
     /// `rN = object instanceof Class` for statically named classes.
     InstanceOf = 79,
+    /// `rN = isset(object->property[dims...])`.
+    IssetPropertyDim = 80,
+    /// `rN = empty(object->property[dims...])`.
+    EmptyPropertyDim = 81,
 }
 
 impl DenseOpcode {
@@ -284,6 +288,8 @@ impl DenseOpcode {
             Self::LoadConstArrayInsert => "load_const_array_insert",
             Self::BindReferenceDim => "bind_reference_dim",
             Self::InstanceOf => "instance_of",
+            Self::IssetPropertyDim => "isset_property_dim",
+            Self::EmptyPropertyDim => "empty_property_dim",
         }
     }
 
@@ -524,6 +530,13 @@ pub enum DenseOperands {
         dst: u32,
         object: DenseOperand,
         class_name: u32,
+    },
+    /// Property dimension isset/empty probe operands.
+    PropertyDimProbe {
+        dst: u32,
+        object: DenseOperand,
+        property: u32,
+        dims: Vec<DenseOperand>,
     },
     /// Local array dimension isset test operands.
     IssetDim {
@@ -1916,6 +1929,8 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
         | DenseOpcode::InstanceOf
+        | DenseOpcode::IssetPropertyDim
+        | DenseOpcode::EmptyPropertyDim
         | DenseOpcode::ForeachInit
         | DenseOpcode::ForeachNext
         | DenseOpcode::ForeachCleanup
@@ -2561,6 +2576,34 @@ fn lower_instruction(
                 dst: dst.raw(),
                 object: lower_operand(*object),
                 class_name: push_name(names, class_name).index() as u32,
+            },
+        ),
+        InstructionKind::IssetPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+        } => (
+            DenseOpcode::IssetPropertyDim,
+            DenseOperands::PropertyDimProbe {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                property: push_name(names, property).index() as u32,
+                dims: dims.iter().copied().map(lower_operand).collect(),
+            },
+        ),
+        InstructionKind::EmptyPropertyDim {
+            dst,
+            object,
+            property,
+            dims,
+        } => (
+            DenseOpcode::EmptyPropertyDim,
+            DenseOperands::PropertyDimProbe {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                property: push_name(names, property).index() as u32,
+                dims: dims.iter().copied().map(lower_operand).collect(),
             },
         ),
         InstructionKind::AssignProperty {
@@ -3330,6 +3373,22 @@ fn verify_instruction(
             verify_name(*class_name, unit, errors);
         }
         (
+            DenseOpcode::IssetPropertyDim | DenseOpcode::EmptyPropertyDim,
+            DenseOperands::PropertyDimProbe {
+                dst,
+                object,
+                property,
+                dims,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*object, unit, function, errors);
+            verify_name(*property, unit, errors);
+            for dim in dims {
+                verify_operand(*dim, unit, function, errors);
+            }
+        }
+        (
             DenseOpcode::AssignProperty,
             DenseOperands::AssignProperty {
                 dst,
@@ -3829,6 +3888,19 @@ fn render_operands(operands: &DenseOperands) -> String {
             format!(
                 "r{dst} = {} instanceof n{class_name}",
                 render_operand(*object)
+            )
+        }
+        DenseOperands::PropertyDimProbe {
+            dst,
+            object,
+            property,
+            dims,
+        } => {
+            let dims: Vec<_> = dims.iter().copied().map(render_operand).collect();
+            format!(
+                "r{dst} = probe {}->n{property}[{}]",
+                render_operand(*object),
+                dims.join(", ")
             )
         }
         DenseOperands::BindReferenceDim {

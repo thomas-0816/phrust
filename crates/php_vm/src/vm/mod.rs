@@ -10189,6 +10189,133 @@ impl Vm {
                             }
                         }
                     }
+                    DenseOpcode::IssetPropertyDim | DenseOpcode::EmptyPropertyDim => {
+                        let DenseOperands::PropertyDimProbe {
+                            dst,
+                            object,
+                            property,
+                            dims,
+                        } = &instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let is_empty = instruction.opcode == DenseOpcode::EmptyPropertyDim;
+                        let Some(property) = dense.names.get(*property as usize) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                format!("invalid dense bytecode property name n{property}"),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let dims = match self.read_dense_dim_operands(compiled, stack, dims) {
+                            Ok(dims) => dims,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let result = {
+                            let object_read =
+                                match self.read_dense_operand_ref(compiled, stack, *object) {
+                                    Ok(value) => value,
+                                    Err(message) => {
+                                        let result =
+                                            self.runtime_error(output, compiled, stack, message);
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                };
+                            match object_read.as_value() {
+                                Value::Object(object) => {
+                                    // Mirror the rich arms: borrowed probe
+                                    // first, clone path only when the walk
+                                    // meets unsupported shapes.
+                                    let borrowed = with_property_state_value(
+                                        compiled,
+                                        state,
+                                        stack,
+                                        object,
+                                        property,
+                                        &mut |value| match value {
+                                            Some(value) => {
+                                                with_borrowed_dim_path(value, &dims, &mut |leaf| {
+                                                    if is_empty {
+                                                        php_empty_access_value(
+                                                            leaf.unwrap_or(&Value::Uninitialized),
+                                                        )
+                                                    } else {
+                                                        Ok(!matches!(
+                                                            leaf,
+                                                            None | Some(Value::Null)
+                                                        ))
+                                                    }
+                                                })
+                                            }
+                                            None => Some(if is_empty {
+                                                php_empty_access_value(&Value::Uninitialized)
+                                            } else {
+                                                Ok(false)
+                                            }),
+                                        },
+                                    )
+                                    .flatten();
+                                    let probe = match borrowed {
+                                        Some(result) => {
+                                            self.record_counter_property_dim_probe_borrowed_hit();
+                                            result
+                                        }
+                                        None => {
+                                            let value = property_state_value(
+                                                compiled, state, stack, object, property,
+                                            )
+                                            .and_then(|value| {
+                                                fetch_dim_path_value(&value, &dims).ok().flatten()
+                                            });
+                                            if is_empty {
+                                                php_empty_access_value(
+                                                    &value.unwrap_or(Value::Uninitialized),
+                                                )
+                                            } else {
+                                                Ok(!matches!(value, None | Some(Value::Null)))
+                                            }
+                                        }
+                                    };
+                                    match probe {
+                                        Ok(value) => Value::Bool(value),
+                                        Err(message) => {
+                                            let result = self
+                                                .runtime_error(output, compiled, stack, message);
+                                            stack.pop_recycle();
+                                            return result;
+                                        }
+                                    }
+                                }
+                                // Non-object receivers mirror the rich arms.
+                                _ => Value::Bool(is_empty),
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(*dst), result)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::InstanceOf => {
                         let DenseOperands::InstanceOf {
                             dst,
@@ -74986,6 +75113,7 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::UnsetDim => "arrays",
         DenseOpcode::FetchProperty | DenseOpcode::AssignProperty => "properties",
         DenseOpcode::InstanceOf => "objects",
+        DenseOpcode::IssetPropertyDim | DenseOpcode::EmptyPropertyDim => "properties",
         DenseOpcode::ForeachInit | DenseOpcode::ForeachNext | DenseOpcode::ForeachCleanup => {
             "foreach"
         }
@@ -94963,6 +95091,70 @@ echo classify(null), "\n";
                 .copied()
                 .unwrap_or_default(),
             0,
+            "{counters:?}"
+        );
+    }
+
+    #[test]
+    fn dense_bytecode_auto_executes_property_dim_probes() {
+        let result = execute_source_with_options(
+            r#"<?php
+class ProbeHooks {
+    public $callbacks = [];
+}
+$h = new ProbeHooks();
+$h->callbacks[5]["cb"] = true;
+function probe($h, $priority) {
+    $state = isset($h->callbacks[$priority]) ? "set" : "unset";
+    $state .= empty($h->callbacks[$priority]) ? ":empty" : ":filled";
+    return $state;
+}
+echo probe($h, 5), "\n";
+echo probe($h, 9), "\n";
+echo probe(null, 1), "\n";
+"#,
+            VmOptions {
+                execution_format: ExecutionFormat::Auto,
+                collect_counters: true,
+                collect_layout_source_attribution: true,
+                inline_caches: InlineCacheMode::On,
+                ..VmOptions::default()
+            },
+        );
+
+        assert!(result.status.is_success(), "{:?}", result.status);
+        assert_eq!(
+            result.output.as_bytes(),
+            b"set:filled\nunset:empty\nunset:empty\n"
+        );
+        let counters = result.counters.expect("counters should be collected");
+        assert!(
+            counters
+                .opcodes
+                .get("bytecode_isset_property_dim")
+                .copied()
+                .unwrap_or_default()
+                >= 3,
+            "{counters:?}"
+        );
+        assert!(
+            counters
+                .opcodes
+                .get("bytecode_empty_property_dim")
+                .copied()
+                .unwrap_or_default()
+                >= 3,
+            "{counters:?}"
+        );
+        // The top-level still falls back for the property-dim assignment
+        // seeding the fixture; the probe function itself runs dense.
+        assert_eq!(
+            counters
+                .dense_function_fallback_by_reason
+                .get("instruction_subset")
+                .copied()
+                .unwrap_or_default(),
+            1,
             "{counters:?}"
         );
     }
