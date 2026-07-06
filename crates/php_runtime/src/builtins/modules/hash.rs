@@ -65,6 +65,10 @@ const HASH_ALGOS: &[&str] = &[
     "sha512/224",
     "sha512/256",
     "sha512",
+    "sha3-224",
+    "sha3-256",
+    "sha3-384",
+    "sha3-512",
     "adler32",
     "crc32",
     "crc32b",
@@ -85,6 +89,10 @@ const HASH_HMAC_ALGOS: &[&str] = &[
     "sha512/224",
     "sha512/256",
     "sha512",
+    "sha3-224",
+    "sha3-256",
+    "sha3-384",
+    "sha3-512",
 ];
 const HASH_HMAC_FLAG: i64 = 1;
 const HASH_CONTEXT_CLASS: &str = "HashContext";
@@ -647,6 +655,10 @@ mod tests {
             "sha512/224",
             "sha512/256",
             "sha512",
+            "sha3-224",
+            "sha3-256",
+            "sha3-384",
+            "sha3-512",
         ] {
             assert!(
                 hmac_values.iter().any(|value| value.contains(algorithm)),
@@ -785,6 +797,41 @@ mod tests {
         assert_eq!(
             call("hash", vec![Value::string("joaat"), Value::string("a")]),
             Value::string("ca2e9442")
+        );
+    }
+
+    #[test]
+    fn hash_supports_sha3_vectors_and_hmac() {
+        assert_eq!(
+            call("hash", vec![Value::string("sha3-224"), Value::string("")]),
+            Value::string("6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("sha3-256"), Value::string("")]),
+            Value::string("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("sha3-384"), Value::string("")]),
+            Value::string(
+                "0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2ac3713831264adb47fb6bd1e058d5f004"
+            )
+        );
+        assert_eq!(
+            call("hash", vec![Value::string("sha3-512"), Value::string("")]),
+            Value::string(
+                "a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26"
+            )
+        );
+        assert_eq!(
+            call(
+                "hash_hmac",
+                vec![
+                    Value::string("sha3-256"),
+                    Value::string("payload"),
+                    Value::string("key")
+                ]
+            ),
+            Value::string("fe8fae51320c42433aa330c1eec41e63cc9c6d307c2eb4f2dd6cf09f4a5e812b")
         );
     }
 

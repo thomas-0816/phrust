@@ -20,6 +20,7 @@
 {"path":"ext/hash/tests/sha1.phpt"}
 {"path":"ext/hash/tests/sha224.phpt"}
 {"path":"ext/hash/tests/sha256.phpt"}
+{"path":"ext/hash/tests/sha3.phpt"}
 {"path":"ext/hash/tests/sha384.phpt"}
 {"path":"ext/hash/tests/sha512-224.phpt"}
 {"path":"ext/hash/tests/sha512-256.phpt"}

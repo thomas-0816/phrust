@@ -2,6 +2,7 @@ use super::*;
 use md5::{Digest, Md5};
 use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
+use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use std::collections::HashSet;
 
 pub(in crate::builtins::modules) fn format_array_values(
@@ -39,6 +40,10 @@ pub(in crate::builtins::modules) fn hash_digest_bytes(
         Some("sha512224") => Ok(Sha512_224::digest(input).to_vec()),
         Some("sha512256") => Ok(Sha512_256::digest(input).to_vec()),
         Some("sha512") => Ok(Sha512::digest(input).to_vec()),
+        Some("sha3224") => Ok(Sha3_224::digest(input).to_vec()),
+        Some("sha3256") => Ok(Sha3_256::digest(input).to_vec()),
+        Some("sha3384") => Ok(Sha3_384::digest(input).to_vec()),
+        Some("sha3512") => Ok(Sha3_512::digest(input).to_vec()),
         Some("adler32") => Ok(adler32(input).to_be_bytes().to_vec()),
         Some("crc32") => Ok(crc32_bzip2(input).to_le_bytes().to_vec()),
         Some("crc32b") => Ok(crc32fast::hash(input).to_be_bytes().to_vec()),
@@ -226,6 +231,46 @@ pub(in crate::builtins::modules) fn hmac_digest_bytes(
             128,
             |bytes| Sha512::digest(bytes).to_vec(),
         )),
+        Some("sha3224") => Ok(hmac_with_block(
+            if key.len() > 144 {
+                Sha3_224::digest(key).to_vec()
+            } else {
+                key.to_vec()
+            },
+            input,
+            144,
+            |bytes| Sha3_224::digest(bytes).to_vec(),
+        )),
+        Some("sha3256") => Ok(hmac_with_block(
+            if key.len() > 136 {
+                Sha3_256::digest(key).to_vec()
+            } else {
+                key.to_vec()
+            },
+            input,
+            136,
+            |bytes| Sha3_256::digest(bytes).to_vec(),
+        )),
+        Some("sha3384") => Ok(hmac_with_block(
+            if key.len() > 104 {
+                Sha3_384::digest(key).to_vec()
+            } else {
+                key.to_vec()
+            },
+            input,
+            104,
+            |bytes| Sha3_384::digest(bytes).to_vec(),
+        )),
+        Some("sha3512") => Ok(hmac_with_block(
+            if key.len() > 72 {
+                Sha3_512::digest(key).to_vec()
+            } else {
+                key.to_vec()
+            },
+            input,
+            72,
+            |bytes| Sha3_512::digest(bytes).to_vec(),
+        )),
         _ => Err(value_error(name, "unsupported hash algorithm")),
     }
 }
@@ -260,6 +305,7 @@ pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -
         "md5" | "sha1" | "adler32" | "crc32" | "crc32b" | "crc32c" => Some(normalized),
         "fnv132" | "fnv1a32" | "fnv164" | "fnv1a64" | "joaat" => Some(normalized),
         "sha224" | "sha256" | "sha384" | "sha512" => Some(normalized),
+        "sha3224" | "sha3256" | "sha3384" | "sha3512" => Some(normalized),
         "sha512/224" => Some("sha512224".to_owned()),
         "sha512/256" => Some("sha512256".to_owned()),
         "sha512224" | "sha512256" => Some(normalized),
