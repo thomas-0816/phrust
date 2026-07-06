@@ -774,11 +774,11 @@ mod arch {
 
     #[target_feature(enable = "avx2")]
     unsafe fn find_json_escape_byte_avx2(bytes: &[u8]) -> Option<usize> {
-        unsafe { find_escape_avx2(bytes, &[b'"', b'\\', b'/'], true) }
+        unsafe { find_escape_avx2(bytes, b"\"\\/", true) }
     }
 
     unsafe fn find_json_escape_byte_sse2(bytes: &[u8]) -> Option<usize> {
-        unsafe { find_escape_sse2(bytes, &[b'"', b'\\', b'/'], true) }
+        unsafe { find_escape_sse2(bytes, b"\"\\/", true) }
     }
 
     #[target_feature(enable = "avx2")]
