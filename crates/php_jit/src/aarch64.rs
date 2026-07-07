@@ -54,18 +54,22 @@ pub enum Cond {
     GreaterThan,
     /// Signed greater than or equal (`GE`).
     GreaterEqual,
+    /// Unsigned higher (`HI`, `C == 1 && Z == 0`) — used for range guards where
+    /// a negative operand should also fail (it reads as a large unsigned value).
+    UnsignedHigher,
 }
 
 impl Cond {
     const fn encoding(self) -> u32 {
         match self {
-            Self::Overflow => 0b0110,     // VS
-            Self::Equal => 0b0000,        // EQ
-            Self::NotEqual => 0b0001,     // NE
-            Self::LessThan => 0b1011,     // LT
-            Self::LessEqual => 0b1101,    // LE
-            Self::GreaterThan => 0b1100,  // GT
-            Self::GreaterEqual => 0b1010, // GE
+            Self::Overflow => 0b0110,       // VS
+            Self::Equal => 0b0000,          // EQ
+            Self::NotEqual => 0b0001,       // NE
+            Self::LessThan => 0b1011,       // LT
+            Self::LessEqual => 0b1101,      // LE
+            Self::GreaterThan => 0b1100,    // GT
+            Self::GreaterEqual => 0b1010,   // GE
+            Self::UnsignedHigher => 0b1000, // HI
         }
     }
 }
@@ -199,6 +203,40 @@ impl Aarch64Assembler {
         self.emit(0xCA00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
     }
 
+    /// `sdiv Xd, Xn, Xm` — signed 64-bit division (truncating toward zero).
+    /// Divide-by-zero yields `0` on aarch64 (no trap), so callers must guard the
+    /// divisor before relying on the quotient. Paired with [`Aarch64Assembler::msub`]
+    /// to form the PHP integer remainder.
+    pub fn sdiv(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x9AC0_0C00 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `msub Xd, Xn, Xm, Xa` — `Xa - (Xn * Xm)`. With `Xn` = quotient, `Xm` =
+    /// divisor, `Xa` = dividend this yields the remainder `dividend - q*divisor`.
+    pub fn msub(&mut self, rd: Reg, rn: Reg, rm: Reg, ra: Reg) {
+        self.emit(
+            0x9B00_8000
+                | (u32::from(rm) << 16)
+                | (u32::from(ra) << 10)
+                | (u32::from(rn) << 5)
+                | u32::from(rd),
+        );
+    }
+
+    /// `lslv Xd, Xn, Xm` — logical shift left of `Xn` by `Xm & 63`. PHP `<<`
+    /// requires the shift amount in `0..=63`; callers guard that range and take
+    /// the side exit otherwise (aarch64 masks the amount mod 64, unlike PHP).
+    pub fn lslv(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x9AC0_2000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `asrv Xd, Xn, Xm` — arithmetic shift right of `Xn` by `Xm & 63`. PHP `>>`
+    /// requires the shift amount in `0..=63`; callers guard that range and take
+    /// the side exit otherwise (aarch64 masks the amount mod 64, unlike PHP).
+    pub fn asrv(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x9AC0_2800 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
     /// `mov Xd, Xm` (register move, encoded as `orr Xd, xzr, Xm`).
     pub fn mov(&mut self, rd: Reg, rm: Reg) {
         self.emit(0xAA00_0000 | (u32::from(rm) << 16) | (u32::from(XZR) << 5) | u32::from(rd));
@@ -239,6 +277,14 @@ impl Aarch64Assembler {
     /// flags (`subs wzr, Wn, #imm`). Used to guard a value tag.
     pub fn cmp_imm_w(&mut self, rn: Reg, imm12: u16) {
         self.emit(0x7100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(XZR));
+    }
+
+    /// `cmp Xn, #imm12` — compare a 64-bit register to an immediate, setting
+    /// flags (`subs xzr, Xn, #imm`). Used for the divide-by-zero and
+    /// shift-range guards, where a following unsigned `b.hi` catches both
+    /// negative (huge as unsigned) and out-of-range operands in one test.
+    pub fn cmp_imm_x(&mut self, rn: Reg, imm12: u16) {
+        self.emit(0xF100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(XZR));
     }
 
     /// `cmp Xn, Xm, asr #63` — compare `Xn` against the arithmetic-shift-right

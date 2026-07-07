@@ -74,7 +74,8 @@ const fn payload_off(slot: u32) -> u32 {
 }
 
 /// A binary PHP integer operation. Add/Sub/Mul carry a type + overflow guard;
-/// the bitwise ops carry only the type guard (they never overflow).
+/// Mod and the shifts carry an operand guard (divisor `!= 0`, shift amount in
+/// `0..=63`); the bitwise ops carry only the type guard (they never overflow).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntBinOp {
     /// `lhs + rhs`, side exit on signed overflow.
@@ -83,16 +84,26 @@ pub enum IntBinOp {
     Sub,
     /// `lhs * rhs`, side exit on signed overflow.
     Mul,
+    /// `lhs % rhs`, side exit on a zero divisor (interpreter raises
+    /// `DivisionByZeroError`). aarch64 wraps `INT_MIN % -1` to `0`, matching PHP.
+    Mod,
     /// `lhs & rhs`.
     BitAnd,
     /// `lhs | rhs`.
     BitOr,
     /// `lhs ^ rhs`.
     BitXor,
+    /// `lhs << rhs`, side exit when the shift amount is outside `0..=63`
+    /// (negative reads as a large unsigned value; PHP would raise or return 0).
+    Shl,
+    /// `lhs >> rhs` (arithmetic), side exit when the shift amount is outside
+    /// `0..=63`.
+    Shr,
 }
 
 impl IntBinOp {
-    /// Emit the operation on `X4`/`X5` into `X6`, taking `deopt` on overflow.
+    /// Emit the operation on `X4` (lhs) / `X5` (rhs) into `X6`, taking `deopt`
+    /// on overflow or an out-of-domain operand. `X3` is used as scratch.
     fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
         match self {
             IntBinOp::Add => {
@@ -111,9 +122,29 @@ impl IntBinOp {
                 asm.cmp_shifted_asr63(X3, X6);
                 asm.b_cond(Cond::NotEqual, deopt);
             }
+            IntBinOp::Mod => {
+                // Side exit on a zero divisor; the interpreter raises the error.
+                asm.cmp_imm_x(X5, 0);
+                asm.b_cond(Cond::Equal, deopt);
+                // remainder = lhs - (lhs / rhs) * rhs.
+                asm.sdiv(X3, X4, X5);
+                asm.msub(X6, X3, X5, X4);
+            }
             IntBinOp::BitAnd => asm.and_reg(X6, X4, X5),
             IntBinOp::BitOr => asm.orr_reg(X6, X4, X5),
             IntBinOp::BitXor => asm.eor_reg(X6, X4, X5),
+            IntBinOp::Shl => {
+                // aarch64 masks the shift mod 64; PHP's 0..=63 domain differs, so
+                // guard the amount (negative reads as a huge unsigned value).
+                asm.cmp_imm_x(X5, 63);
+                asm.b_cond(Cond::UnsignedHigher, deopt);
+                asm.lslv(X6, X4, X5);
+            }
+            IntBinOp::Shr => {
+                asm.cmp_imm_x(X5, 63);
+                asm.b_cond(Cond::UnsignedHigher, deopt);
+                asm.asrv(X6, X4, X5);
+            }
         }
     }
 }
@@ -939,9 +970,12 @@ fn int_bin_op(op: BinaryOp) -> Option<IntBinOp> {
         BinaryOp::Add => Some(IntBinOp::Add),
         BinaryOp::Sub => Some(IntBinOp::Sub),
         BinaryOp::Mul => Some(IntBinOp::Mul),
+        BinaryOp::Mod => Some(IntBinOp::Mod),
         BinaryOp::BitAnd => Some(IntBinOp::BitAnd),
         BinaryOp::BitOr => Some(IntBinOp::BitOr),
         BinaryOp::BitXor => Some(IntBinOp::BitXor),
+        BinaryOp::ShiftLeft => Some(IntBinOp::Shl),
+        BinaryOp::ShiftRight => Some(IntBinOp::Shr),
         _ => None,
     }
 }
@@ -979,7 +1013,7 @@ mod tests {
     use super::{
         GuardedIntAddStep, MAX_SLOT, RegionCompileError, SlotSequenceError,
         build_scalar_int_region, compile_scalar_int_function, compile_scalar_int_region,
-        emit_guarded_int_add_sequence,
+        emit_guarded_int_add_sequence, int_bin_op,
     };
     use crate::region_ir::{
         NodeId, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
@@ -1541,6 +1575,27 @@ mod tests {
             .expect("bitwise const-operand loop body recognized and compiled");
         assert_eq!(compiled.result_slot, 1);
         assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_mod_and_shift_loop_bodies() {
+        // Mod and both shifts are in the native integer subset with a guard.
+        let constants = [IrConstant::Int(0), IrConstant::Int(1), IrConstant::Int(5)];
+        for op in [BinaryOp::Mod, BinaryOp::ShiftLeft, BinaryOp::ShiftRight] {
+            let function = const_body_loop_function(op);
+            let compiled = compile_scalar_int_function(&function, &constants, 1)
+                .unwrap_or_else(|| panic!("{op:?} const-operand loop body should compile"));
+            assert_eq!(compiled.result_slot, 1);
+            assert!(!compiled.code.is_empty());
+        }
+    }
+
+    #[test]
+    fn int_bin_op_still_rejects_out_of_subset_ops() {
+        // Div (float-typed result) and Pow are not in the integer subset.
+        assert_eq!(int_bin_op(BinaryOp::Div), None);
+        assert_eq!(int_bin_op(BinaryOp::Pow), None);
+        assert_eq!(int_bin_op(BinaryOp::Concat), None);
     }
 
     #[test]

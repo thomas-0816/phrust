@@ -988,6 +988,176 @@ mod tests {
         assert_eq!(slots[2].payload as i64, 7);
     }
 
+    /// Build, finalize, and invoke a flat scalar-int op sequence over `slots`,
+    /// returning the side-exit code (0 = completed, 1 = deopt).
+    fn run_scalar_ops(
+        ops: &[crate::copy_patch::ScalarIntOp],
+        slots: &mut [crate::JitCValue],
+    ) -> i32 {
+        use crate::JitCValue;
+        use crate::copy_patch::emit_scalar_int_ops;
+        let code = emit_scalar_int_ops(ops).expect("scalar-int ops emit");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+        run(slots.as_mut_ptr())
+    }
+
+    #[test]
+    fn executes_native_mod_shift_ops() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{IntBinOp, ScalarIntOp};
+
+        // slot[2] = slot[0] % slot[1]; slot[3] = slot[0] << slot[1]; etc.
+        // 17 % 5 = 2.
+        let mut slots = [
+            JitCValue::int(17),
+            JitCValue::int(5),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[ScalarIntOp::Binary {
+                    op: IntBinOp::Mod,
+                    dst: 2,
+                    lhs: 0,
+                    rhs: 1,
+                }],
+                &mut slots,
+            ),
+            0
+        );
+        assert_eq!(slots[2].tag, JitCValueTag::Int);
+        assert_eq!(slots[2].payload as i64, 2);
+
+        // INT_MIN % -1 == 0 (aarch64 wraps the overflowing division to match PHP).
+        let mut wrap = [
+            JitCValue::int(i64::MIN),
+            JitCValue::int(-1),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[ScalarIntOp::Binary {
+                    op: IntBinOp::Mod,
+                    dst: 2,
+                    lhs: 0,
+                    rhs: 1,
+                }],
+                &mut wrap,
+            ),
+            0
+        );
+        assert_eq!(wrap[2].payload as i64, 0);
+
+        // 3 << 4 = 48 (arithmetic left shift).
+        let mut shl = [
+            JitCValue::int(3),
+            JitCValue::int(4),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[ScalarIntOp::Binary {
+                    op: IntBinOp::Shl,
+                    dst: 2,
+                    lhs: 0,
+                    rhs: 1,
+                }],
+                &mut shl,
+            ),
+            0
+        );
+        assert_eq!(shl[2].payload as i64, 48);
+
+        // -256 >> 2 = -64 (arithmetic right shift preserves the sign).
+        let mut shr = [
+            JitCValue::int(-256),
+            JitCValue::int(2),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[ScalarIntOp::Binary {
+                    op: IntBinOp::Shr,
+                    dst: 2,
+                    lhs: 0,
+                    rhs: 1,
+                }],
+                &mut shr,
+            ),
+            0
+        );
+        assert_eq!(shr[2].payload as i64, -64);
+    }
+
+    #[test]
+    fn mod_by_zero_and_out_of_range_shift_take_the_side_exit() {
+        use crate::JitCValue;
+        use crate::copy_patch::{IntBinOp, ScalarIntOp};
+
+        // x % 0 -> side exit (the interpreter raises DivisionByZeroError).
+        let mut by_zero = [
+            JitCValue::int(10),
+            JitCValue::int(0),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[ScalarIntOp::Binary {
+                    op: IntBinOp::Mod,
+                    dst: 2,
+                    lhs: 0,
+                    rhs: 1,
+                }],
+                &mut by_zero,
+            ),
+            1
+        );
+
+        // Shift amount 64 is outside PHP's 0..=63 domain -> side exit (aarch64
+        // would otherwise mask it to 0 and return the operand unchanged).
+        let mut wide = [
+            JitCValue::int(1),
+            JitCValue::int(64),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[ScalarIntOp::Binary {
+                    op: IntBinOp::Shl,
+                    dst: 2,
+                    lhs: 0,
+                    rhs: 1,
+                }],
+                &mut wide,
+            ),
+            1
+        );
+
+        // A negative shift amount reads as a huge unsigned value -> side exit.
+        let mut neg = [
+            JitCValue::int(1),
+            JitCValue::int(-1),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[ScalarIntOp::Binary {
+                    op: IntBinOp::Shr,
+                    dst: 2,
+                    lhs: 0,
+                    rhs: 1,
+                }],
+                &mut neg,
+            ),
+            1
+        );
+    }
+
     // Native loop throughput: sum 0..n natively vs the interpreter's ~50 ns/op.
     // Run with: cargo test --release -p php_jit --ignored --nocapture bench_native_counted_loop
     #[cfg(all(unix, target_arch = "aarch64"))]
