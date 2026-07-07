@@ -67,3 +67,6 @@ Thumbs.db
 # Local Codex/session artifacts
 .codex/
 .agents/
+
+# Dependencies (installed, not committed)
+examples/browser/node_modules/
