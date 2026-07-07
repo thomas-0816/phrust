@@ -16575,7 +16575,7 @@ impl Vm {
                             continue;
                         }
                         let class = if let Some(class) =
-                            lookup_class_in_state(compiled, state, &class_name)
+                            self.cached_class_entry(compiled, state, &class_name)
                         {
                             class
                         } else {
@@ -16597,7 +16597,7 @@ impl Vm {
                                 Ok(_) => {}
                                 Err(result) => return result,
                             }
-                            let Some(class) = lookup_class_in_state(compiled, state, &class_name)
+                            let Some(class) = self.cached_class_entry(compiled, state, &class_name)
                             else {
                                 match self.raise_runtime_error(
                                     compiled,
@@ -17568,7 +17568,7 @@ impl Vm {
                             }
                             continue;
                         }
-                        let class = match lookup_class_in_state(compiled, state, class_name) {
+                        let class = match self.cached_class_entry(compiled, state, class_name) {
                             Some(class) => class,
                             None => {
                                 if is_spl_iterator_runtime_class(class_name) {
@@ -17968,7 +17968,7 @@ impl Vm {
                                     }
                                 }
                                 if let Some(class) =
-                                    lookup_class_in_state(compiled, state, class_name)
+                                    self.cached_class_entry(compiled, state, class_name)
                                 {
                                     class
                                 } else {
