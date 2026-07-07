@@ -9159,25 +9159,47 @@ impl Vm {
                                         stack.pop_recycle();
                                         return result;
                                     };
-                                    self.execute_bytecode_function(
+                                    let call = FunctionCall::new(values, Vec::new())
+                                        .with_call_site_strict_types(
+                                            compiled.unit().strict_types,
+                                        )
+                                        .with_optional_call_span(
+                                            plan.unit
+                                                .spans
+                                                .get(instruction.span.index())
+                                                .copied(),
+                                        );
+                                    // Copy-and-patch native leaf tier, fired from
+                                    // the hot dense call path. The dense fast path
+                                    // dispatches straight to `execute_bytecode_function`,
+                                    // bypassing `execute_function_inner` where the
+                                    // rich path's leaf hook lives — so without this
+                                    // the tier never engages on real (dense) code.
+                                    #[cfg(feature = "jit-copy-patch")]
+                                    let native = self.try_execute_copy_patch_leaf(
                                         compiled,
-                                        &plan.unit,
-                                        Some(plan),
-                                        dense_function,
-                                        ir_function,
                                         function,
-                                        FunctionCall::new(values, Vec::new())
-                                            .with_call_site_strict_types(compiled.unit().strict_types)
-                                            .with_optional_call_span(
-                                                plan.unit
-                                                    .spans
-                                                    .get(instruction.span.index())
-                                                    .copied(),
-                                            ),
-                                        output,
-                                        stack,
-                                        state,
-                                    )
+                                        ir_function,
+                                        &call,
+                                    );
+                                    #[cfg(not(feature = "jit-copy-patch"))]
+                                    let native: Option<Value> = None;
+                                    if let Some(value) = native {
+                                        VmResult::success_no_output(Some(value))
+                                    } else {
+                                        self.execute_bytecode_function(
+                                            compiled,
+                                            &plan.unit,
+                                            Some(plan),
+                                            dense_function,
+                                            ir_function,
+                                            function,
+                                            call,
+                                            output,
+                                            stack,
+                                            state,
+                                        )
+                                    }
                                 }
                                 Some(DenseFunctionPlan::RichFallback { reason }) => {
                                     self.record_counter_dense_call_fallback(reason);
