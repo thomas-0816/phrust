@@ -1,3 +1,5 @@
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use php_diagnostics::{DiagnosticOutputFormat, install_panic_diagnostic_hook};
 use php_server::{config::ServerConfig, server};
 use std::str::FromStr;
@@ -13,9 +15,15 @@ fn main() {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
         )
         .init();
+    #[cfg(not(target_os = "wasi"))]
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(TOKIO_WORKER_STACK_BYTES)
+        .build()
+        .expect("tokio runtime should initialize");
+    #[cfg(target_os = "wasi")]
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .expect("tokio runtime should initialize");
     runtime.block_on(async_main(error_format));

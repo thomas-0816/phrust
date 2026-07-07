@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>phrust PHP in the browser</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: sans-serif; background: #777BB3; color: #fff; padding: 20px; }
+  h1 { color: #fff; }
+  .container { max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+  textarea, pre { background: #f5f5f5; border: none; border-radius: 6px; padding: 12px; font: 14px monospace; }
+  textarea { color: #333; field-sizing: content; min-height: 200px; }
+  pre { min-height: 100px; white-space: pre-wrap; word-break: break-all; color: #333; }
+  #error { color: #c33; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Phrust PHP in the browser</h1>
+  <textarea id="code" autofocus>echo "Hello PHP! 🐘";</textarea>
+  <pre id="output"></pre>
+  <pre id="error"></pre>
+</div>
+<script type="module">
+const codeEl = document.getElementById('code');
+const outputEl = document.getElementById('output');
+const errorEl = document.getElementById('error');
+
+let worker = null;
+
+function terminateWorker() {
+  if (worker) { worker.terminate(); worker = null; }
+}
+
+async function runPhp(code) {
+  terminateWorker();
+
+  outputEl.textContent = '';
+  errorEl.textContent = '';
+
+  worker = new Worker('./phrust-worker.js', { type: 'module' });
+
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === 'ready') {
+      worker.postMessage({ code });
+    } else if (msg.type === 'result') {
+      if (msg.out) outputEl.textContent = msg.out;
+      if (msg.err) errorEl.textContent = msg.err;
+      if (msg.error && !msg.err) errorEl.textContent = `[Exception] ${msg.error}`;
+    }
+  };
+
+  worker.onerror = (e) => {
+    e.preventDefault();
+    if (!errorEl.textContent) errorEl.textContent = `[Worker] ${e.message} ${e.filename}:${e.lineno}:${e.colno}`;
+  };
+}
+
+outputEl.textContent = 'Loading phrust...\n';
+runPhp(codeEl.value);
+
+let timer;
+codeEl.addEventListener('input', () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => runPhp(codeEl.value), 120);
+});
+</script>
+</body>
+</html>

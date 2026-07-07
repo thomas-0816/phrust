@@ -590,6 +590,7 @@ impl VmCounters {
         match kind {
             InstructionKind::BindReferenceFromCall { .. }
             | InstructionKind::CallFunction { .. }
+            | InstructionKind::TailCallFunction { .. }
             | InstructionKind::CallClosure { .. }
             | InstructionKind::AcquireCallable { .. }
             | InstructionKind::CallCallable { .. }
@@ -5125,7 +5126,7 @@ fn push_nested_usize_array(
 // the single match over `InstructionKind` (exhaustive, so new variants
 // fail to compile until both are extended) and `IR_OPCODE_NAMES` mirrors
 // its arm order.
-pub(crate) const IR_OPCODE_COUNT: usize = 103;
+pub(crate) const IR_OPCODE_COUNT: usize = 104;
 
 #[rustfmt::skip]
 const IR_OPCODE_NAMES: [&str; IR_OPCODE_COUNT] = [
@@ -5232,6 +5233,7 @@ const IR_OPCODE_NAMES: [&str; IR_OPCODE_COUNT] = [
     "array_get", // 100
     "unsupported", // 101
     "runtime_error", // 102
+    "tail_call_function", // 103
 ];
 
 #[rustfmt::skip]
@@ -5340,6 +5342,7 @@ fn ir_opcode_index(kind: &InstructionKind) -> usize {
         InstructionKind::ArrayGet { .. } => 100,
         InstructionKind::Unsupported { .. } => 101,
         InstructionKind::RuntimeError { .. } => 102,
+        InstructionKind::TailCallFunction { .. } => 103,
     }
 }
 

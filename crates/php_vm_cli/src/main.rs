@@ -1,3 +1,5 @@
+#![cfg_attr(target_family = "wasm", allow(dead_code, unused_imports))]
+
 //! VM CLI process entry point.
 //!
 //! Command parsing and debug/report adapters live in `commands`; reusable
@@ -18,20 +20,27 @@ const PHP_VM_STACK_SIZE: usize = 128 * 1024 * 1024;
 
 fn main() {
     install_panic_diagnostic_hook("php-vm", env_error_format());
-    let handle = match thread::Builder::new()
-        .name("php-vm-runtime".to_owned())
-        .stack_size(PHP_VM_STACK_SIZE)
-        .spawn(commands::main_entry)
+    #[cfg(not(target_family = "wasm"))]
     {
-        Ok(handle) => handle,
-        Err(error) => {
-            write_spawn_failure(error, env_error_format());
-            process::exit(1);
-        }
-    };
-    handle
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        let handle = match thread::Builder::new()
+            .name("php-vm-runtime".to_owned())
+            .stack_size(PHP_VM_STACK_SIZE)
+            .spawn(commands::main_entry)
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                write_spawn_failure(error, env_error_format());
+                process::exit(1);
+            }
+        };
+        handle
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        commands::main_entry();
+    }
 }
 
 fn write_spawn_failure(error: io::Error, format: DiagnosticOutputFormat) {

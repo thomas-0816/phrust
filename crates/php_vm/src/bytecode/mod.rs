@@ -204,6 +204,10 @@ pub enum DenseOpcode {
     CloneObject = 88,
     /// `object->property[dims...] = value` (or `[] =` append).
     AssignPropertyDim = 89,
+    /// Call a function and store the result in a register, then immediately
+    /// return from the current function -- the terminator after this
+    /// instruction is `Return { value: Some(dst) }`.
+    TailCallFunction = 90,
 }
 
 impl DenseOpcode {
@@ -314,6 +318,7 @@ impl DenseOpcode {
             Self::FetchStaticProperty => "fetch_static_property",
             Self::CloneObject => "clone_object",
             Self::AssignPropertyDim => "assign_property_dim",
+            Self::TailCallFunction => "tail_call_function",
         }
     }
 
@@ -1951,6 +1956,7 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::Discard => Some(RuleKind::NoRule),
         DenseOpcode::CallFunction
         | DenseOpcode::CallFunctionDiscard
+        | DenseOpcode::TailCallFunction
         | DenseOpcode::NewObject
         | DenseOpcode::CallCallable
         | DenseOpcode::ResolveCallable
@@ -2022,7 +2028,7 @@ fn compare_result_feeds_branch(compare: &DenseOperands, branch: &DenseOperands) 
 
 fn dense_skip_reason(opcode: DenseOpcode) -> &'static str {
     match opcode {
-        DenseOpcode::CallFunction => "effectful_call",
+        DenseOpcode::CallFunction | DenseOpcode::TailCallFunction => "effectful_call",
         DenseOpcode::NewObject => "effectful_object_instantiation",
         DenseOpcode::CallCallable => "effectful_callable_call",
         DenseOpcode::ResolveCallable => "effectful_callable_resolution",
@@ -2362,6 +2368,15 @@ fn lower_instruction(
                 args: lower_call_args(instruction, names, args)?,
             },
         ),
+        InstructionKind::TailCallFunction { dst, name, args } => (
+            DenseOpcode::TailCallFunction,
+            DenseOperands::Call {
+                dst: dst.raw(),
+                name: push_name(names, name).index() as u32,
+                args: lower_call_args(instruction, names, args)?,
+            },
+        ),
+
         InstructionKind::NewObject {
             dst,
             display_class_name,
@@ -3223,7 +3238,8 @@ fn verify_instruction(
             verify_register(*dst, function, errors);
             verify_operand(*src, unit, function, errors);
         }
-        (DenseOpcode::CallFunction, DenseOperands::Call { dst, name, args }) => {
+        (DenseOpcode::CallFunction, DenseOperands::Call { dst, name, args })
+        | (DenseOpcode::TailCallFunction, DenseOperands::Call { dst, name, args }) => {
             verify_register(*dst, function, errors);
             verify_name(*name, unit, errors);
             for arg in args {

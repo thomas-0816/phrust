@@ -412,6 +412,7 @@ pub(crate) fn content_type_for(path: &std::path::Path) -> &'static str {
         Some("js") => "application/javascript; charset=UTF-8",
         Some("json") => "application/json",
         Some("txt") => "text/plain; charset=UTF-8",
+        Some("wasm") => "application/wasm",
         Some("xml") => "application/xml",
         _ => "application/octet-stream",
     }

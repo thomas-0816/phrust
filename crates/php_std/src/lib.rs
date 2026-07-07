@@ -1,3 +1,5 @@
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 //! standard-library standard-library registry infrastructure.
 //!
 //! This crate owns metadata for PHP 8.5.7 internal extensions, functions,
@@ -385,19 +387,31 @@ impl ExtensionRegistry {
             standard_library_pcre_extension(),
             standard_library_session_extension(),
             standard_library_pdo_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_pdo_mysql_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_pdo_pgsql_extension(),
             standard_library_pdo_sqlite_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_pgsql_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_pcntl_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_posix_extension(),
             standard_library_readline_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_shmop_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_sysvmsg_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_sysvsem_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_sysvshm_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_mysqli_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_curl_extension(),
+            #[cfg(not(target_family = "wasm"))]
             standard_library_openssl_extension(),
             standard_library_phar_extension(),
             standard_library_sqlite3_extension(),

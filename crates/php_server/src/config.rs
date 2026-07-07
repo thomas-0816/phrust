@@ -14,6 +14,19 @@ use php_vm::api::DenseIncludeMode;
 
 use crate::routing::RequestRewriteRule;
 
+fn temp_dir() -> PathBuf {
+    #[cfg(target_os = "wasi")]
+    if let Ok(dir) = env::var("TMPDIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    #[cfg(target_os = "wasi")]
+    return PathBuf::from("/tmp");
+    #[cfg(not(target_os = "wasi"))]
+    env::temp_dir()
+}
+
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 const DEFAULT_INDEX: &str = "index.php";
 const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
@@ -173,14 +186,14 @@ impl ServerConfig {
             .unwrap_or(DEFAULT_MAX_BODY_BYTES);
         let mut upload_temp_dir = file_config
             .path("upload_temp_dir")
-            .unwrap_or_else(|| std::env::temp_dir().join("phrust-uploads"));
+            .unwrap_or_else(|| temp_dir().join("phrust-uploads"));
         let mut max_upload_files = file_config
             .positive_usize("max_upload_files")?
             .unwrap_or(DEFAULT_MAX_UPLOAD_FILES);
         let mut max_upload_file_bytes = file_config.positive_usize("max_upload_file_bytes")?;
         let mut session_save_path = file_config
             .path("session_save_path")
-            .unwrap_or_else(|| std::env::temp_dir().join("phrust-sessions"));
+            .unwrap_or_else(|| temp_dir().join("phrust-sessions"));
         let mut session_cookie_name = file_config
             .string("session_cookie_name")
             .unwrap_or_else(|| DEFAULT_SESSION_COOKIE_NAME.to_string());
@@ -560,10 +573,10 @@ impl ServerConfig {
             builtin_router: router,
             request_rewrites,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
-            upload_temp_dir: std::env::temp_dir().join("phrust-uploads"),
+            upload_temp_dir: temp_dir().join("phrust-uploads"),
             max_upload_files: DEFAULT_MAX_UPLOAD_FILES,
             max_upload_file_bytes: DEFAULT_MAX_BODY_BYTES,
-            session_save_path: std::env::temp_dir().join("phrust-sessions"),
+            session_save_path: temp_dir().join("phrust-sessions"),
             session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
             session_cookie_path: DEFAULT_SESSION_COOKIE_PATH.to_string(),
             sessions_enabled: true,
@@ -650,12 +663,15 @@ Options:\n\
     }
 
     pub fn validated_docroot(&self) -> Result<PathBuf, ConfigError> {
+        #[cfg(not(target_family = "wasm"))]
         let docroot = self.docroot.canonicalize().map_err(|error| {
             ConfigError::new(format!(
                 "docroot `{}` cannot be canonicalized: {error}",
                 self.docroot.display()
             ))
         })?;
+        #[cfg(target_family = "wasm")]
+        let docroot = self.docroot.clone();
         if !docroot.is_dir() {
             return Err(ConfigError::new(format!(
                 "docroot `{}` is not a directory",
@@ -1107,13 +1123,13 @@ mod tests {
         assert_eq!(config.max_body_bytes, 1_048_576);
         assert_eq!(
             config.upload_temp_dir,
-            std::env::temp_dir().join("phrust-uploads")
+            temp_dir().join("phrust-uploads")
         );
         assert_eq!(config.max_upload_files, 32);
         assert_eq!(config.max_upload_file_bytes, 1_048_576);
         assert_eq!(
             config.session_save_path,
-            std::env::temp_dir().join("phrust-sessions")
+            temp_dir().join("phrust-sessions")
         );
         assert_eq!(config.session_cookie_name, "PHPSESSID");
         assert_eq!(config.session_cookie_path, "/");
@@ -1604,7 +1620,7 @@ index = "../bad.php"
 
     fn temp_config(contents: &str) -> PathBuf {
         let unique = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        let path = temp_dir().join(format!(
             "phrust-server-config-{}-{unique}.toml",
             std::process::id()
         ));

@@ -6773,12 +6773,22 @@ impl Vm {
         plan: Option<&DenseExecutionPlan>,
         dense_function: &DenseFunction,
         ir_function: &IrFunction,
-        function_id: FunctionId,
+        mut function_id: FunctionId,
         mut call: FunctionCall<'_>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
+        struct SavedCallerState {
+            function_index: usize,
+            frame_index: usize,
+            block_index: u32,
+            instruction_offset: usize,
+            foreach_iterators: HashMap<RegId, ForeachIterator>,
+            diagnostics: Vec<RuntimeDiagnostic>,
+            dst: u32,
+            discard: bool,
+        }
         self.record_counter_dense_function_executed();
         if call.resume_continuation.is_some()
             || call.resume_fiber_continuation.is_some()
@@ -6791,14 +6801,57 @@ impl Vm {
             );
         }
         let mut diagnostics = Vec::new();
-        let frame_shape = self.frame_shape_flags(compiled, function_id, ir_function);
-        let frame_reuse_call_shape_reason =
-            frame_reuse_call_shape_blocked_reason(ir_function, &call, frame_shape);
-        let frame_layout = call_frame_layout_class(ir_function, &call, frame_shape);
-        let argument_policy = call.argument_binding_policy(compiled);
-        let elide_frame_args = self.frame_args_elidable(compiled, function_id, ir_function);
-        self.record_counter_direct_frame(frame_layout, ir_function, elide_frame_args);
-        let prepared = match arguments::prepare_arguments(
+        let is_simple = call.captures.is_empty()
+            && call.this_value.is_none()
+            && call.shared_top_level_locals.is_none()
+            && call.error_context_compiled.is_none()
+            && !call.allow_by_ref_value_warnings
+            && call.by_ref_warning_callable_name.is_none()
+            && !ir_function.flags.is_top_level
+            && !ir_function.flags.is_generator
+            && !ir_function.flags.is_method
+            && call.args.len() == ir_function.params.len()
+            && call.args.iter().all(|arg| arg.name.is_none())
+            && ir_function.params.iter().all(|p| !p.by_ref && p.type_.is_none() && !p.variadic);
+        let mut frame_index;
+        if is_simple {
+            self.record_counter_dense_function_executed();
+            let activation_context = FrameActivationContext {
+                scope_class: call.scope_class.take(),
+                called_class: call.called_class.take(),
+                declaring_class: call.declaring_class.take(),
+                call_span: call.call_span,
+            };
+            stack.push_reusable_frame(
+                function_id,
+                dense_function.register_count,
+                dense_function.local_count,
+                activation_context,
+            );
+            frame_index = stack.len().saturating_sub(1);
+            {
+                let frame = stack.current_mut().expect("bytecode frame was pushed");
+                for (param, arg) in ir_function.params.iter().zip(call.args) {
+                    let value = match arg.value {
+                        Value::Reference(cell) => cell.get(),
+                        other => other,
+                    };
+                    if let Err(message) = frame.locals.set(param.local, value) {
+                        let result = self.runtime_error(output, compiled, stack, message);
+                        stack.pop_recycle();
+                        return result;
+                    }
+                }
+            }
+        } else {
+            let frame_shape = self.frame_shape_flags(compiled, function_id, ir_function);
+            let frame_reuse_call_shape_reason =
+                frame_reuse_call_shape_blocked_reason(ir_function, &call, frame_shape);
+            let frame_layout = call_frame_layout_class(ir_function, &call, frame_shape);
+            let argument_policy = call.argument_binding_policy(compiled);
+            let elide_frame_args = self.frame_args_elidable(compiled, function_id, ir_function);
+            self.record_counter_direct_frame(frame_layout, ir_function, elide_frame_args);
+            let prepared = match arguments::prepare_arguments(
             compiled,
             ir_function,
             call.args,
@@ -6873,7 +6926,7 @@ impl Vm {
                 activation_context,
             )
         };
-        let frame_index = stack.len().saturating_sub(1);
+        frame_index = stack.len().saturating_sub(1);
         self.record_counter_frame_activation(
             reused_frame,
             dense_function.register_count,
@@ -6989,6 +7042,11 @@ impl Vm {
                 return result;
             }
         }
+        }
+        let mut dense_function = dense_function;
+        let mut ir_function = ir_function;
+        let mut saved_callers: Vec<SavedCallerState> = Vec::new();
+        let mut resume_instruction_offset: Option<usize> = None;
         let unit_id = compiled.unit().id;
         let mut foreach_iterators: HashMap<RegId, ForeachIterator> = HashMap::new();
         let mut block_index = 0_u32;
@@ -7034,7 +7092,7 @@ impl Vm {
                 stack.pop_recycle();
                 return result;
             };
-            let mut instruction_offset = 0_usize;
+            let mut instruction_offset = resume_instruction_offset.take().unwrap_or(0);
             while instruction_offset < instructions.len() {
                 let instruction = &instructions[instruction_offset];
                 let dense_instruction_index = start + instruction_offset;
@@ -8958,7 +9016,7 @@ impl Vm {
                             return result;
                         }
                     }
-                    DenseOpcode::CallFunction | DenseOpcode::CallFunctionDiscard => {
+                    DenseOpcode::CallFunction | DenseOpcode::CallFunctionDiscard | DenseOpcode::TailCallFunction => {
                         let DenseOperands::Call {
                             dst,
                             name,
@@ -9065,6 +9123,90 @@ impl Vm {
                             resolved
                         };
                         self.record_counter_dense_direct_call_hit();
+                        // Inline state-machine dispatch for same-unit dense calls
+                        // that use the simple preamble path.
+                        if let Some(plan) = plan
+                            && let FunctionCallCacheTarget::CurrentUnit { function } =
+                                target.clone()
+                            && let Some(DenseFunctionPlan::Dense) =
+                                plan.function_plan(function.index())
+                            && let Some(callee_dense_function) =
+                                plan.unit.functions.get(function.index())
+                            && let Some(callee_ir_function) =
+                                compiled.unit().functions.get(function.index())
+                            && !callee_ir_function.flags.is_top_level
+                            && !callee_ir_function.flags.is_generator
+                            && !callee_ir_function.flags.is_method
+                            && call.shared_top_level_locals.is_none()
+                            && values.len() == callee_ir_function.params.len()
+                            && values.iter().all(|arg| arg.name.is_none())
+                            && callee_ir_function.params.iter().all(|p| {
+                                !p.by_ref && p.type_.is_none() && !p.variadic
+                            })
+                        {
+                            self.record_counter_dense_function_executed();
+                            saved_callers.push(SavedCallerState {
+                                function_index: function_id.index(),
+                                frame_index,
+                                block_index,
+                                instruction_offset: next_instruction_offset,
+                                foreach_iterators,
+                                diagnostics: std::mem::take(&mut diagnostics),
+                                dst,
+                                discard: instruction.opcode
+                                    == DenseOpcode::CallFunctionDiscard,
+                            });
+                            let activation_context = FrameActivationContext {
+                                scope_class: None,
+                                called_class: None,
+                                declaring_class: None,
+                                call_span: plan
+                                    .unit
+                                    .spans
+                                    .get(instruction.span.index())
+                                    .copied(),
+                            };
+                            stack.push_reusable_frame(
+                                function,
+                                callee_dense_function.register_count,
+                                callee_dense_function.local_count,
+                                activation_context,
+                            );
+                            frame_index = stack.len().saturating_sub(1);
+                            {
+                                let frame = stack
+                                    .current_mut()
+                                    .expect("bytecode frame was pushed");
+                                for (param, arg) in
+                                    callee_ir_function.params.iter().zip(values)
+                                {
+                                    let value = match arg.value {
+                                        Value::Reference(cell) => cell.get(),
+                                        other => other,
+                                    };
+                                    if let Err(message) =
+                                        frame.locals.set(param.local, value)
+                                    {
+                                        if instruction.opcode
+                                            != DenseOpcode::TailCallFunction
+                                        {
+                                            saved_callers.pop();
+                                        }
+                                        let result = self.runtime_error(
+                                            output, compiled, stack, message,
+                                        );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                }
+                            }
+                            function_id = function;
+                            dense_function = callee_dense_function;
+                            ir_function = callee_ir_function;
+                            foreach_iterators = HashMap::new();
+                            block_index = 0;
+                            continue 'dispatch;
+                        }
                         let result = if let Some(plan) = plan
                             && let FunctionCallCacheTarget::CurrentUnit { function } =
                                 target.clone()
@@ -9109,7 +9251,9 @@ impl Vm {
                                         ir_function,
                                         function,
                                         FunctionCall::new(values, Vec::new())
-                                            .with_call_site_strict_types(compiled.unit().strict_types)
+                                            .with_call_site_strict_types(
+                                                compiled.unit().strict_types,
+                                            )
                                             .with_optional_call_span(
                                                 plan.unit
                                                     .spans
@@ -9137,7 +9281,9 @@ impl Vm {
                                         compiled,
                                         function,
                                         FunctionCall::new(values, Vec::new())
-                                            .with_call_site_strict_types(compiled.unit().strict_types)
+                                            .with_call_site_strict_types(
+                                                compiled.unit().strict_types,
+                                            )
                                             .with_optional_call_span(
                                                 plan.unit
                                                     .spans
@@ -11589,6 +11735,65 @@ impl Vm {
                                 return result;
                             }
                         };
+                        if let Some(mut saved) = saved_callers.pop() {
+                            saved.diagnostics.extend(std::mem::take(&mut diagnostics));
+                            diagnostics = saved.diagnostics;
+                            let restored_frame_index = saved.frame_index;
+                            let restored_block_index = saved.block_index;
+                            let restored_instruction_offset = saved.instruction_offset;
+                            let restored_function_index = saved.function_index;
+                            let restored_foreach_iterators = saved.foreach_iterators;
+                            let restored_dst = saved.dst;
+                            let restored_discard = saved.discard;
+                            resume_instruction_offset = Some(restored_instruction_offset);
+                            stack.pop_recycle();
+                            let Some(restored_dense_function) = plan
+                                .and_then(|p| p.unit.functions.get(restored_function_index))
+                            else {
+                                let result = self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    "E_PHP_VM_STATE_CORRUPTION: restored function missing from dense plan",
+                                );
+                                return result;
+                            };
+                            let Some(restored_ir_function) = compiled
+                                .unit()
+                                .functions
+                                .get(restored_function_index)
+                            else {
+                                let result = self.runtime_error(
+                                    output,
+                                    compiled,
+                                    stack,
+                                    "E_PHP_VM_STATE_CORRUPTION: restored IR function missing",
+                                );
+                                return result;
+                            };
+                            function_id = FunctionId::new(restored_function_index as u32);
+                            dense_function = restored_dense_function;
+                            ir_function = restored_ir_function;
+                            frame_index = restored_frame_index;
+                            block_index = restored_block_index;
+                            foreach_iterators = restored_foreach_iterators;
+                            let return_value = value.unwrap_or(Value::Null);
+                            if !restored_discard {
+                                if let Err(message) = stack
+                                    .frame_mut(frame_index)
+                                    .expect("caller bytecode frame is active")
+                                    .registers
+                                    .set(RegId::new(restored_dst), return_value)
+                                {
+                                    let result = self.runtime_error(
+                                        output, compiled, stack, message,
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                            continue 'dispatch;
+                        }
                         if let Some(shared) = call.shared_top_level_locals.as_deref_mut() {
                             export_shared_locals(ir_function, stack, shared);
                         }
@@ -24773,6 +24978,125 @@ impl Vm {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
+                    InstructionKind::TailCallFunction { name, args, dst: _ } => {
+                        let values = match read_call_args_for_function_at_frame(
+                            unit,
+                            stack,
+                            frame_index,
+                            name,
+                            args,
+                        ) {
+                            Ok(values) => values,
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        };
+                        let lowered_name = normalize_function_name(name);
+                        let interned_name = PhpString::intern(lowered_name.as_bytes());
+                        let epoch = state.lookup_epoch();
+                        let call_shape = function_call_shape(&values);
+                        let target = self
+                            .lookup_function_call_inline_cache(
+                                compiled,
+                                function_id,
+                                block_id,
+                                instruction.id,
+                                &interned_name,
+                                epoch,
+                                &call_shape,
+                            )
+                            .or_else(|| {
+                                let resolved = self.resolve_function_call_target(
+                                    compiled,
+                                    state,
+                                    &lowered_name,
+                                )?;
+                                if self.options.inline_caches.enabled()
+                                    && function_call_target_is_builtin(&resolved)
+                                {
+                                    self.record_counter_builtin_call_ic(false);
+                                }
+                                self.install_function_call_inline_cache(
+                                    compiled,
+                                    function_id,
+                                    block_id,
+                                    instruction.id,
+                                    &interned_name,
+                                    epoch,
+                                    call_shape.clone(),
+                                    resolved.clone(),
+                                );
+                                Some(resolved)
+                            });
+                        let Some(target) = target else {
+                            let diagnostic = undefined_function(
+                                name,
+                                RuntimeSourceSpan::default(),
+                                stack_trace(compiled, stack),
+                            );
+                            return VmResult::runtime_error_with_diagnostic(
+                                output.clone(),
+                                diagnostic.message().to_owned(),
+                                diagnostic,
+                            );
+                        };
+                        let result = self.execute_function_call_target(
+                            compiled,
+                            target,
+                            values,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                block_id,
+                                instruction.id,
+                            )),
+                            Some(instruction.span),
+                            output,
+                            stack,
+                            state,
+                            &running_fiber,
+                        );
+                        if !result.status.is_success()
+                            && let Some(throwable) = state
+                                .pending_throw
+                                .take()
+                                .or_else(|| runtime_error_throwable(&result))
+                        {
+                            if let Some(target) = handle_throw(
+                                compiled,
+                                throwable.clone(),
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                            ) {
+                                block_id = target;
+                                continue 'dispatch;
+                            }
+                            return self.propagate_exception(output, stack, state, throwable);
+                        }
+                        if !result.status.is_success() {
+                            return result;
+                        }
+                        if result.fiber_suspension.is_some() {
+                            return self.propagate_fiber_suspension(
+                                result,
+                                compiled,
+                                RegId::new(0),
+                                block_id,
+                                instruction_index + 1,
+                                &foreach_iterators,
+                                &exception_handlers,
+                                &pending_control,
+                                output,
+                                stack,
+                            );
+                        }
+                        diagnostics.extend(result.diagnostics);
+                        let return_value = result.return_value.unwrap_or(Value::Null);
+                        stack.pop_frame_recycle(frame_index);
+                        return VmResult::success(output.clone(), Some(return_value));
+                    }
                     InstructionKind::CallMethod {
                         dst,
                         object,
@@ -27341,8 +27665,8 @@ impl Vm {
                                 return result;
                             }
                             diagnostics.extend(result.diagnostics);
-                            let return_value = result.return_value.unwrap_or(Value::Null);
-                            if let Err(message) = stack
+                        let return_value = result.return_value.unwrap_or(Value::Null);
+                        if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame is active")
                                 .registers
@@ -60438,6 +60762,7 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         }
         DenseOpcode::CallFunction
         | DenseOpcode::CallFunctionDiscard
+        | DenseOpcode::TailCallFunction
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::CallCallable

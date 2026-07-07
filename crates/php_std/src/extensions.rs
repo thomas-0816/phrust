@@ -3163,6 +3163,7 @@ pub(super) fn standard_library_gmp_extension() -> ExtensionDescriptor {
         ))
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn standard_library_posix_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("posix")
         .with_function(FunctionDescriptor::php("posix_access", "posix"))
@@ -3294,6 +3295,7 @@ pub(super) fn standard_library_shmop_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("shmop_write", "shmop"))
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn standard_library_pcntl_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("pcntl")
         .with_function(FunctionDescriptor::php("pcntl_alarm", "pcntl"))
@@ -3429,6 +3431,7 @@ pub(super) fn standard_library_readline_extension() -> ExtensionDescriptor {
         ))
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn standard_library_sysvmsg_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("sysvmsg")
         .with_class(ClassDescriptor::new(

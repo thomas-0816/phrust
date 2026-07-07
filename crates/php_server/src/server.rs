@@ -255,7 +255,13 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
 }
 
 pub fn run_blocking(config: ServerConfig) -> Result<(), ServerError> {
+    #[cfg(not(target_os = "wasi"))]
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(ServerError::Io)?;
+    #[cfg(target_os = "wasi")]
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(ServerError::Io)?;

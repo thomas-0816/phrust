@@ -1208,6 +1208,7 @@ fn reasons_for_instruction(instruction: &DenseInstruction) -> Vec<VmDeoptReason>
         ],
         DenseOpcode::CallFunction
         | DenseOpcode::CallFunctionDiscard
+        | DenseOpcode::TailCallFunction
         | DenseOpcode::NewObject
         | DenseOpcode::CallCallable
         | DenseOpcode::ResolveCallable
@@ -1306,6 +1307,7 @@ fn rejection_for_ir_instruction(kind: &InstructionKind) -> Option<VmDeoptReason>
         | InstructionKind::ForeachInitRef { .. }
         | InstructionKind::ForeachNextRef { .. } => Some(VmDeoptReason::ReferenceCowIdentity),
         InstructionKind::CallFunction { args, .. }
+        | InstructionKind::TailCallFunction { args, .. }
         | InstructionKind::CallMethod { args, .. }
         | InstructionKind::CallStaticMethod { args, .. }
         | InstructionKind::CallClosure { args, .. }

@@ -5,7 +5,9 @@ pub(in crate::builtins) mod bcmath;
 pub(in crate::builtins) mod calendar;
 pub(in crate::builtins) mod core;
 pub(in crate::builtins) mod ctype;
+#[cfg(not(target_family = "wasm"))]
 pub(in crate::builtins) mod curl;
+
 pub(in crate::builtins) mod date;
 pub(in crate::builtins) mod debug_output;
 pub(in crate::builtins) mod exif;
@@ -28,13 +30,21 @@ pub(in crate::builtins) mod math;
 pub(in crate::builtins) mod mbstring;
 pub(in crate::builtins) mod memcached;
 pub(in crate::builtins) mod msgpack;
+#[cfg(not(target_family = "wasm"))]
 pub(in crate::builtins) mod mysqli;
 pub(in crate::builtins) mod opcache;
+#[cfg(not(target_family = "wasm"))]
 pub(in crate::builtins) mod openssl;
+
+#[cfg(not(target_family = "wasm"))]
 pub(in crate::builtins) mod pcntl;
+
 pub(in crate::builtins) mod pcre;
 pub(in crate::builtins) mod pdo;
+#[cfg(not(target_family = "wasm"))]
 pub(in crate::builtins) mod pgsql;
+
+#[cfg(not(target_family = "wasm"))]
 pub(in crate::builtins) mod posix;
 pub(in crate::builtins) mod readline;
 pub(in crate::builtins) mod redis;

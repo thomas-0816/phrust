@@ -166,8 +166,10 @@ pub mod api {
 pub mod debug {
     #[doc(hidden)]
     pub use crate::array::WeakArrayHandle;
+    #[cfg(not(target_family = "wasm"))]
     #[doc(hidden)]
     pub use crate::builtins::CurlNetworkTestOverride;
+    #[cfg(not(target_family = "wasm"))]
     #[doc(hidden)]
     pub use crate::builtins::set_curl_network_tests_override_for_tests;
     #[doc(hidden)]

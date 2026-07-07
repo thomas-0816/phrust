@@ -48,7 +48,10 @@ pub(crate) async fn serve_until_shutdown(
     tls_acceptor: Option<TlsAcceptor>,
 ) {
     let mut tasks = JoinSet::new();
+    #[cfg(not(target_os = "wasi"))]
     let shutdown = tokio::signal::ctrl_c();
+    #[cfg(target_os = "wasi")]
+    let shutdown = std::future::pending::<std::io::Result<()>>();
     tokio::pin!(shutdown);
     loop {
         tokio::select! {

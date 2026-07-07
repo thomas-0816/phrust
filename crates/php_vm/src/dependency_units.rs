@@ -811,6 +811,7 @@ impl<'a> Planner<'a> {
                 self.add_literal_edge(owner, constant, "load_const");
             }
             InstructionKind::CallFunction { name, args, .. }
+            | InstructionKind::TailCallFunction { name, args, .. }
             | InstructionKind::BindReferenceFromCall { name, args, .. } => {
                 self.add_lookup_edge(owner, "function", &name);
                 self.add_call_arg_literals(owner, &args);

@@ -2295,6 +2295,7 @@ pub fn inline_cache_kind_for_instruction(kind: &InstructionKind) -> Option<Inlin
     match kind {
         InstructionKind::BindReferenceFromCall { .. }
         | InstructionKind::CallFunction { .. }
+        | InstructionKind::TailCallFunction { .. }
         | InstructionKind::CallClosure { .. }
         | InstructionKind::CallCallable { .. }
         | InstructionKind::Pipe { .. } => Some(InlineCacheKind::FunctionCall),

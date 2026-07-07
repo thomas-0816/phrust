@@ -705,6 +705,10 @@ fn format_instruction(kind: &InstructionKind) -> String {
             let args = format_call_args(args);
             format!("call_function r{} {:?} [{}]", dst.raw(), name, args)
         }
+        InstructionKind::TailCallFunction { dst, name, args } => {
+            let args = format_call_args(args);
+            format!("tail_call_function r{} {:?} [{}]", dst.raw(), name, args)
+        }
         InstructionKind::CallMethod {
             dst,
             object,

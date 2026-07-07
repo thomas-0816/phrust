@@ -127,18 +127,24 @@ const MODULE_SLICES: &[&[BuiltinEntry]] = &[
     modules::intl::ENTRIES,
     modules::xml::ENTRIES,
     modules::simplexml::ENTRIES,
+    #[cfg(not(target_family = "wasm"))]
     modules::curl::ENTRIES,
+    #[cfg(not(target_family = "wasm"))]
     modules::openssl::ENTRIES,
     modules::pcre::ENTRIES,
     modules::pdo::ENTRIES,
+    #[cfg(not(target_family = "wasm"))]
     modules::pgsql::ENTRIES,
+    #[cfg(not(target_family = "wasm"))]
     modules::pcntl::ENTRIES,
+    #[cfg(not(target_family = "wasm"))]
     modules::posix::ENTRIES,
     modules::readline::ENTRIES,
     modules::shmop::ENTRIES,
     modules::sysvmsg::ENTRIES,
     modules::sysvsem::ENTRIES,
     modules::sysvshm::ENTRIES,
+    #[cfg(not(target_family = "wasm"))]
     modules::mysqli::ENTRIES,
     modules::opcache::ENTRIES,
     modules::date::ENTRIES,

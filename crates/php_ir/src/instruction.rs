@@ -388,6 +388,13 @@ pub enum InstructionKind {
         name: String,
         args: Vec<IrCallArg>,
     },
+    /// Self-recursive tail call: replaces the current frame instead of pushing
+    /// a new one. The return value goes directly to the original caller.
+    TailCallFunction {
+        dst: RegId,
+        name: String,
+        args: Vec<IrCallArg>,
+    },
     /// Public instance method call with positional arguments.
     CallMethod {
         dst: RegId,

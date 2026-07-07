@@ -1,9 +1,8 @@
 use php_runtime::api::{PhpArray, PhpString, UnserializeOptions, Value, serialize, unserialize};
 use std::{
     collections::HashMap,
-    fs,
-    io::{self, Read},
-    path::{Path, PathBuf},
+    io,
+    path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -185,7 +184,9 @@ pub fn valid_session_id(id: &str) -> bool {
 
 pub fn generate_session_id() -> io::Result<String> {
     let mut bytes = [0u8; 24];
-    fs::File::open(Path::new("/dev/urandom")).and_then(|mut file| file.read_exact(&mut bytes))?;
+    getrandom::fill(&mut bytes).map_err(|error| {
+        io::Error::new(io::ErrorKind::Other, error)
+    })?;
     Ok(hex_bytes(&bytes))
 }
 

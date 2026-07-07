@@ -5,3 +5,6 @@ RUST_MIN_STACK = "33554432"
 
 [target.'cfg(unix)']
 runner = "env RUST_MIN_STACK=33554432"
+
+[target.wasm32-wasip2]
+rustflags = ["--cfg", "tokio_unstable"]

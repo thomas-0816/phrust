@@ -36,7 +36,9 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{task, time::timeout};
+#[cfg(not(target_os = "wasi"))]
+use tokio::task;
+use tokio::time::timeout;
 use tracing::{debug, warn};
 
 pub(crate) struct PartsAndBody {
@@ -803,7 +805,7 @@ pub(crate) fn execute_compiled_php_in_blocking_region(
     runtime_context: RuntimeContext,
     profile_requested: bool,
 ) -> Result<PhpExecutionOutput, PhpExecutionError> {
-    task::block_in_place(move || {
+    let blocking = move || {
         let mode = if profile_requested {
             request_counter_mode(&state)
         } else {
@@ -819,7 +821,15 @@ pub(crate) fn execute_compiled_php_in_blocking_region(
             mode,
             collect_profile_spans,
         )
-    })
+    };
+    #[cfg(not(target_os = "wasi"))]
+    {
+        task::block_in_place(blocking)
+    }
+    #[cfg(target_os = "wasi")]
+    {
+        blocking()
+    }
 }
 
 /// Counter mode for requests that did not ask for a profile (only relevant

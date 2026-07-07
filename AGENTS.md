@@ -176,6 +176,74 @@ Do not automatically update the target PHP version without a new ADR.
 - Use imperative mood.
 - Do not mention development provenance in commit messages.
 
+## WASM cross-compilation (`wasm32-wasip2`)
+
+```bash
+CC_wasm32_wasip2=/tmp/wasi-sdk-33.0-x86_64-linux/bin/wasm32-wasi-clang \
+AR_wasm32_wasip2=/tmp/wasi-sdk-33.0-x86_64-linux/bin/llvm-ar \
+CFLAGS="-U SUPPORT_JIT" \
+PCRE2_SYS_STATIC=1 \
+cargo build --release --target wasm32-wasip2 -p php_vm_cli -p php_server
+```
+
+Run a `.php` file via Wasmtime (CLI):
+
+```bash
+wasmtime run --dir /tmp target/wasm32-wasip2/release/phrust-php.wasm /tmp/test.php
+```
+
+Run the built-in web server with `-S` (PHP-compatible CLI):
+
+```bash
+wasmtime run --dir /tmp -S tcp=y -S inherit-network=y \
+  target/wasm32-wasip2/release/phrust-php.wasm -S 127.0.0.1:8080 -t /tmp
+```
+
+Or via the standalone server binary:
+
+```bash
+wasmtime run --dir /tmp -S tcp=y -S inherit-network=y \
+  target/wasm32-wasip2/release/phrust-server.wasm --listen 127.0.0.1:8080 --docroot /tmp
+```
+
+### Browser demo (WASM via jco)
+
+The browser demo at `examples/browser/` uses `@bytecodealliance/preview2-shim@0.19.0` (WASI polyfill)
+and `@bytecodealliance/jco@1.25.0` (transpiler).
+
+Build steps (wrapper script at `examples/browser/build.sh`):
+
+```bash
+# 1. Cross-compile phrust to wasm32-wasip2
+CC_wasm32_wasip2=/tmp/wasi-sdk-33.0-x86_64-linux/bin/wasm32-wasi-clang \
+AR_wasm32_wasip2=/tmp/wasi-sdk-33.0-x86_64-linux/bin/llvm-ar \
+CFLAGS="-U SUPPORT_JIT" \
+PCRE2_SYS_STATIC=1 \
+cargo build --release --target wasm32-wasip2 -p php_vm_cli
+
+# 2. Transpile to JS + core wasm with jco (no --map flags!)
+examples/browser/build.sh
+```
+
+Run `build.sh` when the wasm component changes.
+
+### Unavailable extensions on `wasm32-wasip2`
+
+| Extension     | Reason |
+|---------------|--------|
+| `curl`        | Requires libcurl C library cross-compilation |
+| `mysqli`      | `mysql` 28.x crate has wasm32 compilation issues |
+| `openssl`     | Requires libssl C library cross-compilation |
+| `pcntl`       | Requires POSIX signals (`SIG_*` constants) |
+| `pdo_mysql`   | Same as `mysqli` |
+| `pdo_pgsql`   | Same as `pgsql` |
+| `pgsql`       | `tokio-postgres` 0.7.18 has wasm32 compilation bug (references `keepalive_config`) |
+| `posix`       | Requires POSIX APIs |
+| `shmop`       | Requires POSIX shared memory |
+| `sysvmsg`     | POSIX message queues (`libc::IPC_NOWAIT` unavailable on WASI) |
+| `sysvsem`     | Requires POSIX semaphores |
+| `sysvshm`     | Requires POSIX shared memory |
+
 ## Performance branches
 
 Run `just perf-pr-guard` before proposing any performance-labeled change.
