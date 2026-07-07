@@ -258,7 +258,7 @@ method calls, subclass fallback, magic fallback, and callee exception
 propagation.
 
 Work item.29 adds the conservative Cranelift tiering policy described in
-`docs/adr/0786-cranelift-tiering-policy.md`. `--jit-threshold=N` is the
+`docs/performance/cranelift/jit-report-schema.md`. `--jit-threshold=N` is the
 minimum-call threshold, `--jit-max-compile-us=N` and `--jit-max-functions=N`
 bound request-local compilation, and `--jit-eager` admits first-call
 compilation for tests. Compact `--jit-stats=json` reports `eager`,

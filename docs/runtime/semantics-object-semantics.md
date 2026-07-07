@@ -302,7 +302,7 @@ Remaining property-hook gaps are intentionally explicit:
 - property defaults immediately before hook lists in the current parser.
 
 The object-model architecture decision is recorded in
-`docs/adr/0029-runtime-semantics-object-model-traits-enums-hooks.md`.
+`docs/runtime/semantics-object-semantics.md`.
 
 ## Method and Object Magic
 
@@ -381,7 +381,7 @@ a 4096-execution overflow guard. Exact refcount-triggered destruction,
 `unset()`-time destruction, cyclic-object collection, destructor ordering for
 wider global/local shutdown cases, and generator/fiber interactions remain
 explicit gaps. The queue invariants are recorded in
-`docs/adr/0025-runtime-semantics-destructor-queue.md`.
+`docs/runtime/semantics-contract.md`.
 
 ## Known Boundaries
 

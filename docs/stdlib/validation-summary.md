@@ -56,7 +56,7 @@ Generated run output belongs under `target/` and must not be committed.
 
 ## Current Boundaries
 
-- PHAR remains governed by ADR-0066. Composer source mode is the required path;
+- PHAR remains governed by ADR 0013. Composer source mode is the required path;
   read-only PHAR support is not enabled in the standard-library layer.
 - Tokenizer extension metadata and runtime smoke coverage are included in
   `performance-tests`.
@@ -72,5 +72,5 @@ Use `docs/stdlib/known-gaps.md`, `docs/stdlib/function-coverage.md`, and
 `docs/stdlib/extension-coverage.md` as the standard-library gap and coverage
 map. Current carryovers include full PHP extension parity, byte-perfect
 extension diagnostics, complete Date/Time timelib parity, complete hash
-algorithm coverage, PHAR support only if ADR-0066 is superseded, and broader
+algorithm coverage, PHAR support only if ADR 0013 is superseded, and broader
 upstream PHPT promotion.

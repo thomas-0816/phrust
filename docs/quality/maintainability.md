@@ -124,7 +124,7 @@ artifact is part of the intended commit set. Tracked generated summary docs
 updated by verified gates are concise committed summaries, not raw run output:
 
 - `docs/stdlib/function-coverage.md`
-- `docs/performance/reports/hotpath-inventory.md`
+- `target/performance/hotpath-inventory.md`
 - `target/performance/fastest/hotpath-report.md`
 - `target/performance/fastest/matrix.md`
 

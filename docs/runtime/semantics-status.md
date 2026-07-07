@@ -41,12 +41,12 @@ committed closure plan. Current topic docs are:
 
 | Decision | ADR |
 | --- | --- |
-| Destructor queue | `docs/adr/0025-runtime-semantics-destructor-queue.md` |
-| GC skeleton and root tracking | `docs/adr/0026-runtime-semantics-gc-skeleton.md` |
-| Slot/reference/COW model | `docs/adr/0027-runtime-semantics-slot-reference-cow.md` |
-| Array element references and foreach | `docs/adr/0028-runtime-semantics-array-element-reference-foreach.md` |
-| Object model, traits, enums, hooks | `docs/adr/0029-runtime-semantics-object-model-traits-enums-hooks.md` |
-| Generator/fiber control flow | `docs/adr/0030-runtime-semantics-generator-fiber-control-flow.md` |
+| Destructor queue | `docs/runtime/semantics-contract.md` |
+| GC skeleton and root tracking | `docs/runtime/semantics-contract.md` |
+| Slot/reference/COW model | `docs/runtime/semantics-reference-cow.md` |
+| Array element references and foreach | `docs/runtime/semantics-array-semantics.md` |
+| Object model, traits, enums, hooks | `docs/runtime/semantics-object-semantics.md` |
+| Generator/fiber control flow | `docs/runtime/semantics-generators-fibers.md` |
 
 ## Standard library Public API Starting Points
 
@@ -196,14 +196,14 @@ Runtime decisions are captured in these ADRs:
 
 | Decision | ADR |
 | --- | --- |
-| IR style | `docs/adr/0017-runtime-register-ir.md` |
-| VM dispatch | `docs/adr/0018-runtime-vm-dispatch.md` |
-| Value representation | `docs/adr/0019-runtime-value-representation.md` |
-| Array model | `docs/adr/0020-runtime-array-mvp.md` |
-| Object model | `docs/adr/0021-runtime-object-mvp.md` |
-| Exception model | `docs/adr/0022-runtime-exception-model.md` |
-| Include model | `docs/adr/0023-runtime-include-model.md` |
-| Known-gap policy | `docs/adr/0024-runtime-known-gap-policy.md` |
+| IR style | `docs/runtime/semantics-status.md` |
+| VM dispatch | `docs/runtime/semantics-status.md` |
+| Value representation | `docs/runtime/semantics-status.md` |
+| Array model | `docs/runtime/semantics-status.md` |
+| Object model | `docs/runtime/semantics-status.md` |
+| Exception model | `docs/runtime/semantics-status.md` |
+| Include model | `docs/runtime/semantics-status.md` |
+| Known-gap policy | `docs/adr/0010-runtime-known-gap-policy.md` |
 
 ## Feature Matrix
 

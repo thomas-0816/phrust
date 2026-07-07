@@ -1,55 +1,19 @@
 # PHPT Known Gaps
 
-Generated from baseline `20260624T210848Z` with 20428 known non-green fingerprints. This catalog is the stable owner map for PHPT failures that are accepted in the committed full baseline.
+This page defines how PHPT known gaps are tracked. Generated gap tables are not
+committed documentation; `nix develop -c just phpt-triage` writes the current
+human-readable report to `target/phpt-work/reports/known-gaps.md`.
 
-Each row carries the hard-rule fields required for a known gap: ID, reference behavior, current Rust behavior, fixture or PHPT example, and planned solution layer.
+The machine-readable source of truth is
+`tests/phpt/manifests/known-gap-catalog.jsonl`. Each accepted gap needs a stable
+identifier, a reference behavior summary, the current phrust behavior, a fixture
+or PHPT example, the planned solution layer, and the baseline count when it is
+derived from the full PHPT baseline.
 
-PHPT runner-smoke closure status is tracked separately in
-`docs/known_gaps/phpt-runner-smoke.jsonl` and validated by `just known-gaps`.
-Accepted runner-smoke non-green outcomes must also be listed in
-`tests/phpt/manifests/runner-smoke-known-non-green.jsonl`; that manifest stays
-empty when the focused smoke gate is green apart from intentional skips and
-XFAILs.
+Runner-smoke known-gap rows are mirrored in
+`docs/known_gaps/phpt-runner-smoke.jsonl` so the generic known-gap validator can
+check the PHPT smoke contract without reading generated reports.
 
-| ID | Baseline count | Reference behavior | Current Rust behavior | Fixture or PHPT example | Planned solution layer |
-| --- | ---: | --- | --- | --- | --- |
-| `runtime-error-or-diagnostic` | 11392 | PHP emits the exact warning, notice, fatal, stack, and exit behavior expected by the PHPT oracle. | The target exits or formats diagnostics differently from PHP for this baseline fingerprint. | `Zend/tests/67468.phpt` | php_runtime/php_vm diagnostics and error channel |
-| `runtime-output-mismatch` | 2314 | PHP stdout and stderr match the PHPT expectation after normal EXPECT/EXPECTF/EXPECTREGEX handling. | The target completes but emits different observable output. | `Zend/tests/access_modifiers/access_modifiers_012.phpt` | php_runtime builtins, php_vm execution semantics, or output buffering |
-| `runtime-unsupported-feature` | 6183 | PHP executes the language or builtin feature covered by the PHPT. | The runtime or VM reports an unsupported/not-implemented diagnostic. | `Zend/tests/ArrayAccess/ArrayAccess_indirect_append.phpt` | php_ir/php_runtime/php_vm feature implementation |
-| `frontend-parse-or-compile` | 187 | PHP accepts the source or reports the same syntax/compile-time diagnostic as the PHPT expects. | The lexer, parser, semantic frontend, or IR lowering rejects or lowers the source differently. | `Zend/tests/backtrace/fatal_error_backtraces_001.phpt` | php_syntax/php_ast/php_semantics/php_ir |
-| `runtime-timeout` | 19 | PHP completes the PHPT within the runner timeout or skips it deterministically. | The target exceeds the PHPT timeout budget. | `Zend/tests/assert/expect_015.phpt` | php_vm control flow, termination, or performance |
-| `phpt-runner-section` | 0 | PHP run-tests handles the section and passes the transformed test to the target correctly. | The PHPT runner marks the test BORK because this section is not yet supported. | `ext/standard/tests/file/file_variation.phpt` | php_phpt_tools runner section handling |
-| `needs-triage` | 320 | PHP behavior is known through the PHPT oracle but the owning failure class is not yet specific enough. | The fingerprint is retained as known non-green until a narrower owner and implementation path is assigned. | `Zend/tests/multibyte/multibyte_encoding_001.phpt` | PHPT triage and module ownership |
-| `unsupported-section` | 21 | run-tests.php understands the section and prepares the target invocation accordingly. | The local PHPT runner BORKs because the section is unsupported. | `ext/standard/tests/basic/bug.phpt` | php_phpt_tools runner section handling |
-| `missing-target-cli-capability` | 96 | The upstream target supports CLI/SAPI-specific invocation required by the PHPT. | The current target mode cannot emulate phpdbg, CGI, or another required SAPI capability. | `sapi/phpdbg/tests/print_001.phpt` | target CLI/SAPI policy or explicit extension policy |
-| `unsupported-file-external` | 6 | run-tests.php loads the external FILE payload and executes it as the test script. | The runner marks the PHPT BORK because safe FILE_EXTERNAL support is not complete. | `ext/standard/tests/file/bug45181.phpt` | php_phpt_tools runner file materialization |
-| `unsupported-expectation` | 10 | run-tests.php compares output with the declared expectation section. | The runner BORKs because this expectation form is not yet supported or normalized. | `ext/standard/tests/general_functions/bug.phpt` | php_phpt_tools expectation matcher |
-| `unsupported-runner-io` | 1 | run-tests.php passes ARGS, STDIN, ENV, INI, CLEAN, or related IO setup to the target. | The local runner cannot yet reproduce that setup for this PHPT. | `ext/standard/tests/streams/bug.phpt` | php_phpt_tools runner environment and process setup |
-| `malformed-or-non-utf8-phpt` | 313 | run-tests.php either parses the PHPT with PHP's file handling or reports a deterministic BORK. | The local runner classifies the PHPT as malformed or lossy/non-UTF8 input. | `tests/phpt/manifests/full-known-failures.jsonl` | php_phpt_tools parser and source decoding |
-| `malformed-or-incomplete-phpt` | 0 | run-tests.php reports malformed PHPT structure consistently. | The local runner classifies missing required sections as BORK. | `tests/phpt/manifests/full-known-failures.jsonl` | php_phpt_tools PHPT parser diagnostics |
-| `unknown-bork` | 0 | run-tests.php gives a concrete reason why the PHPT cannot be executed. | The local baseline retained a BORK without a more specific subclass. | `tests/phpt/manifests/full-baseline-module-counts.jsonl` | PHPT triage subclass refinement |
-| `other-bork` | 8 | run-tests.php gives a concrete reason why the PHPT cannot be executed. | The local baseline groups a low-volume BORK outside the named subclasses. | `tests/phpt/manifests/full-baseline-module-counts.jsonl` | PHPT triage subclass refinement |
-| `extension-policy-dom` | 879 | Reference PHP provides the dom extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies dom as optional with implementation class stub-only; non-green PHPTs stay visible in full-regression accounting. | `ext/dom/tests/DOM4_ChildNode_wrong_document.phpt` | future XML/DOM extension layer |
-| `extension-policy-xml` | 65 | Reference PHP provides the xml extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies xml as optional with implementation class stub-only; non-green PHPTs stay visible in full-regression accounting. | `ext/xml/tests/XML_OPTION_PARSE_HUGE.phpt` | future XML extension layer |
-| `extension-policy-simplexml` | 157 | Reference PHP provides the simplexml extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies simplexml as optional with implementation class stub-only; non-green PHPTs stay visible in full-regression accounting. | `ext/libxml/tests/002.phpt` | future XML/SimpleXML extension layer |
-| `extension-policy-xsl` | 72 | Reference PHP provides the xsl extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies xsl as optional with implementation class stub-only; non-green PHPTs stay visible in full-regression accounting. | `ext/xsl/tests/XSLTProcessor_callables.phpt` | future XML/XSL extension layer |
-| `extension-policy-pdo` | 137 | Reference PHP provides the pdo extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies pdo as optional with implementation class stub-only; non-green PHPTs stay visible in full-regression accounting. | `ext/pdo/tests/attr_statement_class/pdo_ATTR_STATEMENT_CLASS_basic.phpt` | future database extension layer |
-| `extension-policy-pdo_sqlite` | 80 | Reference PHP provides the pdo_sqlite extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies pdo_sqlite as required-framework with implementation class real-implementation-required; non-green PHPTs stay visible in full-regression accounting. | `ext/pdo_sqlite/tests/bug33841.phpt` | future database extension layer |
-| `extension-policy-sqlite3` | 96 | Reference PHP provides the sqlite3 extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies sqlite3 as required-framework with implementation class real-implementation-required; non-green PHPTs stay visible in full-regression accounting. | `ext/sqlite3/tests/bug45798.phpt` | future database extension layer |
-| `extension-policy-mysqli` | 442 | Reference PHP provides the mysqli extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies mysqli as out-of-scope with implementation class out-of-scope; non-green PHPTs stay visible in full-regression accounting. | `ext/mysqli/tests/001.phpt` | future optional database extension package |
-| `extension-policy-mysqlnd` | 0 | Reference PHP provides the mysqlnd extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies mysqlnd as out-of-scope with implementation class out-of-scope; non-green PHPTs stay visible in full-regression accounting. | `ext/mysqlnd` | extension policy |
-| `extension-policy-soap` | 577 | Reference PHP provides the soap extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies soap as out-of-scope with implementation class out-of-scope; non-green PHPTs stay visible in full-regression accounting. | `ext/libxml/tests/bug79191.phpt` | extension policy |
-| `extension-policy-intl` | 467 | Reference PHP provides the intl extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies intl as optional with implementation class stub-only; non-green PHPTs stay visible in full-regression accounting. | `ext/intl/tests/IntlIterator_cycle_management.phpt` | future intl/ICU extension layer |
-| `extension-policy-mbstring` | 414 | Reference PHP provides the mbstring extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies mbstring as required-composer with implementation class real-implementation-required; non-green PHPTs stay visible in full-regression accounting. | `ext/exif/tests/bug68547.phpt` | php_std/php_runtime string builtins |
-| `extension-policy-gd` | 310 | Reference PHP provides the gd extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies gd as out-of-scope with implementation class out-of-scope; non-green PHPTs stay visible in full-regression accounting. | `ext/gd/tests/avif_decode_encode.phpt` | extension policy |
-| `extension-policy-phar` | 552 | Reference PHP provides the phar extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies phar as required-composer with implementation class real-implementation-required; non-green PHPTs stay visible in full-regression accounting. | `ext/phar/tests/001.phpt` | php_runtime filesystem/archive layer |
-| `extension-policy-opcache` | 449 | Reference PHP provides the opcache extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies opcache as out-of-scope with implementation class out-of-scope; non-green PHPTs stay visible in full-regression accounting. | `ext/opcache/tests/001_cli.phpt` | extension policy |
-| `extension-policy-session` | 260 | Reference PHP provides the session extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies session as required-framework with implementation class real-implementation-required; non-green PHPTs stay visible in full-regression accounting. | `ext/session/tests/001.phpt` | future request/runtime state layer |
-| `extension-policy-sapi` | 346 | Reference PHP provides the sapi extension behavior covered by its PHPT corpus when the extension is enabled. | phrust classifies sapi as out-of-scope with implementation class out-of-scope; non-green PHPTs stay visible in full-regression accounting. | `sapi/cgi/tests/001.phpt` | target CLI/SAPI policy |
-
-## Invariants
-
-- `tests/phpt/manifests/known-gap-catalog.jsonl` is the machine-readable form of this catalog.
-- `just phpt-verify-baseline` rejects a known failure whose `primary_missing_feature_guess` is missing here.
-- BORK subclasses from `full-baseline-module-counts.jsonl` must also have catalog rows.
-- The catalog documents accepted baseline gaps only; it does not make new failures acceptable without `PHPT_ACCEPT_BASELINE=1`.
+The full-regression manifest remains authoritative for unexpected failures.
+Known gaps may explain accepted failures, but they do not remove those failures
+from the corpus or from module accounting.

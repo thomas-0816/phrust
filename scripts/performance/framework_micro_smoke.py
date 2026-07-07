@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENGINE = ROOT / "target/debug/php-vm"
 DEFAULT_FIXTURES = ROOT / "tests/fixtures/performance/framework_smoke"
 DEFAULT_OUT = ROOT / "target/performance/framework-smoke/summary.json"
-DEFAULT_MARKDOWN_OUT = ROOT / "docs/performance/framework-corpus.md"
+DEFAULT_MARKDOWN_OUT = ROOT / "target/performance/framework-smoke/summary.md"
 
 FOCUS_COUNTERS = [
     "instructions_executed",

@@ -41,7 +41,7 @@ deterministic failure instead of guessing.
 
 ## Strategy
 
-ADR-0065 permits narrow PCRE2/tzdata-style dependencies. This scope keeps the
+The standard-library scope permits narrow PCRE2/tzdata-style dependencies. This scope keeps the
 Date/Time boundary dependency-free and leaves room for a later tzdb crate or
 timelib FFI behind the same runtime abstraction.
 

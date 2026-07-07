@@ -1,7 +1,7 @@
 # Performance Bytecode Cache Follow-up
 
 Performance bytecode-cache work starts from
-`docs/adr/0072-bytecode-cache-format.md`. The design is intentionally narrower
+`docs/adr/0015-bytecode-cache-format.md`. The design is intentionally narrower
 than PHP Opcache: it defines a local, versioned, untrusted artifact format for
 faster repeated frontend and IR loading. It does not define shared memory,
 runtime state serialization, Zend ABI compatibility, or production SAPI

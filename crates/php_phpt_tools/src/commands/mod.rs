@@ -31,11 +31,11 @@ const DEFAULT_PHPT_BASELINE_METADATA: &str = "tests/phpt/manifests/full-baseline
 const DEFAULT_PHPT_BASELINE_MODULE_COUNTS: &str =
     "tests/phpt/manifests/full-baseline-module-counts.jsonl";
 const DEFAULT_PHPT_TRIAGE_REPORT: &str = "target/phpt-work/reports/triage.md";
-const DEFAULT_PHPT_EXTENSION_POLICY_REPORT: &str = "docs/phpt/extension-policy.md";
-const DEFAULT_PHPT_KNOWN_GAP_REPORT: &str = "docs/phpt/known-gaps.md";
+const DEFAULT_PHPT_EXTENSION_POLICY_REPORT: &str = "target/phpt-work/reports/extension-policy.md";
+const DEFAULT_PHPT_KNOWN_GAP_REPORT: &str = "target/phpt-work/reports/known-gaps.md";
 const DEFAULT_PHPT_KNOWN_GAP_CATALOG: &str = "tests/phpt/manifests/known-gap-catalog.jsonl";
 const DEFAULT_PHPT_MODULE_PRIORITY: &str = "tests/phpt/manifests/module-priority.json";
-const DEFAULT_PHPT_MODULE_DOCS_DIR: &str = "docs/phpt/modules";
+const DEFAULT_PHPT_MODULE_DOCS_DIR: &str = "target/phpt-work/modules";
 const DEFAULT_PHPT_MODULE_MANIFESTS_DIR: &str = "tests/phpt/manifests/modules";
 const GENERATOR_VERSION: &str = "phpt-generate-v1";
 const PHP_RUN_TESTS_INI_DEFAULTS: &[(&str, &str)] = &[

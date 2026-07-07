@@ -1,7 +1,7 @@
 # Performance JIT Experiment
 
 Performance treats JIT work as an experiment behind a default-off feature. The
-decision record is `docs/adr/0076-cranelift-jit-experiment.md`.
+decision record is `docs/adr/0017-cranelift-jit-experiment.md`.
 
 ## Decision Summary
 
@@ -157,29 +157,25 @@ nix develop -c target/debug/php-vm run \
 ```
 
 The standard CLI build may accept `--jit=on`, but feature-off or unsupported
-platform configurations must fall back or skip native execution. The current
-Performance implementation does not allocate executable memory and is not
-production-ready native JIT.
+platform configurations must fall back or skip native execution. Guarded native
+entries are experimental, default-off, and not production-ready native JIT.
 
-## Optional 07.F W^X Status
+## Executable-Memory Boundary
 
-Optional work item is conditional: build a W^X/mprotect prototype only if the
-Performance JIT actually executes native code. That precondition is false in the
-current implementation. The guarded int-leaf path executes through safe
-VM-owned Rust code after Cranelift lowering proof; it does not allocate
-executable pages, does not expose a native function pointer, and does not jump
-into machine code.
+Guarded Cranelift native entries allocate executable memory only through
+Cranelift's JIT memory provider. The separate repository-owned
+`php_jit::code_memory::CodeMemory` abstraction covers emitted machine-code
+experiments and is not wired into VM execution.
 
-Because no executable memory exists in Performance, adding a dummy mprotect wrapper
-would not verify a real lifecycle. The follow-up requirement is:
+The follow-up requirement for production/default-on native execution is:
 
-- introduce a small executable-memory owner only in the future native-code JIT
-  layer;
 - enforce write-then-execute and never writable+executable mappings where the
   host platform supports that policy;
-- add lifecycle/drop tests on every supported host family;
+- add lifecycle, invalidation, and reclamation tests on every supported host
+  family;
 - keep `--jit=off` as the runtime default and preserve interpreter fallback;
-- update `docs/performance/safety-audit.md` before any native entry is enabled.
+- keep shared or persistent native-code caches blocked until a later ADR owns
+  their integrity keys, epochs, and invalidation model.
 
 ## Troubleshooting
 
@@ -191,5 +187,5 @@ would not verify a real lifecycle. The follow-up requirement is:
   PHP features intentionally fall back because the accepted subset is tiny.
 - Output mismatch: stop expanding the JIT path and compare `--jit=off` versus
   `--jit=on` with the same fixture. Interpreter output is authoritative.
-- Native execution claims: require a separate W^X/executable-memory policy,
-  safety audit, and smoke gate before claiming native machine-code execution.
+- Native execution claims: keep experimental native-entry support separate from
+  production/default-on JIT or OPcache-style claims.

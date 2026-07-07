@@ -136,7 +136,7 @@ next compatibility gap is visible without requiring Composer PHAR support.
 ## Explicit Boundaries
 
 - Composer source mode is required before `composer.phar`.
-- PHAR is optional and governed by ADR-0066. Standard library does not implement PHAR
+- PHAR is optional and governed by ADR 0013. Standard library does not implement PHAR
   archive parsing, `phar://`, or stub execution; an optional read-only MVP must
   be accepted separately before any implementation.
 - Online Packagist is not a required Standard library gate.

@@ -8,6 +8,9 @@ rust-version.workspace = true
 [features]
 default = []
 jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift"]
+# Default-off copy-and-patch native tier bridge. Pulls php_jit (whose
+# copy_patch/code_memory/aarch64 modules are always compiled); no Cranelift.
+jit-copy-patch = ["dep:php_jit"]
 
 [dependencies]
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }

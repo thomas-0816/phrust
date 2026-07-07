@@ -141,7 +141,7 @@ runtime configuration hashes, invalidation epochs, and internal compile-budget
 state. Side exits materialize the live snapshot and resume generic execution for
 guard failure, overflow, type change, reference/COW, shape or epoch
 invalidation, output/diagnostic boundaries, and exception boundaries. See
-`docs/adr/0076-cranelift-jit-experiment.md` and
+`docs/adr/0017-cranelift-jit-experiment.md` and
 `docs/performance/jit-experiment.md` for the compiler scope, ABI boundary,
 guard/deopt policy, code-cache lifecycle, platform limits, and abort criteria.
 
@@ -170,7 +170,8 @@ current command behavior, generated summaries, and known gaps:
 - `docs/performance/runtime.md`: runtime and VM optimization contracts.
 - `docs/performance/bytecode-cache.md`: CLI bytecode cache behavior.
 - `docs/reference/performance-status.md`: committed local benchmark summary.
-- `docs/performance/framework-corpus.md`: generated framework-smoke summary.
+- `target/performance/framework-smoke/summary.md`: generated framework-smoke
+  summary.
 - `target/performance/fastest/matrix.md`: generated fastest-engine matrix
   summary.
 - `docs/performance/known-gaps.md` and
@@ -215,14 +216,14 @@ inline-cache, JIT, safety, matrix, and reporting gates.
 | `performance-regression` | Runs `scripts/performance_regression_smoke.sh`, then `scripts/performance/regression_smoke.sh` across opt levels 0/1/2, quickening off/on, and inline caches off/on for the performance stress fixtures, followed by `perf-flag-matrix`. |
 | `perf-flag-matrix` | Compares baseline output/exit/stderr against opt 1, opt 2, superinstructions-on-with-IR, quickening, quickening with `--exec-format=auto`, inline caches, bytecode-cache read/write, and all-non-JIT-on combinations across Performance regressions and selected Runtime semantics fixtures. Low-level JIT rows are opt-in with `PHRUST_PERF_MATRIX_JIT=1` when feature/platform support is available. |
 | `benchmark-smoke` | Builds the VM, runs deterministic Performance smoke fixtures, checks expected output, and writes `target/performance/benchmark-smoke.json`. |
-| `framework-smoke` | Builds the VM, compares opt-off and opt-on runs over deterministic framework-like fixtures, checks output parity, writes `target/performance/framework-smoke/summary.json`, and regenerates `docs/performance/framework-corpus.md`. |
+| `framework-smoke` | Builds the VM, compares opt-off and opt-on runs over deterministic framework-like fixtures, checks output parity, and writes `target/performance/framework-smoke/summary.{json,md}`. |
 | `acceleration-matrix` | Builds the VM, compares `baseline-ir` against dense-bytecode auto/strict subset, superinstructions, optimizer levels 1/2, quickening, inline caches, all-non-JIT, release, and optional Cranelift rows. It checks stdout, stderr/runtime diagnostics, exit status, and counter sanity before writing local JSON/Markdown under `target/performance/acceleration/`. |
 | `default-profile-smoke` | Builds the VM, compares `--engine-preset=baseline` against `--engine-preset=default` across selected runtime, stdlib, performance, framework, and local PHPT smoke cases, records fallback/deopt counters, checks managed fast-path and native availability/execution counters, and writes local JSON/Markdown under `target/performance/default-profile/`. |
 | `managed-fast-coverage` | Builds the VM, runs curated default-profile fixtures, asserts dense bytecode, superinstructions, quickening, inline caches, array shapes, builtin intrinsics, string/output batching, include/cache reuse, native-tier policy, and bounded fallback counters, and writes local JSON/Markdown under `target/performance/managed-fast/`. |
 | `fast-preset-smoke` | Builds the VM, compares `--engine-preset=baseline` against `--engine-preset=fast` across selected runtime, stdlib, performance, framework, and local PHPT smoke cases, records fallback/deopt counters, and writes local JSON/Markdown under `target/performance/fast-preset/` for compatibility-alias coverage. |
 | `bytecode-exec-smoke` | Builds the VM, compares `--exec-format=ir` and strict `--exec-format=bytecode` for the supported dense-bytecode subset including scalar expressions, comparisons, direct user/builtin calls, packed-array dim/append loops, and framework-like mixed-array foreach traversal, verifies `--exec-format=auto` fallback on an unsupported fixture, and writes `target/performance/bytecode-exec-smoke/summary.json`. |
-| `superinstruction-smoke` | Builds the VM, compares strict dense bytecode with `--superinstructions=off` and `--superinstructions=on` across supported fixtures, asserts fused opcode/candidate/skip counters, refreshes `docs/performance/superinstructions.md`, and writes `target/performance/superinstruction-smoke/summary.json`. |
-| `superinstruction-patterns` | Mines adjacent opcode pairs/triples from strict dense-bytecode lowering, writes local reports under `target/performance/superinstructions/`, and refreshes the concise committed summary in `docs/performance/superinstructions.md`. |
+| `superinstruction-smoke` | Builds the VM, compares strict dense bytecode with `--superinstructions=off` and `--superinstructions=on` across supported fixtures, asserts fused opcode/candidate/skip counters, and writes generated reports under `target/performance/superinstruction-smoke/` and `target/performance/superinstructions/`. |
+| `superinstruction-patterns` | Mines adjacent opcode pairs/triples from strict dense-bytecode lowering and writes local reports under `target/performance/superinstructions/`. |
 | `release-benchmark-smoke` | Builds `php-vm` with Cargo `profile.release`, runs the deterministic performance and framework corpora against the release binary, and writes `target/performance/release/release-summary.{json,md}` plus corpus reports. Timings are advisory. |
 | `pgo-benchmark-smoke` | Optional PGO flow. Without `PHRUST_RUN_PGO=1` or `llvm-profdata`, writes a skip report under `target/performance/release/`; when enabled, builds profile-generate/profile-use release binaries and reruns the corpora. |
 | `bolt-benchmark-smoke` | Optional Linux-only BOLT flow. It writes a skip report outside Linux or without `PHRUST_RUN_BOLT=1`, `PHRUST_BOLT_PERF_DATA`, `perf2bolt`, and `llvm-bolt`; enabled runs consume perf data and benchmark the optimized binary. |

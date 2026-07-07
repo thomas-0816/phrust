@@ -453,8 +453,7 @@ nix develop -c just perf-report
 
 The smoke compares opt-off against opt-on (`--opt-level=2`, quickening on,
 inline caches on), checks stdout/stderr/exit-status parity, writes
-`target/performance/framework-smoke/summary.json`, and regenerates
-`docs/performance/framework-corpus.md`. `perf-report` includes that summary when
-present. The fixtures are local and do not use Packagist or vendored framework
-repositories. They collect counters, not wall-clock timings; any timing derived
-from this corpus is local and advisory.
+`target/performance/framework-smoke/summary.{json,md}`. `perf-report` includes
+that summary when present. The fixtures are local and do not use Packagist or
+vendored framework repositories. They collect counters, not wall-clock timings;
+any timing derived from this corpus is local and advisory.

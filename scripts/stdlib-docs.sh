@@ -77,11 +77,11 @@ grep -q 'category = "json"' fixtures/stdlib/phpt_extension_manifest.toml
 grep -q 'category = "pcre"' fixtures/stdlib/phpt_extension_manifest.toml
 grep -q 'category = "date"' fixtures/stdlib/phpt_extension_manifest.toml
 
-for adr in 0060 0061 0062 0063 0064 0065 0066; do
+for adr in 0011 0012 0013; do
   test -f "docs/adr/${adr}-"*.md
 done
-grep -q 'ADR-0066' docs/stdlib/standard-library.md
-grep -q 'ADR-0066' docs/stdlib/composer-compatibility.md
+grep -q 'ADR 0013' docs/stdlib/standard-library.md
+grep -q 'ADR 0013' docs/stdlib/composer-compatibility.md
 grep -q 'STDLIB-GAP-PHAR-REQUIRED' docs/stdlib/known-gaps.md
 
 grep -q 'performance_regression_smoke.sh' docs/stdlib/preflight.md

@@ -5,9 +5,11 @@
 //! explicit native-execution opt-in, ABI hash checks, verifier-backed Cranelift
 //! lowering, and documented unsafe call boundaries.
 
+pub mod aarch64;
 mod abi;
 mod backend;
 pub mod code_memory;
+pub mod copy_patch;
 #[cfg(feature = "jit-cranelift")]
 mod cranelift_lowering;
 mod eligibility;

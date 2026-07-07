@@ -157,6 +157,63 @@ needs:
 - invalidation epochs for functions, classes, properties, includes, autoload,
   array/object shape metadata, and persistent feedback.
 
+## Frame-Local Slot ABI
+
+How a native stencil reads and writes PHP locals given only the opaque frame
+handle. This is the contract the next executable increment consumes.
+
+**Constraints from the current model.** The VM frame stores locals and
+registers as `LocalFile`/`RegisterFile` of VM `Value`/reference slots — *not* a
+flat native array. `JitCFrameView` (`crates/php_jit/src/abi.rs`) carries only an
+opaque `frame` handle plus `local_count`/`register_count`; it never exposes a
+raw locals pointer. The region IR already names the working set:
+`RegionOsrEntry.live_slots: Vec<VmSlotId>` (`region_ir/osr.rs`),
+`RegionNodeKind::Param { slot }` reads a live slot, and `VmSlotKind`
+(`region_ir/bind.rs`) distinguishes `local`/`register`/`temporary`/… so the
+same descriptor addresses both files.
+
+**Model: marshal-in → native slot buffer → marshal-out.**
+
+1. **Marshal-in (Rust, before the call).** The VM allocates a flat slot buffer
+   of `JitCValue` (24 bytes, `repr(C)`), one entry per `VmSlotId` in
+   `live_slots`, densely renumbered to a native slot index. It converts each
+   live VM slot `Value` → `JitCValue` and writes `buffer[native_index]`, then
+   passes `slot_base` to the region alongside the `JitCFrameView`.
+2. **Native fast path (no per-access helper).** Native code addresses slot `i`
+   at `slot_base + i*24` directly. Because `JitCValue` is exactly 24 bytes,
+   every field lands on a legal scaled-immediate boundary: `tag` at
+   `i*24 + 0` via `ldr_w`/`str_w` (÷4), `payload` at `i*24 + 8` and `aux` at
+   `i*24 + 16` via `ldr_x`/`str_x` (÷8). The existing emitter offset load/store
+   in `aarch64.rs` already encode these; **no new instruction is required.**
+   `Param{slot}` lowers to a load; a slot write lowers to a store.
+3. **Marshal-out (Rust, on normal return *and* every side exit/deopt).** The VM
+   reads `buffer[native_index]`, converts `JitCValue` → VM `Value`, and commits
+   it back to the frame slot using the *same* `live_slots` → native-index map,
+   so the interpreter always resumes with a consistent frame.
+
+Because the VM holds the frame and invokes the region from Rust, all marshaling
+is pure Rust around the `blr`; frame-local access therefore needs **no new
+`extern "C"` helper** — native code only ever touches the caller-provided
+buffer. Helpers stay reserved for operations that genuinely need VM-owned state
+(allocation, slow-path property/array access), consuming opaque handles only.
+
+**Bail-before-entry (never marshal in a shape the subset cannot execute),**
+mirroring the OSR motion policy in `region_ir/osr.rs`:
+
+- any live slot holding a reference cell, COW-shared array/object, or otherwise
+  `reference_or_cow_state` → reject the region (the interpreter runs it);
+- non-scalar / unrepresentable value kinds in the working set → reject.
+
+This keeps the buffer a flat, owned, scalar-only working set for the guarded
+subset; heap/opaque values stay VM-owned and cross the ABI only as opaque
+handles a helper explicitly consumes.
+
+**Addressing limit.** The scaled-immediate field is 12 bits (`imm12` ≤ 4095), so
+`ldr_x`/`str_x` reach byte offset ≤ 32760 → native slot index ≤ 1365 directly.
+Functions whose live set would exceed that are rejected as an unsupported shape
+until base-adjust addressing (add the slot base into a scratch register first)
+is emitted.
+
 ## Executable Prerequisites (report-only)
 
 These close non-execution prerequisites. None of them allocate executable
@@ -217,13 +274,21 @@ fails. This is the guard that keeps stencil research non-executable.
 
 ## Architecture Decision
 
-The prototype makes stencil-library research concrete enough to compare against
-the current Cranelift no-exec/reporting flow. It does not justify native
-execution. Property dense opcodes now exist, so the property fetch/assign
-stencil candidates are classified rather than reported absent. The next useful
-work is the remaining prerequisite closure: typed live-state/deopt maps, helper
-status contracts, frame identity maps, reference/COW materialization,
-invalidation epochs, and executable-memory/W^X policy.
+The `dump-baseline-native-stencil` **report command** stays no-exec: it
+estimates and classifies, it does not emit machine code. Property dense opcodes
+now exist, so the property fetch/assign stencil candidates are classified rather
+than reported absent.
+
+Separately, the executable prerequisites this doc listed as future work are now
+owned and tested — executable-memory/W^X policy (`crates/php_jit/src/code_memory.rs`),
+helper status contracts (`helpers.rs`), the live-state map (`region_ir/osr.rs`),
+and typed side-exit/deopt reasons (`abi.rs`). A default-off aarch64 emitter
+(`aarch64.rs`) executes scalar arithmetic/branch stencils over the `JitCValue`
+ABI in tests using the Frame-Local Slot ABI above. Under ADR 0019 that guarded
+subset is now `SUBSET_ALLOWED`. The remaining closure is frame-model completion,
+code-cache lifecycle, source maps, reference/COW/foreach/exception
+materialization for shapes beyond the scalar subset, and PHPT/reference parity —
+all still required before broad generic execution or any default-on discussion.
 
 The PHP-aware mid-tier design in `docs/research/php-mid-tier-compiler.md` is the
 next higher research layer. It consumes the same dense bytecode, feedback, and

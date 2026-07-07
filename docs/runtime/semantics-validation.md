@@ -32,12 +32,12 @@ tests are covered by `ci-rust`, `ci-local`, and the dedicated CI jobs.
 | Runtime contract | `docs/runtime/semantics-contract.md` |
 | Coverage matrix | `docs/runtime/semantics-coverage-matrix.md` |
 | Known gaps | `docs/runtime/semantics-known-gaps.md` |
-| References and COW | `docs/runtime/semantics-reference-cow.md`, `docs/adr/0027-runtime-semantics-slot-reference-cow.md` |
-| Arrays and foreach | `docs/runtime/semantics-array-semantics.md`, `docs/runtime/semantics-foreach-semantics.md`, `docs/adr/0028-runtime-semantics-array-element-reference-foreach.md` |
-| Objects, traits, enums, hooks | `docs/runtime/semantics-object-semantics.md`, `docs/adr/0029-runtime-semantics-object-model-traits-enums-hooks.md` |
-| Generators and fibers | `docs/runtime/semantics-generators-fibers.md`, `docs/adr/0030-runtime-semantics-generator-fiber-control-flow.md` |
+| References and COW | `docs/runtime/semantics-reference-cow.md`, `docs/runtime/semantics-reference-cow.md` |
+| Arrays and foreach | `docs/runtime/semantics-array-semantics.md`, `docs/runtime/semantics-foreach-semantics.md`, `docs/runtime/semantics-array-semantics.md` |
+| Objects, traits, enums, hooks | `docs/runtime/semantics-object-semantics.md`, `docs/runtime/semantics-object-semantics.md` |
+| Generators and fibers | `docs/runtime/semantics-generators-fibers.md`, `docs/runtime/semantics-generators-fibers.md` |
 | Reflection and attributes | `docs/runtime/semantics-reflection-attributes.md` |
-| Destructors and GC | `docs/adr/0025-runtime-semantics-destructor-queue.md`, `docs/adr/0026-runtime-semantics-gc-skeleton.md` |
+| Destructors and GC | `docs/runtime/semantics-contract.md`, `docs/runtime/semantics-contract.md` |
 | Unsafe and hardening audit | `docs/runtime/semantics-hardening.md` |
 | Standard library roadmap | `docs/stdlib/roadmap.md` |
 

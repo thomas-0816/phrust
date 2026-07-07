@@ -1,20 +1,22 @@
-//! VM-owned executable code memory — ADR 0787 prerequisite #1.
+//! VM-owned executable code memory — ADR 0019 prerequisite #1.
 //!
-//! This is the single abstraction that owns executable machine-code memory for
-//! the (future, default-off) native tier. It upholds W^X: on this path a page
-//! is never simultaneously writable and executable in a way the CPU can both
-//! store to and fetch from. On Apple Silicon it maps `MAP_JIT` pages and uses
-//! the per-thread `pthread_jit_write_protect_np` toggle (write, flip to execute,
+//! This is the repository-owned abstraction for emitted machine-code memory in
+//! the (future, default-off) native tier. It upholds W^X: on this path a page is
+//! never simultaneously writable and executable in a way the CPU can both store
+//! to and fetch from. On Apple Silicon it maps `MAP_JIT` pages and uses the
+//! per-thread `pthread_jit_write_protect_np` toggle (write, flip to execute,
 //! invalidate the i-cache); on other Unix hosts it maps read/write, copies, then
 //! `mprotect`s the range to read/execute. Hosts without a supported path fail
 //! closed with [`CodeMemoryError::UnsupportedHost`].
 //!
-//! Constructing a [`CodeMemory`] is the ONLY place the engine is permitted to
-//! allocate executable memory; there must be no ad hoc `mmap`/`mprotect` for
-//! code elsewhere. Owning and testing this abstraction is a prerequisite for the
-//! native tier (see `docs/adr/0787-fast-baseline-native-tier-prerequisites.md`).
-//! It is deliberately NOT wired into VM execution: no interpreter path calls it,
-//! so building it does not enable a `native_execution` mode.
+//! Constructing a [`CodeMemory`] is the repository-owned executable-memory path
+//! for emitted machine-code experiments; Cranelift-generated entries remain
+//! governed separately by ADR 0018 and Cranelift's JIT memory provider. There
+//! must be no ad hoc `mmap`/`mprotect` for code elsewhere. Owning and testing
+//! this abstraction is a prerequisite for the native tier (see
+//! `docs/adr/0019-fast-baseline-native-tier-prerequisites.md`). It is
+//! deliberately NOT wired into VM execution: no interpreter path calls it, so
+//! building it does not enable a `native_execution` mode.
 
 /// Error allocating or finalizing executable code memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,5 +275,500 @@ mod tests {
         // region is read-execute, and `mem` outlives the call.
         let func: extern "C" fn() -> i32 = unsafe { core::mem::transmute(mem.as_ptr()) };
         assert_eq!(func(), 42);
+    }
+
+    // End-to-end: the aarch64 encoder emits real integer arithmetic, the code
+    // memory finalizes it, and it runs natively over live arguments. This is the
+    // copy-and-patch codegen path in miniature (emit -> finalize -> execute).
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_emitted_native_arithmetic() {
+        use crate::aarch64::{Aarch64Assembler, X0, X1};
+
+        // extern "C" fn(a, b) -> a + b : add x0, x0, x1 ; ret
+        let mut asm = Aarch64Assembler::new();
+        asm.add(X0, X0, X1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64) -> i64`,
+        // the region is read-execute, and `mem` outlives the calls.
+        let add: extern "C" fn(i64, i64) -> i64 = unsafe { core::mem::transmute(mem.as_ptr()) };
+        assert_eq!(add(3, 4), 7);
+        assert_eq!(add(100, -1), 99);
+
+        // extern "C" fn(a, b) -> a * b : mul x0, x0, x1 ; ret
+        let mut asm = Aarch64Assembler::new();
+        asm.mul(X0, X0, X1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(i64, i64) -> i64` over a read-execute region.
+        let mul: extern "C" fn(i64, i64) -> i64 = unsafe { core::mem::transmute(mem.as_ptr()) };
+        assert_eq!(mul(6, 7), 42);
+    }
+
+    // The copy-and-patch `guarded_int_arithmetic` stencil realized as native
+    // code: a fast path with an overflow guard that takes a side exit (deopt)
+    // instead of writing a wrong result, matching PHP's checked-add semantics.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_emitted_guarded_add_with_overflow_side_exit() {
+        use crate::aarch64::{Aarch64Assembler, Cond, X0, X1, X2, X3};
+
+        // extern "C" fn(a, b, out) -> i32:
+        //   adds x3, x0, x1        ; sum + flags
+        //   b.vs deopt             ; overflow -> side exit
+        //   str  x3, [x2]          ; *out = sum
+        //   movz x0, #0 ; ret      ; return 0 (ok)
+        // deopt:
+        //   movz x0, #1 ; ret      ; return 1 (side exit / deopt)
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        asm.adds(X3, X0, X1);
+        asm.b_cond(Cond::Overflow, deopt);
+        asm.str_reg(X3, X2);
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64, *mut i64)
+        // -> i32` over a read-execute region that outlives the calls.
+        let guarded_add: extern "C" fn(i64, i64, *mut i64) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        let mut out: i64 = 0;
+        assert_eq!(guarded_add(3, 4, &mut out), 0, "fast path returns ok");
+        assert_eq!(out, 7);
+
+        out = -1;
+        assert_eq!(
+            guarded_add(i64::MAX, 1, &mut out),
+            1,
+            "overflow takes the side exit"
+        );
+        assert_eq!(out, -1, "the side exit must not write a result");
+    }
+
+    // The `binary_add` copy-and-patch stencil operating on the real VM value
+    // ABI (`JitCValue`): guard both operand tags are Int, add with an overflow
+    // guard, write an Int result — otherwise take the interpreter side exit.
+    // This is native codegen over the actual value representation, the shape
+    // that running `$a + $b` natively requires.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_binary_add_stencil_over_jit_c_value() {
+        use crate::JitCValue;
+        use crate::aarch64::{Aarch64Assembler, Cond, X0, X1, X2, X3, X4, X5, X6};
+        use crate::abi::JitCValueTag;
+
+        const INT_TAG: u16 = JitCValueTag::Int as u16;
+
+        // extern "C" fn(a: *const JitCValue, b: *const JitCValue,
+        //               out: *mut JitCValue) -> i32
+        //   tag @ +0 (u32), payload @ +8 (u64); Int tag == 3.
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        asm.ldr_w(X3, X0, 0); // a.tag
+        asm.cmp_imm_w(X3, INT_TAG);
+        asm.b_cond(Cond::NotEqual, deopt);
+        asm.ldr_w(X3, X1, 0); // b.tag
+        asm.cmp_imm_w(X3, INT_TAG);
+        asm.b_cond(Cond::NotEqual, deopt);
+        asm.ldr_x(X4, X0, 8); // a.payload
+        asm.ldr_x(X5, X1, 8); // b.payload
+        asm.adds(X6, X4, X5); // sum + flags
+        asm.b_cond(Cond::Overflow, deopt);
+        asm.movz(X3, INT_TAG);
+        asm.str_w(X3, X2, 0); // out.tag = Int
+        asm.str_x(X6, X2, 8); // out.payload = sum
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(*const JitCValue,
+        // *const JitCValue, *mut JitCValue) -> i32` over a read-execute region;
+        // the pointers below are all valid, aligned `JitCValue`s that outlive the call.
+        let add: extern "C" fn(*const JitCValue, *const JitCValue, *mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Fast path: 3 + 4 = 7.
+        let a = JitCValue::int(3);
+        let b = JitCValue::int(4);
+        let mut out = JitCValue::uninitialized();
+        assert_eq!(add(&a, &b, &mut out), 0);
+        assert_eq!(out.tag, JitCValueTag::Int);
+        assert_eq!(out.payload as i64, 7);
+
+        // Overflow -> side exit; result left uninitialized.
+        let big = JitCValue::int(i64::MAX);
+        let one = JitCValue::int(1);
+        let mut over = JitCValue::uninitialized();
+        assert_eq!(add(&big, &one, &mut over), 1);
+        assert_eq!(over.tag, JitCValueTag::Uninitialized);
+
+        // Non-int operand -> type-guard side exit.
+        let not_int = JitCValue::null();
+        let mut typed = JitCValue::uninitialized();
+        assert_eq!(add(&a, &not_int, &mut typed), 1);
+        assert_eq!(typed.tag, JitCValueTag::Uninitialized);
+    }
+
+    // The Frame-Local Slot ABI made executable: a dense function's working set
+    // is a single flat `[JitCValue]` slot buffer that the VM marshals in/out
+    // around the call. Native code addresses slot `i` at `slot_base + i*24`
+    // directly through the emitter's scaled-offset loads/stores — no per-access
+    // helper. This computes `slot[2] = slot[0] + slot[1]` (the "add two locals
+    // into a third local" kernel) with Int type guards and an overflow side
+    // exit, reading and writing three slots of one contiguous buffer.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_add_over_a_flat_slot_buffer() {
+        use crate::JitCValue;
+        use crate::aarch64::{Aarch64Assembler, Cond, X0, X3, X4, X5, X6};
+        use crate::abi::JitCValueTag;
+
+        const INT_TAG: u16 = JitCValueTag::Int as u16;
+        // `JitCValue` is repr(C) and 24 bytes (tag@0 u32, payload@8 u64,
+        // aux@16 u64), so slot `i` lives at `i * 24` and every field lands on a
+        // legal scaled-immediate boundary.
+        const STRIDE: u32 = 24;
+        const TAG: u32 = 0;
+        const PAYLOAD: u32 = 8;
+
+        // extern "C" fn(slot_base: *mut JitCValue) -> i32, computing
+        //   slot[2] = slot[0] + slot[1]  (Int-guarded, overflow -> side exit)
+        // x0 = slot_base; x3 = scratch/tag; x4/x5 = payloads; x6 = sum.
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        asm.ldr_w(X3, X0, TAG); // slot[0].tag
+        asm.cmp_imm_w(X3, INT_TAG);
+        asm.b_cond(Cond::NotEqual, deopt);
+        asm.ldr_w(X3, X0, STRIDE + TAG); // slot[1].tag
+        asm.cmp_imm_w(X3, INT_TAG);
+        asm.b_cond(Cond::NotEqual, deopt);
+        asm.ldr_x(X4, X0, PAYLOAD); // slot[0].payload
+        asm.ldr_x(X5, X0, STRIDE + PAYLOAD); // slot[1].payload
+        asm.adds(X6, X4, X5); // sum + flags
+        asm.b_cond(Cond::Overflow, deopt);
+        asm.movz(X3, INT_TAG);
+        asm.str_w(X3, X0, 2 * STRIDE + TAG); // slot[2].tag = Int
+        asm.str_x(X6, X0, 2 * STRIDE + PAYLOAD); // slot[2].payload = sum
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(*mut JitCValue) -> i32`
+        // over a read-execute region; the buffer below is a live, aligned,
+        // contiguous `[JitCValue; 3]` (24-byte stride) that outlives the call.
+        let run: extern "C" fn(*mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Fast path: slot[0]=20, slot[1]=22 -> slot[2]=42.
+        let mut slots = [
+            JitCValue::int(20),
+            JitCValue::int(22),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[2].tag, JitCValueTag::Int);
+        assert_eq!(slots[2].payload as i64, 42);
+
+        // Type-guard side exit: slot[1] is not Int -> result slot untouched.
+        let mut typed = [
+            JitCValue::int(1),
+            JitCValue::null(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(typed.as_mut_ptr()), 1);
+        assert_eq!(typed[2].tag, JitCValueTag::Uninitialized);
+
+        // Overflow side exit: result slot untouched.
+        let mut over = [
+            JitCValue::int(i64::MAX),
+            JitCValue::int(1),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(over.as_mut_ptr()), 1);
+        assert_eq!(over[2].tag, JitCValueTag::Uninitialized);
+    }
+
+    // The native<->VM-helper call boundary: copy-and-patch-emitted code
+    // materializes a runtime-resolved helper address and `blr`s into a real VM
+    // helper (with a saved link register), returning the helper's status. This
+    // is the mechanism every VM-state operation in the native tier uses (frame
+    // access, arrays, objects, strings), since those touch VM-owned state only
+    // through helpers rather than direct memory.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn emitted_code_calls_a_vm_helper() {
+        use crate::JIT_HELPER_STATUS_OK;
+        use crate::aarch64::{Aarch64Assembler, X9};
+        use crate::helpers::phrust_jit_i64_add_checked;
+
+        // extern "C" fn(a, b, out) -> i32 forwarding to the checked-add helper:
+        //   push fp/lr ; mov_imm64 x9, &helper ; blr x9 ; pop fp/lr ; ret
+        // a/b/out already sit in x0/x1/x2, matching the helper (lhs, rhs, out) ABI.
+        let helper_addr = phrust_jit_i64_add_checked as *const () as usize as u64;
+        let mut asm = Aarch64Assembler::new();
+        asm.push_fp_lr();
+        asm.mov_imm64(X9, helper_addr);
+        asm.blr(X9);
+        asm.pop_fp_lr();
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64, *mut i64)
+        // -> i32` matching the helper ABI, over a read-execute region.
+        let call: extern "C" fn(i64, i64, *mut i64) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        let mut out: i64 = 0;
+        assert_eq!(call(3, 4, &mut out), JIT_HELPER_STATUS_OK);
+        assert_eq!(out, 7, "the VM helper ran via emitted native code");
+
+        // Overflow: the helper reports a non-OK status through the same boundary.
+        let mut over: i64 = 0;
+        assert_ne!(call(i64::MAX, 1, &mut over), JIT_HELPER_STATUS_OK);
+    }
+
+    // The copy-and-patch sequencer (`copy_patch::emit_guarded_int_add_sequence`)
+    // lowering a multi-step region over the flat slot buffer, executed
+    // end-to-end. Steps chain through the buffer: step 2 reads slot 2, which
+    // step 1 wrote. Verifies the success path, a mid-sequence side exit with its
+    // resume-consistent partial store, and an overflow side exit.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_guarded_int_add_sequence() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{GuardedIntAddStep, emit_guarded_int_add_sequence};
+
+        // slot[2] = slot[0] + slot[1]; slot[4] = slot[2] + slot[3].
+        let steps = [
+            GuardedIntAddStep {
+                dst: 2,
+                lhs: 0,
+                rhs: 1,
+            },
+            GuardedIntAddStep {
+                dst: 4,
+                lhs: 2,
+                rhs: 3,
+            },
+        ];
+        let code = emit_guarded_int_add_sequence(&steps).expect("sequence emits");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(*mut JitCValue) -> i32`
+        // over a read-execute region; each buffer below is a live, aligned,
+        // contiguous `[JitCValue; 5]` (24-byte stride) that outlives the call.
+        let run: extern "C" fn(*mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Success: (10 + 20) + 12 = 42, chained through slot 2.
+        let mut slots = [
+            JitCValue::int(10),
+            JitCValue::int(20),
+            JitCValue::uninitialized(),
+            JitCValue::int(12),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[2].payload as i64, 30);
+        assert_eq!(slots[4].tag, JitCValueTag::Int);
+        assert_eq!(slots[4].payload as i64, 42);
+
+        // Mid-sequence side exit: slot 3 is non-Int, so step 2's guard fails.
+        // Step 1 already ran, so slot 2 keeps its result (resume-consistent).
+        let mut typed = [
+            JitCValue::int(10),
+            JitCValue::int(20),
+            JitCValue::uninitialized(),
+            JitCValue::null(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(typed.as_mut_ptr()), 1);
+        assert_eq!(
+            typed[2].payload as i64, 30,
+            "a completed step's store survives the later side exit"
+        );
+        assert_eq!(typed[4].tag, JitCValueTag::Uninitialized);
+
+        // Overflow in step 1 takes the side exit before its store, so nothing
+        // downstream is written.
+        let mut over = [
+            JitCValue::int(i64::MAX),
+            JitCValue::int(1),
+            JitCValue::uninitialized(),
+            JitCValue::int(7),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(over.as_mut_ptr()), 1);
+        assert_eq!(over[2].tag, JitCValueTag::Uninitialized);
+        assert_eq!(over[4].tag, JitCValueTag::Uninitialized);
+    }
+
+    // The full region-IR -> native path: build a real RegionGraph computing
+    // (p0 + p1) + p2 over three marshaled locals, lower it with
+    // copy_patch::compile_scalar_int_region, and execute the result over the
+    // slot buffer it specifies. Proves the compiler's node->slot layout matches
+    // what the emitted code reads/writes, end-to-end.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_compiled_param_add_region() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::compile_scalar_int_region;
+        use crate::region_ir::{
+            RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind, RegionPlacement,
+            RegionValueType, VmSlotId,
+        };
+
+        fn param(graph: &mut RegionGraph, slot: u32) -> crate::region_ir::NodeId {
+            graph.add_node(RegionNode::new(
+                RegionNodeKind::Param {
+                    slot: VmSlotId::new(slot),
+                },
+                Vec::new(),
+                None,
+                RegionValueType::I64,
+                RegionPlacement::Floating,
+                RegionEffects::PURE,
+            ))
+        }
+
+        let mut graph = RegionGraph::new(RegionId::new(7), "region-add-sum");
+        let p0 = param(&mut graph, 0);
+        let p1 = param(&mut graph, 1);
+        let p2 = param(&mut graph, 2);
+        let sum01 = graph.add_node(RegionNode::new(
+            RegionNodeKind::Add,
+            vec![p0, p1],
+            None,
+            RegionValueType::I64,
+            RegionPlacement::Floating,
+            RegionEffects::PURE,
+        ));
+        let total = graph.add_node(RegionNode::new(
+            RegionNodeKind::Add,
+            vec![sum01, p2],
+            None,
+            RegionValueType::I64,
+            RegionPlacement::Floating,
+            RegionEffects::PURE,
+        ));
+
+        let compiled = compile_scalar_int_region(&graph, total).expect("region compiles");
+        assert_eq!(compiled.buffer_slots, 5);
+        assert_eq!(compiled.result_slot, 4);
+        let mem = CodeMemory::new(&compiled.code).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(*mut JitCValue) -> i32`
+        // over a read-execute region; each buffer below has `buffer_slots` live,
+        // aligned, contiguous `JitCValue`s that outlive the call.
+        let run: extern "C" fn(*mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Success: (11 + 20) + 11 = 42, result in slot 4.
+        let mut slots = [
+            JitCValue::int(11),
+            JitCValue::int(20),
+            JitCValue::int(11),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[4].tag, JitCValueTag::Int);
+        assert_eq!(slots[4].payload as i64, 42);
+
+        // A non-Int marshaled local takes the side exit; the result is untouched.
+        let mut typed = [
+            JitCValue::int(1),
+            JitCValue::null(),
+            JitCValue::int(3),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(typed.as_mut_ptr()), 1);
+        assert_eq!(typed[4].tag, JitCValueTag::Uninitialized);
+    }
+
+    // The widened scalar-int compiler executing sub, const, and overflow-guarded
+    // mul over a real RegionGraph: result = (p0 - p1) * 10.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_compiled_sub_mul_const_region() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::compile_scalar_int_region;
+        use crate::region_ir::{
+            NodeId, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
+            RegionPlacement, RegionValueType, VmSlotId,
+        };
+
+        fn i64_node(graph: &mut RegionGraph, kind: RegionNodeKind, inputs: Vec<NodeId>) -> NodeId {
+            graph.add_node(RegionNode::new(
+                kind,
+                inputs,
+                None,
+                RegionValueType::I64,
+                RegionPlacement::Floating,
+                RegionEffects::PURE,
+            ))
+        }
+
+        let mut graph = RegionGraph::new(RegionId::new(8), "region-sub-mul");
+        let p0 = i64_node(
+            &mut graph,
+            RegionNodeKind::Param {
+                slot: VmSlotId::new(0),
+            },
+            Vec::new(),
+        );
+        let p1 = i64_node(
+            &mut graph,
+            RegionNodeKind::Param {
+                slot: VmSlotId::new(1),
+            },
+            Vec::new(),
+        );
+        let diff = i64_node(&mut graph, RegionNodeKind::Sub, vec![p0, p1]);
+        let ten_const = graph.add_constant(RegionConst::I64(10));
+        let ten = i64_node(&mut graph, RegionNodeKind::Const(ten_const), Vec::new());
+        let scaled = i64_node(&mut graph, RegionNodeKind::Mul, vec![diff, ten]);
+
+        let compiled = compile_scalar_int_region(&graph, scaled).expect("region compiles");
+        assert_eq!(compiled.result_slot, 4);
+        assert_eq!(compiled.buffer_slots, 5);
+        let mem = CodeMemory::new(&compiled.code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute
+        // region; each buffer is 5 live, aligned, contiguous `JitCValue`s.
+        let run: extern "C" fn(*mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Success: (17 - 13) * 10 = 40, result in slot 4.
+        let mut slots = [
+            JitCValue::int(17),
+            JitCValue::int(13),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[4].tag, JitCValueTag::Int);
+        assert_eq!(slots[4].payload as i64, 40);
+
+        // Multiplication overflow takes the side exit: (i64::MAX - 0) * 10.
+        let mut overflow = [
+            JitCValue::int(i64::MAX),
+            JitCValue::int(0),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(overflow.as_mut_ptr()), 1);
+        assert_eq!(overflow[4].tag, JitCValueTag::Uninitialized);
     }
 }
