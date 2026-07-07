@@ -905,7 +905,8 @@ fn raw_param_type_tokens(tokens_before_variable: &[TypeToken]) -> Option<Vec<Typ
     let type_tokens = tokens_before_variable
         .iter()
         .filter(|token| {
-            is_type_atom_token(token) || matches!(token.text.as_str(), "?" | "|" | "&" | "(" | ")")
+            is_type_atom_token(token)
+                || matches!(token.text.as_str(), "?" | "|" | "&" | "(" | ")" | "[" | "]")
         })
         .filter(|token| !is_promotion_modifier_token(token))
         .filter(|token| token.kind != "T_ELLIPSIS")
