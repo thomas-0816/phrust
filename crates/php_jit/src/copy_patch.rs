@@ -9,12 +9,18 @@
 //! slot buffer (rather than registers) keeps each stencil independent and needs
 //! no register allocator; a later pass can promote hot slots to registers.
 //!
-//! Only the guarded-int-add opcode is lowered today. Every other shape is the
-//! full region compiler's job and is rejected there, not emitted here.
+//! The lowered scalar-int subset is integer const / add / sub / mul with type
+//! and overflow guards. Every other shape (comparisons, arrays, calls, control
+//! flow, non-int values) is rejected by the region compiler and left to the
+//! interpreter.
 
-use crate::aarch64::{Aarch64Assembler, Cond, X0, X3, X4, X5, X6};
+use crate::aarch64::{Aarch64Assembler, Cond, Label, Reg, X0, X3, X4, X5, X6};
 use crate::abi::JitCValueTag;
-use crate::region_ir::{NodeId, RegionGraph, RegionNode, RegionNodeKind, RegionValueType};
+use crate::region_ir::{
+    NodeId, RegionConst, RegionGraph, RegionNode, RegionNodeKind, RegionValueType,
+};
+
+const INT_TAG: u16 = JitCValueTag::Int as u16;
 
 /// A single guarded PHP integer-add step: `slot[dst] = slot[lhs] + slot[rhs]`.
 ///
@@ -57,48 +63,110 @@ const fn payload_off(slot: u32) -> u32 {
     slot * STRIDE + PAYLOAD_OFF
 }
 
-/// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` that applies
-/// each guarded int-add step in order over the caller's flat slot buffer.
-///
-/// Returns `0` when every step succeeded. Returns `1` on a side exit: any
-/// operand slot not tagged `Int`, or an addition that overflows `i64`. On a
-/// side exit, slots written by already-completed steps keep their results —
-/// those steps correspond to earlier opcodes that legitimately ran, so the
-/// interpreter resumes at the failing step with the prior locals already
-/// updated. (This primitive returns a single generic side-exit code; wiring it
-/// into VM dispatch adds the per-step resume program point.)
-pub fn emit_guarded_int_add_sequence(
-    steps: &[GuardedIntAddStep],
-) -> Result<Vec<u8>, SlotSequenceError> {
-    const INT_TAG: u16 = JitCValueTag::Int as u16;
+/// A binary PHP integer operation lowered with a type + overflow guard.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntBinOp {
+    /// `lhs + rhs`, side exit on signed overflow.
+    Add,
+    /// `lhs - rhs`, side exit on signed overflow.
+    Sub,
+    /// `lhs * rhs`, side exit on signed overflow.
+    Mul,
+}
 
-    for step in steps {
-        for slot in [step.dst, step.lhs, step.rhs] {
-            if slot > MAX_SLOT {
-                return Err(SlotSequenceError::SlotIndexOutOfRange(slot));
+/// A single scalar-int operation over the flat slot buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScalarIntOp {
+    /// Materialize a statically-known `Int` into `slot[dst]` (no guard needed).
+    Const { dst: u32, value: i64 },
+    /// Guarded binary integer op: `slot[dst] = slot[lhs] <op> slot[rhs]`, with
+    /// `Int` type guards on both operands and an overflow side exit.
+    Binary {
+        op: IntBinOp,
+        dst: u32,
+        lhs: u32,
+        rhs: u32,
+    },
+}
+
+fn check_slot(slot: u32) -> Result<(), SlotSequenceError> {
+    if slot > MAX_SLOT {
+        Err(SlotSequenceError::SlotIndexOutOfRange(slot))
+    } else {
+        Ok(())
+    }
+}
+
+/// Guard that `slot`'s tag is `Int`, taking the side exit otherwise.
+fn emit_int_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, INT_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
+/// Write `value` to `slot[dst]` tagged as `Int`.
+fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
+    asm.movz(X3, INT_TAG);
+    asm.str_w(X3, X0, tag_off(dst));
+    asm.str_x(value, X0, payload_off(dst));
+}
+
+/// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` that applies
+/// each scalar-int op in order over the caller's flat slot buffer.
+///
+/// Returns `0` when every op succeeded. Returns `1` on a side exit: a binary
+/// op's operand slot not tagged `Int`, or an add/sub/mul that overflows `i64`.
+/// On a side exit, slots written by already-completed ops keep their results —
+/// those ops correspond to earlier opcodes that legitimately ran, so the
+/// interpreter resumes at the failing op with the prior locals already updated.
+/// (This primitive returns a single generic side-exit code; wiring it into VM
+/// dispatch adds the per-op resume program point.)
+pub fn emit_scalar_int_ops(ops: &[ScalarIntOp]) -> Result<Vec<u8>, SlotSequenceError> {
+    for op in ops {
+        match *op {
+            ScalarIntOp::Const { dst, .. } => check_slot(dst)?,
+            ScalarIntOp::Binary { dst, lhs, rhs, .. } => {
+                check_slot(dst)?;
+                check_slot(lhs)?;
+                check_slot(rhs)?;
             }
         }
     }
 
     let mut asm = Aarch64Assembler::new();
     let deopt = asm.new_label();
-    for step in steps {
-        // Guard both operand tags are Int; a mismatch takes the side exit.
-        asm.ldr_w(X3, X0, tag_off(step.lhs));
-        asm.cmp_imm_w(X3, INT_TAG);
-        asm.b_cond(Cond::NotEqual, deopt);
-        asm.ldr_w(X3, X0, tag_off(step.rhs));
-        asm.cmp_imm_w(X3, INT_TAG);
-        asm.b_cond(Cond::NotEqual, deopt);
-        // Load payloads, add with an overflow guard.
-        asm.ldr_x(X4, X0, payload_off(step.lhs));
-        asm.ldr_x(X5, X0, payload_off(step.rhs));
-        asm.adds(X6, X4, X5);
-        asm.b_cond(Cond::Overflow, deopt);
-        // Write the Int result back to the destination slot.
-        asm.movz(X3, INT_TAG);
-        asm.str_w(X3, X0, tag_off(step.dst));
-        asm.str_x(X6, X0, payload_off(step.dst));
+    for op in ops {
+        match *op {
+            ScalarIntOp::Const { dst, value } => {
+                asm.mov_imm64(X6, value as u64);
+                emit_store_int(&mut asm, dst, X6);
+            }
+            ScalarIntOp::Binary { op, dst, lhs, rhs } => {
+                emit_int_guard(&mut asm, deopt, lhs);
+                emit_int_guard(&mut asm, deopt, rhs);
+                asm.ldr_x(X4, X0, payload_off(lhs));
+                asm.ldr_x(X5, X0, payload_off(rhs));
+                match op {
+                    IntBinOp::Add => {
+                        asm.adds(X6, X4, X5);
+                        asm.b_cond(Cond::Overflow, deopt);
+                    }
+                    IntBinOp::Sub => {
+                        asm.subs(X6, X4, X5);
+                        asm.b_cond(Cond::Overflow, deopt);
+                    }
+                    IntBinOp::Mul => {
+                        // Overflow when the product high bits differ from the
+                        // sign extension of the low bits (see cmp_shifted_asr63).
+                        asm.mul(X6, X4, X5);
+                        asm.smulh(X3, X4, X5);
+                        asm.cmp_shifted_asr63(X3, X6);
+                        asm.b_cond(Cond::NotEqual, deopt);
+                    }
+                }
+                emit_store_int(&mut asm, dst, X6);
+            }
+        }
     }
     asm.movz(X0, 0);
     asm.ret();
@@ -106,6 +174,23 @@ pub fn emit_guarded_int_add_sequence(
     asm.movz(X0, 1);
     asm.ret();
     Ok(asm.finish())
+}
+
+/// Emit a guarded int-add sequence — the `Add`-only special case of
+/// [`emit_scalar_int_ops`].
+pub fn emit_guarded_int_add_sequence(
+    steps: &[GuardedIntAddStep],
+) -> Result<Vec<u8>, SlotSequenceError> {
+    let ops: Vec<ScalarIntOp> = steps
+        .iter()
+        .map(|step| ScalarIntOp::Binary {
+            op: IntBinOp::Add,
+            dst: step.dst,
+            lhs: step.lhs,
+            rhs: step.rhs,
+        })
+        .collect();
+    emit_scalar_int_ops(&ops)
 }
 
 /// A region lowered to the scalar-int subset: native code plus the slot-buffer
@@ -123,7 +208,8 @@ pub struct CompiledScalarRegion {
 /// Reason a region cannot be lowered to the scalar-int subset.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegionCompileError {
-    /// A value-producing node outside the supported `{Param, Add}` subset.
+    /// A value-producing node outside the supported scalar-int subset
+    /// (`Param`, `Const`, `Add`, `Sub`, `Mul`).
     UnsupportedNode(&'static str),
     /// A supported arithmetic node whose value type is not `I64`.
     NonIntValue,
@@ -145,18 +231,21 @@ impl From<SlotSequenceError> for RegionCompileError {
     }
 }
 
-/// Lower a straight-line scalar-int region of `Param` and `Add` nodes to native
-/// code over the flat slot buffer, reusing [`emit_guarded_int_add_sequence`].
+/// Lower a straight-line scalar-int region to native code over the flat slot
+/// buffer, via [`emit_scalar_int_ops`].
 ///
-/// `Param { slot }` names a marshaled VM slot; each `Add` writes its `Int`
-/// result to a fresh temporary slot allocated above the parameter slots.
-/// `result` is the node whose slot holds the region output (it must be a
-/// computed `Add`, not a passed-through parameter). Control- and memory-typed
-/// nodes are skipped; any other scalar node (`Const`, `Sub`, `Mul`, `Compare`,
-/// `Call`, …) is rejected so the interpreter runs that region instead. Nodes
-/// must appear in dependency order (an `Add`'s inputs lowered before it), as the
-/// region builder emits them; otherwise the input is reported as malformed.
-pub fn compile_param_add_region(
+/// Supported nodes: `Param { slot }` (a marshaled VM slot); `Const` holding an
+/// `I64`, materialized into a fresh temporary; and the guarded integer
+/// arithmetic `Add`/`Sub`/`Mul`, each writing its `Int` result to a temporary
+/// allocated above the parameter slots. `result` names the node whose slot
+/// holds the region output; it must be a computed value (a `Const` or an
+/// arithmetic op), not a passed-through parameter, since a bare parameter could
+/// be non-`Int` at runtime. Control- and memory-typed nodes are skipped; every
+/// other scalar node (comparisons, division, casts, calls, …) is rejected so
+/// the interpreter runs that region. Nodes must appear in dependency order (an
+/// op's inputs lowered before it), as the region builder emits them; otherwise
+/// the input is reported as malformed.
+pub fn compile_scalar_int_region(
     graph: &RegionGraph,
     result: NodeId,
 ) -> Result<CompiledScalarRegion, RegionCompileError> {
@@ -175,45 +264,59 @@ pub fn compile_param_add_region(
     let mut next_temp = if any_param { max_param_slot + 1 } else { 0 };
 
     let mut node_slot: Vec<Option<u32>> = vec![None; nodes.len()];
-    let mut steps: Vec<GuardedIntAddStep> = Vec::new();
+    let mut ops: Vec<ScalarIntOp> = Vec::new();
 
     for (index, node) in nodes.iter().enumerate() {
         match node.kind {
             RegionNodeKind::Param { slot } => node_slot[index] = Some(slot.raw()),
-            RegionNodeKind::Add => {
+            RegionNodeKind::Const(constant) => {
+                let value = match graph.constant(constant) {
+                    Some(RegionConst::I64(value)) => *value,
+                    _ => return Err(RegionCompileError::NonIntValue),
+                };
+                let dst = next_temp;
+                next_temp += 1;
+                node_slot[index] = Some(dst);
+                ops.push(ScalarIntOp::Const { dst, value });
+            }
+            RegionNodeKind::Add | RegionNodeKind::Sub | RegionNodeKind::Mul => {
                 if node.value_type != RegionValueType::I64 {
                     return Err(RegionCompileError::NonIntValue);
                 }
-                let [lhs, rhs] = binary_inputs(node)?;
-                let step = GuardedIntAddStep {
-                    dst: next_temp,
-                    lhs: slot_of(&node_slot, lhs)?,
-                    rhs: slot_of(&node_slot, rhs)?,
+                let op = match node.kind {
+                    RegionNodeKind::Sub => IntBinOp::Sub,
+                    RegionNodeKind::Mul => IntBinOp::Mul,
+                    _ => IntBinOp::Add,
                 };
-                node_slot[index] = Some(next_temp);
+                let [lhs, rhs] = binary_inputs(node)?;
+                let lhs = slot_of(&node_slot, lhs)?;
+                let rhs = slot_of(&node_slot, rhs)?;
+                let dst = next_temp;
                 next_temp += 1;
-                steps.push(step);
+                node_slot[index] = Some(dst);
+                ops.push(ScalarIntOp::Binary { op, dst, lhs, rhs });
             }
             // Control/effect tokens carry no scalar value; they are not lowered.
             _ if matches!(
                 node.value_type,
                 RegionValueType::Control | RegionValueType::Memory
             ) => {}
-            RegionNodeKind::Const(_) => {
-                return Err(RegionCompileError::UnsupportedNode("Const"));
-            }
-            RegionNodeKind::Sub => return Err(RegionCompileError::UnsupportedNode("Sub")),
-            RegionNodeKind::Mul => return Err(RegionCompileError::UnsupportedNode("Mul")),
             _ => return Err(RegionCompileError::UnsupportedNode("non-scalar-int-op")),
         }
     }
 
-    // The result must be a computed Int, not a bare parameter passed through
-    // (a passed-through parameter could still be non-Int at runtime).
-    if !nodes
-        .get(result.index())
-        .is_some_and(|node| matches!(node.kind, RegionNodeKind::Add))
-    {
+    // The result must be a computed value, not a passed-through parameter (which
+    // could be non-Int at runtime).
+    let result_is_computed = nodes.get(result.index()).is_some_and(|node| {
+        matches!(
+            node.kind,
+            RegionNodeKind::Add
+                | RegionNodeKind::Sub
+                | RegionNodeKind::Mul
+                | RegionNodeKind::Const(_)
+        )
+    });
+    if !result_is_computed {
         return Err(RegionCompileError::ResultNotComputed);
     }
     let result_slot = node_slot
@@ -222,7 +325,7 @@ pub fn compile_param_add_region(
         .flatten()
         .ok_or(RegionCompileError::ResultNotComputed)?;
 
-    let code = emit_guarded_int_add_sequence(&steps)?;
+    let code = emit_scalar_int_ops(&ops)?;
     Ok(CompiledScalarRegion {
         code,
         result_slot,
@@ -249,11 +352,11 @@ fn slot_of(node_slot: &[Option<u32>], node: NodeId) -> Result<u32, RegionCompile
 mod tests {
     use super::{
         GuardedIntAddStep, MAX_SLOT, RegionCompileError, SlotSequenceError,
-        compile_param_add_region, emit_guarded_int_add_sequence,
+        compile_scalar_int_region, emit_guarded_int_add_sequence,
     };
     use crate::region_ir::{
-        NodeId, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind, RegionPlacement,
-        RegionValueType, VmSlotId,
+        NodeId, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
+        RegionPlacement, RegionValueType, VmSlotId,
     };
 
     fn param(graph: &mut RegionGraph, slot: u32) -> NodeId {
@@ -269,10 +372,26 @@ mod tests {
         ))
     }
 
-    fn add(graph: &mut RegionGraph, lhs: NodeId, rhs: NodeId) -> NodeId {
+    fn bin(graph: &mut RegionGraph, kind: RegionNodeKind, lhs: NodeId, rhs: NodeId) -> NodeId {
         graph.add_node(RegionNode::new(
-            RegionNodeKind::Add,
+            kind,
             vec![lhs, rhs],
+            None,
+            RegionValueType::I64,
+            RegionPlacement::Floating,
+            RegionEffects::PURE,
+        ))
+    }
+
+    fn add(graph: &mut RegionGraph, lhs: NodeId, rhs: NodeId) -> NodeId {
+        bin(graph, RegionNodeKind::Add, lhs, rhs)
+    }
+
+    fn const_i64(graph: &mut RegionGraph, value: i64) -> NodeId {
+        let constant = graph.add_constant(RegionConst::I64(value));
+        graph.add_node(RegionNode::new(
+            RegionNodeKind::Const(constant),
+            Vec::new(),
             None,
             RegionValueType::I64,
             RegionPlacement::Floating,
@@ -337,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn compiles_param_add_region_to_slot_layout() {
+    fn compiles_scalar_int_region_to_slot_layout() {
         // result = (p0 + p1) + p2; params in slots 0..3, temporaries above.
         let mut graph = RegionGraph::new(RegionId::new(1), "add-region");
         let p0 = param(&mut graph, 0);
@@ -346,7 +465,7 @@ mod tests {
         let sum01 = add(&mut graph, p0, p1);
         let total = add(&mut graph, sum01, p2);
 
-        let compiled = compile_param_add_region(&graph, total).expect("region compiles");
+        let compiled = compile_scalar_int_region(&graph, total).expect("region compiles");
         // Temps are allocated above the max param slot (2): sum01 -> 3, total -> 4.
         assert_eq!(compiled.result_slot, 4);
         assert_eq!(compiled.buffer_slots, 5);
@@ -354,21 +473,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_node_outside_the_subset() {
-        let mut graph = RegionGraph::new(RegionId::new(2), "sub-region");
+    fn compiles_sub_mul_and_const_nodes() {
+        // result = (p0 - p1) * 10
+        let mut graph = RegionGraph::new(RegionId::new(4), "sub-mul-const");
         let p0 = param(&mut graph, 0);
         let p1 = param(&mut graph, 1);
-        let bad = graph.add_node(RegionNode::new(
-            RegionNodeKind::Sub,
-            vec![p0, p1],
-            None,
-            RegionValueType::I64,
-            RegionPlacement::Floating,
-            RegionEffects::PURE,
-        ));
+        let diff = bin(&mut graph, RegionNodeKind::Sub, p0, p1);
+        let ten = const_i64(&mut graph, 10);
+        let scaled = bin(&mut graph, RegionNodeKind::Mul, diff, ten);
+
+        let compiled = compile_scalar_int_region(&graph, scaled).expect("region compiles");
+        // Params 0,1 -> temps from 2: diff -> 2, const 10 -> 3, scaled -> 4.
+        assert_eq!(compiled.result_slot, 4);
+        assert_eq!(compiled.buffer_slots, 5);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_node_outside_the_subset() {
+        // Div is not in the scalar-int subset (no divide-by-zero guard yet).
+        let mut graph = RegionGraph::new(RegionId::new(2), "div-region");
+        let p0 = param(&mut graph, 0);
+        let p1 = param(&mut graph, 1);
+        let bad = bin(&mut graph, RegionNodeKind::Div, p0, p1);
         assert_eq!(
-            compile_param_add_region(&graph, bad),
-            Err(RegionCompileError::UnsupportedNode("Sub")),
+            compile_scalar_int_region(&graph, bad),
+            Err(RegionCompileError::UnsupportedNode("non-scalar-int-op")),
         );
     }
 
@@ -377,7 +507,7 @@ mod tests {
         let mut graph = RegionGraph::new(RegionId::new(3), "id-region");
         let p0 = param(&mut graph, 0);
         assert_eq!(
-            compile_param_add_region(&graph, p0),
+            compile_scalar_int_region(&graph, p0),
             Err(RegionCompileError::ResultNotComputed),
         );
     }
