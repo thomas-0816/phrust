@@ -7,8 +7,11 @@ pub enum RuntimeType {
     Float,
     /// `string`
     String,
-    /// `array`
-    Array,
+    /// `array` or `T[]` (typed array).
+    Array {
+        /// Element type for typed arrays (`T[]`), `None` for bare `array`.
+        element_type: Option<Box<RuntimeType>>,
+    },
     /// `callable`
     Callable,
     /// `iterable`

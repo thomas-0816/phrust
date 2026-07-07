@@ -17,8 +17,12 @@ pub enum IrReturnType {
     Float,
     /// `string`
     String,
-    /// `array`
-    Array,
+    /// `array` or `T[]` (typed array).
+    Array {
+        /// Element type for typed arrays (`T[]`), `None` for bare `array`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        element_type: Option<Box<IrReturnType>>,
+    },
     /// `callable`
     Callable,
     /// `iterable`

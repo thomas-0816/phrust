@@ -433,15 +433,46 @@ impl<'tokens, 'lowerer, 'db> TypeParser<'tokens, 'lowerer, 'db> {
         }
 
         if self.at_text("(") {
+            let start = self.pos;
             self.pos += 1;
             let inner = self.parse_type();
             if self.at_text(")") {
                 self.pos += 1;
             }
+            if self.at_text("[") {
+                self.pos += 1;
+                if self.at_text("]") {
+                    self.pos += 1;
+                }
+                return Some(self.lowerer.alloc(
+                    HirTypeKind::ArrayOf {
+                        element_type: inner?,
+                    },
+                    self.context,
+                    &self.tokens[start..self.pos],
+                ));
+            }
             return inner;
         }
 
-        self.parse_atom()
+        let start = self.pos;
+        let atom = self.parse_atom()?;
+        let mut inner = atom;
+        while self.at_text("[") {
+            self.pos += 1;
+            if self.at_text("]") {
+                self.pos += 1;
+            }
+            let end = self.pos;
+            inner = self.lowerer.alloc(
+                HirTypeKind::ArrayOf {
+                    element_type: inner,
+                },
+                self.context,
+                &self.tokens[start..end],
+            );
+        }
+        Some(inner)
     }
 
     fn parse_atom(&mut self) -> Option<TypeId> {
@@ -618,7 +649,8 @@ pub(crate) fn non_empty_type_tokens(tokens: Vec<TypeToken>) -> Option<Vec<TypeTo
     let tokens: Vec<_> = tokens
         .into_iter()
         .filter(|token| {
-            is_type_atom_token(token) || matches!(token.text.as_str(), "?" | "|" | "&" | "(" | ")")
+            is_type_atom_token(token)
+                || matches!(token.text.as_str(), "?" | "|" | "&" | "(" | ")" | "[" | "]")
         })
         .collect();
     (!tokens.is_empty()).then_some(tokens)
@@ -689,6 +721,9 @@ fn type_duplicate_key(module: &HirModule, id: TypeId) -> String {
         HirTypeKind::Null => "null".to_owned(),
         HirTypeKind::False => "false".to_owned(),
         HirTypeKind::True => "true".to_owned(),
+        HirTypeKind::ArrayOf { element_type } => {
+            format!("array<{}>", type_duplicate_key(module, *element_type))
+        }
         HirTypeKind::Missing => "missing".to_owned(),
         HirTypeKind::Unlowered => "unlowered".to_owned(),
     }

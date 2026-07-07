@@ -1706,7 +1706,9 @@ impl LoweringContext<'_> {
             HirTypeKind::Builtin(BuiltinType::Float) => Some(IrReturnType::Float),
             HirTypeKind::Builtin(BuiltinType::String) => Some(IrReturnType::String),
             HirTypeKind::Builtin(BuiltinType::Bool) => Some(IrReturnType::Bool),
-            HirTypeKind::Builtin(BuiltinType::Array) => Some(IrReturnType::Array),
+            HirTypeKind::Builtin(BuiltinType::Array) => {
+                Some(IrReturnType::Array { element_type: None })
+            }
             HirTypeKind::Builtin(BuiltinType::Callable) => Some(IrReturnType::Callable),
             HirTypeKind::Builtin(BuiltinType::Iterable) => Some(IrReturnType::Iterable),
             HirTypeKind::Builtin(BuiltinType::Object) => Some(IrReturnType::Object),
@@ -1716,6 +1718,12 @@ impl LoweringContext<'_> {
             HirTypeKind::Never => Some(IrReturnType::Never),
             HirTypeKind::False => Some(IrReturnType::False),
             HirTypeKind::True => Some(IrReturnType::True),
+            HirTypeKind::ArrayOf { element_type } => {
+                let inner = self.lower_runtime_type(Some(*element_type))?;
+                Some(IrReturnType::Array {
+                    element_type: Some(Box::new(inner)),
+                })
+            }
             HirTypeKind::Named { name, resolved } => Some(IrReturnType::Class {
                 name: resolved
                     .as_ref()

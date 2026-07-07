@@ -1879,6 +1879,10 @@ fn push_type_kind_json(out: &mut String, module: &hir::HirModule, kind: &hir::Hi
         hir::HirTypeKind::Null => out.push_str(",\"kind\":\"null\""),
         hir::HirTypeKind::False => out.push_str(",\"kind\":\"false\""),
         hir::HirTypeKind::True => out.push_str(",\"kind\":\"true\""),
+        hir::HirTypeKind::ArrayOf { element_type } => {
+            out.push_str(",\"kind\":\"array_of\",\"element_type\":");
+            out.push_str(&element_type.raw().to_string());
+        }
     }
 
     if matches!(
@@ -1887,6 +1891,7 @@ fn push_type_kind_json(out: &mut String, module: &hir::HirModule, kind: &hir::Hi
             | hir::HirTypeKind::Union { .. }
             | hir::HirTypeKind::Intersection { .. }
             | hir::HirTypeKind::Dnf { .. }
+            | hir::HirTypeKind::ArrayOf { .. }
     ) {
         out.push_str(",\"display\":\"");
         out.push_str(&escape_json(&format_type(module, kind)));
@@ -1939,6 +1944,9 @@ fn format_type(module: &hir::HirModule, kind: &hir::HirTypeKind) -> String {
         hir::HirTypeKind::Null => "null".to_owned(),
         hir::HirTypeKind::False => "false".to_owned(),
         hir::HirTypeKind::True => "true".to_owned(),
+        hir::HirTypeKind::ArrayOf { element_type } => {
+            format!("{}[]", format_type(module, module.types()[*element_type].kind()))
+        }
         hir::HirTypeKind::Missing => "missing".to_owned(),
         hir::HirTypeKind::Unlowered => "unlowered".to_owned(),
     }

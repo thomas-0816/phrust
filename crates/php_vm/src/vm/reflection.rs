@@ -100,7 +100,10 @@ pub(super) fn ir_type_name(type_: &IrReturnType) -> String {
         IrReturnType::Int => "int".to_owned(),
         IrReturnType::Float => "float".to_owned(),
         IrReturnType::String => "string".to_owned(),
-        IrReturnType::Array => "array".to_owned(),
+        IrReturnType::Array { element_type: Some(et) } => {
+            format!("{}[]", ir_type_name(et))
+        }
+        IrReturnType::Array { element_type: None } => "array".to_owned(),
         IrReturnType::Callable => "callable".to_owned(),
         IrReturnType::Iterable => "iterable".to_owned(),
         IrReturnType::Object => "object".to_owned(),

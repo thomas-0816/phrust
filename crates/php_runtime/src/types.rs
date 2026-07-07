@@ -16,7 +16,13 @@ pub fn value_matches_runtime_type(value: &Value, runtime_type: &RuntimeType) -> 
         RuntimeType::Int => matches!(value, Value::Int(_)),
         RuntimeType::Float => matches!(value, Value::Float(_) | Value::Int(_)),
         RuntimeType::String => matches!(value, Value::String(_)),
-        RuntimeType::Array => matches!(value, Value::Array(_)),
+        RuntimeType::Array { element_type: None } => matches!(value, Value::Array(_)),
+        RuntimeType::Array {
+            element_type: Some(et),
+        } => match value {
+            Value::Array(array) => array.iter().all(|(_, v)| value_matches_runtime_type(v, et)),
+            _ => false,
+        },
         RuntimeType::Callable => matches!(value, Value::Callable(_)),
         RuntimeType::Iterable => matches!(
             value,
@@ -65,7 +71,10 @@ pub fn runtime_type_name(runtime_type: &RuntimeType) -> String {
         RuntimeType::Int => "int".to_owned(),
         RuntimeType::Float => "float".to_owned(),
         RuntimeType::String => "string".to_owned(),
-        RuntimeType::Array => "array".to_owned(),
+        RuntimeType::Array {
+            element_type: Some(et),
+        } => format!("{}[]", runtime_type_name(et)),
+        RuntimeType::Array { element_type: None } => "array".to_owned(),
         RuntimeType::Callable => "callable".to_owned(),
         RuntimeType::Iterable => "iterable".to_owned(),
         RuntimeType::Object => "object".to_owned(),

@@ -114,6 +114,7 @@ fn parse_type_primary(parser: &mut Parser<'_>) -> TypeShape {
         } else {
             parser.error_expected("expected `)` to close parenthesized type", &[")"]);
         }
+        parse_array_suffix(parser);
         return shape;
     }
 
@@ -131,10 +132,33 @@ fn parse_type_atom(parser: &mut Parser<'_>) -> bool {
         || parser.at(named(TokenName::Static))
     {
         parser.bump();
+        parse_array_suffix(parser);
         return true;
     }
 
-    names::parse_name(parser)
+    if names::parse_name(parser) {
+        parse_array_suffix(parser);
+        return true;
+    }
+
+    false
+}
+
+fn parse_array_suffix(parser: &mut Parser<'_>) {
+    loop {
+        bump_trivia(parser);
+        if !parser.at(symbol(b'[')) {
+            break;
+        }
+        parser.bump();
+        bump_trivia(parser);
+        if parser.at(symbol(b']')) {
+            parser.bump();
+        } else {
+            parser.error_expected("expected `]` to close array type", &["]"]);
+            break;
+        }
+    }
 }
 
 pub(crate) fn at_type_start(parser: &Parser<'_>) -> bool {

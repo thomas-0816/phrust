@@ -236,7 +236,10 @@ fn format_return_type(return_type: &IrReturnType) -> String {
         IrReturnType::Int => "int".to_string(),
         IrReturnType::Float => "float".to_string(),
         IrReturnType::String => "string".to_string(),
-        IrReturnType::Array => "array".to_string(),
+        IrReturnType::Array { element_type: Some(et) } => {
+            format!("{}[]", format_return_type(et))
+        }
+        IrReturnType::Array { element_type: None } => "array".to_string(),
         IrReturnType::Callable => "callable".to_string(),
         IrReturnType::Iterable => "iterable".to_string(),
         IrReturnType::Object => "object".to_string(),

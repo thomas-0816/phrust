@@ -98,6 +98,11 @@ pub enum HirTypeKind {
     False,
     /// `true`.
     True,
+    /// Array with typed elements (`int[]`, `string[]`, `Test[]`).
+    ArrayOf {
+        /// Element type.
+        element_type: TypeId,
+    },
 }
 
 /// Builtin type atoms that are not special context keywords.

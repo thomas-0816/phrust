@@ -788,7 +788,7 @@ fn jit_leaf_call_shape_is_supported(
                     None | Some(
                         IrReturnType::Int
                             | IrReturnType::String
-                            | IrReturnType::Array
+                            | IrReturnType::Array { .. }
                             | IrReturnType::Class { .. }
                     )
                 )
@@ -844,7 +844,7 @@ fn native_leaf_rejection_reason(
             None | Some(
                 IrReturnType::Int
                     | IrReturnType::String
-                    | IrReturnType::Array
+                    | IrReturnType::Array { .. }
                     | IrReturnType::Class { .. }
             )
         )
@@ -46518,7 +46518,10 @@ fn method_type_display(type_: &IrReturnType) -> String {
         IrReturnType::Int => "int".to_owned(),
         IrReturnType::Float => "float".to_owned(),
         IrReturnType::String => "string".to_owned(),
-        IrReturnType::Array => "array".to_owned(),
+        IrReturnType::Array { element_type: Some(et) } => {
+            format!("{}[]", method_type_display(et))
+        }
+        IrReturnType::Array { element_type: None } => "array".to_owned(),
         IrReturnType::Callable => "callable".to_owned(),
         IrReturnType::Iterable => "iterable".to_owned(),
         IrReturnType::Object => "object".to_owned(),
@@ -56677,7 +56680,10 @@ fn typecheck_fast_path_match(value: &Value, runtime_type: &RuntimeType) -> bool 
         RuntimeType::Int => matches!(value, Value::Int(_)),
         RuntimeType::Float => matches!(value, Value::Float(_) | Value::Int(_)),
         RuntimeType::String => matches!(value, Value::String(_)),
-        RuntimeType::Array => matches!(value, Value::Array(_)),
+        RuntimeType::Array { element_type: None } => matches!(value, Value::Array(_)),
+        RuntimeType::Array {
+            element_type: Some(_),
+        } => false,
         RuntimeType::Callable => matches!(value, Value::Callable(_)),
         RuntimeType::Object => {
             matches!(
@@ -56718,7 +56724,11 @@ fn ir_runtime_type(return_type: Option<&IrReturnType>) -> Option<RuntimeType> {
         IrReturnType::Int => RuntimeType::Int,
         IrReturnType::Float => RuntimeType::Float,
         IrReturnType::String => RuntimeType::String,
-        IrReturnType::Array => RuntimeType::Array,
+        IrReturnType::Array { element_type } => RuntimeType::Array {
+            element_type: element_type
+                .as_ref()
+                .and_then(|et| ir_runtime_type(Some(et)).map(Box::new)),
+        },
         IrReturnType::Callable => RuntimeType::Callable,
         IrReturnType::Iterable => RuntimeType::Iterable,
         IrReturnType::Object => RuntimeType::Object,

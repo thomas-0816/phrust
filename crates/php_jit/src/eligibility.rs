@@ -494,7 +494,7 @@ fn packed_foreach_int_sum_candidate_is_eligible(
             "packed foreach sum array parameter must be required by-value",
         ));
     }
-    if array_param.type_.as_ref() != Some(&IrReturnType::Array) {
+    if !matches!(array_param.type_.as_ref(), Some(IrReturnType::Array { .. })) {
         return Err(JitEligibilityReason::function(
             "JIT_ELIGIBILITY_REJECT_PACKED_FOREACH_PARAMS",
             "packed foreach sum parameter must be declared array",
@@ -864,7 +864,7 @@ fn packed_array_fetch_candidate_is_eligible(
             "packed-array fetch candidate requires array and int params",
         ));
     };
-    check_packed_fetch_param_shape(array_param, IrReturnType::Array, "array")?;
+    check_packed_fetch_param_shape(array_param, IrReturnType::Array { element_type: None }, "array")?;
     check_packed_fetch_param_shape(index_param, IrReturnType::Int, "index")?;
     let [block] = function.blocks.as_slice() else {
         return Err(JitEligibilityReason::function(
@@ -950,7 +950,11 @@ fn check_packed_fetch_param_shape(
             format!("packed-array fetch {role} parameter must be required by-value"),
         ));
     }
-    if param.type_.as_ref() != Some(&expected) {
+    let type_ok = match (&expected, param.type_.as_ref()) {
+        (IrReturnType::Array { .. }, Some(IrReturnType::Array { .. })) => true,
+        _ => param.type_.as_ref() == Some(&expected),
+    };
+    if !type_ok {
         return Err(JitEligibilityReason::function(
             "JIT_ELIGIBILITY_REJECT_PACKED_FETCH_PARAMS",
             format!("packed-array fetch {role} parameter has wrong type"),
@@ -1029,7 +1033,7 @@ fn known_call_candidate_is_eligible(
     };
     let expected_type = match name.as_str() {
         "strlen" => IrReturnType::String,
-        "count" => IrReturnType::Array,
+        "count" => IrReturnType::Array { element_type: None },
         _ => {
             return Err(JitEligibilityReason::function(
                 "JIT_ELIGIBILITY_REJECT_KNOWN_CALL_TARGET",
@@ -1065,9 +1069,10 @@ fn known_call_candidate_is_eligible(
             "known-call argument must be the loaded parameter",
         ));
     }
-    let param_type_supported = match param.type_.as_ref() {
-        None => true,
-        Some(type_) => type_ == &expected_type,
+    let param_type_supported = match (&expected_type, param.type_.as_ref()) {
+        (IrReturnType::Array { .. }, Some(IrReturnType::Array { .. })) => true,
+        (_, None) => true,
+        (_, Some(type_)) => type_ == &expected_type,
     };
     if !param_type_supported {
         return Err(JitEligibilityReason::function(

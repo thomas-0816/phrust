@@ -1196,7 +1196,7 @@ fn packed_array_fetch_candidate(
             "packed-array fetch subset requires array and int parameters",
         ));
     };
-    check_packed_fetch_param(array_param, IrReturnType::Array, "array")?;
+    check_packed_fetch_param(array_param, IrReturnType::Array { element_type: None }, "array")?;
     check_packed_fetch_param(index_param, IrReturnType::Int, "index")?;
 
     let block = &ir_function.blocks[0];
@@ -1318,7 +1318,7 @@ fn packed_foreach_int_sum_candidate(
     if array_param.by_ref
         || array_param.variadic
         || array_param.default.is_some()
-        || array_param.type_.as_ref() != Some(&IrReturnType::Array)
+        || array_param.type_.as_ref() != Some(&IrReturnType::Array { element_type: None })
     {
         return Err(CraneliftLoweringError::new(
             "JIT_CRANELIFT_REJECT_PACKED_FOREACH_PARAMS",
@@ -1779,7 +1779,7 @@ fn known_call_candidate(
     }
     match (kind, param.type_.as_ref()) {
         (KnownCallKind::Strlen, None | Some(IrReturnType::String))
-        | (KnownCallKind::Count, None | Some(IrReturnType::Array)) => {}
+        | (KnownCallKind::Count, None | Some(IrReturnType::Array { .. })) => {}
         (KnownCallKind::Strlen, _) => {
             return Err(CraneliftLoweringError::new(
                 "JIT_CRANELIFT_REJECT_KNOWN_CALL_PARAM_TYPE",
@@ -1869,9 +1869,9 @@ fn record_array_lookup_candidate(
             "record-lookup fast path requires array and string parameters",
         ));
     };
-    for (param, expected) in [
-        (array_param, IrReturnType::Array),
-        (key_param, IrReturnType::String),
+    for (param, expected_type_name) in [
+        (array_param, "array"),
+        (key_param, "string"),
     ] {
         if param.by_ref || param.variadic || param.default.is_some() {
             return Err(CraneliftLoweringError::new(
@@ -1879,7 +1879,12 @@ fn record_array_lookup_candidate(
                 "record-lookup parameters must be required and by-value",
             ));
         }
-        if param.type_.as_ref() != Some(&expected) {
+        let type_ok = match (expected_type_name, param.type_.as_ref()) {
+            ("array", Some(IrReturnType::Array { .. })) => true,
+            ("string", Some(IrReturnType::String)) => true,
+            _ => param.type_.is_none(),
+        };
+        if !type_ok {
             return Err(CraneliftLoweringError::new(
                 "JIT_CRANELIFT_REJECT_RECORD_LOOKUP_PARAM_TYPE",
                 "record-lookup fast path requires declared array and string operands",
@@ -4870,7 +4875,7 @@ mod tests {
                 local,
                 required: true,
                 default: None,
-                type_: Some(IrReturnType::Array),
+                type_: Some(IrReturnType::Array { element_type: None }),
                 by_ref: false,
                 variadic: false,
                 attributes: Vec::new(),
