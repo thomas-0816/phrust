@@ -771,4 +771,88 @@ mod tests {
         assert_eq!(run(overflow.as_mut_ptr()), 1);
         assert_eq!(overflow[4].tag, JitCValueTag::Uninitialized);
     }
+
+    // Steady-state native throughput of the guarded int-add stencil: compile
+    // once, finalize one CodeMemory, then call the emitted fn in a tight loop
+    // over a pre-filled buffer (no per-call mmap or marshaling). Reports ns per
+    // native op to compare against the interpreter's measured ~50 ns/op. Ignored
+    // by default; run with:
+    //   cargo test --release -p php_jit --ignored --nocapture bench_native_scalar_int
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "timing benchmark; run with --release --ignored --nocapture"]
+    fn bench_native_scalar_int_throughput() {
+        use crate::JitCValue;
+        use crate::copy_patch::compile_scalar_int_region;
+        use crate::region_ir::{
+            NodeId, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
+            RegionPlacement, RegionValueType, VmSlotId,
+        };
+        use std::time::Instant;
+
+        fn i64_node(graph: &mut RegionGraph, kind: RegionNodeKind, inputs: Vec<NodeId>) -> NodeId {
+            graph.add_node(RegionNode::new(
+                kind,
+                inputs,
+                None,
+                RegionValueType::I64,
+                RegionPlacement::Floating,
+                RegionEffects::PURE,
+            ))
+        }
+
+        // A chain of ADD_OPS guarded int adds: acc = p0 + p1, then acc += p1.
+        const ADD_OPS: usize = 500; // buffer stays under the addressable slot bound
+        let mut graph = RegionGraph::new(RegionId::new(99), "bench-add-chain");
+        let p0 = i64_node(
+            &mut graph,
+            RegionNodeKind::Param {
+                slot: VmSlotId::new(0),
+            },
+            Vec::new(),
+        );
+        let p1 = i64_node(
+            &mut graph,
+            RegionNodeKind::Param {
+                slot: VmSlotId::new(1),
+            },
+            Vec::new(),
+        );
+        let mut acc = i64_node(&mut graph, RegionNodeKind::Add, vec![p0, p1]);
+        for _ in 1..ADD_OPS {
+            acc = i64_node(&mut graph, RegionNodeKind::Add, vec![acc, p1]);
+        }
+        let compiled = compile_scalar_int_region(&graph, acc).expect("region compiles");
+
+        let mem = CodeMemory::new(&compiled.code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        let mut buffer = vec![JitCValue::uninitialized(); compiled.buffer_slots as usize];
+        buffer[0] = JitCValue::int(1);
+        buffer[1] = JitCValue::int(1);
+
+        for _ in 0..1000 {
+            assert_eq!(run(buffer.as_mut_ptr()), 0); // warm i-cache / predictor
+        }
+
+        let iters: u64 = 200_000;
+        let start = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(run(buffer.as_mut_ptr()));
+        }
+        let elapsed = start.elapsed();
+
+        let total_ops = iters * ADD_OPS as u64;
+        let ns_per_op = elapsed.as_nanos() as f64 / total_ops as f64;
+        println!(
+            "native scalar-int add: {ns_per_op:.3} ns/op  ({iters} iters x {ADD_OPS} ops = {total_ops} ops in {elapsed:?})"
+        );
+        assert_eq!(
+            buffer[compiled.result_slot as usize].payload as i64,
+            ADD_OPS as i64 + 1
+        );
+    }
 }

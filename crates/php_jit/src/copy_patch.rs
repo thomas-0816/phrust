@@ -14,10 +14,18 @@
 //! flow, non-int values) is rejected by the region compiler and left to the
 //! interpreter.
 
+use std::collections::HashMap;
+
+use php_ir::instruction::TerminatorKind;
+use php_ir::{
+    BinaryOp, InstructionKind, IrConstant, IrFunction, IrReturnType, LocalId, Operand, RegId,
+};
+
 use crate::aarch64::{Aarch64Assembler, Cond, Label, Reg, X0, X3, X4, X5, X6};
 use crate::abi::JitCValueTag;
 use crate::region_ir::{
-    NodeId, RegionConst, RegionGraph, RegionNode, RegionNodeKind, RegionValueType,
+    NodeId, RegionBuilder, RegionConst, RegionGraph, RegionId, RegionNode, RegionNodeKind,
+    RegionValueType, VmSlotId,
 };
 
 const INT_TAG: u16 = JitCValueTag::Int as u16;
@@ -348,16 +356,224 @@ fn slot_of(node_slot: &[Option<u32>], node: NodeId) -> Result<u32, RegionCompile
         .ok_or(RegionCompileError::MalformedInputs)
 }
 
+/// Resolve an IR operand to the region node holding its value.
+fn resolve_operand(
+    op: &Operand,
+    builder: &mut RegionBuilder,
+    reg_nodes: &HashMap<RegId, NodeId>,
+    param_nodes: &HashMap<LocalId, NodeId>,
+    constants: &[IrConstant],
+) -> Option<NodeId> {
+    match op {
+        Operand::Register(reg) => reg_nodes.get(reg).copied(),
+        Operand::Local(local) => param_nodes.get(local).copied(),
+        Operand::Constant(constant) => match constants.get(constant.index()) {
+            Some(IrConstant::Int(value)) => Some(builder.emit_const_i64(*value)),
+            _ => None,
+        },
+    }
+}
+
+/// Recognize a straight-line scalar-int leaf function and build the `RegionGraph`
+/// the copy-and-patch compiler lowers. Returns the graph plus the result node,
+/// or `None` to reject (the interpreter runs the function).
+///
+/// Accepts: a single-block free function declared `: int`, with only `int`,
+/// by-value, non-variadic, no-default parameters, whose body is exclusively
+/// `LoadLocal` (of a parameter), `LoadConst` (of an `Int`), `Move`, and
+/// `Binary` `Add`/`Sub`/`Mul`, terminated by `Return` of a register. Every other
+/// shape — methods, closures, generators, multiple blocks, branches, calls,
+/// arrays, references, non-int values, or `Div`/`Mod`/`Concat`/bitwise/shift —
+/// is rejected so the interpreter runs it. Guards and overflow side exits are
+/// added by the compiler; recognition only maps proven-int shapes.
+pub fn build_scalar_int_region(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    region_id: u32,
+) -> Option<(RegionGraph, NodeId)> {
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if function.return_type != Some(IrReturnType::Int) {
+        return None;
+    }
+    for param in &function.params {
+        if param.by_ref
+            || param.variadic
+            || param.default.is_some()
+            || param.type_ != Some(IrReturnType::Int)
+        {
+            return None;
+        }
+    }
+
+    // Pure straight-line arithmetic is exactly one block.
+    let [block] = function.blocks.as_slice() else {
+        return None;
+    };
+
+    let mut builder = RegionBuilder::new(RegionId::new(region_id), function.name.as_str());
+    let start = builder.start();
+
+    // Each parameter local materializes as a region parameter keyed by its slot.
+    let mut param_nodes: HashMap<LocalId, NodeId> = HashMap::new();
+    for param in &function.params {
+        let node = builder.param_i64(VmSlotId::new(param.local.raw()));
+        param_nodes.insert(param.local, node);
+    }
+
+    let mut reg_nodes: HashMap<RegId, NodeId> = HashMap::new();
+    for instruction in &block.instructions {
+        match &instruction.kind {
+            InstructionKind::LoadLocal { dst, local } => {
+                let node = param_nodes.get(local).copied()?;
+                reg_nodes.insert(*dst, node);
+            }
+            InstructionKind::LoadConst { dst, constant } => {
+                let value = match constants.get(constant.index()) {
+                    Some(IrConstant::Int(value)) => *value,
+                    _ => return None,
+                };
+                let node = builder.emit_const_i64(value);
+                reg_nodes.insert(*dst, node);
+            }
+            InstructionKind::Move { dst, src } => {
+                let node = resolve_operand(src, &mut builder, &reg_nodes, &param_nodes, constants)?;
+                reg_nodes.insert(*dst, node);
+            }
+            InstructionKind::Binary { dst, op, lhs, rhs } => {
+                let lhs_node =
+                    resolve_operand(lhs, &mut builder, &reg_nodes, &param_nodes, constants)?;
+                let rhs_node =
+                    resolve_operand(rhs, &mut builder, &reg_nodes, &param_nodes, constants)?;
+                let node = match op {
+                    BinaryOp::Add => builder.emit_add_i64(lhs_node, rhs_node),
+                    BinaryOp::Sub => builder.emit_sub_i64(lhs_node, rhs_node),
+                    BinaryOp::Mul => builder.emit_mul_i64(lhs_node, rhs_node),
+                    _ => return None,
+                };
+                reg_nodes.insert(*dst, node);
+            }
+            _ => return None,
+        }
+    }
+
+    let result = match &block.terminator {
+        Some(terminator) => match &terminator.kind {
+            TerminatorKind::Return {
+                value: Some(Operand::Register(reg)),
+                by_ref_local: None,
+            } => reg_nodes.get(reg).copied()?,
+            _ => return None,
+        },
+        None => return None,
+    };
+    builder.emit_return(start, result);
+    Some((builder.finish(), result))
+}
+
+/// Recognize and lower a scalar-int leaf function to native code in one step.
+///
+/// Returns `None` when the function is outside the subset ([`build_scalar_int_region`])
+/// or the region cannot be compiled ([`compile_scalar_int_region`]).
+pub fn compile_scalar_int_function(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    region_id: u32,
+) -> Option<CompiledScalarRegion> {
+    let (graph, result) = build_scalar_int_region(function, constants, region_id)?;
+    compile_scalar_int_region(&graph, result).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         GuardedIntAddStep, MAX_SLOT, RegionCompileError, SlotSequenceError,
-        compile_scalar_int_region, emit_guarded_int_add_sequence,
+        build_scalar_int_region, compile_scalar_int_function, compile_scalar_int_region,
+        emit_guarded_int_add_sequence,
     };
     use crate::region_ir::{
         NodeId, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
         RegionPlacement, RegionValueType, VmSlotId,
     };
+    use php_ir::instruction::TerminatorKind;
+    use php_ir::{
+        BasicBlock, BinaryOp, BlockId, FunctionFlags, InstrId, Instruction, InstructionKind,
+        IrParam, IrReturnType, IrSpan, LocalId, Operand, RegId, Terminator,
+    };
+
+    fn int_param(name: &str, local: u32) -> IrParam {
+        IrParam {
+            name: name.to_string(),
+            local: LocalId::new(local),
+            required: true,
+            default: None,
+            type_: Some(IrReturnType::Int),
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        }
+    }
+
+    /// `function f($a, $b): <return_type> { return $a <op> $b; }`
+    fn binary_leaf(op: BinaryOp, return_type: IrReturnType) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![int_param("a", 0), int_param("b", 1)],
+            locals: vec!["a".to_string(), "b".to_string()],
+            local_count: 2,
+            register_count: 3,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    Instruction {
+                        id: InstrId::new(0),
+                        span,
+                        kind: InstructionKind::LoadLocal {
+                            dst: RegId::new(0),
+                            local: LocalId::new(0),
+                        },
+                    },
+                    Instruction {
+                        id: InstrId::new(1),
+                        span,
+                        kind: InstructionKind::LoadLocal {
+                            dst: RegId::new(1),
+                            local: LocalId::new(1),
+                        },
+                    },
+                    Instruction {
+                        id: InstrId::new(2),
+                        span,
+                        kind: InstructionKind::Binary {
+                            dst: RegId::new(2),
+                            op,
+                            lhs: Operand::Register(RegId::new(0)),
+                            rhs: Operand::Register(RegId::new(1)),
+                        },
+                    },
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(2))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(return_type),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
 
     fn param(graph: &mut RegionGraph, slot: u32) -> NodeId {
         graph.add_node(RegionNode::new(
@@ -510,5 +726,30 @@ mod tests {
             compile_scalar_int_region(&graph, p0),
             Err(RegionCompileError::ResultNotComputed),
         );
+    }
+
+    #[test]
+    fn recognizes_add_of_two_int_params() {
+        // function f($a, $b): int { return $a + $b; }
+        let function = binary_leaf(BinaryOp::Add, IrReturnType::Int);
+        let compiled =
+            compile_scalar_int_function(&function, &[], 1).expect("scalar-int leaf recognized");
+        // Params occupy slots 0,1; the add result lands in temp slot 2.
+        assert_eq!(compiled.result_slot, 2);
+        assert_eq!(compiled.buffer_slots, 3);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_non_int_return_type() {
+        let function = binary_leaf(BinaryOp::Add, IrReturnType::Float);
+        assert!(build_scalar_int_region(&function, &[], 1).is_none());
+    }
+
+    #[test]
+    fn rejects_an_out_of_subset_binary_op() {
+        // Concatenation is a valid BinaryOp but outside the scalar-int subset.
+        let function = binary_leaf(BinaryOp::Concat, IrReturnType::Int);
+        assert!(build_scalar_int_region(&function, &[], 1).is_none());
     }
 }
