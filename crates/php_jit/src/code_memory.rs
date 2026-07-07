@@ -430,7 +430,7 @@ mod tests {
         // extern "C" fn(a, b, out) -> i32 forwarding to the checked-add helper:
         //   push fp/lr ; mov_imm64 x9, &helper ; blr x9 ; pop fp/lr ; ret
         // a/b/out already sit in x0/x1/x2, matching the helper (lhs, rhs, out) ABI.
-        let helper_addr = phrust_jit_i64_add_checked as usize as u64;
+        let helper_addr = phrust_jit_i64_add_checked as *const () as usize as u64;
         let mut asm = Aarch64Assembler::new();
         asm.push_fp_lr();
         asm.mov_imm64(X9, helper_addr);
