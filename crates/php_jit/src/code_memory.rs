@@ -274,4 +274,143 @@ mod tests {
         let func: extern "C" fn() -> i32 = unsafe { core::mem::transmute(mem.as_ptr()) };
         assert_eq!(func(), 42);
     }
+
+    // End-to-end: the aarch64 encoder emits real integer arithmetic, the code
+    // memory finalizes it, and it runs natively over live arguments. This is the
+    // copy-and-patch codegen path in miniature (emit -> finalize -> execute).
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_emitted_native_arithmetic() {
+        use crate::aarch64::{Aarch64Assembler, X0, X1};
+
+        // extern "C" fn(a, b) -> a + b : add x0, x0, x1 ; ret
+        let mut asm = Aarch64Assembler::new();
+        asm.add(X0, X0, X1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64) -> i64`,
+        // the region is read-execute, and `mem` outlives the calls.
+        let add: extern "C" fn(i64, i64) -> i64 = unsafe { core::mem::transmute(mem.as_ptr()) };
+        assert_eq!(add(3, 4), 7);
+        assert_eq!(add(100, -1), 99);
+
+        // extern "C" fn(a, b) -> a * b : mul x0, x0, x1 ; ret
+        let mut asm = Aarch64Assembler::new();
+        asm.mul(X0, X0, X1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(i64, i64) -> i64` over a read-execute region.
+        let mul: extern "C" fn(i64, i64) -> i64 = unsafe { core::mem::transmute(mem.as_ptr()) };
+        assert_eq!(mul(6, 7), 42);
+    }
+
+    // The copy-and-patch `guarded_int_arithmetic` stencil realized as native
+    // code: a fast path with an overflow guard that takes a side exit (deopt)
+    // instead of writing a wrong result, matching PHP's checked-add semantics.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_emitted_guarded_add_with_overflow_side_exit() {
+        use crate::aarch64::{Aarch64Assembler, Cond, X0, X1, X2, X3};
+
+        // extern "C" fn(a, b, out) -> i32:
+        //   adds x3, x0, x1        ; sum + flags
+        //   b.vs deopt             ; overflow -> side exit
+        //   str  x3, [x2]          ; *out = sum
+        //   movz x0, #0 ; ret      ; return 0 (ok)
+        // deopt:
+        //   movz x0, #1 ; ret      ; return 1 (side exit / deopt)
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        asm.adds(X3, X0, X1);
+        asm.b_cond(Cond::Overflow, deopt);
+        asm.str_reg(X3, X2);
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64, *mut i64)
+        // -> i32` over a read-execute region that outlives the calls.
+        let guarded_add: extern "C" fn(i64, i64, *mut i64) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        let mut out: i64 = 0;
+        assert_eq!(guarded_add(3, 4, &mut out), 0, "fast path returns ok");
+        assert_eq!(out, 7);
+
+        out = -1;
+        assert_eq!(
+            guarded_add(i64::MAX, 1, &mut out),
+            1,
+            "overflow takes the side exit"
+        );
+        assert_eq!(out, -1, "the side exit must not write a result");
+    }
+
+    // The `binary_add` copy-and-patch stencil operating on the real VM value
+    // ABI (`JitCValue`): guard both operand tags are Int, add with an overflow
+    // guard, write an Int result — otherwise take the interpreter side exit.
+    // This is native codegen over the actual value representation, the shape
+    // that running `$a + $b` natively requires.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_binary_add_stencil_over_jit_c_value() {
+        use crate::JitCValue;
+        use crate::aarch64::{Aarch64Assembler, Cond, X0, X1, X2, X3, X4, X5, X6};
+        use crate::abi::JitCValueTag;
+
+        const INT_TAG: u16 = JitCValueTag::Int as u16;
+
+        // extern "C" fn(a: *const JitCValue, b: *const JitCValue,
+        //               out: *mut JitCValue) -> i32
+        //   tag @ +0 (u32), payload @ +8 (u64); Int tag == 3.
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        asm.ldr_w(X3, X0, 0); // a.tag
+        asm.cmp_imm_w(X3, INT_TAG);
+        asm.b_cond(Cond::NotEqual, deopt);
+        asm.ldr_w(X3, X1, 0); // b.tag
+        asm.cmp_imm_w(X3, INT_TAG);
+        asm.b_cond(Cond::NotEqual, deopt);
+        asm.ldr_x(X4, X0, 8); // a.payload
+        asm.ldr_x(X5, X1, 8); // b.payload
+        asm.adds(X6, X4, X5); // sum + flags
+        asm.b_cond(Cond::Overflow, deopt);
+        asm.movz(X3, INT_TAG);
+        asm.str_w(X3, X2, 0); // out.tag = Int
+        asm.str_x(X6, X2, 8); // out.payload = sum
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(*const JitCValue,
+        // *const JitCValue, *mut JitCValue) -> i32` over a read-execute region;
+        // the pointers below are all valid, aligned `JitCValue`s that outlive the call.
+        let add: extern "C" fn(*const JitCValue, *const JitCValue, *mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Fast path: 3 + 4 = 7.
+        let a = JitCValue::int(3);
+        let b = JitCValue::int(4);
+        let mut out = JitCValue::uninitialized();
+        assert_eq!(add(&a, &b, &mut out), 0);
+        assert_eq!(out.tag, JitCValueTag::Int);
+        assert_eq!(out.payload as i64, 7);
+
+        // Overflow -> side exit; result left uninitialized.
+        let big = JitCValue::int(i64::MAX);
+        let one = JitCValue::int(1);
+        let mut over = JitCValue::uninitialized();
+        assert_eq!(add(&big, &one, &mut over), 1);
+        assert_eq!(over.tag, JitCValueTag::Uninitialized);
+
+        // Non-int operand -> type-guard side exit.
+        let not_int = JitCValue::null();
+        let mut typed = JitCValue::uninitialized();
+        assert_eq!(add(&a, &not_int, &mut typed), 1);
+        assert_eq!(typed.tag, JitCValueTag::Uninitialized);
+    }
 }
