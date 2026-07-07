@@ -9016,7 +9016,7 @@ impl Vm {
                             return result;
                         }
                     }
-                    DenseOpcode::CallFunction | DenseOpcode::CallFunctionDiscard | DenseOpcode::TailCallFunction => {
+                    DenseOpcode::CallFunction | DenseOpcode::CallFunctionDiscard => {
                         let DenseOperands::Call {
                             dst,
                             name,
@@ -9187,11 +9187,7 @@ impl Vm {
                                     if let Err(message) =
                                         frame.locals.set(param.local, value)
                                     {
-                                        if instruction.opcode
-                                            != DenseOpcode::TailCallFunction
-                                        {
-                                            saved_callers.pop();
-                                        }
+                                    saved_callers.pop();
                                         let result = self.runtime_error(
                                             output, compiled, stack, message,
                                         );
@@ -24977,125 +24973,6 @@ impl Vm {
                         {
                             return self.runtime_error(output, compiled, stack, message);
                         }
-                    }
-                    InstructionKind::TailCallFunction { name, args, dst: _ } => {
-                        let values = match read_call_args_for_function_at_frame(
-                            unit,
-                            stack,
-                            frame_index,
-                            name,
-                            args,
-                        ) {
-                            Ok(values) => values,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
-                        let lowered_name = normalize_function_name(name);
-                        let interned_name = PhpString::intern(lowered_name.as_bytes());
-                        let epoch = state.lookup_epoch();
-                        let call_shape = function_call_shape(&values);
-                        let target = self
-                            .lookup_function_call_inline_cache(
-                                compiled,
-                                function_id,
-                                block_id,
-                                instruction.id,
-                                &interned_name,
-                                epoch,
-                                &call_shape,
-                            )
-                            .or_else(|| {
-                                let resolved = self.resolve_function_call_target(
-                                    compiled,
-                                    state,
-                                    &lowered_name,
-                                )?;
-                                if self.options.inline_caches.enabled()
-                                    && function_call_target_is_builtin(&resolved)
-                                {
-                                    self.record_counter_builtin_call_ic(false);
-                                }
-                                self.install_function_call_inline_cache(
-                                    compiled,
-                                    function_id,
-                                    block_id,
-                                    instruction.id,
-                                    &interned_name,
-                                    epoch,
-                                    call_shape.clone(),
-                                    resolved.clone(),
-                                );
-                                Some(resolved)
-                            });
-                        let Some(target) = target else {
-                            let diagnostic = undefined_function(
-                                name,
-                                RuntimeSourceSpan::default(),
-                                stack_trace(compiled, stack),
-                            );
-                            return VmResult::runtime_error_with_diagnostic(
-                                output.clone(),
-                                diagnostic.message().to_owned(),
-                                diagnostic,
-                            );
-                        };
-                        let result = self.execute_function_call_target(
-                            compiled,
-                            target,
-                            values,
-                            Some((
-                                compiled_unit_cache_key(compiled),
-                                function_id,
-                                block_id,
-                                instruction.id,
-                            )),
-                            Some(instruction.span),
-                            output,
-                            stack,
-                            state,
-                            &running_fiber,
-                        );
-                        if !result.status.is_success()
-                            && let Some(throwable) = state
-                                .pending_throw
-                                .take()
-                                .or_else(|| runtime_error_throwable(&result))
-                        {
-                            if let Some(target) = handle_throw(
-                                compiled,
-                                throwable.clone(),
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                            ) {
-                                block_id = target;
-                                continue 'dispatch;
-                            }
-                            return self.propagate_exception(output, stack, state, throwable);
-                        }
-                        if !result.status.is_success() {
-                            return result;
-                        }
-                        if result.fiber_suspension.is_some() {
-                            return self.propagate_fiber_suspension(
-                                result,
-                                compiled,
-                                RegId::new(0),
-                                block_id,
-                                instruction_index + 1,
-                                &foreach_iterators,
-                                &exception_handlers,
-                                &pending_control,
-                                output,
-                                stack,
-                            );
-                        }
-                        diagnostics.extend(result.diagnostics);
-                        let return_value = result.return_value.unwrap_or(Value::Null);
-                        stack.pop_frame_recycle(frame_index);
-                        return VmResult::success(output.clone(), Some(return_value));
                     }
                     InstructionKind::CallMethod {
                         dst,
@@ -60762,7 +60639,6 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         }
         DenseOpcode::CallFunction
         | DenseOpcode::CallFunctionDiscard
-        | DenseOpcode::TailCallFunction
         | DenseOpcode::CallMethod
         | DenseOpcode::CallStaticMethod
         | DenseOpcode::CallCallable

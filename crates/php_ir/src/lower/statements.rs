@@ -1458,11 +1458,6 @@ impl LoweringContext<'_> {
             builder.terminate_return(function, block, None, span);
             return block;
         }
-        if let Some(block) = self.try_lower_tail_call_return(
-            builder, function, block, expr, span,
-        ) {
-            return block;
-        }
         let Some(value) = self.lower_expr_to_register(builder, function, block, expr) else {
             builder.terminate_return(function, block, None, span);
             return block;
@@ -1474,66 +1469,6 @@ impl LoweringContext<'_> {
             span,
         );
         block
-    }
-
-    /// Detect self-recursive tail calls (`return f(...)` where `f` is the
-    /// enclosing function) and lower them to `TailCallFunction` + `Return`.
-    /// The calling function's frame is reused at runtime, and in the dense
-    /// bytecode path the result is stored to a register that the following
-    /// `Return` terminator reads.
-    fn try_lower_tail_call_return(
-        &mut self,
-        builder: &mut IrBuilder,
-        function: FunctionId,
-        block: BlockId,
-        expr: ExprId,
-        span: IrSpan,
-    ) -> Option<BlockId> {
-        let module = self
-            .frontend
-            .database()
-            .module(self.frontend.module().module_id())?;
-        let expression = module.expressions().get(expr)?;
-        let HirExprKind::Call { callee, args } = expression.kind() else {
-            return None;
-        };
-        let callee_expr = *callee.as_ref()?;
-        let call_name = self.static_function_call_name(callee_expr)?;
-        let normalized_call = normalize_function_name(&call_name);
-        let current_name = self.function_names.get(&function)?;
-        let normalized_current = normalize_function_name(current_name);
-        if normalized_call != normalized_current {
-            return None;
-        }
-        let range = self.span_for(SourceMappedId::from(expr));
-        let site = LowerSite {
-            function,
-            block,
-            expr,
-            span,
-            range,
-        };
-        let (operands, current) = self.lower_call_args_for_function(
-            builder, site, &normalized_call, args,
-        )?;
-        let dst = builder.alloc_register(function);
-        builder.emit(
-            function,
-            current,
-            InstructionKind::TailCallFunction {
-                dst,
-                name: normalized_call,
-                args: operands,
-            },
-            span,
-        );
-        builder.terminate_return(
-            function,
-            current,
-            Some(Operand::Register(dst)),
-            span,
-        );
-        Some(current)
     }
 
     pub(super) fn lower_throw_stmt(

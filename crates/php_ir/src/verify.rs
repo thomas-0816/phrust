@@ -484,10 +484,6 @@ fn verify_instruction(
             verify_register(*dst, function.register_count, errors);
             verify_call_args(args, function, unit, errors);
         }
-        InstructionKind::TailCallFunction { dst, args, .. } => {
-            verify_register(*dst, function.register_count, errors);
-            verify_call_args(args, function, unit, errors);
-        }
         InstructionKind::CallMethod {
             dst, object, args, ..
         } => {
@@ -1381,7 +1377,6 @@ fn instruction_register_uses(kind: &InstructionKind, uses: &mut Vec<RegId>) {
         }
         InstructionKind::BindReferenceFromCall { args, .. }
         | InstructionKind::CallFunction { args, .. }
-        | InstructionKind::TailCallFunction { args, .. }
         | InstructionKind::CallStaticMethod { args, .. }
         | InstructionKind::NewObject { args, .. } => call_args_register_uses(args, uses),
         InstructionKind::BindReferenceFromMethodCall { object, args, .. } => {
@@ -1527,7 +1522,6 @@ fn instruction_register_defs(kind: &InstructionKind, defs: &mut Vec<RegId>) {
         | InstructionKind::Yield { dst, .. }
         | InstructionKind::YieldFrom { dst, .. }
         | InstructionKind::CallFunction { dst, .. }
-        | InstructionKind::TailCallFunction { dst, .. }
         | InstructionKind::CallMethod { dst, .. }
         | InstructionKind::CallStaticMethod { dst, .. }
         | InstructionKind::CloneObject { dst, .. }

@@ -1117,7 +1117,6 @@ fn defined_registers(kind: &InstructionKind) -> Vec<RegId> {
         | InstructionKind::UnsetLocal { .. }
         | InstructionKind::UnsetDim { .. }
         | InstructionKind::ForeachCleanup { .. }
-        | InstructionKind::TailCallFunction { .. }
         | InstructionKind::Unsupported { .. }
         | InstructionKind::RuntimeError { .. } => Vec::new(),
     }
@@ -1317,7 +1316,6 @@ fn remap_instruction_constants(kind: &mut InstructionKind, remap: &[ConstId]) {
             }
         }
         InstructionKind::CallFunction { args, .. }
-        | InstructionKind::TailCallFunction { args, .. }
         | InstructionKind::CallStaticMethod { args, .. }
         | InstructionKind::NewObject { args, .. }
         | InstructionKind::BindReferenceFromCall { args, .. } => {
@@ -1638,7 +1636,6 @@ fn rewrite_instruction_register_operands(
             }
         }
         InstructionKind::CallFunction { args, .. }
-        | InstructionKind::TailCallFunction { args, .. }
         | InstructionKind::CallStaticMethod { args, .. }
         | InstructionKind::NewObject { args, .. }
         | InstructionKind::BindReferenceFromCall { args, .. } => {

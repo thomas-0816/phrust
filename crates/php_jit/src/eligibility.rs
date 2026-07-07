@@ -1554,7 +1554,6 @@ fn check_instruction(
             ))
         }
         InstructionKind::CallFunction { .. }
-        | InstructionKind::TailCallFunction { .. }
         | InstructionKind::CallMethod { .. }
         | InstructionKind::CallStaticMethod { .. }
         | InstructionKind::CallClosure { .. }

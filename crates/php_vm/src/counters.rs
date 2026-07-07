@@ -590,7 +590,6 @@ impl VmCounters {
         match kind {
             InstructionKind::BindReferenceFromCall { .. }
             | InstructionKind::CallFunction { .. }
-            | InstructionKind::TailCallFunction { .. }
             | InstructionKind::CallClosure { .. }
             | InstructionKind::AcquireCallable { .. }
             | InstructionKind::CallCallable { .. }
@@ -5342,7 +5341,6 @@ fn ir_opcode_index(kind: &InstructionKind) -> usize {
         InstructionKind::ArrayGet { .. } => 100,
         InstructionKind::Unsupported { .. } => 101,
         InstructionKind::RuntimeError { .. } => 102,
-        InstructionKind::TailCallFunction { .. } => 103,
     }
 }
 

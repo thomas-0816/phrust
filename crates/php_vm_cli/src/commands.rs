@@ -2924,7 +2924,6 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         },
         DenseOpcode::CallFunction
         | DenseOpcode::CallFunctionDiscard
-        | DenseOpcode::TailCallFunction
         | DenseOpcode::NewObject
         | DenseOpcode::InstanceOf
         | DenseOpcode::IssetPropertyDim
@@ -3297,7 +3296,6 @@ fn classify_copy_patch_stencil_instruction(
         },
         DenseOpcode::CallFunction
         | DenseOpcode::CallFunctionDiscard
-        | DenseOpcode::TailCallFunction
         | DenseOpcode::NewObject
         | DenseOpcode::InstanceOf
         | DenseOpcode::IssetPropertyDim
@@ -3613,7 +3611,6 @@ fn classify_mid_tier_instruction(
         }
         DenseOpcode::CallFunction
         | DenseOpcode::CallFunctionDiscard
-        | DenseOpcode::TailCallFunction
         | DenseOpcode::NewObject
         | DenseOpcode::InstanceOf
         | DenseOpcode::IssetPropertyDim
