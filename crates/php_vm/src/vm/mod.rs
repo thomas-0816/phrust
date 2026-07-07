@@ -56774,11 +56774,18 @@ fn coerce_value_to_runtime_type(value: &Value, runtime_type: &RuntimeType) -> Op
     if value_matches_runtime_type(value, runtime_type) {
         return Some(value.clone());
     }
-    if !matches!(
-        value,
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_)
-    ) {
-        return None;
+    // Typed array element-wise coercion
+    if let RuntimeType::Array {
+        element_type: Some(et),
+    } = runtime_type {
+        let Value::Array(array) = value else {
+            return None;
+        };
+        let mut result = PhpArray::new();
+        for (key, val) in array.iter() {
+            result.insert(key.clone(), coerce_value_to_runtime_type(val, et)?);
+        }
+        return Some(Value::Array(result));
     }
     match runtime_type {
         RuntimeType::Nullable { inner } if matches!(value, Value::Null) => Some(Value::Null),
@@ -56792,15 +56799,47 @@ fn coerce_value_to_runtime_type(value: &Value, runtime_type: &RuntimeType) -> Op
                 NumericValue::Float(value) => Value::Int(value as i64),
             })
         }
-        RuntimeType::Int => to_int(value).ok().map(Value::Int),
+        RuntimeType::Int => {
+            if !is_scalar_coercible(value) {
+                return None;
+            }
+            to_int(value).ok().map(Value::Int)
+        }
         RuntimeType::Float if matches!(value, Value::String(_)) => to_number(value)
             .ok()
             .map(|number| Value::float(number.as_f64())),
-        RuntimeType::Float => to_float(value).ok().map(Value::float),
-        RuntimeType::String => to_string(value).ok().map(Value::String),
-        RuntimeType::Bool => to_bool(value).ok().map(Value::Bool),
-        _ => None,
+        RuntimeType::Float => {
+            if !is_scalar_coercible(value) {
+                return None;
+            }
+            to_float(value).ok().map(Value::float)
+        }
+        RuntimeType::String => {
+            if !is_scalar_coercible(value) {
+                return None;
+            }
+            to_string(value).ok().map(Value::String)
+        }
+        RuntimeType::Bool => {
+            if !is_scalar_coercible(value) {
+                return None;
+            }
+            to_bool(value).ok().map(Value::Bool)
+        }
+        _ => {
+            if !is_scalar_coercible(value) {
+                return None;
+            }
+            None
+        }
     }
+}
+
+fn is_scalar_coercible(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_)
+    )
 }
 
 fn materialize_int_to_float_runtime_type(value: &mut Value, runtime_type: &RuntimeType) {
