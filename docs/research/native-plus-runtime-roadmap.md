@@ -127,15 +127,20 @@ Relevant commits: `6f4be9de` (code memory), `daf32e1c` (first end-to-end emitter
 `14b12369`/`7a94adaf` (guarded int-add over the slot ABI), `62f8e4b3`/`71776da3`
 (subs/smulh; widen to sub/mul/const), `55f3034e` (leaf recognizer),
 `38d8ead7`/`8a8273e0`/`70c88c82` (VM bridge + hook + arg-gate fix), `51bc38f6`
-(native counted loops), `c85846fc` (recognize real PHP for-loops).
+(native counted loops), `c85846fc` (recognize real PHP for-loops), `5b3627f8`
+(int `Compare` → bool), `ad787549`/`2b539865` (bitwise, const operands, `Mod`,
+shifts), `40fe9238` (general CFG compiler — gap a), `79420c51` (dense-path hook —
+gap d), and float arithmetic (gap e, float portion).
 
 ### Gaps to "as native as possible"
 
-**(a) General control-flow compiler.** Only two single-shape *recognizers* exist —
-the straight-line scalar-int leaf and the one canonical counted for-loop. Anything
-else (arbitrary branches, `while`/`foreach`, early return, nested loops, non-unit
-increments) is rejected and interpreted. The sea-of-nodes `region_ir/builder.rs`
-and `opt/` passes are not on the emit path.
+**(a) General control-flow compiler.** — **LANDED** (`compile_scalar_int_cfg`).
+A general CFG compiler now lowers arbitrary `if`/`else`, `while`, early return, and
+non-unit-increment loops: every SSA register and local gets its own slot, so control
+flow is just branches between per-block labels with no phi handling or cross-block
+register allocation. The leaf and counted-loop recognizers stay ahead of it (tighter
+code); it is the catch-all fallback for the int/bool subset. `foreach`, nested-loop
+edge cases, and the sea-of-nodes `opt/` passes on the emit path remain future work.
 
 **(b) Calls + a real helper ABI — the keystone.** Native code cannot call another
 PHP function or a builtin. The encoder has `blr`/`push_fp_lr`/`pop_fp_lr` and
@@ -148,18 +153,24 @@ returns `1` and `NativeLeaf::run` returns `None`, so the whole call falls back t
 the interpreter from the top. `region_ir/osr.rs` computes live-slot metadata but it
 is **unwired** — there is no real resume-at-program-point.
 
-**(d) Default-mode engagement.** The hook is in the **rich** executor
-(`execute_function_inner`). The **dense** executor (`execute_bytecode_function` via
-`execute_function_with_dense_plan`) bypasses it entirely — the dense CALL dispatch
-site calls `execute_bytecode_function` directly with no copy-patch hook. So the
-tier fires today only under `--exec-format ir`; a dense-path hook is required for
-default (Auto/dense) mode.
+**(d) Default-mode engagement.** — **LANDED** (dense-path hook). The dense
+executor's fast CALL dispatch site (`DenseFunctionPlan::Dense`) now tries the
+native leaf before falling through to `execute_bytecode_function`, so the tier
+engages on dense (default-mode) code, not just `--exec-format ir`. Still gated
+behind the `jit-copy-patch` feature + `PHRUST_JIT_COPY_PATCH` env, verified by a
+differential harness (`just copy-patch-native-diff`) that diffs native-on vs
+native-off vs PHP 8.5.7. Flipping the env default to on awaits broader coverage
+(calls/objects) and the mid-region deopt safety net (gap c).
 
-**(e) Type/operator/data coverage.** The lowered subset is `int` only. Missing:
-floats (no FP registers or FP emitter); the rest of the operator set (`Div`/`Mod`,
-bitwise, shifts, `Compare`, `Concat`, boolean logic); strings (via helpers); arrays
-(packed-fast-path plus helper fallback); objects (shape-guarded slot access +
-inline-cache method dispatch). Any of these forces interpretation.
+**(e) Type/operator/data coverage.** — **PARTIALLY LANDED.** Integer operators are
+now complete: `Add`/`Sub`/`Mul` (overflow-guarded), `Mod` and shifts (domain-guarded),
+bitwise `And`/`Or`/`Xor`, integer `Compare` → bool, and constant right-operands.
+**Float arithmetic** is landed too: double-precision `fadd`/`fsub`/`fmul`/`fdiv`
+over FP registers, guarded by a `FloatBits` tag check with a zero-divisor side exit
+for `/` (float `/` is float-typed, so it *is* in the subset, unlike int `/` which
+may produce a float). Still missing: float `Compare` and float loops/branches;
+`Concat` and boolean logic; strings/arrays/objects — all of which route through the
+helper ABI (gap b) and so are gated on it. Any uncovered shape forces interpretation.
 
 **(f) x86-64 backend.** The emitter is aarch64-only; `copy_patch_bridge.rs` and the
 VM hook are `#[cfg(all(unix, target_arch = "aarch64"))]` and fall back everywhere
