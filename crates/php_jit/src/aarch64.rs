@@ -22,6 +22,12 @@ pub const X1: Reg = 1;
 pub const X2: Reg = 2;
 /// Scratch register.
 pub const X3: Reg = 3;
+/// Scratch register.
+pub const X4: Reg = 4;
+/// Scratch register.
+pub const X5: Reg = 5;
+/// Scratch register.
+pub const X6: Reg = 6;
 /// Zero register.
 pub const XZR: Reg = 31;
 /// Link register (return address), used by `ret`.
@@ -124,7 +130,39 @@ impl Aarch64Assembler {
 
     /// `str Xt, [Xn]` — store the 64-bit register `Xt` to `[Xn]` (zero offset).
     pub fn str_reg(&mut self, rt: Reg, rn: Reg) {
-        self.emit(0xF900_0000 | (u32::from(rn) << 5) | u32::from(rt));
+        self.str_x(rt, rn, 0);
+    }
+
+    /// `ldr Wt, [Xn, #byte_offset]` — load 32 bits (e.g. a `repr(u32)` tag).
+    /// `byte_offset` must be a multiple of 4.
+    pub fn ldr_w(&mut self, rt: Reg, rn: Reg, byte_offset: u32) {
+        let imm12 = byte_offset / 4;
+        self.emit(0xB940_0000 | (imm12 << 10) | (u32::from(rn) << 5) | u32::from(rt));
+    }
+
+    /// `ldr Xt, [Xn, #byte_offset]` — load 64 bits (e.g. a value payload).
+    /// `byte_offset` must be a multiple of 8.
+    pub fn ldr_x(&mut self, rt: Reg, rn: Reg, byte_offset: u32) {
+        let imm12 = byte_offset / 8;
+        self.emit(0xF940_0000 | (imm12 << 10) | (u32::from(rn) << 5) | u32::from(rt));
+    }
+
+    /// `str Wt, [Xn, #byte_offset]` — store 32 bits. Multiple of 4.
+    pub fn str_w(&mut self, rt: Reg, rn: Reg, byte_offset: u32) {
+        let imm12 = byte_offset / 4;
+        self.emit(0xB900_0000 | (imm12 << 10) | (u32::from(rn) << 5) | u32::from(rt));
+    }
+
+    /// `str Xt, [Xn, #byte_offset]` — store 64 bits. Multiple of 8.
+    pub fn str_x(&mut self, rt: Reg, rn: Reg, byte_offset: u32) {
+        let imm12 = byte_offset / 8;
+        self.emit(0xF900_0000 | (imm12 << 10) | (u32::from(rn) << 5) | u32::from(rt));
+    }
+
+    /// `cmp Wn, #imm12` — compare a 32-bit register to an immediate, setting
+    /// flags (`subs wzr, Wn, #imm`). Used to guard a value tag.
+    pub fn cmp_imm_w(&mut self, rn: Reg, imm12: u16) {
+        self.emit(0x7100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(XZR));
     }
 
     /// `b.<cond> label` — conditional branch to a (forward or bound) label. The
@@ -190,6 +228,26 @@ mod tests {
                 0xE1, 0x03, 0x00, 0xAA, // mov x1, x0
                 0x43, 0x00, 0x00, 0xF9, // str x3, [x2]
                 0xC0, 0x03, 0x5F, 0xD6, // ret
+            ]
+        );
+    }
+
+    #[test]
+    fn encodes_memory_and_compare() {
+        let mut asm = Aarch64Assembler::new();
+        asm.ldr_w(X3, X0, 0); // ldr w3, [x0]      -> 0xB9400003
+        asm.ldr_x(X0, X0, 8); // ldr x0, [x0, #8]  -> 0xF9400400
+        asm.str_w(X3, X2, 0); // str w3, [x2]      -> 0xB9000043
+        asm.str_x(X0, X2, 8); // str x0, [x2, #8]  -> 0xF9000440
+        asm.cmp_imm_w(X3, 3); // cmp w3, #3        -> 0x71000C7F
+        assert_eq!(
+            asm.finish(),
+            vec![
+                0x03, 0x00, 0x40, 0xB9, // ldr w3, [x0]
+                0x00, 0x04, 0x40, 0xF9, // ldr x0, [x0, #8]
+                0x43, 0x00, 0x00, 0xB9, // str w3, [x2]
+                0x40, 0x04, 0x00, 0xF9, // str x0, [x2, #8]
+                0x7F, 0x0C, 0x00, 0x71, // cmp w3, #3
             ]
         );
     }
