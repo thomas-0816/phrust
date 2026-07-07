@@ -12417,7 +12417,7 @@ impl Vm {
         }
 
         let property_type = ir_runtime_type(resolved.property.type_.as_ref());
-        if let Err(message) = check_property_type(
+        let value = match check_property_type(
             compiled,
             Some(state),
             resolved_class.display_name.as_str(),
@@ -12426,9 +12426,13 @@ impl Vm {
             &value,
             self.typecheck_fast_path_context(),
         ) {
-            self.record_counter_dense_property_fallback("typed_property_validation");
-            return Err(self.dense_runtime_error(compiled, output, stack, state, span, message));
-        }
+            Ok(Some(coerced)) => coerced,
+            Ok(None) => value,
+            Err(message) => {
+                self.record_counter_dense_property_fallback("typed_property_validation");
+                return Err(self.dense_runtime_error(compiled, output, stack, state, span, message));
+            }
+        };
         if let Err(message) =
             validate_property_write(resolved_class, resolved_property, &object, stack, compiled)
         {
@@ -56576,12 +56580,14 @@ fn check_property_type(
     runtime_type: &Option<RuntimeType>,
     value: &Value,
     typecheck: TypecheckFastPathContext<'_>,
-) -> Result<(), String> {
+) -> Result<Option<Value>, String> {
     let Some(runtime_type) = runtime_type else {
-        return Ok(());
+        return Ok(None);
     };
     if vm_value_matches_runtime_type(compiled, state, value, runtime_type, typecheck)? {
-        Ok(())
+        Ok(None)
+    } else if let Some(coerced) = coerce_value_to_runtime_type(value, runtime_type) {
+        Ok(Some(coerced))
     } else {
         Err(format!(
             "E_PHP_VM_PROPERTY_TYPE_MISMATCH: property {class_name}::${property} got {}, expected {}",
