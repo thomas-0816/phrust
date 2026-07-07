@@ -908,6 +908,86 @@ mod tests {
         assert_eq!(zero[2].payload as i64, 0);
     }
 
+    #[test]
+    fn executes_native_loop_with_const_operand_body() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{CountedLoop, IntBinOp, ScalarIntOp, emit_counted_loop};
+
+        // slots: i=0 (counter), n=1 (limit), s=2 (accumulator).
+        // Body `s = s + 5` runs once per iteration -> s = 5 * n.
+        let counted = CountedLoop {
+            prologue: vec![
+                ScalarIntOp::Const { dst: 0, value: 0 },
+                ScalarIntOp::Const { dst: 2, value: 0 },
+            ],
+            counter: 0,
+            limit: 1,
+            body: vec![ScalarIntOp::BinaryConst {
+                op: IntBinOp::Add,
+                dst: 2,
+                lhs: 2,
+                rhs: 5,
+            }],
+        };
+        let code = emit_counted_loop(&counted).expect("const-body loop emits");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        // n = 10 -> s = 5 * 10 = 50.
+        let mut slots = [
+            JitCValue::uninitialized(),
+            JitCValue::int(10),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[2].tag, JitCValueTag::Int);
+        assert_eq!(slots[2].payload as i64, 50);
+    }
+
+    #[test]
+    fn executes_native_loop_with_bitwise_const_body() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{CountedLoop, IntBinOp, ScalarIntOp, emit_counted_loop};
+
+        // slots: i=0 (counter), n=1 (limit), s=2 (accumulator).
+        // Body `s = s | 5` OR-folds a constant; idempotent once the bits are set.
+        let counted = CountedLoop {
+            prologue: vec![
+                ScalarIntOp::Const { dst: 0, value: 0 },
+                ScalarIntOp::Const { dst: 2, value: 2 }, // s starts at 0b010
+            ],
+            counter: 0,
+            limit: 1,
+            body: vec![ScalarIntOp::BinaryConst {
+                op: IntBinOp::BitOr,
+                dst: 2,
+                lhs: 2,
+                rhs: 5, // 0b101
+            }],
+        };
+        let code = emit_counted_loop(&counted).expect("bitwise const-body loop emits");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        // n = 3 -> after any iteration, s = 0b010 | 0b101 = 0b111 = 7.
+        let mut slots = [
+            JitCValue::uninitialized(),
+            JitCValue::int(3),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[2].tag, JitCValueTag::Int);
+        assert_eq!(slots[2].payload as i64, 7);
+    }
+
     // Native loop throughput: sum 0..n natively vs the interpreter's ~50 ns/op.
     // Run with: cargo test --release -p php_jit --ignored --nocapture bench_native_counted_loop
     #[cfg(all(unix, target_arch = "aarch64"))]

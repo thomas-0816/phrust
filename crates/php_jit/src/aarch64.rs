@@ -184,6 +184,21 @@ impl Aarch64Assembler {
         self.emit(0x9B40_7C00 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
     }
 
+    /// `and Xd, Xn, Xm` (64-bit bitwise AND).
+    pub fn and_reg(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x8A00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `orr Xd, Xn, Xm` (64-bit bitwise OR).
+    pub fn orr_reg(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0xAA00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `eor Xd, Xn, Xm` (64-bit bitwise XOR).
+    pub fn eor_reg(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0xCA00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
     /// `mov Xd, Xm` (register move, encoded as `orr Xd, xzr, Xm`).
     pub fn mov(&mut self, rd: Reg, rm: Reg) {
         self.emit(0xAA00_0000 | (u32::from(rm) << 16) | (u32::from(XZR) << 5) | u32::from(rd));

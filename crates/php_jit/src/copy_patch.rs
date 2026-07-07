@@ -73,7 +73,8 @@ const fn payload_off(slot: u32) -> u32 {
     slot * STRIDE + PAYLOAD_OFF
 }
 
-/// A binary PHP integer operation lowered with a type + overflow guard.
+/// A binary PHP integer operation. Add/Sub/Mul carry a type + overflow guard;
+/// the bitwise ops carry only the type guard (they never overflow).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntBinOp {
     /// `lhs + rhs`, side exit on signed overflow.
@@ -82,6 +83,39 @@ pub enum IntBinOp {
     Sub,
     /// `lhs * rhs`, side exit on signed overflow.
     Mul,
+    /// `lhs & rhs`.
+    BitAnd,
+    /// `lhs | rhs`.
+    BitOr,
+    /// `lhs ^ rhs`.
+    BitXor,
+}
+
+impl IntBinOp {
+    /// Emit the operation on `X4`/`X5` into `X6`, taking `deopt` on overflow.
+    fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
+        match self {
+            IntBinOp::Add => {
+                asm.adds(X6, X4, X5);
+                asm.b_cond(Cond::Overflow, deopt);
+            }
+            IntBinOp::Sub => {
+                asm.subs(X6, X4, X5);
+                asm.b_cond(Cond::Overflow, deopt);
+            }
+            IntBinOp::Mul => {
+                // Overflow when the product high bits differ from the sign
+                // extension of the low bits (see cmp_shifted_asr63).
+                asm.mul(X6, X4, X5);
+                asm.smulh(X3, X4, X5);
+                asm.cmp_shifted_asr63(X3, X6);
+                asm.b_cond(Cond::NotEqual, deopt);
+            }
+            IntBinOp::BitAnd => asm.and_reg(X6, X4, X5),
+            IntBinOp::BitOr => asm.orr_reg(X6, X4, X5),
+            IntBinOp::BitXor => asm.eor_reg(X6, X4, X5),
+        }
+    }
 }
 
 /// A single scalar-int operation over the flat slot buffer.
@@ -105,6 +139,14 @@ pub enum ScalarIntOp {
         dst: u32,
         lhs: u32,
         rhs: u32,
+    },
+    /// Guarded binary op with a statically-known right operand:
+    /// `slot[dst] = slot[lhs] <op> rhs` (the constant is materialized inline).
+    BinaryConst {
+        op: IntBinOp,
+        dst: u32,
+        lhs: u32,
+        rhs: i64,
     },
 }
 
@@ -150,6 +192,10 @@ fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
     match op {
         ScalarIntOp::Const { dst, .. } => check_slot(dst),
+        ScalarIntOp::BinaryConst { dst, lhs, .. } => {
+            check_slot(dst)?;
+            check_slot(lhs)
+        }
         ScalarIntOp::Binary { dst, lhs, rhs, .. } | ScalarIntOp::Compare { dst, lhs, rhs, .. } => {
             check_slot(dst)?;
             check_slot(lhs)?;
@@ -172,24 +218,14 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
             emit_int_guard(asm, deopt, rhs);
             asm.ldr_x(X4, X0, payload_off(lhs));
             asm.ldr_x(X5, X0, payload_off(rhs));
-            match op {
-                IntBinOp::Add => {
-                    asm.adds(X6, X4, X5);
-                    asm.b_cond(Cond::Overflow, deopt);
-                }
-                IntBinOp::Sub => {
-                    asm.subs(X6, X4, X5);
-                    asm.b_cond(Cond::Overflow, deopt);
-                }
-                IntBinOp::Mul => {
-                    // Overflow when the product high bits differ from the
-                    // sign extension of the low bits (see cmp_shifted_asr63).
-                    asm.mul(X6, X4, X5);
-                    asm.smulh(X3, X4, X5);
-                    asm.cmp_shifted_asr63(X3, X6);
-                    asm.b_cond(Cond::NotEqual, deopt);
-                }
-            }
+            op.emit(asm, deopt);
+            emit_store_int(asm, dst, X6);
+        }
+        ScalarIntOp::BinaryConst { op, dst, lhs, rhs } => {
+            emit_int_guard(asm, deopt, lhs);
+            asm.ldr_x(X4, X0, payload_off(lhs));
+            asm.mov_imm64(X5, rhs as u64);
+            op.emit(asm, deopt);
             emit_store_int(asm, dst, X6);
         }
         ScalarIntOp::Compare {
@@ -765,14 +801,13 @@ fn compile_counted_loop_function(
     }
     let mut loop_body = Vec::new();
     for stmt in body_kinds.chunks_exact(4) {
+        // Every body statement is `local = local <op> operand`, lowered as
+        // load-lhs / load-rhs / binary / store. The right operand is either
+        // another local (`Binary`) or a constant (`BinaryConst`).
         let (
             InstructionKind::LoadLocal {
                 dst: lhs_reg,
                 local: lhs_local,
-            },
-            InstructionKind::LoadLocal {
-                dst: rhs_reg,
-                local: rhs_local,
             },
             InstructionKind::Binary {
                 dst: result_reg,
@@ -784,19 +819,42 @@ fn compile_counted_loop_function(
                 local: store_local,
                 src: Operand::Register(store_reg),
             },
-        ) = (&stmt[0], &stmt[1], &stmt[2], &stmt[3])
+        ) = (&stmt[0], &stmt[2], &stmt[3])
         else {
             return None;
         };
-        if bin_lhs != lhs_reg || bin_rhs != rhs_reg || store_reg != result_reg {
+        if bin_lhs != lhs_reg || store_reg != result_reg {
             return None;
         }
-        loop_body.push(ScalarIntOp::Binary {
-            op: int_bin_op(*op)?,
-            dst: store_local.raw(),
-            lhs: lhs_local.raw(),
-            rhs: rhs_local.raw(),
-        });
+        let op = int_bin_op(*op)?;
+        let dst = store_local.raw();
+        let lhs = lhs_local.raw();
+        match &stmt[1] {
+            InstructionKind::LoadLocal {
+                dst: rhs_reg,
+                local: rhs_local,
+            } if bin_rhs == rhs_reg => {
+                loop_body.push(ScalarIntOp::Binary {
+                    op,
+                    dst,
+                    lhs,
+                    rhs: rhs_local.raw(),
+                });
+            }
+            InstructionKind::LoadConst {
+                dst: rhs_reg,
+                constant,
+            } if bin_rhs == rhs_reg => {
+                let value = int_constant(constants, *constant)?;
+                loop_body.push(ScalarIntOp::BinaryConst {
+                    op,
+                    dst,
+                    lhs,
+                    rhs: value,
+                });
+            }
+            _ => return None,
+        }
     }
     let TerminatorKind::Jump { target: incr_id } = body.terminator.as_ref()?.kind else {
         return None;
@@ -881,6 +939,9 @@ fn int_bin_op(op: BinaryOp) -> Option<IntBinOp> {
         BinaryOp::Add => Some(IntBinOp::Add),
         BinaryOp::Sub => Some(IntBinOp::Sub),
         BinaryOp::Mul => Some(IntBinOp::Mul),
+        BinaryOp::BitAnd => Some(IntBinOp::BitAnd),
+        BinaryOp::BitOr => Some(IntBinOp::BitOr),
+        BinaryOp::BitXor => Some(IntBinOp::BitXor),
         _ => None,
     }
 }
@@ -1326,6 +1387,160 @@ mod tests {
         let function = sum_to_loop_function();
         let constants = [IrConstant::Int(0), IrConstant::Int(2)];
         assert!(compile_scalar_int_function(&function, &constants, 1).is_none());
+    }
+
+    /// `function acc(int $n): int { $s = 0; for ($i=0; $i<$n; $i++) { $s = $s <op> C; } return $s; }`
+    /// where the loop body applies a constant right operand (`BinaryConst`).
+    /// The body's second load is `LoadConst` (const index 2) instead of a local.
+    fn const_body_loop_function(op: BinaryOp) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let load_local = |dst, local| {
+            ins(InstructionKind::LoadLocal {
+                dst: RegId::new(dst),
+                local: LocalId::new(local),
+            })
+        };
+        let load_const = |dst, constant| {
+            ins(InstructionKind::LoadConst {
+                dst: RegId::new(dst),
+                constant: ConstId::new(constant),
+            })
+        };
+        let store_local = |local, reg| {
+            ins(InstructionKind::StoreLocal {
+                local: LocalId::new(local),
+                src: Operand::Register(RegId::new(reg)),
+            })
+        };
+        let discard = |reg| {
+            ins(InstructionKind::Discard {
+                src: Operand::Register(RegId::new(reg)),
+            })
+        };
+        let binary = |dst, op, lhs, rhs| {
+            ins(InstructionKind::Binary {
+                dst: RegId::new(dst),
+                op,
+                lhs: Operand::Register(RegId::new(lhs)),
+                rhs: Operand::Register(RegId::new(rhs)),
+            })
+        };
+        let add = |dst, lhs, rhs| binary(dst, BinaryOp::Add, lhs, rhs);
+        let term = |kind| Some(Terminator { span, kind });
+        let jump = |target| {
+            term(TerminatorKind::Jump {
+                target: BlockId::new(target),
+            })
+        };
+        let block = |id, instructions, terminator| BasicBlock {
+            id: BlockId::new(id),
+            instructions,
+            terminator,
+        };
+
+        php_ir::IrFunction {
+            name: "acc".to_string(),
+            params: vec![int_param("n", 0)],
+            locals: vec!["n".to_string(), "s".to_string(), "i".to_string()],
+            local_count: 3,
+            register_count: 12,
+            blocks: vec![
+                block(
+                    0,
+                    vec![
+                        load_const(0, 0),
+                        store_local(1, 0),
+                        discard(0),
+                        load_const(1, 0),
+                        store_local(2, 1),
+                        discard(1),
+                    ],
+                    jump(1),
+                ),
+                block(
+                    1,
+                    vec![
+                        load_local(2, 2),
+                        load_local(3, 0),
+                        ins(InstructionKind::Compare {
+                            dst: RegId::new(4),
+                            op: CompareOp::Less,
+                            lhs: Operand::Register(RegId::new(2)),
+                            rhs: Operand::Register(RegId::new(3)),
+                        }),
+                    ],
+                    term(TerminatorKind::JumpIf {
+                        condition: Operand::Register(RegId::new(4)),
+                        if_true: BlockId::new(3),
+                        if_false: BlockId::new(2),
+                    }),
+                ),
+                block(
+                    2,
+                    vec![load_local(11, 1)],
+                    term(TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(11))),
+                        by_ref_local: None,
+                    }),
+                ),
+                block(
+                    3,
+                    vec![
+                        load_local(5, 1),
+                        load_const(6, 2),
+                        binary(7, op, 5, 6),
+                        store_local(1, 7),
+                        discard(7),
+                    ],
+                    jump(4),
+                ),
+                block(
+                    4,
+                    vec![
+                        load_local(8, 2),
+                        load_const(9, 1),
+                        add(10, 8, 9),
+                        store_local(2, 10),
+                        discard(8),
+                    ],
+                    jump(1),
+                ),
+            ],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Int),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_a_loop_with_a_const_operand_body() {
+        // for (...) { $s = $s + 5; } — a BinaryConst body statement.
+        let function = const_body_loop_function(BinaryOp::Add);
+        let constants = [IrConstant::Int(0), IrConstant::Int(1), IrConstant::Int(5)];
+        let compiled = compile_scalar_int_function(&function, &constants, 1)
+            .expect("const-operand loop body recognized and compiled");
+        assert_eq!(compiled.result_slot, 1);
+        assert_eq!(compiled.buffer_slots, 3);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_a_loop_with_a_bitwise_const_body() {
+        // for (...) { $s = $s | 5; } — bitwise op with a constant right operand.
+        let function = const_body_loop_function(BinaryOp::BitOr);
+        let constants = [IrConstant::Int(0), IrConstant::Int(1), IrConstant::Int(5)];
+        let compiled = compile_scalar_int_function(&function, &constants, 1)
+            .expect("bitwise const-operand loop body recognized and compiled");
+        assert_eq!(compiled.result_slot, 1);
+        assert!(!compiled.code.is_empty());
     }
 
     #[test]
