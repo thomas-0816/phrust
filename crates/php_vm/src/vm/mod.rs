@@ -5889,12 +5889,11 @@ impl Vm {
         if call.args.iter().any(|arg| arg.name.is_some()) {
             return None;
         }
-        let unit = compiled.unit();
         let leaf = crate::copy_patch_bridge::cached_leaf(
-            unit.id.raw(),
+            compiled,
             function_id.raw(),
             function,
-            &unit.constants,
+            &compiled.unit().constants,
         )?;
         let params: Vec<Value> = call.args.iter().map(|arg| arg.value.clone()).collect();
         leaf.run(&params)
