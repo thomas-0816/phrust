@@ -25,11 +25,12 @@ use php_ir::{
 use crate::aarch64::{Aarch64Assembler, Cond, Label, Reg, X0, X3, X4, X5, X6};
 use crate::abi::JitCValueTag;
 use crate::region_ir::{
-    NodeId, RegionBuilder, RegionConst, RegionGraph, RegionId, RegionNode, RegionNodeKind,
-    RegionValueType, VmSlotId,
+    NodeId, RegionBuilder, RegionCompareOp, RegionConst, RegionGraph, RegionId, RegionNode,
+    RegionNodeKind, RegionValueType, VmSlotId,
 };
 
 const INT_TAG: u16 = JitCValueTag::Int as u16;
+const BOOL_TAG: u16 = JitCValueTag::Bool as u16;
 
 /// A single guarded PHP integer-add step: `slot[dst] = slot[lhs] + slot[rhs]`.
 ///
@@ -96,6 +97,15 @@ pub enum ScalarIntOp {
         lhs: u32,
         rhs: u32,
     },
+    /// Guarded integer comparison writing a `Bool` (0/1) to `slot[dst]`, with
+    /// `Int` type guards on both operands. `cond` is the aarch64 condition after
+    /// `cmp lhs, rhs` (e.g. `LessThan` for `$lhs < $rhs`).
+    Compare {
+        cond: Cond,
+        dst: u32,
+        lhs: u32,
+        rhs: u32,
+    },
 }
 
 fn check_slot(slot: u32) -> Result<(), SlotSequenceError> {
@@ -120,6 +130,13 @@ fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.str_x(value, X0, payload_off(dst));
 }
 
+/// Write `value` (0 or 1 in the low bit) to `slot[dst]` tagged as `Bool`.
+fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
+    asm.movz(X3, BOOL_TAG);
+    asm.str_w(X3, X0, tag_off(dst));
+    asm.str_x(value, X0, payload_off(dst));
+}
+
 /// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` that applies
 /// each scalar-int op in order over the caller's flat slot buffer.
 ///
@@ -133,7 +150,7 @@ fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
     match op {
         ScalarIntOp::Const { dst, .. } => check_slot(dst),
-        ScalarIntOp::Binary { dst, lhs, rhs, .. } => {
+        ScalarIntOp::Binary { dst, lhs, rhs, .. } | ScalarIntOp::Compare { dst, lhs, rhs, .. } => {
             check_slot(dst)?;
             check_slot(lhs)?;
             check_slot(rhs)
@@ -174,6 +191,20 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
                 }
             }
             emit_store_int(asm, dst, X6);
+        }
+        ScalarIntOp::Compare {
+            cond,
+            dst,
+            lhs,
+            rhs,
+        } => {
+            emit_int_guard(asm, deopt, lhs);
+            emit_int_guard(asm, deopt, rhs);
+            asm.ldr_x(X4, X0, payload_off(lhs));
+            asm.ldr_x(X5, X0, payload_off(rhs));
+            asm.cmp_reg(X4, X5);
+            asm.cset(X6, cond);
+            emit_store_bool(asm, dst, X6);
         }
     }
 }
@@ -382,6 +413,20 @@ pub fn compile_scalar_int_region(
                 node_slot[index] = Some(dst);
                 ops.push(ScalarIntOp::Binary { op, dst, lhs, rhs });
             }
+            RegionNodeKind::Compare(compare_op) => {
+                let [lhs, rhs] = binary_inputs(node)?;
+                let lhs = slot_of(&node_slot, lhs)?;
+                let rhs = slot_of(&node_slot, rhs)?;
+                let dst = next_temp;
+                next_temp += 1;
+                node_slot[index] = Some(dst);
+                ops.push(ScalarIntOp::Compare {
+                    cond: region_compare_to_cond(compare_op),
+                    dst,
+                    lhs,
+                    rhs,
+                });
+            }
             // Control/effect tokens carry no scalar value; they are not lowered.
             _ if matches!(
                 node.value_type,
@@ -400,6 +445,7 @@ pub fn compile_scalar_int_region(
                 | RegionNodeKind::Sub
                 | RegionNodeKind::Mul
                 | RegionNodeKind::Const(_)
+                | RegionNodeKind::Compare(_)
         )
     });
     if !result_is_computed {
@@ -476,7 +522,12 @@ pub fn build_scalar_int_region(
     if function.returns_by_ref || !function.captures.is_empty() {
         return None;
     }
-    if function.return_type != Some(IrReturnType::Int) {
+    // An `int` body, or a `bool` body whose result is a comparison. Operands are
+    // still `int` and guarded; only the result type differs.
+    if !matches!(
+        function.return_type,
+        Some(IrReturnType::Int | IrReturnType::Bool)
+    ) {
         return None;
     }
     for param in &function.params {
@@ -534,6 +585,15 @@ pub fn build_scalar_int_region(
                     BinaryOp::Mul => builder.emit_mul_i64(lhs_node, rhs_node),
                     _ => return None,
                 };
+                reg_nodes.insert(*dst, node);
+            }
+            InstructionKind::Compare { dst, op, lhs, rhs } => {
+                let compare_op = ir_compare_to_region(*op)?;
+                let lhs_node =
+                    resolve_operand(lhs, &mut builder, &reg_nodes, &param_nodes, constants)?;
+                let rhs_node =
+                    resolve_operand(rhs, &mut builder, &reg_nodes, &param_nodes, constants)?;
+                let node = builder.emit_compare_i64(compare_op, lhs_node, rhs_node);
                 reg_nodes.insert(*dst, node);
             }
             _ => return None,
@@ -822,6 +882,34 @@ fn int_bin_op(op: BinaryOp) -> Option<IntBinOp> {
         BinaryOp::Sub => Some(IntBinOp::Sub),
         BinaryOp::Mul => Some(IntBinOp::Mul),
         _ => None,
+    }
+}
+
+/// Map a region comparison op to the aarch64 condition after `cmp lhs, rhs`.
+fn region_compare_to_cond(op: RegionCompareOp) -> Cond {
+    match op {
+        RegionCompareOp::Eq => Cond::Equal,
+        RegionCompareOp::NotEq => Cond::NotEqual,
+        RegionCompareOp::Lt => Cond::LessThan,
+        RegionCompareOp::Lte => Cond::LessEqual,
+        RegionCompareOp::Gt => Cond::GreaterThan,
+        RegionCompareOp::Gte => Cond::GreaterEqual,
+    }
+}
+
+/// Map an IR comparison op to the region comparison subset, or `None` for ops
+/// outside guarded integer comparison. `Identical`/`NotIdentical` behave like
+/// loose `==`/`!=` once both operands are guarded `Int`; `Spaceship` yields an
+/// int, not a bool, so it is rejected.
+fn ir_compare_to_region(op: CompareOp) -> Option<RegionCompareOp> {
+    match op {
+        CompareOp::Equal | CompareOp::Identical => Some(RegionCompareOp::Eq),
+        CompareOp::NotEqual | CompareOp::NotIdentical => Some(RegionCompareOp::NotEq),
+        CompareOp::Less => Some(RegionCompareOp::Lt),
+        CompareOp::LessEqual => Some(RegionCompareOp::Lte),
+        CompareOp::Greater => Some(RegionCompareOp::Gt),
+        CompareOp::GreaterEqual => Some(RegionCompareOp::Gte),
+        CompareOp::Spaceship => None,
     }
 }
 
@@ -1238,5 +1326,60 @@ mod tests {
         let function = sum_to_loop_function();
         let constants = [IrConstant::Int(0), IrConstant::Int(2)];
         assert!(compile_scalar_int_function(&function, &constants, 1).is_none());
+    }
+
+    #[test]
+    fn recognizes_int_comparison_returning_bool() {
+        // function lt(int $a, int $b): bool { return $a < $b; }
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let function = php_ir::IrFunction {
+            name: "lt".to_string(),
+            params: vec![int_param("a", 0), int_param("b", 1)],
+            locals: vec!["a".to_string(), "b".to_string()],
+            local_count: 2,
+            register_count: 3,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(0),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(1),
+                    }),
+                    ins(InstructionKind::Compare {
+                        dst: RegId::new(2),
+                        op: CompareOp::Less,
+                        lhs: Operand::Register(RegId::new(0)),
+                        rhs: Operand::Register(RegId::new(1)),
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(2))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Bool),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        };
+        let compiled = compile_scalar_int_function(&function, &[], 1)
+            .expect("int comparison returning bool recognized");
+        // params 0,1 + the compare result temporary at slot 2.
+        assert_eq!(compiled.buffer_slots, 3);
+        assert!(!compiled.code.is_empty());
     }
 }

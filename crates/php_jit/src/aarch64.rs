@@ -248,6 +248,20 @@ impl Aarch64Assembler {
         self.subs(XZR, rn, rm);
     }
 
+    /// `cset Xd, <cond>` — set `Xd` to 1 if `cond` holds after a `cmp`, else 0
+    /// (encoded as `csinc Xd, xzr, xzr, invert(cond)`). Materializes a PHP bool
+    /// from an integer comparison. Inverting a condition is `encoding ^ 1`.
+    pub fn cset(&mut self, rd: Reg, cond: Cond) {
+        let inverted = cond.encoding() ^ 1;
+        self.emit(
+            0x9A80_0400
+                | (u32::from(XZR) << 16)
+                | (inverted << 12)
+                | (u32::from(XZR) << 5)
+                | u32::from(rd),
+        );
+    }
+
     /// `b label` — unconditional branch to a (forward or bound) label.
     pub fn b(&mut self, label: Label) {
         self.fixups.push((self.code.len(), label.0));

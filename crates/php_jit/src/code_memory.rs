@@ -955,4 +955,55 @@ mod tests {
         );
         assert_eq!(slots[2].payload as i64, N * (N - 1) / 2);
     }
+
+    // Guarded int comparison producing a Bool: slot[2] = slot[0] < slot[1].
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_int_compare_to_bool() {
+        use crate::JitCValue;
+        use crate::aarch64::Cond;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{ScalarIntOp, emit_scalar_int_ops};
+
+        let code = emit_scalar_int_ops(&[ScalarIntOp::Compare {
+            cond: Cond::LessThan,
+            dst: 2,
+            lhs: 0,
+            rhs: 1,
+        }])
+        .expect("compare op emits");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        // 3 < 7 -> true.
+        let mut t = [
+            JitCValue::int(3),
+            JitCValue::int(7),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(t.as_mut_ptr()), 0);
+        assert_eq!(t[2].tag, JitCValueTag::Bool);
+        assert_eq!(t[2].payload, 1);
+
+        // 7 < 3 -> false.
+        let mut f = [
+            JitCValue::int(7),
+            JitCValue::int(3),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(f.as_mut_ptr()), 0);
+        assert_eq!(f[2].tag, JitCValueTag::Bool);
+        assert_eq!(f[2].payload, 0);
+
+        // Non-Int operand -> type-guard side exit.
+        let mut ne = [
+            JitCValue::int(1),
+            JitCValue::null(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(ne.as_mut_ptr()), 1);
+    }
 }
