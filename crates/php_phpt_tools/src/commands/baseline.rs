@@ -248,7 +248,23 @@ pub(crate) fn verify_baseline<W: Write, E: Write>(
     let metadata = read_baseline_metadata(&options.metadata)?;
     let module_counts = read_baseline_module_counts(&options.module_counts)?;
     let known_gap_catalog = read_known_gap_catalog(&options.known_gap_catalog)?;
-    let report = read_baseline_report_totals(&options.report)?;
+    // The rendered baseline report lives under `target/` and is not committed;
+    // a fresh checkout (or CI without a full run) legitimately lacks it. The
+    // committed manifests are the source of truth, so when the report is absent
+    // we cross-check them among themselves and skip only the report-vs-metadata
+    // render check, rather than hard-failing the whole gate.
+    let report = if options.report.exists() {
+        Some(read_baseline_report_totals(&options.report)?)
+    } else {
+        writeln!(
+            stderr,
+            "[info] {} absent (uncommitted target/ artifact); verifying committed manifests only \
+             (run `just phpt-full-regression` to regenerate the report for the full render cross-check)",
+            options.report.display()
+        )
+        .map_err(|io| io.to_string())?;
+        None
+    };
 
     let mut errors = Vec::new();
     if metadata.schema_version != "phpt-full-baseline-v1" {
@@ -289,27 +305,34 @@ pub(crate) fn verify_baseline<W: Write, E: Write>(
         ));
     }
 
-    compare_report_total("PASS", metadata.pass_count, &report, &mut errors);
-    compare_report_total("SKIP", metadata.skip_count, &report, &mut errors);
-    compare_report_total("FAIL", metadata.fail_count, &report, &mut errors);
-    compare_report_total("BORK", metadata.bork_count, &report, &mut errors);
-    if metadata.timestamp != report.timestamp {
-        errors.push(format!(
-            "timestamp mismatch: metadata={} report={}",
-            metadata.timestamp, report.timestamp
-        ));
+    if let Some(report) = &report {
+        compare_report_total("PASS", metadata.pass_count, report, &mut errors);
+        compare_report_total("SKIP", metadata.skip_count, report, &mut errors);
+        compare_report_total("FAIL", metadata.fail_count, report, &mut errors);
+        compare_report_total("BORK", metadata.bork_count, report, &mut errors);
+        if metadata.timestamp != report.timestamp {
+            errors.push(format!(
+                "timestamp mismatch: metadata={} report={}",
+                metadata.timestamp, report.timestamp
+            ));
+        }
     }
 
-    let non_green = report
-        .outcomes
-        .iter()
-        .filter(|(outcome, _)| !matches!(outcome.as_str(), "PASS" | "SKIP" | "XFAIL"))
-        .map(|(_, count)| *count)
-        .sum::<usize>();
+    // The non-green/empty-baseline contract holds regardless of the rendered
+    // report: derive the non-green total from the report when present, else from
+    // the committed metadata (FAIL + BORK are the non-green outcomes).
+    let non_green = match &report {
+        Some(report) => report
+            .outcomes
+            .iter()
+            .filter(|(outcome, _)| !matches!(outcome.as_str(), "PASS" | "SKIP" | "XFAIL"))
+            .map(|(_, count)| *count)
+            .sum::<usize>(),
+        None => metadata.fail_count + metadata.bork_count,
+    };
     if non_green > 0 && failures.is_empty() {
         errors.push(format!(
-            "{} reports {non_green} non-green outcomes but {} is empty",
-            options.report.display(),
+            "baseline reports {non_green} non-green outcomes but {} is empty",
             options.known_failures.display()
         ));
     }
