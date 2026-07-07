@@ -1633,7 +1633,7 @@ pub(super) fn reflection_class_reflection_constants_value(
 pub(super) fn reflection_class_constants_in_hierarchy(
     compiled: &CompiledUnit,
     state: &ExecutionState,
-    class: php_ir::module::ClassEntry,
+    class: std::sync::Arc<php_ir::module::ClassEntry>,
 ) -> Result<Vec<ResolvedConstantOwned>, String> {
     let mut constants = Vec::new();
     let mut seen_classes = Vec::new();
@@ -1652,7 +1652,7 @@ pub(super) fn reflection_class_constants_in_hierarchy(
 pub(super) fn collect_reflection_class_constants(
     compiled: &CompiledUnit,
     state: &ExecutionState,
-    class: php_ir::module::ClassEntry,
+    class: std::sync::Arc<php_ir::module::ClassEntry>,
     seen_classes: &mut Vec<String>,
     seen_names: &mut BTreeSet<String>,
     constants: &mut Vec<ResolvedConstantOwned>,
@@ -1668,7 +1668,7 @@ pub(super) fn collect_reflection_class_constants(
     for constant in &class.constants {
         if seen_names.insert(constant.name.clone()) {
             constants.push(ResolvedConstantOwned {
-                class: class.clone(),
+                class: (*class).clone(),
                 constant: constant.clone(),
             });
         }

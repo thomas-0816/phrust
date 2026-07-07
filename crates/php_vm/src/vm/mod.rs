@@ -4522,8 +4522,8 @@ impl Vm {
     /// Returns the raw IR class entry for a name, shared via `Rc`, cloning the
     /// (possibly large) class definition out of the class table only on the
     /// first `new` of each class within a class-table epoch. Subsequent
-    /// instantiations reuse the shared `Rc` instead of `lookup_class_in_state`'s
-    /// per-call `into_owned` deep clone.
+    /// instantiations reuse the shared `Rc` instead of re-resolving the name and
+    /// deep-cloning the entry out of the `Arc` `lookup_class_in_state` returns.
     fn cached_class_entry(
         &self,
         compiled: &CompiledUnit,
@@ -4541,7 +4541,7 @@ impl Vm {
                 return Some(Rc::clone(entry));
             }
         }
-        let entry = Rc::new(lookup_class_in_state(compiled, state, class_name)?);
+        let entry = Rc::new((*lookup_class_in_state(compiled, state, class_name)?).clone());
         self.ir_class_entry_cache
             .borrow_mut()
             .entries
@@ -41498,7 +41498,7 @@ impl Vm {
             );
         };
         let display_name = lookup_class_in_state(compiled, state, &called_class)
-            .map(|class| class.display_name)
+            .map(|class| class.display_name.clone())
             .unwrap_or(called_class);
         VmResult::success_no_output(Some(Value::string(display_name)))
     }
@@ -41614,7 +41614,7 @@ impl Vm {
         };
         let class_name = object.class_name();
         let display_name = lookup_class_in_state(compiled, state, &class_name)
-            .map(|class| class.display_name)
+            .map(|class| class.display_name.clone())
             .unwrap_or_else(|| object.display_name());
         VmResult::success_no_output(Some(Value::string(display_name)))
     }
@@ -41646,10 +41646,10 @@ impl Vm {
             return result;
         }
         let parent = lookup_class_in_state(compiled, state, &class_name)
-            .and_then(|class| class.parent)
+            .and_then(|class| class.parent.clone())
             .and_then(|parent| {
                 lookup_class_in_state(compiled, state, &parent)
-                    .map(|class| class.display_name)
+                    .map(|class| class.display_name.clone())
                     .or(Some(parent))
             })
             .map(Value::string)
@@ -41705,7 +41705,7 @@ impl Vm {
             return VmResult::success_no_output(Some(Value::Bool(false)));
         };
         let mut array = PhpArray::new();
-        let mut parent = class.parent;
+        let mut parent = class.parent.clone();
         let mut seen = Vec::new();
         while let Some(parent_name) = parent {
             let normalized = normalize_class_name(&parent_name);
@@ -41714,11 +41714,11 @@ impl Vm {
             }
             seen.push(normalized.clone());
             let display = lookup_class_in_state(compiled, state, &normalized)
-                .map(|class| class.display_name)
+                .map(|class| class.display_name.clone())
                 .unwrap_or(parent_name);
             array.insert(string_key(&display), Value::string(display.clone()));
-            parent =
-                lookup_class_in_state(compiled, state, &normalized).and_then(|class| class.parent);
+            parent = lookup_class_in_state(compiled, state, &normalized)
+                .and_then(|class| class.parent.clone());
         }
         VmResult::success_no_output(Some(Value::Array(array)))
     }
@@ -42291,7 +42291,7 @@ impl Vm {
             .unwrap_or_else(|| dynamic_or_retain_unit_index(state, compiled));
         state.dynamic_classes.push(DynamicClassEntry {
             lookup_name: normalize_class_name(&alias_name),
-            class: Arc::new(class),
+            class,
             unit_index,
             origin: declaration_origin(
                 compiled,
@@ -44906,12 +44906,12 @@ struct RuntimeClassEntryCache {
 }
 
 /// Cache of resolved raw IR class entries, keyed by normalized class name and
-/// guarded by the class-table epoch. `lookup_class_in_state` deep-clones the
-/// (potentially large, many-method) `ClassEntry` on every call via `into_owned`,
-/// so a hot `new` site would clone the whole class definition per instantiation.
-/// Sharing the owned entry via `Rc` is behavior-neutral: within a class-table
-/// epoch a class definition is immutable (redeclaration is a fatal), and the
-/// cache is dropped when the epoch changes.
+/// guarded by the class-table epoch. `lookup_class_in_state` returns a shared
+/// `Arc<ClassEntry>` (a cheap refcount bump), but a hot `new` site still needs an
+/// owned `ClassEntry` and would deep-clone the whole class definition out of that
+/// `Arc` per instantiation. Sharing the owned entry via `Rc` is behavior-neutral:
+/// within a class-table epoch a class definition is immutable (redeclaration is a
+/// fatal), and the cache is dropped when the epoch changes.
 #[derive(Clone, Debug, Default)]
 struct IrClassEntryCache {
     epoch: u64,
@@ -46800,13 +46800,6 @@ impl ClassLookup {
         }
     }
 
-    fn into_owned(self) -> php_ir::module::ClassEntry {
-        match self {
-            Self::Owned(class) => *class,
-            Self::Shared(class) => (*class).clone(),
-        }
-    }
-
     fn into_arc(self) -> Arc<php_ir::module::ClassEntry> {
         match self {
             Self::Shared(class) => class,
@@ -48087,6 +48080,7 @@ fn resolve_static_class_name(
                 ));
             };
             lookup_class_in_state(compiled, state, &scope)
+                .map(|class| (*class).clone())
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {scope} is not defined"))
         }
         "static" => {
@@ -48099,6 +48093,7 @@ fn resolve_static_class_name(
                 );
             };
             lookup_class_in_state(compiled, state, &called)
+                .map(|class| (*class).clone())
                 .or_else(|| current_this_called_class(compiled, state, stack, &called))
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {called} is not defined"))
         }
@@ -48125,14 +48120,17 @@ fn resolve_static_class_name(
                     class.name
                 ));
             };
-            lookup_class_in_state(compiled, state, parent_name).ok_or_else(|| {
-                format!(
-                    "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
-                    class.name, parent_name
-                )
-            })
+            lookup_class_in_state(compiled, state, parent_name)
+                .map(|class| (*class).clone())
+                .ok_or_else(|| {
+                    format!(
+                        "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
+                        class.name, parent_name
+                    )
+                })
         }
         _ => lookup_class_in_state(compiled, state, class_name)
+            .map(|class| (*class).clone())
             .or_else(|| internal_runtime_class_entry(&normalize_class_name(class_name)))
             .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined")),
     }
@@ -48285,7 +48283,10 @@ fn current_this_called_class(
 ) -> Option<php_ir::module::ClassEntry> {
     let this_value = current_this_object(compiled, stack)?;
     (normalize_class_name(&this_value.display_name()) == normalize_class_name(called_display))
-        .then(|| lookup_class_in_state(compiled, state, &this_value.class_name()))
+        .then(|| {
+            lookup_class_in_state(compiled, state, &this_value.class_name())
+                .map(|class| (*class).clone())
+        })
         .flatten()
 }
 
@@ -48828,7 +48829,7 @@ fn class_allows_dynamic_properties(
     state: &ExecutionState,
     class: &php_ir::module::ClassEntry,
 ) -> bool {
-    let mut current = Some(class.clone());
+    let mut current = Some(Arc::new(class.clone()));
     while let Some(entry) = current {
         if entry
             .attributes
@@ -50510,7 +50511,7 @@ fn autoload_class_method_callback(
         ));
     }
     let target_display = lookup_class_in_state(compiled, state, class_name)
-        .map(|class| class.display_name)
+        .map(|class| class.display_name.clone())
         .unwrap_or_else(|| display_class_name(class_name));
     Ok(CallableValue::BoundMethod {
         target: CallableMethodTarget::Class(target_display),
@@ -51012,8 +51013,8 @@ fn lookup_class_in_state(
     compiled: &CompiledUnit,
     state: &ExecutionState,
     class_name: &str,
-) -> Option<php_ir::module::ClassEntry> {
-    lookup_class_in_state_ref(compiled, state, class_name).map(ClassLookup::into_owned)
+) -> Option<Arc<php_ir::module::ClassEntry>> {
+    lookup_class_in_state_ref(compiled, state, class_name).map(ClassLookup::into_arc)
 }
 
 fn lookup_class_in_state_ref(
@@ -51961,7 +51962,7 @@ fn lookup_class_constant_in_state(
 fn lookup_class_constant_in_state_inner(
     compiled: &CompiledUnit,
     state: &ExecutionState,
-    class: php_ir::module::ClassEntry,
+    class: Arc<php_ir::module::ClassEntry>,
     constant_name: &str,
     seen: &mut Vec<String>,
 ) -> Result<
@@ -51986,7 +51987,7 @@ fn lookup_class_constant_in_state_inner(
         .cloned()
     {
         seen.pop();
-        return Ok(Some((class, constant)));
+        return Ok(Some(((*class).clone(), constant)));
     }
     if let Some(parent_name) = class.parent.as_deref() {
         let Some(parent) = lookup_class_in_state(compiled, state, parent_name) else {
@@ -52535,7 +52536,7 @@ fn class_hierarchy(
     class: &php_ir::module::ClassEntry,
 ) -> Vec<php_ir::module::ClassEntry> {
     let mut classes = Vec::new();
-    let mut current = Some(class.clone());
+    let mut current = Some(Arc::new(class.clone()));
     let mut seen = BTreeSet::new();
     while let Some(class) = current {
         let normalized = normalize_class_name(&class.name);
@@ -52546,7 +52547,7 @@ fn class_hierarchy(
             .parent
             .as_deref()
             .and_then(|parent| lookup_class_in_state(compiled, state, parent));
-        classes.push(class);
+        classes.push((*class).clone());
     }
     classes
 }
@@ -54284,7 +54285,7 @@ fn callable_class_display_name(
     class_name: &str,
 ) -> String {
     lookup_class_in_state(compiled, state, class_name)
-        .map(|class| class.display_name)
+        .map(|class| class.display_name.clone())
         .or_else(|| {
             php_std::ExtensionRegistry::standard_library()
                 .enabled_class(class_name)

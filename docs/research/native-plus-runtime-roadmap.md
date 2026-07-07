@@ -264,8 +264,20 @@ array/string contents), not the refcount bumps.
   **absolute per-op cost**, so it helps one-shot WordPress. Same-load micro:
   ~8.2% on a WP-sized class (30 props/40 methods; ~1760 ns/iter over `new` +
   a method call), ~3.5% on a small class — the win scales with class size.
-  818 php_vm tests green; behavior-preserving. *Remaining:* the property
-  resolver and a few cold declaration paths still deep-clone (follow-ups).
+  818 php_vm tests green; behavior-preserving.
+- **R2 — owned class lookup shared via `Arc`** (`vm/mod.rs`
+  `lookup_class_in_state` → `Option<Arc<ClassEntry>>` via `into_arc`). A profile
+  of a `new`+property-write loop showed `dense_assign_property_value` spending
+  ~40% of its time in `ClassEntry::clone`: it called the *owned*
+  `lookup_class_in_state`, which deep-cloned the whole `ClassEntry` per property
+  assignment. Returning an `Arc` makes that a refcount bump — the hot caller
+  needed zero edits (reads through `Arc`'s `Deref`); of ~103 call sites ~88 were
+  unchanged, the rest clone only a small extracted field or keep a pre-existing
+  clone (zero regression). Same-load 300k object-creation loop (`new` + ctor
+  property writes + a method call): **~3199 → ~2197 ms (~31%, ~3340 ns/iter)**;
+  object creation 10663 → 7323 ns/iter. *Remaining:* the property *resolver*
+  (`lookup_resolved_property_in_state_inner`, IC-cached/miss-only) and a few cold
+  declaration paths still deep-clone (documented follow-ups).
 
 **Critical lesson baked into every runtime item:** per-request memoization does
 *not* help WordPress. WP is one-shot-distributed — functions run 1–2× per request,
