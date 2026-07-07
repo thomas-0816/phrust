@@ -7,6 +7,7 @@
 
 mod abi;
 mod backend;
+pub mod code_memory;
 #[cfg(feature = "jit-cranelift")]
 mod cranelift_lowering;
 mod eligibility;

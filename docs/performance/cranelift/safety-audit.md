@@ -11,6 +11,7 @@ Audited files:
 - `crates/php_jit/src/lib.rs`
 - `crates/php_jit/src/cranelift_lowering.rs`
 - `crates/php_jit/src/helpers.rs`
+- `crates/php_jit/src/code_memory.rs`
 - `crates/php_vm/src/vm/mod.rs`
 - `crates/php_runtime/src/jit_array.rs`
 - `crates/php_jit/Cargo.toml`
@@ -19,10 +20,12 @@ Audited files:
 Out of scope for Performance:
 
 - persistent native-code cache,
-- native code reclamation,
+- native code reclamation / caching lifecycle policy (the `code_memory`
+  allocator maps, finalizes, and frees a single region on drop, but a
+  process/request code-cache allocation/invalidation/teardown policy is not yet
+  owned; ADR 0787 tracks it),
 - JIT calls into arbitrary PHP frames,
 - inlined object, array, string, destructor, or standard-library semantics,
-- custom executable-memory allocator,
 - Zend ABI or extension ABI compatibility.
 
 ## Status Summary
@@ -30,7 +33,8 @@ Out of scope for Performance:
 | Risk | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | Executable memory lifecycle | accepted | `leak_jit_module_for_handle_lifetime`, `cranelift_native_handle_copy_survives_original_handle_drop` | Native function pointers are raw addresses owned by Cranelift's `JITModule`. Performance intentionally process-leaks each module after finalization so copied `JitFunctionHandle` values cannot outlive executable memory. Reclamation is deferred until a handle-owned code allocator exists. |
-| W^X / memory provider | accepted | `JITModule::new(JITBuilder::with_isa(...))`; no custom mmap/mprotect code | Performance delegates executable-memory mapping and protection transitions to Cranelift's JIT memory provider. The repository does not expose a custom executable-memory allocator. Default builds keep `jit-cranelift` disabled. |
+| W^X / Cranelift memory provider | accepted | `JITModule::new(JITBuilder::with_isa(...))` | The feature-gated Cranelift path delegates executable-memory mapping and protection transitions to Cranelift's JIT memory provider. Default builds keep `jit-cranelift` disabled. |
+| W^X / `code_memory` allocator | mitigated | `code_memory::CodeMemory` + `executes_native_return_constant_*`, `rejects_empty_code` tests | The VM-owned `code_memory` abstraction (ADR 0787 prereq #1) is the single custom executable-memory allocator. It never leaves a page simultaneously writable and executable in a usable way: on Apple Silicon it maps `MAP_JIT` and toggles the per-thread `pthread_jit_write_protect_np` (write → flip to execute → `sys_icache_invalidate`); on other Unix hosts it maps read/write, copies, then `mprotect`s the range to read/execute (`__clear_cache` on aarch64); unsupported hosts fail closed. It is NOT wired into VM execution — no interpreter path constructs it — so it does not enable a `native_execution` mode. |
 | Symbol registry safety | mitigated | `JIT_HELPER_SYMBOLS`, `helper_registry_is_stable`, `helper_registry_layout_summary` tests | Helper names, ids, argument kinds, return kinds, and side-effect flags are centralized. The two exported arithmetic helpers have local `SAFETY:` notes for their unsafe `no_mangle` attributes. |
 | ABI layout assumptions | mitigated | `JIT_RUNTIME_ABI_HASH`, `JIT_HELPER_REGISTRY_ABI_HASH`, handle invoke checks | Native handles check the runtime ABI hash before transmuting a raw address into an `extern "C"` function pointer. Stable C-facing metadata uses fixed integer/pointer shapes rather than Rust references. |
 | Lifetime of compiled functions | accepted | `leak_jit_module_for_handle_lifetime`; lifecycle test | Handles are cloneable pointer descriptors. The current safe lifetime rule is process lifetime for compiled modules. This trades bounded Performance memory growth for no use-after-free path. |
@@ -55,6 +59,14 @@ All Rust unsafe boundaries in the audited Cranelift surface have local
   stack-owned value pointers and reconstruct VM-owned boxed result pointers.
 - `crates/php_jit/src/cranelift_lowering.rs`: test helper out-pointer writes
   are limited to stack-owned slots passed by JIT trampoline tests.
+- `crates/php_jit/src/code_memory.rs`: the custom executable-memory allocator.
+  Each `unsafe` block has a local `SAFETY:` comment — `mmap`/`munmap`/`mprotect`
+  with checked `MAP_FAILED`/errno handling, the Apple-Silicon
+  `pthread_jit_write_protect_np` W^X toggle bracketing the `copy_nonoverlapping`
+  into a freshly mapped `mapped_len >= code.len()` region, and
+  `sys_icache_invalidate`/`__clear_cache` for i-cache coherence. The tests
+  `transmute` the finalized read-execute pointer to an `extern "C" fn() -> i32`
+  only over hand-assembled leaf stubs.
 
 The Cranelift module leak is safe Rust, but it is listed here because it is the
 compiled-code lifetime boundary. Native modules are intentionally leaked after

@@ -1492,7 +1492,7 @@ safety-audit-smoke:
         printf '%s\n' '[fail] performance cache/JIT/adaptive surface contains Rust unsafe' >&2; \
         exit 1; \
     fi
-    @if rg -n '\bunsafe\b' crates/php_jit/src --glob '!lib.rs' --glob '!helpers.rs' --glob '!cranelift_lowering.rs'; then \
+    @if rg -n '\bunsafe\b' crates/php_jit/src --glob '!lib.rs' --glob '!helpers.rs' --glob '!cranelift_lowering.rs' --glob '!code_memory.rs'; then \
         printf '%s\n' '[fail] performance default JIT surface contains unaudited Rust unsafe' >&2; \
         exit 1; \
     fi
