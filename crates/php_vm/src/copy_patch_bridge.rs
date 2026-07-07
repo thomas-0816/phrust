@@ -146,7 +146,7 @@ impl NativeLeaf {
     /// Recognize and lower `function` to native code, or `None` if it is outside
     /// the scalar-int subset or the executable-memory finalize fails.
     ///
-    /// Before recognition, a pre-inline pass ([`inline_scalar_leaf_calls`]) tries
+    /// Before recognition, a pre-inline pass (`inline_scalar_leaf_calls`) tries
     /// to splice the bodies of same-unit scalar-leaf callees into `function`. A
     /// caller that only delegates to recognized scalar leaves becomes a call-free
     /// leaf itself and compiles natively; if the pass finds nothing to inline (or

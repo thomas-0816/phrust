@@ -839,9 +839,9 @@ pub fn build_scalar_int_region(
 
 /// Recognize and lower a scalar-int function to native code in one step, trying
 /// the most specialized lowering first: a straight-line leaf
-/// ([`build_scalar_int_region`]), then a canonical counted `for` loop
-/// ([`compile_counted_loop_function`]), then the general control-flow compiler
-/// ([`compile_scalar_int_cfg`]) for arbitrary `if`/`else`/`while` shapes.
+/// (`build_scalar_int_region`), then a canonical counted `for` loop
+/// (`compile_counted_loop_function`), then the general control-flow compiler
+/// (`compile_scalar_int_cfg`) for arbitrary `if`/`else`/`while` shapes.
 /// Returns `None` when the function is outside every subset.
 ///
 /// The leaf and counted-loop paths stay ahead of the general compiler because
