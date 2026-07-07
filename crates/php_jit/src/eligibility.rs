@@ -15,6 +15,10 @@ use php_ir::{
 pub enum JitCandidateKind {
     /// A conservative leaf function containing only int-local operations.
     IntLeafCandidate,
+    /// A function whose body uses only int-local operations and self-recursive
+    /// (or direct) int-typed function calls. All params and return must be
+    /// declared int. Callees must themselves be JIT-eligible.
+    FunctionCallCandidate { arity: u32 },
     /// A typed packed-array `$xs[$i]` read-only fetch candidate.
     PackedArrayFetchCandidate,
     /// A packed-array by-value foreach integer reduction candidate.
@@ -33,6 +37,7 @@ impl JitCandidateKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::IntLeafCandidate => "IntLeafCandidate",
+            Self::FunctionCallCandidate { .. } => "FunctionCallCandidate",
             Self::PackedArrayFetchCandidate => "PackedArrayFetchCandidate",
             Self::PackedForeachIntSumCandidate => "PackedForeachIntSumCandidate",
             Self::KnownCallCandidate => "KnownCallCandidate",
@@ -378,6 +383,32 @@ fn analyze_function(
         };
     }
 
+    if let Ok(arity) = function_call_candidate_is_eligible(unit, function) {
+        stats.eligible = 1;
+        let eligibility = JitEligibility::Eligible;
+        let debug = vec![
+            format!(
+                "jit-eligibility function={} status={}",
+                function.name,
+                eligibility.as_str()
+            ),
+            format!(
+                "jit-eligibility stats functions={} blocks={} instructions={}",
+                stats.functions_analyzed, stats.blocks_analyzed, stats.instructions_analyzed
+            ),
+            "jit-eligibility candidate=FunctionCallCandidate".to_owned(),
+        ];
+        return JitEligibilityReport {
+            function: function_id,
+            function_name: Some(function.name.clone()),
+            eligibility,
+            candidate_kind: Some(JitCandidateKind::FunctionCallCandidate { arity }),
+            reasons: Vec::new(),
+            stats,
+            debug,
+        };
+    }
+
     let mut rejected = Vec::new();
     let mut unknown = Vec::new();
 
@@ -458,6 +489,88 @@ fn analyze_function(
         stats,
         debug,
     }
+}
+
+/// Check whether a function qualifies as a `FunctionCallCandidate`.
+///
+/// The function must:
+/// - Have only int params and int return
+/// - Use only int-leaf instructions plus `CallFunction`
+/// - Every `CallFunction` must target a known function name that is itself
+///   JIT-eligible (self-recursive calls are always allowed)
+fn function_call_candidate_is_eligible(
+    unit: &IrUnit,
+    function: &IrFunction,
+) -> Result<u32, ()> {
+    if function.flags.is_top_level
+        || function.flags.is_closure
+        || function.flags.is_method
+        || function.flags.is_generator
+        || function.returns_by_ref
+        || !function.captures.is_empty()
+    {
+        return Err(());
+    }
+    if function.return_type.as_ref() != Some(&IrReturnType::Int) {
+        return Err(());
+    }
+    if function.params.is_empty() {
+        return Err(());
+    }
+    for param in &function.params {
+        if param.by_ref || param.variadic || param.default.is_some() {
+            return Err(());
+        }
+        if param.type_.as_ref() != Some(&IrReturnType::Int) {
+            return Err(());
+        }
+    }
+    let arity = function.params.len() as u32;
+    let mut has_call = false;
+
+    for block in &function.blocks {
+        for instruction in &block.instructions {
+            match &instruction.kind {
+                InstructionKind::Nop
+                | InstructionKind::LoadLocal { .. }
+                | InstructionKind::StoreLocal { .. }
+                | InstructionKind::Move { .. }
+                | InstructionKind::Discard { .. }
+                | InstructionKind::LoadConst { .. }
+                | InstructionKind::Binary { .. }
+                | InstructionKind::Compare { .. }
+                | InstructionKind::Unary { .. }
+                | InstructionKind::Cast { .. } => {}
+                InstructionKind::CallFunction { name, args: call_args, .. } => {
+                    has_call = true;
+                    if call_args.len() > 4 {
+                        return Err(());
+                    }
+                    if *name != function.name {
+                        return Err(());
+                    }
+                }
+                _ => return Err(()),
+            }
+        }
+        let Some(terminator) = &block.terminator else {
+            return Err(());
+        };
+        match &terminator.kind {
+            TerminatorKind::Jump { .. } => {}
+            TerminatorKind::JumpIfFalse { .. }
+            | TerminatorKind::JumpIfTrue { .. }
+            | TerminatorKind::JumpIf { .. } => {}
+            TerminatorKind::Return { value: Some(_), by_ref_local: None } => {}
+            _ => return Err(()),
+        }
+    }
+
+    if !has_call {
+        return Err(());
+    }
+
+    Ok(arity)
 }
 
 fn packed_foreach_int_sum_candidate_is_eligible(

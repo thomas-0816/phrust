@@ -171,6 +171,17 @@ struct PropertyLoadCandidate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct FunctionCallCandidateInfo {
+    arity: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeFunctionCallCompileResult {
+    handle: JitFunctionHandle,
+    code_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct NativePropertyLoadCompileResult {
     handle: JitFunctionHandle,
     code_bytes: u64,
@@ -485,6 +496,43 @@ impl JitBackendApi for CraneliftNoExecBackend {
                         },
                         format!(
                             "Cranelift native property-load compile rejected region `{}`: {}",
+                            request.compile.region_id, error
+                        ),
+                    );
+                }
+            }
+        }
+
+        if let Ok(candidate) = function_call_candidate(unit, function) {
+            let start = Instant::now();
+            match compile_function_call_native(
+                unit,
+                function,
+                candidate.arity,
+                &request.compile.region_id,
+            ) {
+                Ok(compiled) => {
+                    let elapsed = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
+                    return JitBackendCompileOutcome::compiled(
+                        compiled.handle,
+                        format!(
+                            "Cranelift native function-call region `{}` function={} abi_hash={} code_bytes={}",
+                            request.compile.region_id,
+                            function.raw(),
+                            JIT_RUNTIME_ABI_HASH,
+                            compiled.code_bytes
+                        ),
+                        compiled.code_bytes,
+                        elapsed.max(1),
+                    );
+                }
+                Err(error) => {
+                    return JitBackendCompileOutcome::skipped(
+                        JitCompileStatus::Rejected {
+                            reason: error.code.to_owned(),
+                        },
+                        format!(
+                            "Cranelift native function-call compile rejected region `{}`: {}",
                             request.compile.region_id, error
                         ),
                     );
@@ -2743,6 +2791,491 @@ fn compile_helper_arithmetic_native(
         fast_path_hits,
         has_control_flow,
     })
+}
+
+fn function_call_candidate(
+    unit: &IrUnit,
+    function: FunctionId,
+) -> Result<FunctionCallCandidateInfo, CraneliftLoweringError> {
+    let ir_function = unit.functions.get(function.index()).ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_MISSING_FUNCTION",
+            format!("function id {} is not present", function.raw()),
+        )
+    })?;
+    if ir_function.flags.is_top_level
+        || ir_function.flags.is_closure
+        || ir_function.flags.is_method
+        || ir_function.flags.is_generator
+        || ir_function.returns_by_ref
+        || !ir_function.captures.is_empty()
+    {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_FUNCTION_CALL_SHAPE",
+            "function call native subset requires an ordinary leaf function",
+        ));
+    }
+    if ir_function.return_type.as_ref() != Some(&IrReturnType::Int) {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_FUNCTION_CALL_RETURN",
+            "function call native subset requires int return type",
+        ));
+    }
+    let arity = ir_function.params.len();
+    if arity == 0 || arity > 4 {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_FUNCTION_CALL_PARAMS",
+            "function call native subset requires 1-4 int params",
+        ));
+    }
+    for param in &ir_function.params {
+        if param.by_ref || param.variadic || param.default.is_some() {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_FUNCTION_CALL_PARAM_SHAPE",
+                "function call native subset requires by-value non-variadic params",
+            ));
+        }
+        if param.type_.as_ref() != Some(&IrReturnType::Int) {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_FUNCTION_CALL_PARAM_TYPE",
+                "function call native subset requires int-typed params",
+            ));
+        }
+    }
+    let mut has_call = false;
+    for block in &ir_function.blocks {
+        for instruction in &block.instructions {
+            match &instruction.kind {
+                InstructionKind::Nop
+                | InstructionKind::LoadLocal { .. }
+                | InstructionKind::StoreLocal { .. }
+                | InstructionKind::Move { .. }
+                | InstructionKind::Discard { .. }
+                | InstructionKind::LoadConst { .. }
+                | InstructionKind::Binary { .. }
+                | InstructionKind::Compare { .. }
+                | InstructionKind::Unary { .. }
+                | InstructionKind::Cast { .. } => {}
+                InstructionKind::CallFunction { .. } => {
+                    has_call = true;
+                }
+                _ => {
+                    return Err(CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_REJECT_FUNCTION_CALL_OPCODE",
+                        format!(
+                            "instruction {:?} is outside function call native subset",
+                            instruction.kind
+                        ),
+                    ));
+                }
+            }
+        }
+        let Some(terminator) = &block.terminator else {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_FUNCTION_CALL_TERMINATOR",
+                format!("block {} has no terminator", block.id.raw()),
+            ));
+        };
+        match &terminator.kind {
+            TerminatorKind::Jump { .. }
+            | TerminatorKind::JumpIfFalse { .. }
+            | TerminatorKind::JumpIf { .. }
+            | TerminatorKind::JumpIfTrue { .. }
+            | TerminatorKind::Return {
+                value: Some(_),
+                by_ref_local: None,
+            } => {}
+            _ => {
+                return Err(CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_REJECT_FUNCTION_CALL_TERMINATOR",
+                    format!(
+                        "terminator {:?} is outside function call native subset",
+                        terminator.kind
+                    ),
+                ));
+            }
+        }
+    }
+    if !has_call {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_FUNCTION_CALL_NO_CALL",
+            "function call native subset requires at least one CallFunction instruction",
+        ));
+    }
+    Ok(FunctionCallCandidateInfo {
+        arity: arity as u32,
+    })
+}
+
+fn compile_function_call_native(
+    unit: &IrUnit,
+    function: FunctionId,
+    arity: u32,
+    region_id: &str,
+) -> Result<NativeFunctionCallCompileResult, CraneliftLoweringError> {
+    let ir_function = unit.functions.get(function.index()).ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_MISSING_FUNCTION",
+            format!("function id {} is not present", function.raw()),
+        )
+    })?;
+
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("use_colocated_libcalls", "false")
+        .map_err(|error| {
+            CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_FLAGS", error.to_string())
+        })?;
+    flag_builder.set("is_pic", "false").map_err(|error| {
+        CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_FLAGS", error.to_string())
+    })?;
+    let isa_builder = cranelift_native::builder().map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_TARGET",
+            format!("host target is unsupported: {error}"),
+        )
+    })?;
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .map_err(|error| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_NATIVE_TARGET",
+                format!("host ISA setup failed: {error}"),
+            )
+        })?;
+    let mut module = JITModule::new(JITBuilder::with_isa(isa, default_libcall_names()));
+
+    let mut signature = module.make_signature();
+    for _ in 0..arity {
+        signature.params.push(AbiParam::new(types::I64));
+    }
+    signature.returns.push(AbiParam::new(types::I64));
+
+    let name = format!(
+        "phrust_cl_funcall_{}_{}",
+        function.raw(),
+        sanitize_symbol_component(region_id)
+    );
+    let func_id = module
+        .declare_function(&name, Linkage::Local, &signature)
+        .map_err(|error| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_DECLARE",
+                format!("failed to declare native function: {error}"),
+            )
+        })?;
+    let mut ctx = module.make_context();
+    ctx.func.signature = signature;
+    ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+
+    let self_func_ref = module.declare_func_in_func(func_id, &mut ctx.func);
+
+    let mut builder_context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
+        let blocks = create_cranelift_blocks(&mut builder, ir_function)?;
+        let entry = blocks.first().copied().ok_or_else(|| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_FUNCTION_CALL_CONTROL_FLOW",
+                "function call native subset requires at least one block",
+            )
+        })?;
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let params = builder.block_params(entry).to_vec();
+
+        let mut locals = BTreeMap::new();
+        for local_index in 0..ir_function.local_count {
+            locals.insert(LocalId::new(local_index), builder.declare_var(types::I64));
+        }
+        for (param, cl_value) in ir_function
+            .params
+            .iter()
+            .zip(params.iter().copied())
+        {
+            let variable = local_variable(&locals, param.local)?;
+            builder.def_var(variable, cl_value);
+        }
+
+        for ir_block in &ir_function.blocks {
+            let block = cranelift_block(&blocks, ir_block.id)?;
+            builder.switch_to_block(block);
+            let mut registers = BTreeMap::new();
+            for instruction in &ir_block.instructions {
+                lower_function_call_instruction(
+                    &mut builder,
+                    unit,
+                    &locals,
+                    &mut registers,
+                    self_func_ref,
+                    instruction,
+                )?;
+            }
+            lower_function_call_terminator(
+                &mut builder,
+                unit,
+                ir_function,
+                &blocks,
+                &locals,
+                &registers,
+                ir_block.id,
+                ir_block.terminator.as_ref(),
+            )?;
+        }
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+
+    let verifier_flags = settings::Flags::new(settings::builder());
+    verify_function(&ctx.func, &verifier_flags).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_VERIFIER",
+            format!("Cranelift verifier rejected native function-call IR: {error}"),
+        )
+    })?;
+    module.define_function(func_id, &mut ctx).map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_DEFINE",
+            format!("failed to define native function: {error}"),
+        )
+    })?;
+    let code_bytes = ctx
+        .compiled_code()
+        .map(|compiled| compiled.code_buffer().len() as u64)
+        .unwrap_or(0);
+    module.clear_context(&mut ctx);
+    module.finalize_definitions().map_err(|error| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_FINALIZE",
+            format!("failed to finalize native function: {error}"),
+        )
+    })?;
+    let address = module.get_finalized_function(func_id) as usize;
+    leak_jit_module_for_handle_lifetime(module);
+    let handle = JitFunctionHandle::i64_native(
+        u64::from(function.raw()) + 1,
+        region_id.to_owned(),
+        JitBackend::CraneliftExperiment,
+        address,
+        arity as u8,
+        code_bytes,
+    );
+    Ok(NativeFunctionCallCompileResult {
+        handle,
+        code_bytes,
+    })
+}
+
+fn lower_function_call_operand(
+    builder: &mut FunctionBuilder<'_>,
+    unit: &IrUnit,
+    locals: &BTreeMap<LocalId, Variable>,
+    registers: &BTreeMap<RegId, ir::Value>,
+    operand: &Operand,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    match operand {
+        Operand::Register(reg) => registers.get(reg).copied().ok_or_else(|| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_MISSING_REGISTER",
+                format!("register {} has not been lowered in this block", reg.raw()),
+            )
+        }),
+        Operand::Constant(constant) => {
+            let value = constant_value(unit, *constant)?;
+            Ok(builder.ins().iconst(types::I64, value))
+        }
+        Operand::Local(local) => use_local_variable(builder, locals, *local),
+    }
+}
+
+fn lower_function_call_instruction(
+    builder: &mut FunctionBuilder<'_>,
+    unit: &IrUnit,
+    locals: &BTreeMap<LocalId, Variable>,
+    registers: &mut BTreeMap<RegId, ir::Value>,
+    self_func_ref: ir::FuncRef,
+    instruction: &Instruction,
+) -> Result<(), CraneliftLoweringError> {
+    match &instruction.kind {
+        InstructionKind::Nop => {}
+        InstructionKind::LoadConst { dst, constant } => {
+            let value = constant_value(unit, *constant)?;
+            let cl_value = builder.ins().iconst(types::I64, value);
+            registers.insert(*dst, cl_value);
+        }
+        InstructionKind::Move { dst, src } => {
+            let cl_value = lower_function_call_operand(builder, unit, locals, registers, src)?;
+            registers.insert(*dst, cl_value);
+        }
+        InstructionKind::LoadLocal { dst, local }
+        | InstructionKind::LoadLocalQuiet { dst, local } => {
+            let cl_value = use_local_variable(builder, locals, *local)?;
+            registers.insert(*dst, cl_value);
+        }
+        InstructionKind::StoreLocal { local, src } => {
+            let cl_value = lower_function_call_operand(builder, unit, locals, registers, src)?;
+            let variable = local_variable(locals, *local)?;
+            builder.def_var(variable, cl_value);
+        }
+        InstructionKind::Discard { src } => {
+            let _ = lower_function_call_operand(builder, unit, locals, registers, src)?;
+        }
+        InstructionKind::Binary { dst, op, lhs, rhs } => {
+            let lhs = lower_function_call_operand(builder, unit, locals, registers, lhs)?;
+            let rhs = lower_function_call_operand(builder, unit, locals, registers, rhs)?;
+            let cl_value = match op {
+                BinaryOp::Add => builder.ins().iadd(lhs, rhs),
+                BinaryOp::Sub => builder.ins().isub(lhs, rhs),
+                BinaryOp::Mul => builder.ins().imul(lhs, rhs),
+                other => {
+                    return Err(CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_REJECT_FUNCTION_CALL_BINARY",
+                        format!("binary op {other:?} is outside function call native subset"),
+                    ));
+                }
+            };
+            registers.insert(*dst, cl_value);
+        }
+        InstructionKind::Compare { dst, op, lhs, rhs } => {
+            let lhs = lower_function_call_operand(builder, unit, locals, registers, lhs)?;
+            let rhs = lower_function_call_operand(builder, unit, locals, registers, rhs)?;
+            let cc = match op {
+                CompareOp::Equal | CompareOp::Identical => IntCC::Equal,
+                CompareOp::NotEqual | CompareOp::NotIdentical => IntCC::NotEqual,
+                CompareOp::Less => IntCC::SignedLessThan,
+                CompareOp::LessEqual => IntCC::SignedLessThanOrEqual,
+                CompareOp::Greater => IntCC::SignedGreaterThan,
+                CompareOp::GreaterEqual => IntCC::SignedGreaterThanOrEqual,
+                other => {
+                    return Err(CraneliftLoweringError::new(
+                        "JIT_CRANELIFT_REJECT_FUNCTION_CALL_COMPARE",
+                        format!(
+                            "compare op {other:?} is outside function call native subset"
+                        ),
+                    ));
+                }
+            };
+            let cmp = builder.ins().icmp(cc, lhs, rhs);
+            let one = builder.ins().iconst(types::I64, 1);
+            let zero = builder.ins().iconst(types::I64, 0);
+            let cl_value = builder.ins().select(cmp, one, zero);
+            registers.insert(*dst, cl_value);
+        }
+        InstructionKind::CallFunction { dst, name: _, args } => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for call_arg in args {
+                let value = lower_function_call_operand(
+                    builder,
+                    unit,
+                    locals,
+                    registers,
+                    &call_arg.value,
+                )?;
+                arg_values.push(value);
+            }
+            let call_inst = builder.ins().call(self_func_ref, &arg_values);
+            let result_values = builder.func.dfg.inst_results(call_inst);
+            if let Some(result) = result_values.first().copied() {
+                registers.insert(*dst, result);
+            } else {
+                return Err(CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_REJECT_FUNCTION_CALL_CALL",
+                    "self-recursive call produced no return values",
+                ));
+            }
+        }
+        other => {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_FUNCTION_CALL_OPCODE",
+                format!(
+                    "instruction {:?} is outside function call native subset",
+                    other
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn lower_function_call_terminator(
+    builder: &mut FunctionBuilder<'_>,
+    unit: &IrUnit,
+    ir_function: &IrFunction,
+    blocks: &[ir::Block],
+    locals: &BTreeMap<LocalId, Variable>,
+    registers: &BTreeMap<RegId, ir::Value>,
+    current_block: BlockId,
+    terminator: Option<&Terminator>,
+) -> Result<(), CraneliftLoweringError> {
+    let Some(terminator) = terminator else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_FUNCTION_CALL_TERMINATOR",
+            format!("block {} has no terminator", current_block.raw()),
+        ));
+    };
+    match &terminator.kind {
+        TerminatorKind::Jump { target } => {
+            builder.ins().jump(cranelift_block(blocks, *target)?, &[]);
+        }
+        TerminatorKind::JumpIfFalse { condition, target } => {
+            let value =
+                lower_function_call_operand(builder, unit, locals, registers, condition)?;
+            let zero = builder.ins().iconst(types::I64, 0);
+            let cond = builder.ins().icmp(IntCC::NotEqual, value, zero);
+            let false_block = cranelift_block(blocks, *target)?;
+            let true_block =
+                cranelift_block(blocks, next_ir_block_id(ir_function, current_block)?)?;
+            builder
+                .ins()
+                .brif(cond, true_block, &[], false_block, &[]);
+        }
+        TerminatorKind::JumpIfTrue { condition, target } => {
+            let value =
+                lower_function_call_operand(builder, unit, locals, registers, condition)?;
+            let zero = builder.ins().iconst(types::I64, 0);
+            let cond = builder.ins().icmp(IntCC::NotEqual, value, zero);
+            let true_block = cranelift_block(blocks, *target)?;
+            let false_block =
+                cranelift_block(blocks, next_ir_block_id(ir_function, current_block)?)?;
+            builder
+                .ins()
+                .brif(cond, true_block, &[], false_block, &[]);
+        }
+        TerminatorKind::JumpIf {
+            condition,
+            if_true,
+            if_false,
+        } => {
+            let value =
+                lower_function_call_operand(builder, unit, locals, registers, condition)?;
+            let zero = builder.ins().iconst(types::I64, 0);
+            let cond = builder.ins().icmp(IntCC::NotEqual, value, zero);
+            builder.ins().brif(
+                cond,
+                cranelift_block(blocks, *if_true)?,
+                &[],
+                cranelift_block(blocks, *if_false)?,
+                &[],
+            );
+        }
+        TerminatorKind::Return {
+            value: Some(value),
+            by_ref_local: None,
+        } => {
+            let value = lower_function_call_operand(builder, unit, locals, registers, value)?;
+            builder.ins().return_(&[value]);
+        }
+        other => {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_REJECT_FUNCTION_CALL_TERMINATOR",
+                format!(
+                    "terminator {:?} is outside function call native subset",
+                    other
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn compile_packed_array_fetch_native(

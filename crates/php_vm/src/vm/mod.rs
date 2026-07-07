@@ -9123,6 +9123,132 @@ impl Vm {
                             resolved
                         };
                         self.record_counter_dense_direct_call_hit();
+                        // JIT tiering: if the target is a user function and the
+                        // tiering policy marks it for JIT, route through the
+                        // normal execute_function path instead of inlining.
+                        if self.options.tiering.enabled
+                            && matches!(self.options.jit, JitMode::Cranelift)
+                            && let FunctionCallCacheTarget::CurrentUnit { function } = &target
+                            && let Some(callee_ir_function) =
+                                compiled.unit().functions.get(function.index())
+                            && !callee_ir_function.flags.is_top_level
+                            && !callee_ir_function.flags.is_generator
+                            && !callee_ir_function.flags.is_method
+                        {
+                            let tier = self.tiering.borrow_mut().record_function_entry(
+                                *function,
+                                self.options.quickening,
+                                self.options.jit,
+                            );
+                            if tier == ExecutionTier::Jit {
+                                resume_instruction_offset = Some(next_instruction_offset);
+                                let result = self.execute_function(
+                                    compiled,
+                                    *function,
+                                    FunctionCall::new(values, Vec::new())
+                                        .with_call_site_strict_types(
+                                            compiled.unit().strict_types,
+                                        )
+                                        .with_optional_call_span(
+                                            plan.and_then(|p| {
+                                                p.unit
+                                                    .spans
+                                                    .get(instruction.span.index())
+                                                    .copied()
+                                            }),
+                                        ),
+                                    output,
+                                    stack,
+                                    state,
+                                );
+                                if !result.status.is_success() {
+                                    self.record_counter_dense_call_fallback(
+                                        "jit_dispatch_error",
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                if result.fiber_suspension.is_some() {
+                                    self.record_counter_dense_call_fallback(
+                                        "fiber_suspension",
+                                    );
+                                    let result = VmResult::unsupported(
+                                        output.clone(),
+                                        "E_PHP_VM_DENSE_BYTECODE_CALL_FIBER_UNSUPPORTED: \
+                                         dense bytecode direct calls do not support \
+                                         fiber suspension yet",
+                                    );
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                let return_value =
+                                    result.return_value.unwrap_or(Value::Null);
+                                if let Err(message) = stack
+                                    .frame_mut(frame_index)
+                                    .expect("bytecode frame is active")
+                                    .registers
+                                    .set(RegId::new(dst), return_value)
+                                {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                if instruction.opcode == DenseOpcode::CallFunctionDiscard {
+                                    let discard_src = DenseOperand {
+                                        kind: DenseOperandKind::Register,
+                                        index: dst,
+                                    };
+                                    let value = match self.take_consumed_dense_operand(
+                                        compiled,
+                                        stack,
+                                        discard_src,
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(message) => {
+                                            let result = self.runtime_error(
+                                                output, compiled, stack, message,
+                                            );
+                                            stack.pop_recycle();
+                                            return result;
+                                        }
+                                    };
+                                    let mut exception_handlers = Vec::new();
+                                    let mut pending_control = None;
+                                    if let Some(outcome) =
+                                        self.run_destructors_for_unreferenced_value(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            &value,
+                                        )
+                                    {
+                                        match outcome {
+                                            RaiseOutcome::Done(result) => {
+                                                stack.pop_recycle();
+                                                return *result;
+                                            }
+                                            RaiseOutcome::Caught(_) => {
+                                                let result = self.runtime_error(
+                                                    output,
+                                                    compiled,
+                                                    stack,
+                                                    "E_PHP_VM_BYTECODE_DESTRUCTOR_CATCH_UNSUPPORTED: \
+                                                     bytecode discard cannot route a caught \
+                                                     destructor exception",
+                                                );
+                                                stack.pop_recycle();
+                                                return result;
+                                            }
+                                        }
+                                    }
+                                }
+                                continue 'dispatch;
+                            }
+                        }
                         // Inline state-machine dispatch for same-unit dense calls
                         // that use the simple preamble path.
                         if let Some(plan) = plan
@@ -13739,24 +13865,26 @@ impl Vm {
         {
             return self.execute_function(&owner, function_id, call, output, stack, state);
         }
-        call = match self.try_execute_cached_dense_function_dispatch(
-            compiled,
-            function_id,
-            function,
-            call,
-            output,
-            stack,
-            state,
-        ) {
-            CachedDenseFunctionDispatch::Executed(result) => return *result,
-            CachedDenseFunctionDispatch::Continue(call) => call,
-        };
         let function_tier = self.tiering.borrow_mut().record_function_entry(
             function_id,
             self.options.quickening,
             self.options.jit,
         );
         self.record_counter_jit_tiering_decision(function_tier);
+        if function_tier != ExecutionTier::Jit {
+            call = match self.try_execute_cached_dense_function_dispatch(
+                compiled,
+                function_id,
+                function,
+                call,
+                output,
+                stack,
+                state,
+            ) {
+                CachedDenseFunctionDispatch::Executed(result) => return *result,
+                CachedDenseFunctionDispatch::Continue(call) => call,
+            };
+        }
         let mut diagnostics = Vec::new();
         let mut block_id;
         let mut start_instruction_index = 0usize;
