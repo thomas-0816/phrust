@@ -129,53 +129,130 @@ fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 /// interpreter resumes at the failing op with the prior locals already updated.
 /// (This primitive returns a single generic side-exit code; wiring it into VM
 /// dispatch adds the per-op resume program point.)
-pub fn emit_scalar_int_ops(ops: &[ScalarIntOp]) -> Result<Vec<u8>, SlotSequenceError> {
-    for op in ops {
-        match *op {
-            ScalarIntOp::Const { dst, .. } => check_slot(dst)?,
-            ScalarIntOp::Binary { dst, lhs, rhs, .. } => {
-                check_slot(dst)?;
-                check_slot(lhs)?;
-                check_slot(rhs)?;
-            }
+fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
+    match op {
+        ScalarIntOp::Const { dst, .. } => check_slot(dst),
+        ScalarIntOp::Binary { dst, lhs, rhs, .. } => {
+            check_slot(dst)?;
+            check_slot(lhs)?;
+            check_slot(rhs)
         }
     }
+}
 
+/// Emit one scalar-int op, reading operands from and writing the result to the
+/// slot buffer. `X3`..`X6` are scratch; nothing is kept in registers across ops
+/// (values live in slots), so ops compose freely — including inside a loop body.
+fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
+    match op {
+        ScalarIntOp::Const { dst, value } => {
+            asm.mov_imm64(X6, value as u64);
+            emit_store_int(asm, dst, X6);
+        }
+        ScalarIntOp::Binary { op, dst, lhs, rhs } => {
+            emit_int_guard(asm, deopt, lhs);
+            emit_int_guard(asm, deopt, rhs);
+            asm.ldr_x(X4, X0, payload_off(lhs));
+            asm.ldr_x(X5, X0, payload_off(rhs));
+            match op {
+                IntBinOp::Add => {
+                    asm.adds(X6, X4, X5);
+                    asm.b_cond(Cond::Overflow, deopt);
+                }
+                IntBinOp::Sub => {
+                    asm.subs(X6, X4, X5);
+                    asm.b_cond(Cond::Overflow, deopt);
+                }
+                IntBinOp::Mul => {
+                    // Overflow when the product high bits differ from the
+                    // sign extension of the low bits (see cmp_shifted_asr63).
+                    asm.mul(X6, X4, X5);
+                    asm.smulh(X3, X4, X5);
+                    asm.cmp_shifted_asr63(X3, X6);
+                    asm.b_cond(Cond::NotEqual, deopt);
+                }
+            }
+            emit_store_int(asm, dst, X6);
+        }
+    }
+}
+
+pub fn emit_scalar_int_ops(ops: &[ScalarIntOp]) -> Result<Vec<u8>, SlotSequenceError> {
+    for op in ops {
+        check_op_slots(*op)?;
+    }
     let mut asm = Aarch64Assembler::new();
     let deopt = asm.new_label();
     for op in ops {
-        match *op {
-            ScalarIntOp::Const { dst, value } => {
-                asm.mov_imm64(X6, value as u64);
-                emit_store_int(&mut asm, dst, X6);
-            }
-            ScalarIntOp::Binary { op, dst, lhs, rhs } => {
-                emit_int_guard(&mut asm, deopt, lhs);
-                emit_int_guard(&mut asm, deopt, rhs);
-                asm.ldr_x(X4, X0, payload_off(lhs));
-                asm.ldr_x(X5, X0, payload_off(rhs));
-                match op {
-                    IntBinOp::Add => {
-                        asm.adds(X6, X4, X5);
-                        asm.b_cond(Cond::Overflow, deopt);
-                    }
-                    IntBinOp::Sub => {
-                        asm.subs(X6, X4, X5);
-                        asm.b_cond(Cond::Overflow, deopt);
-                    }
-                    IntBinOp::Mul => {
-                        // Overflow when the product high bits differ from the
-                        // sign extension of the low bits (see cmp_shifted_asr63).
-                        asm.mul(X6, X4, X5);
-                        asm.smulh(X3, X4, X5);
-                        asm.cmp_shifted_asr63(X3, X6);
-                        asm.b_cond(Cond::NotEqual, deopt);
-                    }
-                }
-                emit_store_int(&mut asm, dst, X6);
-            }
-        }
+        emit_op(&mut asm, deopt, *op);
     }
+    asm.movz(X0, 0);
+    asm.ret();
+    asm.bind(deopt);
+    asm.movz(X0, 1);
+    asm.ret();
+    Ok(asm.finish())
+}
+
+/// A native counted loop over the flat slot buffer: run `prologue` once, then
+/// `while slot[counter] < slot[limit] { body; slot[counter] += 1 }`, all
+/// executing natively with no per-iteration interpreter dispatch — the shape
+/// where the tier's real win lives. Loop-carried values (accumulators, the
+/// counter) live in slots, so no cross-block register allocation or phi handling
+/// is needed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CountedLoop {
+    /// Ops run once before the loop (e.g., zero an accumulator and the counter).
+    pub prologue: Vec<ScalarIntOp>,
+    /// Loop counter slot (compared to `limit`, incremented by 1 each iteration).
+    pub counter: u32,
+    /// Limit slot; the loop runs while `slot[counter] < slot[limit]`.
+    pub limit: u32,
+    /// Ops run each iteration (may read the counter and accumulator slots).
+    pub body: Vec<ScalarIntOp>,
+}
+
+/// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` for a counted
+/// loop. Returns `0` on completion, `1` on a side exit (non-`Int` operand or
+/// overflow anywhere in the prologue, body, condition, or increment).
+pub fn emit_counted_loop(counted: &CountedLoop) -> Result<Vec<u8>, SlotSequenceError> {
+    for op in counted.prologue.iter().chain(counted.body.iter()) {
+        check_op_slots(*op)?;
+    }
+    check_slot(counted.counter)?;
+    check_slot(counted.limit)?;
+
+    let mut asm = Aarch64Assembler::new();
+    let deopt = asm.new_label();
+    let header = asm.new_label();
+    let end = asm.new_label();
+
+    for op in &counted.prologue {
+        emit_op(&mut asm, deopt, *op);
+    }
+
+    asm.bind(header);
+    // Condition: while slot[counter] < slot[limit].
+    emit_int_guard(&mut asm, deopt, counted.counter);
+    emit_int_guard(&mut asm, deopt, counted.limit);
+    asm.ldr_x(X4, X0, payload_off(counted.counter));
+    asm.ldr_x(X5, X0, payload_off(counted.limit));
+    asm.cmp_reg(X4, X5);
+    asm.b_cond(Cond::GreaterEqual, end);
+
+    for op in &counted.body {
+        emit_op(&mut asm, deopt, *op);
+    }
+
+    // slot[counter] += 1 (overflow-guarded).
+    asm.ldr_x(X4, X0, payload_off(counted.counter));
+    asm.movz(X5, 1);
+    asm.adds(X6, X4, X5);
+    asm.b_cond(Cond::Overflow, deopt);
+    emit_store_int(&mut asm, counted.counter, X6);
+    asm.b(header);
+
+    asm.bind(end);
     asm.movz(X0, 0);
     asm.ret();
     asm.bind(deopt);
