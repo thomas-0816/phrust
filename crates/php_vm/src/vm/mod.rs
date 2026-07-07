@@ -15594,34 +15594,38 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        let reference = Value::Reference(cell.clone());
+                        let original_reference = Value::Reference(cell.clone());
                         let property_type = ir_runtime_type(entry.type_.as_ref());
-                        if let Err(message) = check_property_type(
+                        let reference = match check_property_type(
                             compiled,
                             Some(state),
                             resolved.class.display_name.as_str(),
                             property,
                             &property_type,
-                            &reference,
+                            &original_reference,
                             self.typecheck_fast_path_context(),
                         ) {
-                            match self.raise_runtime_error(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                instruction.span,
-                                message,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
+                            Ok(Some(coerced)) => coerced,
+                            Ok(None) => original_reference,
+                            Err(message) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                                RaiseOutcome::Done(result) => return *result,
                             }
-                        }
+                        };
                         if let Err(message) = validate_property_write(
                             &resolved.class,
                             entry,
@@ -18576,7 +18580,7 @@ impl Vm {
                                     ),
                                 );
                             };
-                            if let Err(message) = check_property_type(
+                            let owned_value = match check_property_type(
                                 compiled,
                                 Some(state),
                                 class.display_name.as_str(),
@@ -18585,23 +18589,27 @@ impl Vm {
                                 value,
                                 self.typecheck_fast_path_context(),
                             ) {
-                                match self.raise_runtime_error(
-                                    compiled,
-                                    output,
-                                    stack,
-                                    state,
-                                    &mut exception_handlers,
-                                    &mut pending_control,
-                                    instruction.span,
-                                    message,
-                                ) {
-                                    RaiseOutcome::Caught(target) => {
-                                        block_id = target;
-                                        continue 'dispatch;
+                                Ok(Some(coerced)) => coerced,
+                                Ok(None) => value.clone(),
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
                                     }
-                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                            }
+                            };
                             if let Some(function_id) = entry.hooks.set_function_id {
                                 match self.call_property_hook(
                                     compiled,
@@ -18609,7 +18617,7 @@ impl Vm {
                                     &class,
                                     ir_property,
                                     FunctionId::new(function_id),
-                                    vec![CallArgument::positional(value.clone())],
+                                    vec![CallArgument::positional(owned_value.clone())],
                                     output,
                                     stack,
                                     state,
@@ -18632,7 +18640,7 @@ impl Vm {
                                     ),
                                 );
                             }
-                            copy.set_property(property, value.clone());
+                            copy.set_property(property, owned_value);
                         }
                         if let Err(message) = stack
                             .frame_mut(frame_index)
@@ -21293,7 +21301,7 @@ impl Vm {
                             }
                         };
                         let property_type = ir_runtime_type(entry.type_.as_ref());
-                        if let Err(message) = check_property_type(
+                        let value = match check_property_type(
                             compiled,
                             Some(state),
                             resolved.class.display_name.as_str(),
@@ -21302,24 +21310,28 @@ impl Vm {
                             &value,
                             self.typecheck_fast_path_context(),
                         ) {
-                            self.record_counter_property_assign_ic_fallback("type_mismatch");
-                            match self.raise_runtime_error(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                instruction.span,
-                                message,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
+                            Ok(Some(coerced)) => coerced,
+                            Ok(None) => value,
+                            Err(message) => {
+                                self.record_counter_property_assign_ic_fallback("type_mismatch");
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                                RaiseOutcome::Done(result) => return *result,
                             }
-                        }
+                        };
                         if let Err(message) =
                             validate_property_write(resolved_class, entry, &object, stack, compiled)
                         {
@@ -21825,7 +21837,7 @@ impl Vm {
                             }
                         };
                         let property_type = ir_runtime_type(entry.type_.as_ref());
-                        if let Err(message) = check_property_type(
+                        let value = match check_property_type(
                             compiled,
                             Some(state),
                             resolved_class.display_name.as_str(),
@@ -21834,23 +21846,27 @@ impl Vm {
                             &value,
                             self.typecheck_fast_path_context(),
                         ) {
-                            match self.raise_runtime_error(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                instruction.span,
-                                message,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
+                            Ok(Some(coerced)) => coerced,
+                            Ok(None) => value,
+                            Err(message) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                                RaiseOutcome::Done(result) => return *result,
                             }
-                        }
+                        };
                         if let Err(message) =
                             validate_property_write(resolved_class, entry, &object, stack, compiled)
                         {
@@ -22055,6 +22071,7 @@ impl Vm {
                         property,
                         value,
                     } => {
+                        // BEGIN AssignStaticProperty
                         if let Err(result) = self.autoload_static_class_if_missing(
                             compiled,
                             class_name,
@@ -22169,7 +22186,7 @@ impl Vm {
                             }
                         };
                         let property_type = ir_runtime_type(resolved.property.type_.as_ref());
-                        if let Err(message) = check_property_type(
+                        let value = match check_property_type(
                             compiled,
                             Some(state),
                             resolved.class.display_name.as_str(),
@@ -22178,23 +22195,27 @@ impl Vm {
                             &value,
                             self.typecheck_fast_path_context(),
                         ) {
-                            match self.raise_runtime_error(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                instruction.span,
-                                message,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
+                            Ok(Some(coerced)) => coerced,
+                            Ok(None) => value,
+                            Err(message) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                                RaiseOutcome::Done(result) => return *result,
                             }
-                        }
+                        };
                         let key = static_property_key(&resolved.class, &resolved.property);
                         let current = if let Some(value) = state.static_properties.get(&key) {
                             value.clone()
@@ -22261,6 +22282,7 @@ impl Vm {
                         property,
                         value,
                     } => {
+                        // BEGIN AssignDynamicStaticProperty
                         let class_name_value =
                             match read_operand_at_frame(unit, stack, frame_index, *class_name) {
                                 Ok(value) => value,
@@ -22389,7 +22411,7 @@ impl Vm {
                             }
                         };
                         let property_type = ir_runtime_type(resolved.property.type_.as_ref());
-                        if let Err(message) = check_property_type(
+                        let value = match check_property_type(
                             compiled,
                             Some(state),
                             resolved.class.display_name.as_str(),
@@ -22398,23 +22420,27 @@ impl Vm {
                             &value,
                             self.typecheck_fast_path_context(),
                         ) {
-                            match self.raise_runtime_error(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                instruction.span,
-                                message,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
+                            Ok(Some(coerced)) => coerced,
+                            Ok(None) => value,
+                            Err(message) => {
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    instruction.span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                                RaiseOutcome::Done(result) => return *result,
                             }
-                        }
+                        };
                         let key = static_property_key(&resolved.class, &resolved.property);
                         let current = if let Some(value) = state.static_properties.get(&key) {
                             value.clone()
@@ -31426,7 +31452,7 @@ impl Vm {
         compiled: &CompiledUnit,
         target: PropertyAssignCacheTarget,
         object: &ObjectRef,
-        value: Value,
+        mut value: Value,
         stack: &CallStack,
         state: &ExecutionState,
     ) -> Result<PropertyAssignCacheWrite, String> {
@@ -31547,7 +31573,7 @@ impl Vm {
             return Ok(PropertyAssignCacheWrite::Fallback);
         }
         let property_type = ir_runtime_type(property.type_.as_ref());
-        if check_property_type(
+        match check_property_type(
             &owner,
             Some(state),
             declaring_class.display_name.as_str(),
@@ -31555,11 +31581,13 @@ impl Vm {
             &property_type,
             &value,
             self.typecheck_fast_path_context(),
-        )
-        .is_err()
-        {
-            self.record_counter_property_assign_ic_fallback("type_mismatch");
-            return Ok(PropertyAssignCacheWrite::Fallback);
+        ) {
+            Ok(Some(coerced)) => { value = coerced; }
+            Ok(None) => {}
+            Err(_) => {
+                self.record_counter_property_assign_ic_fallback("type_mismatch");
+                return Ok(PropertyAssignCacheWrite::Fallback);
+            }
         }
         if let Err(message) =
             validate_property_write(declaring_class, property, object, stack, &owner)
@@ -39086,7 +39114,7 @@ impl Vm {
             return Err(PropertyDimAssign::Raise(span, message));
         }
         let property_type = ir_runtime_type(entry.type_.as_ref());
-        if let Err(message) = check_property_type(
+        current = match check_property_type(
             compiled,
             Some(state),
             resolved_class.display_name.as_str(),
@@ -39095,8 +39123,10 @@ impl Vm {
             &current,
             self.typecheck_fast_path_context(),
         ) {
-            return Err(PropertyDimAssign::Raise(span, message));
-        }
+            Ok(Some(coerced)) => coerced,
+            Ok(None) => current,
+            Err(message) => return Err(PropertyDimAssign::Raise(span, message)),
+        };
         if let Err(message) =
             validate_property_write(resolved_class, entry, &object, stack, compiled)
         {
