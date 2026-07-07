@@ -1,4 +1,4 @@
-# ADR 0016: Semantic frontend Runtime Boundary
+# ADR 0009: Semantic Frontend Runtime Boundary
 
 ## Status
 

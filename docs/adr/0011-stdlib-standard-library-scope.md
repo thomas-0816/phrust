@@ -1,8 +1,8 @@
-# ADR-0060: Standard library Standard Library Scope
+# ADR 0011: Standard Library Scope
 
 ## Status
 
-Accepted for Standard library.
+Accepted for the standard-library layer.
 
 ## Context
 
@@ -12,7 +12,7 @@ extension metadata, streams, SPL, Reflection, and diagnostics breadth.
 
 ## Decision
 
-Standard library implements a deterministic offline MVP of PHP 8.5.7 standard-library
+`php_std` and VM-owned builtins implement a deterministic offline MVP of PHP 8.5.7 standard-library
 behavior. The required path covers core functions, JSON, PCRE, Date/Time, SPL,
 Reflection, tokenizer, streams, filesystem, Composer-local autoloading, and
 Composer platform checks.

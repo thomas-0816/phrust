@@ -1,4 +1,4 @@
-# ADR 0008: Lexer Parser Boundary
+# ADR 0007: Lexer/Parser Boundary
 
 ## Status
 

@@ -1,8 +1,8 @@
-# ADR-0066: Standard library PHAR Strategy
+# ADR 0013: PHAR Strategy
 
 ## Status
 
-Accepted for Standard library.
+Accepted for the standard-library layer.
 
 ## Context
 

@@ -1,8 +1,8 @@
-# ADR-0064: Standard library Composer Source Mode
+# ADR 0012: Composer Source Mode
 
 ## Status
 
-Accepted for Standard library.
+Accepted for the standard-library layer.
 
 ## Context
 

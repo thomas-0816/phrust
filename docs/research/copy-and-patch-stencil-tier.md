@@ -284,7 +284,7 @@ owned and tested — executable-memory/W^X policy (`crates/php_jit/src/code_memo
 helper status contracts (`helpers.rs`), the live-state map (`region_ir/osr.rs`),
 and typed side-exit/deopt reasons (`abi.rs`). A default-off aarch64 emitter
 (`aarch64.rs`) executes scalar arithmetic/branch stencils over the `JitCValue`
-ABI in tests using the Frame-Local Slot ABI above. Under ADR 0787 that guarded
+ABI in tests using the Frame-Local Slot ABI above. Under ADR 0019 that guarded
 subset is now `SUBSET_ALLOWED`. The remaining closure is frame-model completion,
 code-cache lifecycle, source maps, reference/COW/foreach/exception
 materialization for shapes beyond the scalar subset, and PHPT/reference parity —

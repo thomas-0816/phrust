@@ -1,4 +1,4 @@
-# ADR 0024: Runtime Known-Gap Policy
+# ADR 0010: Runtime Known-Gap Policy
 
 ## Status
 

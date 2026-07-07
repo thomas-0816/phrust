@@ -1,20 +1,22 @@
-//! VM-owned executable code memory — ADR 0787 prerequisite #1.
+//! VM-owned executable code memory — ADR 0019 prerequisite #1.
 //!
-//! This is the single abstraction that owns executable machine-code memory for
-//! the (future, default-off) native tier. It upholds W^X: on this path a page
-//! is never simultaneously writable and executable in a way the CPU can both
-//! store to and fetch from. On Apple Silicon it maps `MAP_JIT` pages and uses
-//! the per-thread `pthread_jit_write_protect_np` toggle (write, flip to execute,
+//! This is the repository-owned abstraction for emitted machine-code memory in
+//! the (future, default-off) native tier. It upholds W^X: on this path a page is
+//! never simultaneously writable and executable in a way the CPU can both store
+//! to and fetch from. On Apple Silicon it maps `MAP_JIT` pages and uses the
+//! per-thread `pthread_jit_write_protect_np` toggle (write, flip to execute,
 //! invalidate the i-cache); on other Unix hosts it maps read/write, copies, then
 //! `mprotect`s the range to read/execute. Hosts without a supported path fail
 //! closed with [`CodeMemoryError::UnsupportedHost`].
 //!
-//! Constructing a [`CodeMemory`] is the ONLY place the engine is permitted to
-//! allocate executable memory; there must be no ad hoc `mmap`/`mprotect` for
-//! code elsewhere. Owning and testing this abstraction is a prerequisite for the
-//! native tier (see `docs/adr/0787-fast-baseline-native-tier-prerequisites.md`).
-//! It is deliberately NOT wired into VM execution: no interpreter path calls it,
-//! so building it does not enable a `native_execution` mode.
+//! Constructing a [`CodeMemory`] is the repository-owned executable-memory path
+//! for emitted machine-code experiments; Cranelift-generated entries remain
+//! governed separately by ADR 0018 and Cranelift's JIT memory provider. There
+//! must be no ad hoc `mmap`/`mprotect` for code elsewhere. Owning and testing
+//! this abstraction is a prerequisite for the native tier (see
+//! `docs/adr/0019-fast-baseline-native-tier-prerequisites.md`). It is
+//! deliberately NOT wired into VM execution: no interpreter path calls it, so
+//! building it does not enable a `native_execution` mode.
 
 /// Error allocating or finalizing executable code memory.
 #[derive(Debug, Clone, PartialEq, Eq)]

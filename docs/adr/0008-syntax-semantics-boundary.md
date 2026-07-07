@@ -1,4 +1,4 @@
-# ADR 0010: Syntax and Semantics Boundary
+# ADR 0008: Syntax and Semantics Boundary
 
 ## Status
 

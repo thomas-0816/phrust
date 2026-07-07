@@ -141,7 +141,7 @@ runtime configuration hashes, invalidation epochs, and internal compile-budget
 state. Side exits materialize the live snapshot and resume generic execution for
 guard failure, overflow, type change, reference/COW, shape or epoch
 invalidation, output/diagnostic boundaries, and exception boundaries. See
-`docs/adr/0076-cranelift-jit-experiment.md` and
+`docs/adr/0017-cranelift-jit-experiment.md` and
 `docs/performance/jit-experiment.md` for the compiler scope, ABI boundary,
 guard/deopt policy, code-cache lifecycle, platform limits, and abort criteria.
 

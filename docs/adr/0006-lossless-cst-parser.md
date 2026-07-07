@@ -1,4 +1,4 @@
-# ADR 0007: Lossless CST Parser
+# ADR 0006: Lossless CST Parser
 
 ## Status
 

@@ -30,7 +30,7 @@ curl/session ecosystem, online Packagist integration, or unrestricted process
 and shell functions. DOM/XML, PDO, curl, PHAR, mbstring, intl, and FPM are
 explicitly bounded.
 
-PHAR is not a required gate. Composer source mode is the required path. ADR-0066
+PHAR is not a required gate. Composer source mode is the required path. ADR 0013
 keeps PHAR as a known gap unless a later optional read-only MVP is explicitly
 accepted with archive, wrapper, stub, and diagnostic boundaries.
 

@@ -55,7 +55,7 @@ objects, `Iterator`, and `IteratorAggregate` use VM iteration sources described
 in `docs/runtime/semantics-foreach-semantics.md`.
 
 The architecture decision is recorded in
-`docs/adr/0028-runtime-semantics-array-element-reference-foreach.md`.
+`docs/runtime/semantics-array-semantics.md`.
 
 ## Public API Surface
 

@@ -1,4 +1,4 @@
-# ADR-0076: Cranelift JIT Experiment
+# ADR 0017: Cranelift JIT Experiment
 
 ## Status
 
@@ -23,9 +23,10 @@ platform-specific assembly in Performance.
 
 Performance may add a `jit-cranelift` experiment, default off. The experiment is
 allowed to add JIT API scaffolding, eligibility analysis, ABI types, smoke
-gates, optional Cranelift-backed IR lowering for a tiny subset, and guarded
-safe execution prototypes that remain interpreter-fallback-first. The default
-build must not require Cranelift, executable memory, or platform JIT support.
+gates, optional Cranelift-backed IR lowering for a tiny subset, guarded native
+entries, helper-call boundaries, and interpreter-fallback-first execution. The
+default build must not require Cranelift, executable memory, or platform JIT
+support.
 
 The interpreter remains the source of truth. All JIT-eligible code must have an
 available interpreter fallback. Any unsupported feature, guard failure, ABI
@@ -98,13 +99,14 @@ and FPM/SAPI worker lifecycle are outside Performance.
 
 Default builds and tests run with `jit-cranelift` disabled and must not allocate
 or execute writable/executable memory. Feature-enabled builds may compile JIT
-infrastructure and may execute guarded safe-Rust prototypes after Cranelift
-verification. Executing native machine code requires a documented W^X or
-equivalent policy before it can become more than a local experiment.
+infrastructure and may execute guarded native entries only when runtime native
+execution is explicitly allowed, the backend verifies the lowered region, the
+handle carries the expected ABI hash, and the target platform satisfies the
+documented executable-memory policy.
 
 The safety model requires:
 
-- no executable-memory path without a local safe wrapper and audit note;
+- no executable-memory path without a local owner type and audit note;
 - no native code execution from unverified or stale IR;
 - no fallback path that skips PHP diagnostics, destructors, references, COW,
   exceptions, or observable output;
@@ -122,18 +124,18 @@ exist for those targets.
 ## Feature Flag
 
 The experiment uses a default-off feature named `jit-cranelift`. CLI behavior
-must default to `--jit=off` once a CLI switch exists. Enabling the feature is not
-the same as enabling execution; runtime flags and eligibility must still permit
-or reject each region.
+defaults to managed/interpreter execution. Enabling the feature is not the same
+as enabling execution; runtime flags, platform checks, eligibility, helper
+availability, ABI hashes, and safety gates must still permit or reject each
+region.
 
-Work item adds optional dependencies on `cranelift-codegen` and
-`cranelift-frontend` behind this feature. The current prototype builds and
-verifies Cranelift IR text. Work item adds `--jit=on` integration for hot,
-eligible integer leaf functions; after warmup the VM calls the Cranelift lowerer
-as compile proof and executes only a guarded safe-Rust integer evaluator. It
-does not emit executable memory, does not return native function pointers, and
-falls back to the interpreter on compile rejection, guard failure, or unsupported
-runtime values.
+The implemented experiment keeps optional dependencies on `cranelift-codegen`
+and `cranelift-frontend` behind this feature. It covers backend selection,
+eligibility analysis, CLIF verification, helper-backed native entries,
+side-exit reporting, blacklist/tiering counters, and guarded native execution
+for narrow scalar, array, string, and property shapes. Unsupported runtime
+values, guard failures, ABI mismatches, platform limitations, and compile
+rejections fall back to interpreter or VM helper paths.
 
 ## Abort Criteria
 
@@ -153,7 +155,8 @@ layer if any of these happen:
 
 ## Consequences
 
-This decision allows later Performance work items to add `php_jit`, eligibility, ABI
-types, smoke gates, and optional Cranelift compilation. It does not authorize a
-production JIT, shared native-code cache, Zend JIT compatibility, or any
-semantic shortcut for speed.
+This decision allows Performance work items to maintain `php_jit`, eligibility,
+ABI types, smoke gates, optional Cranelift compilation, and narrow guarded
+native execution. It does not authorize a production JIT, default-on native
+execution, shared native-code cache, Zend JIT compatibility, or any semantic
+shortcut for speed.

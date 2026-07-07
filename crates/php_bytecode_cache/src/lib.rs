@@ -1,6 +1,6 @@
 //! performance bytecode-cache metadata envelope.
 //!
-//! The cache format is documented in `docs/adr/0072-bytecode-cache-format.md`.
+//! The cache format is documented in `docs/adr/0015-bytecode-cache-format.md`.
 //! This crate intentionally serializes only the untrusted header/metadata
 //! envelope. It does not serialize VM bytecode or change runtime behavior.
 

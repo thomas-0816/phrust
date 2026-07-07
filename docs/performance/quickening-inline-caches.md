@@ -1,7 +1,7 @@
-# Performance Quickening And Inline Caches
+# Performance Quickening and Inline Caches
 
 This document is the implementation guide for the model accepted in
-`docs/adr/0074-quickening-inline-cache-model.md`. It describes how Performance
+`docs/performance/quickening-inline-caches.md`. It describes how Performance
 quickening and inline caches should be introduced without changing PHP
 semantics.
 
@@ -319,7 +319,7 @@ epoch turns the operation into a miss and either refreshes observation or
 dequickens the entry.
 
 Inline-cache invalidation is specified by
-`docs/adr/0075-cache-invalidation-model.md`. Performance cache entries are
+`docs/adr/0016-cache-invalidation-model.md`. Performance cache entries are
 request-local VM side-table entries. They are not serialized into bytecode
 cache artifacts and are not optimizer inputs.
 

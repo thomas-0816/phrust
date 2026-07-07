@@ -1,4 +1,4 @@
-# ADR-0075: Inline Cache Invalidation Model
+# ADR 0016: Inline Cache Invalidation Model
 
 ## Status
 
@@ -7,9 +7,10 @@ Accepted.
 ## Context
 
 Performance introduces request-local quickening and inline-cache state for the
-interpreter. ADR-0074 defines the shared quickening model, but inline caches
-need a narrower invalidation contract because their entries memoize PHP lookup
-results whose correctness depends on mutable request state.
+interpreter. `docs/performance/quickening-inline-caches.md` defines the shared
+adaptive-execution model, but inline caches need a narrower invalidation
+contract because their entries memoize PHP lookup results whose correctness
+depends on mutable request state.
 
 PHP lookup behavior can change when code is included or evaluated, autoloaders
 are registered, class composition is finalized, properties are added, or request
