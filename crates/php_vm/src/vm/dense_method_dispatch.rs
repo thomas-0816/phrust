@@ -718,7 +718,7 @@ impl Vm {
         ) {
             return result;
         }
-        let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
+        let Some(class) = self.cached_class_entry(compiled, state, class_name) else {
             return self.runtime_error(
                 output,
                 compiled,
@@ -726,7 +726,6 @@ impl Vm {
                 format!("E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"),
             );
         };
-        let class = class.clone();
         if let Err(result) =
             self.autoload_class_parents_if_missing(compiled, &class, output, stack, state)
         {

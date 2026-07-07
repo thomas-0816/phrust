@@ -2141,6 +2141,10 @@ pub struct Vm {
     /// evaluation, method mapping) on every `new`. Invalidated whenever the
     /// class table changes (tracked by `ExecutionState::class_table_epoch`).
     runtime_class_entry_cache: RefCell<RuntimeClassEntryCache>,
+    /// Memoized raw IR class entries (shared via `Rc`) so repeated `new` of a
+    /// class does not deep-clone the whole class definition per instantiation.
+    /// Invalidated by `ExecutionState::class_table_epoch`.
+    ir_class_entry_cache: RefCell<IrClassEntryCache>,
     adaptive_tiny_unit_setup_skipped: Cell<bool>,
     include_execution_depth: Cell<u32>,
     request_profile_stack: RefCell<Vec<RequestProfileFrame>>,
@@ -2166,6 +2170,7 @@ impl Vm {
             trivial_method_plans: RefCell::new(HashMap::new()),
             frame_shape_flags: RefCell::new(HashMap::new()),
             runtime_class_entry_cache: RefCell::new(RuntimeClassEntryCache::default()),
+            ir_class_entry_cache: RefCell::new(IrClassEntryCache::default()),
             quickening: RefCell::new(QuickeningTable::default()),
             inline_caches: RefCell::new(InlineCacheTable::default()),
             jit: RefCell::new(JitRuntimeState::default()),
@@ -2191,6 +2196,7 @@ impl Vm {
         self.trivial_method_plans.borrow_mut().clear();
         self.frame_shape_flags.borrow_mut().clear();
         *self.runtime_class_entry_cache.borrow_mut() = RuntimeClassEntryCache::default();
+        *self.ir_class_entry_cache.borrow_mut() = IrClassEntryCache::default();
         *self.quickening.borrow_mut() = QuickeningTable::default();
         if self.options.quickening.enabled() && !self.options.quickening_seed.is_empty() {
             self.quickening
@@ -4511,6 +4517,36 @@ impl Vm {
             .entries
             .insert(key, Rc::clone(&entry));
         Ok(entry)
+    }
+
+    /// Returns the raw IR class entry for a name, shared via `Rc`, cloning the
+    /// (possibly large) class definition out of the class table only on the
+    /// first `new` of each class within a class-table epoch. Subsequent
+    /// instantiations reuse the shared `Rc` instead of `lookup_class_in_state`'s
+    /// per-call `into_owned` deep clone.
+    fn cached_class_entry(
+        &self,
+        compiled: &CompiledUnit,
+        state: &ExecutionState,
+        class_name: &str,
+    ) -> Option<Rc<php_ir::module::ClassEntry>> {
+        let epoch = state.class_table_epoch;
+        let key = normalize_class_name(class_name);
+        {
+            let mut cache = self.ir_class_entry_cache.borrow_mut();
+            if cache.epoch != epoch {
+                cache.entries.clear();
+                cache.epoch = epoch;
+            } else if let Some(entry) = cache.entries.get(&key) {
+                return Some(Rc::clone(entry));
+            }
+        }
+        let entry = Rc::new(lookup_class_in_state(compiled, state, class_name)?);
+        self.ir_class_entry_cache
+            .borrow_mut()
+            .entries
+            .insert(key, Rc::clone(&entry));
+        Some(entry)
     }
 
     fn record_counter_direct_frame(&self, layout: &str, function: &IrFunction, elided: bool) {
@@ -44779,6 +44815,19 @@ impl From<RuntimeClassEntryError> for String {
 struct RuntimeClassEntryCache {
     epoch: u64,
     entries: HashMap<String, Rc<RuntimeClassEntry>>,
+}
+
+/// Cache of resolved raw IR class entries, keyed by normalized class name and
+/// guarded by the class-table epoch. `lookup_class_in_state` deep-clones the
+/// (potentially large, many-method) `ClassEntry` on every call via `into_owned`,
+/// so a hot `new` site would clone the whole class definition per instantiation.
+/// Sharing the owned entry via `Rc` is behavior-neutral: within a class-table
+/// epoch a class definition is immutable (redeclaration is a fatal), and the
+/// cache is dropped when the epoch changes.
+#[derive(Clone, Debug, Default)]
+struct IrClassEntryCache {
+    epoch: u64,
+    entries: HashMap<String, Rc<php_ir::module::ClassEntry>>,
 }
 
 fn runtime_class_entry(
