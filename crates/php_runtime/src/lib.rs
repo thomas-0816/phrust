@@ -36,6 +36,7 @@ pub mod pcre;
 pub mod phar;
 pub mod reference;
 pub mod resource;
+pub mod scalar_methods;
 pub mod serialization;
 pub mod session;
 pub mod sqlite;

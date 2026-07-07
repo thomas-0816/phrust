@@ -25012,6 +25012,34 @@ impl Vm {
                                 continue;
                             }
                             Value::Object(object) => object,
+                            scalar @ (Value::String(_) | Value::Int(_) | Value::Float(_)) => {
+                                let args: Vec<Value> = values
+                                    .into_iter()
+                                    .map(|a| a.value)
+                                    .collect();
+                                let result = php_runtime::scalar_methods::dispatch_scalar_method(
+                                    scalar,
+                                    method,
+                                    args,
+                                );
+                                let value = match result {
+                                    Ok(value) => value,
+                                    Err(message) => {
+                                        return self.runtime_error(
+                                            output, compiled, stack, message,
+                                        );
+                                    }
+                                };
+                                if let Err(message) = stack
+                                    .frame_mut(frame_index)
+                                    .expect("frame is active")
+                                    .registers
+                                    .set(*dst, value)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                continue;
+                            }
                             other => {
                                 let message = format!(
                                     "E_PHP_VM_METHOD_CALL_NON_OBJECT: Call to a member function {method}() on {}",

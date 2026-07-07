@@ -39,6 +39,18 @@ impl Vm {
                 return VmResult::success_no_output(Some(value));
             }
             Value::Object(object) => object,
+            scalar @ (Value::String(_) | Value::Int(_) | Value::Float(_)) => {
+                self.record_counter_dense_call_fallback("scalar_method_receiver");
+                let values: Vec<Value> = args.into_iter().map(|a| a.value).collect();
+                return match php_runtime::scalar_methods::dispatch_scalar_method(
+                    scalar,
+                    method,
+                    values,
+                ) {
+                    Ok(value) => VmResult::success_no_output(Some(value)),
+                    Err(message) => self.runtime_error(output, compiled, stack, message),
+                };
+            }
             other => {
                 self.record_counter_dense_call_fallback("non_object_method_receiver");
                 return self.runtime_error(
