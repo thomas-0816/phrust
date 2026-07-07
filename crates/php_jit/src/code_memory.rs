@@ -771,4 +771,239 @@ mod tests {
         assert_eq!(run(overflow.as_mut_ptr()), 1);
         assert_eq!(overflow[4].tag, JitCValueTag::Uninitialized);
     }
+
+    // Steady-state native throughput of the guarded int-add stencil: compile
+    // once, finalize one CodeMemory, then call the emitted fn in a tight loop
+    // over a pre-filled buffer (no per-call mmap or marshaling). Reports ns per
+    // native op to compare against the interpreter's measured ~50 ns/op. Ignored
+    // by default; run with:
+    //   cargo test --release -p php_jit --ignored --nocapture bench_native_scalar_int
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "timing benchmark; run with --release --ignored --nocapture"]
+    fn bench_native_scalar_int_throughput() {
+        use crate::JitCValue;
+        use crate::copy_patch::compile_scalar_int_region;
+        use crate::region_ir::{
+            NodeId, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
+            RegionPlacement, RegionValueType, VmSlotId,
+        };
+        use std::time::Instant;
+
+        fn i64_node(graph: &mut RegionGraph, kind: RegionNodeKind, inputs: Vec<NodeId>) -> NodeId {
+            graph.add_node(RegionNode::new(
+                kind,
+                inputs,
+                None,
+                RegionValueType::I64,
+                RegionPlacement::Floating,
+                RegionEffects::PURE,
+            ))
+        }
+
+        // A chain of ADD_OPS guarded int adds: acc = p0 + p1, then acc += p1.
+        const ADD_OPS: usize = 500; // buffer stays under the addressable slot bound
+        let mut graph = RegionGraph::new(RegionId::new(99), "bench-add-chain");
+        let p0 = i64_node(
+            &mut graph,
+            RegionNodeKind::Param {
+                slot: VmSlotId::new(0),
+            },
+            Vec::new(),
+        );
+        let p1 = i64_node(
+            &mut graph,
+            RegionNodeKind::Param {
+                slot: VmSlotId::new(1),
+            },
+            Vec::new(),
+        );
+        let mut acc = i64_node(&mut graph, RegionNodeKind::Add, vec![p0, p1]);
+        for _ in 1..ADD_OPS {
+            acc = i64_node(&mut graph, RegionNodeKind::Add, vec![acc, p1]);
+        }
+        let compiled = compile_scalar_int_region(&graph, acc).expect("region compiles");
+
+        let mem = CodeMemory::new(&compiled.code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        let mut buffer = vec![JitCValue::uninitialized(); compiled.buffer_slots as usize];
+        buffer[0] = JitCValue::int(1);
+        buffer[1] = JitCValue::int(1);
+
+        for _ in 0..1000 {
+            assert_eq!(run(buffer.as_mut_ptr()), 0); // warm i-cache / predictor
+        }
+
+        let iters: u64 = 200_000;
+        let start = Instant::now();
+        for _ in 0..iters {
+            std::hint::black_box(run(buffer.as_mut_ptr()));
+        }
+        let elapsed = start.elapsed();
+
+        let total_ops = iters * ADD_OPS as u64;
+        let ns_per_op = elapsed.as_nanos() as f64 / total_ops as f64;
+        println!(
+            "native scalar-int add: {ns_per_op:.3} ns/op  ({iters} iters x {ADD_OPS} ops = {total_ops} ops in {elapsed:?})"
+        );
+        assert_eq!(
+            buffer[compiled.result_slot as usize].payload as i64,
+            ADD_OPS as i64 + 1
+        );
+    }
+
+    // A native counted loop executed end-to-end: for (i=0; i<n; i++) s += i.
+    // The whole loop runs natively with no per-iteration interpreter dispatch —
+    // the shape where the tier's real speedup lives.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_counted_loop() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{CountedLoop, IntBinOp, ScalarIntOp, emit_counted_loop};
+
+        // slots: i=0 (counter), n=1 (limit), s=2 (accumulator).
+        let counted = CountedLoop {
+            prologue: vec![
+                ScalarIntOp::Const { dst: 0, value: 0 }, // i = 0
+                ScalarIntOp::Const { dst: 2, value: 0 }, // s = 0
+            ],
+            counter: 0,
+            limit: 1,
+            body: vec![ScalarIntOp::Binary {
+                op: IntBinOp::Add,
+                dst: 2,
+                lhs: 2,
+                rhs: 0,
+            }], // s = s + i
+        };
+        let code = emit_counted_loop(&counted).expect("loop emits");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        // n = 100 -> sum(0..99) = 4950.
+        let mut slots = [
+            JitCValue::uninitialized(),
+            JitCValue::int(100),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[2].tag, JitCValueTag::Int);
+        assert_eq!(slots[2].payload as i64, 4950);
+
+        // n = 0 -> the body never runs, s stays 0.
+        let mut zero = [
+            JitCValue::uninitialized(),
+            JitCValue::int(0),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(zero.as_mut_ptr()), 0);
+        assert_eq!(zero[2].payload as i64, 0);
+    }
+
+    // Native loop throughput: sum 0..n natively vs the interpreter's ~50 ns/op.
+    // Run with: cargo test --release -p php_jit --ignored --nocapture bench_native_counted_loop
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "timing benchmark; run with --release --ignored --nocapture"]
+    fn bench_native_counted_loop() {
+        use crate::JitCValue;
+        use crate::copy_patch::{CountedLoop, IntBinOp, ScalarIntOp, emit_counted_loop};
+        use std::time::Instant;
+
+        let counted = CountedLoop {
+            prologue: vec![
+                ScalarIntOp::Const { dst: 0, value: 0 },
+                ScalarIntOp::Const { dst: 2, value: 0 },
+            ],
+            counter: 0,
+            limit: 1,
+            body: vec![ScalarIntOp::Binary {
+                op: IntBinOp::Add,
+                dst: 2,
+                lhs: 2,
+                rhs: 0,
+            }],
+        };
+        let code = emit_counted_loop(&counted).expect("loop emits");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        const N: i64 = 30_000_000;
+        let mut slots = [
+            JitCValue::uninitialized(),
+            JitCValue::int(N),
+            JitCValue::uninitialized(),
+        ];
+        let start = Instant::now();
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        let elapsed = start.elapsed();
+        let per_iter = elapsed.as_nanos() as f64 / N as f64;
+        println!(
+            "native counted loop: {per_iter:.3} ns/iter ({N} iters in {elapsed:?}), sum={}",
+            slots[2].payload as i64
+        );
+        assert_eq!(slots[2].payload as i64, N * (N - 1) / 2);
+    }
+
+    // Guarded int comparison producing a Bool: slot[2] = slot[0] < slot[1].
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_int_compare_to_bool() {
+        use crate::JitCValue;
+        use crate::aarch64::Cond;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{ScalarIntOp, emit_scalar_int_ops};
+
+        let code = emit_scalar_int_ops(&[ScalarIntOp::Compare {
+            cond: Cond::LessThan,
+            dst: 2,
+            lhs: 0,
+            rhs: 1,
+        }])
+        .expect("compare op emits");
+        let mem = CodeMemory::new(&code).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(*mut JitCValue) -> i32` over a read-execute region.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
+        };
+
+        // 3 < 7 -> true.
+        let mut t = [
+            JitCValue::int(3),
+            JitCValue::int(7),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(t.as_mut_ptr()), 0);
+        assert_eq!(t[2].tag, JitCValueTag::Bool);
+        assert_eq!(t[2].payload, 1);
+
+        // 7 < 3 -> false.
+        let mut f = [
+            JitCValue::int(7),
+            JitCValue::int(3),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(f.as_mut_ptr()), 0);
+        assert_eq!(f[2].tag, JitCValueTag::Bool);
+        assert_eq!(f[2].payload, 0);
+
+        // Non-Int operand -> type-guard side exit.
+        let mut ne = [
+            JitCValue::int(1),
+            JitCValue::null(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(ne.as_mut_ptr()), 1);
+    }
 }

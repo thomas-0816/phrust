@@ -46,14 +46,26 @@ pub enum Cond {
     Equal,
     /// Not equal (`Z == 0`).
     NotEqual,
+    /// Signed less than (`LT`).
+    LessThan,
+    /// Signed less than or equal (`LE`).
+    LessEqual,
+    /// Signed greater than (`GT`).
+    GreaterThan,
+    /// Signed greater than or equal (`GE`).
+    GreaterEqual,
 }
 
 impl Cond {
     const fn encoding(self) -> u32 {
         match self {
-            Self::Overflow => 0b0110, // VS
-            Self::Equal => 0b0000,    // EQ
-            Self::NotEqual => 0b0001, // NE
+            Self::Overflow => 0b0110,     // VS
+            Self::Equal => 0b0000,        // EQ
+            Self::NotEqual => 0b0001,     // NE
+            Self::LessThan => 0b1011,     // LT
+            Self::LessEqual => 0b1101,    // LE
+            Self::GreaterThan => 0b1100,  // GT
+            Self::GreaterEqual => 0b1010, // GE
         }
     }
 }
@@ -229,6 +241,33 @@ impl Aarch64Assembler {
         );
     }
 
+    /// `cmp Xn, Xm` — compare two 64-bit registers, setting flags
+    /// (`subs xzr, Xn, Xm`). Followed by a signed `b.<cond>` for loop
+    /// conditions and integer comparisons.
+    pub fn cmp_reg(&mut self, rn: Reg, rm: Reg) {
+        self.subs(XZR, rn, rm);
+    }
+
+    /// `cset Xd, <cond>` — set `Xd` to 1 if `cond` holds after a `cmp`, else 0
+    /// (encoded as `csinc Xd, xzr, xzr, invert(cond)`). Materializes a PHP bool
+    /// from an integer comparison. Inverting a condition is `encoding ^ 1`.
+    pub fn cset(&mut self, rd: Reg, cond: Cond) {
+        let inverted = cond.encoding() ^ 1;
+        self.emit(
+            0x9A80_0400
+                | (u32::from(XZR) << 16)
+                | (inverted << 12)
+                | (u32::from(XZR) << 5)
+                | u32::from(rd),
+        );
+    }
+
+    /// `b label` — unconditional branch to a (forward or bound) label.
+    pub fn b(&mut self, label: Label) {
+        self.fixups.push((self.code.len(), label.0));
+        self.emit(0x1400_0000);
+    }
+
     /// `b.<cond> label` — conditional branch to a (forward or bound) label. The
     /// 19-bit displacement is filled in by [`Aarch64Assembler::finish`].
     pub fn b_cond(&mut self, cond: Cond, label: Label) {
@@ -255,11 +294,17 @@ impl Aarch64Assembler {
     pub fn finish(mut self) -> Vec<u8> {
         for (pos, label_id) in &self.fixups {
             let target = self.labels[*label_id].expect("branch label must be bound");
-            // Branch displacement is PC-relative to the branch, in instructions.
+            // Branch displacement is PC-relative to the branch, in instructions
+            // (may be negative for a backward branch to a bound label).
             let offset_insns = (target as isize - *pos as isize) / 4;
-            let imm19 = (offset_insns as u32) & 0x0007_FFFF;
             let base = u32::from_le_bytes(self.code[*pos..*pos + 4].try_into().unwrap());
-            let patched = base | (imm19 << 5);
+            let patched = if base & 0xFC00_0000 == 0x1400_0000 {
+                // Unconditional `b`: 26-bit signed imm at bits 0..=25.
+                base | ((offset_insns as u32) & 0x03FF_FFFF)
+            } else {
+                // Conditional `b.cond`: 19-bit signed imm at bits 5..=23.
+                base | (((offset_insns as u32) & 0x0007_FFFF) << 5)
+            };
             self.code[*pos..*pos + 4].copy_from_slice(&patched.to_le_bytes());
         }
         self.code
@@ -310,6 +355,23 @@ mod tests {
                 0x7F, 0xFC, 0x86, 0xEB, // cmp x3, x6, asr #63
             ]
         );
+    }
+
+    #[test]
+    fn encodes_compare_and_forward_backward_branches() {
+        // A loop skeleton: cmp ; b.ge end ; b header(back) ; end:
+        let mut asm = Aarch64Assembler::new();
+        asm.cmp_reg(X3, X4); // byte 0: subs xzr, x3, x4 -> 0xEB04007F
+        let header = asm.new_label();
+        let end = asm.new_label();
+        asm.bind(header); // byte 4
+        asm.b_cond(Cond::GreaterEqual, end); // byte 4: b.ge end (fwd +2)
+        asm.b(header); // byte 8: b header (back -1)
+        asm.bind(end); // byte 12
+        let code = asm.finish();
+        assert_eq!(&code[0..4], &[0x7F, 0x00, 0x04, 0xEB], "cmp x3, x4");
+        assert_eq!(&code[4..8], &[0x4A, 0x00, 0x00, 0x54], "b.ge end (+2)");
+        assert_eq!(&code[8..12], &[0xFF, 0xFF, 0xFF, 0x17], "b header (-1)");
     }
 
     #[test]

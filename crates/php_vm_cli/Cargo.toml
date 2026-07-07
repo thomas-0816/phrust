@@ -8,6 +8,8 @@ rust-version.workspace = true
 [features]
 default = []
 jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift", "php_vm/jit-cranelift"]
+# Default-off copy-and-patch native leaf tier (also env-gated by PHRUST_JIT_COPY_PATCH).
+jit-copy-patch = ["php_vm/jit-copy-patch"]
 
 [[bin]]
 name = "php-vm"

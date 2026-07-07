@@ -15,17 +15,27 @@
 //! marshal-in / marshal-out ABI is proven end-to-end, and it stays inert unless
 //! both the `jit-copy-patch` feature and a caller opt in.
 
+use std::sync::OnceLock;
+
 use php_jit::copy_patch::CompiledScalarRegion;
 use php_runtime::Value;
 
 use crate::frame::LocalFile;
 
-// The marshaling types and local addressing are only reachable on the aarch64
-// path; the non-aarch64 fallback returns `None` without touching them.
+// The marshaling types, local addressing, and compiled-leaf cache are only
+// reachable on the aarch64 path; the non-aarch64 fallback returns `None`.
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_ir::ids::LocalId;
 #[cfg(all(unix, target_arch = "aarch64"))]
+use php_ir::{IrConstant, IrFunction};
+#[cfg(all(unix, target_arch = "aarch64"))]
 use php_jit::{JitCValue, JitCValueTag};
+#[cfg(all(unix, target_arch = "aarch64"))]
+use std::cell::RefCell;
+#[cfg(all(unix, target_arch = "aarch64"))]
+use std::collections::HashMap;
+#[cfg(all(unix, target_arch = "aarch64"))]
+use std::rc::Rc;
 
 /// Marshal a VM `Value` into the flat-buffer `JitCValue` the native tier reads.
 ///
@@ -96,6 +106,114 @@ pub fn run_scalar_int_region(
     _locals: &LocalFile,
 ) -> Option<Value> {
     None
+}
+
+/// Process-global enable for the copy-patch leaf tier, read once. Default off;
+/// set the `PHRUST_JIT_COPY_PATCH` environment variable (to any value) to opt in.
+/// Gated additionally by the `jit-copy-patch` cargo feature, so it is inert in a
+/// default build.
+#[must_use]
+pub fn copy_patch_leaf_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("PHRUST_JIT_COPY_PATCH").is_some())
+}
+
+/// A recognized + compiled scalar-int leaf function, ready to invoke natively.
+///
+/// Holds the finalized executable mapping so a function is recognized and lowered
+/// once, then reused across calls (the [`cached_leaf`] cache owns these).
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub struct NativeLeaf {
+    code: php_jit::code_memory::CodeMemory,
+    result_slot: u32,
+    buffer_slots: u32,
+}
+
+#[cfg(all(unix, target_arch = "aarch64"))]
+impl NativeLeaf {
+    /// Recognize and lower `function` to native code, or `None` if it is outside
+    /// the scalar-int subset or the executable-memory finalize fails.
+    pub fn compile(
+        function: &IrFunction,
+        constants: &[IrConstant],
+        region_id: u32,
+    ) -> Option<Self> {
+        let compiled =
+            php_jit::copy_patch::compile_scalar_int_function(function, constants, region_id)?;
+        let code = php_jit::code_memory::CodeMemory::new(&compiled.code).ok()?;
+        Some(Self {
+            code,
+            result_slot: compiled.result_slot,
+            buffer_slots: compiled.buffer_slots,
+        })
+    }
+
+    /// Invoke over positional parameter values (parameter `i` supplies buffer
+    /// slot `i`). Returns `None` on any guard/overflow side exit or an
+    /// unrepresentable result, so the caller falls back to the interpreter.
+    #[must_use]
+    pub fn run(&self, params: &[Value]) -> Option<Value> {
+        let mut buffer: Vec<JitCValue> = (0..self.buffer_slots)
+            .map(|slot| {
+                params
+                    .get(slot as usize)
+                    .map_or_else(JitCValue::uninitialized, marshal_local)
+            })
+            .collect();
+        // SAFETY: `self.code` is machine code emitted by `php_jit::copy_patch`
+        // as a valid `extern "C" fn(*mut JitCValue) -> i32`, finalized
+        // read-execute by `CodeMemory`; `buffer` is a live, aligned, contiguous
+        // `[JitCValue; buffer_slots]` that outlives the call.
+        let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(
+                self.code.as_ptr(),
+            )
+        };
+        if run(buffer.as_mut_ptr()) != 0 {
+            return None;
+        }
+        unmarshal_result(buffer.get(self.result_slot as usize)?)
+    }
+}
+
+/// `(unit id, function id)` → compiled leaf, or `None` for a function proven
+/// outside the subset (so it is not re-recognized on every call).
+#[cfg(all(unix, target_arch = "aarch64"))]
+type LeafCache = HashMap<(u32, u32), Option<Rc<NativeLeaf>>>;
+
+#[cfg(all(unix, target_arch = "aarch64"))]
+thread_local! {
+    /// Native code depends only on the function's immutable IR, so no epoch
+    /// invalidation is needed within a process.
+    static LEAF_CACHE: RefCell<LeafCache> = RefCell::new(HashMap::new());
+}
+
+/// Look up — or recognize, compile, and cache — the native leaf for a function.
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub fn cached_leaf(
+    unit_id: u32,
+    function_id: u32,
+    function: &IrFunction,
+    constants: &[IrConstant],
+) -> Option<Rc<NativeLeaf>> {
+    LEAF_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .entry((unit_id, function_id))
+            .or_insert_with(|| {
+                let leaf = NativeLeaf::compile(function, constants, function_id).map(Rc::new);
+                if std::env::var_os("PHRUST_JIT_COPY_PATCH_DEBUG").is_some() {
+                    eprintln!(
+                        "[copy-patch] fn={} (id={}) recognized={}",
+                        function.name,
+                        function_id,
+                        leaf.is_some()
+                    );
+                }
+                leaf
+            })
+            .clone()
+    })
 }
 
 #[cfg(test)]
