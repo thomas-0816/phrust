@@ -28,6 +28,10 @@ pub const X4: Reg = 4;
 pub const X5: Reg = 5;
 /// Scratch register.
 pub const X6: Reg = 6;
+/// Scratch register commonly used to hold a called address.
+pub const X9: Reg = 9;
+/// Frame pointer.
+pub const FP: Reg = 29;
 /// Zero register.
 pub const XZR: Reg = 31;
 /// Link register (return address), used by `ret`.
@@ -95,6 +99,38 @@ impl Aarch64Assembler {
     /// `movz Xd, #imm16` — move a 16-bit immediate, zeroing the rest of `Xd`.
     pub fn movz(&mut self, rd: Reg, imm16: u16) {
         self.emit(0xD280_0000 | (u32::from(imm16) << 5) | u32::from(rd));
+    }
+
+    /// `movk Xd, #imm16, LSL #(16*hw)` — insert a 16-bit immediate into the
+    /// `hw`-th 16-bit lane of `Xd`, keeping the other lanes.
+    pub fn movk(&mut self, rd: Reg, imm16: u16, hw: u8) {
+        self.emit(0xF280_0000 | (u32::from(hw) << 21) | (u32::from(imm16) << 5) | u32::from(rd));
+    }
+
+    /// Materializes a full 64-bit immediate (e.g. a runtime-resolved helper
+    /// address) into `Xd` with a `movz`+`movk`×3 sequence.
+    pub fn mov_imm64(&mut self, rd: Reg, value: u64) {
+        self.movz(rd, (value & 0xFFFF) as u16);
+        self.movk(rd, ((value >> 16) & 0xFFFF) as u16, 1);
+        self.movk(rd, ((value >> 32) & 0xFFFF) as u16, 2);
+        self.movk(rd, ((value >> 48) & 0xFFFF) as u16, 3);
+    }
+
+    /// `blr Xn` — branch with link to the address in `Xn` (call a helper).
+    pub fn blr(&mut self, rn: Reg) {
+        self.emit(0xD63F_0000 | (u32::from(rn) << 5));
+    }
+
+    /// `stp x29, x30, [sp, #-16]!` — non-leaf prologue: save frame pointer and
+    /// link register before a `blr` clobbers `x30`.
+    pub fn push_fp_lr(&mut self) {
+        self.emit(0xA9BF_7BFD);
+    }
+
+    /// `ldp x29, x30, [sp], #16` — non-leaf epilogue: restore frame pointer and
+    /// link register before `ret`.
+    pub fn pop_fp_lr(&mut self) {
+        self.emit(0xA8C1_7BFD);
     }
 
     /// `add Xd, Xn, Xm` (64-bit register add).
@@ -250,6 +286,34 @@ mod tests {
                 0x7F, 0x0C, 0x00, 0x71, // cmp w3, #3
             ]
         );
+    }
+
+    #[test]
+    fn encodes_calls_and_frame_ops() {
+        let mut asm = Aarch64Assembler::new();
+        asm.push_fp_lr(); // stp x29,x30,[sp,#-16]! -> 0xA9BF7BFD
+        asm.movk(X9, 0x1234, 1); // movk x9,#0x1234,lsl 16 -> 0xF2A24689
+        asm.blr(X9); // blr x9                -> 0xD63F0120
+        asm.pop_fp_lr(); // ldp x29,x30,[sp],#16  -> 0xA8C17BFD
+        assert_eq!(
+            asm.finish(),
+            vec![
+                0xFD, 0x7B, 0xBF, 0xA9, // push fp/lr
+                0x89, 0x46, 0xA2, 0xF2, // movk x9, #0x1234, lsl 16
+                0x20, 0x01, 0x3F, 0xD6, // blr x9
+                0xFD, 0x7B, 0xC1, 0xA8, // pop fp/lr
+            ]
+        );
+    }
+
+    #[test]
+    fn mov_imm64_materializes_low_lane_first() {
+        let mut asm = Aarch64Assembler::new();
+        asm.mov_imm64(X9, 0xDEAD_BEEF_1234_5678);
+        let code = asm.finish();
+        assert_eq!(code.len(), 16, "movz + movk x3");
+        // First instruction: movz x9, #0x5678 -> 0xD28ACF09.
+        assert_eq!(&code[0..4], &0xD28A_CF09u32.to_le_bytes());
     }
 
     #[test]

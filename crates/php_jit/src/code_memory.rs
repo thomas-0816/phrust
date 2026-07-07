@@ -413,4 +413,42 @@ mod tests {
         assert_eq!(add(&a, &not_int, &mut typed), 1);
         assert_eq!(typed.tag, JitCValueTag::Uninitialized);
     }
+
+    // The native<->VM-helper call boundary: copy-and-patch-emitted code
+    // materializes a runtime-resolved helper address and `blr`s into a real VM
+    // helper (with a saved link register), returning the helper's status. This
+    // is the mechanism every VM-state operation in the native tier uses (frame
+    // access, arrays, objects, strings), since those touch VM-owned state only
+    // through helpers rather than direct memory.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn emitted_code_calls_a_vm_helper() {
+        use crate::JIT_HELPER_STATUS_OK;
+        use crate::aarch64::{Aarch64Assembler, X9};
+        use crate::helpers::phrust_jit_i64_add_checked;
+
+        // extern "C" fn(a, b, out) -> i32 forwarding to the checked-add helper:
+        //   push fp/lr ; mov_imm64 x9, &helper ; blr x9 ; pop fp/lr ; ret
+        // a/b/out already sit in x0/x1/x2, matching the helper (lhs, rhs, out) ABI.
+        let helper_addr = phrust_jit_i64_add_checked as usize as u64;
+        let mut asm = Aarch64Assembler::new();
+        asm.push_fp_lr();
+        asm.mov_imm64(X9, helper_addr);
+        asm.blr(X9);
+        asm.pop_fp_lr();
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64, *mut i64)
+        // -> i32` matching the helper ABI, over a read-execute region.
+        let call: extern "C" fn(i64, i64, *mut i64) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        let mut out: i64 = 0;
+        assert_eq!(call(3, 4, &mut out), JIT_HELPER_STATUS_OK);
+        assert_eq!(out, 7, "the VM helper ran via emitted native code");
+
+        // Overflow: the helper reports a non-OK status through the same boundary.
+        let mut over: i64 = 0;
+        assert_ne!(call(i64::MAX, 1, &mut over), JIT_HELPER_STATUS_OK);
+    }
 }
