@@ -173,5 +173,4 @@ security-gated effort — not reachable in a single session.
 
 - [copy-and-patch-stencil-tier.md](copy-and-patch-stencil-tier.md)
 - [php-mid-tier-compiler.md](php-mid-tier-compiler.md)
-- [baseline-native-tier.md](baseline-native-tier.md)
 - [deopt-resume-table.md](deopt-resume-table.md)

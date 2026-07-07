@@ -35,14 +35,7 @@ require_file docs/runtime/semantics-status.md
 require_file docs/research/zend-opcode-mapping-runtime.md
 require_file docs/research/embedding-spike.md
 require_file docs/research/runtime-bench-smoke.md
-require_file docs/adr/0017-runtime-register-ir.md
-require_file docs/adr/0018-runtime-vm-dispatch.md
-require_file docs/adr/0019-runtime-value-representation.md
-require_file docs/adr/0020-runtime-array-mvp.md
-require_file docs/adr/0021-runtime-object-mvp.md
-require_file docs/adr/0022-runtime-exception-model.md
-require_file docs/adr/0023-runtime-include-model.md
-require_file docs/adr/0024-runtime-known-gap-policy.md
+require_file docs/adr/0010-runtime-known-gap-policy.md
 require_file fixtures/bytecode/valid/manual-basic.ir.snap
 require_file fixtures/bytecode/valid/literals-single.ir.snap
 require_file fixtures/bytecode/valid/literals-multiple.ir.snap

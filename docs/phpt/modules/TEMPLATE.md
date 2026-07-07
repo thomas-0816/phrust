@@ -29,7 +29,7 @@ Use this template when starting a focused PHPT extension or module loop.
 
 ## Owned Files
 
-- `docs/phpt/modules/<module>.md`
+- `target/phpt-work/modules/<module>.md`
 - `tests/phpt/manifests/modules/<module>.json`
 - `tests/phpt/manifests/modules/<module>.selected.jsonl`
 - `tests/phpt/generated/<module>/...`

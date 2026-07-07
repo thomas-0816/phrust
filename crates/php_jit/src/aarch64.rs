@@ -148,6 +148,12 @@ impl Aarch64Assembler {
         self.emit(0xCB00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
     }
 
+    /// `subs Xd, Xn, Xm` — subtract and set the condition flags (for overflow
+    /// guards on PHP integer subtraction, checked via `b.vs`).
+    pub fn subs(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0xEB00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
     /// `mul Xd, Xn, Xm` (64-bit multiply; `madd` with the zero-register addend).
     pub fn mul(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         self.emit(
@@ -157,6 +163,13 @@ impl Aarch64Assembler {
                 | (u32::from(rn) << 5)
                 | u32::from(rd),
         );
+    }
+
+    /// `smulh Xd, Xn, Xm` — signed multiply returning the high 64 bits of the
+    /// 128-bit product. Paired with [`Aarch64Assembler::mul`] and
+    /// [`Aarch64Assembler::cmp_shifted_asr63`] to detect signed 64-bit overflow.
+    pub fn smulh(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x9B40_7C00 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
     }
 
     /// `mov Xd, Xm` (register move, encoded as `orr Xd, xzr, Xm`).
@@ -199,6 +212,21 @@ impl Aarch64Assembler {
     /// flags (`subs wzr, Wn, #imm`). Used to guard a value tag.
     pub fn cmp_imm_w(&mut self, rn: Reg, imm12: u16) {
         self.emit(0x7100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(XZR));
+    }
+
+    /// `cmp Xn, Xm, asr #63` — compare `Xn` against the arithmetic-shift-right
+    /// (sign extension) of `Xm`, setting flags (`subs xzr, Xn, Xm, asr #63`).
+    /// After `smulh`/`mul`, `Xn` = product high bits and `Xm` = product low
+    /// bits; equal means the signed product fits in 64 bits, so a `b.ne` side
+    /// exit fires exactly on multiplication overflow.
+    pub fn cmp_shifted_asr63(&mut self, rn: Reg, rm: Reg) {
+        self.emit(
+            0xEB80_0000
+                | (u32::from(rm) << 16)
+                | (63 << 10)
+                | (u32::from(rn) << 5)
+                | u32::from(XZR),
+        );
     }
 
     /// `b.<cond> label` — conditional branch to a (forward or bound) label. The
@@ -264,6 +292,22 @@ mod tests {
                 0xE1, 0x03, 0x00, 0xAA, // mov x1, x0
                 0x43, 0x00, 0x00, 0xF9, // str x3, [x2]
                 0xC0, 0x03, 0x5F, 0xD6, // ret
+            ]
+        );
+    }
+
+    #[test]
+    fn encodes_widened_arithmetic() {
+        let mut asm = Aarch64Assembler::new();
+        asm.subs(X3, X0, X1); // subs x3, x0, x1        -> 0xEB010003
+        asm.smulh(X3, X4, X5); // smulh x3, x4, x5      -> 0x9B457C83
+        asm.cmp_shifted_asr63(X3, X6); // cmp x3, x6, asr #63 -> 0xEB86FC7F
+        assert_eq!(
+            asm.finish(),
+            vec![
+                0x03, 0x00, 0x01, 0xEB, // subs x3, x0, x1
+                0x83, 0x7C, 0x45, 0x9B, // smulh x3, x4, x5
+                0x7F, 0xFC, 0x86, 0xEB, // cmp x3, x6, asr #63
             ]
         );
     }

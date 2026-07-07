@@ -164,7 +164,7 @@ instead of falling back to value-copy semantics. Do not expose raw
 helpers outside VM-internal paths that already control borrow ordering.
 
 The architectural decision is recorded in
-`docs/adr/0027-runtime-semantics-slot-reference-cow.md`.
+`docs/runtime/semantics-reference-cow.md`.
 
 ## Risks and Optimization Points
 

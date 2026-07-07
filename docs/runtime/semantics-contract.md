@@ -529,12 +529,12 @@ Runtime semantics behavior is split across these topic documents:
 
 Architecture decisions are recorded in:
 
-- `docs/adr/0025-runtime-semantics-destructor-queue.md`;
-- `docs/adr/0026-runtime-semantics-gc-skeleton.md`;
-- `docs/adr/0027-runtime-semantics-slot-reference-cow.md`;
-- `docs/adr/0028-runtime-semantics-array-element-reference-foreach.md`;
-- `docs/adr/0029-runtime-semantics-object-model-traits-enums-hooks.md`;
-- `docs/adr/0030-runtime-semantics-generator-fiber-control-flow.md`.
+- `docs/runtime/semantics-contract.md`;
+- `docs/runtime/semantics-contract.md`;
+- `docs/runtime/semantics-reference-cow.md`;
+- `docs/runtime/semantics-array-semantics.md`;
+- `docs/runtime/semantics-object-semantics.md`;
+- `docs/runtime/semantics-generators-fibers.md`.
 
 ## Runtime Tracing
 
@@ -636,7 +636,7 @@ known-gap behavior, it needs a fixture and an updated ADR or topic document.
 
 ## Hardening and Unsafe Audit
 
-Runtime semantics runtime hardening is tracked in `docs/runtime/semantics-hardening.md`.
+Runtime-semantics hardening is tracked in `docs/runtime/semantics-hardening.md`.
 `verify-runtime` includes:
 
 - `just runtime-hardening-lints`, which runs Clippy for `php_runtime` and

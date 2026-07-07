@@ -87,18 +87,17 @@ Audit result:
 
 - JIT remains default-off at both Cargo feature and CLI levels.
 - Feature-off builds do not depend on Cranelift or executable-memory support.
-- Feature-on Cranelift lowering verifies IR text and still does not allocate
-  executable memory.
-- Work item execution is a safe Rust int-leaf evaluator gated by Cranelift
-  lowering success and Work item tiering eligibility. It does not enter
-  native machine code or expose a native function pointer.
-- `JitStats::executable_memory_allocations` remains zero in tests and smoke
-  artifacts. W^X/mprotect work remains optional/future and is not required for
-  current execution because no executable pages are allocated.
-- Optional 07.F was evaluated and intentionally does not add a placeholder
-  executable-memory wrapper: Performance has no native code entry, so there is no
-  real W^X lifecycle to test yet. The requirement moves with the first future
-  native-code JIT implementation.
+- Feature-on Cranelift lowering verifies IR text before any native entry can be
+  used.
+- Guarded native entries exist only for narrow eligible shapes and require the
+  explicit native-execution opt-in, ABI checks, helper boundaries, and
+  interpreter fallback.
+- Executable-memory ownership is split between Cranelift's JIT memory provider
+  for Cranelift-generated entries and `php_jit::code_memory` for
+  repository-emitted machine-code experiments. No ad hoc executable-memory path
+  is accepted.
+- Production/default-on native execution, persistent native-code caches, and
+  broad VM native-frame integration remain out of scope.
 
 Coverage:
 
@@ -160,7 +159,7 @@ nix develop -c rg -n '\bunsafe\b' crates/php_jit/src \
 
 The excluded `php_jit` files contain the feature-gated Cranelift native-call
 boundary and must stay covered by `docs/performance/cranelift/safety-audit.md`,
-`docs/adr/0785-cranelift-memory-safety.md`, and
+`docs/adr/0018-cranelift-memory-safety.md`, and
 `just verify-cranelift`.
 
 ### Troubleshooting
@@ -302,8 +301,9 @@ Safety constraints:
 - Compilation first calls the Work item eligibility analyzer through the
   Work item Cranelift lowerer. Only successfully verified tiny integer leaf
   functions can enter the JIT execution path.
-- The execution prototype is safe Rust. It does not allocate executable memory,
-  expose a callable native pointer, or jump into native machine code.
+- Native entries use a fixed `extern "C"` ABI, ABI-hash checks, opaque pointer
+  arguments, and status/side-exit returns. They do not resume at arbitrary
+  native PCs or expose partial VM frames.
 - The accepted runtime subset is integer constants, local loads/stores, moves,
   checked add/sub/mul, and integer return. Checked arithmetic overflow is a
   bailout, not wrapping behavior.

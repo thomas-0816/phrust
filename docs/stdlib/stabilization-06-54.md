@@ -1,8 +1,8 @@
-# Standard library Work item Standard Library Stabilization
+# Standard Library Stabilization
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item reviewed the current Standard library standard-library differential reports
-and stabilized the highest-value deviations that were small runtime fixes rather
+This work item reviewed the current standard-library differential reports and
+stabilized the highest-value deviations that were small runtime fixes rather
 than new subsystem work.
 
 ## Fixed Deviations

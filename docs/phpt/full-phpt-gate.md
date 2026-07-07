@@ -242,7 +242,9 @@ counts in a fresh checkout without reading local `target/phpt-work` artifacts.
 
 Every `primary_missing_feature_guess` in `full-known-failures.jsonl` and every
 BORK subclass in `full-baseline-module-counts.jsonl` must have a row here.
-`docs/phpt/known-gaps.md` is the human-readable rendering of the same catalog.
+`target/phpt-work/reports/known-gaps.md` is the generated human-readable
+rendering of the same catalog. `docs/phpt/known-gaps.md` is the stable policy
+summary.
 
 `target/phpt-work/reports/full-baseline.md` is the generated local human report
 for the same baseline. It must agree with the metadata and machine manifest

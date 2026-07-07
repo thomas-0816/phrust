@@ -809,7 +809,7 @@ superinstruction-smoke:
 
 superinstruction-patterns:
     cargo build -p php_vm_cli --bin php-vm
-    scripts/performance/superinstruction_patterns.py --summary-doc docs/performance/superinstructions.md
+    scripts/performance/superinstruction_patterns.py --summary-doc target/performance/superinstructions/summary.md
 
 vm-smoke:
     cargo build -p php_vm_cli --bin php-vm
@@ -1360,7 +1360,7 @@ fastest-engine-matrix:
     scripts/performance/fastest_engine_matrix.py
 
 hotpath-inventory:
-    scripts/performance/hotpath_inventory.py target/performance/benchmark-smoke.json --json-out target/performance/hotpaths.json --markdown-out docs/performance/reports/hotpath-inventory.md
+    scripts/performance/hotpath_inventory.py target/performance/benchmark-smoke.json --json-out target/performance/hotpaths.json --markdown-out target/performance/hotpath-inventory.md
 
 fastest-hotpath-report:
     cargo build -p php_vm_cli --bin php-vm

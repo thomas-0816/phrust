@@ -36,5 +36,5 @@ values, and stateful builtins fall back to the existing builtin handler.
 The Performance smoke benchmark fixture `stdlib_dispatch.php` exercises repeated
 `count`, `strlen`, `is_int`, `array_values`, `strtolower`,
 `str_contains`, `str_starts_with`, and `str_ends_with` calls so
-`docs/performance/reports/hotpath-inventory.md` can report visible dispatch-cache hits from the
+`target/performance/hotpath-inventory.md` can report visible dispatch-cache hits from the
 standard-library-heavy path.

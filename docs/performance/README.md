@@ -34,8 +34,6 @@ Generated counters, JSON, profiler captures, benchmark matrices, and local
 markdown reports stay under `target/performance/`. The public status summary is
 [Performance status](../reference/performance-status.md).
 
-- [Hot path inventory](reports/hotpath-inventory.md)
-
 ## Native Tier
 
 Cranelift and native-tier documents are grouped under

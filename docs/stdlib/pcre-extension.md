@@ -14,7 +14,7 @@ Work item implements an ext/pcre MVP backed by PCRE2:
 - `preg_last_error_msg`
 
 The runtime uses the Rust `pcre2` crate and the Nix dev shell provides the
-native `pcre2` package. This follows ADR-0065 and avoids substituting Rust
+native `pcre2` package. This follows The standard-library scope and avoids substituting Rust
 `regex` semantics for PCRE behavior.
 
 ## Implemented Behavior

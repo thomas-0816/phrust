@@ -52,12 +52,10 @@ require_file docs/frontend/definition-of-done.md
 require_file docs/frontend/semantic-frontend-architecture.md
 require_file docs/frontend/semantic-reference-oracle.md
 require_file docs/frontend/semantic-fixtures.md
-require_file docs/adr/0011-typed-ast-views.md
-require_file docs/adr/0012-hir-symbol-ids-and-interning.md
-require_file docs/adr/0013-php-name-resolution.md
-require_file docs/adr/0014-compile-time-diagnostics.md
-require_file docs/adr/0015-constant-expression-lowering.md
-require_file docs/adr/0016-frontend-no-runtime-boundary.md
+require_file docs/adr/0006-lossless-cst-parser.md
+require_file docs/adr/0007-lexer-parser-boundary.md
+require_file docs/adr/0008-syntax-semantics-boundary.md
+require_file docs/adr/0009-frontend-no-runtime-boundary.md
 
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck scripts/verify/frontend.sh

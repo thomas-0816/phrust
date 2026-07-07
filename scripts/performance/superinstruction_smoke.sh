@@ -163,6 +163,6 @@ summary="${OUT_DIR}/summary.json"
 
 scripts/performance/superinstruction_patterns.py \
   --engine "${ENGINE}" \
-  --summary-doc docs/performance/superinstructions.md
+  --summary-doc target/performance/superinstructions/summary.md
 
 printf '[pass] superinstruction smoke compared %s fixture(s) and wrote %s\n' "${#fixtures[@]}" "${summary}"

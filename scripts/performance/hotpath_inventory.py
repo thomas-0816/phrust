@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPORT = ROOT / "target/performance/bench-performance-smoke.json"
 DEFAULT_JSON = ROOT / "target/performance/hotpaths.json"
-DEFAULT_MARKDOWN = ROOT / "docs/performance/reports/hotpath-inventory.md"
+DEFAULT_MARKDOWN = ROOT / "target/performance/hotpath-inventory.md"
 
 
 @dataclass(frozen=True)

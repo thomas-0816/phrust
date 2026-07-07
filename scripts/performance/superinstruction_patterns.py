@@ -299,6 +299,7 @@ def main() -> int:
     markdown_path.write_text(markdown, encoding="utf-8")
     if args.summary_doc is not None:
         summary_doc = args.summary_doc if args.summary_doc.is_absolute() else ROOT / args.summary_doc
+        summary_doc.parent.mkdir(parents=True, exist_ok=True)
         summary_doc.write_text(markdown, encoding="utf-8")
     print(
         "[pass] superinstruction pattern mining analyzed "
