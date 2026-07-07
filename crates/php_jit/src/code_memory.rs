@@ -303,4 +303,48 @@ mod tests {
         let mul: extern "C" fn(i64, i64) -> i64 = unsafe { core::mem::transmute(mem.as_ptr()) };
         assert_eq!(mul(6, 7), 42);
     }
+
+    // The copy-and-patch `guarded_int_arithmetic` stencil realized as native
+    // code: a fast path with an overflow guard that takes a side exit (deopt)
+    // instead of writing a wrong result, matching PHP's checked-add semantics.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_emitted_guarded_add_with_overflow_side_exit() {
+        use crate::aarch64::{Aarch64Assembler, Cond, X0, X1, X2, X3};
+
+        // extern "C" fn(a, b, out) -> i32:
+        //   adds x3, x0, x1        ; sum + flags
+        //   b.vs deopt             ; overflow -> side exit
+        //   str  x3, [x2]          ; *out = sum
+        //   movz x0, #0 ; ret      ; return 0 (ok)
+        // deopt:
+        //   movz x0, #1 ; ret      ; return 1 (side exit / deopt)
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        asm.adds(X3, X0, X1);
+        asm.b_cond(Cond::Overflow, deopt);
+        asm.str_reg(X3, X2);
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64, *mut i64)
+        // -> i32` over a read-execute region that outlives the calls.
+        let guarded_add: extern "C" fn(i64, i64, *mut i64) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        let mut out: i64 = 0;
+        assert_eq!(guarded_add(3, 4, &mut out), 0, "fast path returns ok");
+        assert_eq!(out, 7);
+
+        out = -1;
+        assert_eq!(
+            guarded_add(i64::MAX, 1, &mut out),
+            1,
+            "overflow takes the side exit"
+        );
+        assert_eq!(out, -1, "the side exit must not write a result");
+    }
 }
