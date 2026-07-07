@@ -2,13 +2,44 @@
 
 ## Status
 
-Accepted for fastest-engine prerequisite tracking.
+Accepted for fastest-engine prerequisite tracking. **Updated 2026-07-07:** the
+executable-memory/W^X, helper-registry, ABI-hash, live-state, and
+side-exit/deopt prerequisites below are now owned and tested, so the gate for a
+**narrow guarded baseline-native subset** moves from `HARD_BLOCK` to
+`SUBSET_ALLOWED` in `docs/performance/optimization-gates.md`. Broad generic
+machine-code execution of whole functions stays `HARD_BLOCK` until the remaining
+items (frame-model completion, source maps, foreach/exception/`finally`,
+generator/fiber, diagnostics/output proof) and PHPT/reference parity gates are
+satisfied. See "Prerequisite Status" below.
 
-Gate class: `HARD_BLOCK` for executable baseline-native code, per
-`docs/performance/optimization-gates.md`. This ADR does not block
-interpreter-side subsets (dense dispatch, inline caches, by-ref argument
-location encoding, optimizer passes); those follow the `SUBSET_ALLOWED` and
-`EVIDENCE_GATE` policies in that document.
+This ADR does not block interpreter-side subsets (dense dispatch, inline caches,
+by-ref argument location encoding, optimizer passes); those follow the
+`SUBSET_ALLOWED` and `EVIDENCE_GATE` policies in that document.
+
+## Prerequisite Status (2026-07-07)
+
+The mandatory-prerequisite table below is retained as the engineering checklist.
+Current ownership:
+
+| Area | Status | Owner |
+| --- | --- | --- |
+| Executable memory | Owned + tested | `crates/php_jit/src/code_memory.rs` (VM-owned `CodeMemory`, fail-closed `UnsupportedHost`, lifecycle/exec tests; the sole executable-mapping site). |
+| W^X policy | Owned + tested | `code_memory.rs` per-platform transitions (macOS `MAP_JIT` + `pthread_jit_write_protect_np`; other-unix RW→RX `mprotect`), documented in `docs/performance/cranelift/safety-audit.md`. |
+| ABI hash | Owned | `JIT_HELPER_REGISTRY_ABI_HASH` + `repr(C)` `JitCValue`/`JitCFrameView` in `crates/php_jit/src/abi.rs`. |
+| Helper registry | Owned + tested | `crates/php_jit/src/helpers.rs` (`JIT_HELPER_SYMBOLS`: versioned ids, names, signatures, side effects, return-status). |
+| Side exits and deopt records | Owned | `abi.rs` `SideExitReason` / `JitSideExit` / `JitCExit`. |
+| Live-state map | Owned | `crates/php_jit/src/region_ir/osr.rs` `RegionOsrEntry.live_slots` over `VmSlotId`. |
+| References and COW | Rejected (owned) | OSR motion policy rejects `reference_or_cow_state`; the guarded subset never executes reference/COW shapes. |
+| Frame model | Partial | `JitCFrameView` + `VmSlotId` slot mapping exist; marshaling contract specified in `docs/research/copy-and-patch-stencil-tier.md` ("Frame-Local Slot ABI"). Full call-frame identity/return-slot wiring is open. |
+| Code cache lifecycle | Open | No persistent native cache yet; keys schema defined in `copy-and-patch-stencil-tier.md`. |
+| Source-map and traces | Open | Native program-point → IR/dense/source mapping not yet emitted. |
+| Foreach / exceptions & `finally` / generators & fibers | Rejected (owned) | Rejected by the OSR motion policy and deopt metadata; not executed. |
+| Diagnostics and output | Open | Warning/output-byte parity proof pending. |
+| PHPT/reference gates | Open | Focused fixtures + PHPT/reference parity required before any default-on discussion. |
+
+The guarded subset is permitted precisely because unproven shapes are
+**rejected** (they take a typed side exit to the interpreter), never executed
+with a plausible-but-wrong result.
 
 ## Context
 
@@ -103,9 +134,17 @@ nix develop -c just verify-performance
 
 ## Decision
 
-Baseline-native work may continue only as prerequisite documentation and
-no-exec evidence. No runtime switch may execute baseline-native machine code
-until executable-memory policy, W^X behavior, code-cache lifecycle, ABI/helper
-hashes, frame/live-state/deopt metadata, reference/COW/foreach/exception state,
-generator/fiber policy, diagnostics/output proof, and PHPT/reference gates are
-implemented and accepted.
+A **narrow guarded baseline-native subset** may execute now that the
+executable-memory/W^X, helper-registry, ABI-hash, live-state, and
+side-exit/deopt prerequisites are owned and tested (see "Prerequisite Status").
+Such execution must: consume verified dense bytecode only; marshal live slots
+in/out through the VM; guard every specialized shape; take a typed side exit to
+the interpreter on any unproven shape (references/COW, foreach, exceptions,
+`finally`, generators, fibers, dynamic calls); and stay **default-off** behind
+the JIT feature gate with fallback/side-exit counters intact.
+
+Broad generic machine-code execution of whole functions stays blocked until the
+remaining prerequisites (frame-model completion, code-cache lifecycle, source
+maps, foreach/exception/`finally`/destructor materialization, generator/fiber
+snapshots, diagnostics/output-byte proof) and PHPT/reference parity gates are
+implemented and accepted. No default-on discussion happens before that.
