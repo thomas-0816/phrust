@@ -610,4 +610,88 @@ mod tests {
         assert_eq!(over[2].tag, JitCValueTag::Uninitialized);
         assert_eq!(over[4].tag, JitCValueTag::Uninitialized);
     }
+
+    // The full region-IR -> native path: build a real RegionGraph computing
+    // (p0 + p1) + p2 over three marshaled locals, lower it with
+    // copy_patch::compile_param_add_region, and execute the result over the
+    // slot buffer it specifies. Proves the compiler's node->slot layout matches
+    // what the emitted code reads/writes, end-to-end.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_compiled_param_add_region() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::compile_param_add_region;
+        use crate::region_ir::{
+            RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind, RegionPlacement,
+            RegionValueType, VmSlotId,
+        };
+
+        fn param(graph: &mut RegionGraph, slot: u32) -> crate::region_ir::NodeId {
+            graph.add_node(RegionNode::new(
+                RegionNodeKind::Param {
+                    slot: VmSlotId::new(slot),
+                },
+                Vec::new(),
+                None,
+                RegionValueType::I64,
+                RegionPlacement::Floating,
+                RegionEffects::PURE,
+            ))
+        }
+
+        let mut graph = RegionGraph::new(RegionId::new(7), "region-add-sum");
+        let p0 = param(&mut graph, 0);
+        let p1 = param(&mut graph, 1);
+        let p2 = param(&mut graph, 2);
+        let sum01 = graph.add_node(RegionNode::new(
+            RegionNodeKind::Add,
+            vec![p0, p1],
+            None,
+            RegionValueType::I64,
+            RegionPlacement::Floating,
+            RegionEffects::PURE,
+        ));
+        let total = graph.add_node(RegionNode::new(
+            RegionNodeKind::Add,
+            vec![sum01, p2],
+            None,
+            RegionValueType::I64,
+            RegionPlacement::Floating,
+            RegionEffects::PURE,
+        ));
+
+        let compiled = compile_param_add_region(&graph, total).expect("region compiles");
+        assert_eq!(compiled.buffer_slots, 5);
+        assert_eq!(compiled.result_slot, 4);
+        let mem = CodeMemory::new(&compiled.code).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(*mut JitCValue) -> i32`
+        // over a read-execute region; each buffer below has `buffer_slots` live,
+        // aligned, contiguous `JitCValue`s that outlive the call.
+        let run: extern "C" fn(*mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Success: (11 + 20) + 11 = 42, result in slot 4.
+        let mut slots = [
+            JitCValue::int(11),
+            JitCValue::int(20),
+            JitCValue::int(11),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), 0);
+        assert_eq!(slots[4].tag, JitCValueTag::Int);
+        assert_eq!(slots[4].payload as i64, 42);
+
+        // A non-Int marshaled local takes the side exit; the result is untouched.
+        let mut typed = [
+            JitCValue::int(1),
+            JitCValue::null(),
+            JitCValue::int(3),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(typed.as_mut_ptr()), 1);
+        assert_eq!(typed[4].tag, JitCValueTag::Uninitialized);
+    }
 }
