@@ -27,38 +27,50 @@ use crate::frame::LocalFile;
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_ir::ids::LocalId;
 #[cfg(all(unix, target_arch = "aarch64"))]
-use php_ir::{IrConstant, IrFunction};
+use php_ir::instruction::{IrCallArg, TerminatorKind};
+#[cfg(all(unix, target_arch = "aarch64"))]
+use php_ir::{
+    FunctionId, InstrId, Instruction, InstructionKind, IrConstant, IrFunction, IrReturnType,
+    IrSpan, Operand, RegId,
+};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_jit::{JitCValue, JitCValueTag};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use std::cell::RefCell;
 #[cfg(all(unix, target_arch = "aarch64"))]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use std::rc::Rc;
 
+#[cfg(all(unix, target_arch = "aarch64"))]
+use crate::compiled_unit::CompiledUnit;
+
 /// Marshal a VM `Value` into the flat-buffer `JitCValue` the native tier reads.
 ///
-/// Only scalar ints and bools cross as themselves. Every other value (strings,
-/// arrays, objects, references, floats, null, uninitialized, …) becomes
-/// `Uninitialized`, so the region's `Int` guard takes the interpreter side exit
-/// instead of misinterpreting a heap handle or non-int scalar as an integer.
+/// Only scalar ints, bools, and floats cross as themselves. Every other value
+/// (strings, arrays, objects, references, null, uninitialized, …) becomes
+/// `Uninitialized`, so the region's type guard takes the interpreter side exit
+/// instead of misinterpreting a heap handle or wrong-typed scalar.
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn marshal_local(value: &Value) -> JitCValue {
     match value {
         Value::Int(int) => JitCValue::int(*int),
         Value::Bool(boolean) => JitCValue::bool(*boolean),
+        Value::Float(float) => JitCValue::float(float.to_f64()),
         _ => JitCValue::uninitialized(),
     }
 }
 
 /// Marshal a native result `JitCValue` back to a VM `Value`. Returns `None` for
-/// any tag the scalar-int tier does not produce as a committed result.
+/// any tag the scalar tier does not produce as a committed result.
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn unmarshal_result(value: &JitCValue) -> Option<Value> {
     match value.tag {
         JitCValueTag::Int => Some(Value::Int(value.payload as i64)),
         JitCValueTag::Bool => Some(Value::Bool(value.payload != 0)),
+        JitCValueTag::FloatBits => Some(Value::Float(php_runtime::FloatValue::from_f64(
+            f64::from_bits(value.payload),
+        ))),
         _ => None,
     }
 }
@@ -133,13 +145,23 @@ pub struct NativeLeaf {
 impl NativeLeaf {
     /// Recognize and lower `function` to native code, or `None` if it is outside
     /// the scalar-int subset or the executable-memory finalize fails.
+    ///
+    /// Before recognition, a pre-inline pass (`inline_scalar_leaf_calls`) tries
+    /// to splice the bodies of same-unit scalar-leaf callees into `function`. A
+    /// caller that only delegates to recognized scalar leaves becomes a call-free
+    /// leaf itself and compiles natively; if the pass finds nothing to inline (or
+    /// a non-inlinable call remains) the original `function` is compiled unchanged
+    /// — which the recognizer then rejects if a call is left, exactly as before.
     pub fn compile(
+        unit: &CompiledUnit,
         function: &IrFunction,
         constants: &[IrConstant],
         region_id: u32,
     ) -> Option<Self> {
+        let inlined = inline_scalar_leaf_calls(function, unit, constants);
+        let target = inlined.as_ref().unwrap_or(function);
         let compiled =
-            php_jit::copy_patch::compile_scalar_int_function(function, constants, region_id)?;
+            php_jit::copy_patch::compile_scalar_int_function(target, constants, region_id)?;
         let code = php_jit::code_memory::CodeMemory::new(&compiled.code).ok()?;
         Some(Self {
             code,
@@ -189,19 +211,24 @@ thread_local! {
 }
 
 /// Look up — or recognize, compile, and cache — the native leaf for a function.
+///
+/// `unit` supplies the sibling functions the pre-inline pass may splice in; the
+/// cache key stays `(unit id, function id)`. Compilation (including the inline
+/// pass) never re-enters this cache, so holding the borrow across it is safe.
 #[cfg(all(unix, target_arch = "aarch64"))]
 pub fn cached_leaf(
-    unit_id: u32,
+    unit: &CompiledUnit,
     function_id: u32,
     function: &IrFunction,
     constants: &[IrConstant],
 ) -> Option<Rc<NativeLeaf>> {
+    let unit_id = unit.unit().id.raw();
     LEAF_CACHE.with(|cache| {
         cache
             .borrow_mut()
             .entry((unit_id, function_id))
             .or_insert_with(|| {
-                let leaf = NativeLeaf::compile(function, constants, function_id).map(Rc::new);
+                let leaf = NativeLeaf::compile(unit, function, constants, function_id).map(Rc::new);
                 if std::env::var_os("PHRUST_JIT_COPY_PATCH_DEBUG").is_some() {
                     eprintln!(
                         "[copy-patch] fn={} (id={}) recognized={}",
@@ -214,6 +241,358 @@ pub fn cached_leaf(
             })
             .clone()
     })
+}
+
+/// Recursion budget for the transitive inline pass. Bounds mutually-recursive
+/// call chains (direct self-recursion is rejected outright); a chain deeper than
+/// this is simply left un-inlined and runs in the interpreter.
+#[cfg(all(unix, target_arch = "aarch64"))]
+const MAX_INLINE_DEPTH: u32 = 8;
+
+/// Outcome of inlining a function's `CallFunction`s.
+#[cfg(all(unix, target_arch = "aarch64"))]
+enum InlineOutcome {
+    /// The function contains no `CallFunction`; compile it as-is.
+    NoCalls,
+    /// Every `CallFunction` was inlined away; here is the call-free rewrite.
+    Inlined(Box<IrFunction>),
+    /// A `CallFunction` is outside the inlinable shape; do not transform.
+    Rejected,
+}
+
+/// Pre-inline pass over a copy-and-patch candidate: splice the bodies of
+/// same-unit scalar-leaf callees into `function` so a caller that merely
+/// delegates to recognized scalar leaves becomes a call-free leaf itself.
+///
+/// Returns `Some(rewrite)` only when `function` contained at least one
+/// `CallFunction` and every one was inlined away. Returns `None` when there was
+/// nothing to inline, or when any call is outside the supported shape — in which
+/// case the caller compiles the original `function`, and the recognizer rejects
+/// it (a residual call is not in the scalar subset), exactly as before this pass.
+///
+/// The transform is conservative: a call is inlined only if the callee, after
+/// transitively inlining *its* calls, reduces to a single-block, call-free,
+/// register-only scalar leaf (recognized by
+/// [`compile_scalar_int_function`](php_jit::copy_patch::compile_scalar_int_function))
+/// whose body reads only its by-value int/float parameters and returns one
+/// register. Arguments must be plain positional register/constant values. Any
+/// mismatch leaves the call in place (so it side-exits to the interpreter),
+/// preserving observable behavior.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn inline_scalar_leaf_calls(
+    function: &IrFunction,
+    unit: &CompiledUnit,
+    constants: &[IrConstant],
+) -> Option<IrFunction> {
+    let self_id = unit.lookup_function(&function.name);
+    match inline_calls(function, unit, constants, self_id, 0) {
+        InlineOutcome::Inlined(inlined) => Some(*inlined),
+        InlineOutcome::NoCalls | InlineOutcome::Rejected => None,
+    }
+}
+
+/// True when any block of `function` contains a `CallFunction`.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn function_has_calls(function: &IrFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction.kind, InstructionKind::CallFunction { .. }))
+    })
+}
+
+/// Rewrite every `CallFunction` in `function` by splicing in its callee's
+/// reduced body. `self_id` is the id of `function` itself (to reject direct
+/// self-recursion); `depth` bounds the recursion.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn inline_calls(
+    function: &IrFunction,
+    unit: &CompiledUnit,
+    constants: &[IrConstant],
+    self_id: Option<FunctionId>,
+    depth: u32,
+) -> InlineOutcome {
+    if !function_has_calls(function) {
+        return InlineOutcome::NoCalls;
+    }
+    if depth >= MAX_INLINE_DEPTH {
+        return InlineOutcome::Rejected;
+    }
+
+    let mut rewrite = function.clone();
+    // Callee registers are renamed into disjoint ranges above the caller's own
+    // registers; `next_reg` is the running high-water mark. Locals are never
+    // extended because an inlinable callee reads only its parameters (bound by
+    // register substitution), so it introduces no new local slots.
+    let mut next_reg = function.register_count;
+
+    for block in &mut rewrite.blocks {
+        let mut rebuilt: Vec<Instruction> = Vec::with_capacity(block.instructions.len());
+        for instruction in &block.instructions {
+            match &instruction.kind {
+                InstructionKind::CallFunction { dst, name, args } => {
+                    let Some(spliced) = try_splice_call(
+                        *dst,
+                        name,
+                        args,
+                        unit,
+                        constants,
+                        self_id,
+                        depth,
+                        &mut next_reg,
+                        instruction.span,
+                    ) else {
+                        return InlineOutcome::Rejected;
+                    };
+                    rebuilt.extend(spliced);
+                }
+                _ => rebuilt.push(instruction.clone()),
+            }
+        }
+        block.instructions = rebuilt;
+    }
+
+    rewrite.register_count = next_reg;
+    InlineOutcome::Inlined(Box::new(rewrite))
+}
+
+/// Reduce `callee` to the single-block, call-free, register-only scalar leaf the
+/// inliner can splice, or `None` if it is outside that shape. The reduction
+/// transitively inlines the callee's own calls first, so `poly -> scale -> fma`
+/// collapses in one bottom-up walk.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn reduce_inlinable_callee(
+    callee: &IrFunction,
+    callee_id: FunctionId,
+    unit: &CompiledUnit,
+    constants: &[IrConstant],
+    depth: u32,
+) -> Option<IrFunction> {
+    if depth >= MAX_INLINE_DEPTH {
+        return None;
+    }
+    let flags = callee.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if callee.returns_by_ref || !callee.captures.is_empty() {
+        return None;
+    }
+
+    let reduced = match inline_calls(callee, unit, constants, Some(callee_id), depth + 1) {
+        InlineOutcome::NoCalls => callee.clone(),
+        InlineOutcome::Inlined(inlined) => *inlined,
+        InlineOutcome::Rejected => return None,
+    };
+
+    // A splice-able leaf is exactly one block returning one register value.
+    if reduced.blocks.len() != 1 {
+        return None;
+    }
+    let block = reduced.blocks.first()?;
+    if !matches!(
+        block.terminator.as_ref()?.kind,
+        TerminatorKind::Return {
+            value: Some(Operand::Register(_)),
+            by_ref_local: None,
+        }
+    ) {
+        return None;
+    }
+
+    // Parameters must be plain by-value int/float scalars (matching the leaf
+    // recognizer), so an argument value can be bound by register substitution.
+    for param in &reduced.params {
+        if param.by_ref || param.variadic || param.default.is_some() {
+            return None;
+        }
+        if !matches!(param.type_, Some(IrReturnType::Int | IrReturnType::Float)) {
+            return None;
+        }
+    }
+
+    // Substitution is only sound when the body reads its parameters and never
+    // writes a local: no `StoreLocal`, and every local read is a parameter. This
+    // keeps the callee's whole state in renamed registers with no new slots.
+    let params: HashSet<LocalId> = reduced.params.iter().map(|param| param.local).collect();
+    for instruction in &block.instructions {
+        let ok = match &instruction.kind {
+            InstructionKind::LoadLocal { local, .. }
+            | InstructionKind::LoadLocalQuiet { local, .. } => params.contains(local),
+            InstructionKind::LoadConst { .. } => true,
+            InstructionKind::Move { src, .. } => operand_is_value_or_param(src, &params),
+            InstructionKind::Binary { lhs, rhs, .. }
+            | InstructionKind::Compare { lhs, rhs, .. } => {
+                operand_is_value_or_param(lhs, &params) && operand_is_value_or_param(rhs, &params)
+            }
+            InstructionKind::Discard { src } => operand_is_value_or_param(src, &params),
+            _ => false,
+        };
+        if !ok {
+            return None;
+        }
+    }
+
+    // Final gate: the reduced body must be a recognized scalar leaf.
+    php_jit::copy_patch::compile_scalar_int_function(&reduced, constants, callee_id.raw())?;
+    Some(reduced)
+}
+
+/// An operand is safe to keep/rename when it is a register or constant, or a
+/// local that is one of the callee's parameters (substituted for its argument).
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn operand_is_value_or_param(operand: &Operand, params: &HashSet<LocalId>) -> bool {
+    match operand {
+        Operand::Register(_) | Operand::Constant(_) => true,
+        Operand::Local(local) => params.contains(local),
+    }
+}
+
+/// Try to inline one `CallFunction`. On success returns the instruction sequence
+/// that replaces it (argument bindings, the renamed callee body, and a move of
+/// the callee's result into the call's destination register) and advances
+/// `next_reg` past the callee's renamed register range. Returns `None` for any
+/// call outside the supported shape, so the caller is left un-inlined.
+#[cfg(all(unix, target_arch = "aarch64"))]
+#[allow(clippy::too_many_arguments)]
+fn try_splice_call(
+    call_dst: RegId,
+    name: &str,
+    args: &[IrCallArg],
+    unit: &CompiledUnit,
+    constants: &[IrConstant],
+    self_id: Option<FunctionId>,
+    depth: u32,
+    next_reg: &mut u32,
+    call_span: IrSpan,
+) -> Option<Vec<Instruction>> {
+    let callee_id = unit.lookup_function(name)?;
+    if self_id == Some(callee_id) {
+        return None; // no direct self-recursion
+    }
+    let callee = unit.unit().functions.get(callee_id.index())?;
+    let reduced = reduce_inlinable_callee(callee, callee_id, unit, constants, depth)?;
+
+    // Plain positional value arguments, one per parameter.
+    if args.len() != reduced.params.len() {
+        return None;
+    }
+    let mut param_args: Vec<(LocalId, Operand)> = Vec::with_capacity(reduced.params.len());
+    for (param, arg) in reduced.params.iter().zip(args.iter()) {
+        if arg.name.is_some() || arg.unpack {
+            return None;
+        }
+        match arg.value {
+            Operand::Register(_) | Operand::Constant(_) => {}
+            Operand::Local(_) => return None,
+        }
+        param_args.push((param.local, arg.value));
+    }
+
+    let block = reduced.blocks.first()?;
+    let TerminatorKind::Return {
+        value: Some(Operand::Register(return_reg)),
+        by_ref_local: None,
+    } = block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+
+    let base = *next_reg;
+    let mut spliced: Vec<Instruction> = Vec::with_capacity(block.instructions.len() + 1);
+    for instruction in &block.instructions {
+        let kind = match &instruction.kind {
+            InstructionKind::LoadLocal { dst, local }
+            | InstructionKind::LoadLocalQuiet { dst, local } => {
+                // A parameter read becomes a move of the bound argument value.
+                let value = param_arg_value(&param_args, *local)?;
+                InstructionKind::Move {
+                    dst: rename_reg(base, *dst),
+                    src: value,
+                }
+            }
+            InstructionKind::LoadConst { dst, constant } => InstructionKind::LoadConst {
+                dst: rename_reg(base, *dst),
+                constant: *constant,
+            },
+            InstructionKind::Move { dst, src } => InstructionKind::Move {
+                dst: rename_reg(base, *dst),
+                src: rename_operand(*src, base, &param_args)?,
+            },
+            InstructionKind::Binary { dst, op, lhs, rhs } => InstructionKind::Binary {
+                dst: rename_reg(base, *dst),
+                op: *op,
+                lhs: rename_operand(*lhs, base, &param_args)?,
+                rhs: rename_operand(*rhs, base, &param_args)?,
+            },
+            InstructionKind::Compare { dst, op, lhs, rhs } => InstructionKind::Compare {
+                dst: rename_reg(base, *dst),
+                op: *op,
+                lhs: rename_operand(*lhs, base, &param_args)?,
+                rhs: rename_operand(*rhs, base, &param_args)?,
+            },
+            InstructionKind::Discard { src } => InstructionKind::Discard {
+                src: rename_operand(*src, base, &param_args)?,
+            },
+            _ => return None,
+        };
+        spliced.push(Instruction {
+            id: instruction.id,
+            span: instruction.span,
+            kind,
+        });
+    }
+
+    // The callee's return value flows into the call's destination register.
+    spliced.push(Instruction {
+        id: InstrId::new(0),
+        span: call_span,
+        kind: InstructionKind::Move {
+            dst: call_dst,
+            src: Operand::Register(rename_reg(base, return_reg)),
+        },
+    });
+
+    *next_reg = base.checked_add(reduced.register_count)?;
+
+    if std::env::var_os("PHRUST_JIT_COPY_PATCH_DEBUG").is_some() {
+        eprintln!("[copy-patch] fn={name} (inlined leaf callee) recognized=true");
+    }
+
+    Some(spliced)
+}
+
+/// Rename a callee register into the caller's disjoint high range.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn rename_reg(base: u32, reg: RegId) -> RegId {
+    RegId::new(base + reg.raw())
+}
+
+/// The argument operand bound to a callee parameter local, if any.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn param_arg_value(param_args: &[(LocalId, Operand)], local: LocalId) -> Option<Operand> {
+    param_args
+        .iter()
+        .find(|(param, _)| *param == local)
+        .map(|(_, value)| *value)
+}
+
+/// Rename a callee operand into caller space: registers shift into the disjoint
+/// range, constants pass through, and a parameter local becomes its bound
+/// argument value. A non-parameter local is unreachable in a reduced leaf, so it
+/// aborts the splice.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn rename_operand(
+    operand: Operand,
+    base: u32,
+    param_args: &[(LocalId, Operand)],
+) -> Option<Operand> {
+    match operand {
+        Operand::Register(reg) => Some(Operand::Register(rename_reg(base, reg))),
+        Operand::Constant(constant) => Some(Operand::Constant(constant)),
+        Operand::Local(local) => param_arg_value(param_args, local),
+    }
 }
 
 #[cfg(test)]

@@ -127,39 +127,61 @@ Relevant commits: `6f4be9de` (code memory), `daf32e1c` (first end-to-end emitter
 `14b12369`/`7a94adaf` (guarded int-add over the slot ABI), `62f8e4b3`/`71776da3`
 (subs/smulh; widen to sub/mul/const), `55f3034e` (leaf recognizer),
 `38d8ead7`/`8a8273e0`/`70c88c82` (VM bridge + hook + arg-gate fix), `51bc38f6`
-(native counted loops), `c85846fc` (recognize real PHP for-loops).
+(native counted loops), `c85846fc` (recognize real PHP for-loops), `5b3627f8`
+(int `Compare` → bool), `ad787549`/`2b539865` (bitwise, const operands, `Mod`,
+shifts), `40fe9238` (general CFG compiler — gap a), `79420c51` (dense-path hook —
+gap d), and float arithmetic (gap e, float portion).
 
 ### Gaps to "as native as possible"
 
-**(a) General control-flow compiler.** Only two single-shape *recognizers* exist —
-the straight-line scalar-int leaf and the one canonical counted for-loop. Anything
-else (arbitrary branches, `while`/`foreach`, early return, nested loops, non-unit
-increments) is rejected and interpreted. The sea-of-nodes `region_ir/builder.rs`
-and `opt/` passes are not on the emit path.
+**(a) General control-flow compiler.** — **LANDED** (`compile_scalar_int_cfg`).
+A general CFG compiler now lowers arbitrary `if`/`else`, `while`, early return, and
+non-unit-increment loops: every SSA register and local gets its own slot, so control
+flow is just branches between per-block labels with no phi handling or cross-block
+register allocation. The leaf and counted-loop recognizers stay ahead of it (tighter
+code); it is the catch-all fallback for the int/bool subset. `foreach`, nested-loop
+edge cases, and the sea-of-nodes `opt/` passes on the emit path remain future work.
 
-**(b) Calls + a real helper ABI — the keystone.** Native code cannot call another
-PHP function or a builtin. The encoder has `blr`/`push_fp_lr`/`pop_fp_lr` and
-`helpers.rs` defines a stable helper-symbol ABI, but no stencil emits a call and no
-helper is registered/linked. Every recognizer rejects `Call`. This is the
-prerequisite for anything resembling real WordPress code.
+**(b) Calls + a real helper ABI — the keystone.** — **PARTIALLY LANDED**
+(native→native inlining). A bridge-side pre-inline pass
+(`copy_patch_bridge.rs` `inline_scalar_leaf_calls`) now splices same-unit
+scalar-leaf callee bodies into a caller, so a function that only delegates to
+recognized scalar leaves compiles natively instead of being rejected for
+containing a `Call`. It is bounded-transitive (depth ≤ 8, self-recursion
+rejected), so `poly → scale → fma` collapses bottom-up; a callee is inlined only
+when it reduces to a single-block, one-register-return, register-only scalar
+leaf whose body reads only its by-value int/float params (pure register
+substitution, no new local slots), with plain positional register/constant args.
+Verified against PHP 8.5.7 via the differential harness. **Still missing:**
+native→**builtin** and native→**userland** calls, which need a VM re-entry ABI
+(pass a context pointer + a helper that re-enters the interpreter) — the
+`blr`/`push_fp_lr`/`pop_fp_lr` ops and the `helpers.rs` symbol ABI exist but no
+stencil emits such a call yet. That re-entry path is the remaining keystone work
+for real WordPress code (which calls builtins and non-leaf userland functions).
 
 **(c) Mid-region deopt / OSR.** Deopt is **entry-only**: a guard/overflow side exit
 returns `1` and `NativeLeaf::run` returns `None`, so the whole call falls back to
 the interpreter from the top. `region_ir/osr.rs` computes live-slot metadata but it
 is **unwired** — there is no real resume-at-program-point.
 
-**(d) Default-mode engagement.** The hook is in the **rich** executor
-(`execute_function_inner`). The **dense** executor (`execute_bytecode_function` via
-`execute_function_with_dense_plan`) bypasses it entirely — the dense CALL dispatch
-site calls `execute_bytecode_function` directly with no copy-patch hook. So the
-tier fires today only under `--exec-format ir`; a dense-path hook is required for
-default (Auto/dense) mode.
+**(d) Default-mode engagement.** — **LANDED** (dense-path hook). The dense
+executor's fast CALL dispatch site (`DenseFunctionPlan::Dense`) now tries the
+native leaf before falling through to `execute_bytecode_function`, so the tier
+engages on dense (default-mode) code, not just `--exec-format ir`. Still gated
+behind the `jit-copy-patch` feature + `PHRUST_JIT_COPY_PATCH` env, verified by a
+differential harness (`just copy-patch-native-diff`) that diffs native-on vs
+native-off vs PHP 8.5.7. Flipping the env default to on awaits broader coverage
+(calls/objects) and the mid-region deopt safety net (gap c).
 
-**(e) Type/operator/data coverage.** The lowered subset is `int` only. Missing:
-floats (no FP registers or FP emitter); the rest of the operator set (`Div`/`Mod`,
-bitwise, shifts, `Compare`, `Concat`, boolean logic); strings (via helpers); arrays
-(packed-fast-path plus helper fallback); objects (shape-guarded slot access +
-inline-cache method dispatch). Any of these forces interpretation.
+**(e) Type/operator/data coverage.** — **PARTIALLY LANDED.** Integer operators are
+now complete: `Add`/`Sub`/`Mul` (overflow-guarded), `Mod` and shifts (domain-guarded),
+bitwise `And`/`Or`/`Xor`, integer `Compare` → bool, and constant right-operands.
+**Float arithmetic** is landed too: double-precision `fadd`/`fsub`/`fmul`/`fdiv`
+over FP registers, guarded by a `FloatBits` tag check with a zero-divisor side exit
+for `/` (float `/` is float-typed, so it *is* in the subset, unlike int `/` which
+may produce a float). Still missing: float `Compare` and float loops/branches;
+`Concat` and boolean logic; strings/arrays/objects — all of which route through the
+helper ABI (gap b) and so are gated on it. Any uncovered shape forces interpretation.
 
 **(f) x86-64 backend.** The emitter is aarch64-only; `copy_patch_bridge.rs` and the
 VM hook are `#[cfg(all(unix, target_arch = "aarch64"))]` and fall back everywhere
@@ -210,6 +232,40 @@ array/string contents), not the refcount bumps.
 - **Frame-shape memoization** (`FrameShapeFlags`): per-call body-scan
   classification (try/finally, destructor-sensitivity, inline blockers) is memoized
   per `(unit, function)` instead of re-scanned every call. ~5.6% on 100K calls.
+- **R1 — per-call session allocation removed** (`session.rs`
+  `SessionState::placeholder()`; `result.rs` `success`/`success_with_diagnostics`).
+  A macOS `sample` of a call-heavy loop showed every function return building a
+  `VmResult` whose `SessionState::default()` heap-allocates three Strings
+  (`"PHPSESSID"`/`"nocache"`/`"files"`). That session is a placeholder — inner
+  returns discard it and the request boundary overwrites the top-level result
+  from `state.session` — so an allocation-free placeholder is behavior-preserving.
+  Same-load 3M-call loop: ~3280 → ~3199 ms (~2.5%, ~27 ns/call).
+- **R1 — lean arg-binding extended to typed params** (`arguments.rs`
+  `bind_arguments` fast-path guard). The profiled dominant call cost:
+  typed by-value params missed the A3 fast path and paid the general path's
+  `bound: Vec<Option<CallArgument>>` allocation + required/variadic/named/default
+  scanning. Relaxing the guard to `type_.is_none() || default.is_none()` admits
+  typed-without-default (and keeps every previously-fast shape — no regression).
+  This is behavior-identical because **neither** path coerces inside
+  `bind_arguments` — both produce raw values, and coercion/strict-types/
+  `TypeError` are applied by the shared post-binding loop (`coerce_or_check_param_type`
+  at the two `prepare_arguments` call sites), so feeding it identical raw values
+  at the identical point is provably equivalent. Same-load 3M-call loop of
+  `leaf(int $a, int $b)`: ~3679 → ~3125 ms (**~15%, ~185 ns/call**) — the biggest
+  R1 win so far, and WordPress uses typed params heavily. Verified against PHP
+  8.5.7 across typed/untyped-default/strict/typed-default cases. *Remaining R1:*
+  deeper frame pooling / `RegisterFile`/`LocalFile` setup — needs further profiling.
+- **R2 — `ClassEntry` shared via `Arc`** (`compiled_unit.rs` `class_table:
+  Vec<Arc<ClassEntry>>` + `lookup_class_arc`; `vm/mod.rs` `ClassLookup::Shared`,
+  `into_arc`, `ResolvedMethodOwned`/`DynamicClassEntry` hold `Arc`). The method/
+  constructor resolver (`lookup_resolved_method_in_state_inner`) is threaded so
+  the hot path is a refcount bump end-to-end instead of a deep clone of the
+  (~272-byte + maps) `ClassEntry`. Unlike the caches above this cuts an
+  **absolute per-op cost**, so it helps one-shot WordPress. Same-load micro:
+  ~8.2% on a WP-sized class (30 props/40 methods; ~1760 ns/iter over `new` +
+  a method call), ~3.5% on a small class — the win scales with class size.
+  818 php_vm tests green; behavior-preserving. *Remaining:* the property
+  resolver and a few cold declaration paths still deep-clone (follow-ups).
 
 **Critical lesson baked into every runtime item:** per-request memoization does
 *not* help WordPress. WP is one-shot-distributed — functions run 1–2× per request,

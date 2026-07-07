@@ -44,7 +44,7 @@ struct CompiledUnitInner {
     unit: IrUnit,
     function_table: Vec<CompiledFunctionEntry>,
     constant_table: Vec<CompiledConstantEntry>,
-    class_table: Vec<ClassEntry>,
+    class_table: Vec<Arc<ClassEntry>>,
     function_lookup: HashMap<String, FunctionId>,
     constant_lookup: HashMap<String, ConstId>,
     class_lookup: HashMap<String, usize>,
@@ -143,7 +143,7 @@ impl CompiledUnit {
             .classes
             .iter()
             .filter(|entry| !entry.flags.is_conditional)
-            .cloned()
+            .map(|entry| Arc::new(entry.clone()))
             .collect::<Vec<_>>();
         let class_lookup = class_table.iter().enumerate().fold(
             HashMap::with_capacity(class_table.len()),
@@ -218,7 +218,18 @@ impl CompiledUnit {
         php_runtime::layout_stats::record_symbol_map_lookup();
         let normalized = normalize_class_name(name);
         let index = self.inner.class_lookup.get(&normalized).copied()?;
-        self.inner.class_table.get(index)
+        self.inner.class_table.get(index).map(Arc::as_ref)
+    }
+
+    /// Finds a class by normalized name, returning a shared handle to the
+    /// (potentially large) `ClassEntry` via a cheap `Arc` refcount bump instead
+    /// of a deep clone.
+    #[must_use]
+    pub fn lookup_class_arc(&self, name: &str) -> Option<Arc<ClassEntry>> {
+        php_runtime::layout_stats::record_symbol_map_lookup();
+        let normalized = normalize_class_name(name);
+        let index = self.inner.class_lookup.get(&normalized).copied()?;
+        self.inner.class_table.get(index).map(Arc::clone)
     }
 
     /// Finds any class entry in the underlying IR unit, including conditional declarations.
@@ -244,7 +255,7 @@ impl CompiledUnit {
 
     /// Returns the VM class lookup table.
     #[must_use]
-    pub fn class_table(&self) -> &[ClassEntry] {
+    pub fn class_table(&self) -> &[Arc<ClassEntry>] {
         &self.inner.class_table
     }
 

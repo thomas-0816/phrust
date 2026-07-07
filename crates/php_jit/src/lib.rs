@@ -15,6 +15,7 @@ mod cranelift_lowering;
 mod eligibility;
 mod helpers;
 pub mod region_ir;
+pub mod x86_64;
 
 pub use abi::{
     JIT_RUNTIME_ABI_HASH, JIT_RUNTIME_ABI_VERSION, JitAbiValue, JitBailout, JitBailoutKind,

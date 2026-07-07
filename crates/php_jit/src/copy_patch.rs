@@ -22,7 +22,7 @@ use php_ir::{
     IrReturnType, LocalId, Operand, RegId,
 };
 
-use crate::aarch64::{Aarch64Assembler, Cond, Label, Reg, X0, X3, X4, X5, X6};
+use crate::aarch64::{Aarch64Assembler, Cond, D0, D1, D2, Label, Reg, X0, X3, X4, X5, X6};
 use crate::abi::JitCValueTag;
 use crate::region_ir::{
     NodeId, RegionBuilder, RegionCompareOp, RegionConst, RegionGraph, RegionId, RegionNode,
@@ -31,6 +31,7 @@ use crate::region_ir::{
 
 const INT_TAG: u16 = JitCValueTag::Int as u16;
 const BOOL_TAG: u16 = JitCValueTag::Bool as u16;
+const FLOAT_TAG: u16 = JitCValueTag::FloatBits as u16;
 
 /// A single guarded PHP integer-add step: `slot[dst] = slot[lhs] + slot[rhs]`.
 ///
@@ -59,10 +60,12 @@ pub enum SlotSequenceError {
 const STRIDE: u32 = 24;
 const TAG_OFF: u32 = 0;
 const PAYLOAD_OFF: u32 = 8;
+const AUX_OFF: u32 = 16;
 
 /// The `tag` word load (`ldr_w` at `slot * 24`, encoding `imm12 = slot * 6`) is
 /// the binding scaled-immediate constraint: `slot * 6 <= 4095`. The payload
-/// double-word (`imm12 = slot * 3 + 1`) is looser, so this bound covers both.
+/// (`imm12 = slot * 3 + 1`) and aux (`imm12 = slot * 3 + 2`) double-words are
+/// looser, so this bound covers all three accesses.
 const MAX_SLOT: u32 = 4095 / 6;
 
 const fn tag_off(slot: u32) -> u32 {
@@ -73,7 +76,13 @@ const fn payload_off(slot: u32) -> u32 {
     slot * STRIDE + PAYLOAD_OFF
 }
 
-/// A binary PHP integer operation lowered with a type + overflow guard.
+const fn aux_off(slot: u32) -> u32 {
+    slot * STRIDE + AUX_OFF
+}
+
+/// A binary PHP integer operation. Add/Sub/Mul carry a type + overflow guard;
+/// Mod and the shifts carry an operand guard (divisor `!= 0`, shift amount in
+/// `0..=63`); the bitwise ops carry only the type guard (they never overflow).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntBinOp {
     /// `lhs + rhs`, side exit on signed overflow.
@@ -82,6 +91,69 @@ pub enum IntBinOp {
     Sub,
     /// `lhs * rhs`, side exit on signed overflow.
     Mul,
+    /// `lhs % rhs`, side exit on a zero divisor (interpreter raises
+    /// `DivisionByZeroError`). aarch64 wraps `INT_MIN % -1` to `0`, matching PHP.
+    Mod,
+    /// `lhs & rhs`.
+    BitAnd,
+    /// `lhs | rhs`.
+    BitOr,
+    /// `lhs ^ rhs`.
+    BitXor,
+    /// `lhs << rhs`, side exit when the shift amount is outside `0..=63`
+    /// (negative reads as a large unsigned value; PHP would raise or return 0).
+    Shl,
+    /// `lhs >> rhs` (arithmetic), side exit when the shift amount is outside
+    /// `0..=63`.
+    Shr,
+}
+
+impl IntBinOp {
+    /// Emit the operation on `X4` (lhs) / `X5` (rhs) into `X6`, taking `deopt`
+    /// on overflow or an out-of-domain operand. `X3` is used as scratch.
+    fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
+        match self {
+            IntBinOp::Add => {
+                asm.adds(X6, X4, X5);
+                asm.b_cond(Cond::Overflow, deopt);
+            }
+            IntBinOp::Sub => {
+                asm.subs(X6, X4, X5);
+                asm.b_cond(Cond::Overflow, deopt);
+            }
+            IntBinOp::Mul => {
+                // Overflow when the product high bits differ from the sign
+                // extension of the low bits (see cmp_shifted_asr63).
+                asm.mul(X6, X4, X5);
+                asm.smulh(X3, X4, X5);
+                asm.cmp_shifted_asr63(X3, X6);
+                asm.b_cond(Cond::NotEqual, deopt);
+            }
+            IntBinOp::Mod => {
+                // Side exit on a zero divisor; the interpreter raises the error.
+                asm.cmp_imm_x(X5, 0);
+                asm.b_cond(Cond::Equal, deopt);
+                // remainder = lhs - (lhs / rhs) * rhs.
+                asm.sdiv(X3, X4, X5);
+                asm.msub(X6, X3, X5, X4);
+            }
+            IntBinOp::BitAnd => asm.and_reg(X6, X4, X5),
+            IntBinOp::BitOr => asm.orr_reg(X6, X4, X5),
+            IntBinOp::BitXor => asm.eor_reg(X6, X4, X5),
+            IntBinOp::Shl => {
+                // aarch64 masks the shift mod 64; PHP's 0..=63 domain differs, so
+                // guard the amount (negative reads as a huge unsigned value).
+                asm.cmp_imm_x(X5, 63);
+                asm.b_cond(Cond::UnsignedHigher, deopt);
+                asm.lslv(X6, X4, X5);
+            }
+            IntBinOp::Shr => {
+                asm.cmp_imm_x(X5, 63);
+                asm.b_cond(Cond::UnsignedHigher, deopt);
+                asm.asrv(X6, X4, X5);
+            }
+        }
+    }
 }
 
 /// A single scalar-int operation over the flat slot buffer.
@@ -106,6 +178,115 @@ pub enum ScalarIntOp {
         lhs: u32,
         rhs: u32,
     },
+    /// Guarded binary op with a statically-known right operand:
+    /// `slot[dst] = slot[lhs] <op> rhs` (the constant is materialized inline).
+    BinaryConst {
+        op: IntBinOp,
+        dst: u32,
+        lhs: u32,
+        rhs: i64,
+    },
+    /// Copy a whole value (tag + payload + aux) `slot[dst] = slot[src]`. Used by
+    /// the general CFG lowering to move values between the register and local
+    /// slot ranges without a type guard (downstream ops guard as needed).
+    Copy { dst: u32, src: u32 },
+}
+
+/// A binary PHP float operation over IEEE-754 doubles. Add/Sub/Mul never fault
+/// (they saturate to ±inf / NaN like PHP); Div carries a zero-divisor guard
+/// because PHP `/` raises `DivisionByZeroError` on a zero divisor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FloatBinOp {
+    /// `lhs + rhs`.
+    Add,
+    /// `lhs - rhs`.
+    Sub,
+    /// `lhs * rhs`.
+    Mul,
+    /// `lhs / rhs`, side exit on a zero divisor (`+0.0` and `-0.0`).
+    Div,
+}
+
+impl FloatBinOp {
+    /// Emit the operation on `D0`/`D1` into `D2`, taking `deopt` on a zero
+    /// divisor (Div only).
+    fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
+        match self {
+            FloatBinOp::Add => asm.fadd(D2, D0, D1),
+            FloatBinOp::Sub => asm.fsub(D2, D0, D1),
+            FloatBinOp::Mul => asm.fmul(D2, D0, D1),
+            FloatBinOp::Div => {
+                asm.fcmp_zero(D1);
+                asm.b_cond(Cond::Equal, deopt);
+                asm.fdiv(D2, D0, D1);
+            }
+        }
+    }
+}
+
+/// A single scalar-float operation over the flat slot buffer. Mirrors
+/// [`ScalarIntOp`] for `FloatBits`-tagged values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScalarFloatOp {
+    /// Materialize a statically-known `float` (given as its IEEE-754 bits) into
+    /// `slot[dst]` (no guard needed).
+    Const { dst: u32, bits: u64 },
+    /// Copy a whole value (tag + payload + aux) `slot[dst] = slot[src]`.
+    Copy { dst: u32, src: u32 },
+    /// Guarded binary float op `slot[dst] = slot[lhs] <op> slot[rhs]`, with
+    /// `FloatBits` guards on both operands and a zero-divisor side exit for Div.
+    Binary {
+        op: FloatBinOp,
+        dst: u32,
+        lhs: u32,
+        rhs: u32,
+    },
+}
+
+fn check_float_op_slots(op: ScalarFloatOp) -> Result<(), SlotSequenceError> {
+    match op {
+        ScalarFloatOp::Const { dst, .. } => check_slot(dst),
+        ScalarFloatOp::Copy { dst, src } => {
+            check_slot(dst)?;
+            check_slot(src)
+        }
+        ScalarFloatOp::Binary { dst, lhs, rhs, .. } => {
+            check_slot(dst)?;
+            check_slot(lhs)?;
+            check_slot(rhs)
+        }
+    }
+}
+
+/// Emit a copy of the whole 24-byte value `slot[dst] = slot[src]` (tag +
+/// payload + aux); the tag travels with the value so downstream ops still guard.
+fn emit_value_copy(asm: &mut Aarch64Assembler, dst: u32, src: u32) {
+    asm.ldr_w(X3, X0, tag_off(src));
+    asm.str_w(X3, X0, tag_off(dst));
+    asm.ldr_x(X4, X0, payload_off(src));
+    asm.str_x(X4, X0, payload_off(dst));
+    asm.ldr_x(X5, X0, aux_off(src));
+    asm.str_x(X5, X0, aux_off(dst));
+}
+
+fn emit_float_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarFloatOp) {
+    match op {
+        ScalarFloatOp::Const { dst, bits } => {
+            asm.mov_imm64(X6, bits);
+            asm.movz(X3, FLOAT_TAG);
+            asm.str_w(X3, X0, tag_off(dst));
+            asm.str_x(X6, X0, payload_off(dst));
+        }
+        ScalarFloatOp::Copy { dst, src } => emit_value_copy(asm, dst, src),
+        ScalarFloatOp::Binary { op, dst, lhs, rhs } => {
+            emit_float_guard(asm, deopt, lhs);
+            emit_float_guard(asm, deopt, rhs);
+            asm.ldr_d(D0, X0, payload_off(lhs));
+            asm.ldr_d(D1, X0, payload_off(rhs));
+            op.emit(asm, deopt);
+            emit_store_float(asm, dst, D2);
+        }
+    }
 }
 
 fn check_slot(slot: u32) -> Result<(), SlotSequenceError> {
@@ -123,6 +304,15 @@ fn emit_int_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.b_cond(Cond::NotEqual, deopt);
 }
 
+/// Guard that `slot`'s tag is `Bool`, taking the side exit otherwise. Used on a
+/// branch condition so arbitrary-truthiness conditions (int, string, …) fall
+/// back to the interpreter rather than being mis-tested here.
+fn emit_bool_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, BOOL_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
 /// Write `value` to `slot[dst]` tagged as `Int`.
 fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, INT_TAG);
@@ -135,6 +325,20 @@ fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, BOOL_TAG);
     asm.str_w(X3, X0, tag_off(dst));
     asm.str_x(value, X0, payload_off(dst));
+}
+
+/// Guard that `slot`'s tag is `FloatBits`, taking the side exit otherwise.
+fn emit_float_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, FLOAT_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
+/// Write the double register `value` to `slot[dst]` tagged as `FloatBits`.
+fn emit_store_float(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
+    asm.movz(X3, FLOAT_TAG);
+    asm.str_w(X3, X0, tag_off(dst));
+    asm.str_d(value, X0, payload_off(dst));
 }
 
 /// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` that applies
@@ -150,6 +354,14 @@ fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
     match op {
         ScalarIntOp::Const { dst, .. } => check_slot(dst),
+        ScalarIntOp::Copy { dst, src } => {
+            check_slot(dst)?;
+            check_slot(src)
+        }
+        ScalarIntOp::BinaryConst { dst, lhs, .. } => {
+            check_slot(dst)?;
+            check_slot(lhs)
+        }
         ScalarIntOp::Binary { dst, lhs, rhs, .. } | ScalarIntOp::Compare { dst, lhs, rhs, .. } => {
             check_slot(dst)?;
             check_slot(lhs)?;
@@ -167,29 +379,20 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
             asm.mov_imm64(X6, value as u64);
             emit_store_int(asm, dst, X6);
         }
+        ScalarIntOp::Copy { dst, src } => emit_value_copy(asm, dst, src),
         ScalarIntOp::Binary { op, dst, lhs, rhs } => {
             emit_int_guard(asm, deopt, lhs);
             emit_int_guard(asm, deopt, rhs);
             asm.ldr_x(X4, X0, payload_off(lhs));
             asm.ldr_x(X5, X0, payload_off(rhs));
-            match op {
-                IntBinOp::Add => {
-                    asm.adds(X6, X4, X5);
-                    asm.b_cond(Cond::Overflow, deopt);
-                }
-                IntBinOp::Sub => {
-                    asm.subs(X6, X4, X5);
-                    asm.b_cond(Cond::Overflow, deopt);
-                }
-                IntBinOp::Mul => {
-                    // Overflow when the product high bits differ from the
-                    // sign extension of the low bits (see cmp_shifted_asr63).
-                    asm.mul(X6, X4, X5);
-                    asm.smulh(X3, X4, X5);
-                    asm.cmp_shifted_asr63(X3, X6);
-                    asm.b_cond(Cond::NotEqual, deopt);
-                }
-            }
+            op.emit(asm, deopt);
+            emit_store_int(asm, dst, X6);
+        }
+        ScalarIntOp::BinaryConst { op, dst, lhs, rhs } => {
+            emit_int_guard(asm, deopt, lhs);
+            asm.ldr_x(X4, X0, payload_off(lhs));
+            asm.mov_imm64(X5, rhs as u64);
+            op.emit(asm, deopt);
             emit_store_int(asm, dst, X6);
         }
         ScalarIntOp::Compare {
@@ -217,6 +420,26 @@ pub fn emit_scalar_int_ops(ops: &[ScalarIntOp]) -> Result<Vec<u8>, SlotSequenceE
     let deopt = asm.new_label();
     for op in ops {
         emit_op(&mut asm, deopt, *op);
+    }
+    asm.movz(X0, 0);
+    asm.ret();
+    asm.bind(deopt);
+    asm.movz(X0, 1);
+    asm.ret();
+    Ok(asm.finish())
+}
+
+/// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` that applies
+/// each scalar-float op in order over the caller's flat slot buffer. Returns `0`
+/// on success, `1` on a side exit (non-`FloatBits` operand or a zero divisor).
+pub fn emit_scalar_float_ops(ops: &[ScalarFloatOp]) -> Result<Vec<u8>, SlotSequenceError> {
+    for op in ops {
+        check_float_op_slots(*op)?;
+    }
+    let mut asm = Aarch64Assembler::new();
+    let deopt = asm.new_label();
+    for op in ops {
+        emit_float_op(&mut asm, deopt, *op);
     }
     asm.movz(X0, 0);
     asm.ret();
@@ -614,10 +837,17 @@ pub fn build_scalar_int_region(
     Some((builder.finish(), result))
 }
 
-/// Recognize and lower a scalar-int function to native code in one step: a
-/// straight-line leaf ([`build_scalar_int_region`]) or a canonical counted `for`
-/// loop ([`compile_counted_loop_function`]). Returns `None` when the function is
-/// outside both subsets.
+/// Recognize and lower a scalar-int function to native code in one step, trying
+/// the most specialized lowering first: a straight-line leaf
+/// (`build_scalar_int_region`), then a canonical counted `for` loop
+/// (`compile_counted_loop_function`), then the general control-flow compiler
+/// (`compile_scalar_int_cfg`) for arbitrary `if`/`else`/`while` shapes.
+/// Returns `None` when the function is outside every subset.
+///
+/// The leaf and counted-loop paths stay ahead of the general compiler because
+/// they emit tighter code (locals read directly, native loop increment) for the
+/// shapes they recognize; the CFG compiler is the catch-all that trades a few
+/// extra slot copies for covering everything else in the int/bool subset.
 pub fn compile_scalar_int_function(
     function: &IrFunction,
     constants: &[IrConstant],
@@ -628,7 +858,13 @@ pub fn compile_scalar_int_function(
     {
         return Some(compiled);
     }
-    compile_counted_loop_function(function, constants)
+    if let Some(compiled) = compile_counted_loop_function(function, constants) {
+        return Some(compiled);
+    }
+    if let Some(compiled) = compile_scalar_int_cfg(function, constants) {
+        return Some(compiled);
+    }
+    compile_scalar_float_leaf(function, constants)
 }
 
 /// Non-`Discard` instruction kinds of a block. `Discard` is a register-lifetime
@@ -765,14 +1001,13 @@ fn compile_counted_loop_function(
     }
     let mut loop_body = Vec::new();
     for stmt in body_kinds.chunks_exact(4) {
+        // Every body statement is `local = local <op> operand`, lowered as
+        // load-lhs / load-rhs / binary / store. The right operand is either
+        // another local (`Binary`) or a constant (`BinaryConst`).
         let (
             InstructionKind::LoadLocal {
                 dst: lhs_reg,
                 local: lhs_local,
-            },
-            InstructionKind::LoadLocal {
-                dst: rhs_reg,
-                local: rhs_local,
             },
             InstructionKind::Binary {
                 dst: result_reg,
@@ -784,19 +1019,42 @@ fn compile_counted_loop_function(
                 local: store_local,
                 src: Operand::Register(store_reg),
             },
-        ) = (&stmt[0], &stmt[1], &stmt[2], &stmt[3])
+        ) = (&stmt[0], &stmt[2], &stmt[3])
         else {
             return None;
         };
-        if bin_lhs != lhs_reg || bin_rhs != rhs_reg || store_reg != result_reg {
+        if bin_lhs != lhs_reg || store_reg != result_reg {
             return None;
         }
-        loop_body.push(ScalarIntOp::Binary {
-            op: int_bin_op(*op)?,
-            dst: store_local.raw(),
-            lhs: lhs_local.raw(),
-            rhs: rhs_local.raw(),
-        });
+        let op = int_bin_op(*op)?;
+        let dst = store_local.raw();
+        let lhs = lhs_local.raw();
+        match &stmt[1] {
+            InstructionKind::LoadLocal {
+                dst: rhs_reg,
+                local: rhs_local,
+            } if bin_rhs == rhs_reg => {
+                loop_body.push(ScalarIntOp::Binary {
+                    op,
+                    dst,
+                    lhs,
+                    rhs: rhs_local.raw(),
+                });
+            }
+            InstructionKind::LoadConst {
+                dst: rhs_reg,
+                constant,
+            } if bin_rhs == rhs_reg => {
+                let value = int_constant(constants, *constant)?;
+                loop_body.push(ScalarIntOp::BinaryConst {
+                    op,
+                    dst,
+                    lhs,
+                    rhs: value,
+                });
+            }
+            _ => return None,
+        }
     }
     let TerminatorKind::Jump { target: incr_id } = body.terminator.as_ref()?.kind else {
         return None;
@@ -875,12 +1133,336 @@ fn compile_counted_loop_function(
     })
 }
 
+/// Lower a value-producing move into `dst` from an operand: a register or local
+/// becomes a whole-value [`ScalarIntOp::Copy`], an int constant becomes a
+/// [`ScalarIntOp::Const`]. `None` for any other operand form.
+fn move_to_slot(
+    dst: u32,
+    src: &Operand,
+    constants: &[IrConstant],
+    local_count: u32,
+) -> Option<ScalarIntOp> {
+    match src {
+        Operand::Register(r) => Some(ScalarIntOp::Copy {
+            dst,
+            src: local_count + r.raw(),
+        }),
+        Operand::Local(l) => Some(ScalarIntOp::Copy { dst, src: l.raw() }),
+        Operand::Constant(c) => Some(ScalarIntOp::Const {
+            dst,
+            value: int_constant(constants, *c)?,
+        }),
+    }
+}
+
+/// Lower an arbitrary scalar-int control-flow graph (`if`/`else`, `while`, and
+/// their combinations) to native code. Every SSA register and every local gets
+/// its own slot, so values flow through the slot buffer and control flow is just
+/// branches between per-block labels — no cross-block register allocation or phi
+/// handling is needed. This is the general fallback after the straight-line leaf
+/// and canonical counted-loop recognizers; it accepts the int/bool instruction
+/// subset plus `Jump` / `JumpIf` / `Return(value)` terminators and returns `None`
+/// (the interpreter runs the function) for anything else.
+///
+/// Slot layout: locals occupy `[0, local_count)`, registers occupy
+/// `[local_count, local_count + register_count)`, and every `Return` copies its
+/// value to a dedicated result slot just above them, so the caller always finds
+/// the result in the same place regardless of which return fired.
+fn compile_scalar_int_cfg(
+    function: &IrFunction,
+    constants: &[IrConstant],
+) -> Option<CompiledScalarRegion> {
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if !matches!(
+        function.return_type,
+        Some(IrReturnType::Int) | Some(IrReturnType::Bool)
+    ) {
+        return None;
+    }
+    for param in &function.params {
+        if param.by_ref
+            || param.variadic
+            || param.default.is_some()
+            || param.type_ != Some(IrReturnType::Int)
+        {
+            return None;
+        }
+    }
+    if function.blocks.is_empty() {
+        return None;
+    }
+
+    let local_count = function.local_count;
+    let result_slot = local_count.checked_add(function.register_count)?;
+    let buffer_slots = result_slot.checked_add(1)?;
+    if result_slot > MAX_SLOT {
+        return None;
+    }
+    let reg_slot = |r: RegId| local_count + r.raw();
+
+    // Translate one instruction to its slot op. `None` means "outside the
+    // subset", which aborts the whole compile (the interpreter runs it).
+    let to_op = |kind: &InstructionKind| -> Option<ScalarIntOp> {
+        match kind {
+            InstructionKind::LoadLocal { dst, local }
+            | InstructionKind::LoadLocalQuiet { dst, local } => Some(ScalarIntOp::Copy {
+                dst: reg_slot(*dst),
+                src: local.raw(),
+            }),
+            InstructionKind::LoadConst { dst, constant } => Some(ScalarIntOp::Const {
+                dst: reg_slot(*dst),
+                value: int_constant(constants, *constant)?,
+            }),
+            InstructionKind::Move { dst, src } => {
+                move_to_slot(reg_slot(*dst), src, constants, local_count)
+            }
+            InstructionKind::StoreLocal { local, src } => {
+                move_to_slot(local.raw(), src, constants, local_count)
+            }
+            InstructionKind::Binary {
+                dst,
+                op,
+                lhs: Operand::Register(lhs),
+                rhs,
+            } => {
+                let op = int_bin_op(*op)?;
+                let dst = reg_slot(*dst);
+                let lhs = reg_slot(*lhs);
+                match rhs {
+                    Operand::Register(rhs) => Some(ScalarIntOp::Binary {
+                        op,
+                        dst,
+                        lhs,
+                        rhs: reg_slot(*rhs),
+                    }),
+                    Operand::Constant(c) => Some(ScalarIntOp::BinaryConst {
+                        op,
+                        dst,
+                        lhs,
+                        rhs: int_constant(constants, *c)?,
+                    }),
+                    Operand::Local(_) => None,
+                }
+            }
+            InstructionKind::Compare {
+                dst,
+                op,
+                lhs: Operand::Register(lhs),
+                rhs: Operand::Register(rhs),
+            } => Some(ScalarIntOp::Compare {
+                cond: region_compare_to_cond(ir_compare_to_region(*op)?),
+                dst: reg_slot(*dst),
+                lhs: reg_slot(*lhs),
+                rhs: reg_slot(*rhs),
+            }),
+            _ => None,
+        }
+    };
+
+    let mut asm = Aarch64Assembler::new();
+    let deopt = asm.new_label();
+    let block_labels: Vec<Label> = function.blocks.iter().map(|_| asm.new_label()).collect();
+    // Block IDs need not equal their vec position, so index labels by id.
+    let mut label_of = HashMap::new();
+    for (pos, block) in function.blocks.iter().enumerate() {
+        label_of.insert(block.id.index(), block_labels[pos]);
+    }
+
+    for (pos, block) in function.blocks.iter().enumerate() {
+        asm.bind(block_labels[pos]);
+        for kind in meaningful_kinds(block) {
+            emit_op(&mut asm, deopt, to_op(&kind)?);
+        }
+        match &block.terminator.as_ref()?.kind {
+            TerminatorKind::Jump { target } => {
+                asm.b(*label_of.get(&target.index())?);
+            }
+            TerminatorKind::JumpIf {
+                condition: Operand::Register(cond),
+                if_true,
+                if_false,
+            } => {
+                let slot = reg_slot(*cond);
+                emit_bool_guard(&mut asm, deopt, slot);
+                asm.ldr_x(X4, X0, payload_off(slot));
+                asm.cmp_imm_x(X4, 0);
+                asm.b_cond(Cond::NotEqual, *label_of.get(&if_true.index())?);
+                asm.b(*label_of.get(&if_false.index())?);
+            }
+            TerminatorKind::Return {
+                value: Some(Operand::Register(reg)),
+                by_ref_local: None,
+            } => {
+                emit_op(
+                    &mut asm,
+                    deopt,
+                    ScalarIntOp::Copy {
+                        dst: result_slot,
+                        src: reg_slot(*reg),
+                    },
+                );
+                asm.movz(X0, 0);
+                asm.ret();
+            }
+            _ => return None,
+        }
+    }
+
+    asm.bind(deopt);
+    asm.movz(X0, 1);
+    asm.ret();
+
+    Some(CompiledScalarRegion {
+        code: asm.finish(),
+        result_slot,
+        buffer_slots,
+    })
+}
+
+/// Map an IR `BinaryOp` to the native scalar-float subset (`Div` is included
+/// because float `/` is float-typed, unlike int `/`).
+fn float_bin_op(op: BinaryOp) -> Option<FloatBinOp> {
+    match op {
+        BinaryOp::Add => Some(FloatBinOp::Add),
+        BinaryOp::Sub => Some(FloatBinOp::Sub),
+        BinaryOp::Mul => Some(FloatBinOp::Mul),
+        BinaryOp::Div => Some(FloatBinOp::Div),
+        _ => None,
+    }
+}
+
+fn float_constant(constants: &[IrConstant], id: ConstId) -> Option<u64> {
+    match constants.get(id.index()) {
+        Some(IrConstant::Float(value)) => Some(value.to_bits()),
+        _ => None,
+    }
+}
+
+/// Recognize and lower a straight-line scalar-**float** leaf function to native
+/// code: a single block of `float`-typed by-value params returning `float`,
+/// whose body is `LoadLocal` / `LoadConst`(float) / `Move` / `Binary`
+/// (`Add`/`Sub`/`Mul`/`Div`) over register operands, then `Return`. Every SSA
+/// register gets its own slot (like [`compile_scalar_int_cfg`]); the returned
+/// value is copied to a dedicated result slot. Returns `None` for any other
+/// shape (the interpreter runs it). Div carries a zero-divisor side exit.
+fn compile_scalar_float_leaf(
+    function: &IrFunction,
+    constants: &[IrConstant],
+) -> Option<CompiledScalarRegion> {
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if function.return_type != Some(IrReturnType::Float) {
+        return None;
+    }
+    for param in &function.params {
+        if param.by_ref
+            || param.variadic
+            || param.default.is_some()
+            || param.type_ != Some(IrReturnType::Float)
+        {
+            return None;
+        }
+    }
+    // Single-block leaf only; branches/loops over floats are a later step.
+    if function.blocks.len() != 1 {
+        return None;
+    }
+    let block = function.blocks.first()?;
+
+    let local_count = function.local_count;
+    let result_slot = local_count.checked_add(function.register_count)?;
+    let buffer_slots = result_slot.checked_add(1)?;
+    if result_slot > MAX_SLOT {
+        return None;
+    }
+    let reg_slot = |r: RegId| local_count + r.raw();
+
+    let mut ops = Vec::new();
+    for kind in meaningful_kinds(block) {
+        let op = match &kind {
+            InstructionKind::LoadLocal { dst, local }
+            | InstructionKind::LoadLocalQuiet { dst, local } => ScalarFloatOp::Copy {
+                dst: reg_slot(*dst),
+                src: local.raw(),
+            },
+            InstructionKind::LoadConst { dst, constant } => ScalarFloatOp::Const {
+                dst: reg_slot(*dst),
+                bits: float_constant(constants, *constant)?,
+            },
+            InstructionKind::Move {
+                dst,
+                src: Operand::Register(src),
+            } => ScalarFloatOp::Copy {
+                dst: reg_slot(*dst),
+                src: reg_slot(*src),
+            },
+            InstructionKind::Move {
+                dst,
+                src: Operand::Constant(c),
+            } => ScalarFloatOp::Const {
+                dst: reg_slot(*dst),
+                bits: float_constant(constants, *c)?,
+            },
+            InstructionKind::Binary {
+                dst,
+                op,
+                lhs: Operand::Register(lhs),
+                rhs: Operand::Register(rhs),
+            } => ScalarFloatOp::Binary {
+                op: float_bin_op(*op)?,
+                dst: reg_slot(*dst),
+                lhs: reg_slot(*lhs),
+                rhs: reg_slot(*rhs),
+            },
+            _ => return None,
+        };
+        ops.push(op);
+    }
+
+    // Terminator: return a register value, copied into the result slot.
+    let TerminatorKind::Return {
+        value: Some(Operand::Register(reg)),
+        by_ref_local: None,
+    } = &block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+    ops.push(ScalarFloatOp::Copy {
+        dst: result_slot,
+        src: reg_slot(*reg),
+    });
+
+    let code = emit_scalar_float_ops(&ops).ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot,
+        buffer_slots,
+    })
+}
+
 /// Map an IR `BinaryOp` to the native scalar-int subset.
 fn int_bin_op(op: BinaryOp) -> Option<IntBinOp> {
     match op {
         BinaryOp::Add => Some(IntBinOp::Add),
         BinaryOp::Sub => Some(IntBinOp::Sub),
         BinaryOp::Mul => Some(IntBinOp::Mul),
+        BinaryOp::Mod => Some(IntBinOp::Mod),
+        BinaryOp::BitAnd => Some(IntBinOp::BitAnd),
+        BinaryOp::BitOr => Some(IntBinOp::BitOr),
+        BinaryOp::BitXor => Some(IntBinOp::BitXor),
+        BinaryOp::ShiftLeft => Some(IntBinOp::Shl),
+        BinaryOp::ShiftRight => Some(IntBinOp::Shr),
         _ => None,
     }
 }
@@ -917,8 +1499,8 @@ fn ir_compare_to_region(op: CompareOp) -> Option<RegionCompareOp> {
 mod tests {
     use super::{
         GuardedIntAddStep, MAX_SLOT, RegionCompileError, SlotSequenceError,
-        build_scalar_int_region, compile_scalar_int_function, compile_scalar_int_region,
-        emit_guarded_int_add_sequence,
+        build_scalar_int_region, compile_counted_loop_function, compile_scalar_int_function,
+        compile_scalar_int_region, emit_guarded_int_add_sequence, int_bin_op,
     };
     use crate::region_ir::{
         NodeId, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
@@ -1321,11 +1903,393 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_loop_that_increments_by_a_non_one_step() {
-        // Change the increment constant from 1 to 2: no longer a `$i++` loop.
+    fn counted_loop_recognizer_rejects_a_non_one_step() {
+        // Change the increment constant from 1 to 2: no longer a canonical `$i++`
+        // loop, so the specialized counted-loop recognizer declines it...
         let function = sum_to_loop_function();
         let constants = [IrConstant::Int(0), IrConstant::Int(2)];
-        assert!(compile_scalar_int_function(&function, &constants, 1).is_none());
+        assert!(compile_counted_loop_function(&function, &constants).is_none());
+        // ...but the general CFG compiler still lowers it (it is a valid `while`).
+        assert!(compile_scalar_int_function(&function, &constants, 1).is_some());
+    }
+
+    /// `function acc(int $n): int { $s = 0; for ($i=0; $i<$n; $i++) { $s = $s <op> C; } return $s; }`
+    /// where the loop body applies a constant right operand (`BinaryConst`).
+    /// The body's second load is `LoadConst` (const index 2) instead of a local.
+    fn const_body_loop_function(op: BinaryOp) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let load_local = |dst, local| {
+            ins(InstructionKind::LoadLocal {
+                dst: RegId::new(dst),
+                local: LocalId::new(local),
+            })
+        };
+        let load_const = |dst, constant| {
+            ins(InstructionKind::LoadConst {
+                dst: RegId::new(dst),
+                constant: ConstId::new(constant),
+            })
+        };
+        let store_local = |local, reg| {
+            ins(InstructionKind::StoreLocal {
+                local: LocalId::new(local),
+                src: Operand::Register(RegId::new(reg)),
+            })
+        };
+        let discard = |reg| {
+            ins(InstructionKind::Discard {
+                src: Operand::Register(RegId::new(reg)),
+            })
+        };
+        let binary = |dst, op, lhs, rhs| {
+            ins(InstructionKind::Binary {
+                dst: RegId::new(dst),
+                op,
+                lhs: Operand::Register(RegId::new(lhs)),
+                rhs: Operand::Register(RegId::new(rhs)),
+            })
+        };
+        let add = |dst, lhs, rhs| binary(dst, BinaryOp::Add, lhs, rhs);
+        let term = |kind| Some(Terminator { span, kind });
+        let jump = |target| {
+            term(TerminatorKind::Jump {
+                target: BlockId::new(target),
+            })
+        };
+        let block = |id, instructions, terminator| BasicBlock {
+            id: BlockId::new(id),
+            instructions,
+            terminator,
+        };
+
+        php_ir::IrFunction {
+            name: "acc".to_string(),
+            params: vec![int_param("n", 0)],
+            locals: vec!["n".to_string(), "s".to_string(), "i".to_string()],
+            local_count: 3,
+            register_count: 12,
+            blocks: vec![
+                block(
+                    0,
+                    vec![
+                        load_const(0, 0),
+                        store_local(1, 0),
+                        discard(0),
+                        load_const(1, 0),
+                        store_local(2, 1),
+                        discard(1),
+                    ],
+                    jump(1),
+                ),
+                block(
+                    1,
+                    vec![
+                        load_local(2, 2),
+                        load_local(3, 0),
+                        ins(InstructionKind::Compare {
+                            dst: RegId::new(4),
+                            op: CompareOp::Less,
+                            lhs: Operand::Register(RegId::new(2)),
+                            rhs: Operand::Register(RegId::new(3)),
+                        }),
+                    ],
+                    term(TerminatorKind::JumpIf {
+                        condition: Operand::Register(RegId::new(4)),
+                        if_true: BlockId::new(3),
+                        if_false: BlockId::new(2),
+                    }),
+                ),
+                block(
+                    2,
+                    vec![load_local(11, 1)],
+                    term(TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(11))),
+                        by_ref_local: None,
+                    }),
+                ),
+                block(
+                    3,
+                    vec![
+                        load_local(5, 1),
+                        load_const(6, 2),
+                        binary(7, op, 5, 6),
+                        store_local(1, 7),
+                        discard(7),
+                    ],
+                    jump(4),
+                ),
+                block(
+                    4,
+                    vec![
+                        load_local(8, 2),
+                        load_const(9, 1),
+                        add(10, 8, 9),
+                        store_local(2, 10),
+                        discard(8),
+                    ],
+                    jump(1),
+                ),
+            ],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Int),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_a_loop_with_a_const_operand_body() {
+        // for (...) { $s = $s + 5; } — a BinaryConst body statement.
+        let function = const_body_loop_function(BinaryOp::Add);
+        let constants = [IrConstant::Int(0), IrConstant::Int(1), IrConstant::Int(5)];
+        let compiled = compile_scalar_int_function(&function, &constants, 1)
+            .expect("const-operand loop body recognized and compiled");
+        assert_eq!(compiled.result_slot, 1);
+        assert_eq!(compiled.buffer_slots, 3);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_a_loop_with_a_bitwise_const_body() {
+        // for (...) { $s = $s | 5; } — bitwise op with a constant right operand.
+        let function = const_body_loop_function(BinaryOp::BitOr);
+        let constants = [IrConstant::Int(0), IrConstant::Int(1), IrConstant::Int(5)];
+        let compiled = compile_scalar_int_function(&function, &constants, 1)
+            .expect("bitwise const-operand loop body recognized and compiled");
+        assert_eq!(compiled.result_slot, 1);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_mod_and_shift_loop_bodies() {
+        // Mod and both shifts are in the native integer subset with a guard.
+        let constants = [IrConstant::Int(0), IrConstant::Int(1), IrConstant::Int(5)];
+        for op in [BinaryOp::Mod, BinaryOp::ShiftLeft, BinaryOp::ShiftRight] {
+            let function = const_body_loop_function(op);
+            let compiled = compile_scalar_int_function(&function, &constants, 1)
+                .unwrap_or_else(|| panic!("{op:?} const-operand loop body should compile"));
+            assert_eq!(compiled.result_slot, 1);
+            assert!(!compiled.code.is_empty());
+        }
+    }
+
+    #[test]
+    fn int_bin_op_still_rejects_out_of_subset_ops() {
+        // Div (float-typed result) and Pow are not in the integer subset.
+        assert_eq!(int_bin_op(BinaryOp::Div), None);
+        assert_eq!(int_bin_op(BinaryOp::Pow), None);
+        assert_eq!(int_bin_op(BinaryOp::Concat), None);
+    }
+
+    /// `function max2(int $a, int $b): int { if ($a > $b) { return $a; } return $b; }`
+    /// (locals: 0=$a, 1=$b) — an if/else diamond the counted-loop and leaf
+    /// recognizers reject, exercising the general CFG compiler.
+    fn max2_function() -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let block = |id, instructions, terminator| BasicBlock {
+            id: BlockId::new(id),
+            instructions,
+            terminator,
+        };
+        let ret = |reg| {
+            Some(Terminator {
+                span,
+                kind: TerminatorKind::Return {
+                    value: Some(Operand::Register(RegId::new(reg))),
+                    by_ref_local: None,
+                },
+            })
+        };
+
+        php_ir::IrFunction {
+            name: "max2".to_string(),
+            params: vec![int_param("a", 0), int_param("b", 1)],
+            locals: vec!["a".to_string(), "b".to_string()],
+            local_count: 2,
+            register_count: 6,
+            blocks: vec![
+                // entry: cmp = $a > $b; jump_if then else.
+                block(
+                    0,
+                    vec![
+                        ins(InstructionKind::LoadLocal {
+                            dst: RegId::new(0),
+                            local: LocalId::new(0),
+                        }),
+                        ins(InstructionKind::LoadLocal {
+                            dst: RegId::new(1),
+                            local: LocalId::new(1),
+                        }),
+                        ins(InstructionKind::Compare {
+                            dst: RegId::new(2),
+                            op: CompareOp::Greater,
+                            lhs: Operand::Register(RegId::new(0)),
+                            rhs: Operand::Register(RegId::new(1)),
+                        }),
+                    ],
+                    Some(Terminator {
+                        span,
+                        kind: TerminatorKind::JumpIf {
+                            condition: Operand::Register(RegId::new(2)),
+                            if_true: BlockId::new(1),
+                            if_false: BlockId::new(2),
+                        },
+                    }),
+                ),
+                // then: return $a.
+                block(
+                    1,
+                    vec![ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(3),
+                        local: LocalId::new(0),
+                    })],
+                    ret(3),
+                ),
+                // else: return $b.
+                block(
+                    2,
+                    vec![ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(4),
+                        local: LocalId::new(1),
+                    })],
+                    ret(4),
+                ),
+            ],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Int),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn general_cfg_compiler_recognizes_if_else_diamond() {
+        let function = max2_function();
+        let compiled = compile_scalar_int_function(&function, &[], 1)
+            .expect("if/else diamond compiled by the general CFG compiler");
+        // Slot layout: locals 0,1; registers 2..8; result slot at 2 + 6 = 8.
+        assert_eq!(compiled.result_slot, 8);
+        assert_eq!(compiled.buffer_slots, 9);
+        assert!(!compiled.code.is_empty());
+    }
+
+    fn float_param(name: &str, local: u32) -> IrParam {
+        IrParam {
+            name: name.to_string(),
+            local: LocalId::new(local),
+            required: true,
+            default: None,
+            type_: Some(IrReturnType::Float),
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        }
+    }
+
+    /// `function fma(float $a, float $b): float { return $a * $b + $a; }`
+    fn float_leaf_function(op: BinaryOp, return_type: IrReturnType) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![float_param("a", 0), float_param("b", 1)],
+            locals: vec!["a".to_string(), "b".to_string()],
+            local_count: 2,
+            register_count: 4,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(0),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(1),
+                    }),
+                    ins(InstructionKind::Binary {
+                        dst: RegId::new(2),
+                        op,
+                        lhs: Operand::Register(RegId::new(0)),
+                        rhs: Operand::Register(RegId::new(1)),
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(2))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(return_type),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_a_scalar_float_leaf() {
+        // function f(float $a, float $b): float { return $a / $b; }
+        let function = float_leaf_function(BinaryOp::Div, IrReturnType::Float);
+        let compiled = compile_scalar_int_function(&function, &[], 1)
+            .expect("scalar-float leaf recognized and compiled");
+        // Locals 0,1; registers 0..4 map to slots 2..6; result slot at 2+4 = 6.
+        assert_eq!(compiled.result_slot, 6);
+        assert_eq!(compiled.buffer_slots, 7);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn float_leaf_rejects_a_non_float_return() {
+        // A float-param body returning int is not the float-leaf shape (and the
+        // int leaf rejects float params), so no native lowering applies.
+        let function = float_leaf_function(BinaryOp::Add, IrReturnType::Int);
+        assert!(compile_scalar_int_function(&function, &[], 1).is_none());
+    }
+
+    #[test]
+    fn float_bin_op_rejects_out_of_subset_ops() {
+        // Modulo and concat are not float-native; only +,-,*,/ are.
+        assert_eq!(super::float_bin_op(BinaryOp::Mod), None);
+        assert_eq!(super::float_bin_op(BinaryOp::Concat), None);
+        assert!(super::float_bin_op(BinaryOp::Div).is_some());
+    }
+
+    #[test]
+    fn general_cfg_compiler_rejects_a_non_int_body_op() {
+        // Swap the comparison for a string concat: outside the int/bool subset.
+        let mut function = max2_function();
+        function.blocks[0].instructions[2].kind = InstructionKind::Binary {
+            dst: RegId::new(2),
+            op: BinaryOp::Concat,
+            lhs: Operand::Register(RegId::new(0)),
+            rhs: Operand::Register(RegId::new(1)),
+        };
+        // The JumpIf now reads a non-bool from a rejected op — but the op itself
+        // is out of subset, so the whole compile bails to the interpreter.
+        assert!(compile_scalar_int_function(&function, &[], 1).is_none());
     }
 
     #[test]

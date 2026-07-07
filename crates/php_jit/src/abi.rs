@@ -520,6 +520,12 @@ impl JitCValue {
         }
     }
 
+    /// Creates a float value from an `f64` (stored as its IEEE-754 bits).
+    #[must_use]
+    pub fn float(value: f64) -> Self {
+        Self::float_bits(value.to_bits())
+    }
+
     /// Creates an opaque heap value handle.
     #[must_use]
     pub const fn opaque(kind: JitOpaqueValueKind, handle: JitOpaqueHandle) -> Self {

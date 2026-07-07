@@ -114,7 +114,10 @@ impl VmResult {
             diagnostics: Vec::new(),
             http_response: RuntimeHttpResponseState::default(),
             upload_registry: UploadRegistry::default(),
-            session: SessionState::default(),
+            // Never observed: overwritten at the request boundary from
+            // `state.session`, discarded for inner-call returns. Cheap default
+            // avoids three heap Strings on every function return.
+            session: SessionState::placeholder(),
             return_value,
             returned_explicitly: false,
             process_exit_code: None,
@@ -143,7 +146,8 @@ impl VmResult {
             diagnostics,
             http_response: RuntimeHttpResponseState::default(),
             upload_registry: UploadRegistry::default(),
-            session: SessionState::default(),
+            // See `success`: never-observed placeholder, allocation-free.
+            session: SessionState::placeholder(),
             return_value,
             returned_explicitly: false,
             process_exit_code: None,

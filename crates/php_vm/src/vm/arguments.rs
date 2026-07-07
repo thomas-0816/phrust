@@ -103,24 +103,47 @@ fn bind_arguments(
     elide_frame_args: bool,
 ) -> Result<PreparedArguments, VmError> {
     // Fast path: a plain positional call with exact arity to a function whose
-    // parameters are all untyped, non-variadic, and by-value, with frame args
-    // elided. This is the overwhelmingly common call shape; binding it directly
-    // skips the general path's per-call `bound` vector, the required/variadic
-    // scans, and the named/variadic/default machinery. It is behavior-identical
-    // to the general path for this shape: no type checks apply (all params are
-    // untyped), no by-ref references are produced, no defaults are needed
-    // (exact arity), `frame_args` is empty (elided), and `diagnostics` is empty
-    // (no by-ref value warnings). Values are moved rather than re-cloned.
+    // parameters are all non-variadic and by-value (untyped, or typed without a
+    // default — see the guard), with frame args elided. This is the
+    // overwhelmingly common call shape; binding it directly skips the general
+    // path's per-call `bound` vector, the required/variadic scans, and the
+    // named/variadic/default machinery.
+    //
+    // It is behavior-identical to the general path for this shape. Both paths
+    // hand the caller *raw* (uncoerced) by-value arguments plus a raw trace
+    // snapshot; parameter type coercion, strict-types enforcement, and
+    // TypeError reporting are then applied uniformly by the shared post-binding
+    // loop that calls `coerce_or_check_param_type` on every prepared argument
+    // (see the two `prepare_arguments` call sites in `mod.rs`). The general
+    // success path never coerces inside `bind_arguments` — it too produces raw
+    // values and lets that same loop coerce them — so producing raw values here
+    // for typed and untyped params alike feeds the identical values to the
+    // identical type-check at the identical program point. Typed by-value params
+    // therefore bind here exactly as they would through the general path.
+    //
+    // The remaining shape guarantees still hold: no by-ref references are
+    // produced (all params are by-value), no defaults are consulted (exact
+    // arity means every param is supplied), `frame_args` is empty (elided), and
+    // `diagnostics` is empty (no by-ref value warnings). Values are moved rather
+    // than re-cloned.
     if elide_frame_args
         && args.len() == function.params.len()
         && args.iter().all(|arg| {
             arg.name.is_none()
                 && !matches!(arg.value_kind, IrCallArgValueKind::ByRefLocationPlaceholder)
         })
-        && function
-            .params
-            .iter()
-            .all(|param| !param.variadic && !param.by_ref && param.type_.is_none())
+        && function.params.iter().all(|param| {
+            !param.variadic
+                    && !param.by_ref
+                    // Untyped params (with or without a default) kept the fast
+                    // path before this change; typed params without a default
+                    // are the R1 win added here. Both bind by-position and are
+                    // coerced by the shared post-binding loop, so both are
+                    // behavior-identical to the general path at exact arity
+                    // (a supplied param never consults its default). Only
+                    // typed-with-default stays on the general path, conservatively.
+                    && (param.type_.is_none() || param.default.is_none())
+        })
     {
         let mut prepared = Vec::with_capacity(function.params.len());
         let mut trace_args = Vec::with_capacity(function.params.len());

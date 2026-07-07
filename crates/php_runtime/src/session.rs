@@ -54,6 +54,35 @@ impl Default for SessionState {
 }
 
 impl SessionState {
+    /// A cheap, allocation-free session placeholder for the per-call `VmResult`
+    /// success path. Every function return carries a `SessionState`, but inner
+    /// calls discard it and the request boundary overwrites the top-level result
+    /// from `state.session` (see `Vm::execute`), so this value is never observed.
+    /// Unlike [`SessionState::default`] it allocates no default-string heap
+    /// buffers (`"PHPSESSID"`/`"nocache"`/`"files"`), removing three allocations
+    /// from every call return — the real request session still uses `default()`.
+    #[must_use]
+    pub fn placeholder() -> Self {
+        Self {
+            status: PHP_SESSION_NONE,
+            name: String::new(),
+            id: String::new(),
+            data: PhpArray::new(),
+            cache_expire: 180,
+            cache_limiter: String::new(),
+            module_name: String::new(),
+            save_path: String::new(),
+            next_id: 1,
+            pending_generated_id: None,
+            lazy_load_enabled: false,
+            data_loaded: true,
+            started: false,
+            destroyed: false,
+            newly_created: false,
+            destroyed_id: None,
+        }
+    }
+
     /// Returns the current request-local session status.
     #[must_use]
     pub const fn status(&self) -> i64 {

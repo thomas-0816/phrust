@@ -1208,6 +1208,13 @@ copy-patch-stencil-smoke:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/copy_patch_stencil_smoke.py
 
+# Differential check that the native copy-patch tier matches the interpreter and
+# the pinned PHP 8.5.7 reference. Builds php-vm with the feature so native
+# actually engages (aarch64); the harness SKIPs cleanly on unsupported hosts.
+copy-patch-native-diff:
+    cargo build -p php_vm_cli --bin php-vm --features jit-copy-patch
+    scripts/performance/copy_patch_native_diff.py
+
 mid-tier-plan-smoke:
     cargo build -p php_vm_cli --bin php-vm
     scripts/performance/mid_tier_plan_smoke.py

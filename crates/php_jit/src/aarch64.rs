@@ -37,6 +37,14 @@ pub const XZR: Reg = 31;
 /// Link register (return address), used by `ret`.
 pub const LR: Reg = 30;
 
+/// Double-precision FP scratch registers (a separate register file from the
+/// `x` GPRs; the same small indices address `d0..d31` in FP-form instructions).
+pub const D0: Reg = 0;
+/// Double-precision FP scratch register.
+pub const D1: Reg = 1;
+/// Double-precision FP scratch register.
+pub const D2: Reg = 2;
+
 /// Condition codes for conditional branches.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cond {
@@ -54,18 +62,22 @@ pub enum Cond {
     GreaterThan,
     /// Signed greater than or equal (`GE`).
     GreaterEqual,
+    /// Unsigned higher (`HI`, `C == 1 && Z == 0`) — used for range guards where
+    /// a negative operand should also fail (it reads as a large unsigned value).
+    UnsignedHigher,
 }
 
 impl Cond {
     const fn encoding(self) -> u32 {
         match self {
-            Self::Overflow => 0b0110,     // VS
-            Self::Equal => 0b0000,        // EQ
-            Self::NotEqual => 0b0001,     // NE
-            Self::LessThan => 0b1011,     // LT
-            Self::LessEqual => 0b1101,    // LE
-            Self::GreaterThan => 0b1100,  // GT
-            Self::GreaterEqual => 0b1010, // GE
+            Self::Overflow => 0b0110,       // VS
+            Self::Equal => 0b0000,          // EQ
+            Self::NotEqual => 0b0001,       // NE
+            Self::LessThan => 0b1011,       // LT
+            Self::LessEqual => 0b1101,      // LE
+            Self::GreaterThan => 0b1100,    // GT
+            Self::GreaterEqual => 0b1010,   // GE
+            Self::UnsignedHigher => 0b1000, // HI
         }
     }
 }
@@ -184,6 +196,55 @@ impl Aarch64Assembler {
         self.emit(0x9B40_7C00 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
     }
 
+    /// `and Xd, Xn, Xm` (64-bit bitwise AND).
+    pub fn and_reg(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x8A00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `orr Xd, Xn, Xm` (64-bit bitwise OR).
+    pub fn orr_reg(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0xAA00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `eor Xd, Xn, Xm` (64-bit bitwise XOR).
+    pub fn eor_reg(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0xCA00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `sdiv Xd, Xn, Xm` — signed 64-bit division (truncating toward zero).
+    /// Divide-by-zero yields `0` on aarch64 (no trap), so callers must guard the
+    /// divisor before relying on the quotient. Paired with [`Aarch64Assembler::msub`]
+    /// to form the PHP integer remainder.
+    pub fn sdiv(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x9AC0_0C00 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `msub Xd, Xn, Xm, Xa` — `Xa - (Xn * Xm)`. With `Xn` = quotient, `Xm` =
+    /// divisor, `Xa` = dividend this yields the remainder `dividend - q*divisor`.
+    pub fn msub(&mut self, rd: Reg, rn: Reg, rm: Reg, ra: Reg) {
+        self.emit(
+            0x9B00_8000
+                | (u32::from(rm) << 16)
+                | (u32::from(ra) << 10)
+                | (u32::from(rn) << 5)
+                | u32::from(rd),
+        );
+    }
+
+    /// `lslv Xd, Xn, Xm` — logical shift left of `Xn` by `Xm & 63`. PHP `<<`
+    /// requires the shift amount in `0..=63`; callers guard that range and take
+    /// the side exit otherwise (aarch64 masks the amount mod 64, unlike PHP).
+    pub fn lslv(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x9AC0_2000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `asrv Xd, Xn, Xm` — arithmetic shift right of `Xn` by `Xm & 63`. PHP `>>`
+    /// requires the shift amount in `0..=63`; callers guard that range and take
+    /// the side exit otherwise (aarch64 masks the amount mod 64, unlike PHP).
+    pub fn asrv(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        self.emit(0x9AC0_2800 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
     /// `mov Xd, Xm` (register move, encoded as `orr Xd, xzr, Xm`).
     pub fn mov(&mut self, rd: Reg, rm: Reg) {
         self.emit(0xAA00_0000 | (u32::from(rm) << 16) | (u32::from(XZR) << 5) | u32::from(rd));
@@ -220,10 +281,73 @@ impl Aarch64Assembler {
         self.emit(0xF900_0000 | (imm12 << 10) | (u32::from(rn) << 5) | u32::from(rt));
     }
 
+    // --- Double-precision floating point ---
+    //
+    // FP registers `d0..d31` are a separate register file from `x0..x30`; the
+    // same small indices (`D0 = 0`, …) address them inside FP-form instructions.
+    // The native tier stores a PHP float as the raw IEEE-754 bits in the slot
+    // payload (tag `FloatBits`), so a float slot is loaded/stored with `ldr_d` /
+    // `str_d` at the same payload offset an `i64` would use.
+
+    /// `ldr Dt, [Xn, #byte_offset]` — load a 64-bit double. Multiple of 8.
+    pub fn ldr_d(&mut self, dt: Reg, rn: Reg, byte_offset: u32) {
+        let imm12 = byte_offset / 8;
+        self.emit(0xFD40_0000 | (imm12 << 10) | (u32::from(rn) << 5) | u32::from(dt));
+    }
+
+    /// `str Dt, [Xn, #byte_offset]` — store a 64-bit double. Multiple of 8.
+    pub fn str_d(&mut self, dt: Reg, rn: Reg, byte_offset: u32) {
+        let imm12 = byte_offset / 8;
+        self.emit(0xFD00_0000 | (imm12 << 10) | (u32::from(rn) << 5) | u32::from(dt));
+    }
+
+    /// `fmov Dd, Xn` — copy the raw 64-bit pattern of a general register into a
+    /// double register (materializing a constant float loaded via `mov_imm64`).
+    pub fn fmov_gp_to_fp(&mut self, dd: Reg, rn: Reg) {
+        self.emit(0x9E67_0000 | (u32::from(rn) << 5) | u32::from(dd));
+    }
+
+    /// `fadd Dd, Dn, Dm` (double-precision add).
+    pub fn fadd(&mut self, dd: Reg, dn: Reg, dm: Reg) {
+        self.emit(0x1E60_2800 | (u32::from(dm) << 16) | (u32::from(dn) << 5) | u32::from(dd));
+    }
+
+    /// `fsub Dd, Dn, Dm` (double-precision subtract).
+    pub fn fsub(&mut self, dd: Reg, dn: Reg, dm: Reg) {
+        self.emit(0x1E60_3800 | (u32::from(dm) << 16) | (u32::from(dn) << 5) | u32::from(dd));
+    }
+
+    /// `fmul Dd, Dn, Dm` (double-precision multiply).
+    pub fn fmul(&mut self, dd: Reg, dn: Reg, dm: Reg) {
+        self.emit(0x1E60_0800 | (u32::from(dm) << 16) | (u32::from(dn) << 5) | u32::from(dd));
+    }
+
+    /// `fdiv Dd, Dn, Dm` (double-precision divide). PHP `/` throws on a zero
+    /// divisor, so callers guard the divisor with [`Aarch64Assembler::fcmp_zero`]
+    /// and side-exit before dividing.
+    pub fn fdiv(&mut self, dd: Reg, dn: Reg, dm: Reg) {
+        self.emit(0x1E60_1800 | (u32::from(dm) << 16) | (u32::from(dn) << 5) | u32::from(dd));
+    }
+
+    /// `fcmp Dn, #0.0` — compare a double against zero, setting the flags. `+0.0`
+    /// and `-0.0` both set `Z` (equal), so a following `b.eq` catches both signed
+    /// zeros; a NaN operand sets the unordered flags (neither `<`/`>` nor `==`).
+    pub fn fcmp_zero(&mut self, dn: Reg) {
+        self.emit(0x1E60_2008 | (u32::from(dn) << 5));
+    }
+
     /// `cmp Wn, #imm12` — compare a 32-bit register to an immediate, setting
     /// flags (`subs wzr, Wn, #imm`). Used to guard a value tag.
     pub fn cmp_imm_w(&mut self, rn: Reg, imm12: u16) {
         self.emit(0x7100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(XZR));
+    }
+
+    /// `cmp Xn, #imm12` — compare a 64-bit register to an immediate, setting
+    /// flags (`subs xzr, Xn, #imm`). Used for the divide-by-zero and
+    /// shift-range guards, where a following unsigned `b.hi` catches both
+    /// negative (huge as unsigned) and out-of-range operands in one test.
+    pub fn cmp_imm_x(&mut self, rn: Reg, imm12: u16) {
+        self.emit(0xF100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(XZR));
     }
 
     /// `cmp Xn, Xm, asr #63` — compare `Xn` against the arithmetic-shift-right
