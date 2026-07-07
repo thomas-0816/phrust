@@ -16,6 +16,9 @@ pub mod aliasing;
 pub mod bytecode;
 #[doc(hidden)]
 pub mod compiled_unit;
+/// Default-off copy-and-patch native tier bridge (behind `jit-copy-patch`).
+#[cfg(feature = "jit-copy-patch")]
+pub mod copy_patch_bridge;
 #[doc(hidden)]
 pub mod counters;
 #[doc(hidden)]
