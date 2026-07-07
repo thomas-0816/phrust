@@ -274,4 +274,33 @@ mod tests {
         let func: extern "C" fn() -> i32 = unsafe { core::mem::transmute(mem.as_ptr()) };
         assert_eq!(func(), 42);
     }
+
+    // End-to-end: the aarch64 encoder emits real integer arithmetic, the code
+    // memory finalizes it, and it runs natively over live arguments. This is the
+    // copy-and-patch codegen path in miniature (emit -> finalize -> execute).
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_emitted_native_arithmetic() {
+        use crate::aarch64::{Aarch64Assembler, X0, X1};
+
+        // extern "C" fn(a, b) -> a + b : add x0, x0, x1 ; ret
+        let mut asm = Aarch64Assembler::new();
+        asm.add(X0, X0, X1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(i64, i64) -> i64`,
+        // the region is read-execute, and `mem` outlives the calls.
+        let add: extern "C" fn(i64, i64) -> i64 = unsafe { core::mem::transmute(mem.as_ptr()) };
+        assert_eq!(add(3, 4), 7);
+        assert_eq!(add(100, -1), 99);
+
+        // extern "C" fn(a, b) -> a * b : mul x0, x0, x1 ; ret
+        let mut asm = Aarch64Assembler::new();
+        asm.mul(X0, X0, X1);
+        asm.ret();
+        let mem = CodeMemory::new(&asm.finish()).expect("code memory should finalize");
+        // SAFETY: valid `extern "C" fn(i64, i64) -> i64` over a read-execute region.
+        let mul: extern "C" fn(i64, i64) -> i64 = unsafe { core::mem::transmute(mem.as_ptr()) };
+        assert_eq!(mul(6, 7), 42);
+    }
 }
