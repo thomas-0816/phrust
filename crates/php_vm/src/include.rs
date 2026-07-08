@@ -289,6 +289,10 @@ impl IncludeCache {
                 match include_path_file_fingerprint(&resolved.canonical_path) {
                     Ok(current) if current == resolved.fingerprint => {
                         self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
+                        // Observe the directory version after dropping the
+                        // shard lock so the extra stat never serializes other
+                        // threads on this shard.
+                        drop(shard);
                         self.observe_directory_version(&resolved);
                         return Ok(resolved);
                     }
@@ -332,18 +336,24 @@ impl IncludeCache {
             return None;
         }
         let shard_index = self.negative_shard_index(key);
-        // The negative cache is advisory: a poisoned shard must degrade to a
-        // normal resolution (cache miss), never turn a transient panic into a
-        // persistent include failure.
-        let mut shard = self.negative_shards[shard_index].lock().ok()?;
-        let entry = shard.get(key)?;
+        // Clone the entry out, then validate its directory-version guards
+        // (a stat per guard) WITHOUT holding the shard lock, so concurrent
+        // threads hashing to this shard do not convoy on filesystem I/O.
+        // A poisoned shard is advisory-degraded to a cache miss, never a hard
+        // include failure.
+        let entry = {
+            let shard = self.negative_shards[shard_index].lock().ok()?;
+            shard.get(key)?.clone()
+        };
         if entry.is_still_valid() {
             self.stats
                 .negative_cache_hits
                 .fetch_add(1, Ordering::Relaxed);
-            return Some(entry.error.clone());
+            return Some(entry.error);
         }
-        shard.remove(key);
+        if let Ok(mut shard) = self.negative_shards[shard_index].lock() {
+            shard.remove(key);
+        }
         self.stats
             .negative_cache_invalidations
             .fetch_add(1, Ordering::Relaxed);

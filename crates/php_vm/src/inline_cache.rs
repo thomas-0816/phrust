@@ -472,7 +472,10 @@ pub struct AutoloadClassLookupCacheKey {
     pub autoload_enabled: bool,
     pub autoload_stack_depth: usize,
     pub include_path_config: String,
-    pub composer_map_fingerprint: Option<String>,
+    /// Composer autoload-map fingerprint for the request. `Arc` so building
+    /// one key per class-like lookup is a refcount bump, not a heap copy of
+    /// the (request-constant) fingerprint string.
+    pub composer_map_fingerprint: Option<std::sync::Arc<str>>,
 }
 
 /// Epoch guards that make autoload lookup cache entries request-local and
@@ -3569,7 +3572,7 @@ mod tests {
             autoload_enabled: true,
             autoload_stack_depth: 0,
             include_path_config: "vendor".to_owned(),
-            composer_map_fingerprint: Some("classmap:1".to_owned()),
+            composer_map_fingerprint: Some(std::sync::Arc::from("classmap:1")),
         };
         let epochs = AutoloadClassLookupEpochs {
             autoload_stack_epoch: 1,

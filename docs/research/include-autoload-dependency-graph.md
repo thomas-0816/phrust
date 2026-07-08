@@ -74,7 +74,11 @@ configuration input before it can affect execution.
   are attributed through the shared include cache
   (`composer_fingerprint_stale`). Because the value is stable within a
   request, wiring it into the (request-local) lookup key changes no hit/miss
-  behavior.
+  behavior. Known limit: `composer_fingerprint_stale` compares against a
+  single process-global last-seen value, so a server hosting apps at
+  different project roots counts a transition on every alternation; the
+  counter is advisory observability, and per-root attribution is deferred
+  with the persistent-reuse work that would consume it.
 - `deployment root -> fingerprint`: production-mode server runs install a
   `DeploymentRootFingerprint` (canonical docroot, directory version at
   startup, operator-declared mode) into the shared include cache. The mode

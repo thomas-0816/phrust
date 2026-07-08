@@ -1064,7 +1064,7 @@ struct ExecutionState {
     /// Composer autoload-map fingerprint observed once per request on first
     /// autoload-cache use. Outer `None` = not yet computed; inner `None` = no
     /// map detected (unknown, blocks persistent reuse keyed on it).
-    composer_map_fingerprint: Option<Option<String>>,
+    composer_map_fingerprint: Option<Option<Arc<str>>>,
     dynamic_units: Vec<CompiledUnit>,
     dynamic_functions: Vec<DynamicFunctionEntry>,
     dynamic_classes: Vec<DynamicClassEntry>,
@@ -3184,11 +3184,19 @@ impl Vm {
     /// request; it only keys the (request-local) entries on the deployment's
     /// autoload maps. `None` means no map was detected — unknown, which any
     /// future persistent reuse must treat as blocking.
-    fn composer_map_fingerprint(&self, state: &mut ExecutionState) -> Option<String> {
+    fn composer_map_fingerprint(&self, state: &mut ExecutionState) -> Option<Arc<str>> {
+        // The fingerprint keys only the (request-local) autoload inline cache;
+        // when inline caches are disabled (baseline/oracle mode) the key is
+        // never stored or compared, so skip the ~10-stat vendor/composer probe
+        // entirely rather than paying it per lookup for a discarded key.
+        if !self.options.inline_caches.enabled() {
+            return None;
+        }
         if state.composer_map_fingerprint.is_none() {
             let fingerprint = self
                 .composer_probe_anchor(state)
-                .and_then(|anchor| crate::include::composer_autoload_map_fingerprint(&anchor));
+                .and_then(|anchor| crate::include::composer_autoload_map_fingerprint(&anchor))
+                .map(Arc::<str>::from);
             if self.options.collect_counters
                 && let Some(counters) = self.counters.borrow_mut().as_mut()
             {
