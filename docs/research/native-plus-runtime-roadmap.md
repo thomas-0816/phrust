@@ -312,6 +312,23 @@ array/string contents), not the refcount bumps.
   wall-clock scales with array size — ~1% (3-element) to **~21%** (60-element,
   166→130 ms/200k) — so WordPress-sized config/record arrays benefit most. 836
   tests; COW/reference parity fixtures byte-identical flag-off/on/PHP.
+- **R4 — default-off class-context frame/register pooling** (`vm/mod.rs`
+  `frame_reuse_call_shape_blocked_reason`; `--reuse-class-context-frames`). Frame
+  + register-file + arena reuse was blocked for *every* class-context call (`$this`/
+  method/constructor — the WordPress-dominant shape), so `frames_reused = 0` and a
+  fresh frame+register+arena was allocated per call. The block was over-conservative:
+  `$this` is the `"this"` local (already reset), destructors run via an explicit
+  queue at defined points (not Rust `Drop`, so pooling doesn't change timing),
+  pooled frames aren't GC roots, static locals live in `ExecutionState`. Flag-on
+  lets a class-context call reuse only when it clears every *other* guard
+  (destructor-sensitive body, try/finally, by-ref, generator/fiber/closure/shared-
+  locals). Signal on an OOP method-call loop: `frames_reused` 0→~n, `frames_allocated`
+  / `request_arena_allocations` collapse **4501→3**. Default-off (byte-identical);
+  844 tests; destructor-order/stale-`$this`/recursion/reference/exception+finally/
+  static-local parity byte-identical flag-off/on on both dense+rich paths vs PHP
+  8.5.7. Wall-clock neutral on the tight micro loop (allocator isn't its bottleneck);
+  lands as a correct, default-off lever cutting per-call malloc pressure that
+  accumulates across a real request (the arena rationale).
 
 **Critical lesson baked into every runtime item:** per-request memoization does
 *not* help WordPress. WP is one-shot-distributed — functions run 1–2× per request,
