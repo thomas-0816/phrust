@@ -6,10 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["jit-copy-patch"]
 jit-cranelift = ["dep:php_jit", "php_jit/jit-cranelift"]
-# Default-off copy-and-patch native tier bridge. Pulls php_jit (whose
+# Copy-and-patch native tier bridge, on by default. Pulls php_jit (whose
 # copy_patch/code_memory/aarch64 modules are always compiled); no Cranelift.
+# Runtime-gated by PHRUST_JIT_COPY_PATCH (default on; set falsey to disable) and
+# inert on non-aarch64/non-unix hosts. Disable the compile entirely with
+# --no-default-features.
 jit-copy-patch = ["dep:php_jit"]
 
 [dependencies]

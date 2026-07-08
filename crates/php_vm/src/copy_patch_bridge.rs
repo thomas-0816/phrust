@@ -123,14 +123,24 @@ pub fn run_scalar_int_region(
     None
 }
 
-/// Process-global enable for the copy-patch leaf tier, read once. Default off;
-/// set the `PHRUST_JIT_COPY_PATCH` environment variable (to any value) to opt in.
-/// Gated additionally by the `jit-copy-patch` cargo feature, so it is inert in a
-/// default build.
+/// Process-global enable for the copy-patch leaf tier, read once. Default **on**
+/// (the `jit-copy-patch` cargo feature is in the default feature set, and this
+/// tier engages unless explicitly disabled). Set `PHRUST_JIT_COPY_PATCH` to a
+/// falsey value (`0`, `off`, `false`, `no`, or empty) to disable it at runtime —
+/// e.g. for the differential harness's off-vs-on comparison or to isolate the
+/// interpreter on a workload. Any other value (or leaving it unset) keeps the
+/// tier on. On a non-aarch64/non-unix host the tier is inert regardless.
 #[must_use]
 pub fn copy_patch_leaf_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("PHRUST_JIT_COPY_PATCH").is_some())
+    *ENABLED.get_or_init(|| match std::env::var("PHRUST_JIT_COPY_PATCH") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "false" | "no" | ""
+        ),
+        // Unset (or non-UTF-8) → on by default.
+        Err(_) => true,
+    })
 }
 
 /// Native-call permissions for a compile, derived from the unit's function
