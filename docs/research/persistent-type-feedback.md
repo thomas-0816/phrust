@@ -91,10 +91,21 @@ status against the baseline row.
 
 `PersistentFeedbackContext::render_sites_counted` is the engine-owned writer: it
 emits only validator-accepted entries and returns how many it wrote, which the
-CLI records as `entries_written`. Emitted entries carry the context's epochs, so
-a writer fed real epochs would persist non-zero epochs. Writing is governed
-independently of consumption: `--persistent-feedback-consume=off` still writes
-the sidecar, which is what makes a seeded-vs-cold A/B run possible.
+CLI records as `entries_written`. Emitted entries carry the executed run's
+**final invalidation epochs** (class/function/autoload/include state stashed
+out of `Vm::execute` and surfaced on `PhpExecutionOutput`), so entries record
+their true observation state; a run that ends before teardown falls back to
+conservative zeros. Writing is governed independently of consumption:
+`--persistent-feedback-consume=off` still writes the sidecar, which is what
+makes a seeded-vs-cold A/B run possible.
+
+Epoch validation is explicit per context
+(`PersistentFeedbackEpochValidation`): a live in-process consumer requires an
+exact epoch match, while a cold-start load (the CLI reading a sidecar before
+any code has executed) cannot know the epochs this run will reach — for a
+matching source/config/IR fingerprint the declaration sequence replays
+deterministically, so recorded epochs are kept on the accepted entries and
+every consumer re-validates against live state at seed or lookup time.
 
 ## Consumption (current state)
 
@@ -119,12 +130,6 @@ seeded site is attributed via `persistent_feedback_seeded_guard_hits` /
 
 ## Remaining Work
 
-- **Capture non-zero epochs.** The `ExecutionState` class/function/autoload/
-  include epochs (`vm/mod.rs`) are request-local and dropped when `execute`
-  returns, so the write context still uses the cold-start zero epoch (a
-  conservative value that rejects as `epoch_mismatch`, never optimistic reuse).
-  The plumbing is: stash the final epochs out of `execute`, surface them on
-  `PhpExecutionOutput`, and build the write context with them.
 - persist the full accepted payload (callsite/scalar/array/object/branch/
   include-autoload observations), not just the quickening sub-field, once the VM
   produces those observations;

@@ -4,7 +4,9 @@ use php_runtime::api::{
     ExitStatus, RuntimeContext, RuntimeDiagnostic, RuntimeHttpResponseState, SessionState,
     UploadRegistry, Value,
 };
-use php_vm::api::{QuickeningSiteSnapshot, TieringStats, VmCounters, VmOptions};
+use php_vm::api::{
+    PersistentFeedbackEpochs, QuickeningSiteSnapshot, TieringStats, VmCounters, VmOptions,
+};
 use std::path::PathBuf;
 
 /// Executor-wide defaults.
@@ -76,6 +78,10 @@ pub struct PhpExecutionOutput {
     pub counters: Option<VmCounters>,
     pub tiering_stats: Option<TieringStats>,
     pub quickening_feedback: Vec<QuickeningSiteSnapshot>,
+    /// Final invalidation epochs of the executed request, for stamping
+    /// persistent-feedback entries with their observation state. `None` when
+    /// feedback collection was off or execution ended before teardown.
+    pub persistent_feedback_epochs: Option<PersistentFeedbackEpochs>,
 }
 
 impl PhpExecutionOutput {
@@ -94,6 +100,7 @@ impl PhpExecutionOutput {
             counters: None,
             tiering_stats: None,
             quickening_feedback: Vec::new(),
+            persistent_feedback_epochs: None,
         }
     }
 }

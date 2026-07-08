@@ -64,6 +64,7 @@ impl PhpExecutor {
                 counters: None,
                 tiering_stats: None,
                 quickening_feedback: Vec::new(),
+                persistent_feedback_epochs: None,
             })));
         }
         Ok(CompiledPhpScript::new(pipeline))
@@ -107,6 +108,7 @@ impl PhpExecutor {
                 counters: None,
                 tiering_stats: None,
                 quickening_feedback: Vec::new(),
+                persistent_feedback_epochs: None,
             })));
         }
         Ok((CompiledPhpScript::new(pipeline), timings))
@@ -140,13 +142,18 @@ impl PhpExecutor {
             ..self.options.vm_options.clone()
         });
         let result = vm.execute(compiled.executable_unit());
-        let quickening_feedback = if self.options.collect_quickening_feedback {
-            vm.export_persistent_quickening()
-        } else {
-            Vec::new()
-        };
+        let (quickening_feedback, persistent_feedback_epochs) =
+            if self.options.collect_quickening_feedback {
+                (
+                    vm.export_persistent_quickening(),
+                    vm.export_persistent_feedback_epochs(),
+                )
+            } else {
+                (Vec::new(), None)
+            };
         let mut output = execution_output_from_vm(&compiled.path, &compiled.source, result);
         output.quickening_feedback = quickening_feedback;
+        output.persistent_feedback_epochs = persistent_feedback_epochs;
         output
     }
 

@@ -2181,6 +2181,10 @@ pub struct Vm {
     counters: RefCell<Option<VmCounters>>,
     literal_pool: RefCell<LiteralPool>,
     quickening: RefCell<QuickeningTable>,
+    /// Final invalidation epochs of the last `execute` call, stashed before
+    /// request state drops so the persistent-feedback writer can stamp entries
+    /// with the true observation state instead of cold-start zeros.
+    persistent_feedback_epochs: Cell<Option<crate::persistent_feedback::PersistentFeedbackEpochs>>,
     inline_caches: RefCell<InlineCacheTable>,
     jit: RefCell<JitRuntimeState>,
     tiering: RefCell<TieringState>,
@@ -2248,6 +2252,7 @@ impl Vm {
             default_slot_template_cache: RefCell::new(DefaultSlotTemplateCache::default()),
             constructor_resolution_cache: RefCell::new(ConstructorResolutionCache::default()),
             quickening: RefCell::new(QuickeningTable::default()),
+            persistent_feedback_epochs: Cell::new(None),
             inline_caches: RefCell::new(InlineCacheTable::default()),
             jit: RefCell::new(JitRuntimeState::default()),
             tiering: RefCell::new(tiering),
@@ -2278,6 +2283,7 @@ impl Vm {
         *self.default_slot_template_cache.borrow_mut() = DefaultSlotTemplateCache::default();
         *self.constructor_resolution_cache.borrow_mut() = ConstructorResolutionCache::default();
         *self.quickening.borrow_mut() = QuickeningTable::default();
+        self.persistent_feedback_epochs.set(None);
         let mut persistent_feedback_seeded_sites = 0usize;
         if self.options.quickening.enabled() && !self.options.quickening_seed.is_empty() {
             persistent_feedback_seeded_sites = self
@@ -2487,6 +2493,14 @@ impl Vm {
         let output_len = output.len();
         let output_stats = output.stats();
         sync_session_state_from_globals(&mut state);
+        self.persistent_feedback_epochs.set(Some(
+            crate::persistent_feedback::PersistentFeedbackEpochs {
+                class_table: state.class_table_epoch,
+                function_table: state.function_table_epoch,
+                autoload: state.autoload_stack_epoch,
+                include_path: state.include_config_epoch,
+            },
+        ));
         result.diagnostics.extend(state.diagnostics);
         result.output = output.clone();
         result.http_response = state.http_response;
@@ -2522,6 +2536,17 @@ impl Vm {
     #[must_use]
     pub fn export_persistent_quickening(&self) -> Vec<crate::quickening::QuickeningSiteSnapshot> {
         self.quickening.borrow().export_persistent_sites()
+    }
+
+    /// Final invalidation epochs of the last `execute` call, for stamping
+    /// persistent-feedback entries with their true observation state. `None`
+    /// when the last execution ended before request teardown (compile
+    /// errors), which callers must treat as cold-start zeros.
+    #[must_use]
+    pub fn export_persistent_feedback_epochs(
+        &self,
+    ) -> Option<crate::persistent_feedback::PersistentFeedbackEpochs> {
+        self.persistent_feedback_epochs.get()
     }
 
     fn should_skip_adaptive_tiny_unit_setup(&self, unit: &IrUnit) -> bool {

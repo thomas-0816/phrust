@@ -159,6 +159,7 @@ pub(crate) fn execution_output_from_vm(
         counters: result.counters,
         tiering_stats: result.tiering_stats,
         quickening_feedback: Vec::new(),
+        persistent_feedback_epochs: None,
     }
 }
 

@@ -31,6 +31,23 @@ pub struct PersistentFeedbackEpochs {
     pub include_path: u64,
 }
 
+/// How a load validates entry epochs against the context.
+///
+/// Entries record the invalidation epochs of the run that *observed* them.
+/// A live in-process consumer knows its current epochs and can require an
+/// exact match. A cold-start load (the CLI reading a sidecar before any code
+/// has executed) cannot know the epochs this run will reach — for a matching
+/// source/config/IR fingerprint the declaration sequence replays
+/// deterministically, so the recorded epochs are the expectation, and every
+/// consumer re-validates against live state at seed or lookup time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistentFeedbackEpochValidation {
+    /// Entries must match the context's epochs exactly.
+    Exact,
+    /// Accept recorded epochs; consumers re-validate against live state.
+    DeferToConsumption,
+}
+
 /// Current-source context used to validate persisted feedback.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PersistentFeedbackContext {
@@ -40,6 +57,7 @@ pub struct PersistentFeedbackContext {
     pub compile_options: String,
     pub ir_fingerprint: String,
     pub epochs: PersistentFeedbackEpochs,
+    pub epoch_validation: PersistentFeedbackEpochValidation,
     pub target_arch_config: String,
 }
 
@@ -61,8 +79,24 @@ impl PersistentFeedbackContext {
             compile_options: compile_options.into(),
             ir_fingerprint: ir_fingerprint.into(),
             epochs,
+            epoch_validation: PersistentFeedbackEpochValidation::Exact,
             target_arch_config: target_arch_config.into(),
         }
+    }
+
+    /// Returns the context with the given epochs, e.g. the final epochs of
+    /// the run whose observations are being written.
+    #[must_use]
+    pub fn with_epochs(mut self, epochs: PersistentFeedbackEpochs) -> Self {
+        self.epochs = epochs;
+        self
+    }
+
+    /// Returns the context with the given epoch-validation policy.
+    #[must_use]
+    pub fn with_epoch_validation(mut self, policy: PersistentFeedbackEpochValidation) -> Self {
+        self.epoch_validation = policy;
+        self
     }
 
     #[must_use]
@@ -259,7 +293,9 @@ impl PersistentFeedbackContext {
         if key.target_arch_config != self.target_arch_config {
             return Err(PersistentFeedbackRejectReason::ArchitectureMismatch);
         }
-        if key.epochs != self.epochs {
+        if self.epoch_validation == PersistentFeedbackEpochValidation::Exact
+            && key.epochs != self.epochs
+        {
             return Err(PersistentFeedbackRejectReason::EpochMismatch);
         }
         if key.source_fingerprint != self.source_fingerprint
@@ -976,6 +1012,55 @@ mod tests {
         assert_eq!(report.stats.rejected_epoch_mismatch, 1);
         assert_eq!(report.stats.rejected_stale, 0);
         assert!(report.stats.fallback_to_baseline);
+    }
+
+    #[test]
+    fn deferred_epoch_validation_accepts_recorded_epochs_for_consumers() {
+        // A cold-start load cannot know this run's final epochs; the recorded
+        // observation epochs are kept on the entry for consumers to
+        // re-validate against live state. Fingerprint mismatches still reject.
+        let text = valid_entry().replace("class_epoch=1", "class_epoch=99");
+        let report = context()
+            .with_epoch_validation(PersistentFeedbackEpochValidation::DeferToConsumption)
+            .validate_bytes(text.as_bytes());
+
+        assert_eq!(report.stats.entries_accepted, 1);
+        assert_eq!(report.stats.rejected_epoch_mismatch, 0);
+        assert_eq!(report.store.entries()[0].key.epochs.class_table, 99);
+
+        let stale = valid_entry().replace("source=source-1", "source=source-2");
+        let report = context()
+            .with_epoch_validation(PersistentFeedbackEpochValidation::DeferToConsumption)
+            .validate_bytes(stale.as_bytes());
+        assert_eq!(report.stats.entries_accepted, 0);
+        assert_eq!(report.stats.rejected_stale, 1);
+    }
+
+    #[test]
+    fn writer_stamps_context_epochs_on_entries() {
+        let exported = crate::quickening::QuickeningSiteSnapshot {
+            site: crate::quickening::QuickeningSiteKey::Dense {
+                unit: 0,
+                function: 3,
+                instruction: 7,
+            },
+            state: crate::quickening::QuickeningState::Specialized,
+            specialization: Some(crate::quickening::QuickeningSpecialization::AddIntInt),
+            guard_failures: 0,
+        };
+        let (text, written) = context()
+            .with_epochs(PersistentFeedbackEpochs {
+                class_table: 11,
+                function_table: 12,
+                autoload: 13,
+                include_path: 14,
+            })
+            .render_sites_counted(&[exported]);
+        assert_eq!(written, 1);
+        assert!(
+            text.contains("class_epoch=11 function_epoch=12 autoload_epoch=13 include_epoch=14"),
+            "{text}"
+        );
     }
 
     #[test]

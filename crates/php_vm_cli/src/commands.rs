@@ -22,9 +22,9 @@ use php_vm::api::{
 };
 use php_vm::experimental::{
     BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, JitCompileDescriptor,
-    PersistentFeedbackContext, PersistentFeedbackEpochs, PersistentFeedbackLoadReport,
-    PersistentFeedbackStats, PersistentFeedbackStore, QuickeningSiteSnapshot, RegionProfile,
-    VmCounters, plan_dependency_units,
+    PersistentFeedbackContext, PersistentFeedbackEpochValidation, PersistentFeedbackEpochs,
+    PersistentFeedbackLoadReport, PersistentFeedbackStats, PersistentFeedbackStore,
+    QuickeningSiteSnapshot, RegionProfile, VmCounters, plan_dependency_units,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -1089,8 +1089,14 @@ where
         persistent_feedback.write_path.as_deref(),
         persistent_feedback.context.as_ref(),
     ) {
+        // Stamp entries with the executed run's final invalidation epochs —
+        // the true observation state — instead of cold-start zeros. A run
+        // that ended before teardown keeps the conservative zeros.
+        let write_context = context
+            .clone()
+            .with_epochs(output.persistent_feedback_epochs.unwrap_or_default());
         entries_written =
-            store_persistent_feedback(write_path, context, &output.quickening_feedback);
+            store_persistent_feedback(write_path, &write_context, &output.quickening_feedback);
     }
     if let Some(path) = run_options.persistent_feedback.stats_json.clone() {
         let mut stats = persistent_feedback.report.stats.clone();
@@ -2118,6 +2124,10 @@ fn persistent_feedback_context(
     let ir_fingerprint = stable_feedback_fingerprint(
         format!("{}:{}", fingerprint.digest, php_ir::IR_LOWERING_REVISION).as_bytes(),
     );
+    // Cold-start loads cannot know this run's final epochs; entries keep
+    // their recorded observation epochs and consumers re-validate against
+    // live state at seed time. The write path replaces the epochs with the
+    // executed run's final state before rendering.
     Ok(PersistentFeedbackContext::new(
         fingerprint.digest,
         env!("CARGO_PKG_VERSION"),
@@ -2126,7 +2136,8 @@ fn persistent_feedback_context(
         ir_fingerprint,
         PersistentFeedbackEpochs::default(),
         rust_target_label(),
-    ))
+    )
+    .with_epoch_validation(PersistentFeedbackEpochValidation::DeferToConsumption))
 }
 
 fn persistent_feedback_compile_options(run_options: &RunOptions<'_>) -> String {
@@ -6010,7 +6021,7 @@ mod tests {
         let stats_path = base.with_extension("json");
         std::fs::write(
             &source_path,
-            "<?php\n$sum = 0;\nfor ($i = 0; $i < 64; $i++) {\n    $sum = $sum + $i;\n}\necho $sum, \"\\n\";\n",
+            "<?php\nclass FeedbackEpochProbe {}\n$probe = new FeedbackEpochProbe();\n$sum = 0;\nfor ($i = 0; $i < 64; $i++) {\n    $sum = $sum + $i;\n}\necho $sum, \"\\n\";\n",
         )
         .expect("write temporary PHP source");
         let _ = std::fs::remove_file(&feedback_path);
@@ -6033,6 +6044,13 @@ mod tests {
         let feedback = std::fs::read_to_string(&feedback_path).expect("feedback file written");
         assert!(feedback.starts_with("phrust-persistent-feedback-v1"));
         assert!(feedback.contains("specialization=add_int_int"));
+        // Entries carry the executed run's final invalidation epochs (the
+        // class declaration bumped the class-table epoch), not cold-start
+        // zeros.
+        assert!(
+            !feedback.contains("class_epoch=0"),
+            "entries must carry observed epochs: {feedback}"
+        );
 
         let counters_path = base.with_extension("counters.json");
         let _ = std::fs::remove_file(&counters_path);

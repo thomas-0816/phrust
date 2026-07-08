@@ -77,6 +77,7 @@ pub mod api {
         include_directory_version, negative_include_cache_enabled,
     };
     pub use crate::inline_cache::InlineCacheMode;
+    pub use crate::persistent_feedback::PersistentFeedbackEpochs;
     pub use crate::quickening::{QuickeningMode, QuickeningSiteKey, QuickeningSiteSnapshot};
     pub use crate::tiering::{TieringOptions, TieringStats};
     pub use crate::vm::{
@@ -154,9 +155,9 @@ pub mod experimental {
         PERSISTENT_FEEDBACK_FORMAT_VERSION, PERSISTENT_FEEDBACK_STATS_SCHEMA_VERSION,
         PersistentArrayKeyShape, PersistentArrayLayout, PersistentBranchBias,
         PersistentCallsiteState, PersistentFeedbackContext, PersistentFeedbackEntry,
-        PersistentFeedbackEpochs, PersistentFeedbackKey, PersistentFeedbackLoadReport,
-        PersistentFeedbackPayload, PersistentFeedbackStats, PersistentFeedbackStore,
-        PersistentGuardFailureSummary, PersistentIncludeAutoloadStability,
+        PersistentFeedbackEpochValidation, PersistentFeedbackEpochs, PersistentFeedbackKey,
+        PersistentFeedbackLoadReport, PersistentFeedbackPayload, PersistentFeedbackStats,
+        PersistentFeedbackStore, PersistentGuardFailureSummary, PersistentIncludeAutoloadStability,
         PersistentObjectShapeObservation, PersistentScalarKind,
     };
     #[doc(hidden)]
