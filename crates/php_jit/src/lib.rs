@@ -5,6 +5,16 @@
 //! explicit native-execution opt-in, ABI hash checks, verifier-backed Cranelift
 //! lowering, and documented unsafe call boundaries.
 
+// This crate is the engine's sanctioned native-codegen boundary: allocating
+// executable memory, W^X toggling, and calling generated code are irreducibly
+// `unsafe`, each guarded by a local `// SAFETY:` contract. The
+// `runtime-hardening-lints` gate forbids `unsafe` in the interpreter core
+// (php_runtime, php_vm) and, since php_vm pulls php_jit as a default-feature
+// path dependency, that `-D unsafe-code` propagates here; opt this crate out at
+// its root so the invariant keeps protecting the core without banning unsafe in
+// the one crate whose job requires it.
+#![allow(unsafe_code)]
+
 pub mod aarch64;
 mod abi;
 mod backend;
