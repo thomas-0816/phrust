@@ -558,6 +558,11 @@ pub struct VmCounters {
     /// Subset of `last_use_moves_applied` where the moved value was a refcounted
     /// heap value (array/string/object/...), so a real clone/allocation was avoided.
     pub last_use_move_clones_avoided: u64,
+    /// Runtime lever R3 (array-read release): transient shared array-handle
+    /// register clones dropped at a dimension fetch's block-local last use, so a
+    /// following in-place write to the array's owning local skips a
+    /// copy-on-write separation. Observable in the `cow_separations` drop.
+    pub last_use_array_read_releases: u64,
     /// Candidate register reads left cloning, grouped by stable rejection reason.
     pub last_use_move_ineligible_by_reason: BTreeMap<String, u64>,
 }
@@ -1191,6 +1196,12 @@ impl VmCounters {
         if clone_avoided {
             self.last_use_move_clones_avoided += 1;
         }
+    }
+
+    /// Records one array-read register release (Runtime lever R3): a transient
+    /// shared array handle dropped at a dimension fetch's last use.
+    pub(crate) fn record_last_use_array_read_release(&mut self) {
+        self.last_use_array_read_releases += 1;
     }
 
     /// Attributes one candidate register read left cloning to a stable reason.
@@ -2984,6 +2995,12 @@ impl VmCounters {
             true,
         );
         push_field(&mut json, "cow_separations", self.cow_separations, true);
+        push_field(
+            &mut json,
+            "last_use_array_read_releases",
+            self.last_use_array_read_releases,
+            true,
+        );
         push_string_u64_map_field(
             &mut json,
             "cow_separation_by_source_family",

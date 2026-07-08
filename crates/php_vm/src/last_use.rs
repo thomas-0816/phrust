@@ -8,6 +8,20 @@
 //! of cloning it. Moving consumes the transient `Rc`, so a later write sees the
 //! sole owner and mutates in place.
 //!
+//! The same proof also drives an *array-read register release* (see
+//! [`LastUseMovePlan::is_array_release_eligible`]). A dimension fetch such as
+//! `$map["b"]` first loads `$map` into a register (an `Rc` handle clone), then
+//! reads the element. That register clone lingers after the fetch, so a
+//! following in-place write to the same local (`$map["c"] = …`) sees a shared
+//! array and copy-on-write-separates the whole contents. When the fetch is that
+//! register's block-local last use, the executor drops the transient handle
+//! right after the (always owned) element value is extracted, returning the
+//! owning local to sole ownership so its next write mutates in place. The fetch
+//! result is a value copy (references are dereferenced and cloned), never an
+//! alias into the array, and only *shared* handles are released — dropping one
+//! merely decrements the refcount, freeing no contents and running no
+//! destructors — so behavior stays byte-identical.
+//!
 //! The whole feature is default-off: [`crate::vm::VmOptions::last_use_moves`]
 //! gates both building this plan and consulting it. With the flag off the plan
 //! is never built and the executor's read path is byte-identical to today.
@@ -29,8 +43,9 @@
 //! 4. That last-use instruction reads the register *exactly once* across all of
 //!    its operands (moving one operand must not strand a second read).
 //! 5. The last-use instruction is one of the small set of value-consuming
-//!    opcodes the executor actually converts, and the register is that opcode's
-//!    single movable source operand.
+//!    opcodes the executor actually converts (its single movable source
+//!    operand), *or* it is a dimension fetch (`FetchDim`/`LoadConstFetchDim`)
+//!    whose source array is that register — the array-read release site.
 //!
 //! Every other register read stays a clone (current behavior). Reads feeding
 //! by-reference sends, closures/captures, foreach iterators, or any raw-register
@@ -83,8 +98,14 @@ pub struct LastUseMovePlan {
     /// Packed `(instruction_index << 32) | register_index` keys marking the
     /// single movable source register read of an instruction.
     eligible: HashSet<u64>,
+    /// Packed keys marking a dimension fetch's source-array register read whose
+    /// block-local last use this is, so the executor may drop the transient
+    /// array handle after extracting the (owned) element value.
+    array_release_eligible: HashSet<u64>,
     /// Count of register reads marked move-eligible.
     eligible_reads: u64,
+    /// Count of array-read source registers marked release-eligible.
+    array_release_reads: u64,
     /// Candidate registers rejected, grouped by stable reason.
     ineligible_by_reason: BTreeMap<&'static str, u64>,
 }
@@ -110,16 +131,31 @@ impl LastUseMovePlan {
         self.eligible_reads
     }
 
+    /// Returns whether the source-array register read at `instruction_index`
+    /// for `register` is a provably-safe last use of a dimension fetch whose
+    /// transient array handle may be dropped after the element value is read.
+    #[must_use]
+    pub fn is_array_release_eligible(&self, instruction_index: u32, register: u32) -> bool {
+        self.array_release_eligible
+            .contains(&Self::key(instruction_index, register))
+    }
+
+    /// Number of array-read source registers marked release-eligible.
+    #[must_use]
+    pub fn array_release_reads(&self) -> u64 {
+        self.array_release_reads
+    }
+
     /// Candidate registers left cloning, grouped by stable reason.
     #[must_use]
     pub fn ineligible_by_reason(&self) -> &BTreeMap<&'static str, u64> {
         &self.ineligible_by_reason
     }
 
-    /// True when no reads were marked (nothing to move).
+    /// True when no reads were marked (nothing to move or release).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.eligible.is_empty()
+        self.eligible.is_empty() && self.array_release_eligible.is_empty()
     }
 
     fn record_ineligible(&mut self, reason: &'static str) {
@@ -187,7 +223,12 @@ impl LastUseMovePlan {
                 plan.record_ineligible(reason::MULTIPLE_READS_IN_LAST_USE);
                 continue;
             }
-            if movable_operand(instruction) != Some(register) {
+            // A register's provably-dead last use is either a value-consuming
+            // move site or a dimension fetch's source-array register. These
+            // opcode sets are disjoint, so at most one branch matches.
+            let is_value_move = movable_operand(instruction) == Some(register);
+            let is_array_release = releasable_array_operand(instruction) == Some(register);
+            if !is_value_move && !is_array_release {
                 plan.record_ineligible(reason::UNMOVABLE_LAST_USE_SITE);
                 continue;
             }
@@ -195,8 +236,14 @@ impl LastUseMovePlan {
                 plan.record_ineligible(reason::UNMOVABLE_LAST_USE_SITE);
                 continue;
             };
-            plan.eligible.insert(Self::key(instruction_index, register));
-            plan.eligible_reads += 1;
+            if is_value_move {
+                plan.eligible.insert(Self::key(instruction_index, register));
+                plan.eligible_reads += 1;
+            } else {
+                plan.array_release_eligible
+                    .insert(Self::key(instruction_index, register));
+                plan.array_release_reads += 1;
+            }
         }
 
         #[cfg(debug_assertions)]
@@ -213,7 +260,9 @@ impl LastUseMovePlan {
     fn debug_assert_safe(&self, function: &DenseFunction, instruction_block: &[u32]) {
         let mut defs = Vec::new();
         let mut uses = Vec::new();
-        for &packed in &self.eligible {
+        // The move set and the array-release set carry identical liveness
+        // invariants; re-derive both from scratch.
+        for &packed in self.eligible.iter().chain(&self.array_release_eligible) {
             let instruction_index = (packed >> 32) as usize;
             let register = (packed & 0xffff_ffff) as u32;
             let marked_block = instruction_block[instruction_index];
@@ -309,6 +358,27 @@ fn movable_operand(instruction: &DenseInstruction) -> Option<u32> {
                 ..
             },
         ) => register_index(*value),
+        _ => None,
+    }
+}
+
+/// Register holding the source array of a dimension fetch whose element result
+/// is always an owned value copy (never an alias into the array). Releasing the
+/// register at its last use lets the array's owning local reclaim sole
+/// ownership so a following in-place write skips a copy-on-write separation.
+///
+/// Only the value-read fetches qualify: their handlers extract the element
+/// through `effective_value`, which dereferences PHP references and clones, so
+/// the fetch result never borrows the array storage. Returns `None` for every
+/// other opcode and for non-register array operands (a local array operand is
+/// read in place and must stay live). By-reference element binding uses
+/// `BindReferenceDim`, not these opcodes, so an aliasing fetch is never marked.
+fn releasable_array_operand(instruction: &DenseInstruction) -> Option<u32> {
+    match (instruction.opcode, &instruction.operands) {
+        (DenseOpcode::FetchDim, DenseOperands::FetchDim { array, .. }) => register_index(*array),
+        (DenseOpcode::LoadConstFetchDim, DenseOperands::LoadConstFetchDim { array, .. }) => {
+            register_index(*array)
+        }
         _ => None,
     }
 }
@@ -633,6 +703,18 @@ mod tests {
         )
     }
 
+    fn fetch_dim(dst: u32, array: u32, key: u32) -> DenseInstruction {
+        instr(
+            DenseOpcode::FetchDim,
+            DenseOperands::FetchDim {
+                dst,
+                array: reg(array),
+                key: reg(key),
+                quiet: false,
+            },
+        )
+    }
+
     fn ret() -> DenseInstruction {
         instr(DenseOpcode::Return, DenseOperands::Return { value: None })
     }
@@ -734,6 +816,86 @@ mod tests {
         assert_eq!(
             plan.ineligible_by_reason().get(reason::USED_BEFORE_DEF),
             Some(&1)
+        );
+    }
+
+    #[test]
+    fn marks_block_local_last_use_array_read_of_fetch_dim() {
+        // r1 (source array) and r2 (key) are defined then read once by the
+        // fetch. r1 is the releasable source-array operand; r2 is not.
+        let plan = LastUseMovePlan::analyze(&function(
+            vec![load_const(1), load_const(2), fetch_dim(3, 1, 2), ret()],
+            one_block(4),
+        ));
+        assert!(
+            plan.is_array_release_eligible(2, 1),
+            "source array releases"
+        );
+        assert!(!plan.is_move_eligible(2, 1), "release is not a value move");
+        assert_eq!(plan.array_release_reads(), 1);
+        assert!(
+            !plan.is_array_release_eligible(2, 2),
+            "the key register is not a releasable array operand"
+        );
+    }
+
+    #[test]
+    fn rejects_array_read_release_when_register_read_again() {
+        // r1 is the source array of two fetches; only its textually-last read
+        // may release, never the earlier one.
+        let plan = LastUseMovePlan::analyze(&function(
+            vec![
+                load_const(1),
+                load_const(2),
+                fetch_dim(3, 1, 2),
+                fetch_dim(4, 1, 2),
+                ret(),
+            ],
+            one_block(5),
+        ));
+        assert!(
+            !plan.is_array_release_eligible(2, 1),
+            "an earlier array read must never be released"
+        );
+        assert!(
+            plan.is_array_release_eligible(3, 1),
+            "the last array read releases"
+        );
+        assert_eq!(plan.array_release_reads(), 1);
+    }
+
+    #[test]
+    fn rejects_multi_block_array_read_release() {
+        // r1 defined in block 0, read as a fetch source array in block 1: not
+        // block-local, so it may be live across the edge and is never released.
+        let plan = LastUseMovePlan::analyze(&function(
+            vec![
+                load_const(1),
+                load_const(2),
+                instr(DenseOpcode::Jump, DenseOperands::Jump { target: 1 }),
+                fetch_dim(3, 1, 2),
+                ret(),
+            ],
+            vec![
+                DenseBlock {
+                    id: 0,
+                    first_instruction: 0,
+                    instruction_len: 3,
+                    terminator: 2,
+                },
+                DenseBlock {
+                    id: 1,
+                    first_instruction: 3,
+                    instruction_len: 2,
+                    terminator: 4,
+                },
+            ],
+        ));
+        assert!(!plan.is_array_release_eligible(3, 1));
+        assert_eq!(plan.array_release_reads(), 0);
+        assert_eq!(
+            plan.ineligible_by_reason().get(reason::MULTI_BLOCK),
+            Some(&2)
         );
     }
 

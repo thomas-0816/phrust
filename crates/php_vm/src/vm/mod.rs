@@ -4454,6 +4454,42 @@ impl Vm {
         }
     }
 
+    fn record_counter_last_use_array_read_release(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_last_use_array_read_release();
+        }
+    }
+
+    /// Drops the transient shared array handle left in `register` by a
+    /// dimension fetch whose block-local last use this was (Runtime lever R3).
+    /// The plan already proved the register is dead after this fetch; only
+    /// *shared* array handles are released, so dropping merely decrements the
+    /// refcount — no contents are freed and no destructors run — while the
+    /// array's owning local regains sole ownership and its next write mutates
+    /// in place instead of copy-on-write-separating. Non-arrays, sole-owned
+    /// arrays, and non-register operands are left untouched (byte-identical to
+    /// the flag-off path).
+    fn release_dead_shared_array_register(&self, stack: &mut CallStack, register: u32) {
+        let Some(frame) = stack.current_mut() else {
+            return;
+        };
+        let reg = RegId::new(register);
+        let is_shared_array = matches!(
+            frame.registers.get(reg),
+            Some(Value::Array(array)) if array.is_shared()
+        );
+        if !is_shared_array {
+            return;
+        }
+        if let Ok(value) = frame.registers.take(reg) {
+            drop(value);
+            self.record_counter_last_use_array_read_release();
+        }
+    }
+
     /// Folds a freshly built plan's build-time rejection reasons into the
     /// counters exactly once (called only when a plan is first analyzed).
     fn record_counter_last_use_move_ineligible(&self, plan: &crate::last_use::LastUseMovePlan) {
@@ -10276,6 +10312,15 @@ impl Vm {
                             .get(instruction.span.index())
                             .copied()
                             .unwrap_or_default();
+                        // Runtime lever R3 (array-read release): decide up front,
+                        // before any borrow of the source register, whether this
+                        // fetch is that register's provably-dead block-local last
+                        // use (flag-off leaves `move_plan` `None`, so this is
+                        // always `false` and the read path is unchanged).
+                        let release_array_register = array.kind == DenseOperandKind::Register
+                            && move_plan.is_some_and(|plan| {
+                                plan.is_array_release_eligible(dense_instruction_index, array.index)
+                            });
                         let array_ref = if array.kind == DenseOperandKind::Local
                             && is_globals_local(ir_function, LocalId::new(array.index))
                         {
@@ -10342,6 +10387,16 @@ impl Vm {
                                 }
                             },
                         };
+                        // The element value above is an owned copy (references
+                        // are dereferenced and cloned), never an alias into the
+                        // array, so the dead source-array register clone may now
+                        // be dropped. `release_dead_shared_array_register` only
+                        // drops shared handles, so the array's owning local
+                        // reclaims sole ownership without changing any
+                        // PHP-visible value or destructor timing.
+                        if release_array_register {
+                            self.release_dead_shared_array_register(stack, array.index);
+                        }
                         if let Err(message) = stack
                             .current_mut()
                             .expect("bytecode frame was pushed")

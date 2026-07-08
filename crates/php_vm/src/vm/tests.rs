@@ -20602,3 +20602,63 @@ fn last_use_move_fires_on_dense_cast_of_register_value() {
         on_counters.last_use_move_clones_avoided
     );
 }
+
+#[test]
+fn last_use_array_read_release_preserves_reference_and_cow_semantics() {
+    // Array-read register release must not perturb PHP-visible semantics: an
+    // aliased element reference keeps aliasing, and a by-value array copy stays
+    // independent, across intervening in-place writes.
+    assert_last_use_move_parity(
+        "<?php\n$map = [\"a\"=>1, \"b\"=>2, \"c\"=>3];\n$r = &$map[\"b\"];\n$read = $map[\"a\"];\n$map[\"c\"] = 100;\n$r = 555;\n$copy = $map;\n$peek = $map[\"a\"];\n$map[\"c\"] = 7;\necho $map[\"b\"], \"|\", $map[\"c\"], \"|\", $read, \"\\n\";\necho implode(\",\", $copy), \"\\n\";\necho $peek, \"\\n\";\n",
+        "555|7|1\n1,555,100\n1\n",
+    );
+}
+
+#[test]
+fn last_use_array_read_release_eliminates_false_sharing_cow() {
+    // Read-then-write in a loop: `$map["b"]` loads $map into a register whose
+    // block-local last use is the fetch. Flag-off that clone lingers across
+    // `$map["c"] = $i`, so the local looks shared and every iteration COW-
+    // separates. Flag-on releases the dead handle before the write, which then
+    // mutates in place: `cow_separations` collapses while output is unchanged.
+    let source = "<?php\n$map = [\"a\"=>1,\"b\"=>2,\"c\"=>3];\n$sum = 0;\nfor ($i = 0; $i < 50; $i++) {\n    $sum += $map[\"b\"];\n    $map[\"c\"] = $i;\n}\necho $sum, \"|\", $map[\"c\"], \"\\n\";\n";
+
+    let flag_off = run_last_use_config(source, ExecutionFormat::Bytecode, false);
+    assert!(
+        flag_off.status.is_success(),
+        "flag-off failed: {:?}",
+        flag_off.status
+    );
+    assert_eq!(flag_off.output.to_string_lossy(), "100|49\n");
+    let off_counters = flag_off.counters.expect("counters enabled");
+    assert_eq!(off_counters.last_use_array_read_releases, 0);
+    assert!(
+        off_counters.cow_separations >= 50,
+        "flag-off must copy-on-write every iteration, got {}",
+        off_counters.cow_separations
+    );
+
+    let flag_on = run_last_use_config(source, ExecutionFormat::Bytecode, true);
+    assert!(
+        flag_on.status.is_success(),
+        "flag-on failed: {:?}",
+        flag_on.status
+    );
+    assert_eq!(
+        flag_on.output.to_string_lossy(),
+        "100|49\n",
+        "array-read release must not change observable output"
+    );
+    let on_counters = flag_on.counters.expect("counters enabled");
+    assert!(
+        on_counters.last_use_array_read_releases >= 50,
+        "expected a per-iteration array-read release, got {}",
+        on_counters.last_use_array_read_releases
+    );
+    assert!(
+        on_counters.cow_separations < off_counters.cow_separations,
+        "release must cut copy-on-write separations: off={} on={}",
+        off_counters.cow_separations,
+        on_counters.cow_separations
+    );
+}
