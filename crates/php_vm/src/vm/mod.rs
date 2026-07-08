@@ -1061,6 +1061,10 @@ struct ExecutionState {
     autoload_registry: AutoloadRegistry,
     autoload_stack: Vec<String>,
     spl_autoload_extensions: String,
+    /// Composer autoload-map fingerprint observed once per request on first
+    /// autoload-cache use. Outer `None` = not yet computed; inner `None` = no
+    /// map detected (unknown, blocks persistent reuse keyed on it).
+    composer_map_fingerprint: Option<Option<String>>,
     dynamic_units: Vec<CompiledUnit>,
     dynamic_functions: Vec<DynamicFunctionEntry>,
     dynamic_classes: Vec<DynamicClassEntry>,
@@ -2995,6 +2999,18 @@ impl Vm {
             {
                 counters.record_include_stale_invalidation_by_reason("file_fingerprint_changed");
             }
+            for _ in 0..after
+                .directory_version_hits
+                .saturating_sub(before.directory_version_hits)
+            {
+                counters.record_directory_version_hit();
+            }
+            for _ in 0..after
+                .directory_version_misses
+                .saturating_sub(before.directory_version_misses)
+            {
+                counters.record_directory_version_miss();
+            }
         }
     }
 
@@ -3007,9 +3023,98 @@ impl Vm {
             self.record_counter_fallback_by_path_semantics("outside_allowed_root");
         } else if message.contains("MISSING") {
             self.record_counter_fallback_by_path_semantics("missing_path");
+            // A missing include path is where a negative include cache would
+            // install an entry. It stays disabled until directory versions are
+            // validated by policy; record why the miss was not cached.
+            self.record_counter_negative_include_cache_blocked("directory_versions_unvalidated");
         } else {
             self.record_counter_fallback_by_path_semantics("loader_error");
         }
+    }
+
+    /// Compares an include-path IC target's stored parent-directory version
+    /// against the current one, counters only (never hit acceptance).
+    fn record_counter_directory_version_observation(&self, target: &IncludePathCacheTarget) {
+        if !self.options.collect_counters {
+            return;
+        }
+        let current = target
+            .canonical_path
+            .parent()
+            .and_then(crate::include::include_directory_version);
+        let matches = match (&target.directory_version, &current) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            if matches {
+                counters.record_directory_version_hit();
+            } else {
+                counters.record_directory_version_miss();
+            }
+        }
+    }
+
+    fn record_counter_negative_include_cache_blocked(&self, reason: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_negative_include_cache_blocked(reason);
+        }
+    }
+
+    /// Returns the request's Composer autoload-map fingerprint, computing it
+    /// once on first use. The value is stable for the whole request, so wiring
+    /// it into autoload cache keys never changes hit/miss behavior within a
+    /// request; it only keys the (request-local) entries on the deployment's
+    /// autoload maps. `None` means no map was detected — unknown, which any
+    /// future persistent reuse must treat as blocking.
+    fn composer_map_fingerprint(&self, state: &mut ExecutionState) -> Option<String> {
+        if state.composer_map_fingerprint.is_none() {
+            let fingerprint = self
+                .composer_probe_anchor(state)
+                .and_then(|anchor| crate::include::composer_autoload_map_fingerprint(&anchor));
+            if self.options.collect_counters
+                && let Some(counters) = self.counters.borrow_mut().as_mut()
+            {
+                counters.record_composer_fingerprint(fingerprint.is_some());
+            }
+            if let Some(cache) = &self.options.include_cache
+                && matches!(
+                    cache.note_composer_fingerprint(fingerprint.as_deref()),
+                    crate::include::ComposerFingerprintTransition::Changed
+                )
+                && self.options.collect_counters
+                && let Some(counters) = self.counters.borrow_mut().as_mut()
+            {
+                counters.record_composer_fingerprint_stale();
+            }
+            state.composer_map_fingerprint = Some(fingerprint);
+        }
+        state.composer_map_fingerprint.clone().unwrap_or(None)
+    }
+
+    /// Anchor directory for the Composer map probe: the entry script's
+    /// directory (HTTP script filename or CLI argv[0]), falling back to the
+    /// request CWD.
+    fn composer_probe_anchor(&self, state: &ExecutionState) -> Option<PathBuf> {
+        let script = match &self.options.runtime_context.request_mode {
+            php_runtime::RuntimeRequestMode::Http(request) => {
+                Some(PathBuf::from(&request.script_filename))
+            }
+            _ => self.options.runtime_context.argv.first().map(PathBuf::from),
+        };
+        let script = script.filter(|path| !path.as_os_str().is_empty())?;
+        let script = if script.is_absolute() {
+            script
+        } else {
+            state.cwd.join(script)
+        };
+        script
+            .parent()
+            .map(Path::to_path_buf)
+            .or_else(|| Some(state.cwd.clone()))
     }
 
     fn record_counter_frame_activation(&self, reused: bool, register_count: u32, local_count: u32) {
@@ -40329,6 +40434,7 @@ impl Vm {
                                 block_id,
                                 instruction_id,
                             );
+                            self.record_counter_directory_version_observation(&target);
                             match loader.load_resolved(target.canonical_path) {
                                 Ok(loaded) => loaded,
                                 Err(message) => {
@@ -40365,6 +40471,7 @@ impl Vm {
                                     let target = IncludePathCacheTarget {
                                         canonical_path: resolved.canonical_path.clone(),
                                         fingerprint: resolved.fingerprint.clone(),
+                                        directory_version: resolved.directory_version,
                                     };
                                     self.install_include_path_inline_cache(
                                         unit_key,
@@ -40419,6 +40526,7 @@ impl Vm {
                             let target = IncludePathCacheTarget {
                                 canonical_path: resolved.canonical_path.clone(),
                                 fingerprint: resolved.fingerprint.clone(),
+                                directory_version: resolved.directory_version,
                             };
                             self.install_include_path_inline_cache(
                                 unit_key,
@@ -42934,7 +43042,7 @@ impl Vm {
             autoload_enabled: autoload,
             autoload_stack_depth: state.autoload_stack.len(),
             include_path_config: state.ini.get("include_path").unwrap_or(".").to_owned(),
-            composer_map_fingerprint: None,
+            composer_map_fingerprint: self.composer_map_fingerprint(state),
         };
         let epochs = state.autoload_class_lookup_epochs();
         if let Some((unit_key, function, block, instruction)) = call_site {

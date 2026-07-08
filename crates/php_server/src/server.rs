@@ -13,7 +13,7 @@ use php_diagnostics::{
     DiagnosticCause, DiagnosticEnvelope, DiagnosticLayer, DiagnosticPhase, DiagnosticSeverity,
     DiagnosticSuggestion,
 };
-use php_executor::{CompiledScriptCache, IncludeCache};
+use php_executor::{CompiledScriptCache, DeploymentRootFingerprint, IncludeCache};
 use std::{
     collections::BTreeMap,
     fmt,
@@ -194,6 +194,13 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         CompiledScriptCache::disabled()
     });
     let include_cache = Arc::new(IncludeCache::new(config.script_cache_shards));
+    // Deployment-root fingerprint: metadata + counters only. A root that
+    // cannot be observed counts as `deployment_fingerprint_missing` and keeps
+    // every fingerprint-gated persistent reuse blocked.
+    include_cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+        &docroot,
+        config.deployment_mode,
+    ));
     let engine = Arc::new(ServerEngineState::new(
         engine_profile,
         config.max_vm_steps,

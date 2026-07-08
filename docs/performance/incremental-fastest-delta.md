@@ -33,8 +33,8 @@ committed.
 | Integrated server, no external PHP | present | `crates/php_server`, `phrust-php -S`; executes through phrust frontend/runtime/VM in-process. `docs/server-architecture.md`, `docs/web-server.md`. | Improve engine hot path / cache scalability metrics, **not** process orchestration. | P10 |
 | CLI bytecode cache | present | `crates/php_bytecode_cache`; fingerprint envelope (source hash, engine/PHP-target/format versions, opt level, features). `docs/performance/bytecode-cache.md`. | None as a cache; share *fingerprint concepts* only where safe. | (shared by P1) |
 | Server script/include cache | partial | Process-local, intentionally not OPcache-equivalent. `docs/runtime/cache-architecture.md`. | Production-mode invalidation via engine-owned fingerprints. | P2 |
-| Persistent type feedback | report-only / optional-default-off | `php_vm::persistent_feedback`; `--persistent-feedback-read`, `--persistent-feedback-stats-json`; `FPE-GAP-PERSISTENT-FEEDBACK`; `docs/research/persistent-type-feedback.md`; optional matrix row `phrust-persistent-feedback-optional`. Reader/validator only; accepted entries do not change execution. | (1) engine-owned **writer** with accept/reject-split stats done (P1); non-zero epoch capture remains. (2) **Quickening consumer already exists** (default-off, guard-protected, `seed_persistent_sites` reports installed count); the remaining P3 delta is **inline-cache** seeding + a dedicated `--persistent-feedback-consume` flag + per-entry seeded/dequickened attribution. | P1, P3 |
-| Include/autoload dependency graph | partial | Request-local projection over ICs; `FPE-GAP-INCLUDE-AUTOLOAD-GRAPH`; `docs/research/include-autoload-dependency-graph.md`; counters `include_graph_hits/misses`, `autoload_graph_hits/misses`, `negative_lookup_hits`, `invalidations_by_reason`, `fallback_by_path_semantics`; `IncludePathFileFingerprint` (length, mtime nanos, readonly). Directory-version node **required but unused**; Composer map fingerprint slot **reserved/empty**; deployment-root fingerprint **absent**. | Directory-version abstraction (metadata+counters first), extended file identity, Composer classmap fingerprint slot, deployment-root fingerprint, new counters — all fail-closed. | P2 |
+| Persistent type feedback | present (guard-protected consumption) | `php_vm::persistent_feedback`; `--persistent-feedback-read/-write/-stats-json`; `FPE-GAP-PERSISTENT-FEEDBACK`; `docs/research/persistent-type-feedback.md`; optional matrix row `phrust-persistent-feedback-optional`. Quickening consumption is governed by `--persistent-feedback-consume=off|quickening` / `PHRUST_PERSISTENT_FEEDBACK_CONSUME` — **consume-on by default** alongside the default sidecar (not default-off; the guard protocol re-verifies every seed), attributed via `persistent_feedback_seeded_sites`/`_seeded_guard_hits`/`_seeded_dequickens` and stats-JSON `consume_mode`. | (1) engine-owned **writer** with accept/reject-split stats done (P1); non-zero epoch capture remains. (2) Remaining P3 delta: **inline-cache** seeding as a further consume mode. | P1, P3 |
+| Include/autoload dependency graph | partial (P2 fingerprints landed) | Request-local projection over ICs; `FPE-GAP-INCLUDE-AUTOLOAD-GRAPH`; `docs/research/include-autoload-dependency-graph.md`; counters `include_graph_hits/misses`, `autoload_graph_hits/misses`, `negative_lookup_hits`, `invalidations_by_reason`, `fallback_by_path_semantics`. **P2 landed, metadata+counters only:** `IncludeDirectoryVersion` captured per resolution + compared on revalidation (`directory_version_hits/misses`); per-request Composer map fingerprint wired into the autoload lookup key (`composer_fingerprint_present/missing/stale`); compile-key `source_content_hash` (stable FNV-1a); server `--deployment-mode dev\|immutable` + `DeploymentRootFingerprint` (`deployment_fingerprint_*` metrics); `negative_include_cache_blocked_by_reason`. Negative caching stays disabled. | *Consume* the fingerprints: directory-version-validated negative include caching, cross-request cache keys — separately gated future step. | P2 (done) |
 | Request-local arenas / persistent engine heap | partial | `FPE-GAP-REQUEST-ARENAS`; `docs/research/request-local-arenas.md`; counters `request_arena_allocations/bytes`, `request_pool_resets`, `persistent_engine_allocations/bytes`, `arena_fallback_allocations_by_reason`, `destructor_sensitive_arena_blocks`. Request-local frame/register pool is the implemented win; `persistent_engine_*` are now populated from the immutable-name interner footprint (`symbol_interner_footprint`, snapshot). | Extend the persistent heap owner to broader engine-only metadata (compiled-unit metadata handles, source-map metadata, symbol maps, validated feedback descriptors, fingerprints) beyond interned names. | P4 |
 | Array fast paths / packed metadata | present | `FPE-GAP-ARRAY-FASTPATHS-V2`; runtime-owned packed metadata (element/key-kind/numeric-string/reference/COW/mutation-epoch/length); guarded packed fetch/append/foreach; family/fallback counter maps. | Full `array_sum/min/max` reductions, mutation-heavy, by-ref foreach — future. | (evidence for P5) |
 | Record-like / mixed array shapes | present (guarded reads) | `FPE-GAP-RECORD-LIKE-ARRAY-SHAPES`; `docs/performance/array-shapes.md`; `FetchDim`/1-D `IssetDim` fail-closed helper reads for record/small-map; observed-shape + hit/miss + coercion/order/COW/reference fallback counters. **Recently extended**: interned record shapes + `StableKeyMap` (`c961c2ec`); dense `EmptyDim` now consumes the fail-closed shape helper (P5, behavior-preserving). | Write/foreach fast paths, immutable-literal storage, and native consumption remain evidence-gated. | P5 |
@@ -76,9 +76,11 @@ committed.
 - **The persistent-feedback reader/validator, metadata model, and
   fingerprint keying** already exist. P1 adds the *writer*; do not rewrite the
   validator or the metadata schema.
-- **`IncludePathFileFingerprint` and the request-local include/autoload graph**
-  already exist. P2 adds *fingerprint dimensions* (directory version, Composer
-  map, deployment root); do not rebuild the graph.
+- **`IncludePathFileFingerprint`, `IncludeDirectoryVersion`, the Composer map
+  fingerprint, the deployment-root fingerprint, and the request-local
+  include/autoload graph** all exist (P2 landed). The next delta is *consuming*
+  these fingerprints under a validated policy; do not rebuild the graph or
+  re-add fingerprint dimensions.
 - **Cranelift eligibility, side-exit, blacklist, and compile-budget machinery**
   already exist. P12 adds at most one region from evidence; do not build a
   generic function JIT.
@@ -88,12 +90,15 @@ committed.
 
 ## Smallest remaining deltas (pack order)
 
-1. **P1** — persistent-feedback writer + engine-owned metadata cache, non-zero
-   epochs, write/accept/reject stats. Consumption stays default-off.
-2. **P2** — directory-version + file-identity + Composer + deployment-root
-   fingerprints for the include/autoload graph, fail-closed.
-3. **P3** — gated consumer that seeds quickening/ICs from accepted feedback;
-   runtime guards still execute.
+1. **P1** — persistent-feedback writer + engine-owned metadata cache done;
+   non-zero epoch capture remains. Consumption is separately governed by
+   `--persistent-feedback-consume` (consume-on default, kill switch).
+2. **P2** — done: directory-version + content-hash + Composer + deployment-root
+   fingerprints landed as fail-closed metadata + counters. Remaining:
+   consuming them (negative caching, cross-request keys) as a separately
+   gated step.
+3. **P3** — quickening consumer done (flag + seeded/dequickened attribution);
+   inline-cache seeding remains as a further consume mode.
 4. **P4** — persistent immutable engine heap owner so `persistent_engine_*`
    counters become meaningful for engine-only metadata.
 5. **P5** — one array shape family promoted to an executable improvement.

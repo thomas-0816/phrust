@@ -396,6 +396,12 @@ pub struct VmCounters {
     pub include_fallback_by_reason: BTreeMap<String, u64>,
     pub include_stale_invalidation_by_reason: BTreeMap<String, u64>,
     pub include_graph_hits: u64,
+    pub directory_version_hits: u64,
+    pub directory_version_misses: u64,
+    pub composer_fingerprint_present: u64,
+    pub composer_fingerprint_missing: u64,
+    pub composer_fingerprint_stale: u64,
+    pub negative_include_cache_blocked_by_reason: BTreeMap<String, u64>,
     pub include_graph_misses: u64,
     pub autoload_graph_hits: u64,
     pub autoload_graph_misses: u64,
@@ -723,6 +729,33 @@ impl VmCounters {
 
     pub(crate) fn record_include_graph_hit(&mut self) {
         self.include_graph_hits += 1;
+    }
+
+    pub(crate) fn record_directory_version_hit(&mut self) {
+        self.directory_version_hits += 1;
+    }
+
+    pub(crate) fn record_directory_version_miss(&mut self) {
+        self.directory_version_misses += 1;
+    }
+
+    pub(crate) fn record_composer_fingerprint(&mut self, present: bool) {
+        if present {
+            self.composer_fingerprint_present += 1;
+        } else {
+            self.composer_fingerprint_missing += 1;
+        }
+    }
+
+    pub(crate) fn record_composer_fingerprint_stale(&mut self) {
+        self.composer_fingerprint_stale += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_blocked(&mut self, reason: &str) {
+        *self
+            .negative_include_cache_blocked_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
     }
 
     pub(crate) fn record_include_graph_miss(&mut self) {
@@ -3825,6 +3858,42 @@ impl VmCounters {
             self.negative_lookup_hits,
             true,
         );
+        push_field(
+            &mut json,
+            "directory_version_hits",
+            self.directory_version_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "directory_version_misses",
+            self.directory_version_misses,
+            true,
+        );
+        push_field(
+            &mut json,
+            "composer_fingerprint_present",
+            self.composer_fingerprint_present,
+            true,
+        );
+        push_field(
+            &mut json,
+            "composer_fingerprint_missing",
+            self.composer_fingerprint_missing,
+            true,
+        );
+        push_field(
+            &mut json,
+            "composer_fingerprint_stale",
+            self.composer_fingerprint_stale,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "negative_include_cache_blocked_by_reason",
+            &self.negative_include_cache_blocked_by_reason,
+            true,
+        );
         push_string_u64_map_field(
             &mut json,
             "invalidations_by_reason",
@@ -5704,6 +5773,12 @@ mod tests {
         counters.record_autoload_graph_hit();
         counters.record_autoload_graph_miss();
         counters.record_negative_lookup_hit();
+        counters.record_directory_version_hit();
+        counters.record_directory_version_miss();
+        counters.record_composer_fingerprint(true);
+        counters.record_composer_fingerprint(false);
+        counters.record_composer_fingerprint_stale();
+        counters.record_negative_include_cache_blocked("directory_versions_unvalidated");
         counters.record_invalidation_by_reason("file_fingerprint_changed");
         counters.record_fallback_by_path_semantics("missing_path");
         counters.record_inline_cache(InlineCacheObservation {
@@ -6274,6 +6349,17 @@ mod tests {
         assert_eq!(counters.autoload_graph_hits, 2);
         assert_eq!(counters.autoload_graph_misses, 2);
         assert_eq!(counters.negative_lookup_hits, 1);
+        assert_eq!(counters.directory_version_hits, 1);
+        assert_eq!(counters.directory_version_misses, 1);
+        assert_eq!(counters.composer_fingerprint_present, 1);
+        assert_eq!(counters.composer_fingerprint_missing, 1);
+        assert_eq!(counters.composer_fingerprint_stale, 1);
+        assert_eq!(
+            counters
+                .negative_include_cache_blocked_by_reason
+                .get("directory_versions_unvalidated"),
+            Some(&1)
+        );
         assert_eq!(
             counters
                 .invalidations_by_reason
@@ -6569,6 +6655,12 @@ mod tests {
         assert!(json.contains("\"inline_cache_disabled\": 0"));
         assert!(json.contains("\"include_graph_hits\": 0"));
         assert!(json.contains("\"include_graph_misses\": 0"));
+        assert!(json.contains("\"directory_version_hits\": 0"));
+        assert!(json.contains("\"directory_version_misses\": 0"));
+        assert!(json.contains("\"composer_fingerprint_present\": 0"));
+        assert!(json.contains("\"composer_fingerprint_missing\": 0"));
+        assert!(json.contains("\"composer_fingerprint_stale\": 0"));
+        assert!(json.contains("\"negative_include_cache_blocked_by_reason\": {}"));
         assert!(json.contains("\"include_resolution_hits\": 0"));
         assert!(json.contains("\"include_resolution_misses\": 0"));
         assert!(json.contains("\"include_compile_hits\": 0"));

@@ -43,6 +43,43 @@ pub struct IncludePathFileFingerprint {
     pub device: Option<u64>,
 }
 
+/// Portable directory version for the include/autoload graph.
+///
+/// Captures the directory's modification time and filesystem identity where
+/// the platform exposes them. Compared by equality: a `None` field only ever
+/// matches another `None`, so missing platform data narrows reuse instead of
+/// widening it (fail-closed). Directory versions are metadata and counters
+/// only today — negative include-path caching stays disabled until a
+/// validated policy consumes them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IncludeDirectoryVersion {
+    pub modified_unix_nanos: Option<u128>,
+    pub inode: Option<u64>,
+    pub device: Option<u64>,
+}
+
+/// Observes a directory's current version. `None` means the directory could
+/// not be inspected; callers must treat that as "unvalidated", never as a
+/// match.
+#[must_use]
+pub fn include_directory_version(dir: &Path) -> Option<IncludeDirectoryVersion> {
+    let metadata = fs::metadata(dir).ok()?;
+    if !metadata.is_dir() {
+        return None;
+    }
+    let modified_unix_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    let (inode, device) = file_identity(&metadata);
+    Some(IncludeDirectoryVersion {
+        modified_unix_nanos,
+        inode,
+        device,
+    })
+}
+
 /// Result of resolving one include target without loading its contents.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedIncludePath {
@@ -50,6 +87,11 @@ pub struct ResolvedIncludePath {
     pub canonical_path: PathBuf,
     /// File metadata fingerprint used to invalidate stale path resolutions.
     pub fingerprint: IncludePathFileFingerprint,
+    /// Version of the canonical path's parent directory at resolve time.
+    /// Metadata only: revalidation compares it for the directory-version
+    /// counters without changing whether the resolution is accepted. `None`
+    /// (phar entries, uninspectable directories) always counts as a miss.
+    pub directory_version: Option<IncludeDirectoryVersion>,
 }
 
 /// Shared process-local include cache for resolution and compiled include units.
@@ -59,6 +101,23 @@ pub struct IncludeCache {
     compile_shards: Vec<Mutex<HashMap<CompiledIncludeKey, Arc<CompiledUnit>>>>,
     compile_locks: Vec<IncludeCompileLockShard>,
     stats: IncludeCacheCounters,
+    /// Deployment-root fingerprint installed by production-mode server runs.
+    /// Metadata only: revalidation feeds the `deployment_fingerprint_*`
+    /// counters without changing any cache decision.
+    deployment_root: Mutex<Option<DeploymentRootFingerprint>>,
+    /// Last Composer map fingerprint observed by a request, for cross-request
+    /// staleness attribution. `Some(None)` records "observed, no map found".
+    composer_last_fingerprint: Mutex<Option<Option<String>>>,
+}
+
+/// Cross-request transition of the observed Composer map fingerprint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComposerFingerprintTransition {
+    /// First observation in this process, or unchanged since the last one.
+    Unchanged,
+    /// The fingerprint differs from the previous request's observation — the
+    /// deployment's autoload maps changed while the process was running.
+    Changed,
 }
 
 impl IncludeCache {
@@ -77,7 +136,75 @@ impl IncludeCache {
                 .map(|_| IncludeCompileLockShard::default())
                 .collect(),
             stats: IncludeCacheCounters::default(),
+            deployment_root: Mutex::new(None),
+            composer_last_fingerprint: Mutex::new(None),
         }
+    }
+
+    /// Installs the deployment-root fingerprint for this process. Counts
+    /// `deployment_fingerprint_present` when the root was observable and
+    /// `deployment_fingerprint_missing` otherwise; a `None` fingerprint keeps
+    /// the slot empty so later revalidations keep counting `missing`.
+    pub fn set_deployment_root_fingerprint(&self, fingerprint: Option<DeploymentRootFingerprint>) {
+        match &fingerprint {
+            Some(_) => {
+                self.stats
+                    .deployment_fingerprint_present
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            None => {
+                self.stats
+                    .deployment_fingerprint_missing
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if let Ok(mut slot) = self.deployment_root.lock() {
+            *slot = fingerprint;
+        }
+    }
+
+    /// Re-observes the deployment root's directory version and counts
+    /// `deployment_fingerprint_stale` when it no longer matches the installed
+    /// fingerprint. Metadata only — no cache entries are invalidated here.
+    pub fn revalidate_deployment_root(&self) {
+        let Ok(slot) = self.deployment_root.lock() else {
+            return;
+        };
+        let Some(fingerprint) = slot.as_ref() else {
+            return;
+        };
+        let current = include_directory_version(&fingerprint.canonical_root);
+        let matches = match (&fingerprint.directory_version, &current) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        if !matches {
+            self.stats
+                .deployment_fingerprint_stale
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Records the Composer map fingerprint a request observed and reports
+    /// whether it changed since the previous request in this process.
+    pub fn note_composer_fingerprint(
+        &self,
+        current: Option<&str>,
+    ) -> ComposerFingerprintTransition {
+        let Ok(mut last) = self.composer_last_fingerprint.lock() else {
+            return ComposerFingerprintTransition::Unchanged;
+        };
+        let transition = match last.as_ref() {
+            Some(previous) if previous.as_deref() != current => {
+                self.stats
+                    .composer_fingerprint_stale
+                    .fetch_add(1, Ordering::Relaxed);
+                ComposerFingerprintTransition::Changed
+            }
+            _ => ComposerFingerprintTransition::Unchanged,
+        };
+        *last = Some(current.map(str::to_owned));
+        transition
     }
 
     /// Resolves an include path through a shared process-local cache.
@@ -99,6 +226,7 @@ impl IncludeCache {
                 match include_path_file_fingerprint(&resolved.canonical_path) {
                     Ok(current) if current == resolved.fingerprint => {
                         self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
+                        self.observe_directory_version(&resolved);
                         return Ok(resolved);
                     }
                     Ok(_) | Err(_) => {
@@ -232,6 +360,31 @@ impl IncludeCache {
         Ok(None)
     }
 
+    /// Compares the stored parent-directory version against the current one
+    /// and records the directory-version counters. Metadata only: this never
+    /// affects whether the resolution hit is accepted — it measures how often
+    /// a future directory-version-validated negative cache would have been
+    /// consistent.
+    fn observe_directory_version(&self, resolved: &ResolvedIncludePath) {
+        let current = resolved
+            .canonical_path
+            .parent()
+            .and_then(include_directory_version);
+        let matches = match (&resolved.directory_version, &current) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        if matches {
+            self.stats
+                .directory_version_hits
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.stats
+                .directory_version_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn dependencies_are_fresh(&self, key: &CompiledIncludeKey) -> Result<bool, VmError> {
         for dependency in &key.local_dependencies {
             self.stats
@@ -281,6 +434,24 @@ impl IncludeCache {
                 .stale_dependency_invalidations
                 .load(Ordering::Relaxed),
             compile_errors: self.stats.compile_errors.load(Ordering::Relaxed),
+            directory_version_hits: self.stats.directory_version_hits.load(Ordering::Relaxed),
+            directory_version_misses: self.stats.directory_version_misses.load(Ordering::Relaxed),
+            composer_fingerprint_stale: self
+                .stats
+                .composer_fingerprint_stale
+                .load(Ordering::Relaxed),
+            deployment_fingerprint_present: self
+                .stats
+                .deployment_fingerprint_present
+                .load(Ordering::Relaxed),
+            deployment_fingerprint_missing: self
+                .stats
+                .deployment_fingerprint_missing
+                .load(Ordering::Relaxed),
+            deployment_fingerprint_stale: self
+                .stats
+                .deployment_fingerprint_stale
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -355,6 +526,12 @@ pub struct IncludeCacheStats {
     pub stale_invalidations: u64,
     pub stale_dependency_invalidations: u64,
     pub compile_errors: u64,
+    pub directory_version_hits: u64,
+    pub directory_version_misses: u64,
+    pub composer_fingerprint_stale: u64,
+    pub deployment_fingerprint_present: u64,
+    pub deployment_fingerprint_missing: u64,
+    pub deployment_fingerprint_stale: u64,
 }
 
 #[derive(Debug, Default)]
@@ -368,6 +545,12 @@ struct IncludeCacheCounters {
     stale_invalidations: AtomicU64,
     stale_dependency_invalidations: AtomicU64,
     compile_errors: AtomicU64,
+    directory_version_hits: AtomicU64,
+    directory_version_misses: AtomicU64,
+    composer_fingerprint_stale: AtomicU64,
+    deployment_fingerprint_present: AtomicU64,
+    deployment_fingerprint_missing: AtomicU64,
+    deployment_fingerprint_stale: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -595,9 +778,11 @@ impl IncludeLoader {
             .with_context("canonical_path", canonical.display()));
         }
         let fingerprint = include_path_file_fingerprint(&canonical)?;
+        let directory_version = canonical.parent().and_then(include_directory_version);
         Ok(ResolvedIncludePath {
             canonical_path: canonical,
             fingerprint,
+            directory_version,
         })
     }
 
@@ -654,6 +839,9 @@ impl IncludeLoader {
         Ok(ResolvedIncludePath {
             canonical_path,
             fingerprint,
+            // Phar entries have no meaningful parent-directory version; `None`
+            // always counts as a directory-version miss (conservative).
+            directory_version: None,
         })
     }
 
@@ -735,6 +923,118 @@ pub fn include_path_file_fingerprint(path: &Path) -> Result<IncludePathFileFinge
     })
 }
 
+/// Stable, dependency-free 64-bit FNV-1a hash for engine-owned content
+/// identity. `DefaultHasher` is explicitly unstable across releases and
+/// processes, so it must never leak into anything a future persistent cache
+/// could key on.
+#[must_use]
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Well-known Composer autoload map files, fingerprinted as engine metadata.
+/// This never changes runtime behavior: the fingerprint feeds cache keys and
+/// counters only, and a missing map yields `None` (unknown), which blocks any
+/// persistent reuse keyed on it.
+const COMPOSER_MAP_FILES: &[&str] = &[
+    "autoload_classmap.php",
+    "autoload_files.php",
+    "autoload_psr4.php",
+    "autoload_real.php",
+    "autoload_static.php",
+];
+
+/// Fingerprints a detected Composer `vendor/composer` autoload map near
+/// `anchor_dir` (the entry script's directory), walking at most four ancestor
+/// levels so front controllers under `public/`/`web/` still find the project
+/// root. Returns `None` when no map directory is detected.
+#[must_use]
+pub fn composer_autoload_map_fingerprint(anchor_dir: &Path) -> Option<String> {
+    let mut dir = Some(anchor_dir);
+    for _ in 0..=4 {
+        let candidate = dir?;
+        let composer_dir = candidate.join("vendor").join("composer");
+        if composer_dir.is_dir() {
+            return Some(render_composer_map_fingerprint(&composer_dir));
+        }
+        dir = candidate.parent();
+    }
+    None
+}
+
+fn render_composer_map_fingerprint(composer_dir: &Path) -> String {
+    let mut rendered = format!("{}\n", composer_dir.display());
+    for name in COMPOSER_MAP_FILES {
+        match include_path_file_fingerprint(&composer_dir.join(name)) {
+            Ok(fingerprint) => {
+                rendered.push_str(&format!(
+                    "{name}|{}|{:?}|{}|{:?}|{:?}\n",
+                    fingerprint.len,
+                    fingerprint.modified_unix_nanos,
+                    fingerprint.readonly,
+                    fingerprint.inode,
+                    fingerprint.device,
+                ));
+            }
+            Err(_) => rendered.push_str(&format!("{name}|absent\n")),
+        }
+    }
+    format!("composer-map-v1:{:016x}", fnv1a_64(rendered.as_bytes()))
+}
+
+/// Declared mutability of a deployment root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeploymentRootMode {
+    /// Development default: the root may mutate at any time, so persistent
+    /// reuse keyed on the root stays blocked.
+    DevMutable,
+    /// Operator-declared immutable deployment root (for example an atomically
+    /// swapped release directory). Declaration is a config input, not a
+    /// filesystem probe — the engine still revalidates the directory version.
+    ImmutableDeclared,
+}
+
+impl DeploymentRootMode {
+    /// Stable config/report spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DevMutable => "dev",
+            Self::ImmutableDeclared => "immutable",
+        }
+    }
+}
+
+/// Deployment-root fingerprint for production-mode server runs: the canonical
+/// root, its directory version at startup, and the operator-declared
+/// mutability mode. Metadata and counters only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeploymentRootFingerprint {
+    pub canonical_root: PathBuf,
+    pub directory_version: Option<IncludeDirectoryVersion>,
+    pub mode: DeploymentRootMode,
+}
+
+impl DeploymentRootFingerprint {
+    /// Observes a deployment root. `None` when the root cannot be
+    /// canonicalized, which callers count as `deployment_fingerprint_missing`.
+    #[must_use]
+    pub fn observe(root: &Path, mode: DeploymentRootMode) -> Option<Self> {
+        let canonical_root = fs::canonicalize(root).ok()?;
+        let directory_version = include_directory_version(&canonical_root);
+        Some(Self {
+            canonical_root,
+            directory_version,
+            mode,
+        })
+    }
+}
+
 /// Filesystem identity `(inode, device)` when the platform exposes it. Unix
 /// reports both; other platforms report `(None, None)`, which keeps caching
 /// conservative rather than optimistic.
@@ -810,6 +1110,12 @@ struct CompiledIncludeKey {
     len: u64,
     modified_unix_nanos: Option<u128>,
     readonly: bool,
+    /// Stable FNV-1a hash of the source read at compile time. Costs no extra
+    /// I/O (the source is already in memory) and gives the compiled-unit
+    /// identity a content dimension the stat-based probe cannot: a future
+    /// persistent cache must validate by content, and probe-time fingerprints
+    /// never carry a hash, so absence stays conservative by construction.
+    source_content_hash: u64,
     local_dependencies: Vec<CompiledIncludeDependencyKey>,
     compiler_version: &'static str,
     debug_assertions: bool,
@@ -835,6 +1141,7 @@ impl CompiledIncludeKey {
             len: resolved.fingerprint.len,
             modified_unix_nanos: resolved.fingerprint.modified_unix_nanos,
             readonly: resolved.fingerprint.readonly,
+            source_content_hash: fnv1a_64(source.as_bytes()),
             local_dependencies: local_psr_source_dependencies(source, &resolved.canonical_path),
             compiler_version: env!("CARGO_PKG_VERSION"),
             debug_assertions: cfg!(debug_assertions),
@@ -1349,6 +1656,138 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(cache.cache_stats().resolution_misses, 1);
         assert_eq!(cache.cache_stats().resolution_hits, 1);
+        // The revalidated hit also observed a stable parent-directory version.
+        assert_eq!(cache.cache_stats().directory_version_hits, 1);
+        assert_eq!(cache.cache_stats().directory_version_misses, 0);
+        assert!(
+            first.directory_version.is_some(),
+            "resolutions capture the parent directory version"
+        );
+    }
+
+    #[test]
+    fn directory_version_observes_directories_only_and_is_stable() {
+        let fixture = IncludeCacheFixture::new("dir-version");
+        fixture.write("lib.php", "<?php echo 'lib';\n");
+        let first = include_directory_version(&fixture.root).expect("directory version");
+        let second = include_directory_version(&fixture.root).expect("directory version");
+        assert_eq!(first, second, "unchanged directory has a stable version");
+        assert_eq!(
+            include_directory_version(&fixture.root.join("lib.php")),
+            None,
+            "files are not directories"
+        );
+        assert_eq!(
+            include_directory_version(&fixture.root.join("missing")),
+            None,
+            "missing directories are unvalidated, never a match"
+        );
+    }
+
+    #[test]
+    fn fnv1a_64_is_stable_across_processes() {
+        // Standard FNV-1a test vectors; a persistent cache may key on these.
+        assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a_64(b"foobar"), 0x85944171f73967e8);
+    }
+
+    #[test]
+    fn composer_map_fingerprint_detects_maps_and_walks_ancestors() {
+        let fixture = IncludeCacheFixture::new("composer-map");
+        assert_eq!(
+            composer_autoload_map_fingerprint(&fixture.root),
+            None,
+            "no vendor/composer directory means unknown"
+        );
+
+        fixture.write(
+            "vendor/composer/autoload_classmap.php",
+            "<?php return [];\n",
+        );
+        let from_root =
+            composer_autoload_map_fingerprint(&fixture.root).expect("map detected at root");
+        assert!(from_root.starts_with("composer-map-v1:"), "{from_root}");
+
+        // A front controller under public/ finds the same project root map.
+        fixture.write("public/index.php", "<?php\n");
+        let from_public = composer_autoload_map_fingerprint(&fixture.root.join("public"))
+            .expect("map detected from public/");
+        assert_eq!(from_root, from_public);
+
+        // Rewriting a map file changes the fingerprint.
+        fixture.write(
+            "vendor/composer/autoload_classmap.php",
+            "<?php return ['App\\\\A' => 'src/A.php'];\n",
+        );
+        let after_rewrite =
+            composer_autoload_map_fingerprint(&fixture.root).expect("map still detected");
+        assert_ne!(from_root, after_rewrite);
+    }
+
+    #[test]
+    fn composer_fingerprint_transitions_attribute_staleness() {
+        let cache = IncludeCache::new(1);
+        assert_eq!(
+            cache.note_composer_fingerprint(Some("composer-map-v1:aa")),
+            ComposerFingerprintTransition::Unchanged,
+            "first observation is not stale"
+        );
+        assert_eq!(
+            cache.note_composer_fingerprint(Some("composer-map-v1:aa")),
+            ComposerFingerprintTransition::Unchanged
+        );
+        assert_eq!(
+            cache.note_composer_fingerprint(Some("composer-map-v1:bb")),
+            ComposerFingerprintTransition::Changed
+        );
+        assert_eq!(
+            cache.note_composer_fingerprint(None),
+            ComposerFingerprintTransition::Changed,
+            "a map disappearing is a change"
+        );
+        assert_eq!(cache.cache_stats().composer_fingerprint_stale, 2);
+    }
+
+    #[test]
+    fn deployment_root_fingerprint_counts_present_missing_and_stale() {
+        let fixture = IncludeCacheFixture::new("deployment-root");
+        let cache = IncludeCache::new(1);
+
+        cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+            &fixture.root.join("missing"),
+            DeploymentRootMode::DevMutable,
+        ));
+        assert_eq!(cache.cache_stats().deployment_fingerprint_missing, 1);
+
+        let observed = DeploymentRootFingerprint::observe(
+            &fixture.root,
+            DeploymentRootMode::ImmutableDeclared,
+        )
+        .expect("observable root");
+        assert_eq!(observed.mode, DeploymentRootMode::ImmutableDeclared);
+        cache.set_deployment_root_fingerprint(Some(observed.clone()));
+        assert_eq!(cache.cache_stats().deployment_fingerprint_present, 1);
+        cache.revalidate_deployment_root();
+        assert_eq!(
+            cache.cache_stats().deployment_fingerprint_stale,
+            0,
+            "unchanged root is not stale"
+        );
+
+        // A stored version that no longer matches attributes staleness. Use a
+        // synthetic mismatch so the test does not depend on filesystem mtime
+        // granularity.
+        cache.set_deployment_root_fingerprint(Some(DeploymentRootFingerprint {
+            directory_version: Some(IncludeDirectoryVersion {
+                modified_unix_nanos: Some(1),
+                inode: Some(1),
+                device: Some(1),
+            }),
+            ..observed
+        }));
+        cache.revalidate_deployment_root();
+        assert_eq!(cache.cache_stats().deployment_fingerprint_stale, 1);
     }
 
     #[test]

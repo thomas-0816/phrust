@@ -4692,6 +4692,15 @@ fn include_missing_warns_and_continues_but_require_missing_fails() {
         Some(&1),
         "{counters:?}"
     );
+    // A missing path is where a negative include cache would install an
+    // entry; it stays disabled and records why.
+    assert_eq!(
+        counters
+            .negative_include_cache_blocked_by_reason
+            .get("directory_versions_unvalidated"),
+        Some(&1),
+        "{counters:?}"
+    );
 
     let require = execute_fixture_file_with_options(
         "fixtures/runtime/invalid/includes/require-missing.php",
@@ -4734,6 +4743,74 @@ fn include_missing_warns_and_continues_but_require_missing_fails() {
         Some(&1),
         "{counters:?}"
     );
+}
+
+#[test]
+fn composer_map_fingerprint_counters_attribute_presence_per_request() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-vm-composer-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos()
+    ));
+    let composer_dir = root.join("vendor").join("composer");
+    std::fs::create_dir_all(&composer_dir).expect("create composer fixture");
+    std::fs::write(
+        composer_dir.join("autoload_classmap.php"),
+        "<?php return [];\n",
+    )
+    .expect("write classmap");
+    let script_path = root.join("index.php");
+    // class_exists drives the autoload lookup cache, whose key carries the
+    // Composer map fingerprint. Autoload lookups without a registered
+    // callback preserve output either way — this is metadata + counters.
+    let source = "<?php var_dump(class_exists('PhrustComposerProbeMissing'));";
+    std::fs::write(&script_path, source).expect("write script");
+
+    let with_map = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            runtime_context: RuntimeContext::controlled_cli(
+                script_path.to_string_lossy().into_owned(),
+                Vec::new(),
+            )
+            .with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+    );
+    assert!(with_map.status.is_success(), "{:?}", with_map.status);
+    assert_eq!(with_map.output.as_bytes(), b"bool(false)\n");
+    let counters = with_map.counters.expect("counters");
+    assert_eq!(counters.composer_fingerprint_present, 1, "{counters:?}");
+    assert_eq!(counters.composer_fingerprint_missing, 0, "{counters:?}");
+
+    let without_map = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            runtime_context: RuntimeContext::controlled_cli(
+                "/nonexistent-phrust-root/index.php".to_owned(),
+                Vec::new(),
+            ),
+            ..VmOptions::default()
+        },
+    );
+    assert!(without_map.status.is_success(), "{:?}", without_map.status);
+    assert_eq!(with_map.output, without_map.output);
+    let counters = without_map.counters.expect("counters");
+    assert_eq!(counters.composer_fingerprint_present, 0, "{counters:?}");
+    assert_eq!(counters.composer_fingerprint_missing, 1, "{counters:?}");
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -5367,6 +5444,10 @@ fn include_path_inline_cache_records_hits_and_preserves_semantics() {
     assert!(counters.include_path_ic_misses > 0, "{counters:?}");
     assert!(counters.include_graph_hits > 0, "{counters:?}");
     assert!(counters.include_graph_misses > 0, "{counters:?}");
+    // Every IC revalidation also observes the parent-directory version
+    // (metadata only): a stable fixture directory always matches.
+    assert!(counters.directory_version_hits > 0, "{counters:?}");
+    assert_eq!(counters.directory_version_misses, 0, "{counters:?}");
 }
 
 #[test]
@@ -5495,6 +5576,7 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
         IncludePathCacheTarget {
             canonical_path: resolved.canonical_path.clone(),
             fingerprint: resolved.fingerprint.clone(),
+            directory_version: resolved.directory_version,
         },
     );
     std::fs::write(&include_path, "<?php echo 'changed';\n").expect("rewrite include");
@@ -8396,6 +8478,10 @@ fn jit_int_leaf_hot_loop_executes_after_warmup() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            // This test proves the Cranelift tier compiles and executes; the
+            // copy-patch leaf tier would otherwise claim this scalar-int leaf
+            // before tiering ever sees it.
+            copy_patch_leaf_override: Some(false),
             ..VmOptions::default()
         },
     );
@@ -8420,10 +8506,6 @@ fn cranelift_default_tiering_keeps_cold_function_interpreted() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            // This test proves the Cranelift tier compiles and executes; the
-            // copy-patch leaf tier would otherwise claim this scalar-int leaf
-            // before tiering ever sees it.
-            copy_patch_leaf_override: Some(false),
             ..VmOptions::default()
         },
     );
@@ -8536,6 +8618,7 @@ fn cranelift_inline_arithmetic_executes_native_and_counts_fast_paths() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -8601,7 +8684,6 @@ fn cranelift_record_lookup_key_miss_side_exits_and_resumes_interpreter() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -8943,6 +9025,7 @@ fn cranelift_known_strlen_executes_native_and_counts_fast_hit() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -9090,7 +9173,6 @@ fn cranelift_string_concat_rejects_string_int_without_fast_hit() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
-            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()

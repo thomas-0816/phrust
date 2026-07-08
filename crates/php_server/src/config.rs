@@ -10,7 +10,7 @@ use php_diagnostics::{
     DiagnosticSeverity, DiagnosticSuggestion,
 };
 use php_executor::EngineProfileName;
-use php_vm::api::DenseIncludeMode;
+use php_vm::api::{DenseIncludeMode, DeploymentRootMode};
 
 use crate::routing::RequestRewriteRule;
 
@@ -55,6 +55,11 @@ pub struct ServerConfig {
     pub max_vm_steps: usize,
     pub execution_deadline_enabled: bool,
     pub engine_preset: EngineProfileName,
+    /// Declared mutability of the deployment root. `dev` (default) marks the
+    /// docroot as mutable, which keeps every deployment-fingerprint-gated
+    /// persistent reuse blocked; `immutable` is an operator declaration for
+    /// atomically swapped release directories. Metadata and counters only.
+    pub deployment_mode: DeploymentRootMode,
     pub dense_includes: Option<DenseIncludeMode>,
     pub perf_ablation: ServerPerfAblation,
     pub metrics_endpoint_enabled: bool,
@@ -208,6 +213,11 @@ impl ServerConfig {
             .map(|value| parse_engine_preset("engine_preset", &value))
             .transpose()?
             .unwrap_or_default();
+        let mut deployment_mode = file_config
+            .string("deployment_mode")
+            .map(|value| parse_deployment_mode("deployment_mode", &value))
+            .transpose()?
+            .unwrap_or(DeploymentRootMode::DevMutable);
         let file_dense_includes = file_config
             .string("dense_includes")
             .map(|value| parse_dense_includes("dense_includes", &value))
@@ -344,6 +354,14 @@ impl ServerConfig {
                 "--engine-preset" => {
                     engine_preset = parse_engine_preset(&arg, &required_value(&arg, &mut args)?)?;
                 }
+                "--deployment-mode" => {
+                    deployment_mode =
+                        parse_deployment_mode(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                _ if arg.starts_with("--deployment-mode=") => {
+                    let value = arg.trim_start_matches("--deployment-mode=");
+                    deployment_mode = parse_deployment_mode("--deployment-mode", value)?;
+                }
                 "--dense-includes" => {
                     dense_includes = Some(parse_dense_includes(
                         &arg,
@@ -448,6 +466,7 @@ impl ServerConfig {
                 max_vm_steps,
                 execution_deadline_enabled,
                 engine_preset,
+                deployment_mode,
                 dense_includes,
                 perf_ablation,
                 metrics_endpoint_enabled,
@@ -500,6 +519,7 @@ impl ServerConfig {
             max_vm_steps,
             execution_deadline_enabled,
             engine_preset,
+            deployment_mode,
             dense_includes,
             perf_ablation,
             metrics_endpoint_enabled,
@@ -573,6 +593,7 @@ impl ServerConfig {
             max_vm_steps: DEFAULT_MAX_VM_STEPS,
             execution_deadline_enabled: true,
             engine_preset: EngineProfileName::default(),
+            deployment_mode: DeploymentRootMode::DevMutable,
             dense_includes: env_value_dense_includes()?,
             perf_ablation: env_value_perf_ablation()?.unwrap_or_default(),
             metrics_endpoint_enabled: false,
@@ -893,6 +914,16 @@ fn env_value_perf_ablation() -> Result<Option<ServerPerfAblation>, ConfigError> 
         .transpose()
 }
 
+fn parse_deployment_mode(flag: &str, value: &str) -> Result<DeploymentRootMode, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "dev" | "mutable" => Ok(DeploymentRootMode::DevMutable),
+        "immutable" => Ok(DeploymentRootMode::ImmutableDeclared),
+        _ => Err(ConfigError::new(format!(
+            "invalid {flag} `{value}`; expected dev or immutable"
+        ))),
+    }
+}
+
 fn parse_dense_includes(flag: &str, value: &str) -> Result<DenseIncludeMode, ConfigError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "0" | "false" | "no" | "off" => Ok(DenseIncludeMode::Off),
@@ -1077,7 +1108,7 @@ fn default_max_in_flight() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, ServerConfig};
+    use super::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, DeploymentRootMode, ServerConfig};
     use php_diagnostics::DiagnosticOutputFormat;
     use php_executor::EngineProfileName;
     use php_vm::api::DenseIncludeMode;
@@ -1090,6 +1121,23 @@ mod tests {
     };
 
     static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn parses_deployment_mode_flag_and_rejects_unknown_values() {
+        let config =
+            ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "immutable"])
+                .unwrap();
+        assert_eq!(
+            config.deployment_mode,
+            DeploymentRootMode::ImmutableDeclared
+        );
+        let config =
+            ServerConfig::parse_from(["--docroot", "public", "--deployment-mode=dev"]).unwrap();
+        assert_eq!(config.deployment_mode, DeploymentRootMode::DevMutable);
+        let error = ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "prod"])
+            .unwrap_err();
+        assert!(error.to_string().contains("expected dev or immutable"));
+    }
 
     #[test]
     fn parses_required_docroot_and_defaults() {
@@ -1123,6 +1171,7 @@ mod tests {
         assert_eq!(config.max_vm_steps, 100_000);
         assert!(config.execution_deadline_enabled);
         assert_eq!(config.engine_preset, EngineProfileName::Default);
+        assert_eq!(config.deployment_mode, DeploymentRootMode::DevMutable);
         assert_eq!(config.dense_includes, None);
         assert_eq!(config.perf_ablation, Default::default());
         assert!(config.metrics_endpoint_enabled);

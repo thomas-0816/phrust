@@ -28,16 +28,43 @@ configuration input before it can affect execution.
   whole struct is compared by equality, so an atomic replace or symlink swap
   that preserves length+mtime still invalidates the cached resolution. On
   platforms without filesystem identity both fields are `None`, which only
-  matches another `None` and never widens reuse (fail-closed). Content hashes
-  remain deferred (they require reading the file on every revalidation) until an
-  evidence-backed hot path justifies the cost.
-- `directory -> version`: directory versioning is a required node for safe
-  negative include-path caching. It is not used for include misses yet, so
-  missing include paths fall back to normal resolution and diagnostics.
+  matches another `None` and never widens reuse (fail-closed). Content identity
+  exists at the compile-cache layer: `CompiledIncludeKey` carries a stable
+  FNV-1a `source_content_hash` computed from the source already in memory at
+  compile time (zero extra I/O). Probe-time (stat-based) fingerprints never
+  carry a content hash, so any future content-validated reuse treats their
+  absence as blocking — conservative by construction.
+- `directory -> version`: `IncludeDirectoryVersion` (mtime nanos + Unix
+  inode/device, `None` fields only match `None`) is captured for the resolved
+  file's parent directory on every resolution — in both the request-local
+  include-path IC and the shared process include cache. Revalidation compares
+  it and reports `directory_version_hits`/`directory_version_misses`,
+  **counters only**: the comparison never affects whether a hit is accepted,
+  and missing include paths still fall back to normal resolution and
+  diagnostics. Phar entries carry no directory version (always a miss).
 - `autoload rule -> resolver`: SPL/Composer-style callbacks are represented by
   autoload stack epoch, registry epoch, lookup kind, normalized name,
-  autoload-enabled flag, include-path configuration, and a reserved Composer map
-  fingerprint slot.
+  autoload-enabled flag, include-path configuration, and the Composer map
+  fingerprint. The fingerprint is computed once per request on first
+  autoload-cache use: the engine probes the entry script's directory and up to
+  four ancestors for `vendor/composer/` and fingerprints the well-known map
+  files (`autoload_classmap/files/psr4/real/static.php`) by file metadata into
+  a stable `composer-map-v1:<hash>` string. No map found means `None`
+  (unknown), which blocks persistent reuse keyed on it. Presence is counted
+  per request (`composer_fingerprint_present/missing`); cross-request changes
+  are attributed through the shared include cache
+  (`composer_fingerprint_stale`). Because the value is stable within a
+  request, wiring it into the (request-local) lookup key changes no hit/miss
+  behavior.
+- `deployment root -> fingerprint`: production-mode server runs install a
+  `DeploymentRootFingerprint` (canonical docroot, directory version at
+  startup, operator-declared mode) into the shared include cache. The mode
+  comes from `--deployment-mode dev|immutable` (config key
+  `deployment_mode`), defaulting to `dev` = mutable, which keeps every
+  fingerprint-gated persistent reuse blocked. Metrics scrapes re-observe the
+  root and report `deployment_fingerprint_present/missing/stale` via
+  `phrust_server_deployment_fingerprint_*`. Metadata and counters only — no
+  cache decision consumes it yet.
 - `failed lookup -> negative cache`: negative class-like lookup entries are
   cached only when no visible autoload side effects can be skipped: autoload is
   disabled, or autoload is enabled with an empty autoload callback registry.
@@ -94,13 +121,50 @@ Ambiguous path semantics are not cached. They are reported through
 - `negative_lookup_hits`
 - `invalidations_by_reason`
 - `fallback_by_path_semantics`
+- `directory_version_hits` / `directory_version_misses` — revalidations whose
+  stored parent-directory version matched / did not match (or was
+  unobservable); reported in VM counters (IC path + shared-cache delta) and
+  server metrics (`phrust_server_include_directory_version_*`).
+- `composer_fingerprint_present` / `composer_fingerprint_missing` — per-request
+  map detection; `composer_fingerprint_stale` — cross-request map change seen
+  by the shared include cache.
+- `deployment_fingerprint_present` / `deployment_fingerprint_missing` /
+  `deployment_fingerprint_stale` — server-level, exported as
+  `phrust_server_deployment_fingerprint_*`.
+- `negative_include_cache_blocked_by_reason` — why a missing include path was
+  *not* negatively cached (currently always
+  `directory_versions_unvalidated`).
 
 The performance report includes the aggregate graph counters plus selected
 reason-map entries for file fingerprint invalidation and path semantics fallback.
 
+## Exact Fallback Conditions
+
+Every P2 fingerprint is fail-closed and none of them changes an accept/reject
+decision yet:
+
+- A directory that cannot be inspected (missing, replaced by a file, phar
+  entry) yields no `IncludeDirectoryVersion`; comparisons against `None`
+  always count as misses and can never validate a future negative-cache
+  entry.
+- No detected `vendor/composer` directory yields fingerprint `None` =
+  unknown; unknown blocks any persistent reuse keyed on the Composer map. A
+  map file that appears, disappears, or changes across requests counts
+  `composer_fingerprint_stale`.
+- A docroot that cannot be canonicalized yields no deployment fingerprint
+  (`deployment_fingerprint_missing`); `--deployment-mode dev` (the default)
+  declares the root mutable, which by itself blocks fingerprint-gated
+  persistent reuse even when the fingerprint is present.
+- Missing include-path negative caching stays disabled unconditionally;
+  every candidate records `negative_include_cache_blocked_by_reason` instead
+  of installing an entry.
+
 ## Deferred Integrations
 
 Persistent feedback and inline-cache expansion should consume this graph only
-after directory versions, Composer map fingerprints, and production-mode
-deployment fingerprints exist. Until then, stale or ambiguous graph metadata
-must fall back to current include/autoload logic.
+after the directory-version, Composer-map, and deployment-root fingerprints
+prove stable under real workloads. The fingerprints now exist as metadata and
+counters; consuming them (directory-version-validated negative caching,
+cross-request cache keys) is the next, separately gated step. Until then,
+stale or ambiguous graph metadata must fall back to current include/autoload
+logic.

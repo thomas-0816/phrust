@@ -71,8 +71,10 @@ pub mod api {
     };
     pub use crate::error::{VmError, VmErrorSeverity};
     pub use crate::include::{
-        IncludeCache, IncludeCacheStats, IncludeLoader, IncludePathFileFingerprint, LoadedInclude,
-        ResolvedIncludePath,
+        ComposerFingerprintTransition, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache,
+        IncludeCacheStats, IncludeDirectoryVersion, IncludeLoader, IncludePathFileFingerprint,
+        LoadedInclude, ResolvedIncludePath, composer_autoload_map_fingerprint,
+        include_directory_version,
     };
     pub use crate::inline_cache::InlineCacheMode;
     pub use crate::quickening::{QuickeningMode, QuickeningSiteKey, QuickeningSiteSnapshot};

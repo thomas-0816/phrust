@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use php_runtime::PhpString;
 
-use crate::include::IncludePathFileFingerprint;
+use crate::include::{IncludeDirectoryVersion, IncludePathFileFingerprint};
 use crate::{DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolStats};
 
 use php_ir::{
@@ -430,6 +430,9 @@ pub struct IncludePathCacheKey {
 pub struct IncludePathCacheTarget {
     pub canonical_path: PathBuf,
     pub fingerprint: IncludePathFileFingerprint,
+    /// Parent-directory version at resolve time, compared on revalidation for
+    /// the `directory_version_*` counters only — never for hit acceptance.
+    pub directory_version: Option<IncludeDirectoryVersion>,
 }
 
 /// Class-like lookup flavor cached by autoload lookup IC slots.
@@ -3555,6 +3558,7 @@ mod tests {
                 inode: None,
                 device: None,
             },
+            directory_version: None,
         };
 
         table.observe_slot(
@@ -3630,6 +3634,7 @@ mod tests {
                     inode: None,
                     device: None,
                 },
+                directory_version: None,
             },
         );
         let (cached, event) = table.lookup_include_path(
@@ -3683,6 +3688,7 @@ mod tests {
                     inode: None,
                     device: None,
                 },
+                directory_version: None,
             },
         );
         let (cached, event) = table.lookup_include_path(
