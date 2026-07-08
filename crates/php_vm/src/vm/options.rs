@@ -81,6 +81,21 @@ pub struct VmOptions {
     /// Skip adaptive quickening/tiering setup for tiny units with at most this
     /// many IR instructions. `None` keeps adaptive setup always enabled.
     pub adaptive_tiny_unit_setup_threshold: Option<u32>,
+    /// Runtime lever R3: move (instead of clone) a dense register operand when a
+    /// conservative last-use analysis proves the read is the register's block-local
+    /// last use. Default-off; with it off the dense read path is byte-identical to
+    /// today and this analysis is never built. Preserves COW/reference semantics.
+    pub last_use_moves: bool,
+    /// Runtime lever R4: allow request-local frame/register pooling to reuse a
+    /// completed activation for a class-context call (a method/constructor/static
+    /// call, or any call that carries `$this`/scope/called/declaring class) when
+    /// that call clears every other reuse guard. Default-off; with it off the
+    /// `class_context` reuse block stays in place and the call path is
+    /// byte-identical to today. The reuse/reset path fully clears `$this` and all
+    /// class-context frame state, so nothing leaks from the prior occupant, and
+    /// teardown drops the prior occupant's values at the same PHP-observable
+    /// moment as the fresh-frame path.
+    pub reuse_class_context_frames: bool,
 }
 
 impl Default for VmOptions {
@@ -115,6 +130,8 @@ impl Default for VmOptions {
             typecheck_fast_paths: true,
             internal_function_dispatch_cache: true,
             adaptive_tiny_unit_setup_threshold: None,
+            last_use_moves: false,
+            reuse_class_context_frames: false,
         }
     }
 }

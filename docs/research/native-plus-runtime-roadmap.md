@@ -159,10 +159,22 @@ native→**builtin** and native→**userland** calls, which need a VM re-entry A
 stencil emits such a call yet. That re-entry path is the remaining keystone work
 for real WordPress code (which calls builtins and non-leaf userland functions).
 
-**(c) Mid-region deopt / OSR.** Deopt is **entry-only**: a guard/overflow side exit
-returns `1` and `NativeLeaf::run` returns `None`, so the whole call falls back to
-the interpreter from the top. `region_ir/osr.rs` computes live-slot metadata but it
-is **unwired** — there is no real resume-at-program-point.
+**(c) Mid-region deopt / OSR.** — **report-only metadata precision LANDED;
+execution-OSR deferred.** Deopt is still **entry-only** (a guard/overflow side
+exit returns `1`, `NativeLeaf::run` returns `None`, the call re-runs interpreted
+from the top — which is correct, just re-does the prefix). The safe prerequisite
+work is done: `php_vm::deopt` now computes **intra-block initialized-liveness**
+(`LiveValueSlot.initialized = Some(true)` for slots proven defined before the
+resume point, reusing `last_use.rs`'s exhaustive def/use classifier), **scalar
+alias refinement** (scalar-producing opcodes → `no_references_observed`), and
+**call-frame return-slot identity**, all guarded by verifier rules + a debug
+independent re-derivation that fails on any over-claim, with precision counters
+(`slots_initialized_known` 0→61 on a smoke fixture) and 11 fixtures. Still
+report-only — no execution/OSR/native path — and every prior hard rejection
+(try/finally, exception, generator/fiber, by-ref, include/eval) is intact.
+**Remaining:** actual resume-at-program-point execution (interpreter mid-entry),
+which is low current value (guard failures are rare in the scalar tier, so
+entry-only deopt already suffices) and belongs with a future consuming tier.
 
 **(d) Default-mode engagement.** — **LANDED** (dense-path hook). The dense
 executor's fast CALL dispatch site (`DenseFunctionPlan::Dense`) now tries the
@@ -278,6 +290,57 @@ array/string contents), not the refcount bumps.
   object creation 10663 → 7323 ns/iter. *Remaining:* the property *resolver*
   (`lookup_resolved_property_in_state_inner`, IC-cached/miss-only) and a few cold
   declaration paths still deep-clone (documented follow-ups).
+- **R3 — default-off last-use register moves** (`php_vm/src/last_use.rs` +
+  dense executor). A conservative block-local analysis marks a dense register
+  read move-eligible only when the register is block-local, first-occurrence is
+  a def (not live-in → not live-out across a self-loop back-edge), the marked
+  read is its last and reads it exactly once, and it is the opcode's single
+  movable source. Four value-operand sites (`Move`/`Cast`/`AssignDim`/`AppendDim`/
+  `ArrayInsert`) then *move* (`take_consumed_dense_operand`) the register instead
+  of cloning, handing a heap temporary to its consumer without a refcount bump /
+  potential COW separation. Gated behind **default-off** `--last-use-moves`
+  (`VmOptions::last_use_moves`); flag-off is byte-identical (plan never built).
+  Counters `last_use_moves_applied`/`clones_avoided`/`ineligible_by_reason`. The
+  def/use enumerator is exhaustive (no wildcard → new operand variants must be
+  classified) and a `debug_assertions` verifier re-derives the invariants.
+  Verified: 831 tests, COW/reference parity flag-on == flag-off == rich-IR oracle
+  == PHP 8.5.7. Structural clone-avoidance rises on the opt-in path; wall-clock is
+  neutral on the micro-benchmarks tested (consistent with the ~1 ns refcount-bump
+  correction above), so it lands as a correct, default-off, structurally-measured
+  foundation.
+- **R3 — array-read false-sharing COW eliminated** (`last_use.rs`
+  `array_release_eligible` + `release_dead_shared_array_register`). Diagnosed via
+  the `cow_separations` counter: a dim fetch (`$map["k"]`) loads the array into a
+  register (an `Rc` handle clone) that lingers past the read, so a following
+  in-place write (`$map["j"]=…`) sees the array shared and `Rc::make_mut`
+  deep-copies all contents *every iteration* (`cow_separations = n`; write-only
+  was `0`). Reusing R3's block-local last-use proof, the `FetchDim` handler now
+  takes-and-drops that register when it is the register's provable last use **and**
+  holds a *shared* `Value::Array` — releasing the clone so the write mutates the
+  sole owner in place. Only shared arrays are dropped (refcount decrement, no
+  contents freed, no destructor change); the fetch result is an owned copy (no
+  alias); by-ref binding uses another opcode. Default-off (`--last-use-moves`).
+  Read+write workload: `cow_separations` **n → 0** flag-on, stdout identical;
+  wall-clock scales with array size — ~1% (3-element) to **~21%** (60-element,
+  166→130 ms/200k) — so WordPress-sized config/record arrays benefit most. 836
+  tests; COW/reference parity fixtures byte-identical flag-off/on/PHP.
+- **R4 — default-off class-context frame/register pooling** (`vm/mod.rs`
+  `frame_reuse_call_shape_blocked_reason`; `--reuse-class-context-frames`). Frame
+  + register-file + arena reuse was blocked for *every* class-context call (`$this`/
+  method/constructor — the WordPress-dominant shape), so `frames_reused = 0` and a
+  fresh frame+register+arena was allocated per call. The block was over-conservative:
+  `$this` is the `"this"` local (already reset), destructors run via an explicit
+  queue at defined points (not Rust `Drop`, so pooling doesn't change timing),
+  pooled frames aren't GC roots, static locals live in `ExecutionState`. Flag-on
+  lets a class-context call reuse only when it clears every *other* guard
+  (destructor-sensitive body, try/finally, by-ref, generator/fiber/closure/shared-
+  locals). Signal on an OOP method-call loop: `frames_reused` 0→~n, `frames_allocated`
+  / `request_arena_allocations` collapse **4501→3**. Default-off (byte-identical);
+  844 tests; destructor-order/stale-`$this`/recursion/reference/exception+finally/
+  static-local parity byte-identical flag-off/on on both dense+rich paths vs PHP
+  8.5.7. Wall-clock neutral on the tight micro loop (allocator isn't its bottleneck);
+  lands as a correct, default-off lever cutting per-call malloc pressure that
+  accumulates across a real request (the arena rationale).
 
 **Critical lesson baked into every runtime item:** per-request memoization does
 *not* help WordPress. WP is one-shot-distributed — functions run 1–2× per request,

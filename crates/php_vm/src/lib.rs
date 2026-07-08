@@ -38,6 +38,8 @@ pub mod include;
 #[doc(hidden)]
 pub mod inline_cache;
 #[doc(hidden)]
+pub mod last_use;
+#[doc(hidden)]
 pub mod literal_pool;
 #[doc(hidden)]
 pub mod osr;
@@ -102,10 +104,10 @@ pub mod experimental {
     };
     #[doc(hidden)]
     pub use crate::deopt::{
-        ControlStateMarker, DeoptMetadata, DeoptMetadataError, DeoptRegionMetadata,
-        DeoptResumePoint, DeoptSideExitPoint, ExitId, GuardId, GuardKind, GuardRecord, GuardedTier,
-        LiveIdentityMarker, LiveStateSnapshot, LiveValueClass, LiveValueSlot,
-        MaterializedLiveState, MaterializedResumeRecord, ResumePoint, ResumeTable,
+        ControlStateMarker, DeoptMetadata, DeoptMetadataError, DeoptPrecisionCounters,
+        DeoptRegionMetadata, DeoptResumePoint, DeoptSideExitPoint, ExitId, GuardId, GuardKind,
+        GuardRecord, GuardedTier, LiveIdentityMarker, LiveStateSnapshot, LiveValueClass,
+        LiveValueSlot, MaterializedLiveState, MaterializedResumeRecord, ResumePoint, ResumeTable,
         ResumeTableError, SharedExit, SideExitPolicy, SnapshotEntry, SnapshotId, SnapshotRecord,
         SnapshotRejection, SnapshotStateFamily, VmDeoptReason,
     };
@@ -184,11 +186,11 @@ pub use compiled_unit::CompiledUnit;
 pub use counters::{BoundaryProfile, JitCompileDescriptor, OperationProfile, VmCounters};
 #[doc(hidden)]
 pub use deopt::{
-    ControlStateMarker, DeoptMetadata, DeoptMetadataError, DeoptRegionMetadata, DeoptResumePoint,
-    DeoptSideExitPoint, ExitId, GuardId, GuardKind, GuardRecord, GuardedTier, LiveIdentityMarker,
-    LiveStateSnapshot, LiveValueClass, LiveValueSlot, MaterializedLiveState,
-    MaterializedResumeRecord, ResumePoint, ResumeTable, ResumeTableError, SharedExit,
-    SideExitPolicy, SnapshotEntry, SnapshotId, SnapshotRecord, SnapshotRejection,
+    ControlStateMarker, DeoptMetadata, DeoptMetadataError, DeoptPrecisionCounters,
+    DeoptRegionMetadata, DeoptResumePoint, DeoptSideExitPoint, ExitId, GuardId, GuardKind,
+    GuardRecord, GuardedTier, LiveIdentityMarker, LiveStateSnapshot, LiveValueClass, LiveValueSlot,
+    MaterializedLiveState, MaterializedResumeRecord, ResumePoint, ResumeTable, ResumeTableError,
+    SharedExit, SideExitPolicy, SnapshotEntry, SnapshotId, SnapshotRecord, SnapshotRejection,
     SnapshotStateFamily, VmDeoptReason,
 };
 #[doc(hidden)]

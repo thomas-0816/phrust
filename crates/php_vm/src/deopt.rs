@@ -4,14 +4,17 @@
 //! intentionally independent of executable native code so future Cranelift,
 //! baseline-native, or quickening tiers can consume the same resume contract.
 
+use std::collections::{BTreeMap, HashSet};
+
 use php_ir::instruction::{InstructionKind, IrCallArg, TerminatorKind};
 use php_ir::{IrSpan, IrUnit};
 
 use crate::aliasing::AliasState;
 use crate::bytecode::{
     DENSE_BYTECODE_VERSION, DenseBlock, DenseBytecodeUnit, DenseFunction, DenseInstruction,
-    DenseLowerError, DenseOpcode,
+    DenseLowerError, DenseOpcode, DenseOperands,
 };
+use crate::last_use::collect_defs_uses;
 
 /// Stable VM-owned deoptimization reason codes.
 ///
@@ -203,6 +206,13 @@ pub struct LiveStateSnapshot {
     pub output_buffer: ControlStateMarker,
     /// Call frame identity marker.
     pub call_frame_identity: ControlStateMarker,
+    /// Caller register that receives the callee return value at a call-boundary
+    /// side exit, when derivable from the dense call instruction. `Some(index)`
+    /// is only valid alongside `call_frame_identity == Represented`; it records
+    /// the caller-callee return slot so a future tier resuming after a
+    /// materialized call knows where the result lands. `None` when the region is
+    /// not a value-returning call boundary or the destination is not derivable.
+    pub call_return_slot: Option<u32>,
     /// Include stack marker.
     pub include_stack: ControlStateMarker,
     /// Pending diagnostics marker.
@@ -418,6 +428,59 @@ pub struct DeoptMetadata {
     pub native_execution: bool,
     /// Generated regions.
     pub regions: Vec<DeoptRegionMetadata>,
+}
+
+/// Report-only precision counters for the generated live-state metadata. They
+/// quantify how much of the snapshot state the metadata generator can prove,
+/// so a precision improvement is measurable rather than asserted.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DeoptPrecisionCounters {
+    /// Live slots (registers plus locals) proven definitely initialized
+    /// (`initialized == Some(true)`) across every generated side-exit snapshot.
+    pub slots_initialized_known: u64,
+    /// Register slots whose alias class was refined to `no_references_observed`
+    /// inside a reference/COW region (`reference_cow == Represented`) because the
+    /// register provably holds a plain scalar — a strictly finer class than the
+    /// region's coarse `unknown_aliasing` default.
+    pub slots_alias_refined: u64,
+    /// Count of generated side-exit snapshots that cannot be materialized
+    /// exactly, keyed by the first missing state family. Empty for the current
+    /// supported regions (rejections happen upstream at the IR boundary), so a
+    /// non-empty map would flag an over-claim regression.
+    pub snapshot_rejected_by_family: BTreeMap<&'static str, u64>,
+}
+
+impl DeoptMetadata {
+    /// Computes the report-only precision counters over every generated
+    /// side-exit snapshot.
+    #[must_use]
+    pub fn precision_counters(&self) -> DeoptPrecisionCounters {
+        let mut counters = DeoptPrecisionCounters::default();
+        for region in &self.regions {
+            for exit in &region.side_exits {
+                let snapshot = &exit.snapshot;
+                for slot in snapshot.registers.iter().chain(snapshot.locals.iter()) {
+                    if slot.initialized == Some(true) {
+                        counters.slots_initialized_known += 1;
+                    }
+                }
+                if snapshot.reference_cow == ControlStateMarker::Represented {
+                    for slot in &snapshot.registers {
+                        if slot.alias_class == AliasState::NoReferencesObserved {
+                            counters.slots_alias_refined += 1;
+                        }
+                    }
+                }
+                if let Some(family) = snapshot.rejected_state_family() {
+                    *counters
+                        .snapshot_rejected_by_family
+                        .entry(family.as_str())
+                        .or_default() += 1;
+                }
+            }
+        }
+        counters
+    }
 }
 
 /// Stable guard identifier for guard/snapshot/resume metadata v2.
@@ -963,6 +1026,8 @@ impl DeoptMetadata {
             regions,
         };
         metadata.verify()?;
+        #[cfg(debug_assertions)]
+        debug_assert_initialized_liveness_sound(unit, &metadata);
         Ok(metadata)
     }
 
@@ -1057,8 +1122,26 @@ fn region_for_block(
     let end = first + block.instruction_len as usize;
     let instructions: Vec<u32> = (first as u32..end as u32).collect();
     let mut side_exits = Vec::new();
+
+    // Intra-block forward dataflow, reset to empty at block entry. A dense block
+    // is single-entry and straight-line (only its terminator branches), so every
+    // path that reaches instruction `i` executes `[first, i)` in program order.
+    // Therefore a slot defined earlier in this block is definitely initialized at
+    // `i`, and a register whose latest in-block definition is a scalar-producing
+    // opcode provably holds a plain scalar there. Slots first defined in a
+    // predecessor block are left unproven (`None` / region-default alias) — this
+    // pass never claims a state a single block cannot establish.
+    let mut init_regs: HashSet<u32> = HashSet::new();
+    let mut init_locals: HashSet<u32> = HashSet::new();
+    let mut scalar_regs: HashSet<u32> = HashSet::new();
+    let mut defs_scratch: Vec<u32> = Vec::new();
+    let mut uses_scratch: Vec<u32> = Vec::new();
+
     for instruction_index in first..end {
         let instruction = &function.instructions[instruction_index];
+        // Emit side exits using the dataflow state *before* executing this
+        // instruction: a side exit resumes at `instruction_index`, so this
+        // instruction's own definitions have not happened yet.
         for reason in reasons_for_instruction(instruction) {
             let resume = DeoptResumePoint {
                 function: function_index,
@@ -1068,8 +1151,40 @@ fn region_for_block(
             side_exits.push(DeoptSideExitPoint {
                 reason,
                 resume,
-                snapshot: snapshot_for_instruction(unit, function, instruction, resume, reason),
+                snapshot: snapshot_for_instruction(
+                    unit,
+                    function,
+                    instruction,
+                    resume,
+                    reason,
+                    &init_regs,
+                    &init_locals,
+                    &scalar_regs,
+                ),
             });
+        }
+
+        // Advance the dataflow state past this instruction for the next boundary.
+        defs_scratch.clear();
+        uses_scratch.clear();
+        collect_defs_uses(&instruction.operands, &mut defs_scratch, &mut uses_scratch);
+        for &register in &defs_scratch {
+            init_regs.insert(register);
+            // Any definition may overwrite an earlier scalar result; a scalar
+            // classification is re-added below only if this definition proves it.
+            scalar_regs.remove(&register);
+        }
+        if let Some(dst) = scalar_result_register(instruction) {
+            scalar_regs.insert(dst);
+        }
+        match local_init_effect(instruction) {
+            Some(LocalInitEffect::Define(local)) => {
+                init_locals.insert(local);
+            }
+            Some(LocalInitEffect::Kill(local)) => {
+                init_locals.remove(&local);
+            }
+            None => {}
         }
     }
     DeoptRegionMetadata {
@@ -1082,12 +1197,101 @@ fn region_for_block(
     }
 }
 
+/// Effect of a dense instruction on the definite-initialization state of a PHP
+/// local. Definitions are a conservative subset (only opcodes that
+/// unconditionally initialize the named local); the kill set is complete for the
+/// supported (non-rejected) regions — `UnsetLocal` is the only opcode that can
+/// make a local uninitialized again, and `UnsetDim` clears an element without
+/// touching the local's own initialized state. Missing a definition only costs
+/// precision (`None` instead of `Some(true)`); missing a kill would be unsound,
+/// so the kill set must stay exhaustive.
+enum LocalInitEffect {
+    /// The named local is definitely initialized after this instruction.
+    Define(u32),
+    /// The named local becomes uninitialized after this instruction.
+    Kill(u32),
+}
+
+/// Classifies a dense instruction's effect on a local's initialized state, keyed
+/// on opcode so an operand shape shared by a read-only opcode is never mistaken
+/// for a definition.
+fn local_init_effect(instruction: &DenseInstruction) -> Option<LocalInitEffect> {
+    match (instruction.opcode, &instruction.operands) {
+        (
+            DenseOpcode::StoreLocal | DenseOpcode::StoreLocalDiscard,
+            DenseOperands::LocalOperand { local, .. },
+        ) => Some(LocalInitEffect::Define(*local)),
+        (DenseOpcode::InitStaticLocal, DenseOperands::StaticLocal { local, .. }) => {
+            Some(LocalInitEffect::Define(*local))
+        }
+        (DenseOpcode::UnsetLocal, DenseOperands::Local { local }) => {
+            Some(LocalInitEffect::Kill(*local))
+        }
+        _ => None,
+    }
+}
+
+/// Register destination of a dense opcode whose result is provably a plain
+/// scalar — `bool` for the comparison/`instanceof`/`isset`/`empty` opcodes and
+/// `bool`/`int` for the spaceship compare and boolean negation. Such a value can
+/// never carry PHP reference or copy-on-write container identity, so its register
+/// may be refined to `NoReferencesObserved` even inside a reference/COW region
+/// (where the region default is the coarse `UnknownAliasing`). Keyed on opcode so
+/// value-copying opcodes that share an operand shape (`Move`, `LoadLocal`, …) are
+/// never treated as scalar producers. Returns `None` for every other opcode, so
+/// no register is ever refined below what its defining opcode proves.
+fn scalar_result_register(instruction: &DenseInstruction) -> Option<u32> {
+    match (instruction.opcode, &instruction.operands) {
+        (
+            DenseOpcode::CompareEqual
+            | DenseOpcode::CompareNotEqual
+            | DenseOpcode::CompareIdentical
+            | DenseOpcode::CompareNotIdentical
+            | DenseOpcode::CompareLess
+            | DenseOpcode::CompareLessEqual
+            | DenseOpcode::CompareGreater
+            | DenseOpcode::CompareGreaterEqual
+            | DenseOpcode::CompareSpaceship,
+            DenseOperands::Binary { dst, .. },
+        ) => Some(*dst),
+        (DenseOpcode::UnaryNot, DenseOperands::RegOperand { dst, .. }) => Some(*dst),
+        (DenseOpcode::InstanceOf, DenseOperands::InstanceOf { dst, .. }) => Some(*dst),
+        (
+            DenseOpcode::IssetLocal | DenseOpcode::EmptyLocal,
+            DenseOperands::RegOperand { dst, .. },
+        ) => Some(*dst),
+        (DenseOpcode::IssetDim, DenseOperands::IssetDim { dst, .. }) => Some(*dst),
+        (DenseOpcode::EmptyDim, DenseOperands::EmptyDim { dst, .. }) => Some(*dst),
+        _ => None,
+    }
+}
+
+/// Caller register that receives a value-returning call's result, when the dense
+/// call opcode names an explicit destination register. Used to record the
+/// caller-callee return slot on a `call_frame_boundary` side exit. Returns `None`
+/// for calls with no value destination (e.g. discarded calls, declarations).
+fn call_return_register(instruction: &DenseInstruction) -> Option<u32> {
+    match (instruction.opcode, &instruction.operands) {
+        (DenseOpcode::CallFunction, DenseOperands::Call { dst, .. }) => Some(*dst),
+        (DenseOpcode::CallCallable, DenseOperands::CallableCall { dst, .. }) => Some(*dst),
+        (DenseOpcode::NewObject, DenseOperands::NewObject { dst, .. }) => Some(*dst),
+        (DenseOpcode::CallMethod, DenseOperands::MethodCall { dst, .. }) => Some(*dst),
+        (DenseOpcode::CallStaticMethod, DenseOperands::StaticCall { dst, .. }) => Some(*dst),
+        (DenseOpcode::Pipe, DenseOperands::Pipe { dst, .. }) => Some(*dst),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn snapshot_for_instruction(
     unit: &DenseBytecodeUnit,
     function: &DenseFunction,
     instruction: &DenseInstruction,
     resume: DeoptResumePoint,
     reason: VmDeoptReason,
+    init_regs: &HashSet<u32>,
+    init_locals: &HashSet<u32>,
+    scalar_regs: &HashSet<u32>,
 ) -> LiveStateSnapshot {
     let span = unit
         .spans
@@ -1109,6 +1313,27 @@ fn snapshot_for_instruction(
         VmDeoptReason::ReferenceCowIdentity => AliasState::UnknownAliasing,
         _ => AliasState::NoReferencesObserved,
     };
+    // Definite-initialization: `Some(true)` only where a slot is provably defined
+    // before this instruction on every path (proved intra-block above); `None`
+    // otherwise. The generator never emits `Some(false)` for the enumerate-all
+    // model — a not-yet-defined slot is "unproven", not "proven uninitialized".
+    let register_initialized = |index: u32| init_regs.contains(&index).then_some(true);
+    let local_initialized = |index: u32| init_locals.contains(&index).then_some(true);
+    // Per-slot alias refinement: a register proven to hold a plain scalar carries
+    // no reference/COW identity, so refine it to the finest class even in a
+    // reference/COW region. Never widen below the region default otherwise.
+    let register_alias = |index: u32| {
+        if region_alias_class == AliasState::UnknownAliasing && scalar_regs.contains(&index) {
+            AliasState::NoReferencesObserved
+        } else {
+            region_alias_class
+        }
+    };
+    let call_return_slot = if reason == VmDeoptReason::CallFrameBoundary {
+        call_return_register(instruction)
+    } else {
+        None
+    };
     LiveStateSnapshot {
         resume,
         span,
@@ -1116,16 +1341,16 @@ fn snapshot_for_instruction(
             .map(|index| LiveValueSlot {
                 class: LiveValueClass::Register,
                 index,
-                initialized: None,
+                initialized: register_initialized(index),
                 identity: value_identity,
-                alias_class: region_alias_class,
+                alias_class: register_alias(index),
             })
             .collect(),
         locals: (0..function.local_count)
             .map(|index| LiveValueSlot {
                 class: LiveValueClass::Local,
                 index,
-                initialized: None,
+                initialized: local_initialized(index),
                 identity: value_identity,
                 alias_class: region_alias_class,
             })
@@ -1137,6 +1362,7 @@ fn snapshot_for_instruction(
         reference_cow: marker_for(reason, VmDeoptReason::ReferenceCowIdentity),
         output_buffer: marker_for(reason, VmDeoptReason::OutputBufferState),
         call_frame_identity: marker_for(reason, VmDeoptReason::CallFrameBoundary),
+        call_return_slot,
         include_stack: ControlStateMarker::Represented,
         pending_diagnostics: ControlStateMarker::Represented,
         source_trace: ControlStateMarker::Represented,
@@ -1373,6 +1599,116 @@ fn verify_snapshot(
             });
         }
     }
+    // Alias-class metadata must stay honest: a region reporting no reference/COW
+    // control state must not carry any reference-sensitive slot.
+    if !snapshot.alias_metadata_consistent() {
+        errors.push(DeoptMetadataError {
+            reason: VmDeoptReason::ReferenceCowIdentity,
+            message: format!(
+                "region {} snapshot claims a reference-sensitive slot without reference/COW state",
+                region.region_id
+            ),
+        });
+    }
+    // A slot proven uninitialized cannot appear in a snapshot that also claims to
+    // materialize exactly: the initialized-state family must reject it. This
+    // keeps `Some(false)` from silently masquerading as materializable.
+    let claims_uninitialized = snapshot
+        .registers
+        .iter()
+        .chain(snapshot.locals.iter())
+        .any(|slot| slot.initialized == Some(false));
+    if claims_uninitialized && snapshot.rejected_state_family().is_none() {
+        errors.push(DeoptMetadataError {
+            reason: VmDeoptReason::UnsupportedControlFlow,
+            message: format!(
+                "region {} snapshot marks a slot uninitialized yet claims full materialization",
+                region.region_id
+            ),
+        });
+    }
+    // A caller-callee return slot is only meaningful at a represented call
+    // frame boundary and must index a real register slot.
+    if let Some(slot) = snapshot.call_return_slot {
+        if snapshot.call_frame_identity != ControlStateMarker::Represented {
+            errors.push(DeoptMetadataError {
+                reason: VmDeoptReason::CallFrameBoundary,
+                message: format!(
+                    "region {} records a call return slot without a represented call frame",
+                    region.region_id
+                ),
+            });
+        }
+        if (slot as usize) >= snapshot.registers.len() {
+            errors.push(DeoptMetadataError {
+                reason: VmDeoptReason::CallFrameBoundary,
+                message: format!(
+                    "region {} call return slot {} is outside the register file",
+                    region.region_id, slot
+                ),
+            });
+        }
+    }
+}
+
+/// Independent debug-build re-derivation of the initialized-liveness claims. For
+/// every generated snapshot it recomputes, from the owning block's start, the set
+/// of slots provably initialized before the resume instruction, and asserts every
+/// `Some(true)` claim is backed by an in-block definition. This scans from scratch
+/// rather than reusing the generator's incremental state, so an enumeration bug in
+/// `region_for_block` that over-claimed initialization would fail here in tests.
+#[cfg(debug_assertions)]
+fn debug_assert_initialized_liveness_sound(unit: &DenseBytecodeUnit, metadata: &DeoptMetadata) {
+    for region in &metadata.regions {
+        let Some(function) = unit.functions.get(region.function as usize) else {
+            continue;
+        };
+        let Some(block) = function.blocks.iter().find(|b| b.id == region.entry_block) else {
+            continue;
+        };
+        let first = block.first_instruction as usize;
+        let mut defs = Vec::new();
+        let mut uses = Vec::new();
+        for exit in &region.side_exits {
+            let target = exit.resume.instruction as usize;
+            let mut regs: HashSet<u32> = HashSet::new();
+            let mut locals: HashSet<u32> = HashSet::new();
+            for idx in first..target.min(function.instructions.len()) {
+                let instruction = &function.instructions[idx];
+                defs.clear();
+                uses.clear();
+                collect_defs_uses(&instruction.operands, &mut defs, &mut uses);
+                for &register in &defs {
+                    regs.insert(register);
+                }
+                match local_init_effect(instruction) {
+                    Some(LocalInitEffect::Define(local)) => {
+                        locals.insert(local);
+                    }
+                    Some(LocalInitEffect::Kill(local)) => {
+                        locals.remove(&local);
+                    }
+                    None => {}
+                }
+            }
+            for slot in &exit.snapshot.registers {
+                debug_assert!(
+                    slot.initialized != Some(true) || regs.contains(&slot.index),
+                    "region {} register r{} claims initialized without an in-block definition",
+                    region.region_id,
+                    slot.index
+                );
+            }
+            for slot in &exit.snapshot.locals {
+                debug_assert!(
+                    slot.initialized != Some(true) || locals.contains(&slot.index),
+                    "region {} local slot {} claims initialized without an in-block definition",
+                    region.region_id,
+                    slot.index
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1400,6 +1736,293 @@ mod tests {
             .into_iter()
             .map(|error| error.reason)
             .collect()
+    }
+
+    /// Base plain snapshot for verifier over-claim tests: `register_count`
+    /// initialized scalar registers, no PHP control state, resuming at f0:b0#0.
+    fn plain_snapshot(register_count: u32) -> LiveStateSnapshot {
+        LiveStateSnapshot {
+            resume: DeoptResumePoint {
+                function: 0,
+                block: 0,
+                instruction: 0,
+            },
+            span: IrSpan::default(),
+            registers: (0..register_count)
+                .map(|index| LiveValueSlot {
+                    class: LiveValueClass::Register,
+                    index,
+                    initialized: Some(true),
+                    identity: LiveIdentityMarker::Plain,
+                    alias_class: AliasState::NoReferencesObserved,
+                })
+                .collect(),
+            locals: Vec::new(),
+            operand_stack: Vec::new(),
+            pending_exception: ControlStateMarker::None,
+            pending_finally: ControlStateMarker::None,
+            foreach_iterator: ControlStateMarker::None,
+            reference_cow: ControlStateMarker::None,
+            output_buffer: ControlStateMarker::None,
+            call_frame_identity: ControlStateMarker::None,
+            call_return_slot: None,
+            include_stack: ControlStateMarker::Represented,
+            pending_diagnostics: ControlStateMarker::Represented,
+            source_trace: ControlStateMarker::Represented,
+        }
+    }
+
+    /// Wraps one hand-built snapshot in a single-block region so `verify` and the
+    /// precision counters can be exercised without lowering a whole program.
+    fn metadata_with_snapshot(snapshot: LiveStateSnapshot) -> DeoptMetadata {
+        DeoptMetadata {
+            schema_version: 1,
+            dense_bytecode_version: DENSE_BYTECODE_VERSION,
+            native_execution: false,
+            regions: vec![DeoptRegionMetadata {
+                region_id: "f0:b0".to_string(),
+                function: 0,
+                entry_block: 0,
+                blocks: vec![0],
+                instructions: vec![0],
+                side_exits: vec![DeoptSideExitPoint {
+                    reason: VmDeoptReason::CallFrameBoundary,
+                    resume: DeoptResumePoint {
+                        function: 0,
+                        block: 0,
+                        instruction: 0,
+                    },
+                    snapshot,
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn deopt_metadata_proves_initialized_after_definition() {
+        // A local stored earlier in a straight-line block is provably initialized
+        // at every later side exit in that block: `initialized == Some(true)`.
+        let metadata =
+            metadata_from_source("<?php $x = 1 + 2; echo $x;").expect("straight-line metadata");
+        let snapshots: Vec<&LiveStateSnapshot> = metadata
+            .regions
+            .iter()
+            .flat_map(|region| &region.side_exits)
+            .map(|exit| &exit.snapshot)
+            .collect();
+        assert!(
+            snapshots
+                .iter()
+                .flat_map(|snapshot| &snapshot.locals)
+                .any(|slot| slot.initialized == Some(true)),
+            "a stored local is proven initialized after its definition"
+        );
+        assert!(
+            snapshots
+                .iter()
+                .flat_map(|snapshot| &snapshot.registers)
+                .any(|slot| slot.initialized == Some(true)),
+            "a defined register is proven initialized after its definition"
+        );
+        // The generator never proves definite-uninitialization for the
+        // enumerate-all model, so it emits `Some(true)` or `None`, never
+        // `Some(false)` — keeping every snapshot materializable.
+        assert!(
+            snapshots
+                .iter()
+                .flat_map(|snapshot| snapshot.registers.iter().chain(snapshot.locals.iter()))
+                .all(|slot| slot.initialized != Some(false))
+        );
+        assert!(metadata.precision_counters().slots_initialized_known > 0);
+    }
+
+    #[test]
+    fn deopt_metadata_leaves_conditional_definition_uninitialized() {
+        // `$x` is defined only on the taken branch, so at the merge point it is
+        // not provably initialized. The intra-block analysis leaves it `None`
+        // (unproven), never over-claiming `Some(true)`. Successful generation
+        // also runs the debug re-derivation, which fails loudly on any
+        // over-claim.
+        let metadata = metadata_from_source("<?php $c = 1; if ($c) { $x = 5; } echo $x;")
+            .expect("conditional metadata");
+        assert!(
+            metadata
+                .regions
+                .iter()
+                .flat_map(|region| &region.side_exits)
+                .flat_map(|exit| &exit.snapshot.locals)
+                .any(|slot| slot.initialized.is_none()),
+            "a conditionally-defined local stays unproven (None) at the merge point"
+        );
+    }
+
+    #[test]
+    fn deopt_metadata_refines_scalar_register_alias_in_reference_region() {
+        // A comparison result is provably a plain scalar. In the same block a
+        // later array-dim write forms a reference/COW region whose default alias
+        // class is the coarse `unknown_aliasing`; the scalar register is refined
+        // to the finest `no_references_observed` without weakening the region's
+        // coarsest-class summary.
+        let metadata =
+            metadata_from_source("<?php $x = 1; $ok = $x < 5; $arr = []; $arr[0] = $x; echo $ok;")
+                .expect("reference-region metadata");
+        let refined = metadata
+            .regions
+            .iter()
+            .flat_map(|region| &region.side_exits)
+            .filter(|exit| exit.snapshot.reference_cow == ControlStateMarker::Represented)
+            .find(|exit| {
+                exit.snapshot
+                    .registers
+                    .iter()
+                    .any(|slot| slot.alias_class == AliasState::NoReferencesObserved)
+            })
+            .expect("a reference/COW region refines at least one scalar register");
+        // The coarsest-class summary stays honest: still unknown for the region.
+        assert_eq!(
+            refined.snapshot.reference_alias_summary(),
+            AliasState::UnknownAliasing
+        );
+        // Every generated snapshot's alias metadata stays internally consistent.
+        for exit in metadata
+            .regions
+            .iter()
+            .flat_map(|region| &region.side_exits)
+        {
+            assert!(exit.snapshot.alias_metadata_consistent());
+        }
+        assert!(metadata.precision_counters().slots_alias_refined > 0);
+    }
+
+    #[test]
+    fn deopt_metadata_records_caller_callee_return_slot() {
+        // A direct function call is a call-frame boundary side exit; the callee
+        // return value's caller register is derivable and recorded.
+        let metadata = metadata_from_source("<?php function g(){ return 1; } $x = g(); echo $x;")
+            .expect("call metadata");
+        let exit = metadata
+            .regions
+            .iter()
+            .flat_map(|region| &region.side_exits)
+            .find(|exit| exit.snapshot.call_return_slot.is_some())
+            .expect("a call boundary records its return slot");
+        assert_eq!(exit.reason, VmDeoptReason::CallFrameBoundary);
+        assert_eq!(
+            exit.snapshot.call_frame_identity,
+            ControlStateMarker::Represented
+        );
+        let slot = exit.snapshot.call_return_slot.expect("return slot present");
+        assert!((slot as usize) < exit.snapshot.registers.len());
+    }
+
+    #[test]
+    fn deopt_metadata_precision_counters_are_measurable() {
+        // Report-only precision: the pre-change generator emitted `None` for every
+        // initialized field and no alias refinement (both counters 0). The refined
+        // generator proves many slots and refines scalar registers, and never
+        // rejects a supported region (rejections happen upstream at the IR
+        // boundary), so the rejection map stays empty.
+        let metadata =
+            metadata_from_source("<?php $x = 1; $ok = $x < 5; $arr = []; $arr[0] = $x; echo $ok;")
+                .expect("counter metadata");
+        let counters = metadata.precision_counters();
+        assert!(counters.slots_initialized_known > 0);
+        assert!(counters.slots_alias_refined > 0);
+        assert!(
+            counters.snapshot_rejected_by_family.is_empty(),
+            "supported regions are all materializable: {:?}",
+            counters.snapshot_rejected_by_family
+        );
+    }
+
+    #[test]
+    fn deopt_metadata_rejects_include_and_eval() {
+        assert!(
+            rejected_reasons("<?php include 'x.php';")
+                .contains(&VmDeoptReason::UnsupportedControlFlow)
+        );
+        assert!(
+            rejected_reasons("<?php eval('1;');").contains(&VmDeoptReason::UnsupportedControlFlow)
+        );
+    }
+
+    #[test]
+    fn deopt_metadata_rejects_by_reference_foreach() {
+        let reasons = rejected_reasons("<?php $a = [1]; foreach ($a as &$v) { $v++; }");
+        assert!(reasons.contains(&VmDeoptReason::ReferenceCowIdentity));
+    }
+
+    #[test]
+    fn deopt_verifier_rejects_call_return_slot_without_represented_frame() {
+        let mut snapshot = plain_snapshot(1);
+        snapshot.call_frame_identity = ControlStateMarker::None;
+        snapshot.call_return_slot = Some(0);
+        let errors = metadata_with_snapshot(snapshot)
+            .verify()
+            .expect_err("a return slot without a represented call frame is rejected");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.reason == VmDeoptReason::CallFrameBoundary)
+        );
+    }
+
+    #[test]
+    fn deopt_verifier_rejects_call_return_slot_out_of_range() {
+        let mut snapshot = plain_snapshot(1);
+        snapshot.call_frame_identity = ControlStateMarker::Represented;
+        snapshot.call_return_slot = Some(7);
+        let errors = metadata_with_snapshot(snapshot)
+            .verify()
+            .expect_err("an out-of-range return slot is rejected");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("call return slot 7 is outside the register file")
+        }));
+    }
+
+    #[test]
+    fn deopt_verifier_rejects_inconsistent_alias_metadata() {
+        // A reference-sensitive slot with no reference/COW control state is an
+        // over-claim: the verifier flags it.
+        let mut snapshot = plain_snapshot(1);
+        snapshot.registers[0].alias_class = AliasState::EscapedReference;
+        snapshot.reference_cow = ControlStateMarker::None;
+        let errors = metadata_with_snapshot(snapshot)
+            .verify()
+            .expect_err("inconsistent alias metadata is rejected");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.reason == VmDeoptReason::ReferenceCowIdentity)
+        );
+    }
+
+    #[test]
+    fn deopt_precision_counter_counts_uninitialized_rejection() {
+        // A proven-uninitialized local rejects materialization (initialized-locals
+        // family) and is counted by the rejection precision counter — while the
+        // verifier still passes because the rejection is honestly marked.
+        let mut snapshot = plain_snapshot(1);
+        snapshot.locals = vec![LiveValueSlot {
+            class: LiveValueClass::Local,
+            index: 0,
+            initialized: Some(false),
+            identity: LiveIdentityMarker::Plain,
+            alias_class: AliasState::NoReferencesObserved,
+        }];
+        let metadata = metadata_with_snapshot(snapshot);
+        metadata
+            .verify()
+            .expect("an honestly-rejected uninitialized slot still verifies");
+        let counters = metadata.precision_counters();
+        assert_eq!(
+            counters
+                .snapshot_rejected_by_family
+                .get(SnapshotStateFamily::InitializedLocals.as_str()),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -1584,6 +2207,7 @@ mod tests {
             reference_cow: ControlStateMarker::Represented,
             output_buffer: ControlStateMarker::Represented,
             call_frame_identity: ControlStateMarker::Represented,
+            call_return_slot: None,
             include_stack: ControlStateMarker::Represented,
             pending_diagnostics: ControlStateMarker::Represented,
             source_trace: ControlStateMarker::Represented,
@@ -1669,6 +2293,7 @@ mod tests {
             reference_cow: ControlStateMarker::None,
             output_buffer: ControlStateMarker::None,
             call_frame_identity: ControlStateMarker::None,
+            call_return_slot: None,
             include_stack: ControlStateMarker::None,
             pending_diagnostics: ControlStateMarker::None,
             source_trace: ControlStateMarker::None,
@@ -1713,6 +2338,7 @@ mod tests {
             reference_cow: ControlStateMarker::None,
             output_buffer: ControlStateMarker::None,
             call_frame_identity: ControlStateMarker::Represented,
+            call_return_slot: None,
             include_stack: ControlStateMarker::Represented,
             pending_diagnostics: ControlStateMarker::Represented,
             source_trace: ControlStateMarker::Represented,
