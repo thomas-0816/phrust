@@ -1356,6 +1356,11 @@ impl InlineCacheTable {
             ) {
                 return;
             }
+            // A runtime install means the slot is no longer purely
+            // seed-derived, so drop seed attribution; the seeder re-sets
+            // `seeded` after its own install call, keeping the flag true only
+            // for slots touched exclusively by seeding.
+            slot.seeded = false;
             let new_entry = FunctionCallPolymorphicEntry {
                 lowered_name: lowered_name.clone(),
                 epoch,
@@ -3701,6 +3706,71 @@ mod tests {
         assert_eq!(event.kind, Some(InlineCacheKind::AutoloadClassLookup));
         assert!(event.invalidation);
         assert!(event.miss);
+    }
+
+    #[test]
+    fn runtime_install_over_a_seeded_slot_drops_seed_attribution() {
+        let mut table = InlineCacheTable::default();
+        let snapshot = FunctionCallSiteSnapshot {
+            function: 0,
+            block: 0,
+            instruction: 0,
+            lowered_name: "seeded".to_owned(),
+            arity: 0,
+            epoch: 1,
+            target_function: 4,
+        };
+        assert_eq!(
+            table.seed_persistent_function_callsites(7, std::slice::from_ref(&snapshot), |_| true),
+            1
+        );
+        // A runtime install at the same site (a second distinct call) clears
+        // the seed flag, so later hits are not misattributed as seeded.
+        table.observe_slot(
+            7,
+            FunctionId::new(0),
+            BlockId::new(0),
+            InstrId::new(0),
+            InlineCacheKind::FunctionCall,
+        );
+        table.install_function_call(
+            7,
+            FunctionId::new(0),
+            BlockId::new(0),
+            InstrId::new(0),
+            &PhpString::intern(b"learned"),
+            InvalidationEpoch::new(1),
+            FunctionCallShape {
+                arity: 0,
+                named_arguments: Vec::new(),
+                by_ref_arguments: Vec::new(),
+            },
+            None,
+            FunctionCallCacheTarget::CurrentUnit {
+                function: FunctionId::new(9),
+            },
+        );
+        let name = PhpString::intern(b"learned");
+        let shape = FunctionCallShape {
+            arity: 0,
+            named_arguments: Vec::new(),
+            by_ref_arguments: Vec::new(),
+        };
+        let (_, observation) = table.lookup_function_call(
+            7,
+            FunctionId::new(0),
+            BlockId::new(0),
+            InstrId::new(0),
+            &name,
+            InvalidationEpoch::new(1),
+            &shape,
+            None,
+        );
+        assert!(observation.hit);
+        assert!(
+            !observation.seeded,
+            "a runtime-learned hit must not attribute to the seed"
+        );
     }
 
     #[test]

@@ -120,6 +120,22 @@ pub fn negative_include_cache_enabled() -> bool {
     })
 }
 
+/// Directory-version guards for a candidate parent, captured by the loader
+/// immediately BEFORE probing that candidate so a file created concurrently
+/// with (or after) the probe changes the version and invalidates the guard.
+/// `None` means the miss is not cacheable — an unversionable/relative parent,
+/// a non-`NotFound` (transient) failure, or a symlink candidate whose target
+/// could appear in a directory these guards do not cover.
+pub(crate) struct NegativeProbeTrace {
+    guards: Option<Vec<(PathBuf, IncludeDirectoryVersion)>>,
+}
+
+impl NegativeProbeTrace {
+    fn uncacheable() -> Self {
+        Self { guards: None }
+    }
+}
+
 /// One cached missing-include resolution: the deterministic error to replay
 /// plus the directory-version guards that must all still match for the entry
 /// to be served.
@@ -130,38 +146,6 @@ struct NegativeIncludeEntry {
 }
 
 impl NegativeIncludeEntry {
-    /// Builds guards from the probed candidates' parent directories. Every
-    /// parent must exist and be versionable; otherwise the miss is not
-    /// cacheable (a deeper directory chain could appear without changing any
-    /// observed version). Relative candidates are probed by the loader
-    /// against the process working directory (PHP `chdir` is virtualized in
-    /// request state and never moves the process), so they anchor there for
-    /// guard purposes too.
-    fn from_candidates(error: &VmError, candidates: &[PathBuf]) -> Option<Self> {
-        if candidates.is_empty() {
-            return None;
-        }
-        let process_cwd = std::env::current_dir().ok()?;
-        let mut guards: Vec<(PathBuf, IncludeDirectoryVersion)> = Vec::new();
-        for candidate in candidates {
-            let candidate = if candidate.is_absolute() {
-                candidate.clone()
-            } else {
-                process_cwd.join(candidate)
-            };
-            let parent = candidate.parent()?.to_path_buf();
-            if guards.iter().any(|(dir, _)| *dir == parent) {
-                continue;
-            }
-            let version = include_directory_version(&parent)?;
-            guards.push((parent, version));
-        }
-        Some(Self {
-            error: error.clone(),
-            guards,
-        })
-    }
-
     fn is_still_valid(&self) -> bool {
         self.guards.iter().all(|(dir, stored)| {
             include_directory_version(dir).is_some_and(|current| current == *stored)
@@ -317,7 +301,7 @@ impl IncludeCache {
                 }
             }
         }
-        if let Some(error) = self.lookup_negative_include(&key)? {
+        if let Some(error) = self.lookup_negative_include(&key) {
             return Err(error);
         }
         self.stats.resolution_misses.fetch_add(1, Ordering::Relaxed);
@@ -328,8 +312,8 @@ impl IncludeCache {
             cwd,
         ) {
             Ok(resolved) => resolved,
-            Err((error, candidates)) => {
-                self.maybe_install_negative_include(key, &error, &candidates);
+            Err((error, trace)) => {
+                self.maybe_install_negative_include(key, &error, trace);
                 return Err(error);
             }
         };
@@ -343,51 +327,52 @@ impl IncludeCache {
     /// Serves a cached missing-include failure only while every guard
     /// directory version still matches. Any changed or unobservable guard
     /// drops the entry and falls back to full resolution.
-    fn lookup_negative_include(
-        &self,
-        key: &IncludeResolutionKey,
-    ) -> Result<Option<VmError>, VmError> {
+    fn lookup_negative_include(&self, key: &IncludeResolutionKey) -> Option<VmError> {
         if !negative_include_cache_enabled() {
-            return Ok(None);
+            return None;
         }
         let shard_index = self.negative_shard_index(key);
-        let mut shard = self.negative_shards[shard_index]
-            .lock()
-            .map_err(|_| include_cache_lock_error("negative", "lookup"))?;
-        let Some(entry) = shard.get(key) else {
-            return Ok(None);
-        };
+        // The negative cache is advisory: a poisoned shard must degrade to a
+        // normal resolution (cache miss), never turn a transient panic into a
+        // persistent include failure.
+        let mut shard = self.negative_shards[shard_index].lock().ok()?;
+        let entry = shard.get(key)?;
         if entry.is_still_valid() {
             self.stats
                 .negative_cache_hits
                 .fetch_add(1, Ordering::Relaxed);
-            return Ok(Some(entry.error.clone()));
+            return Some(entry.error.clone());
         }
         shard.remove(key);
         self.stats
             .negative_cache_invalidations
             .fetch_add(1, Ordering::Relaxed);
-        Ok(None)
+        None
     }
 
     /// Installs a directory-version-guarded negative entry for a missing
-    /// include path. Fail-closed: only `E_PHP_VM_INCLUDE_MISSING` with every
-    /// candidate parent directory versionable is cacheable, and each shard is
+    /// include path. Fail-closed: only a genuine `E_PHP_VM_INCLUDE_MISSING`
+    /// whose loader trace captured pre-probe versions for every (absolute,
+    /// non-symlink, ENOENT) candidate parent is cacheable, and each shard is
     /// capacity-bounded.
     fn maybe_install_negative_include(
         &self,
         key: IncludeResolutionKey,
         error: &VmError,
-        candidates: &[PathBuf],
+        trace: NegativeProbeTrace,
     ) {
         if !negative_include_cache_enabled() || error.code() != "E_PHP_VM_INCLUDE_MISSING" {
             return;
         }
-        let Some(entry) = NegativeIncludeEntry::from_candidates(error, candidates) else {
+        let Some(guards) = trace.guards.filter(|guards| !guards.is_empty()) else {
             self.stats
                 .negative_cache_blocked_unversioned
                 .fetch_add(1, Ordering::Relaxed);
             return;
+        };
+        let entry = NegativeIncludeEntry {
+            error: error.clone(),
+            guards,
         };
         let shard_index = self.negative_shard_index(&key);
         let Ok(mut shard) = self.negative_shards[shard_index].lock() else {
@@ -897,10 +882,13 @@ impl IncludeLoader {
             .map_err(|(error, _)| error)
     }
 
-    /// Like [`Self::resolve_with_include_path`] but also reports the candidate
-    /// paths that were probed when resolution fails, so a caller can install a
-    /// directory-version-guarded negative cache entry. Non-local failures
-    /// (disabled loader, stream schemes, phar) report no candidates.
+    /// Like [`Self::resolve_with_include_path`] but also reports, when
+    /// resolution fails as a genuine missing path, the directory-version
+    /// guards needed to install a negative-cache entry — captured immediately
+    /// BEFORE probing each candidate so a file created concurrently with the
+    /// probe invalidates the guard. Non-local failures (disabled loader,
+    /// stream schemes, phar, non-`NotFound` errors, symlink/relative
+    /// candidates) yield an uncacheable trace.
     // The error variant is cold (resolution failures) and immediately
     // consumed by the negative-cache installer; boxing would only add an
     // allocation on the diagnostic path.
@@ -911,20 +899,20 @@ impl IncludeLoader {
         path: &str,
         include_path: &[PathBuf],
         cwd: Option<&Path>,
-    ) -> Result<ResolvedIncludePath, (VmError, Vec<PathBuf>)> {
+    ) -> Result<ResolvedIncludePath, (VmError, NegativeProbeTrace)> {
         if self.allowed_roots.is_empty() {
             return Err((
                 include_error(
                     "E_PHP_VM_INCLUDE_DISABLED",
                     "include loader has no allowed roots",
                 ),
-                Vec::new(),
+                NegativeProbeTrace::uncacheable(),
             ));
         }
         if phar::is_phar_uri(path) {
             return self
                 .resolve_phar_include(path, cwd)
-                .map_err(|error| (error, Vec::new()));
+                .map_err(|error| (error, NegativeProbeTrace::uncacheable()));
         }
         if path.contains("://") {
             return Err((
@@ -933,7 +921,7 @@ impl IncludeLoader {
                     format!("stream include `{path}` is not supported"),
                 )
                 .with_context("path", path),
-                Vec::new(),
+                NegativeProbeTrace::uncacheable(),
             ));
         }
         let raw = Path::new(path);
@@ -962,15 +950,58 @@ impl IncludeLoader {
             }
             push_include_candidate(&mut candidates, raw.to_path_buf());
         }
+        // Capture negative-cache guards only when the cache would use them.
+        // Each guard is the version of a candidate's parent directory read
+        // *before* that candidate is probed, so a file created concurrently
+        // with (or after) the probe changes the version and invalidates the
+        // guard. `cacheable` stays true only while every failed candidate is a
+        // non-symlink path that failed with NotFound and whose parent is
+        // versionable; a non-NotFound (transient permission/IO) failure or a
+        // dangling symlink (whose target may appear in an unguarded directory)
+        // makes the miss unsafe to cache. Relative candidates are anchored at
+        // the process working directory, matching how `fs::canonicalize`
+        // resolves them (residual limit: a mid-process `chdir` is not captured
+        // in the resolution key — the server and CLI never chdir while serving).
+        let capture_guards = negative_include_cache_enabled();
+        let mut process_cwd: Option<Option<PathBuf>> = None;
+        let mut guards: Vec<(PathBuf, IncludeDirectoryVersion)> = Vec::new();
+        let mut cacheable = capture_guards;
         let mut last_error = None;
         let mut canonical = None;
         for candidate in &candidates {
+            if cacheable {
+                let absolute = if candidate.is_absolute() {
+                    Some(candidate.clone())
+                } else {
+                    let cwd = process_cwd
+                        .get_or_insert_with(|| std::env::current_dir().ok())
+                        .clone();
+                    cwd.map(|cwd| cwd.join(candidate))
+                };
+                match absolute.as_ref().and_then(|path| path.parent()) {
+                    Some(parent) => {
+                        if !guards.iter().any(|(dir, _)| dir == parent) {
+                            match include_directory_version(parent) {
+                                Some(version) => guards.push((parent.to_path_buf(), version)),
+                                None => cacheable = false,
+                            }
+                        }
+                    }
+                    None => cacheable = false,
+                }
+            }
             match fs::canonicalize(candidate) {
                 Ok(path) => {
                     canonical = Some(path);
                     break;
                 }
                 Err(error) => {
+                    if cacheable
+                        && (error.kind() != std::io::ErrorKind::NotFound
+                            || fs::symlink_metadata(candidate).is_ok())
+                    {
+                        cacheable = false;
+                    }
                     last_error = Some(
                         include_error(
                             "E_PHP_VM_INCLUDE_MISSING",
@@ -986,7 +1017,10 @@ impl IncludeLoader {
                 include_error("E_PHP_VM_INCLUDE_MISSING", format!("{path}: not found"))
                     .with_context("path", path)
             });
-            return Err((error, candidates));
+            let trace = NegativeProbeTrace {
+                guards: cacheable.then_some(guards),
+            };
+            return Err((error, trace));
         };
         if !self
             .allowed_roots
@@ -999,11 +1033,11 @@ impl IncludeLoader {
                     format!("{} is outside allowed include roots", canonical.display()),
                 )
                 .with_context("canonical_path", canonical.display()),
-                Vec::new(),
+                NegativeProbeTrace::uncacheable(),
             ));
         }
-        let fingerprint =
-            include_path_file_fingerprint(&canonical).map_err(|error| (error, Vec::new()))?;
+        let fingerprint = include_path_file_fingerprint(&canonical)
+            .map_err(|error| (error, NegativeProbeTrace::uncacheable()))?;
         let directory_version = canonical.parent().and_then(include_directory_version);
         Ok(ResolvedIncludePath {
             canonical_path: canonical,
@@ -1966,6 +2000,42 @@ mod tests {
                 Some(&fixture.root),
             )
             .expect("file now resolves");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn negative_include_cache_does_not_cache_permission_failures() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixture = IncludeCacheFixture::new("negative-eacces");
+        fixture.write("locked/lib.php", "<?php\n");
+        let locked = fixture.root.join("locked");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        // Remove search permission so canonicalize fails with EACCES, not
+        // NotFound. Skip if running as root (permission bits are ignored).
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
+        let blocked = cache.resolve_with_include_path(
+            &loader,
+            None,
+            "locked/lib.php",
+            &[],
+            Some(&fixture.root),
+        );
+        let permission_denied = blocked.is_err()
+            && fs::metadata(locked.join("lib.php"))
+                .err()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod restore");
+        if !permission_denied {
+            return; // running as root or platform ignores the mode bits
+        }
+        // A transient permission failure must not be cached: fixing perms
+        // (which changes ctime, not the guarded dir mtime) resolves normally.
+        assert_eq!(cache.cache_stats().negative_cache_installs, 0);
+        cache
+            .resolve_with_include_path(&loader, None, "locked/lib.php", &[], Some(&fixture.root))
+            .expect("include resolves once permission is restored");
     }
 
     #[test]
