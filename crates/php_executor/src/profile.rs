@@ -105,6 +105,10 @@ impl EngineProfile {
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering.enabled = false;
                 vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
+                // The compatibility oracle stays pre-lever: keep the runtime R3/R4
+                // levers off even though they are on in the default runtime.
+                vm_options.last_use_moves = false;
+                vm_options.reuse_class_context_frames = false;
                 OptimizationLevel::O0
             }
             EngineProfileName::Default => {
@@ -123,6 +127,9 @@ impl EngineProfile {
                 vm_options.tiering = TieringOptions::default();
                 vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
                 vm_options.adaptive_tiny_unit_setup_threshold = Some(8);
+                // Runtime R3/R4 levers on in the default runtime.
+                vm_options.last_use_moves = true;
+                vm_options.reuse_class_context_frames = true;
                 OptimizationLevel::O2
             }
             EngineProfileName::ExperimentalJit => {
@@ -141,6 +148,9 @@ impl EngineProfile {
                 vm_options.tiering = TieringOptions::default();
                 vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
                 vm_options.adaptive_tiny_unit_setup_threshold = Some(8);
+                // Same guarded tier + runtime R3/R4 levers as the default runtime.
+                vm_options.last_use_moves = true;
+                vm_options.reuse_class_context_frames = true;
                 OptimizationLevel::O2
             }
         };
@@ -242,6 +252,9 @@ mod tests {
         assert!(options.vm_options.tiering.enabled);
         assert!(options.vm_options.typecheck_fast_paths);
         assert!(options.vm_options.internal_function_dispatch_cache);
+        // Runtime R3/R4 levers are on in the default runtime.
+        assert!(options.vm_options.last_use_moves);
+        assert!(options.vm_options.reuse_class_context_frames);
     }
 
     #[test]
@@ -266,6 +279,9 @@ mod tests {
         assert_eq!(options.vm_options.inline_caches, InlineCacheMode::Off);
         assert_eq!(options.vm_options.jit, JitMode::Off);
         assert!(!options.vm_options.tiering.enabled);
+        // The oracle must stay pre-lever even though R3/R4 are on by default.
+        assert!(!options.vm_options.last_use_moves);
+        assert!(!options.vm_options.reuse_class_context_frames);
     }
 
     #[test]

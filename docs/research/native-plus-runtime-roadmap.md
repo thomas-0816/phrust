@@ -152,12 +152,53 @@ rejected), so `poly → scale → fma` collapses bottom-up; a callee is inlined 
 when it reduces to a single-block, one-register-return, register-only scalar
 leaf whose body reads only its by-value int/float params (pure register
 substitution, no new local slots), with plain positional register/constant args.
-Verified against PHP 8.5.7 via the differential harness. **Still missing:**
-native→**builtin** and native→**userland** calls, which need a VM re-entry ABI
-(pass a context pointer + a helper that re-enters the interpreter) — the
-`blr`/`push_fp_lr`/`pop_fp_lr` ops and the `helpers.rs` symbol ABI exist but no
-stencil emits such a call yet. That re-entry path is the remaining keystone work
-for real WordPress code (which calls builtins and non-leaf userland functions).
+Verified against PHP 8.5.7 via the differential harness. **native→pure-builtin
+also landed:** a `ScalarIntOp::CallAbsI64` stencil emits a real `blr` into the
+pure `phrust_jit_abs_i64` helper (fp/lr save, 16-byte-aligned scratch frame,
+`x0=value`/`x1=&out`, status check → shared side exit, else store) — the first
+stencil to emit an actual call, closing the "encoder has `blr` but no stencil
+calls" gap. Safe (a normal C-ABI call to a pure `extern "C"` fn, no VM re-entry);
+the VM gates it via `NativeCallPermits` (only when `abs` resolves to the real
+builtin, never a user/namespaced shadow); `abs(INT_MIN)` side-exits so the
+interpreter yields the float — all byte-identical to PHP 8.5.7. **native→userland
+(tail-call shape) also landed:** a scalar-int leaf whose terminator returns the
+result of a `CallFunction` to a non-inlinable userland function now compiles —
+the native region computes the args, returns region status `3`
+(`JIT_HELPER_STATUS_TAILCALL`), and the VM performs the call on the normal
+`execute_function` path. **There is no unsafe VM re-entry** (see the correction
+below); the native code *returns to Rust first*, then Rust makes the call with
+its ordinary `&mut` state params. `execute_copy_patch_tailcall` materializes the
+leaf's own frame (id, guaranteed-int args, call-site spans) around the call so a
+throwing/stack-inspecting callee sees the identical stack, and the region guards
+every param as `Int` at entry so args are genuine ints (no coercion divergence).
+Runtime-gated to plain userland functions (rejects builtins, methods/closures/
+generators, by-ref return, by-ref/variadic params, arity mismatch → interpret
+the whole leaf). Verified byte-identical native-off == native-on == PHP 8.5.7
+(strict, built 8.5.7 reference) incl. uncaught-fatal trace, `getTraceAsString`,
+`debug_backtrace()`, and a 3-deep throwing tail-call chain.
+
+*Perf (honest):* this is a **coverage/correctness milestone, not a speedup** — on
+a tight microbench the native tail-call path is **~7% slower** than interpreting
+(200k iters, debug: ~2.49s on vs ~2.32s off) because frame materialization +
+marshal-out + name resolution outweigh the tiny native-prefix saving. Default-off,
+so the regression only touches the opt-in tier. The real win needs OSR (keep
+post-call work native, avoid re-marshaling) — the documented extension below.
+
+*Correction — the earlier "unsafe / deferred" claim was wrong.* A prior revision
+here asserted native→userland required an *unsafe* VM re-entry ABI reconstructing
+`&mut self` from a raw pointer while a borrow was live (aliasing UB), needing a
+cross-cutting borrow-discipline refactor, and deferred it. That was based on a
+false premise: `Vm::execute_function` takes **`&self`** (interior mutability;
+mutable state threaded through `output`/`stack`/`state` *parameters*). The sound
+design needs no unsafe code and no re-entry — the native region *returns* to Rust,
+which then calls through the normal path. **Still open (extensions, all sound —
+not unsafe):** multi-block prefixes (need the general CFG lowering with a
+tail-call terminator), float-returning tail-call leaves, native→builtin
+tail-calls, and *post-call native work* (true OSR: return-and-resume with slot
+spill/reload — converges with (c); a resume-state bug is wrong output the harness
+catches, not UB, since slot addressing stays bounded). Every other roadmap item
+(gaps a/c/d/e/f, R1–R5, and gap-b's native→native + native→pure-builtin) is
+landed and verified.
 
 **(c) Mid-region deopt / OSR.** — **report-only metadata precision LANDED;
 execution-OSR deferred.** Deopt is still **entry-only** (a guard/overflow side

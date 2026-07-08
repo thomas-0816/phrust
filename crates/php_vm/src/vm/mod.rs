@@ -181,13 +181,26 @@ const JIT_BLACKLIST_GUARD_FAILURE_THRESHOLD: u64 = 2;
 const JIT_BLACKLIST_COMPILE_ERROR_THRESHOLD: u64 = 1;
 #[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_ABI_MISMATCH_THRESHOLD: u64 = 1;
-#[cfg(feature = "jit-cranelift")]
+// The property-load fetch status codes are shared by both native tiers'
+// property-load helpers (Cranelift and copy-and-patch), so the three the shared
+// fetch core returns are available whenever either tier is compiled. LAYOUT_EXIT
+// is only produced/attributed on the Cranelift path, so it stays gated there.
+#[cfg(any(
+    feature = "jit-cranelift",
+    all(feature = "jit-copy-patch", unix, target_arch = "aarch64")
+))]
 const JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT: i32 = 21;
 #[cfg(feature = "jit-cranelift")]
 const JIT_PROPERTY_LOAD_STATUS_LAYOUT_EXIT: i32 = 22;
-#[cfg(feature = "jit-cranelift")]
+#[cfg(any(
+    feature = "jit-cranelift",
+    all(feature = "jit-copy-patch", unix, target_arch = "aarch64")
+))]
 const JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT: i32 = 23;
-#[cfg(feature = "jit-cranelift")]
+#[cfg(any(
+    feature = "jit-cranelift",
+    all(feature = "jit-copy-patch", unix, target_arch = "aarch64")
+))]
 const JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT: i32 = 24;
 
 #[cfg(feature = "jit-cranelift")]
@@ -368,6 +381,50 @@ extern "C" fn jit_concat_string_string_fast(
     php_jit::JIT_HELPER_STATUS_OK
 }
 
+/// Shared monomorphic property-load fetch core reused by both native tiers'
+/// property-load helpers: the Cranelift [`jit_property_load_monomorphic_fast`]
+/// and the copy-and-patch `copy_patch_property_load_abi` (in
+/// `crate::copy_patch_bridge`). It performs the *layout guard* — the value must
+/// be an object whose runtime class equals the metadata's expected receiver
+/// class, so a polymorphic/subclass instance reaching the same site is rejected
+/// rather than read at a wrong slot — and reads the declared property by its
+/// runtime storage name.
+///
+/// Returns `Ok(value)` with the property's initialized value, or `Err(status)`
+/// with the specific side-exit status: a non-object or class mismatch is
+/// [`JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT`], an absent property is
+/// [`JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT`], and an uninitialized typed property
+/// is [`JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT`] (the interpreter then throws
+/// the exact `Error`). It only reads a declared property slot — it never mutates,
+/// invokes a hook/`__get` (those shapes are excluded at recognition time), or
+/// re-enters the VM.
+#[cfg(any(
+    feature = "jit-cranelift",
+    all(feature = "jit-copy-patch", unix, target_arch = "aarch64")
+))]
+pub(crate) fn jit_property_load_fetch(
+    value: &Value,
+    metadata: &php_jit::JitPropertyLoadMetadata,
+) -> Result<Value, i32> {
+    let effective = match value {
+        Value::Reference(cell) => cell.get(),
+        other => other.clone(),
+    };
+    let Value::Object(object) = effective else {
+        return Err(JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT);
+    };
+    if normalize_class_name(&object.class_name()) != metadata.receiver_class {
+        return Err(JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT);
+    }
+    let Some(value) = object.get_property(&metadata.storage_name) else {
+        return Err(JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT);
+    };
+    if value.is_uninitialized() {
+        return Err(JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT);
+    }
+    Ok(value)
+}
+
 #[cfg(feature = "jit-cranelift")]
 extern "C" fn jit_property_load_monomorphic_fast(
     value_ptr: usize,
@@ -383,30 +440,19 @@ extern "C" fn jit_property_load_monomorphic_fast(
     // SAFETY: The VM passes a pointer to the handle-owned metadata for the
     // duration of this synchronous native invocation.
     let metadata = unsafe { &*(metadata_ptr as *const php_jit::JitPropertyLoadMetadata) };
-    let effective = match value {
-        Value::Reference(cell) => cell.get(),
-        other => other.clone(),
-    };
-    let Value::Object(object) = effective else {
-        return JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT;
-    };
-    if normalize_class_name(&object.class_name()) != metadata.receiver_class {
-        return JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT;
+    match jit_property_load_fetch(value, metadata) {
+        Ok(value) => {
+            let result = Box::new(value);
+            // SAFETY: The out pointer was checked for null and points to the
+            // native caller's stack-owned output slot. The VM reclaims the boxed
+            // value immediately after the native call returns successfully.
+            unsafe {
+                *out = Box::into_raw(result) as usize;
+            }
+            php_jit::JIT_HELPER_STATUS_OK
+        }
+        Err(status) => status,
     }
-    let Some(value) = object.get_property(&metadata.storage_name) else {
-        return JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT;
-    };
-    if value.is_uninitialized() {
-        return JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT;
-    }
-    let result = Box::new(value);
-    // SAFETY: The out pointer was checked for null and points to the native
-    // caller's stack-owned output slot. The VM reclaims the boxed value
-    // immediately after the native call returns successfully.
-    unsafe {
-        *out = Box::into_raw(result) as usize;
-    }
-    php_jit::JIT_HELPER_STATUS_OK
 }
 
 fn output_preallocation_hint(unit: &IrUnit) -> usize {
@@ -512,12 +558,17 @@ struct AutoloadTraceOrigin {
 struct PreparedArg {
     value: Value,
     reference: Option<ReferenceCell>,
+    /// When true, this argument's backtrace entry must hold the live by-ref
+    /// cell so the trace observes later writes through the parameter (matching
+    /// the reference engine). Set only for a *supplied* by-ref parameter that
+    /// bound a cell; a by-ref parameter that fell back to its default keeps a
+    /// value snapshot instead, so it stays false.
+    trace_holds_reference: bool,
 }
 
 struct PreparedArguments {
     args: Vec<PreparedArg>,
     frame_args: Vec<Value>,
-    trace_args: Vec<FrameTraceArgument>,
     diagnostics: Vec<RuntimeDiagnostic>,
 }
 
@@ -1957,7 +2008,7 @@ fn function_is_specialized_tiny_leaf_candidate(
 fn specialized_call_frame_fallback_reason(
     layout: &str,
     frame_reuse_blocked_reason: Option<&'static str>,
-    args: &[PreparedArg],
+    has_by_ref_arg: bool,
 ) -> Option<&'static str> {
     if layout == "tiny_leaf_frame" && frame_reuse_blocked_reason.is_none() {
         return None;
@@ -1971,18 +2022,10 @@ fn specialized_call_frame_fallback_reason(
         "include_eval_frame" => Some("include_eval"),
         "dynamic_reflection_call_frame" => Some("dynamic_reflection"),
         "known_function_frame" | "tiny_leaf_frame" => frame_reuse_blocked_reason
-            .or_else(|| {
-                args.iter()
-                    .any(|arg| arg.reference.is_some())
-                    .then_some("by_ref_argument")
-            })
+            .or_else(|| has_by_ref_arg.then_some("by_ref_argument"))
             .or(Some("not_tiny_leaf")),
         _ => frame_reuse_blocked_reason
-            .or_else(|| {
-                args.iter()
-                    .any(|arg| arg.reference.is_some())
-                    .then_some("by_ref_argument")
-            })
+            .or_else(|| has_by_ref_arg.then_some("by_ref_argument"))
             .or(Some("unsupported_layout")),
     }
 }
@@ -2156,6 +2199,18 @@ pub struct Vm {
     /// class does not deep-clone the whole class definition per instantiation.
     /// Invalidated by `ExecutionState::class_table_epoch`.
     ir_class_entry_cache: RefCell<IrClassEntryCache>,
+    /// Memoized default declared-slot templates so the hot `new C(...)` path
+    /// clones a prebuilt slot vector instead of re-running the per-property
+    /// default-materialization loop on every instantiation. Invalidated by
+    /// `ExecutionState::class_table_epoch`, so a redefinition rebuilds it from
+    /// the current class entry.
+    default_slot_template_cache: RefCell<DefaultSlotTemplateCache>,
+    /// Memoized `__construct` resolution outcomes so the hot `new C(...)` path
+    /// does not re-run the inheritance + visibility method-resolution walk on
+    /// every instantiation. Keyed by (normalized class name, normalized caller
+    /// scope) and guarded by `ExecutionState::class_table_epoch`, so a
+    /// redeclaration or autoload (both bump the epoch) drops stale outcomes.
+    constructor_resolution_cache: RefCell<ConstructorResolutionCache>,
     adaptive_tiny_unit_setup_skipped: Cell<bool>,
     include_execution_depth: Cell<u32>,
     request_profile_stack: RefCell<Vec<RequestProfileFrame>>,
@@ -2186,6 +2241,8 @@ impl Vm {
             frame_shape_flags: RefCell::new(HashMap::new()),
             runtime_class_entry_cache: RefCell::new(RuntimeClassEntryCache::default()),
             ir_class_entry_cache: RefCell::new(IrClassEntryCache::default()),
+            default_slot_template_cache: RefCell::new(DefaultSlotTemplateCache::default()),
+            constructor_resolution_cache: RefCell::new(ConstructorResolutionCache::default()),
             quickening: RefCell::new(QuickeningTable::default()),
             inline_caches: RefCell::new(InlineCacheTable::default()),
             jit: RefCell::new(JitRuntimeState::default()),
@@ -2214,6 +2271,8 @@ impl Vm {
         self.last_use_move_plans.borrow_mut().clear();
         *self.runtime_class_entry_cache.borrow_mut() = RuntimeClassEntryCache::default();
         *self.ir_class_entry_cache.borrow_mut() = IrClassEntryCache::default();
+        *self.default_slot_template_cache.borrow_mut() = DefaultSlotTemplateCache::default();
+        *self.constructor_resolution_cache.borrow_mut() = ConstructorResolutionCache::default();
         *self.quickening.borrow_mut() = QuickeningTable::default();
         if self.options.quickening.enabled() && !self.options.quickening_seed.is_empty() {
             self.quickening
@@ -4672,6 +4731,100 @@ impl Vm {
         Some(entry)
     }
 
+    /// Returns the memoized default declared-slot template for a resolved
+    /// runtime class, building it once per (class identity, class-table epoch)
+    /// and reusing the shared `Rc` afterward. The hot `new C(...)` path clones
+    /// the template into a fresh instance (see `ObjectRef::from_layout_slots`)
+    /// instead of re-running the per-property default-materialization loop.
+    ///
+    /// The template is byte-identical to the `declared_slots`
+    /// `ObjectRef::new_with_display_name` builds for the same class shape, and
+    /// is independent of `display_name` (which only selects the debug-label
+    /// layout variant). Keying by the class-table epoch means a redefinition
+    /// (which bumps the epoch) rebuilds the template from the current entry, so
+    /// stale defaults can never leak across a redeclaration.
+    fn cached_default_slot_template(
+        &self,
+        state: &ExecutionState,
+        runtime_class: &RuntimeClassEntry,
+        display_name: &str,
+    ) -> Rc<Vec<Option<Value>>> {
+        let epoch = state.class_table_epoch;
+        let key = normalize_class_name(&runtime_class.name);
+        {
+            let mut cache = self.default_slot_template_cache.borrow_mut();
+            if cache.epoch != epoch {
+                cache.entries.clear();
+                cache.epoch = epoch;
+            } else if let Some(template) = cache.entries.get(&key) {
+                return Rc::clone(template);
+            }
+        }
+        let template = Rc::new(ObjectRef::default_declared_slots(
+            runtime_class,
+            display_name,
+        ));
+        self.default_slot_template_cache
+            .borrow_mut()
+            .entries
+            .insert(key, Rc::clone(&template));
+        template
+    }
+
+    /// Returns the resolved `__construct` for a class as seen from `caller_scope`,
+    /// running the inheritance + visibility method-resolution walk only on the
+    /// first `new` of each (class, caller scope) pair within a class-table epoch
+    /// and reusing the memoized outcome afterward.
+    ///
+    /// The outcome is exactly what `lookup_resolved_method_in_state` returns for
+    /// `"__construct"` — `Ok(Some(resolved))`, `Ok(None)` (no constructor → default
+    /// construction), or `Err(message)` (e.g. an inheritance-cycle diagnostic) — so
+    /// a cache hit reproduces the same result byte-for-byte, including errors. The
+    /// caller scope is part of the key because private/protected resolution depends
+    /// on it, and it is normalized (as `lookup_resolved_method_in_state` compares
+    /// scopes case-insensitively) so equivalent scopes share one entry. When the
+    /// class table changes (redeclaration or autoload, both bump
+    /// `class_table_epoch`), the cache is dropped so resolution is recomputed
+    /// against the new table.
+    ///
+    /// Downstream visibility enforcement (`validate_constructor_callable_in_state_scope`,
+    /// abstract-class instantiation checks) runs on the returned `ResolvedMethodOwned`
+    /// exactly as before and is not memoized here.
+    fn cached_constructor_resolution(
+        &self,
+        compiled: &CompiledUnit,
+        state: &ExecutionState,
+        class_name: &str,
+        caller_scope: Option<&str>,
+    ) -> Result<Option<ResolvedMethodOwned>, String> {
+        let epoch = state.class_table_epoch;
+        let key = (
+            normalize_class_name(class_name),
+            caller_scope.map(normalize_class_name),
+        );
+        {
+            let mut cache = self.constructor_resolution_cache.borrow_mut();
+            if cache.epoch != epoch {
+                cache.entries.clear();
+                cache.epoch = epoch;
+            } else if let Some(outcome) = cache.entries.get(&key) {
+                return outcome.clone();
+            }
+        }
+        let outcome = lookup_resolved_method_in_state(
+            compiled,
+            state,
+            class_name,
+            "__construct",
+            caller_scope,
+        );
+        self.constructor_resolution_cache
+            .borrow_mut()
+            .entries
+            .insert(key, outcome.clone());
+        outcome
+    }
+
     fn record_counter_direct_frame(&self, layout: &str, function: &IrFunction, elided: bool) {
         if !self.options.collect_counters {
             return;
@@ -5993,7 +6146,10 @@ impl Vm {
         function_id: FunctionId,
         function: &IrFunction,
         call: &FunctionCall<'_>,
-    ) -> Option<Value> {
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Option<VmResult> {
         if !crate::copy_patch_bridge::copy_patch_leaf_enabled() {
             return None;
         }
@@ -6019,7 +6175,142 @@ impl Vm {
             &compiled.unit().constants,
         )?;
         let params: Vec<Value> = call.args.iter().map(|arg| arg.value.clone()).collect();
-        leaf.run(&params)
+        match leaf.run_outcome(&params) {
+            crate::copy_patch_bridge::LeafOutcome::Value(value) => {
+                Some(VmResult::success_no_output(Some(value)))
+            }
+            crate::copy_patch_bridge::LeafOutcome::Fallback => None,
+            // The native prefix computed the arguments and requested the userland
+            // call. The bridge never re-enters the VM; the call runs here, on the
+            // identical normal path, so behavior matches the interpreter exactly.
+            crate::copy_patch_bridge::LeafOutcome::TailCall { callee_name, args } => self
+                .execute_copy_patch_tailcall(
+                    compiled,
+                    function_id,
+                    function,
+                    call.call_span,
+                    &params,
+                    &callee_name,
+                    args,
+                    &call.running_fiber,
+                    output,
+                    stack,
+                    state,
+                ),
+        }
+    }
+
+    /// Perform a copy-and-patch tail call: resolve `callee_name` exactly as the
+    /// interpreter resolves an unqualified `CallFunction`, validate it is a plain
+    /// userland function whose by-value arity matches the natively-computed
+    /// `args`, then run it through the normal [`Self::execute_function`] path and
+    /// return its result faithfully (exceptions/errors included).
+    ///
+    /// Materializes the leaf's own stack frame around the call so a throwing or
+    /// stack-inspecting callee observes the identical call stack (name, arguments,
+    /// and call-site spans) it would under the interpreter. The leaf is a free
+    /// function whose parameters are all int-by-value, and the native region only
+    /// requested the tail call after guarding every parameter as `Int`, so
+    /// `leaf_args` are exactly the int values the leaf was called with — no
+    /// argument-coercion divergence. The callee pops its own frame on every exit
+    /// (return, runtime error, and `propagate_exception`), so popping the leaf
+    /// frame afterward keeps the stack balanced, mirroring the interpreter popping
+    /// the leaf once its body returns.
+    ///
+    /// Returns `None` — so the caller falls back to interpreting the *whole* leaf
+    /// — when the callee is a builtin, a dynamic miss, a method/closure/generator,
+    /// declared by-reference return, or has any by-reference/variadic parameter or
+    /// a mismatched arity. A tail call to a userland scalar leaf simply re-enters
+    /// `execute_function`, which may itself run natively.
+    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
+    #[allow(clippy::too_many_arguments)]
+    fn execute_copy_patch_tailcall(
+        &self,
+        compiled: &CompiledUnit,
+        leaf_function_id: FunctionId,
+        leaf_function: &IrFunction,
+        leaf_call_span: Option<php_ir::IrSpan>,
+        leaf_args: &[Value],
+        callee_name: &str,
+        args: Vec<Value>,
+        running_fiber: &Option<FiberRef>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Option<VmResult> {
+        let normalized = normalize_function_name(callee_name);
+        let (callee_unit, callee_id) =
+            match self.resolve_function_call_target(compiled, state, &normalized)? {
+                FunctionCallCacheTarget::CurrentUnit { function } => (compiled.clone(), function),
+                FunctionCallCacheTarget::DynamicUnit {
+                    unit_index,
+                    function,
+                } => (state.dynamic_units.get(unit_index).cloned()?, function),
+                // A builtin tail call is out of scope; interpret the whole leaf.
+                FunctionCallCacheTarget::Builtin { .. } => return None,
+            };
+        let callee = callee_unit.unit().functions.get(callee_id.index())?;
+        let flags = callee.flags;
+        if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+            return None;
+        }
+        if callee.returns_by_ref || callee.params.len() != args.len() {
+            return None;
+        }
+        if callee
+            .params
+            .iter()
+            .any(|param| param.by_ref || param.variadic)
+        {
+            return None;
+        }
+
+        // The tail call's call-site span (where the leaf calls the callee). The
+        // leaf is single-block with exactly one `CallFunction` (the tail call), so
+        // the last `CallFunction` instruction is it; used for the callee frame's
+        // backtrace line.
+        let callee_call_span = leaf_function
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .rev()
+            .find_map(|instruction| match instruction.kind {
+                InstructionKind::CallFunction { .. } => Some(instruction.span),
+                _ => None,
+            });
+
+        // Materialize the leaf's frame (free function: no class scope) with its
+        // guaranteed-int arguments, so the callee sees the same stack.
+        stack.push_fresh_frame(
+            leaf_function_id,
+            leaf_function.register_count,
+            leaf_function.local_count,
+            FrameActivationContext {
+                scope_class: None,
+                called_class: None,
+                declaring_class: None,
+                call_span: leaf_call_span,
+            },
+        );
+        if let Some(frame) = stack.current_mut() {
+            frame.trace_arguments.reserve(leaf_args.len());
+            for value in leaf_args.iter() {
+                frame.trace_arguments.push(FrameTraceArgument {
+                    name: None,
+                    value: value.clone(),
+                });
+            }
+            frame.arguments = leaf_args.to_vec();
+        }
+
+        let sub_args: Vec<CallArgument> = args.into_iter().map(CallArgument::positional).collect();
+        let sub_call = FunctionCall::new(sub_args, Vec::new())
+            .with_call_site_strict_types(compiled.unit().strict_types)
+            .with_optional_call_span(callee_call_span)
+            .inherit_fiber_context(running_fiber);
+        let result = self.execute_function(&callee_unit, callee_id, sub_call, output, stack, state);
+        stack.pop_recycle();
+        Some(result)
     }
 
     /// Hosts without the copy-patch emitter always fall back to the interpreter.
@@ -6030,7 +6321,10 @@ impl Vm {
         _function_id: FunctionId,
         _function: &IrFunction,
         _call: &FunctionCall<'_>,
-    ) -> Option<Value> {
+        _output: &mut OutputBuffer,
+        _stack: &mut CallStack,
+        _state: &mut ExecutionState,
+    ) -> Option<VmResult> {
         None
     }
 
@@ -6982,50 +7276,87 @@ impl Vm {
         let argument_policy = call.argument_binding_policy(compiled);
         let elide_frame_args = self.frame_args_elidable(compiled, function_id, ir_function);
         self.record_counter_direct_frame(frame_layout, ir_function, elide_frame_args);
-        let prepared = match arguments::prepare_arguments(
-            compiled,
-            ir_function,
-            call.args,
-            stack,
-            state,
-            self.typecheck_fast_path_context(),
-            argument_policy,
-            call.allow_by_ref_value_warnings,
-            call.call_span,
-            call.by_ref_warning_callable_name.as_deref(),
-            elide_frame_args,
-        ) {
-            Ok(args) => args,
-            Err(message) => {
-                let error_compiled = call.error_context_compiled.as_ref().unwrap_or(compiled);
-                let error_span = call.call_span.unwrap_or(ir_function.span);
-                let caller_only_trace = message.code() == "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE";
-                let result = self.runtime_error(output, error_compiled, stack, message);
-                if let Some(throwable) = runtime_error_throwable(&result) {
-                    tag_throwable_location(&throwable, error_compiled, error_span);
-                    state.pending_trace = Some(if caller_only_trace {
-                        capture_backtrace_string(error_compiled, stack)
-                    } else {
-                        capture_backtrace_string_with_failed_call(
-                            error_compiled,
-                            stack,
-                            ir_function,
-                            error_span,
-                        )
-                    });
-                    state.pending_throw = Some(throwable);
-                    return VmResult::propagating_exception(output.clone());
+        // R1 fast path: an exact-arity plain-positional by-value call binds its
+        // arguments straight into the callee frame's locals, reusing the
+        // incoming `Vec<CallArgument>` as the hand-off buffer and skipping the
+        // per-call `Vec<PreparedArg>` allocation. Guarded to the identical shape
+        // as `bind_arguments`'s fast path, so coercion, strict-types, TypeError
+        // reporting, and the backtrace snapshot stay byte-identical (see the
+        // shared `is_direct_bind_fast_shape`, `coerce_or_check_param_type`, and
+        // `trace_value_for_bound_param`).
+        let direct_bind =
+            elide_frame_args && arguments::is_direct_bind_fast_shape(ir_function, &call.args);
+        let mut direct_args: Vec<CallArgument> = Vec::new();
+        let mut prepared_args: Vec<PreparedArg> = Vec::new();
+        let mut frame_args: Vec<Value> = Vec::new();
+        let mut binding_diagnostics: Vec<RuntimeDiagnostic> = Vec::new();
+        let has_by_ref_arg;
+        if direct_bind {
+            // Resolve reference arguments in place, exactly as the fast path in
+            // `bind_arguments` does, so the trace snapshot and the locals both
+            // observe the dereferenced value. The shape guarantees no by-ref
+            // params, no defaults, no variadic, and no named arguments, so
+            // `frame_args`/`binding_diagnostics` stay empty as they would on the
+            // general path for this shape.
+            let mut args = std::mem::take(&mut call.args);
+            for arg in &mut args {
+                if let Value::Reference(cell) = &arg.value {
+                    arg.value = cell.get();
                 }
-                return result;
             }
-        };
-        let frame_reuse_blocked_reason = frame_reuse_call_shape_reason
-            .or_else(|| frame_reuse_prepared_args_blocked_reason(&prepared.args));
+            direct_args = args;
+            has_by_ref_arg = false;
+        } else {
+            let prepared = match arguments::prepare_arguments(
+                compiled,
+                ir_function,
+                std::mem::take(&mut call.args),
+                stack,
+                state,
+                self.typecheck_fast_path_context(),
+                argument_policy,
+                call.allow_by_ref_value_warnings,
+                call.call_span,
+                call.by_ref_warning_callable_name.as_deref(),
+                elide_frame_args,
+            ) {
+                Ok(args) => args,
+                Err(message) => {
+                    let error_compiled = call.error_context_compiled.as_ref().unwrap_or(compiled);
+                    let error_span = call.call_span.unwrap_or(ir_function.span);
+                    let caller_only_trace =
+                        message.code() == "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE";
+                    let result = self.runtime_error(output, error_compiled, stack, message);
+                    if let Some(throwable) = runtime_error_throwable(&result) {
+                        tag_throwable_location(&throwable, error_compiled, error_span);
+                        state.pending_trace = Some(if caller_only_trace {
+                            capture_backtrace_string(error_compiled, stack)
+                        } else {
+                            capture_backtrace_string_with_failed_call(
+                                error_compiled,
+                                stack,
+                                ir_function,
+                                error_span,
+                            )
+                        });
+                        state.pending_throw = Some(throwable);
+                        return VmResult::propagating_exception(output.clone());
+                    }
+                    return result;
+                }
+            };
+            has_by_ref_arg = frame_reuse_prepared_args_blocked_reason(&prepared.args).is_some();
+            frame_args = prepared.frame_args;
+            binding_diagnostics = prepared.diagnostics;
+            prepared_args = prepared.args;
+        }
+        let frame_reuse_blocked_reason =
+            frame_reuse_call_shape_reason.or_else(|| has_by_ref_arg.then_some("by_ref_argument"));
         self.record_counter_call_frame_layout(frame_layout);
         let specialized_frame_fallback = specialized_call_frame_fallback_reason(
             frame_layout,
             frame_reuse_blocked_reason,
-            &prepared.args,
+            has_by_ref_arg,
         );
         let specialized_tiny_frame = specialized_frame_fallback.is_none();
         if frame_layout == "tiny_leaf_frame" {
@@ -7063,10 +7394,7 @@ impl Vm {
             dense_function.register_count,
             dense_function.local_count,
         );
-        let args = prepared.args;
-        let frame_args = prepared.frame_args;
-        let trace_args = prepared.trace_args;
-        for diagnostic in prepared.diagnostics {
+        for diagnostic in binding_diagnostics {
             let handled = match self.dispatch_error_handler(
                 compiled,
                 output,
@@ -7094,9 +7422,14 @@ impl Vm {
         }
         {
             let frame = stack.current_mut().expect("bytecode frame was pushed");
+            let args_is_empty = if direct_bind {
+                direct_args.is_empty()
+            } else {
+                prepared_args.is_empty()
+            };
             if specialized_tiny_frame {
                 self.record_counter_specialized_frame_hit();
-                if !args.is_empty() {
+                if !args_is_empty {
                     self.record_counter_arg_array_avoided();
                 }
                 if reused_frame {
@@ -7104,7 +7437,23 @@ impl Vm {
                 }
             } else {
                 frame.arguments = frame_args;
-                frame.trace_arguments = trace_args;
+                // Build the backtrace snapshot straight into the frame's pooled
+                // vector (from the raw args, before they move into locals),
+                // rather than allocating one per call and discarding it for the
+                // tiny-frame fast path above.
+                if direct_bind {
+                    build_frame_trace_arguments_direct(
+                        &mut frame.trace_arguments,
+                        &direct_args,
+                        &ir_function.params,
+                    );
+                } else {
+                    build_frame_trace_arguments(
+                        &mut frame.trace_arguments,
+                        &prepared_args,
+                        &ir_function.params,
+                    );
+                }
             }
         }
         if let Err(message) = initialize_captures(ir_function, call.captures, stack) {
@@ -7131,46 +7480,90 @@ impl Vm {
         } else if ir_function.flags.is_top_level {
             bind_top_level_global_locals(ir_function, stack, state);
         }
-        for (arg_index, (param, mut arg)) in ir_function.params.iter().zip(args).enumerate() {
-            if let Err(message) = coerce_or_check_param_type(
-                compiled,
-                state,
-                ir_function,
-                param,
-                arg_index,
-                &mut arg.value,
-                arg.reference.is_some(),
-                self.typecheck_fast_path_context(),
-                argument_policy.call_site_strict_types,
-                call.call_span,
-            ) {
-                let result = self.runtime_error(output, compiled, stack, message);
-                if let Some(throwable) = runtime_error_throwable(&result) {
-                    tag_throwable_location(&throwable, compiled, ir_function.span);
-                    state.pending_trace = Some(capture_backtrace_string(compiled, stack));
-                    return self.propagate_exception(output, stack, state, throwable);
+        if direct_bind {
+            // Direct-to-locals: coerce each raw by-value argument with the same
+            // `coerce_or_check_param_type` at the same program point as the
+            // general path, then write it straight into the frame's locals. The
+            // fast shape has no by-ref params, so there is no reference cell to
+            // bind (`coerce_or_check_param_type` ignores the by-ref flag anyway).
+            for (arg_index, (param, arg)) in ir_function.params.iter().zip(direct_args).enumerate()
+            {
+                let mut value = arg.value;
+                if let Err(message) = coerce_or_check_param_type(
+                    compiled,
+                    state,
+                    ir_function,
+                    param,
+                    arg_index,
+                    &mut value,
+                    false,
+                    self.typecheck_fast_path_context(),
+                    argument_policy.call_site_strict_types,
+                    call.call_span,
+                ) {
+                    let result = self.runtime_error(output, compiled, stack, message);
+                    if let Some(throwable) = runtime_error_throwable(&result) {
+                        tag_throwable_location(&throwable, compiled, ir_function.span);
+                        state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                        return self.propagate_exception(output, stack, state, throwable);
+                    }
+                    stack.pop_recycle();
+                    return result;
                 }
-                stack.pop_recycle();
-                return result;
+                let locals = &mut stack
+                    .current_mut()
+                    .expect("bytecode frame was pushed")
+                    .locals;
+                if let Err(message) = locals.set(param.local, value) {
+                    let result = self.runtime_error(output, compiled, stack, message);
+                    stack.pop_recycle();
+                    return result;
+                }
             }
-            let locals = &mut stack
-                .current_mut()
-                .expect("bytecode frame was pushed")
-                .locals;
-            let result = if param.by_ref {
-                if let Some(reference) = arg.reference {
-                    reference.set(arg.value);
-                    locals.bind_reference_cell(param.local, reference)
+        } else {
+            for (arg_index, (param, mut arg)) in
+                ir_function.params.iter().zip(prepared_args).enumerate()
+            {
+                if let Err(message) = coerce_or_check_param_type(
+                    compiled,
+                    state,
+                    ir_function,
+                    param,
+                    arg_index,
+                    &mut arg.value,
+                    arg.reference.is_some(),
+                    self.typecheck_fast_path_context(),
+                    argument_policy.call_site_strict_types,
+                    call.call_span,
+                ) {
+                    let result = self.runtime_error(output, compiled, stack, message);
+                    if let Some(throwable) = runtime_error_throwable(&result) {
+                        tag_throwable_location(&throwable, compiled, ir_function.span);
+                        state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                        return self.propagate_exception(output, stack, state, throwable);
+                    }
+                    stack.pop_recycle();
+                    return result;
+                }
+                let locals = &mut stack
+                    .current_mut()
+                    .expect("bytecode frame was pushed")
+                    .locals;
+                let result = if param.by_ref {
+                    if let Some(reference) = arg.reference {
+                        reference.set(arg.value);
+                        locals.bind_reference_cell(param.local, reference)
+                    } else {
+                        locals.set(param.local, arg.value)
+                    }
                 } else {
                     locals.set(param.local, arg.value)
+                };
+                if let Err(message) = result {
+                    let result = self.runtime_error(output, compiled, stack, message);
+                    stack.pop_recycle();
+                    return result;
                 }
-            } else {
-                locals.set(param.local, arg.value)
-            };
-            if let Err(message) = result {
-                let result = self.runtime_error(output, compiled, stack, message);
-                stack.pop_recycle();
-                return result;
             }
         }
         let unit_id = compiled.unit().id;
@@ -9323,11 +9716,14 @@ impl Vm {
                                         function,
                                         ir_function,
                                         &call,
+                                        output,
+                                        stack,
+                                        state,
                                     );
                                     #[cfg(not(feature = "jit-copy-patch"))]
-                                    let native: Option<Value> = None;
-                                    if let Some(value) = native {
-                                        VmResult::success_no_output(Some(value))
+                                    let native: Option<VmResult> = None;
+                                    if let Some(result) = native {
+                                        result
                                     } else {
                                         self.execute_bytecode_function(
                                             compiled,
@@ -13792,12 +14188,21 @@ impl Vm {
             return self.execute_function(&owner, function_id, call, output, stack, state);
         }
         // Copy-and-patch native leaf tier runs before dense dispatch so a
-        // recognized scalar-int leaf executes natively rather than densely.
+        // recognized scalar-int leaf executes natively rather than densely. A
+        // recognized native→userland tail call performs the callee here, on the
+        // normal path, so the returned `VmResult` (result or exception) is
+        // propagated faithfully.
         #[cfg(feature = "jit-copy-patch")]
-        if let Some(value) =
-            self.try_execute_copy_patch_leaf(compiled, function_id, function, &call)
-        {
-            return VmResult::success_no_output(Some(value));
+        if let Some(result) = self.try_execute_copy_patch_leaf(
+            compiled,
+            function_id,
+            function,
+            &call,
+            output,
+            stack,
+            state,
+        ) {
+            return result;
         }
         call = match self.try_execute_cached_dense_function_dispatch(
             compiled,
@@ -13980,7 +14385,7 @@ impl Vm {
             let specialized_frame_fallback = specialized_call_frame_fallback_reason(
                 frame_layout,
                 frame_reuse_blocked_reason,
-                &prepared.args,
+                frame_reuse_prepared_args_blocked_reason(&prepared.args).is_some(),
             );
             let specialized_tiny_frame = specialized_frame_fallback.is_none();
             if frame_layout == "tiny_leaf_frame" {
@@ -13991,7 +14396,6 @@ impl Vm {
             }
             let args = prepared.args;
             let frame_args = prepared.frame_args;
-            let trace_args = prepared.trace_args;
             for diagnostic in prepared.diagnostics {
                 let handled = match self.dispatch_error_handler(
                     compiled,
@@ -14096,7 +14500,11 @@ impl Vm {
             }
             {
                 let frame = stack.current_mut().expect("frame was pushed");
-                frame.trace_arguments = trace_args;
+                // This executor keeps the backtrace snapshot for every frame
+                // (tiny frames included), so build it unconditionally, directly
+                // into the frame's pooled vector from the raw args before they
+                // move into locals.
+                build_frame_trace_arguments(&mut frame.trace_arguments, &args, &function.params);
                 if specialized_tiny_frame {
                     if !args.is_empty() {
                         self.record_counter_arg_array_avoided();
@@ -16933,8 +17341,16 @@ impl Vm {
                         }
                         let spl_runtime_parent =
                             spl_runtime_parent_for_class(compiled, state, &class);
-                        let object =
-                            ObjectRef::new_with_display_name(&runtime_class, display_class_name);
+                        let slot_template = self.cached_default_slot_template(
+                            state,
+                            &runtime_class,
+                            &display_class_name,
+                        );
+                        let object = ObjectRef::from_layout_slots(
+                            &runtime_class,
+                            display_class_name,
+                            (*slot_template).clone(),
+                        );
                         if let Some(spl_class) = spl_runtime_parent.as_deref() {
                             object.set_property(
                                 SPL_RUNTIME_CLASS_PROPERTY,
@@ -16942,11 +17358,10 @@ impl Vm {
                             );
                         }
                         let caller_scope = current_scope_class(compiled, stack);
-                        let constructor = match lookup_resolved_method_in_state(
+                        let constructor = match self.cached_constructor_resolution(
                             compiled,
                             state,
                             &class.name,
-                            "__construct",
                             caller_scope.as_deref(),
                         ) {
                             Ok(constructor) => constructor,
@@ -18325,8 +18740,16 @@ impl Vm {
                         };
                         let spl_runtime_parent =
                             spl_runtime_parent_for_class(compiled, state, &class);
-                        let object =
-                            ObjectRef::new_with_display_name(&runtime_class, display_class_name);
+                        let slot_template = self.cached_default_slot_template(
+                            state,
+                            &runtime_class,
+                            display_class_name,
+                        );
+                        let object = ObjectRef::from_layout_slots(
+                            &runtime_class,
+                            display_class_name,
+                            (*slot_template).clone(),
+                        );
                         if let Some(spl_class) = spl_runtime_parent.as_deref() {
                             object.set_property(
                                 SPL_RUNTIME_CLASS_PROPERTY,
@@ -18334,11 +18757,10 @@ impl Vm {
                             );
                         }
                         let caller_scope = current_scope_class(compiled, stack);
-                        let constructor = match lookup_resolved_method_in_state(
+                        let constructor = match self.cached_constructor_resolution(
                             compiled,
                             state,
                             &class.name,
-                            "__construct",
                             caller_scope.as_deref(),
                         ) {
                             Ok(constructor) => constructor,
@@ -45096,6 +45518,38 @@ struct IrClassEntryCache {
     entries: HashMap<String, Rc<php_ir::module::ClassEntry>>,
 }
 
+/// Cache of default declared-slot templates, keyed by normalized class name and
+/// guarded by the class-table epoch. Each template is the slot-index-aligned
+/// default vector a fresh instance starts from; cloning it into a new object
+/// skips the per-property iterate + filter + `slot_by_name` hash-lookup loop
+/// that `ObjectRef::new_with_display_name` runs. Sharing it via `Rc` is
+/// behavior-neutral within a class-table epoch (a class definition is immutable
+/// until redeclaration, which bumps the epoch and drops the cache), and the
+/// template is byte-identical to the defaults the slow path builds.
+#[derive(Clone, Debug, Default)]
+struct DefaultSlotTemplateCache {
+    epoch: u64,
+    entries: HashMap<String, Rc<Vec<Option<Value>>>>,
+}
+
+/// Cache of `__construct` resolution outcomes, keyed by (normalized class name,
+/// normalized caller scope) and guarded by the class-table epoch. Resolving a
+/// constructor runs a private-scope probe plus the full inheritance + visibility
+/// walk (`lookup_resolved_method_in_state`); a hot instantiation site would
+/// otherwise pay that on every `new`. Caching the whole `Result` — `Ok(Some)`,
+/// `Ok(None)`, and `Err` alike — reproduces the exact outcome on a hit (a
+/// visibility/cycle diagnostic is replayed, never re-walked or bypassed). The
+/// caller scope is part of the key because private/protected resolution differs
+/// by calling scope. Cloning the cached `ResolvedMethodOwned` bumps the shared
+/// `Arc<ClassEntry>` and clones the resolved method entry, which is exactly what
+/// the walk's terminal step does, so a hit is behavior-neutral; the cache is
+/// dropped when the epoch changes.
+#[derive(Clone, Debug, Default)]
+struct ConstructorResolutionCache {
+    epoch: u64,
+    entries: HashMap<(String, Option<String>), Result<Option<ResolvedMethodOwned>, String>>,
+}
+
 fn runtime_class_entry(
     compiled: &CompiledUnit,
     state: &ExecutionState,
@@ -46962,7 +47416,7 @@ struct ResolvedMethod<'a> {
     method: &'a php_ir::module::ClassMethodEntry,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ResolvedMethodOwned {
     class: Arc<php_ir::module::ClassEntry>,
     method: php_ir::module::ClassMethodEntry,
@@ -56353,6 +56807,114 @@ fn trace_value_for_param(value: &Value, sensitive: bool) -> Value {
         sensitive_parameter_value()
     } else {
         value.clone()
+    }
+}
+
+/// Rebuilds a frame's backtrace-visible arguments in place, pushing directly
+/// into the frame's (capacity-retained) vector instead of allocating a fresh
+/// one per call. It reproduces exactly the snapshot the argument binder used to
+/// return: one entry per bound positional argument (a supplied by-ref parameter
+/// holds the live cell, `#[\SensitiveParameter]` values are redacted), a
+/// variadic tail expanded to its elements with their named labels, and extra
+/// positional arguments appended verbatim without redaction. Call it only for
+/// frames that will actually keep their trace arguments; the raw (pre-coercion)
+/// `prepared_args` must be read before they are moved into the frame's locals.
+fn build_frame_trace_arguments(
+    trace: &mut Vec<FrameTraceArgument>,
+    prepared_args: &[PreparedArg],
+    params: &[IrParam],
+) {
+    debug_assert!(trace.is_empty());
+    trace.reserve(prepared_args.len());
+    for (index, arg) in prepared_args.iter().enumerate() {
+        match params.get(index) {
+            // The variadic parameter collapses its tail into one prepared array
+            // argument; expand it back into one trace entry per element, keyed
+            // by the named-argument labels the array preserves in order. No
+            // parameters follow a variadic one.
+            Some(param) if param.variadic => {
+                let sensitive = param_is_sensitive(param);
+                if let Value::Array(array) = &arg.value {
+                    for (key, value) in array.iter() {
+                        let name = match key {
+                            ArrayKey::String(name) => Some(name.to_string_lossy()),
+                            ArrayKey::Int(_) => None,
+                        };
+                        trace.push(FrameTraceArgument {
+                            name,
+                            value: trace_value_for_param(value, sensitive),
+                        });
+                    }
+                }
+                break;
+            }
+            Some(param) => {
+                trace.push(FrameTraceArgument {
+                    name: None,
+                    value: trace_value_for_bound_param(
+                        param,
+                        &arg.value,
+                        arg.reference.as_ref(),
+                        arg.trace_holds_reference,
+                    ),
+                });
+            }
+            // Extra positional arguments beyond the declared parameters have no
+            // parameter to consult, so they are neither named nor redacted.
+            None => {
+                trace.push(FrameTraceArgument {
+                    name: None,
+                    value: arg.value.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// The backtrace-visible value for one bound positional parameter: redacted for
+/// `#[\SensitiveParameter]`, the live by-ref cell when the trace must observe
+/// writes through the parameter, otherwise a value snapshot. Shared by the
+/// prepared-arguments trace builder and the dense direct-bind trace builder so
+/// both produce byte-identical entries.
+fn trace_value_for_bound_param(
+    param: &IrParam,
+    value: &Value,
+    reference: Option<&ReferenceCell>,
+    trace_holds_reference: bool,
+) -> Value {
+    if param_is_sensitive(param) {
+        trace_value_for_param(value, true)
+    } else if trace_holds_reference {
+        Value::Reference(
+            reference
+                .cloned()
+                .expect("by-ref trace argument retains its cell"),
+        )
+    } else {
+        value.clone()
+    }
+}
+
+/// Builds a frame's backtrace-visible arguments for the dense executor's
+/// direct-to-locals fast path, reading the raw (reference-resolved, pre-coercion)
+/// call arguments instead of a `Vec<PreparedArg>`. The fast shape guarantees
+/// exact arity with no by-ref, variadic, or extra positional arguments, so every
+/// argument maps to a declared parameter and produces exactly the entry
+/// `build_frame_trace_arguments` would for the equivalent prepared arguments
+/// (`reference: None`, `trace_holds_reference: false`). Read the arguments before
+/// they move into the frame's locals.
+fn build_frame_trace_arguments_direct(
+    trace: &mut Vec<FrameTraceArgument>,
+    args: &[CallArgument],
+    params: &[IrParam],
+) {
+    debug_assert!(trace.is_empty());
+    trace.reserve(args.len());
+    for (param, arg) in params.iter().zip(args) {
+        trace.push(FrameTraceArgument {
+            name: None,
+            value: trace_value_for_bound_param(param, &arg.value, None, false),
+        });
     }
 }
 

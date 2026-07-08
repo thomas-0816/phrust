@@ -2,8 +2,9 @@
 
 use std::mem::size_of;
 
-/// Stable ABI fingerprint for the helper-symbol registry.
-pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x07c1_481f_0000_0004;
+/// Stable ABI fingerprint for the helper-symbol registry. Bumped whenever the
+/// registry's symbol set or any helper ABI changes.
+pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x07c1_481f_0000_0005;
 
 /// Helper completed successfully.
 pub const JIT_HELPER_STATUS_OK: i32 = 0;
@@ -11,6 +12,15 @@ pub const JIT_HELPER_STATUS_OK: i32 = 0;
 pub const JIT_HELPER_STATUS_FALLBACK: i32 = 1;
 /// Native inline arithmetic overflowed and the VM must fall back.
 pub const JIT_HELPER_STATUS_OVERFLOW: i32 = 2;
+/// A copy-and-patch region requested a native→userland tail call: the region's
+/// prefix ran, left each positional `Int` argument in its buffer slot (see
+/// `copy_patch::TailCallPlan`), and returned without computing a result. The VM
+/// bridge reads the argument slots and performs the userland call through the
+/// normal interpreter path. This is a *region* return status alongside the
+/// region's `0` (OK, result in `result_slot`) and `1` (guard/overflow side
+/// exit); the value `3` is chosen so it never aliases the Cranelift ABI's
+/// [`JIT_HELPER_STATUS_OVERFLOW`] (`2`).
+pub const JIT_HELPER_STATUS_TAILCALL: i32 = 3;
 
 /// Stable helper id.
 #[repr(transparent)]
@@ -71,6 +81,7 @@ const I64_I64_OUT_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::I64,
     JitHelperArgKind::U64,
 ];
+const I64_OUT_ARGS: &[JitHelperArgKind] = &[JitHelperArgKind::I64, JitHelperArgKind::U64];
 const CONTEXT_VALUE_ARGS: &[JitHelperArgKind] =
     &[JitHelperArgKind::VmContext, JitHelperArgKind::Value];
 const CONTEXT_VALUE_VALUE_ARGS: &[JitHelperArgKind] = &[
@@ -208,6 +219,15 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
         has_side_effects: true,
         description: "record-shape array lookup helper with symbol-guarded slot read",
     },
+    JitHelperSymbol {
+        id: JitHelperId(13),
+        name: "phrust_jit_abs_i64",
+        args: I64_OUT_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: false,
+        description: "pure PHP integer abs() helper; falls back on i64::MIN overflow",
+    },
 ];
 
 /// Looks up a helper by stable id.
@@ -286,13 +306,30 @@ pub extern "C" fn phrust_jit_i64_mul_checked(lhs: i64, rhs: i64, out: *mut i64) 
     write_checked_result(out, lhs.checked_mul(rhs))
 }
 
+/// Pure PHP integer `abs()` helper for the copy-and-patch native tier.
+///
+/// Writes `*out = x.abs()` and returns [`JIT_HELPER_STATUS_OK`] for every `x`
+/// except `i64::MIN`. For `i64::MIN` the magnitude does not fit in an `i64`, so
+/// PHP returns a *float* (`9.2233720368547758E+18`); this helper reports
+/// [`JIT_HELPER_STATUS_FALLBACK`] and leaves `out` unwritten so the emitted code
+/// side-exits and the interpreter produces the float result. `checked_abs`
+/// yields `None` exactly for `i64::MIN`, matching that boundary.
+///
+/// SAFETY: The unmangled symbol is part of the stable performance helper
+/// registry. Its C ABI, argument order, and status/out-pointer contract are
+/// documented in `JIT_HELPER_SYMBOLS` and validated by registry layout tests.
+#[unsafe(no_mangle)]
+pub extern "C" fn phrust_jit_abs_i64(x: i64, out: *mut i64) -> i32 {
+    write_checked_result(out, x.checked_abs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         JIT_HELPER_REGISTRY_ABI_HASH, JIT_HELPER_STATUS_FALLBACK, JIT_HELPER_STATUS_OK,
         JIT_HELPER_STATUS_OVERFLOW, JIT_HELPER_SYMBOLS, JitHelperArgKind, JitHelperId,
         JitHelperReturnKind, helper_registry_is_stable, helper_registry_layout_summary,
-        lookup_helper_by_id, lookup_helper_by_name, phrust_jit_i64_add_checked,
+        lookup_helper_by_id, lookup_helper_by_name, phrust_jit_abs_i64, phrust_jit_i64_add_checked,
         phrust_jit_i64_mul_checked,
     };
 
@@ -305,7 +342,7 @@ mod tests {
             JIT_HELPER_SYMBOLS.first().expect("first").id,
             JitHelperId(1)
         );
-        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(12));
+        assert_eq!(JIT_HELPER_SYMBOLS.last().expect("last").id, JitHelperId(13));
     }
 
     #[test]
@@ -337,6 +374,13 @@ mod tests {
         assert_eq!(array_len.returns, JitHelperReturnKind::Status);
         assert!(!array_len.can_throw);
         assert!(!array_len.has_side_effects);
+
+        let abs = lookup_helper_by_name("phrust_jit_abs_i64").expect("abs helper");
+        assert_eq!(abs.id, JitHelperId(13));
+        assert_eq!(abs.args, &[JitHelperArgKind::I64, JitHelperArgKind::U64]);
+        assert_eq!(abs.returns, JitHelperReturnKind::Status);
+        assert!(!abs.can_throw);
+        assert!(!abs.has_side_effects);
 
         let property_load = lookup_helper_by_name("php_jit_property_load_monomorphic_fast")
             .expect("property helper");
@@ -376,5 +420,30 @@ mod tests {
             JIT_HELPER_STATUS_FALLBACK
         );
         assert_eq!(JIT_HELPER_STATUS_OVERFLOW, 2);
+    }
+
+    #[test]
+    fn abs_helper_returns_magnitude_and_falls_back_on_int_min() {
+        let mut out = 0;
+        assert_eq!(phrust_jit_abs_i64(5, &mut out), JIT_HELPER_STATUS_OK);
+        assert_eq!(out, 5);
+        assert_eq!(phrust_jit_abs_i64(-7, &mut out), JIT_HELPER_STATUS_OK);
+        assert_eq!(out, 7);
+        assert_eq!(phrust_jit_abs_i64(0, &mut out), JIT_HELPER_STATUS_OK);
+        assert_eq!(out, 0);
+
+        // i64::MIN's magnitude overflows i64 (PHP returns a float), so the
+        // helper falls back and leaves `out` untouched.
+        out = 42;
+        assert_eq!(
+            phrust_jit_abs_i64(i64::MIN, &mut out),
+            JIT_HELPER_STATUS_FALLBACK
+        );
+        assert_eq!(out, 42, "the fallback must not write a result");
+        // A null out pointer is rejected rather than dereferenced.
+        assert_eq!(
+            phrust_jit_abs_i64(3, std::ptr::null_mut()),
+            JIT_HELPER_STATUS_FALLBACK
+        );
     }
 }

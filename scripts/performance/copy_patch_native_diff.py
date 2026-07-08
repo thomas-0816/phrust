@@ -7,14 +7,15 @@ must never change observable behavior. When a PHP 8.5.7 reference is resolvable
 it also diffs against real PHP, matching the repository's differential-testing
 discipline.
 
-Native execution only engages when `target/debug/php-vm` was built with the
-`jit-copy-patch` cargo feature on a supported host (unix + aarch64) and the
-`PHRUST_JIT_COPY_PATCH` env var is set. The harness probes for that with
-`PHRUST_JIT_COPY_PATCH_DEBUG` and SKIPs with an explicit reason when the tier is
-inert, so a default build never reports a false pass.
+The `jit-copy-patch` cargo feature is now in the default feature set and the
+tier is on by default at runtime, so a standard `target/debug/php-vm` engages it
+on a supported host (unix + aarch64). This harness forces the tier on for its
+"on" run and forces it off (`PHRUST_JIT_COPY_PATCH=0`) for its "off" run, and
+SKIPs with an explicit reason if the tier is inert (a non-aarch64 host or a
+`--no-default-features` build), so it never reports a false pass.
 
-Build the native engine with:
-    nix develop -c cargo build -p php_vm_cli --bin php-vm --features jit-copy-patch
+Build the engine with (default features already include the tier):
+    nix develop -c cargo build -p php_vm_cli --bin php-vm
 """
 
 from __future__ import annotations
@@ -30,6 +31,13 @@ FIXTURE_DIR = ROOT / "tests/fixtures/performance/native_tier"
 FIXTURES = (
     FIXTURE_DIR / "scalar_leaves.php",
     FIXTURE_DIR / "inlined_calls.php",
+    FIXTURE_DIR / "builtin_abs_call.php",
+    FIXTURE_DIR / "builtin_count.php",
+    FIXTURE_DIR / "builtin_strlen.php",
+    FIXTURE_DIR / "builtin_is_type.php",
+    FIXTURE_DIR / "builtin_property_load.php",
+    FIXTURE_DIR / "userland_tailcall.php",
+    FIXTURE_DIR / "userland_tailcall_safety.php",
 )
 
 # Version pinned by ADR 0001; a non-8.5.7 php mis-tokenizes 8.5 syntax.
@@ -49,7 +57,9 @@ def run_engine(fixture: Path, *, native: bool) -> subprocess.CompletedProcess[st
         env["PHRUST_JIT_COPY_PATCH"] = "1"
         env["PHRUST_JIT_COPY_PATCH_DEBUG"] = "1"
     else:
-        env.pop("PHRUST_JIT_COPY_PATCH", None)
+        # The tier is on by default now, so "off" must disable it explicitly —
+        # unsetting the var would leave it enabled and make off-vs-on vacuous.
+        env["PHRUST_JIT_COPY_PATCH"] = "0"
         env.pop("PHRUST_JIT_COPY_PATCH_DEBUG", None)
     return subprocess.run(
         [str(ENGINE), "run", rel(fixture)],
@@ -125,8 +135,8 @@ def main() -> int:
 
     if not native_tier_engaged(FIXTURES[0]):
         print(
-            "[skip] copy-patch native tier is inert (php-vm not built with "
-            "--features jit-copy-patch, or unsupported host); "
+            "[skip] copy-patch native tier is inert (unsupported host, or php-vm "
+            "built with --no-default-features); "
             "differential run needs the native tier engaged to be meaningful"
         )
         return 0

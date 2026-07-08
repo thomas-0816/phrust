@@ -16,22 +16,29 @@
 
 use std::collections::HashMap;
 
-use php_ir::instruction::TerminatorKind;
+use php_ir::instruction::{IrCallArgValueKind, TerminatorKind};
 use php_ir::{
     BasicBlock, BinaryOp, CompareOp, ConstId, InstructionKind, IrConstant, IrFunction,
     IrReturnType, LocalId, Operand, RegId,
 };
 
-use crate::aarch64::{Aarch64Assembler, Cond, D0, D1, D2, Label, Reg, X0, X3, X4, X5, X6};
+use crate::aarch64::{
+    Aarch64Assembler, Cond, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
+};
 use crate::abi::JitCValueTag;
+use crate::helpers::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, phrust_jit_abs_i64};
 use crate::region_ir::{
     NodeId, RegionBuilder, RegionCompareOp, RegionConst, RegionGraph, RegionId, RegionNode,
     RegionNodeKind, RegionValueType, VmSlotId,
 };
 
+const UNINIT_TAG: u16 = JitCValueTag::Uninitialized as u16;
 const INT_TAG: u16 = JitCValueTag::Int as u16;
 const BOOL_TAG: u16 = JitCValueTag::Bool as u16;
 const FLOAT_TAG: u16 = JitCValueTag::FloatBits as u16;
+const STRING_TAG: u16 = JitCValueTag::OpaqueString as u16;
+const ARRAY_TAG: u16 = JitCValueTag::OpaqueArray as u16;
+const OBJECT_TAG: u16 = JitCValueTag::OpaqueObject as u16;
 
 /// A single guarded PHP integer-add step: `slot[dst] = slot[lhs] + slot[rhs]`.
 ///
@@ -190,6 +197,180 @@ pub enum ScalarIntOp {
     /// the general CFG lowering to move values between the register and local
     /// slot ranges without a type guard (downstream ops guard as needed).
     Copy { dst: u32, src: u32 },
+    /// Guarded native call to the pure builtin `abs()` on an int:
+    /// `slot[dst] = abs(slot[arg])`. Guards `slot[arg]` is `Int`, then `blr`s
+    /// the `phrust_jit_abs_i64` VM helper over the C ABI (fp/lr saved, a 16-byte
+    /// scratch frame holding the out value and the saved slot base). A non-OK
+    /// helper status — the `abs(PHP_INT_MIN)` overflow, where PHP returns a
+    /// float — takes the side exit so the interpreter produces the float. This
+    /// is only emitted when the VM bridge has confirmed the call resolves to the
+    /// real builtin `abs` (see [`NativeCallPermits`]).
+    CallAbsI64 { dst: u32, arg: u32 },
+    /// Guarded native call to the builtin `count()` on a plain array:
+    /// `slot[dst] = count(slot[arg])`. Guards `slot[arg]` is an `OpaqueArray`,
+    /// then `blr`s the runtime `php_jit_array_len` ABI wrapper at
+    /// `array_len_helper` over the C ABI (fp/lr saved, a 16-byte scratch frame
+    /// holding the out length and the saved slot base). The array slot's payload
+    /// is a borrowed `*const Value` the VM marshaled for the call's duration; the
+    /// helper only reads its length. `php_jit_array_len` accepts only packed
+    /// all-int arrays, so a hashed/associative/mixed array (or a non-array slot —
+    /// a scalar, a `Countable` object, the `count()` TypeError case) returns a
+    /// non-OK status and takes the side exit, so the interpreter reproduces the
+    /// exact result/error. Emitted only when the VM bridge confirms the call
+    /// resolves to the real builtin `count` (see [`NativeCallPermits`]) and
+    /// provides the helper address (see [`CopyPatchRuntimeHelpers`]). `php_jit`
+    /// cannot name the runtime symbol, so the address is carried in the op.
+    CallCountI64 {
+        dst: u32,
+        arg: u32,
+        array_len_helper: u64,
+    },
+    /// Guarded native call to the builtin `strlen()` on a string:
+    /// `slot[dst] = strlen(slot[arg])`. Guards `slot[arg]` is an `OpaqueString`,
+    /// then `blr`s the runtime string-length ABI wrapper at `strlen_helper` over
+    /// the C ABI (identical frame discipline to [`Self::CallCountI64`]). The
+    /// string slot's payload is a borrowed `*const Value` the VM marshaled for
+    /// the call's duration; the helper only reads its byte length (PHP `strlen`
+    /// is a byte count, not a multibyte length). A non-`String` slot — a scalar,
+    /// an array, an object, or `null` (the interpreter would coerce or raise) —
+    /// side-exits at the tag guard, and the helper reports a non-OK status for
+    /// any value it cannot length (so an unexpected shape side-exits and the
+    /// interpreter reproduces the exact result/error). Emitted only when the VM
+    /// bridge confirms the call resolves to the real builtin `strlen` (see
+    /// [`NativeCallPermits`]) and provides the helper address (see
+    /// [`CopyPatchRuntimeHelpers`]).
+    CallStrlenI64 {
+        dst: u32,
+        arg: u32,
+        strlen_helper: u64,
+    },
+    /// Pure type predicate writing a `Bool` (0/1) to `slot[dst]`:
+    /// `slot[dst] = (slot[arg].tag == expected_tag)`. Backs the canonical
+    /// `is_int`/`is_string`/`is_array`/`is_float`/`is_bool` builtins — the answer
+    /// is exactly the marshaled tag, so no helper call and no payload deref is
+    /// needed (this is the safest stencil: it only reads the tag word).
+    ///
+    /// The one guard: an `Uninitialized`-marshaled argument is ambiguous (the
+    /// bridge collapses `null`, objects, resources, references, and every other
+    /// non-scalar/non-string/non-array value onto it), so the predicate cannot be
+    /// decided from the tag — the stencil side-exits and the interpreter answers.
+    /// Every *definite* tag (`Int`/`Bool`/`FloatBits`/`OpaqueString`/
+    /// `OpaqueArray`) yields a correct true/false. `expected_tag` selects the
+    /// predicate (e.g. [`INT_TAG`] for `is_int`). Emitted only when the VM bridge
+    /// confirms the call resolves to the real builtin (see [`NativeCallPermits`]).
+    IsType {
+        dst: u32,
+        arg: u32,
+        expected_tag: u16,
+    },
+    /// Guarded native call reading a monomorphic declared *scalar* property:
+    /// `slot[dst] = <object at slot[arg]>-><declared property>`. Guards
+    /// `slot[arg]` is an `OpaqueObject`, then `blr`s the property-load ABI
+    /// wrapper at `helper` over the C ABI (fp/lr saved; a 32-byte scratch frame
+    /// holding the out `JitCValue` and the saved slot base). The object slot's
+    /// payload is a borrowed `*const Value` the VM marshaled for the call's
+    /// duration; `metadata_ptr` is a borrowed `*const JitPropertyLoadMetadata`
+    /// the VM keeps alive for the whole life of the compiled leaf.
+    ///
+    /// The helper performs the *layout guard* (the object's runtime class must
+    /// equal the expected receiver class the metadata records — else a
+    /// polymorphic/subclass instance reaching the same site side-exits, never
+    /// reading a wrong slot) and reads the declared property; it never invokes a
+    /// hook/`__get` or re-enters the VM (those shapes are excluded at recognition
+    /// time). Only when the property value is a scalar `Int`/`Bool`/`Float` does
+    /// the helper marshal it into the out `JitCValue` and return `OK`; a
+    /// non-scalar value (string/array/object/null), an uninitialized typed
+    /// property, an absent property, a class mismatch, or a non-object slot
+    /// returns a non-`OK` status and side-exits, so the interpreter produces the
+    /// exact value/error. `php_jit` cannot name the runtime symbol or build the
+    /// class metadata, so both addresses are carried in the op (the VM bridge
+    /// recognizes the leaf and supplies them; see the bridge's
+    /// `recognize_property_load_leaf`).
+    CallPropertyLoadScalar {
+        dst: u32,
+        arg: u32,
+        metadata_ptr: u64,
+        helper: u64,
+    },
+}
+
+/// Which builtin function calls the copy-and-patch compiler may lower to a
+/// native helper call.
+///
+/// Function-name resolution (is `abs` the real math builtin, or a user-defined
+/// or namespaced shadow?) is owned by the VM, which has the function registry;
+/// `php_jit` has neither. So the VM bridge decides and passes explicit
+/// permission here, and this compiler emits a guarded helper call *only* when
+/// permitted. With the default (all-false) permits, every `CallFunction` is
+/// rejected and the interpreter runs it, exactly as before this tier existed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NativeCallPermits {
+    /// True when the callee name `abs` is confirmed to resolve to the real
+    /// builtin `abs` (not a user-defined or namespaced function that shadows
+    /// it). Set by the VM bridge after checking the function registry.
+    pub builtin_abs: bool,
+    /// True when the compiler may lower a native→userland *tail call* (a leaf
+    /// whose result is exactly a `CallFunction`'s result) to the tail-call form:
+    /// the region computes the arguments natively and returns
+    /// [`JIT_HELPER_STATUS_TAILCALL`] so the
+    /// VM bridge performs the call through its normal interpreter path. Unlike
+    /// `builtin_abs`, this permits *lowering the shape*; the callee's identity
+    /// (userland vs. builtin, arity, by-reference parameters) is validated by the
+    /// VM at call time, which falls back to interpreting the whole leaf when the
+    /// callee is out of scope. Defaults to false so the shape is never lowered
+    /// without an opt-in.
+    pub allow_userland_tailcall: bool,
+    /// True when the callee name `count` is confirmed to resolve to the real
+    /// builtin `count` (not a user-defined or namespaced function that shadows
+    /// it). Set by the VM bridge after checking the function registry; mirrors
+    /// `builtin_abs`. A namespaced shadow also carries its namespace in the
+    /// lowered call name, so the `count` recognizer never matches it regardless.
+    pub builtin_count: bool,
+    /// True when the callee name `strlen` is confirmed to resolve to the real
+    /// builtin `strlen` (not a user-defined or namespaced shadow). Set by the VM
+    /// bridge after checking the function registry; mirrors `builtin_count`.
+    pub builtin_strlen: bool,
+    /// True when the callee name `is_int` is confirmed to resolve to the real
+    /// builtin `is_int`. Each type predicate carries its own permit so that a
+    /// user/namespaced shadow of one never enables the others.
+    pub builtin_is_int: bool,
+    /// True when the callee name `is_string` is confirmed to resolve to the real
+    /// builtin `is_string`.
+    pub builtin_is_string: bool,
+    /// True when the callee name `is_array` is confirmed to resolve to the real
+    /// builtin `is_array`.
+    pub builtin_is_array: bool,
+    /// True when the callee name `is_float` is confirmed to resolve to the real
+    /// builtin `is_float`.
+    pub builtin_is_float: bool,
+    /// True when the callee name `is_bool` is confirmed to resolve to the real
+    /// builtin `is_bool`.
+    pub builtin_is_bool: bool,
+}
+
+/// Runtime-owned helper addresses the copy-and-patch tier `blr`s from emitted
+/// code, mirroring Cranelift's `JitRuntimeHelperAddresses`.
+///
+/// `php_jit` cannot name runtime symbols — the array/string/object helpers live
+/// in `php_runtime` and the VM, below which `php_jit` sits — so the VM bridge
+/// resolves their addresses and passes them here, and the compiler embeds the
+/// chosen address in the emitted stencil. An address of `0` means the helper is
+/// unavailable, which disables the corresponding shape (the interpreter runs
+/// it), so a build without the helper wired in behaves exactly as before.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CopyPatchRuntimeHelpers {
+    /// Address of an `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`
+    /// wrapping `php_jit_array_len`: it reads the borrowed `Value` at `value_ptr`
+    /// and writes its packed-array length through `out`, returning a non-OK
+    /// status for any non-packed-int array. `0` = unavailable → `count` is not
+    /// lowered. Same ABI Cranelift uses for `packed_array_len`.
+    pub array_len: u64,
+    /// Address of an `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`
+    /// wrapping the VM's string-length read: it reads the borrowed `Value` at
+    /// `value_ptr` and writes its byte length through `out`, returning a non-OK
+    /// status for any non-string value. `0` = unavailable → `strlen` is not
+    /// lowered. Same ABI shape as `array_len`.
+    pub strlen: u64,
 }
 
 /// A binary PHP float operation over IEEE-754 doubles. Add/Sub/Mul never fault
@@ -313,6 +494,287 @@ fn emit_bool_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.b_cond(Cond::NotEqual, deopt);
 }
 
+/// Emit a guarded native call `slot[dst] = abs(slot[arg])` through the pure
+/// `phrust_jit_abs_i64` VM helper.
+///
+/// The call stencil, in order:
+/// 1. Guard `slot[arg]` is `Int` (while `X0` still holds the slot base), taking
+///    the shared side exit otherwise.
+/// 2. Load the argument payload into a scratch register.
+/// 3. Enter a non-leaf frame: `push_fp_lr` (saves `x29`/`x30`, `sp -= 16`) then
+///    `sub sp, sp, #16` reserving `[sp+0]` for the helper's `*out i64` and
+///    `[sp+8]` for the saved slot base. `sp` stays 16-byte aligned per AAPCS64.
+/// 4. Marshal the C-ABI arguments: `x0 = arg value`, `x1 = &out` (`sp+0`).
+/// 5. Materialize the helper address into `x9` and `blr x9`.
+/// 6. Check `w0` (the status): non-`OK` (the `abs(PHP_INT_MIN)` overflow) tears
+///    the frame down and branches to the shared deopt so the interpreter runs.
+/// 7. On `OK`: reload `*out` and the slot base, tear the frame down, and store
+///    the `Int` result to `slot[dst]`.
+///
+/// Nothing is assumed to survive the `blr` except through the stack: both the
+/// result and the slot base are reloaded from the reserved frame afterward.
+fn emit_call_abs_i64(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32) {
+    // 1–2: guard + read the argument while X0 is still the slot base.
+    emit_int_guard(asm, deopt, arg);
+    asm.ldr_x(X4, X0, payload_off(arg));
+    // 3: non-leaf frame + 16-byte scratch ([sp+0]=out, [sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value, x1 = &out.
+    asm.mov(X0, X4);
+    asm.add_imm(X1, SP, 0);
+    // 5: call phrust_jit_abs_i64(value, &out) -> status in w0.
+    asm.mov_imm64(X9, phrust_jit_abs_i64 as *const () as usize as u64);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the result and slot base, free the frame, store the Int.
+    asm.ldr_x(X6, SP, 0);
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    emit_store_int(asm, dst, X6);
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
+/// Guard that `slot`'s tag is `OpaqueArray`, taking the side exit otherwise.
+/// Only a genuine array slot reaches the length helper — a scalar, a `Countable`
+/// object (marshaled as `Uninitialized`), or any other value side-exits here so
+/// the interpreter reproduces `count()`'s exact semantics/errors.
+fn emit_array_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, ARRAY_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
+/// Emit a guarded native call `slot[dst] = count(slot[arg])` for the plain
+/// packed-array case, through the runtime `php_jit_array_len` ABI wrapper at
+/// `helper` (an `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`).
+///
+/// The call stencil mirrors [`emit_call_abs_i64`], differing only in the guard
+/// (the arg must be an `OpaqueArray`) and in taking the helper address as a
+/// parameter — `php_jit` cannot name the runtime symbol. In order:
+/// 1. Guard `slot[arg]` is an `OpaqueArray` (while `X0` still holds the slot
+///    base), taking the shared side exit otherwise.
+/// 2. Load the array slot's `payload` — a borrowed `*const Value` the VM
+///    marshaled for the call's duration — into a scratch register.
+/// 3. Enter a non-leaf frame: `push_fp_lr` then a 16-byte scratch reserving
+///    `[sp+0]` for the helper's `*out i64` and `[sp+8]` for the saved slot base.
+/// 4. Marshal the C-ABI arguments: `x0 = value_ptr`, `x1 = &out` (`sp+0`).
+/// 5. Materialize the helper address into `x9` and `blr x9`.
+/// 6. Check `w0` (the status): a non-`OK` status — a hashed/associative/mixed
+///    array the helper rejects — tears the frame down and takes the shared side
+///    exit so the interpreter computes the length.
+/// 7. On `OK`: reload `*out` (the length) and the slot base, tear the frame
+///    down, and store the `Int` result to `slot[dst]`.
+///
+/// Nothing is assumed to survive the `blr` except through the stack; the helper
+/// only reads the borrowed value and never mutates, frees, or re-enters the VM.
+fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
+    // 1–2: guard the arg is an array + read its borrowed-pointer payload while
+    // X0 is still the slot base.
+    emit_array_guard(asm, deopt, arg);
+    asm.ldr_x(X4, X0, payload_off(arg));
+    // 3: non-leaf frame + 16-byte scratch ([sp+0]=out length, [sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value_ptr, x1 = &out.
+    asm.mov(X0, X4);
+    asm.add_imm(X1, SP, 0);
+    // 5: call php_jit_array_len(value_ptr, &out) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the length and slot base, free the frame, store the Int.
+    asm.ldr_x(X6, SP, 0);
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    emit_store_int(asm, dst, X6);
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
+/// Guard that `slot`'s tag is `OpaqueString`, taking the side exit otherwise.
+/// Only a genuine string slot reaches the length helper — a scalar, an array,
+/// an object, `null`, or any other value (all of which PHP's `strlen` would
+/// coerce or reject) side-exits here so the interpreter reproduces the exact
+/// semantics.
+fn emit_string_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, STRING_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
+/// Emit a guarded native call `slot[dst] = strlen(slot[arg])` through the
+/// runtime string-length ABI wrapper at `helper` (an
+/// `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`).
+///
+/// A near-clone of [`emit_call_count`], differing only in the guard (the arg
+/// must be an `OpaqueString`): guard the arg tag, load its borrowed
+/// `*const Value` payload, enter a non-leaf frame with a 16-byte scratch
+/// (`[sp+0]` = out length, `[sp+8]` = saved slot base), marshal `x0 = value_ptr`
+/// / `x1 = &out`, `blr` the helper, side-exit on a non-OK status, else reload
+/// the byte length and store the `Int` result. The helper only reads the
+/// borrowed value's byte length; it never mutates, frees, or re-enters the VM.
+fn emit_call_strlen(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
+    // 1–2: guard the arg is a string + read its borrowed-pointer payload while
+    // X0 is still the slot base.
+    emit_string_guard(asm, deopt, arg);
+    asm.ldr_x(X4, X0, payload_off(arg));
+    // 3: non-leaf frame + 16-byte scratch ([sp+0]=out length, [sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value_ptr, x1 = &out.
+    asm.mov(X0, X4);
+    asm.add_imm(X1, SP, 0);
+    // 5: call strlen_helper(value_ptr, &out) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the length and slot base, free the frame, store the Int.
+    asm.ldr_x(X6, SP, 0);
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    emit_store_int(asm, dst, X6);
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
+/// Guard that `slot`'s tag is `OpaqueObject`, taking the side exit otherwise.
+/// Only a genuine object slot reaches the property-load helper — a scalar, a
+/// string, an array, `null`, or any other value side-exits here so the
+/// interpreter reproduces the exact property-access semantics/errors.
+fn emit_object_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, OBJECT_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
+/// Emit a guarded native call `slot[dst] = <object>-><scalar property>` through
+/// the monomorphic property-load ABI wrapper at `helper` (an `extern "C"
+/// fn(value_ptr: usize, metadata_ptr: usize, out: *mut JitCValue) -> i32`).
+///
+/// Mirrors [`emit_call_count`]'s non-leaf frame discipline, differing in three
+/// ways: the guard (the arg must be an `OpaqueObject`), a third C-ABI argument
+/// (`metadata_ptr`, the borrowed layout metadata), and a full-`JitCValue` out
+/// slot (24 bytes) rather than an `i64`. In order:
+/// 1. Guard `slot[arg]` is an `OpaqueObject` (while `X0` still holds the slot
+///    base), taking the shared side exit otherwise.
+/// 2. Load the object slot's `payload` — a borrowed `*const Value` the VM
+///    marshaled for the call's duration — into a scratch register.
+/// 3. Enter a non-leaf frame: `push_fp_lr` then a 32-byte scratch reserving
+///    `[sp+0 .. sp+24)` for the helper's out `JitCValue` and `[sp+24]` for the
+///    saved slot base (`sp` stays 16-byte aligned per AAPCS64).
+/// 4. Marshal the C-ABI arguments: `x0 = value_ptr`, `x1 = metadata_ptr`,
+///    `x2 = &out` (`sp+0`).
+/// 5. Materialize the helper address into `x9` and `blr x9`.
+/// 6. Check `w0` (the status): a non-`OK` status — the object's layout does not
+///    match the expected class, the property is absent/uninitialized, or the
+///    property value is non-scalar — tears the frame down and takes the shared
+///    side exit so the interpreter produces the exact value/error.
+/// 7. On `OK`: reload the slot base, copy the marshaled 24-byte `JitCValue`
+///    result from the scratch into `slot[dst]`, and tear the frame down.
+///
+/// Nothing is assumed to survive the `blr` except through the stack; the helper
+/// only reads the borrowed object's declared property and never mutates, frees,
+/// invokes a hook/`__get`, or re-enters the VM.
+fn emit_property_load(
+    asm: &mut Aarch64Assembler,
+    deopt: Label,
+    dst: u32,
+    arg: u32,
+    metadata_ptr: u64,
+    helper: u64,
+) {
+    // 1–2: guard the arg is an object + read its borrowed-pointer payload while
+    // X0 is still the slot base.
+    emit_object_guard(asm, deopt, arg);
+    asm.ldr_x(X4, X0, payload_off(arg));
+    // 3: non-leaf frame + 32-byte scratch ([sp+0..24)=out JitCValue,
+    // [sp+24]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 32);
+    asm.str_x(X0, SP, 24);
+    // 4: C-ABI args — x0 = value_ptr, x1 = metadata_ptr, x2 = &out.
+    asm.mov(X0, X4);
+    asm.mov_imm64(X1, metadata_ptr);
+    asm.add_imm(X2, SP, 0);
+    // 5: call helper(value_ptr, metadata_ptr, &out) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the slot base, copy the 24-byte result (tag+reserved,
+    // payload, aux) into slot[dst], free the frame.
+    asm.ldr_x(X0, SP, 24);
+    asm.ldr_x(X3, SP, 0);
+    asm.str_x(X3, X0, tag_off(dst));
+    asm.ldr_x(X4, SP, 8);
+    asm.str_x(X4, X0, payload_off(dst));
+    asm.ldr_x(X5, SP, 16);
+    asm.str_x(X5, X0, aux_off(dst));
+    asm.add_imm(SP, SP, 32);
+    asm.pop_fp_lr();
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 32);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
+/// Emit a pure type-predicate stencil `slot[dst] = (slot[arg].tag ==
+/// expected_tag)`, guarding that the marshaled tag is decidable.
+///
+/// No call and no payload deref: it loads the tag word, side-exits when it is
+/// `Uninitialized` (the ambiguous case the bridge collapses `null`/objects/etc.
+/// onto — the interpreter must answer), then writes the `Bool` result of the tag
+/// comparison. Every definite tag yields a correct true/false, so there is no
+/// wrong-answer path: an unrecognized shape is either a decidable non-match or an
+/// `Uninitialized` side exit.
+fn emit_is_type(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, expected_tag: u16) {
+    asm.ldr_w(X3, X0, tag_off(arg));
+    // An Uninitialized-marshaled value is ambiguous; defer to the interpreter.
+    asm.cmp_imm_w(X3, UNINIT_TAG);
+    asm.b_cond(Cond::Equal, deopt);
+    // The answer is exactly whether the marshaled tag is the predicate's tag.
+    asm.cmp_imm_w(X3, expected_tag);
+    asm.cset(X6, Cond::Equal);
+    emit_store_bool(asm, dst, X6);
+}
+
 /// Write `value` to `slot[dst]` tagged as `Int`.
 fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, INT_TAG);
@@ -354,7 +816,12 @@ fn emit_store_float(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
     match op {
         ScalarIntOp::Const { dst, .. } => check_slot(dst),
-        ScalarIntOp::Copy { dst, src } => {
+        ScalarIntOp::Copy { dst, src }
+        | ScalarIntOp::CallAbsI64 { dst, arg: src }
+        | ScalarIntOp::CallCountI64 { dst, arg: src, .. }
+        | ScalarIntOp::CallStrlenI64 { dst, arg: src, .. }
+        | ScalarIntOp::CallPropertyLoadScalar { dst, arg: src, .. }
+        | ScalarIntOp::IsType { dst, arg: src, .. } => {
             check_slot(dst)?;
             check_slot(src)
         }
@@ -380,6 +847,28 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
             emit_store_int(asm, dst, X6);
         }
         ScalarIntOp::Copy { dst, src } => emit_value_copy(asm, dst, src),
+        ScalarIntOp::CallAbsI64 { dst, arg } => emit_call_abs_i64(asm, deopt, dst, arg),
+        ScalarIntOp::CallCountI64 {
+            dst,
+            arg,
+            array_len_helper,
+        } => emit_call_count(asm, deopt, dst, arg, array_len_helper),
+        ScalarIntOp::CallStrlenI64 {
+            dst,
+            arg,
+            strlen_helper,
+        } => emit_call_strlen(asm, deopt, dst, arg, strlen_helper),
+        ScalarIntOp::IsType {
+            dst,
+            arg,
+            expected_tag,
+        } => emit_is_type(asm, deopt, dst, arg, expected_tag),
+        ScalarIntOp::CallPropertyLoadScalar {
+            dst,
+            arg,
+            metadata_ptr,
+            helper,
+        } => emit_property_load(asm, deopt, dst, arg, metadata_ptr, helper),
         ScalarIntOp::Binary { op, dst, lhs, rhs } => {
             emit_int_guard(asm, deopt, lhs);
             emit_int_guard(asm, deopt, rhs);
@@ -533,16 +1022,40 @@ pub fn emit_guarded_int_add_sequence(
     emit_scalar_int_ops(&ops)
 }
 
+/// The plan for a native→userland tail call recognized in a scalar-int leaf.
+///
+/// When the region returns
+/// [`JIT_HELPER_STATUS_TAILCALL`], its prefix
+/// has already left each positional argument — guaranteed `Int`-tagged — in the
+/// buffer slots named by `arg_slots` (in call order). The VM bridge reads those
+/// slots as the arguments and performs the call to `callee_name` through the
+/// normal interpreter path, so the callee runs identically to a fully
+/// interpreted call. The region itself never re-enters the VM.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TailCallPlan {
+    /// Callee name exactly as written at the call site; the VM normalizes and
+    /// resolves it (and validates it is a plain userland function) at call time.
+    pub callee_name: String,
+    /// Buffer slots holding the marshaled positional `Int` arguments, in order.
+    pub arg_slots: Vec<u32>,
+}
+
 /// A region lowered to the scalar-int subset: native code plus the slot-buffer
 /// layout the VM must marshal against.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledScalarRegion {
     /// Emitted `extern "C" fn(slot_base: *mut JitCValue) -> i32`.
     pub code: Vec<u8>,
-    /// Slot holding the region result after a successful (`0`) return.
+    /// Slot holding the region result after a successful (`0`) return. Unused on
+    /// the tail-call path (the VM produces the result from the userland call).
     pub result_slot: u32,
     /// Number of `JitCValue` slots the caller's buffer must provide.
     pub buffer_slots: u32,
+    /// `Some` when the region is a native→userland tail call: it returns
+    /// [`JIT_HELPER_STATUS_TAILCALL`] rather
+    /// than a result, and the VM bridge performs the call named here. `None` for
+    /// every ordinary region (result in `result_slot` on a `0` return).
+    pub tail_call: Option<TailCallPlan>,
 }
 
 /// Reason a region cannot be lowered to the scalar-int subset.
@@ -685,6 +1198,7 @@ pub fn compile_scalar_int_region(
         code,
         result_slot,
         buffer_slots: next_temp.max(max_param_slot + 1),
+        tail_call: None,
     })
 }
 
@@ -853,6 +1367,32 @@ pub fn compile_scalar_int_function(
     constants: &[IrConstant],
     region_id: u32,
 ) -> Option<CompiledScalarRegion> {
+    compile_scalar_int_function_with_permits(
+        function,
+        constants,
+        region_id,
+        NativeCallPermits::default(),
+    )
+}
+
+/// [`compile_scalar_int_function`] with explicit native-call permission.
+///
+/// The straight-line leaf, counted-loop, and float-leaf recognizers never lower
+/// calls, so a function containing a permitted builtin call is rejected by them
+/// and reaches the general CFG compiler, which honors `permits` to lower the
+/// call to a guarded native helper (e.g. `abs` → [`ScalarIntOp::CallAbsI64`]).
+/// With the default permits this is identical to [`compile_scalar_int_function`].
+///
+/// The native→userland tail-call recognizer runs *last*, after the CFG compiler,
+/// so a call the CFG compiler already lowers natively (e.g. `return abs($x)`)
+/// keeps its tighter form and only a call outside every other subset — a
+/// non-inlinable userland tail call — reaches `compile_scalar_int_tailcall_leaf`.
+pub fn compile_scalar_int_function_with_permits(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    region_id: u32,
+    permits: NativeCallPermits,
+) -> Option<CompiledScalarRegion> {
     if let Some((graph, result)) = build_scalar_int_region(function, constants, region_id)
         && let Ok(compiled) = compile_scalar_int_region(&graph, result)
     {
@@ -861,10 +1401,341 @@ pub fn compile_scalar_int_function(
     if let Some(compiled) = compile_counted_loop_function(function, constants) {
         return Some(compiled);
     }
-    if let Some(compiled) = compile_scalar_int_cfg(function, constants) {
+    if let Some(compiled) = compile_scalar_int_cfg(function, constants, permits) {
         return Some(compiled);
     }
-    compile_scalar_float_leaf(function, constants)
+    if let Some(compiled) = compile_scalar_float_leaf(function, constants) {
+        return Some(compiled);
+    }
+    compile_scalar_int_tailcall_leaf(function, constants, permits)
+}
+
+/// [`compile_scalar_int_function_with_permits`] plus runtime-helper addresses,
+/// enabling the heap-handle and type-predicate shapes (currently `count` →
+/// `php_jit_array_len`, `strlen` → the string-length wrapper, and the pure
+/// `is_int`/`is_string`/`is_array`/`is_float`/`is_bool` predicates;
+/// concat/property-load will follow).
+///
+/// These recognizers run *first*: their shapes (a string/array/untyped parameter
+/// feeding a builtin) are disjoint from the int/float scalar subset the other
+/// recognizers accept, so trying them first never steals a scalar leaf — and with
+/// the default permits (all false) each returns `None`, so this reduces exactly to
+/// [`compile_scalar_int_function_with_permits`].
+pub fn compile_scalar_int_function_with_permits_and_helpers(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    region_id: u32,
+    permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
+) -> Option<CompiledScalarRegion> {
+    if let Some(compiled) = compile_scalar_int_count_leaf(function, permits, helpers) {
+        return Some(compiled);
+    }
+    if let Some(compiled) = compile_scalar_int_strlen_leaf(function, permits, helpers) {
+        return Some(compiled);
+    }
+    if let Some(compiled) = compile_scalar_int_is_type_leaf(function, permits) {
+        return Some(compiled);
+    }
+    compile_scalar_int_function_with_permits(function, constants, region_id, permits)
+}
+
+/// The structural match shared by the single-argument builtin-leaf recognizers
+/// (`count`/`strlen`/`is_*`): the sole parameter, the un-normalized call name,
+/// and the slot layout. Builtin-specific gates (name, permit, declared return
+/// and parameter types) are applied by each recognizer.
+struct SingleArgBuiltinLeaf<'a> {
+    /// The function's sole parameter (by-value, non-variadic, no default).
+    param: &'a php_ir::IrParam,
+    /// The call name exactly as written at the call site; a namespaced shadow
+    /// keeps its `\`, so a bare-name check never matches it.
+    call_name: String,
+    /// Slot the native result is written to (above locals + registers).
+    result_slot: u32,
+    /// `JitCValue` slots the caller's buffer must provide.
+    buffer_slots: u32,
+}
+
+/// Match the `return builtin($x)` leaf shape common to the `count`/`strlen`/
+/// `is_*` recognizers: a single-block free function with exactly one by-value,
+/// non-variadic, no-default parameter, whose body is exactly `LoadLocal($param)`
+/// then a single-positional-argument `CallFunction` on that register, returned
+/// unchanged. Returns the parameter, the un-normalized call name, and the slot
+/// layout, or `None` for any other shape (methods, closures, generators, wrong
+/// arity, named/spread args, by-ref params, extra body). Callers still apply the
+/// builtin-specific name/permit/type gates.
+fn match_single_arg_builtin_leaf(function: &IrFunction) -> Option<SingleArgBuiltinLeaf<'_>> {
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    // Exactly one parameter: by-value, non-variadic, no default.
+    let [param] = function.params.as_slice() else {
+        return None;
+    };
+    if param.by_ref || param.variadic || param.default.is_some() {
+        return None;
+    }
+
+    // Single-block leaf: load the parameter, then call the builtin on it, return.
+    let [block] = function.blocks.as_slice() else {
+        return None;
+    };
+    let kinds = meaningful_kinds(block);
+    let [
+        InstructionKind::LoadLocal {
+            dst: load_reg,
+            local: load_local,
+        },
+        InstructionKind::CallFunction {
+            dst: call_dst,
+            name,
+            args,
+        },
+    ] = kinds.as_slice()
+    else {
+        return None;
+    };
+    if *load_local != param.local {
+        return None;
+    }
+    // A single plain positional argument, the loaded parameter register. A
+    // by-reference *arg* annotation only tracks the variable's source location
+    // for potential write-back; these pure builtins never write back, so it is
+    // moot (as in the `abs` path).
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    if arg.name.is_some() || arg.unpack {
+        return None;
+    }
+    let Operand::Register(arg_reg) = arg.value else {
+        return None;
+    };
+    if arg_reg != *load_reg {
+        return None;
+    }
+    // The terminator must return exactly the call's result register.
+    let TerminatorKind::Return {
+        value: Some(Operand::Register(ret_reg)),
+        by_ref_local: None,
+    } = &block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+    if ret_reg != call_dst {
+        return None;
+    }
+
+    // Slot layout matches the other leaf compilers: locals occupy their indices,
+    // so the sole parameter is marshaled into `slot[param.local]`; the result
+    // lands in a dedicated slot above locals + registers. The stencil reads the
+    // argument straight from the parameter slot — no register copy.
+    let result_slot = function.local_count.checked_add(function.register_count)?;
+    let buffer_slots = result_slot.checked_add(1)?;
+    if result_slot > MAX_SLOT {
+        return None;
+    }
+    Some(SingleArgBuiltinLeaf {
+        param,
+        call_name: name.clone(),
+        result_slot,
+        buffer_slots,
+    })
+}
+
+/// Recognize and lower a `count($array)` leaf to a native
+/// [`ScalarIntOp::CallCountI64`], gated by `permits.builtin_count` and a resolved
+/// `helpers.array_len` address.
+///
+/// The matched shape is a single-argument builtin leaf (see
+/// [`match_single_arg_builtin_leaf`]) named `count`, returning `int` or untyped
+/// (`count()` is always int-valued), whose parameter is `array`-typed or untyped
+/// — an int/float/etc. parameter could never be an array at runtime, so it is
+/// outside this shape (and the guard would always fail). A namespaced `count`
+/// shadow keeps its namespace in the call name, so the literal `name == "count"`
+/// check never matches it — the interpreter runs the shadow.
+///
+/// The stencil guards the runtime array tag and the helper's packed-int layout,
+/// so only a plain packed all-int array runs natively; every other value
+/// side-exits and the interpreter reproduces the exact result/error.
+fn compile_scalar_int_count_leaf(
+    function: &IrFunction,
+    permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
+) -> Option<CompiledScalarRegion> {
+    if !permits.builtin_count || helpers.array_len == 0 {
+        return None;
+    }
+    // `count()` returns int; accept an int-typed or untyped declared return.
+    if !matches!(function.return_type, None | Some(IrReturnType::Int)) {
+        return None;
+    }
+    let leaf = match_single_arg_builtin_leaf(function)?;
+    if leaf.call_name != "count" {
+        return None;
+    }
+    if !matches!(leaf.param.type_, None | Some(IrReturnType::Array)) {
+        return None;
+    }
+    let code = emit_scalar_int_ops(&[ScalarIntOp::CallCountI64 {
+        dst: leaf.result_slot,
+        arg: leaf.param.local.raw(),
+        array_len_helper: helpers.array_len,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot: leaf.result_slot,
+        buffer_slots: leaf.buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// Recognize and lower a `strlen($string)` leaf to a native
+/// [`ScalarIntOp::CallStrlenI64`], gated by `permits.builtin_strlen` and a
+/// resolved `helpers.strlen` address.
+///
+/// The matched shape is a single-argument builtin leaf (see
+/// [`match_single_arg_builtin_leaf`]) named `strlen`, returning `int` or untyped
+/// (`strlen()` is always int-valued), whose parameter is `string`-typed or
+/// untyped. A `string`-typed parameter is always a genuine string (PHP coerces
+/// the argument at the boundary); an untyped parameter may be anything, and any
+/// non-string value side-exits at the tag guard so the interpreter applies
+/// `strlen`'s coercion/`TypeError` semantics. A namespaced `strlen` shadow keeps
+/// its namespace in the call name, so the literal check never matches it.
+///
+/// Only a genuine `Value::String` runs natively; its byte length (PHP `strlen`
+/// is a byte count) is read by the helper. Every other value side-exits.
+fn compile_scalar_int_strlen_leaf(
+    function: &IrFunction,
+    permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
+) -> Option<CompiledScalarRegion> {
+    if !permits.builtin_strlen || helpers.strlen == 0 {
+        return None;
+    }
+    // `strlen()` returns int; accept an int-typed or untyped declared return.
+    if !matches!(function.return_type, None | Some(IrReturnType::Int)) {
+        return None;
+    }
+    let leaf = match_single_arg_builtin_leaf(function)?;
+    if leaf.call_name != "strlen" {
+        return None;
+    }
+    if !matches!(leaf.param.type_, None | Some(IrReturnType::String)) {
+        return None;
+    }
+    let code = emit_scalar_int_ops(&[ScalarIntOp::CallStrlenI64 {
+        dst: leaf.result_slot,
+        arg: leaf.param.local.raw(),
+        strlen_helper: helpers.strlen,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot: leaf.result_slot,
+        buffer_slots: leaf.buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// Map a canonical type-predicate builtin name to the marshaled [`JitCValueTag`]
+/// its argument must carry, but only when the matching per-name permit is set.
+///
+/// Covers exactly the canonical spellings whose answer is a pure tag check:
+/// `is_int`/`is_string`/`is_array`/`is_float`/`is_bool`. The aliases
+/// (`is_integer`/`is_long`/`is_double`) and the predicates with non-tag semantics
+/// (`is_null`/`is_object`/`is_numeric`/`is_scalar`/`is_callable`/`is_iterable`/
+/// `is_a`) return `None` and fall through to the interpreter. A namespaced shadow
+/// keeps its `\`, so it never matches a bare name here.
+fn is_type_predicate_tag(name: &str, permits: NativeCallPermits) -> Option<u16> {
+    match name {
+        "is_int" if permits.builtin_is_int => Some(INT_TAG),
+        "is_string" if permits.builtin_is_string => Some(STRING_TAG),
+        "is_array" if permits.builtin_is_array => Some(ARRAY_TAG),
+        "is_float" if permits.builtin_is_float => Some(FLOAT_TAG),
+        "is_bool" if permits.builtin_is_bool => Some(BOOL_TAG),
+        _ => None,
+    }
+}
+
+/// Recognize and lower an `is_TYPE($x)` leaf for a canonical type predicate to a
+/// native [`ScalarIntOp::IsType`], gated by the predicate's own permit (see
+/// [`is_type_predicate_tag`]).
+///
+/// The matched shape is a single-argument builtin leaf (see
+/// [`match_single_arg_builtin_leaf`]) whose name is one of the canonical
+/// predicates and returning `bool` or untyped. The parameter may be of *any* (or
+/// no) declared type: the answer is the marshaled tag, which is correct for every
+/// definite tag, and an `Uninitialized`-marshaled argument (`null`, an object,
+/// etc.) side-exits so the interpreter answers — so no declared type can produce
+/// a wrong result. No helper is needed (the stencil only reads the tag word).
+fn compile_scalar_int_is_type_leaf(
+    function: &IrFunction,
+    permits: NativeCallPermits,
+) -> Option<CompiledScalarRegion> {
+    // `is_*()` returns bool; accept a bool-typed or untyped declared return.
+    if !matches!(function.return_type, None | Some(IrReturnType::Bool)) {
+        return None;
+    }
+    let leaf = match_single_arg_builtin_leaf(function)?;
+    let expected_tag = is_type_predicate_tag(&leaf.call_name, permits)?;
+    let code = emit_scalar_int_ops(&[ScalarIntOp::IsType {
+        dst: leaf.result_slot,
+        arg: leaf.param.local.raw(),
+        expected_tag,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot: leaf.result_slot,
+        buffer_slots: leaf.buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// Lower a recognized monomorphic scalar property-load leaf to native code: a
+/// single [`ScalarIntOp::CallPropertyLoadScalar`] over the flat slot buffer.
+///
+/// The VM bridge (which owns class/property resolution) recognizes the
+/// `return $o->prop;` leaf shape and builds the `JitPropertyLoadMetadata` the
+/// layout guard needs, passing its (borrowed, VM-owned, outlives-the-leaf)
+/// pointer as `metadata_ptr` and the property-load ABI wrapper address as
+/// `helper`. `object_slot` is the object parameter's VM slot (its `LocalId`
+/// index); `result_slot` is a dedicated slot above locals + registers;
+/// `buffer_slots` sizes the caller's marshaled buffer. Returns `None` if either
+/// address is unavailable (`0`) or a slot is outside the addressable range.
+///
+/// `php_jit` never recognizes this shape itself (it cannot resolve classes), so
+/// with no bridge caller this is dead-inert; it only lowers the exact `(slot,
+/// metadata, helper)` triple the bridge hands it.
+pub fn compile_property_load_leaf(
+    object_slot: u32,
+    result_slot: u32,
+    buffer_slots: u32,
+    metadata_ptr: u64,
+    helper: u64,
+) -> Option<CompiledScalarRegion> {
+    if helper == 0 || metadata_ptr == 0 {
+        return None;
+    }
+    let code = emit_scalar_int_ops(&[ScalarIntOp::CallPropertyLoadScalar {
+        dst: result_slot,
+        arg: object_slot,
+        metadata_ptr,
+        helper,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot,
+        buffer_slots,
+        tail_call: None,
+    })
 }
 
 /// Non-`Discard` instruction kinds of a block. `Discard` is a register-lifetime
@@ -1130,6 +2001,7 @@ fn compile_counted_loop_function(
         code,
         result_slot: result_local.raw(),
         buffer_slots: function.local_count,
+        tail_call: None,
     })
 }
 
@@ -1155,6 +2027,75 @@ fn move_to_slot(
     }
 }
 
+/// Lower one non-call scalar-int instruction to its slot op, using the CFG slot
+/// mapping (`reg_slot` for registers, raw index for locals). Shared by the
+/// general CFG compiler and the tail-call recognizer for the prefix subset —
+/// `LoadLocal`/`LoadLocalQuiet`, `LoadConst`(int), `Move`, `StoreLocal`,
+/// `Binary`, and `Compare`. Returns `None` for any instruction outside the
+/// int/bool subset, including every `CallFunction` (each caller handles calls —
+/// or rejects them — itself).
+fn scalar_int_prefix_op(
+    kind: &InstructionKind,
+    constants: &[IrConstant],
+    local_count: u32,
+    reg_slot: impl Fn(RegId) -> u32,
+) -> Option<ScalarIntOp> {
+    match kind {
+        InstructionKind::LoadLocal { dst, local }
+        | InstructionKind::LoadLocalQuiet { dst, local } => Some(ScalarIntOp::Copy {
+            dst: reg_slot(*dst),
+            src: local.raw(),
+        }),
+        InstructionKind::LoadConst { dst, constant } => Some(ScalarIntOp::Const {
+            dst: reg_slot(*dst),
+            value: int_constant(constants, *constant)?,
+        }),
+        InstructionKind::Move { dst, src } => {
+            move_to_slot(reg_slot(*dst), src, constants, local_count)
+        }
+        InstructionKind::StoreLocal { local, src } => {
+            move_to_slot(local.raw(), src, constants, local_count)
+        }
+        InstructionKind::Binary {
+            dst,
+            op,
+            lhs: Operand::Register(lhs),
+            rhs,
+        } => {
+            let op = int_bin_op(*op)?;
+            let dst = reg_slot(*dst);
+            let lhs = reg_slot(*lhs);
+            match rhs {
+                Operand::Register(rhs) => Some(ScalarIntOp::Binary {
+                    op,
+                    dst,
+                    lhs,
+                    rhs: reg_slot(*rhs),
+                }),
+                Operand::Constant(c) => Some(ScalarIntOp::BinaryConst {
+                    op,
+                    dst,
+                    lhs,
+                    rhs: int_constant(constants, *c)?,
+                }),
+                Operand::Local(_) => None,
+            }
+        }
+        InstructionKind::Compare {
+            dst,
+            op,
+            lhs: Operand::Register(lhs),
+            rhs: Operand::Register(rhs),
+        } => Some(ScalarIntOp::Compare {
+            cond: region_compare_to_cond(ir_compare_to_region(*op)?),
+            dst: reg_slot(*dst),
+            lhs: reg_slot(*lhs),
+            rhs: reg_slot(*rhs),
+        }),
+        _ => None,
+    }
+}
+
 /// Lower an arbitrary scalar-int control-flow graph (`if`/`else`, `while`, and
 /// their combinations) to native code. Every SSA register and every local gets
 /// its own slot, so values flow through the slot buffer and control flow is just
@@ -1171,6 +2112,7 @@ fn move_to_slot(
 fn compile_scalar_int_cfg(
     function: &IrFunction,
     constants: &[IrConstant],
+    permits: NativeCallPermits,
 ) -> Option<CompiledScalarRegion> {
     let flags = function.flags;
     if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
@@ -1207,62 +2149,33 @@ fn compile_scalar_int_cfg(
     let reg_slot = |r: RegId| local_count + r.raw();
 
     // Translate one instruction to its slot op. `None` means "outside the
-    // subset", which aborts the whole compile (the interpreter runs it).
+    // subset", which aborts the whole compile (the interpreter runs it). The
+    // non-call subset is shared with the tail-call recognizer via
+    // `scalar_int_prefix_op`; only the `abs` helper call is CFG-specific.
     let to_op = |kind: &InstructionKind| -> Option<ScalarIntOp> {
-        match kind {
-            InstructionKind::LoadLocal { dst, local }
-            | InstructionKind::LoadLocalQuiet { dst, local } => Some(ScalarIntOp::Copy {
-                dst: reg_slot(*dst),
-                src: local.raw(),
-            }),
-            InstructionKind::LoadConst { dst, constant } => Some(ScalarIntOp::Const {
-                dst: reg_slot(*dst),
-                value: int_constant(constants, *constant)?,
-            }),
-            InstructionKind::Move { dst, src } => {
-                move_to_slot(reg_slot(*dst), src, constants, local_count)
+        // A call to the real builtin `abs` (confirmed by the VM bridge via
+        // `permits`) on a single by-value register argument lowers to the
+        // guarded native helper call. Any other name, arity, argument form,
+        // or an unconfirmed `abs` returns `None` so the interpreter runs it.
+        if let InstructionKind::CallFunction { dst, name, args } = kind
+            && permits.builtin_abs
+            && name.as_str() == "abs"
+        {
+            let [arg] = args.as_slice() else {
+                return None;
+            };
+            if arg.name.is_some() || arg.unpack {
+                return None;
             }
-            InstructionKind::StoreLocal { local, src } => {
-                move_to_slot(local.raw(), src, constants, local_count)
-            }
-            InstructionKind::Binary {
-                dst,
-                op,
-                lhs: Operand::Register(lhs),
-                rhs,
-            } => {
-                let op = int_bin_op(*op)?;
-                let dst = reg_slot(*dst);
-                let lhs = reg_slot(*lhs);
-                match rhs {
-                    Operand::Register(rhs) => Some(ScalarIntOp::Binary {
-                        op,
-                        dst,
-                        lhs,
-                        rhs: reg_slot(*rhs),
-                    }),
-                    Operand::Constant(c) => Some(ScalarIntOp::BinaryConst {
-                        op,
-                        dst,
-                        lhs,
-                        rhs: int_constant(constants, *c)?,
-                    }),
-                    Operand::Local(_) => None,
-                }
-            }
-            InstructionKind::Compare {
-                dst,
-                op,
-                lhs: Operand::Register(lhs),
-                rhs: Operand::Register(rhs),
-            } => Some(ScalarIntOp::Compare {
-                cond: region_compare_to_cond(ir_compare_to_region(*op)?),
+            let Operand::Register(arg_reg) = arg.value else {
+                return None;
+            };
+            return Some(ScalarIntOp::CallAbsI64 {
                 dst: reg_slot(*dst),
-                lhs: reg_slot(*lhs),
-                rhs: reg_slot(*rhs),
-            }),
-            _ => None,
+                arg: reg_slot(arg_reg),
+            });
         }
+        scalar_int_prefix_op(kind, constants, local_count, reg_slot)
     };
 
     let mut asm = Aarch64Assembler::new();
@@ -1322,6 +2235,240 @@ fn compile_scalar_int_cfg(
         code: asm.finish(),
         result_slot,
         buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// One positional argument of a native→userland tail call: how the emitted
+/// prefix produces it (guaranteed `Int`) into its fresh buffer slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TailArgSource {
+    /// Guard `src` is `Int` (side exit otherwise), then copy it to the arg slot.
+    GuardedCopy { src: u32 },
+    /// Materialize a statically-known `Int` into the arg slot.
+    Const { value: i64 },
+}
+
+/// Emit the tail-call region: guard every parameter slot as `Int`, run the
+/// argument-computing `prefix`, marshal each argument into a fresh buffer slot at
+/// `first_arg_slot + i` (guarding params as `Int` so a non-int actual argument
+/// side-exits), then return [`JIT_HELPER_STATUS_TAILCALL`] without writing a
+/// result. A guard failure anywhere takes the shared side exit (status `1`).
+///
+/// The entry parameter guards ensure the region only requests the tail call when
+/// *every* parameter is a genuine `Int` — even a parameter that never feeds an
+/// argument. That is what lets the VM materialize the caller's stack frame with
+/// the raw call arguments (they equal the interpreter's coerced `int` values), so
+/// a throwing or stack-inspecting callee observes a byte-identical backtrace.
+///
+/// Returns the machine code and the argument slots (in call order) the VM reads.
+fn emit_tailcall_region(
+    prefix: &[ScalarIntOp],
+    args: &[TailArgSource],
+    param_slots: &[u32],
+    first_arg_slot: u32,
+) -> Result<(Vec<u8>, Vec<u32>), SlotSequenceError> {
+    for op in prefix {
+        check_op_slots(*op)?;
+    }
+    for &slot in param_slots {
+        check_slot(slot)?;
+    }
+    let mut arg_slots = Vec::with_capacity(args.len());
+    for (index, arg) in args.iter().enumerate() {
+        let slot = first_arg_slot
+            .checked_add(
+                u32::try_from(index)
+                    .map_err(|_| SlotSequenceError::SlotIndexOutOfRange(first_arg_slot))?,
+            )
+            .ok_or(SlotSequenceError::SlotIndexOutOfRange(first_arg_slot))?;
+        check_slot(slot)?;
+        if let TailArgSource::GuardedCopy { src } = arg {
+            check_slot(*src)?;
+        }
+        arg_slots.push(slot);
+    }
+
+    let mut asm = Aarch64Assembler::new();
+    let deopt = asm.new_label();
+    // Guard every parameter is `Int` up front (see the note above).
+    for &slot in param_slots {
+        emit_int_guard(&mut asm, deopt, slot);
+    }
+    for op in prefix {
+        emit_op(&mut asm, deopt, *op);
+    }
+    for (arg, &slot) in args.iter().zip(arg_slots.iter()) {
+        match arg {
+            TailArgSource::GuardedCopy { src } => {
+                emit_int_guard(&mut asm, deopt, *src);
+                emit_value_copy(&mut asm, slot, *src);
+            }
+            TailArgSource::Const { value } => {
+                asm.mov_imm64(X6, *value as u64);
+                emit_store_int(&mut asm, slot, X6);
+            }
+        }
+    }
+    // Tail call requested: the arguments are in their slots and the VM performs
+    // the call. No result is written — the region returns before the call.
+    asm.movz(X0, JIT_HELPER_STATUS_TAILCALL as u16);
+    asm.ret();
+    asm.bind(deopt);
+    asm.movz(X0, 1);
+    asm.ret();
+    Ok((asm.finish(), arg_slots))
+}
+
+/// Recognize a native→userland *tail-call* leaf and lower its argument-computing
+/// prefix to native code, gated by `permits.allow_userland_tailcall`.
+///
+/// The matched shape is a single-block `int`/`bool`-returning free function
+/// (int, by-value, non-variadic, no-default parameters) whose meaningful
+/// instructions are a scalar-int prefix (`LoadLocal`, `LoadConst`(int), `Move`,
+/// `StoreLocal`, `Binary`, `Compare`) followed by a final
+/// `CallFunction { dst, name, args }` whose result register is returned
+/// unchanged — `Return(%dst)`. Because the call is the last instruction, `%dst`
+/// is used only by that `Return`: a genuine tail call.
+///
+/// The emitted region computes each positional argument into a fresh buffer slot
+/// (guarding params as `Int`, so a non-int actual argument side-exits rather than
+/// mis-marshaling), then returns
+/// [`JIT_HELPER_STATUS_TAILCALL`] and records
+/// a [`TailCallPlan`]. The VM bridge reads the argument slots and performs the
+/// call through its normal interpreter path — so behavior matches the interpreter
+/// by construction, with no native re-entry.
+///
+/// Rejected: named or spread arguments, a pure by-reference argument send
+/// (`ByRefLocationPlaceholder`), a non-register/non-int-constant argument value,
+/// a nested call or any out-of-subset prefix instruction, and any post-call work
+/// (which would need on-stack replacement — out of scope). The callee's identity
+/// (userland vs. builtin, arity, by-reference parameters, method/closure) is not
+/// checked here — `php_jit` has no function registry — but by the VM at call
+/// time, which interprets the whole leaf when the callee is out of scope.
+fn compile_scalar_int_tailcall_leaf(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    permits: NativeCallPermits,
+) -> Option<CompiledScalarRegion> {
+    if !permits.allow_userland_tailcall {
+        return None;
+    }
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if !matches!(
+        function.return_type,
+        Some(IrReturnType::Int) | Some(IrReturnType::Bool)
+    ) {
+        return None;
+    }
+    for param in &function.params {
+        if param.by_ref
+            || param.variadic
+            || param.default.is_some()
+            || param.type_ != Some(IrReturnType::Int)
+        {
+            return None;
+        }
+    }
+
+    // Single-block leaf: prefix + tail call + return. A multi-block prefix would
+    // need the general CFG lowering with a tail-call terminator — a later step.
+    let [block] = function.blocks.as_slice() else {
+        return None;
+    };
+
+    // The final meaningful instruction must be the tail call; everything before
+    // it is the argument-computing prefix.
+    let kinds = meaningful_kinds(block);
+    let (call_kind, prefix_kinds) = kinds.split_last()?;
+    let InstructionKind::CallFunction {
+        dst: call_dst,
+        name,
+        args,
+    } = call_kind
+    else {
+        return None;
+    };
+
+    // The terminator must return exactly the call's result register.
+    let TerminatorKind::Return {
+        value: Some(Operand::Register(ret_reg)),
+        by_ref_local: None,
+    } = &block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+    if ret_reg != call_dst {
+        return None;
+    }
+
+    let local_count = function.local_count;
+    // Registers sit above locals; the fresh argument slots sit above the
+    // registers, so an argument slot never aliases a value the prefix computes.
+    let first_arg_slot = local_count.checked_add(function.register_count)?;
+    let reg_slot = |r: RegId| local_count + r.raw();
+
+    // Lower the prefix with the shared scalar-int lowering. A nested call or any
+    // out-of-subset instruction rejects the whole leaf.
+    let mut prefix = Vec::with_capacity(prefix_kinds.len());
+    for kind in prefix_kinds {
+        prefix.push(scalar_int_prefix_op(
+            kind,
+            constants,
+            local_count,
+            reg_slot,
+        )?);
+    }
+
+    // Each argument must be a plain positional value whose operand is a
+    // scalar-int register or int constant.
+    let mut arg_sources = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg.name.is_some()
+            || arg.unpack
+            || arg.value_kind == IrCallArgValueKind::ByRefLocationPlaceholder
+        {
+            return None;
+        }
+        let source = match arg.value {
+            Operand::Register(reg) => TailArgSource::GuardedCopy { src: reg_slot(reg) },
+            Operand::Constant(constant) => TailArgSource::Const {
+                value: int_constant(constants, constant)?,
+            },
+            Operand::Local(_) => return None,
+        };
+        arg_sources.push(source);
+    }
+
+    let arg_count = u32::try_from(args.len()).ok()?;
+    let buffer_slots = first_arg_slot.checked_add(arg_count)?;
+
+    // Guard every parameter as `Int` at entry so the tail call is only requested
+    // when the leaf's arguments are all genuine ints (see `emit_tailcall_region`).
+    let param_slots: Vec<u32> = function
+        .params
+        .iter()
+        .map(|param| param.local.raw())
+        .collect();
+
+    let (code, arg_slots) =
+        emit_tailcall_region(&prefix, &arg_sources, &param_slots, first_arg_slot).ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        // Unused on the tail-call path (the VM produces the result); slot 0 is
+        // always present, keeping the field well-formed.
+        result_slot: 0,
+        buffer_slots,
+        tail_call: Some(TailCallPlan {
+            callee_name: name.clone(),
+            arg_slots,
+        }),
     })
 }
 
@@ -1448,6 +2595,7 @@ fn compile_scalar_float_leaf(
         code,
         result_slot,
         buffer_slots,
+        tail_call: None,
     })
 }
 
@@ -1498,15 +2646,18 @@ fn ir_compare_to_region(op: CompareOp) -> Option<RegionCompareOp> {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuardedIntAddStep, MAX_SLOT, RegionCompileError, SlotSequenceError,
-        build_scalar_int_region, compile_counted_loop_function, compile_scalar_int_function,
-        compile_scalar_int_region, emit_guarded_int_add_sequence, int_bin_op,
+        CopyPatchRuntimeHelpers, GuardedIntAddStep, MAX_SLOT, NativeCallPermits,
+        RegionCompileError, SlotSequenceError, build_scalar_int_region,
+        compile_counted_loop_function, compile_scalar_int_function,
+        compile_scalar_int_function_with_permits,
+        compile_scalar_int_function_with_permits_and_helpers, compile_scalar_int_region,
+        emit_guarded_int_add_sequence, int_bin_op,
     };
     use crate::region_ir::{
         NodeId, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
         RegionPlacement, RegionValueType, VmSlotId,
     };
-    use php_ir::instruction::TerminatorKind;
+    use php_ir::instruction::{IrCallArg, IrCallArgValueKind, TerminatorKind};
     use php_ir::{
         BasicBlock, BinaryOp, BlockId, CompareOp, ConstId, FunctionFlags, InstrId, Instruction,
         InstructionKind, IrConstant, IrParam, IrReturnType, IrSpan, LocalId, Operand, RegId,
@@ -1745,6 +2896,707 @@ mod tests {
         assert_eq!(compiled.result_slot, 2);
         assert_eq!(compiled.buffer_slots, 3);
         assert!(!compiled.code.is_empty());
+    }
+
+    /// `function f(int $x): int { return abs($x) + 1; }` as the frontend lowers
+    /// it (see `php-vm dump-ir`): a single block with a `CallFunction "abs"` on a
+    /// register argument, then `+ 1`.
+    fn abs_plus_one_function(call_name: &str) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let positional = |reg: u32| IrCallArg {
+            name: None,
+            value: Operand::Register(RegId::new(reg)),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: Some(LocalId::new(0)),
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        };
+        php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![int_param("x", 0)],
+            locals: vec!["x".to_string()],
+            local_count: 1,
+            register_count: 4,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::CallFunction {
+                        dst: RegId::new(0),
+                        name: call_name.to_string(),
+                        args: vec![positional(1)],
+                    }),
+                    ins(InstructionKind::LoadConst {
+                        dst: RegId::new(2),
+                        constant: ConstId::new(0),
+                    }),
+                    ins(InstructionKind::Binary {
+                        dst: RegId::new(3),
+                        op: BinaryOp::Add,
+                        lhs: Operand::Register(RegId::new(0)),
+                        rhs: Operand::Register(RegId::new(2)),
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(3))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Int),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_builtin_abs_call_only_with_permit() {
+        let function = abs_plus_one_function("abs");
+        let constants = [IrConstant::Int(1)];
+        let permits = NativeCallPermits {
+            builtin_abs: true,
+            ..NativeCallPermits::default()
+        };
+
+        // Without permission the `abs` call is out of subset -> interpreter.
+        assert!(compile_scalar_int_function(&function, &constants, 1).is_none());
+
+        // With the VM's confirmation, the CFG compiler lowers it natively.
+        let compiled = compile_scalar_int_function_with_permits(&function, &constants, 1, permits)
+            .expect("abs leaf recognized when the builtin is confirmed");
+        // Locals: $x = slot 0; registers r0..r3 -> slots 1..4; result slot 5.
+        assert_eq!(compiled.result_slot, 5);
+        assert_eq!(compiled.buffer_slots, 6);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_namespaced_abs_call_even_with_permit() {
+        // A namespaced call keeps its `\` in the lowered name, so it is never
+        // matched as the builtin regardless of the permit.
+        let function = abs_plus_one_function("app\\abs");
+        let constants = [IrConstant::Int(1)];
+        let permits = NativeCallPermits {
+            builtin_abs: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits(&function, &constants, 1, permits).is_none()
+        );
+    }
+
+    /// `function f($x): $ret { return $name($x); }` as the frontend lowers it:
+    /// one by-value parameter loaded into a register, a single-positional
+    /// `CallFunction` on it, returned unchanged. The shared shape behind the
+    /// count/strlen/is_* recognizer tests; `call_name`, `param_type`, and
+    /// `return_type` vary to exercise the shadow, typed-parameter, and
+    /// return-type cases.
+    fn single_arg_builtin_leaf_function(
+        call_name: &str,
+        param_type: Option<IrReturnType>,
+        return_type: Option<IrReturnType>,
+    ) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let positional = |reg: u32| IrCallArg {
+            name: None,
+            value: Operand::Register(RegId::new(reg)),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: Some(LocalId::new(0)),
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        };
+        php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![IrParam {
+                name: "a".to_string(),
+                local: LocalId::new(0),
+                required: true,
+                default: None,
+                type_: param_type,
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            }],
+            locals: vec!["a".to_string()],
+            local_count: 1,
+            register_count: 2,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::CallFunction {
+                        dst: RegId::new(0),
+                        name: call_name.to_string(),
+                        args: vec![positional(1)],
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(0))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type,
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    /// The count-specific shape: `function f($a) { return count($a); }` with an
+    /// untyped return (like the microbench). Delegates to the shared builder.
+    fn count_leaf_function(
+        call_name: &str,
+        param_type: Option<IrReturnType>,
+    ) -> php_ir::IrFunction {
+        single_arg_builtin_leaf_function(call_name, param_type, None)
+    }
+
+    #[test]
+    fn recognizes_builtin_count_leaf_only_with_permit_and_helper() {
+        let function = count_leaf_function("count", None);
+        // A non-zero placeholder address; the recognizer only embeds it (the
+        // emitted `blr` is exercised end-to-end in code_memory.rs).
+        let helpers = CopyPatchRuntimeHelpers {
+            array_len: 0x1000,
+            strlen: 0,
+        };
+        let permits = NativeCallPermits {
+            builtin_count: true,
+            ..NativeCallPermits::default()
+        };
+
+        // No permit -> outside every subset (the interpreter runs it).
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                NativeCallPermits::default(),
+                helpers,
+            )
+            .is_none()
+        );
+        // Permit but no resolved helper address -> not lowered.
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default(),
+            )
+            .is_none()
+        );
+
+        // Permit + helper -> recognized. $a=slot 0; regs r0,r1 -> slots 1,2; the
+        // count result lands in the dedicated result slot 3.
+        let compiled = compile_scalar_int_function_with_permits_and_helpers(
+            &function,
+            &[],
+            1,
+            permits,
+            helpers,
+        )
+        .expect("count leaf recognized when the builtin is confirmed and the helper resolves");
+        assert_eq!(compiled.result_slot, 3);
+        assert_eq!(compiled.buffer_slots, 4);
+        assert!(compiled.tail_call.is_none());
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_count_leaf_with_array_typed_parameter() {
+        let function = count_leaf_function("count", Some(IrReturnType::Array));
+        let helpers = CopyPatchRuntimeHelpers {
+            array_len: 0x1000,
+            strlen: 0,
+        };
+        let permits = NativeCallPermits {
+            builtin_count: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                helpers
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_a_namespaced_count_call_even_with_permit() {
+        // A namespaced call keeps its `\` in the lowered name, so it is never
+        // matched as the builtin `count` regardless of the permit.
+        let function = count_leaf_function("app\\count", None);
+        let helpers = CopyPatchRuntimeHelpers {
+            array_len: 0x1000,
+            strlen: 0,
+        };
+        let permits = NativeCallPermits {
+            builtin_count: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                helpers
+            )
+            .is_none()
+        );
+    }
+
+    /// Runtime helpers with only the `strlen` address resolved (a non-zero
+    /// placeholder; the emitted `blr` is exercised end-to-end in code_memory.rs).
+    fn strlen_helpers() -> CopyPatchRuntimeHelpers {
+        CopyPatchRuntimeHelpers {
+            array_len: 0,
+            strlen: 0x2000,
+        }
+    }
+
+    #[test]
+    fn recognizes_builtin_strlen_leaf_only_with_permit_and_helper() {
+        let function = single_arg_builtin_leaf_function("strlen", None, Some(IrReturnType::Int));
+        let helpers = strlen_helpers();
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+
+        // No permit -> outside every subset (the interpreter runs it).
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                NativeCallPermits::default(),
+                helpers,
+            )
+            .is_none()
+        );
+        // Permit but no resolved helper address -> not lowered.
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default(),
+            )
+            .is_none()
+        );
+
+        // Permit + helper -> recognized. $a=slot 0; regs r0,r1 -> slots 1,2; the
+        // strlen result lands in the dedicated result slot 3.
+        let compiled = compile_scalar_int_function_with_permits_and_helpers(
+            &function,
+            &[],
+            1,
+            permits,
+            helpers,
+        )
+        .expect("strlen leaf recognized when the builtin is confirmed and the helper resolves");
+        assert_eq!(compiled.result_slot, 3);
+        assert_eq!(compiled.buffer_slots, 4);
+        assert!(compiled.tail_call.is_none());
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_strlen_leaf_with_string_typed_parameter() {
+        let function = single_arg_builtin_leaf_function(
+            "strlen",
+            Some(IrReturnType::String),
+            Some(IrReturnType::Int),
+        );
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                strlen_helpers()
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_strlen_leaf_with_int_typed_parameter() {
+        // An int-typed parameter can never be a string at runtime, so it is
+        // outside the strlen shape (the tag guard would always fail); the
+        // interpreter runs it.
+        let function = single_arg_builtin_leaf_function(
+            "strlen",
+            Some(IrReturnType::Int),
+            Some(IrReturnType::Int),
+        );
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                strlen_helpers()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_a_namespaced_strlen_call_even_with_permit() {
+        let function =
+            single_arg_builtin_leaf_function("app\\strlen", None, Some(IrReturnType::Int));
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                strlen_helpers()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn recognizes_is_type_leaves_only_with_matching_permit() {
+        // Each canonical predicate is recognized only when its own permit is set,
+        // and needs no runtime helper (the stencil only reads the tag).
+        let cases = [
+            (
+                "is_int",
+                NativeCallPermits {
+                    builtin_is_int: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_string",
+                NativeCallPermits {
+                    builtin_is_string: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_array",
+                NativeCallPermits {
+                    builtin_is_array: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_float",
+                NativeCallPermits {
+                    builtin_is_float: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_bool",
+                NativeCallPermits {
+                    builtin_is_bool: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+        ];
+        for (name, permits) in cases {
+            let function = single_arg_builtin_leaf_function(name, None, Some(IrReturnType::Bool));
+
+            // No permit -> the interpreter runs it.
+            assert!(
+                compile_scalar_int_function_with_permits_and_helpers(
+                    &function,
+                    &[],
+                    1,
+                    NativeCallPermits::default(),
+                    CopyPatchRuntimeHelpers::default(),
+                )
+                .is_none(),
+                "{name} without its permit falls back"
+            );
+
+            // Matching permit -> recognized; no helper address required.
+            let compiled = compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default(),
+            )
+            .unwrap_or_else(|| panic!("{name} recognized with its permit"));
+            assert_eq!(compiled.result_slot, 3);
+            assert_eq!(compiled.buffer_slots, 4);
+            assert!(compiled.tail_call.is_none());
+            assert!(!compiled.code.is_empty());
+        }
+    }
+
+    #[test]
+    fn is_type_permits_do_not_cross() {
+        // `is_string` must not be enabled by the `is_int` permit.
+        let function =
+            single_arg_builtin_leaf_function("is_string", None, Some(IrReturnType::Bool));
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn recognizes_is_type_leaf_with_typed_parameter() {
+        // The tag check is correct for any declared parameter type, so a typed
+        // parameter is still recognized (unlike strlen/count, no type restriction).
+        let function = single_arg_builtin_leaf_function(
+            "is_int",
+            Some(IrReturnType::Mixed),
+            Some(IrReturnType::Bool),
+        );
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default()
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_is_type_aliases_and_unhandled_predicates() {
+        // Every type-predicate permit ON, to prove it is the NAME (not a missing
+        // permit) that leaves these to the interpreter: aliases (is_integer/
+        // is_long/is_double) and the non-tag predicates.
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            builtin_is_string: true,
+            builtin_is_array: true,
+            builtin_is_float: true,
+            builtin_is_bool: true,
+            ..NativeCallPermits::default()
+        };
+        for name in [
+            "is_integer",
+            "is_long",
+            "is_double",
+            "is_null",
+            "is_object",
+            "is_numeric",
+            "is_scalar",
+            "is_iterable",
+            "is_callable",
+            "is_a",
+        ] {
+            let function = single_arg_builtin_leaf_function(name, None, Some(IrReturnType::Bool));
+            assert!(
+                compile_scalar_int_function_with_permits_and_helpers(
+                    &function,
+                    &[],
+                    1,
+                    permits,
+                    CopyPatchRuntimeHelpers::default()
+                )
+                .is_none(),
+                "{name} is left to the interpreter"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_namespaced_is_type_call() {
+        let function =
+            single_arg_builtin_leaf_function("app\\is_int", None, Some(IrReturnType::Bool));
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default()
+            )
+            .is_none()
+        );
+    }
+
+    /// `function f($a, $b): int { return g($a + $b); }` — the native→userland
+    /// tail-call shape: the prefix computes `$a + $b`, then a final
+    /// `CallFunction` whose result register is returned unchanged.
+    fn tailcall_leaf_function(call_name: &str) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let positional = |reg: u32| IrCallArg {
+            name: None,
+            value: Operand::Register(RegId::new(reg)),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: None,
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        };
+        php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![int_param("a", 0), int_param("b", 1)],
+            locals: vec!["a".to_string(), "b".to_string()],
+            local_count: 2,
+            register_count: 4,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(2),
+                        local: LocalId::new(1),
+                    }),
+                    ins(InstructionKind::Binary {
+                        dst: RegId::new(3),
+                        op: BinaryOp::Add,
+                        lhs: Operand::Register(RegId::new(1)),
+                        rhs: Operand::Register(RegId::new(2)),
+                    }),
+                    ins(InstructionKind::CallFunction {
+                        dst: RegId::new(0),
+                        name: call_name.to_string(),
+                        args: vec![positional(3)],
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(0))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Int),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_userland_tailcall_shape_only_with_permit() {
+        let function = tailcall_leaf_function("classify");
+        let constants: [IrConstant; 0] = [];
+
+        // Without the permit the tail-call shape is out of every subset, so the
+        // interpreter runs it (no native lowering).
+        assert!(compile_scalar_int_function(&function, &constants, 1).is_none());
+
+        // With the permit, the recognizer lowers the argument prefix and records
+        // the plan. The callee's identity is validated later, by the VM.
+        let permits = NativeCallPermits {
+            allow_userland_tailcall: true,
+            ..NativeCallPermits::default()
+        };
+        let compiled = compile_scalar_int_function_with_permits(&function, &constants, 1, permits)
+            .expect("tail-call leaf recognized with the permit");
+        let plan = compiled
+            .tail_call
+            .as_ref()
+            .expect("a tail-call region records its plan");
+        assert_eq!(plan.callee_name, "classify");
+        // Locals $a,$b = slots 0,1; regs r0..r3 = slots 2..5; the fresh argument
+        // slot sits just above the registers at slot 6.
+        assert_eq!(plan.arg_slots, vec![6]);
+        assert_eq!(compiled.buffer_slots, 7);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn rejects_non_tail_call_shape_even_with_permit() {
+        // `return callee($x) + 1`: the returned value is the *add* result, not the
+        // call's result, so it is not a tail call. With the tail-call permit set
+        // (but no `abs` permit) it is rejected by every subset -> interpreter.
+        let function = abs_plus_one_function("classify");
+        let constants = [IrConstant::Int(1)];
+        let permits = NativeCallPermits {
+            allow_userland_tailcall: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits(&function, &constants, 1, permits).is_none(),
+            "post-call work is not a tail call"
+        );
     }
 
     #[test]

@@ -327,6 +327,199 @@ mod identity_storage {
         let object = ObjectRef::new(&class);
         assert_eq!(object.get_property("virtualName"), None);
     }
+
+    /// A class exercising every backing/skip case the slot builder must
+    /// reproduce: an inherited-then-overridden duplicate name (last default
+    /// wins at the first-occurrence slot), a static (excluded), a virtual
+    /// hooked property (unbacked, excluded), a backed hooked property, a
+    /// readonly typed property with a default, and a typed-uninitialized
+    /// property (present with the `Uninitialized` sentinel, not absent).
+    fn representative_class() -> ClassEntry {
+        ClassEntry {
+            name: "child".to_owned(),
+            parent: Some("base".to_owned()),
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: vec![
+                ClassPropertyEntry {
+                    name: "value".to_owned(),
+                    default: Value::String(crate::PhpString::from_test_str("base")),
+                    type_: None,
+                    flags: ClassPropertyFlags::default(),
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "sharedStatic".to_owned(),
+                    default: Value::Int(99),
+                    type_: None,
+                    flags: ClassPropertyFlags {
+                        is_static: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "virtualName".to_owned(),
+                    default: Value::Uninitialized,
+                    type_: Some(RuntimeType::String),
+                    flags: ClassPropertyFlags {
+                        is_typed: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks {
+                        get_function_id: Some(1),
+                        set_function_id: Some(2),
+                        backed: false,
+                    },
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "backedHook".to_owned(),
+                    default: Value::Int(7),
+                    type_: Some(RuntimeType::Int),
+                    flags: ClassPropertyFlags {
+                        is_typed: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks {
+                        get_function_id: Some(3),
+                        set_function_id: None,
+                        backed: true,
+                    },
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "readonlyLimit".to_owned(),
+                    default: Value::Int(42),
+                    type_: Some(RuntimeType::Int),
+                    flags: ClassPropertyFlags {
+                        is_readonly: true,
+                        is_typed: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "uninitialized".to_owned(),
+                    default: Value::Uninitialized,
+                    type_: Some(RuntimeType::Int),
+                    flags: ClassPropertyFlags {
+                        is_typed: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                ClassPropertyEntry {
+                    name: "private:base:hidden".to_owned(),
+                    default: Value::Int(2),
+                    type_: None,
+                    flags: ClassPropertyFlags {
+                        is_private: true,
+                        ..ClassPropertyFlags::default()
+                    },
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+                // Overriding declaration of `value`: keeps the first-occurrence
+                // slot but the later default must win.
+                ClassPropertyEntry {
+                    name: "value".to_owned(),
+                    default: Value::String(crate::PhpString::from_test_str("child")),
+                    type_: None,
+                    flags: ClassPropertyFlags::default(),
+                    hooks: ClassPropertyHooks::default(),
+                    attributes: Vec::new(),
+                },
+            ],
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        }
+    }
+
+    #[test]
+    fn from_layout_slots_reproduces_new_with_display_name_initial_state() {
+        let class = representative_class();
+        let names = [
+            "value",
+            "sharedStatic",
+            "virtualName",
+            "backedHook",
+            "readonlyLimit",
+            "uninitialized",
+            "private:base:hidden",
+        ];
+
+        let slow = ObjectRef::new_with_display_name(&class, "child");
+        let template = ObjectRef::default_declared_slots(&class, "child");
+        let fast = ObjectRef::from_layout_slots(&class, "child", template.clone());
+
+        // PHP-visible snapshot (declaration/slot order + values) is identical.
+        assert_eq!(slow.properties_snapshot(), fast.properties_snapshot());
+
+        // The overriding declaration's default wins at the first-occurrence slot.
+        assert_eq!(
+            fast.get_property("value"),
+            Some(Value::String(crate::PhpString::from_test_str("child")))
+        );
+        // Static is excluded from instance storage.
+        assert_eq!(fast.get_property("sharedStatic"), None);
+        // Virtual (unbacked) hook has no backing slot.
+        assert_eq!(fast.get_property("virtualName"), None);
+        // Backed hook keeps its default.
+        assert_eq!(fast.get_property("backedHook"), Some(Value::Int(7)));
+
+        // Per-name reads and debug labels match the slow path exactly.
+        for name in names {
+            assert_eq!(
+                slow.get_property(name),
+                fast.get_property(name),
+                "property `{name}` read differs between construction paths"
+            );
+            assert_eq!(
+                slow.property_debug_label(name),
+                fast.property_debug_label(name),
+                "property `{name}` debug label differs between construction paths"
+            );
+        }
+
+        // The typed-uninitialized backed slot is present-but-uninitialized (the
+        // `Uninitialized` sentinel occupies the slot; that is distinct from an
+        // absent `None` slot). The template must carry the sentinel identically.
+        assert_eq!(
+            fast.get_property("uninitialized"),
+            Some(Value::Uninitialized)
+        );
+        assert!(
+            fast.properties_snapshot()
+                .iter()
+                .any(|(n, v)| n == "uninitialized" && *v == Value::Uninitialized),
+            "uninitialized typed slot must surface with the Uninitialized sentinel"
+        );
+
+        // The template length matches the layout slot count (backed instance
+        // names, deduped): value, backedHook, readonlyLimit, uninitialized,
+        // private:base:hidden.
+        assert_eq!(template.len(), 5);
+    }
+
+    #[test]
+    fn default_declared_slots_template_is_display_name_independent() {
+        let class = representative_class();
+        // Different display spellings select different debug-label layout
+        // variants but must produce the same slot template contents.
+        assert_eq!(
+            ObjectRef::default_declared_slots(&class, "Child"),
+            ObjectRef::default_declared_slots(&class, "child"),
+        );
+    }
 }
 
 mod enum_metadata {

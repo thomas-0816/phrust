@@ -1076,6 +1076,464 @@ mod tests {
         run(slots.as_mut_ptr())
     }
 
+    // The call stencil executed end-to-end: `slot[dst] = abs(slot[arg])`
+    // emitted as a real `blr` into the `phrust_jit_abs_i64` VM helper (fp/lr
+    // saved, a 16-byte scratch frame for the out value and the slot base). This
+    // is the safe subset of native-tier gap (b): a pure C-ABI call to a pure
+    // function, with the `abs(INT_MIN)` overflow taking the side exit so the
+    // interpreter produces PHP's float result.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_abs_call_stencil() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{IntBinOp, ScalarIntOp};
+
+        // abs(5) = 5 and abs(-7) = 7, written to slot[1].
+        for (input, expected) in [(5i64, 5i64), (-7, 7), (0, 0), (i64::MAX, i64::MAX)] {
+            let mut slots = [JitCValue::int(input), JitCValue::uninitialized()];
+            assert_eq!(
+                run_scalar_ops(&[ScalarIntOp::CallAbsI64 { dst: 1, arg: 0 }], &mut slots),
+                0,
+                "abs({input}) runs natively"
+            );
+            assert_eq!(slots[1].tag, JitCValueTag::Int);
+            assert_eq!(slots[1].payload as i64, expected);
+        }
+
+        // abs(PHP_INT_MIN) overflows i64 (PHP returns a float): the helper
+        // reports fallback, so the stencil side-exits and leaves slot[1] alone.
+        let mut min = [JitCValue::int(i64::MIN), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[ScalarIntOp::CallAbsI64 { dst: 1, arg: 0 }], &mut min),
+            1,
+            "abs(INT_MIN) takes the side exit"
+        );
+        assert_eq!(min[1].tag, JitCValueTag::Uninitialized);
+
+        // A non-Int argument trips the type guard before the call.
+        let mut bad = [JitCValue::null(), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[ScalarIntOp::CallAbsI64 { dst: 1, arg: 0 }], &mut bad),
+            1,
+            "a non-Int argument side-exits at the guard"
+        );
+
+        // The helper result feeds a following op — the `abs($x) + 1` shape:
+        // slot[2] = abs(slot[0]); slot[3] = slot[2] + slot[1].
+        let mut chain = [
+            JitCValue::int(-5),
+            JitCValue::int(1),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[
+                    ScalarIntOp::CallAbsI64 { dst: 2, arg: 0 },
+                    ScalarIntOp::Binary {
+                        op: IntBinOp::Add,
+                        dst: 3,
+                        lhs: 2,
+                        rhs: 1,
+                    },
+                ],
+                &mut chain,
+            ),
+            0
+        );
+        assert_eq!(chain[2].payload as i64, 5, "abs(-5) = 5 written to slot 2");
+        assert_eq!(chain[3].tag, JitCValueTag::Int);
+        assert_eq!(chain[3].payload as i64, 6, "abs(-5) + 1 = 6");
+    }
+
+    // The count() call stencil executed end-to-end: `slot[dst] = count(slot[arg])`
+    // over a read-only borrowed array handle. The array crosses as an
+    // `OpaqueArray` slot whose payload is a pointer the emitted code passes to a
+    // runtime-resolved `php_jit_array_len` ABI wrapper (fp/lr saved, a 16-byte
+    // scratch frame for the out length and the slot base). This is the first
+    // heap-handle shape of the native tier: the array-tag guard fires before the
+    // call (a non-array side-exits), and a helper fallback (a non-packed array in
+    // the VM) also side-exits — only a plain packed array returns natively. The
+    // helper here stands in for `php_runtime::php_jit_array_len` (php_jit cannot
+    // depend on php_runtime), exercising the exact call boundary and ABI.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_count_call_stencil() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::ScalarIntOp;
+
+        // Stand-in for the runtime `php_jit_array_len` ABI wrapper: read the array
+        // length the test parked at `value_ptr` and write it out. A negative
+        // sentinel reports a non-OK status, modeling the helper's fallback for a
+        // non-packed (hashed) array so the stencil side-exits.
+        extern "C" fn test_array_len(value_ptr: usize, out: *mut i64) -> i32 {
+            if value_ptr == 0 || out.is_null() {
+                return 1;
+            }
+            // SAFETY: the test parks a live `i64` at `value_ptr` for the call.
+            let len = unsafe { *(value_ptr as *const i64) };
+            if len < 0 {
+                return 1; // helper fallback -> side exit
+            }
+            // SAFETY: `out` is the stencil's stack out-slot, valid for the call.
+            unsafe {
+                *out = len;
+            }
+            crate::JIT_HELPER_STATUS_OK
+        }
+
+        let helper = test_array_len as *const () as usize as u64;
+        let array_slot = |len: &i64| JitCValue {
+            tag: JitCValueTag::OpaqueArray,
+            reserved: 0,
+            payload: (len as *const i64) as u64,
+            aux: 0,
+        };
+        let count_op = ScalarIntOp::CallCountI64 {
+            dst: 1,
+            arg: 0,
+            array_len_helper: helper,
+        };
+
+        // A borrowed packed-array handle of length 3: the fast path runs the
+        // helper and writes the Int length to slot[1].
+        let length: i64 = 3;
+        let mut slots = [array_slot(&length), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[count_op], &mut slots),
+            0,
+            "count over a packed array handle runs natively"
+        );
+        assert_eq!(slots[1].tag, JitCValueTag::Int);
+        assert_eq!(slots[1].payload as i64, 3);
+
+        // A non-array argument (an Int) trips the array-tag guard before the call
+        // — the helper is never reached and the result slot is untouched.
+        let mut not_array = [JitCValue::int(5), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[count_op], &mut not_array),
+            1,
+            "a non-array argument side-exits at the tag guard"
+        );
+        assert_eq!(not_array[1].tag, JitCValueTag::Uninitialized);
+
+        // Uninitialized (how the bridge marshals a Countable object or any
+        // non-array heap value) also side-exits at the guard.
+        let mut uninit = [JitCValue::uninitialized(), JitCValue::uninitialized()];
+        assert_eq!(run_scalar_ops(&[count_op], &mut uninit), 1);
+        assert_eq!(uninit[1].tag, JitCValueTag::Uninitialized);
+
+        // A genuine array handle whose helper reports fallback (a non-packed array
+        // in the VM) side-exits after the call, leaving the result untouched.
+        let sentinel: i64 = -1;
+        let mut hashed = [array_slot(&sentinel), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[count_op], &mut hashed),
+            1,
+            "a helper fallback (non-packed array) side-exits"
+        );
+        assert_eq!(hashed[1].tag, JitCValueTag::Uninitialized);
+    }
+
+    // The strlen() call stencil executed end-to-end: `slot[dst] = strlen(slot[arg])`
+    // over a read-only borrowed string handle. Mirrors the count stencil — the
+    // string crosses as an `OpaqueString` slot whose payload is a pointer the
+    // emitted code passes to a runtime-resolved string-length ABI wrapper. The
+    // string-tag guard fires before the call (a non-string side-exits), and a
+    // helper fallback (an unexpected shape in the VM) also side-exits. The helper
+    // here stands in for the VM's `copy_patch_strlen_abi` (php_jit cannot depend
+    // on the VM), exercising the exact call boundary and ABI.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_strlen_call_stencil() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::ScalarIntOp;
+
+        // Stand-in for the runtime string-length ABI wrapper: read the byte length
+        // the test parked at `value_ptr` and write it out. A negative sentinel
+        // reports a non-OK status, modeling the helper's fallback for a value it
+        // cannot length so the stencil side-exits.
+        extern "C" fn test_strlen(value_ptr: usize, out: *mut i64) -> i32 {
+            if value_ptr == 0 || out.is_null() {
+                return 1;
+            }
+            // SAFETY: the test parks a live `i64` at `value_ptr` for the call.
+            let len = unsafe { *(value_ptr as *const i64) };
+            if len < 0 {
+                return 1; // helper fallback -> side exit
+            }
+            // SAFETY: `out` is the stencil's stack out-slot, valid for the call.
+            unsafe {
+                *out = len;
+            }
+            crate::JIT_HELPER_STATUS_OK
+        }
+
+        let helper = test_strlen as *const () as usize as u64;
+        let string_slot = |len: &i64| JitCValue {
+            tag: JitCValueTag::OpaqueString,
+            reserved: 0,
+            payload: (len as *const i64) as u64,
+            aux: 0,
+        };
+        let strlen_op = ScalarIntOp::CallStrlenI64 {
+            dst: 1,
+            arg: 0,
+            strlen_helper: helper,
+        };
+
+        // A borrowed string handle of byte length 5: the fast path runs the helper
+        // and writes the Int length to slot[1].
+        let length: i64 = 5;
+        let mut slots = [string_slot(&length), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[strlen_op], &mut slots),
+            0,
+            "strlen over a string handle runs natively"
+        );
+        assert_eq!(slots[1].tag, JitCValueTag::Int);
+        assert_eq!(slots[1].payload as i64, 5);
+
+        // Empty string -> length 0 still runs natively.
+        let zero: i64 = 0;
+        let mut empty = [string_slot(&zero), JitCValue::uninitialized()];
+        assert_eq!(run_scalar_ops(&[strlen_op], &mut empty), 0);
+        assert_eq!(empty[1].payload as i64, 0);
+
+        // A non-string argument (an Int) trips the string-tag guard before the
+        // call — the helper is never reached and the result slot is untouched.
+        let mut not_string = [JitCValue::int(5), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[strlen_op], &mut not_string),
+            1,
+            "a non-string argument side-exits at the tag guard"
+        );
+        assert_eq!(not_string[1].tag, JitCValueTag::Uninitialized);
+
+        // Uninitialized (how the bridge marshals null / an object / any non-string
+        // heap value) also side-exits at the guard.
+        let mut uninit = [JitCValue::uninitialized(), JitCValue::uninitialized()];
+        assert_eq!(run_scalar_ops(&[strlen_op], &mut uninit), 1);
+        assert_eq!(uninit[1].tag, JitCValueTag::Uninitialized);
+
+        // A genuine string handle whose helper reports fallback side-exits after
+        // the call, leaving the result untouched.
+        let sentinel: i64 = -1;
+        let mut bad = [string_slot(&sentinel), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[strlen_op], &mut bad),
+            1,
+            "a helper fallback side-exits"
+        );
+        assert_eq!(bad[1].tag, JitCValueTag::Uninitialized);
+    }
+
+    // The monomorphic property-load call stencil executed end-to-end:
+    // `slot[dst] = <object>-><declared scalar property>` over a read-only
+    // borrowed object handle. The object crosses as an `OpaqueObject` slot whose
+    // payload is a pointer the emitted code passes to a property-load ABI wrapper,
+    // along with a borrowed layout-metadata pointer (arg x1) and a full-`JitCValue`
+    // out slot (arg x2, a 32-byte scratch frame that also saves the slot base).
+    // The object-tag guard fires before the call (a non-object side-exits), and
+    // the helper's layout guard side-exits for a non-matching class — so a
+    // polymorphic call site never reads a wrong slot. The helper here stands in
+    // for the VM's `copy_patch_property_load_abi` (php_jit cannot depend on the
+    // VM), exercising the exact call boundary, the OpaqueObject tag, the layout
+    // guard, and the marshaled scalar result.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_property_load_call_stencil() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::ScalarIntOp;
+
+        // Stand-in for the VM's copy_patch_property_load_abi. The object handle's
+        // payload points at a `TestObject { layout_id, scalar }` (modeling an
+        // object at a known layout holding a scalar property); the metadata
+        // pointer points at the expected layout id. A matching layout marshals the
+        // Int scalar into the out JitCValue and returns OK; a mismatch reports a
+        // non-OK status (the layout side exit) so the stencil defers to the
+        // interpreter, never reading a wrong slot.
+        #[repr(C)]
+        struct TestObject {
+            layout_id: u64,
+            scalar: i64,
+        }
+        extern "C" fn test_property_load(
+            value_ptr: usize,
+            metadata_ptr: usize,
+            out: *mut JitCValue,
+        ) -> i32 {
+            if value_ptr == 0 || metadata_ptr == 0 || out.is_null() {
+                return crate::JIT_HELPER_STATUS_FALLBACK;
+            }
+            // SAFETY: the test parks a live `TestObject` at `value_ptr` and a live
+            // expected-layout `u64` at `metadata_ptr` for the call's duration.
+            let object = unsafe { &*(value_ptr as *const TestObject) };
+            let expected = unsafe { *(metadata_ptr as *const u64) };
+            if object.layout_id != expected {
+                return crate::JIT_HELPER_STATUS_FALLBACK; // layout mismatch -> side exit
+            }
+            // SAFETY: `out` is the stencil's stack scratch, a valid 24-byte JitCValue.
+            unsafe {
+                *out = JitCValue::int(object.scalar);
+            }
+            crate::JIT_HELPER_STATUS_OK
+        }
+
+        let helper = test_property_load as *const () as usize as u64;
+        let expected_layout: u64 = 0xABCD;
+        let metadata_ptr = (&expected_layout as *const u64) as u64;
+        let object_slot = |obj: &TestObject| JitCValue {
+            tag: JitCValueTag::OpaqueObject,
+            reserved: 0,
+            payload: (obj as *const TestObject) as u64,
+            aux: 0,
+        };
+        let op = ScalarIntOp::CallPropertyLoadScalar {
+            dst: 1,
+            arg: 0,
+            metadata_ptr,
+            helper,
+        };
+
+        // Matching layout: the property read runs natively and writes the Int
+        // scalar to slot[1].
+        let matching = TestObject {
+            layout_id: 0xABCD,
+            scalar: 42,
+        };
+        let mut slots = [object_slot(&matching), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[op], &mut slots),
+            0,
+            "a matching-layout property load runs natively"
+        );
+        assert_eq!(slots[1].tag, JitCValueTag::Int);
+        assert_eq!(slots[1].payload as i64, 42);
+
+        // Layout mismatch (a different class reaching the same monomorphic site):
+        // the helper reports non-OK, so the stencil side-exits and the result slot
+        // is untouched — the guard fires before any commit, never a wrong slot.
+        let mismatch = TestObject {
+            layout_id: 0x1234,
+            scalar: 99,
+        };
+        let mut wrong = [object_slot(&mismatch), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[op], &mut wrong),
+            1,
+            "a layout-mismatch object handle side-exits"
+        );
+        assert_eq!(wrong[1].tag, JitCValueTag::Uninitialized);
+
+        // A non-object argument (an Int) trips the OpaqueObject tag guard before
+        // the call — the helper is never reached and the result slot is untouched.
+        let mut not_object = [JitCValue::int(7), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[op], &mut not_object),
+            1,
+            "a non-object argument side-exits at the tag guard"
+        );
+        assert_eq!(not_object[1].tag, JitCValueTag::Uninitialized);
+
+        // Uninitialized (how the bridge marshals a non-object/non-handle value)
+        // also side-exits at the tag guard.
+        let mut uninit = [JitCValue::uninitialized(), JitCValue::uninitialized()];
+        assert_eq!(run_scalar_ops(&[op], &mut uninit), 1);
+        assert_eq!(uninit[1].tag, JitCValueTag::Uninitialized);
+    }
+
+    // The is_TYPE() predicate stencils executed end-to-end: `slot[dst] =
+    // (slot[arg].tag == expected_tag)`. No call and no payload deref — the answer
+    // is exactly the marshaled tag. For each predicate, a matching marshaled value
+    // yields Bool(true), every non-matching definite tag yields Bool(false), and
+    // an Uninitialized-marshaled argument (null/object/etc.) side-exits so the
+    // interpreter answers the ambiguous case.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_is_type_stencils() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::ScalarIntOp;
+
+        const INT_TAG: u16 = JitCValueTag::Int as u16;
+        const BOOL_TAG: u16 = JitCValueTag::Bool as u16;
+        const FLOAT_TAG: u16 = JitCValueTag::FloatBits as u16;
+        const STRING_TAG: u16 = JitCValueTag::OpaqueString as u16;
+        const ARRAY_TAG: u16 = JitCValueTag::OpaqueArray as u16;
+
+        // Borrowed-handle slots for the opaque tags; the is_* stencil only reads
+        // the tag word, so the payload pointer is never dereferenced.
+        let dummy: i64 = 0;
+        let string_slot = JitCValue {
+            tag: JitCValueTag::OpaqueString,
+            reserved: 0,
+            payload: (&dummy as *const i64) as u64,
+            aux: 0,
+        };
+        let array_slot = JitCValue {
+            tag: JitCValueTag::OpaqueArray,
+            reserved: 0,
+            payload: (&dummy as *const i64) as u64,
+            aux: 0,
+        };
+
+        // (predicate tag, a value that marshals with that tag).
+        let cases: [(u16, JitCValue); 5] = [
+            (INT_TAG, JitCValue::int(7)),
+            (BOOL_TAG, JitCValue::bool(true)),
+            (FLOAT_TAG, JitCValue::float(1.5)),
+            (STRING_TAG, string_slot),
+            (ARRAY_TAG, array_slot),
+        ];
+        // One value per definite tag, to exercise every non-matching answer.
+        let definite = [
+            JitCValue::int(7),
+            JitCValue::bool(false),
+            JitCValue::float(0.0),
+            string_slot,
+            array_slot,
+        ];
+
+        for (expected_tag, matching) in cases {
+            let op = ScalarIntOp::IsType {
+                dst: 1,
+                arg: 0,
+                expected_tag,
+            };
+
+            // Matching tag -> Bool(true).
+            let mut slots = [matching, JitCValue::uninitialized()];
+            assert_eq!(run_scalar_ops(&[op], &mut slots), 0);
+            assert_eq!(slots[1].tag, JitCValueTag::Bool);
+            assert_eq!(slots[1].payload, 1, "is_type(matching tag) is true");
+
+            // Every non-matching definite tag -> Bool(false).
+            for other in definite {
+                if other.tag as u16 == expected_tag {
+                    continue;
+                }
+                let mut slots = [other, JitCValue::uninitialized()];
+                assert_eq!(run_scalar_ops(&[op], &mut slots), 0);
+                assert_eq!(slots[1].tag, JitCValueTag::Bool);
+                assert_eq!(slots[1].payload, 0, "is_type(non-matching tag) is false");
+            }
+
+            // Uninitialized argument -> side exit (ambiguous; interpreter answers).
+            let mut uninit = [JitCValue::uninitialized(), JitCValue::uninitialized()];
+            assert_eq!(
+                run_scalar_ops(&[op], &mut uninit),
+                1,
+                "an Uninitialized argument side-exits"
+            );
+            assert_eq!(uninit[1].tag, JitCValueTag::Uninitialized);
+        }
+    }
+
     #[test]
     fn executes_native_mod_shift_ops() {
         use crate::JitCValue;
@@ -1854,5 +2312,143 @@ mod tests {
             JitCValue::uninitialized(),
         ];
         assert_eq!(run(ne.as_mut_ptr()), 1);
+    }
+
+    // The native->userland tail-call region executed end-to-end: the recognized
+    // leaf `f($a,$b): int { return g($a + $b); }` computes the argument `$a + $b`
+    // natively, leaves it in the plan's argument slot, and returns the tail-call
+    // status. A non-int marshaled argument takes the shared side exit instead.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_userland_tailcall_region() {
+        use crate::JIT_HELPER_STATUS_TAILCALL;
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{NativeCallPermits, compile_scalar_int_function_with_permits};
+        use php_ir::instruction::{IrCallArg, IrCallArgValueKind, TerminatorKind};
+        use php_ir::{
+            BasicBlock, BinaryOp, BlockId, FunctionFlags, InstrId, Instruction, InstructionKind,
+            IrParam, IrReturnType, IrSpan, LocalId, Operand, RegId, Terminator,
+        };
+
+        let span = IrSpan::default();
+        let int_param = |name: &str, local: u32| IrParam {
+            name: name.to_string(),
+            local: LocalId::new(local),
+            required: true,
+            default: None,
+            type_: Some(IrReturnType::Int),
+            by_ref: false,
+            variadic: false,
+            attributes: Vec::new(),
+        };
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        // `function f($a, $b): int { return g($a + $b); }`.
+        let function = php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![int_param("a", 0), int_param("b", 1)],
+            locals: vec!["a".to_string(), "b".to_string()],
+            local_count: 2,
+            register_count: 4,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(2),
+                        local: LocalId::new(1),
+                    }),
+                    ins(InstructionKind::Binary {
+                        dst: RegId::new(3),
+                        op: BinaryOp::Add,
+                        lhs: Operand::Register(RegId::new(1)),
+                        rhs: Operand::Register(RegId::new(2)),
+                    }),
+                    ins(InstructionKind::CallFunction {
+                        dst: RegId::new(0),
+                        name: "g".to_string(),
+                        args: vec![IrCallArg {
+                            name: None,
+                            value: Operand::Register(RegId::new(3)),
+                            unpack: false,
+                            value_kind: IrCallArgValueKind::Direct,
+                            by_ref_local: None,
+                            by_ref_dim: None,
+                            by_ref_property: None,
+                            by_ref_property_dim: None,
+                        }],
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(0))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Int),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        };
+
+        let permits = NativeCallPermits {
+            allow_userland_tailcall: true,
+            ..NativeCallPermits::default()
+        };
+        let compiled = compile_scalar_int_function_with_permits(&function, &[], 1, permits)
+            .expect("tail-call leaf compiles");
+        let plan = compiled
+            .tail_call
+            .as_ref()
+            .expect("records a tail-call plan");
+        assert_eq!(plan.callee_name, "g");
+        assert_eq!(plan.arg_slots, vec![6]);
+        assert_eq!(compiled.buffer_slots, 7);
+
+        let mem = CodeMemory::new(&compiled.code).expect("code memory should finalize");
+        // SAFETY: the emitted bytes are a valid `extern "C" fn(*mut JitCValue) -> i32`
+        // over a read-execute region; each buffer below has `buffer_slots` (7)
+        // live, aligned, contiguous `JitCValue`s that outlive the call.
+        let run: extern "C" fn(*mut JitCValue) -> i32 =
+            unsafe { core::mem::transmute(mem.as_ptr()) };
+
+        // Tail call requested: slot[0]=20, slot[1]=22 -> arg slot 6 holds 42.
+        let mut slots = [
+            JitCValue::int(20),
+            JitCValue::int(22),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(slots.as_mut_ptr()), JIT_HELPER_STATUS_TAILCALL);
+        assert_eq!(slots[6].tag, JitCValueTag::Int);
+        assert_eq!(slots[6].payload as i64, 42);
+
+        // A non-Int marshaled argument trips the prefix `Int` guard -> side exit;
+        // the argument slot is left untouched (still Uninitialized).
+        let mut typed = [
+            JitCValue::null(),
+            JitCValue::int(22),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(run(typed.as_mut_ptr()), 1);
+        assert_eq!(typed[6].tag, JitCValueTag::Uninitialized);
     }
 }

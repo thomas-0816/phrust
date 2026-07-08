@@ -752,7 +752,18 @@ impl Vm {
             );
         }
         let spl_runtime_parent = spl_runtime_parent_for_class(compiled, state, &class);
-        let object = ObjectRef::new_with_display_name(&runtime_class, display_class_name);
+        // Clone a memoized default-slot template (keyed by class + class-table
+        // epoch) into the fresh instance, skipping the per-property iterate +
+        // filter + `slot_by_name` hash-lookup loop the slow path runs. The
+        // template is byte-identical to that loop's output and rebuilt on a
+        // redefinition (epoch bump).
+        let slot_template =
+            self.cached_default_slot_template(state, &runtime_class, display_class_name);
+        let object = ObjectRef::from_layout_slots(
+            &runtime_class,
+            display_class_name,
+            (*slot_template).clone(),
+        );
         if let Some(spl_class) = spl_runtime_parent.as_deref() {
             object.set_property(
                 SPL_RUNTIME_CLASS_PROPERTY,

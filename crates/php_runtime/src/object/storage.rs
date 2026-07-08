@@ -43,6 +43,26 @@ fn is_backed_instance_property(property: &super::ClassPropertyEntry) -> bool {
             && !property.hooks.backed)
 }
 
+/// Materializes the default declared-slot vector for a fresh instance of
+/// `class` under `layout`. Slot defaults always come from the caller's class
+/// entry (a cached layout may have been built from an earlier, identical
+/// shape), so this reads defaults live rather than storing them on the shared
+/// layout. When two properties share a storage name (redeclaration through
+/// inheritance or trait composition), the later occurrence wins, matching the
+/// slot the shared layout assigned to the first occurrence.
+fn build_declared_slots(class: &ClassEntry, layout: &PropertyLayout) -> Vec<Option<Value>> {
+    let mut declared_slots: Vec<Option<Value>> = vec![None; layout.slot_names.len()];
+    for property in &class.properties {
+        if !is_backed_instance_property(property) {
+            continue;
+        }
+        if let Some(slot) = layout.slot_by_name.get(&property.name) {
+            declared_slots[*slot as usize] = Some(property.default.clone());
+        }
+    }
+    declared_slots
+}
+
 /// Builds or reuses the shared layout for a class. Conditional classes can
 /// redefine a name with a different shape, so a cached layout is only
 /// shared when the declared names and debug labels match exactly; slot
@@ -226,20 +246,62 @@ impl ObjectRef {
     /// Creates an object with an explicit source-spelled display class name.
     #[must_use]
     pub fn new_with_display_name(class: &ClassEntry, display_name: impl Into<String>) -> Self {
-        crate::layout_stats::record_object_allocation();
         let display_name = display_name.into();
         let layout = class_layout(class, &display_name);
-        // Slot defaults always come from the caller's class entry (a cached
-        // layout may have been built from an earlier, identical shape).
-        let mut declared_slots: Vec<Option<Value>> = vec![None; layout.slot_names.len()];
-        for property in &class.properties {
-            if !is_backed_instance_property(property) {
-                continue;
-            }
-            if let Some(slot) = layout.slot_by_name.get(&property.name) {
-                declared_slots[*slot as usize] = Some(property.default.clone());
-            }
-        }
+        let declared_slots = build_declared_slots(class, &layout);
+        Self::assemble(class, display_name, layout, declared_slots)
+    }
+
+    /// Builds the default declared-slot template for a fresh instance of
+    /// `class` under the layout selected by `display_name`.
+    ///
+    /// The returned vector is slot-index aligned with the class's property
+    /// layout and byte-identical to the `declared_slots` that
+    /// `new_with_display_name` would produce for the same class shape, so a
+    /// caller may memoize it (keyed by class identity plus a class-table epoch)
+    /// and clone it into fresh instances through [`Self::from_layout_slots`],
+    /// skipping the per-property default-materialization loop. The template is
+    /// independent of `display_name` (which only selects the debug-label layout
+    /// variant, not slot contents or ordering).
+    #[must_use]
+    pub fn default_declared_slots(class: &ClassEntry, display_name: &str) -> Vec<Option<Value>> {
+        let layout = class_layout(class, display_name);
+        build_declared_slots(class, &layout)
+    }
+
+    /// Creates an object from a precomputed default declared-slot vector,
+    /// skipping the per-property default-materialization loop.
+    ///
+    /// `declared_slots` MUST be slot-index aligned with the layout selected for
+    /// `class`/`display_name` — that is, produced by
+    /// [`Self::default_declared_slots`] for the same class shape (cloned per
+    /// instance). This is the fast instantiation path for the hot `new C(...)`
+    /// site; every other caller can keep using `new_with_display_name`, which
+    /// builds the slots itself.
+    #[must_use]
+    pub fn from_layout_slots(
+        class: &ClassEntry,
+        display_name: impl Into<String>,
+        declared_slots: Vec<Option<Value>>,
+    ) -> Self {
+        let display_name = display_name.into();
+        let layout = class_layout(class, &display_name);
+        debug_assert_eq!(
+            declared_slots.len(),
+            layout.slot_names.len(),
+            "precomputed declared-slot template length must match the class layout"
+        );
+        Self::assemble(class, display_name, layout, declared_slots)
+    }
+
+    /// Assembles object storage from a resolved layout and declared-slot vector.
+    fn assemble(
+        class: &ClassEntry,
+        display_name: String,
+        layout: Rc<PropertyLayout>,
+        declared_slots: Vec<Option<Value>>,
+    ) -> Self {
+        crate::layout_stats::record_object_allocation();
         let id = next_object_id();
         Self {
             id,
