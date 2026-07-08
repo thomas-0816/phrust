@@ -9,3 +9,9 @@ fixture = "fixtures/semantic/declarations/duplicate-class-invalid.php"
 reason = "Rust performs a deterministic same-file duplicate class declaration check that PHP lint defers until compile/runtime loading."
 area = "frontend"
 expected_resolution_phase = "runtime-declaration-linking"
+
+[[gap]]
+fixture = "fixtures/semantic/expressions/php85-pipe-clone-callable.php"
+reason = "phrust correctly accepts this valid PHP 8.5 syntax (pipe |> with first-class callables plus clone-with-arguments); the pinned PHP 8.5.7 reference debug build aborts on it with a Zend GC assertion (exit -6, 'Assertion failed: (p->refcount > 0), zend_gc_delref, zend_types.h:1383'), so the acceptance mismatch is a reference-side crash, not a phrust frontend gap."
+area = "reference-oracle"
+expected_resolution_phase = "reference-php-upstream-fix"
