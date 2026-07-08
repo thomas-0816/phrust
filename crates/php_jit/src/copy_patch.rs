@@ -256,7 +256,7 @@ pub enum ScalarIntOp {
     /// decided from the tag — the stencil side-exits and the interpreter answers.
     /// Every *definite* tag (`Int`/`Bool`/`FloatBits`/`OpaqueString`/
     /// `OpaqueArray`) yields a correct true/false. `expected_tag` selects the
-    /// predicate (e.g. [`INT_TAG`] for `is_int`). Emitted only when the VM bridge
+    /// predicate (e.g. `INT_TAG` for `is_int`). Emitted only when the VM bridge
     /// confirms the call resolves to the real builtin (see [`NativeCallPermits`]).
     IsType {
         dst: u32,
