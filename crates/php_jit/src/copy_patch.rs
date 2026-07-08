@@ -35,6 +35,7 @@ use crate::region_ir::{
 const INT_TAG: u16 = JitCValueTag::Int as u16;
 const BOOL_TAG: u16 = JitCValueTag::Bool as u16;
 const FLOAT_TAG: u16 = JitCValueTag::FloatBits as u16;
+const ARRAY_TAG: u16 = JitCValueTag::OpaqueArray as u16;
 
 /// A single guarded PHP integer-add step: `slot[dst] = slot[lhs] + slot[rhs]`.
 ///
@@ -202,6 +203,25 @@ pub enum ScalarIntOp {
     /// is only emitted when the VM bridge has confirmed the call resolves to the
     /// real builtin `abs` (see [`NativeCallPermits`]).
     CallAbsI64 { dst: u32, arg: u32 },
+    /// Guarded native call to the builtin `count()` on a plain array:
+    /// `slot[dst] = count(slot[arg])`. Guards `slot[arg]` is an `OpaqueArray`,
+    /// then `blr`s the runtime `php_jit_array_len` ABI wrapper at
+    /// `array_len_helper` over the C ABI (fp/lr saved, a 16-byte scratch frame
+    /// holding the out length and the saved slot base). The array slot's payload
+    /// is a borrowed `*const Value` the VM marshaled for the call's duration; the
+    /// helper only reads its length. `php_jit_array_len` accepts only packed
+    /// all-int arrays, so a hashed/associative/mixed array (or a non-array slot —
+    /// a scalar, a `Countable` object, the `count()` TypeError case) returns a
+    /// non-OK status and takes the side exit, so the interpreter reproduces the
+    /// exact result/error. Emitted only when the VM bridge confirms the call
+    /// resolves to the real builtin `count` (see [`NativeCallPermits`]) and
+    /// provides the helper address (see [`CopyPatchRuntimeHelpers`]). `php_jit`
+    /// cannot name the runtime symbol, so the address is carried in the op.
+    CallCountI64 {
+        dst: u32,
+        arg: u32,
+        array_len_helper: u64,
+    },
 }
 
 /// Which builtin function calls the copy-and-patch compiler may lower to a
@@ -230,6 +250,31 @@ pub struct NativeCallPermits {
     /// callee is out of scope. Defaults to false so the shape is never lowered
     /// without an opt-in.
     pub allow_userland_tailcall: bool,
+    /// True when the callee name `count` is confirmed to resolve to the real
+    /// builtin `count` (not a user-defined or namespaced function that shadows
+    /// it). Set by the VM bridge after checking the function registry; mirrors
+    /// `builtin_abs`. A namespaced shadow also carries its namespace in the
+    /// lowered call name, so the `count` recognizer never matches it regardless.
+    pub builtin_count: bool,
+}
+
+/// Runtime-owned helper addresses the copy-and-patch tier `blr`s from emitted
+/// code, mirroring Cranelift's `JitRuntimeHelperAddresses`.
+///
+/// `php_jit` cannot name runtime symbols — the array/string/object helpers live
+/// in `php_runtime` and the VM, below which `php_jit` sits — so the VM bridge
+/// resolves their addresses and passes them here, and the compiler embeds the
+/// chosen address in the emitted stencil. An address of `0` means the helper is
+/// unavailable, which disables the corresponding shape (the interpreter runs
+/// it), so a build without the helper wired in behaves exactly as before.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CopyPatchRuntimeHelpers {
+    /// Address of an `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`
+    /// wrapping `php_jit_array_len`: it reads the borrowed `Value` at `value_ptr`
+    /// and writes its packed-array length through `out`, returning a non-OK
+    /// status for any non-packed-int array. `0` = unavailable → `count` is not
+    /// lowered. Same ABI Cranelift uses for `packed_array_len`.
+    pub array_len: u64,
 }
 
 /// A binary PHP float operation over IEEE-754 doubles. Add/Sub/Mul never fault
@@ -405,6 +450,73 @@ fn emit_call_abs_i64(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u3
     asm.bind(done);
 }
 
+/// Guard that `slot`'s tag is `OpaqueArray`, taking the side exit otherwise.
+/// Only a genuine array slot reaches the length helper — a scalar, a `Countable`
+/// object (marshaled as `Uninitialized`), or any other value side-exits here so
+/// the interpreter reproduces `count()`'s exact semantics/errors.
+fn emit_array_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, ARRAY_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
+/// Emit a guarded native call `slot[dst] = count(slot[arg])` for the plain
+/// packed-array case, through the runtime `php_jit_array_len` ABI wrapper at
+/// `helper` (an `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`).
+///
+/// The call stencil mirrors [`emit_call_abs_i64`], differing only in the guard
+/// (the arg must be an `OpaqueArray`) and in taking the helper address as a
+/// parameter — `php_jit` cannot name the runtime symbol. In order:
+/// 1. Guard `slot[arg]` is an `OpaqueArray` (while `X0` still holds the slot
+///    base), taking the shared side exit otherwise.
+/// 2. Load the array slot's `payload` — a borrowed `*const Value` the VM
+///    marshaled for the call's duration — into a scratch register.
+/// 3. Enter a non-leaf frame: `push_fp_lr` then a 16-byte scratch reserving
+///    `[sp+0]` for the helper's `*out i64` and `[sp+8]` for the saved slot base.
+/// 4. Marshal the C-ABI arguments: `x0 = value_ptr`, `x1 = &out` (`sp+0`).
+/// 5. Materialize the helper address into `x9` and `blr x9`.
+/// 6. Check `w0` (the status): a non-`OK` status — a hashed/associative/mixed
+///    array the helper rejects — tears the frame down and takes the shared side
+///    exit so the interpreter computes the length.
+/// 7. On `OK`: reload `*out` (the length) and the slot base, tear the frame
+///    down, and store the `Int` result to `slot[dst]`.
+///
+/// Nothing is assumed to survive the `blr` except through the stack; the helper
+/// only reads the borrowed value and never mutates, frees, or re-enters the VM.
+fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
+    // 1–2: guard the arg is an array + read its borrowed-pointer payload while
+    // X0 is still the slot base.
+    emit_array_guard(asm, deopt, arg);
+    asm.ldr_x(X4, X0, payload_off(arg));
+    // 3: non-leaf frame + 16-byte scratch ([sp+0]=out length, [sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value_ptr, x1 = &out.
+    asm.mov(X0, X4);
+    asm.add_imm(X1, SP, 0);
+    // 5: call php_jit_array_len(value_ptr, &out) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the length and slot base, free the frame, store the Int.
+    asm.ldr_x(X6, SP, 0);
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    emit_store_int(asm, dst, X6);
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
 /// Write `value` to `slot[dst]` tagged as `Int`.
 fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, INT_TAG);
@@ -446,7 +558,9 @@ fn emit_store_float(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
     match op {
         ScalarIntOp::Const { dst, .. } => check_slot(dst),
-        ScalarIntOp::Copy { dst, src } | ScalarIntOp::CallAbsI64 { dst, arg: src } => {
+        ScalarIntOp::Copy { dst, src }
+        | ScalarIntOp::CallAbsI64 { dst, arg: src }
+        | ScalarIntOp::CallCountI64 { dst, arg: src, .. } => {
             check_slot(dst)?;
             check_slot(src)
         }
@@ -473,6 +587,11 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
         }
         ScalarIntOp::Copy { dst, src } => emit_value_copy(asm, dst, src),
         ScalarIntOp::CallAbsI64 { dst, arg } => emit_call_abs_i64(asm, deopt, dst, arg),
+        ScalarIntOp::CallCountI64 {
+            dst,
+            arg,
+            array_len_helper,
+        } => emit_call_count(asm, deopt, dst, arg, array_len_helper),
         ScalarIntOp::Binary { op, dst, lhs, rhs } => {
             emit_int_guard(asm, deopt, lhs);
             emit_int_guard(asm, deopt, rhs);
@@ -1012,6 +1131,152 @@ pub fn compile_scalar_int_function_with_permits(
         return Some(compiled);
     }
     compile_scalar_int_tailcall_leaf(function, constants, permits)
+}
+
+/// [`compile_scalar_int_function_with_permits`] plus runtime-helper addresses,
+/// enabling the heap-handle shapes that call a runtime helper (currently only
+/// `count` → `php_jit_array_len`; strlen/concat/property-load will follow).
+///
+/// The heap-handle recognizers run *first*: their shapes (an array/untyped
+/// parameter feeding a builtin) are disjoint from the int/float scalar subset
+/// the other recognizers accept, so trying them first never steals a scalar leaf
+/// — and with default helpers (all addresses `0`) this reduces exactly to
+/// [`compile_scalar_int_function_with_permits`].
+pub fn compile_scalar_int_function_with_permits_and_helpers(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    region_id: u32,
+    permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
+) -> Option<CompiledScalarRegion> {
+    if let Some(compiled) = compile_scalar_int_count_leaf(function, permits, helpers) {
+        return Some(compiled);
+    }
+    compile_scalar_int_function_with_permits(function, constants, region_id, permits)
+}
+
+/// Recognize and lower a `count($array)` leaf to a native
+/// [`ScalarIntOp::CallCountI64`], gated by `permits.builtin_count` and a resolved
+/// `helpers.array_len` address.
+///
+/// The matched shape is a single-block free function returning `int` (or with no
+/// declared return type — `count()` is always int-valued) with exactly one
+/// by-value, non-variadic, no-default parameter that is `array`-typed or
+/// untyped, whose body is exactly `LoadLocal($param)` then
+/// `CallFunction "count"` on that register, returned unchanged. A namespaced
+/// `count` shadow lowers its call name with the namespace (e.g. `ns\count`), so
+/// the literal `name == "count"` check never matches it — the interpreter runs
+/// the shadow. Everything else (methods, closures, generators, wrong arity,
+/// named/spread/by-ref-placeholder args, an int/float/etc.-typed parameter,
+/// any other body) is rejected so the interpreter runs it.
+///
+/// The stencil guards the runtime array tag and the helper's packed-int layout,
+/// so only a plain packed all-int array runs natively; every other value
+/// side-exits and the interpreter reproduces the exact result/error.
+fn compile_scalar_int_count_leaf(
+    function: &IrFunction,
+    permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
+) -> Option<CompiledScalarRegion> {
+    if !permits.builtin_count || helpers.array_len == 0 {
+        return None;
+    }
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    // `count()` returns int; accept an int-typed or untyped declared return.
+    if !matches!(function.return_type, None | Some(IrReturnType::Int)) {
+        return None;
+    }
+    // Exactly one parameter: by-value, non-variadic, no default. Its type must be
+    // `array` or untyped — an int/float/etc. parameter could never be an array at
+    // runtime, so it is outside this shape (and the guard would always fail).
+    let [param] = function.params.as_slice() else {
+        return None;
+    };
+    if param.by_ref || param.variadic || param.default.is_some() {
+        return None;
+    }
+    if !matches!(param.type_, None | Some(IrReturnType::Array)) {
+        return None;
+    }
+
+    // Single-block leaf: load the parameter, then `count()` it, then return.
+    let [block] = function.blocks.as_slice() else {
+        return None;
+    };
+    let kinds = meaningful_kinds(block);
+    let [
+        InstructionKind::LoadLocal {
+            dst: load_reg,
+            local: load_local,
+        },
+        InstructionKind::CallFunction {
+            dst: call_dst,
+            name,
+            args,
+        },
+    ] = kinds.as_slice()
+    else {
+        return None;
+    };
+    if *load_local != param.local || name.as_str() != "count" {
+        return None;
+    }
+    // A single plain positional argument, the loaded parameter register. A
+    // by-reference *arg* annotation only tracks the variable's source location
+    // for potential write-back; `count` never writes back, so it is moot (as in
+    // the `abs` path).
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    if arg.name.is_some() || arg.unpack {
+        return None;
+    }
+    let Operand::Register(arg_reg) = arg.value else {
+        return None;
+    };
+    if arg_reg != *load_reg {
+        return None;
+    }
+    // The terminator must return exactly the call's result register.
+    let TerminatorKind::Return {
+        value: Some(Operand::Register(ret_reg)),
+        by_ref_local: None,
+    } = &block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+    if ret_reg != call_dst {
+        return None;
+    }
+
+    // Slot layout matches the other leaf compilers: locals occupy their indices,
+    // so the sole array parameter is marshaled into `slot[param.local]`; the
+    // result lands in a dedicated slot above locals + registers. The stencil
+    // reads the array handle straight from the parameter slot — no register copy.
+    let local_count = function.local_count;
+    let result_slot = local_count.checked_add(function.register_count)?;
+    let buffer_slots = result_slot.checked_add(1)?;
+    if result_slot > MAX_SLOT {
+        return None;
+    }
+    let code = emit_scalar_int_ops(&[ScalarIntOp::CallCountI64 {
+        dst: result_slot,
+        arg: param.local.raw(),
+        array_len_helper: helpers.array_len,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot,
+        buffer_slots,
+        tail_call: None,
+    })
 }
 
 /// Non-`Discard` instruction kinds of a block. `Discard` is a register-lifetime
@@ -1922,9 +2187,11 @@ fn ir_compare_to_region(op: CompareOp) -> Option<RegionCompareOp> {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuardedIntAddStep, MAX_SLOT, NativeCallPermits, RegionCompileError, SlotSequenceError,
-        build_scalar_int_region, compile_counted_loop_function, compile_scalar_int_function,
-        compile_scalar_int_function_with_permits, compile_scalar_int_region,
+        CopyPatchRuntimeHelpers, GuardedIntAddStep, MAX_SLOT, NativeCallPermits,
+        RegionCompileError, SlotSequenceError, build_scalar_int_region,
+        compile_counted_loop_function, compile_scalar_int_function,
+        compile_scalar_int_function_with_permits,
+        compile_scalar_int_function_with_permits_and_helpers, compile_scalar_int_region,
         emit_guarded_int_add_sequence, int_bin_op,
     };
     use crate::region_ir::{
@@ -2271,6 +2538,168 @@ mod tests {
         };
         assert!(
             compile_scalar_int_function_with_permits(&function, &constants, 1, permits).is_none()
+        );
+    }
+
+    /// `function f($a) { return count($a); }` as the frontend lowers it: one
+    /// untyped-or-array by-value parameter loaded into a register, a
+    /// `CallFunction "count"` on it, returned unchanged. `call_name` and
+    /// `param_type` vary to exercise the shadow and typed-parameter cases.
+    fn count_leaf_function(
+        call_name: &str,
+        param_type: Option<IrReturnType>,
+    ) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let positional = |reg: u32| IrCallArg {
+            name: None,
+            value: Operand::Register(RegId::new(reg)),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: Some(LocalId::new(0)),
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        };
+        php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![IrParam {
+                name: "a".to_string(),
+                local: LocalId::new(0),
+                required: true,
+                default: None,
+                type_: param_type,
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            }],
+            locals: vec!["a".to_string()],
+            local_count: 1,
+            register_count: 2,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::CallFunction {
+                        dst: RegId::new(0),
+                        name: call_name.to_string(),
+                        args: vec![positional(1)],
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(0))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            // Untyped return, like the microbench `f($a){ return count($a); }`.
+            return_type: None,
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_builtin_count_leaf_only_with_permit_and_helper() {
+        let function = count_leaf_function("count", None);
+        // A non-zero placeholder address; the recognizer only embeds it (the
+        // emitted `blr` is exercised end-to-end in code_memory.rs).
+        let helpers = CopyPatchRuntimeHelpers { array_len: 0x1000 };
+        let permits = NativeCallPermits {
+            builtin_count: true,
+            ..NativeCallPermits::default()
+        };
+
+        // No permit -> outside every subset (the interpreter runs it).
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                NativeCallPermits::default(),
+                helpers,
+            )
+            .is_none()
+        );
+        // Permit but no resolved helper address -> not lowered.
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default(),
+            )
+            .is_none()
+        );
+
+        // Permit + helper -> recognized. $a=slot 0; regs r0,r1 -> slots 1,2; the
+        // count result lands in the dedicated result slot 3.
+        let compiled = compile_scalar_int_function_with_permits_and_helpers(
+            &function,
+            &[],
+            1,
+            permits,
+            helpers,
+        )
+        .expect("count leaf recognized when the builtin is confirmed and the helper resolves");
+        assert_eq!(compiled.result_slot, 3);
+        assert_eq!(compiled.buffer_slots, 4);
+        assert!(compiled.tail_call.is_none());
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_count_leaf_with_array_typed_parameter() {
+        let function = count_leaf_function("count", Some(IrReturnType::Array));
+        let helpers = CopyPatchRuntimeHelpers { array_len: 0x1000 };
+        let permits = NativeCallPermits {
+            builtin_count: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                helpers
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_a_namespaced_count_call_even_with_permit() {
+        // A namespaced call keeps its `\` in the lowered name, so it is never
+        // matched as the builtin `count` regardless of the permit.
+        let function = count_leaf_function("app\\count", None);
+        let helpers = CopyPatchRuntimeHelpers { array_len: 0x1000 };
+        let permits = NativeCallPermits {
+            builtin_count: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                helpers
+            )
+            .is_none()
         );
     }
 

@@ -35,7 +35,7 @@ use php_ir::{
     IrSpan, Operand, RegId,
 };
 #[cfg(all(unix, target_arch = "aarch64"))]
-use php_jit::copy_patch::TailCallPlan;
+use php_jit::copy_patch::{CopyPatchRuntimeHelpers, TailCallPlan};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_jit::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, JitCValue, JitCValueTag};
 #[cfg(all(unix, target_arch = "aarch64"))]
@@ -50,18 +50,77 @@ use crate::compiled_unit::CompiledUnit;
 
 /// Marshal a VM `Value` into the flat-buffer `JitCValue` the native tier reads.
 ///
-/// Only scalar ints, bools, and floats cross as themselves. Every other value
-/// (strings, arrays, objects, references, null, uninitialized, …) becomes
-/// `Uninitialized`, so the region's type guard takes the interpreter side exit
-/// instead of misinterpreting a heap handle or wrong-typed scalar.
+/// Scalar ints, bools, and floats cross as themselves. An `Array` crosses as a
+/// read-only borrowed handle: an `OpaqueArray`-tagged slot whose `payload` is
+/// `value as *const Value`, a pointer the array helpers read but never mutate,
+/// free, or store. Every other value (strings, objects, references, null,
+/// uninitialized, …) becomes `Uninitialized`, so a region expecting a scalar or
+/// a different heap shape takes the interpreter side exit instead of
+/// misinterpreting a handle.
+///
+/// SAFETY / POINTER-LIFETIME CONTRACT: the returned `JitCValue` may embed a raw
+/// pointer *into* `value`. The caller MUST keep the pointed-to `Value` alive and
+/// unmoved for the entire duration of the native `run` call its buffer is passed
+/// to, and the native code MUST NOT retain the pointer past that call. Both call
+/// sites uphold this — [`run_scalar_int_region`] marshals pointers into an owned
+/// backing `Vec<Option<Value>>` that outlives the call, and
+/// [`NativeLeaf::run_outcome`] marshals pointers into the caller's `&[Value]`
+/// params slice, which likewise outlives the call. The only consumer of an
+/// `OpaqueArray` payload is the `count` stencil, whose helper
+/// ([`copy_patch_array_len_abi`]) performs a synchronous read-only length query
+/// with no mutation, free, or VM re-entry.
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn marshal_local(value: &Value) -> JitCValue {
     match value {
         Value::Int(int) => JitCValue::int(*int),
         Value::Bool(boolean) => JitCValue::bool(*boolean),
         Value::Float(float) => JitCValue::float(float.to_f64()),
+        // Read-only borrowed array handle: the payload is a `*const Value` valid
+        // only for the synchronous native call (see the contract above).
+        Value::Array(_) => JitCValue {
+            tag: JitCValueTag::OpaqueArray,
+            reserved: 0,
+            payload: value as *const Value as u64,
+            aux: 0,
+        },
         _ => JitCValue::uninitialized(),
     }
+}
+
+/// C-ABI wrapper the `count` stencil `blr`s: read the borrowed `Value` at
+/// `value_ptr` and write its packed-array length through `out`. Mirrors the
+/// Cranelift `jit_array_len_abi` (identical `extern "C" fn(usize, *mut i64) ->
+/// i32` shape) so both native tiers reuse the one runtime helper
+/// `php_runtime::php_jit_array_len` rather than re-implementing array length.
+///
+/// Read-only and non-re-entrant: it only reads the borrowed value's length and
+/// never mutates, frees, or re-enters the VM. It returns a non-OK status (so the
+/// stencil side-exits to the interpreter) for a null pointer, a non-packed-int
+/// array, or a length that does not fit an `i64`.
+///
+/// SAFETY: `value_ptr` is the `payload` of an `OpaqueArray` slot the bridge
+/// marshaled as `&Value as *const Value` into the live params/backing buffer, so
+/// it is a valid `Value` pointer for this synchronous call (see `marshal_local`).
+/// `out` is the stencil's stack out-slot, non-null and valid for the call.
+#[cfg(all(unix, target_arch = "aarch64"))]
+extern "C" fn copy_patch_array_len_abi(value_ptr: usize, out: *mut i64) -> i32 {
+    if value_ptr == 0 || out.is_null() {
+        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+    }
+    // SAFETY: a live, borrowed `Value` valid for this call (see the doc above).
+    let value = unsafe { &*(value_ptr as *const Value) };
+    let mut length = 0_usize;
+    if php_runtime::php_jit_array_len(value, &mut length) != php_runtime::PHP_JIT_ARRAY_STATUS_OK {
+        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+    }
+    let Ok(length) = i64::try_from(length) else {
+        return php_runtime::PHP_JIT_ARRAY_STATUS_LAYOUT_EXIT;
+    };
+    // SAFETY: `out` is non-null and valid for this synchronous call (checked).
+    unsafe {
+        *out = length;
+    }
+    php_runtime::PHP_JIT_ARRAY_STATUS_OK
 }
 
 /// Marshal a native result `JitCValue` back to a VM `Value`. Returns `None` for
@@ -90,11 +149,19 @@ fn unmarshal_result(value: &JitCValue) -> Option<Value> {
 pub fn run_scalar_int_region(compiled: &CompiledScalarRegion, locals: &LocalFile) -> Option<Value> {
     use php_jit::code_memory::CodeMemory;
 
-    let mut buffer: Vec<JitCValue> = (0..compiled.buffer_slots)
-        .map(|slot| {
-            locals
-                .get(LocalId::new(slot))
-                .map_or_else(JitCValue::uninitialized, |value| marshal_local(&value))
+    // Own each marshaled local's `Value` in a backing store that outlives the
+    // native call: `LocalFile::get` returns an owned clone, so marshaling an
+    // `Array` handle as a pointer to a temporary would dangle. Pointers embedded
+    // by `marshal_local` therefore point into `owned`, kept alive across `run`.
+    let owned: Vec<Option<Value>> = (0..compiled.buffer_slots)
+        .map(|slot| locals.get(LocalId::new(slot)))
+        .collect();
+    let mut buffer: Vec<JitCValue> = owned
+        .iter()
+        .map(|value| {
+            value
+                .as_ref()
+                .map_or_else(JitCValue::uninitialized, marshal_local)
         })
         .collect();
 
@@ -103,11 +170,16 @@ pub fn run_scalar_int_region(compiled: &CompiledScalarRegion, locals: &LocalFile
     // as a valid `extern "C" fn(*mut JitCValue) -> i32`, finalized read-execute
     // by `CodeMemory`. `buffer` is a live, aligned, contiguous `[JitCValue]` of
     // `buffer_slots` entries that outlives the call, and the region only
-    // addresses slots `< buffer_slots`.
+    // addresses slots `< buffer_slots`. Any borrowed array pointer in it points
+    // into `owned`, which also outlives the call (dropped at scope end below).
     let run: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
         core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(mem.as_ptr())
     };
-    if run(buffer.as_mut_ptr()) != 0 {
+    let status = run(buffer.as_mut_ptr());
+    // `owned` must stay live until the native call returns (it may hold arrays
+    // the region read by pointer); reference it here to pin that lifetime.
+    drop(owned);
+    if status != 0 {
         return None; // guard/overflow side exit → interpreter fallback
     }
     unmarshal_result(buffer.get(compiled.result_slot as usize)?)
@@ -147,15 +219,16 @@ pub fn copy_patch_leaf_enabled() -> bool {
 /// registry — the VM owns function-name resolution, so it (not `php_jit`)
 /// decides whether a call name is the real builtin.
 ///
-/// The only permission today is builtin `abs`. An unqualified `abs` call is the
-/// real math builtin unless the unit defines a *global* function literally named
-/// `abs`; PHP forbids redeclaring a builtin at global scope, so a shadow is only
-/// reachable via a namespace, where the call/registry name carries the namespace
-/// (`ns\abs`) and never matches the bare `abs` the native path lowers. Checking
-/// the registry for a bare-`abs` user function is therefore defense in depth, and
-/// mirrors the interpreter, which also resolves an unqualified builtin name to
-/// the builtin ahead of user functions. Any resolution doubt leaves the call
-/// unrecognized (interpreter fallback).
+/// The builtin permissions today are `abs` and `count`. An unqualified `abs`
+/// (or `count`) call is the real builtin unless the unit defines a *global*
+/// function literally named that; PHP forbids redeclaring a builtin at global
+/// scope, so a shadow is only reachable via a namespace, where the call/registry
+/// name carries the namespace (`ns\abs`, `ns\count`) and never matches the bare
+/// name the native path lowers. Checking the registry for a bare-name user
+/// function is therefore defense in depth, and mirrors the interpreter, which
+/// also resolves an unqualified builtin name to the builtin ahead of user
+/// functions. Any resolution doubt leaves the call unrecognized (interpreter
+/// fallback).
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn native_call_permits(unit: &CompiledUnit) -> php_jit::copy_patch::NativeCallPermits {
     php_jit::copy_patch::NativeCallPermits {
@@ -167,6 +240,7 @@ fn native_call_permits(unit: &CompiledUnit) -> php_jit::copy_patch::NativeCallPe
         // whole leaf when the callee is out of scope. So this is unconditionally
         // true — correctness does not depend on any registry check here.
         allow_userland_tailcall: true,
+        builtin_count: unit.lookup_function("count").is_none(),
     }
 }
 
@@ -220,8 +294,14 @@ impl NativeLeaf {
         let inlined = inline_scalar_leaf_calls(function, unit, constants);
         let target = inlined.as_ref().unwrap_or(function);
         let permits = native_call_permits(unit);
-        let compiled = php_jit::copy_patch::compile_scalar_int_function_with_permits(
-            target, constants, region_id, permits,
+        // Runtime-owned helper addresses `php_jit` cannot name itself (mirrors the
+        // Cranelift `JitRuntimeHelperAddresses` plumbing). `count` reads array
+        // length through this wrapper over `php_runtime::php_jit_array_len`.
+        let helpers = CopyPatchRuntimeHelpers {
+            array_len: copy_patch_array_len_abi as *const () as usize as u64,
+        };
+        let compiled = php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
+            target, constants, region_id, permits, helpers,
         )?;
         let code = php_jit::code_memory::CodeMemory::new(&compiled.code).ok()?;
         Some(Self {
@@ -785,6 +865,147 @@ mod tests {
             run_scalar_int_region(&compiled, &locals),
             None,
             "a non-Int local is marshaled as Uninitialized and trips the Int guard"
+        );
+    }
+
+    /// Build `function f($a) { return count($a); }` as the frontend lowers it and
+    /// compile it with the real `copy_patch_array_len_abi` helper wired in.
+    fn count_leaf_region() -> php_jit::copy_patch::CompiledScalarRegion {
+        use php_ir::instruction::{IrCallArg, IrCallArgValueKind, TerminatorKind};
+        use php_ir::{
+            BasicBlock, BlockId, FunctionFlags, InstrId, Instruction, InstructionKind, IrParam,
+            IrSpan, Operand, RegId,
+        };
+
+        let span = IrSpan::default();
+        let function = php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![IrParam {
+                name: "a".to_string(),
+                local: LocalId::new(0),
+                required: true,
+                default: None,
+                type_: None,
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            }],
+            locals: vec!["a".to_string()],
+            local_count: 1,
+            register_count: 2,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    Instruction {
+                        id: InstrId::new(0),
+                        span,
+                        kind: InstructionKind::LoadLocal {
+                            dst: RegId::new(1),
+                            local: LocalId::new(0),
+                        },
+                    },
+                    Instruction {
+                        id: InstrId::new(1),
+                        span,
+                        kind: InstructionKind::CallFunction {
+                            dst: RegId::new(0),
+                            name: "count".to_string(),
+                            args: vec![IrCallArg {
+                                name: None,
+                                value: Operand::Register(RegId::new(1)),
+                                unpack: false,
+                                value_kind: IrCallArgValueKind::Direct,
+                                by_ref_local: Some(LocalId::new(0)),
+                                by_ref_dim: None,
+                                by_ref_property: None,
+                                by_ref_property_dim: None,
+                            }],
+                        },
+                    },
+                ],
+                terminator: Some(php_ir::Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(0))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: None,
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        };
+        let permits = php_jit::copy_patch::NativeCallPermits {
+            builtin_count: true,
+            ..php_jit::copy_patch::NativeCallPermits::default()
+        };
+        let helpers = php_jit::copy_patch::CopyPatchRuntimeHelpers {
+            array_len: super::copy_patch_array_len_abi as *const () as usize as u64,
+        };
+        php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
+            &function,
+            &[],
+            1,
+            permits,
+            helpers,
+        )
+        .expect("count leaf compiles with the array-len helper wired in")
+    }
+
+    #[test]
+    fn count_stencil_runs_over_a_real_packed_array_handle() {
+        // A packed all-int array marshals as an OpaqueArray handle; the stencil
+        // guards the tag, calls the real `php_jit_array_len` wrapper over the
+        // borrowed pointer, and returns the length natively.
+        let compiled = count_leaf_region();
+        let mut locals = LocalFile::new(compiled.buffer_slots);
+        locals
+            .set(
+                LocalId::new(0),
+                Value::packed_array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
+            )
+            .unwrap();
+        assert_eq!(
+            run_scalar_int_region(&compiled, &locals),
+            Some(Value::Int(3)),
+            "count over a real packed-int array handle runs natively"
+        );
+    }
+
+    #[test]
+    fn count_stencil_side_exits_on_a_non_packed_array() {
+        // A packed array with a non-int element passes the array-tag guard but the
+        // helper reports fallback (not a packed-int layout), so the stencil side-
+        // exits and the interpreter computes the length instead.
+        let compiled = count_leaf_region();
+        let mut locals = LocalFile::new(compiled.buffer_slots);
+        locals
+            .set(
+                LocalId::new(0),
+                Value::packed_array(vec![Value::Int(1), Value::string("two")]),
+            )
+            .unwrap();
+        assert_eq!(
+            run_scalar_int_region(&compiled, &locals),
+            None,
+            "a non-packed-int array side-exits after the helper reports fallback"
+        );
+    }
+
+    #[test]
+    fn count_stencil_side_exits_on_a_non_array() {
+        // A scalar argument marshals as Int; the array-tag guard fails before the
+        // call, so the helper is never reached (the count() TypeError case).
+        let compiled = count_leaf_region();
+        let mut locals = LocalFile::new(compiled.buffer_slots);
+        locals.set(LocalId::new(0), Value::Int(5)).unwrap();
+        assert_eq!(
+            run_scalar_int_region(&compiled, &locals),
+            None,
+            "a non-array argument side-exits at the tag guard"
         );
     }
 }

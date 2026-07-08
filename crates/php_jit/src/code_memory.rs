@@ -1147,6 +1147,96 @@ mod tests {
         assert_eq!(chain[3].payload as i64, 6, "abs(-5) + 1 = 6");
     }
 
+    // The count() call stencil executed end-to-end: `slot[dst] = count(slot[arg])`
+    // over a read-only borrowed array handle. The array crosses as an
+    // `OpaqueArray` slot whose payload is a pointer the emitted code passes to a
+    // runtime-resolved `php_jit_array_len` ABI wrapper (fp/lr saved, a 16-byte
+    // scratch frame for the out length and the slot base). This is the first
+    // heap-handle shape of the native tier: the array-tag guard fires before the
+    // call (a non-array side-exits), and a helper fallback (a non-packed array in
+    // the VM) also side-exits — only a plain packed array returns natively. The
+    // helper here stands in for `php_runtime::php_jit_array_len` (php_jit cannot
+    // depend on php_runtime), exercising the exact call boundary and ABI.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_count_call_stencil() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::ScalarIntOp;
+
+        // Stand-in for the runtime `php_jit_array_len` ABI wrapper: read the array
+        // length the test parked at `value_ptr` and write it out. A negative
+        // sentinel reports a non-OK status, modeling the helper's fallback for a
+        // non-packed (hashed) array so the stencil side-exits.
+        extern "C" fn test_array_len(value_ptr: usize, out: *mut i64) -> i32 {
+            if value_ptr == 0 || out.is_null() {
+                return 1;
+            }
+            // SAFETY: the test parks a live `i64` at `value_ptr` for the call.
+            let len = unsafe { *(value_ptr as *const i64) };
+            if len < 0 {
+                return 1; // helper fallback -> side exit
+            }
+            // SAFETY: `out` is the stencil's stack out-slot, valid for the call.
+            unsafe {
+                *out = len;
+            }
+            crate::JIT_HELPER_STATUS_OK
+        }
+
+        let helper = test_array_len as *const () as usize as u64;
+        let array_slot = |len: &i64| JitCValue {
+            tag: JitCValueTag::OpaqueArray,
+            reserved: 0,
+            payload: (len as *const i64) as u64,
+            aux: 0,
+        };
+        let count_op = ScalarIntOp::CallCountI64 {
+            dst: 1,
+            arg: 0,
+            array_len_helper: helper,
+        };
+
+        // A borrowed packed-array handle of length 3: the fast path runs the
+        // helper and writes the Int length to slot[1].
+        let length: i64 = 3;
+        let mut slots = [array_slot(&length), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[count_op], &mut slots),
+            0,
+            "count over a packed array handle runs natively"
+        );
+        assert_eq!(slots[1].tag, JitCValueTag::Int);
+        assert_eq!(slots[1].payload as i64, 3);
+
+        // A non-array argument (an Int) trips the array-tag guard before the call
+        // — the helper is never reached and the result slot is untouched.
+        let mut not_array = [JitCValue::int(5), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[count_op], &mut not_array),
+            1,
+            "a non-array argument side-exits at the tag guard"
+        );
+        assert_eq!(not_array[1].tag, JitCValueTag::Uninitialized);
+
+        // Uninitialized (how the bridge marshals a Countable object or any
+        // non-array heap value) also side-exits at the guard.
+        let mut uninit = [JitCValue::uninitialized(), JitCValue::uninitialized()];
+        assert_eq!(run_scalar_ops(&[count_op], &mut uninit), 1);
+        assert_eq!(uninit[1].tag, JitCValueTag::Uninitialized);
+
+        // A genuine array handle whose helper reports fallback (a non-packed array
+        // in the VM) side-exits after the call, leaving the result untouched.
+        let sentinel: i64 = -1;
+        let mut hashed = [array_slot(&sentinel), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[count_op], &mut hashed),
+            1,
+            "a helper fallback (non-packed array) side-exits"
+        );
+        assert_eq!(hashed[1].tag, JitCValueTag::Uninitialized);
+    }
+
     #[test]
     fn executes_native_mod_shift_ops() {
         use crate::JitCValue;

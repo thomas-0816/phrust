@@ -32,6 +32,7 @@ FIXTURES = (
     FIXTURE_DIR / "scalar_leaves.php",
     FIXTURE_DIR / "inlined_calls.php",
     FIXTURE_DIR / "builtin_abs_call.php",
+    FIXTURE_DIR / "builtin_count.php",
     FIXTURE_DIR / "userland_tailcall.php",
     FIXTURE_DIR / "userland_tailcall_safety.php",
 )
