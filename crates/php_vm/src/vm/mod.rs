@@ -3011,6 +3011,36 @@ impl Vm {
             {
                 counters.record_directory_version_miss();
             }
+            for _ in 0..after
+                .negative_cache_hits
+                .saturating_sub(before.negative_cache_hits)
+            {
+                counters.record_negative_include_cache_hit();
+            }
+            for _ in 0..after
+                .negative_cache_installs
+                .saturating_sub(before.negative_cache_installs)
+            {
+                counters.record_negative_include_cache_install();
+            }
+            for _ in 0..after
+                .negative_cache_invalidations
+                .saturating_sub(before.negative_cache_invalidations)
+            {
+                counters.record_negative_include_cache_invalidation();
+            }
+            for _ in 0..after
+                .negative_cache_blocked_unversioned
+                .saturating_sub(before.negative_cache_blocked_unversioned)
+            {
+                counters.record_negative_include_cache_blocked("candidate_directory_unversioned");
+            }
+            for _ in 0..after
+                .negative_cache_blocked_capacity
+                .saturating_sub(before.negative_cache_blocked_capacity)
+            {
+                counters.record_negative_include_cache_blocked("capacity");
+            }
         }
     }
 
@@ -3023,10 +3053,16 @@ impl Vm {
             self.record_counter_fallback_by_path_semantics("outside_allowed_root");
         } else if message.contains("MISSING") {
             self.record_counter_fallback_by_path_semantics("missing_path");
-            // A missing include path is where a negative include cache would
-            // install an entry. It stays disabled until directory versions are
-            // validated by policy; record why the miss was not cached.
-            self.record_counter_negative_include_cache_blocked("directory_versions_unvalidated");
+            // The shared include cache installs directory-version-guarded
+            // negative entries for missing paths (its install/blocked
+            // accounting arrives via the cache stats delta). The request-local
+            // IC path performs no such validation, so its misses stay
+            // uncached and record why.
+            if self.options.include_cache.is_none() {
+                self.record_counter_negative_include_cache_blocked(
+                    "directory_versions_unvalidated",
+                );
+            }
         } else {
             self.record_counter_fallback_by_path_semantics("loader_error");
         }

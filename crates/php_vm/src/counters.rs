@@ -401,6 +401,9 @@ pub struct VmCounters {
     pub composer_fingerprint_present: u64,
     pub composer_fingerprint_missing: u64,
     pub composer_fingerprint_stale: u64,
+    pub negative_include_cache_hits: u64,
+    pub negative_include_cache_installs: u64,
+    pub negative_include_cache_invalidations: u64,
     pub negative_include_cache_blocked_by_reason: BTreeMap<String, u64>,
     pub include_graph_misses: u64,
     pub autoload_graph_hits: u64,
@@ -756,6 +759,18 @@ impl VmCounters {
             .negative_include_cache_blocked_by_reason
             .entry(reason.to_owned())
             .or_default() += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_hit(&mut self) {
+        self.negative_include_cache_hits += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_install(&mut self) {
+        self.negative_include_cache_installs += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_invalidation(&mut self) {
+        self.negative_include_cache_invalidations += 1;
     }
 
     pub(crate) fn record_include_graph_miss(&mut self) {
@@ -3888,6 +3903,24 @@ impl VmCounters {
             self.composer_fingerprint_stale,
             true,
         );
+        push_field(
+            &mut json,
+            "negative_include_cache_hits",
+            self.negative_include_cache_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "negative_include_cache_installs",
+            self.negative_include_cache_installs,
+            true,
+        );
+        push_field(
+            &mut json,
+            "negative_include_cache_invalidations",
+            self.negative_include_cache_invalidations,
+            true,
+        );
         push_string_u64_map_field(
             &mut json,
             "negative_include_cache_blocked_by_reason",
@@ -5778,6 +5811,9 @@ mod tests {
         counters.record_composer_fingerprint(true);
         counters.record_composer_fingerprint(false);
         counters.record_composer_fingerprint_stale();
+        counters.record_negative_include_cache_hit();
+        counters.record_negative_include_cache_install();
+        counters.record_negative_include_cache_invalidation();
         counters.record_negative_include_cache_blocked("directory_versions_unvalidated");
         counters.record_invalidation_by_reason("file_fingerprint_changed");
         counters.record_fallback_by_path_semantics("missing_path");
@@ -6354,6 +6390,9 @@ mod tests {
         assert_eq!(counters.composer_fingerprint_present, 1);
         assert_eq!(counters.composer_fingerprint_missing, 1);
         assert_eq!(counters.composer_fingerprint_stale, 1);
+        assert_eq!(counters.negative_include_cache_hits, 1);
+        assert_eq!(counters.negative_include_cache_installs, 1);
+        assert_eq!(counters.negative_include_cache_invalidations, 1);
         assert_eq!(
             counters
                 .negative_include_cache_blocked_by_reason
@@ -6660,6 +6699,9 @@ mod tests {
         assert!(json.contains("\"composer_fingerprint_present\": 0"));
         assert!(json.contains("\"composer_fingerprint_missing\": 0"));
         assert!(json.contains("\"composer_fingerprint_stale\": 0"));
+        assert!(json.contains("\"negative_include_cache_hits\": 0"));
+        assert!(json.contains("\"negative_include_cache_installs\": 0"));
+        assert!(json.contains("\"negative_include_cache_invalidations\": 0"));
         assert!(json.contains("\"negative_include_cache_blocked_by_reason\": {}"));
         assert!(json.contains("\"include_resolution_hits\": 0"));
         assert!(json.contains("\"include_resolution_misses\": 0"));

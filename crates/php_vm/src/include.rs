@@ -94,10 +94,86 @@ pub struct ResolvedIncludePath {
     pub directory_version: Option<IncludeDirectoryVersion>,
 }
 
+/// Per-shard capacity bound for negative include-path entries. Autoloader
+/// probing can generate unbounded distinct missing paths (class names can be
+/// user-influenced), so growth must be capped; overflow skips installation
+/// and counts `negative_cache_blocked_capacity` instead.
+const NEGATIVE_INCLUDE_CACHE_SHARD_CAPACITY: usize = 1024;
+
+/// Process-global enable for directory-version-validated negative
+/// include-path caching, read once. Default **on**: a cached miss is only
+/// served while the directory version of every probed candidate's parent is
+/// byte-identical to install time, so a file appearing anywhere the original
+/// probe looked invalidates the entry (a directory's mtime/identity changes
+/// when entries are created or removed). Set `PHRUST_NEGATIVE_INCLUDE_CACHE`
+/// to a falsey value (`0`, `off`, `false`, `no`, or empty) to disable.
+#[must_use]
+pub fn negative_include_cache_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("PHRUST_NEGATIVE_INCLUDE_CACHE") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "false" | "no" | ""
+        ),
+        Err(_) => true,
+    })
+}
+
+/// One cached missing-include resolution: the deterministic error to replay
+/// plus the directory-version guards that must all still match for the entry
+/// to be served.
+#[derive(Clone, Debug)]
+struct NegativeIncludeEntry {
+    error: VmError,
+    guards: Vec<(PathBuf, IncludeDirectoryVersion)>,
+}
+
+impl NegativeIncludeEntry {
+    /// Builds guards from the probed candidates' parent directories. Every
+    /// parent must exist and be versionable; otherwise the miss is not
+    /// cacheable (a deeper directory chain could appear without changing any
+    /// observed version). Relative candidates are probed by the loader
+    /// against the process working directory (PHP `chdir` is virtualized in
+    /// request state and never moves the process), so they anchor there for
+    /// guard purposes too.
+    fn from_candidates(error: &VmError, candidates: &[PathBuf]) -> Option<Self> {
+        if candidates.is_empty() {
+            return None;
+        }
+        let process_cwd = std::env::current_dir().ok()?;
+        let mut guards: Vec<(PathBuf, IncludeDirectoryVersion)> = Vec::new();
+        for candidate in candidates {
+            let candidate = if candidate.is_absolute() {
+                candidate.clone()
+            } else {
+                process_cwd.join(candidate)
+            };
+            let parent = candidate.parent()?.to_path_buf();
+            if guards.iter().any(|(dir, _)| *dir == parent) {
+                continue;
+            }
+            let version = include_directory_version(&parent)?;
+            guards.push((parent, version));
+        }
+        Some(Self {
+            error: error.clone(),
+            guards,
+        })
+    }
+
+    fn is_still_valid(&self) -> bool {
+        self.guards.iter().all(|(dir, stored)| {
+            include_directory_version(dir).is_some_and(|current| current == *stored)
+        })
+    }
+}
+
 /// Shared process-local include cache for resolution and compiled include units.
 #[derive(Debug)]
 pub struct IncludeCache {
     resolution_shards: Vec<Mutex<HashMap<IncludeResolutionKey, ResolvedIncludePath>>>,
+    negative_shards: Vec<Mutex<HashMap<IncludeResolutionKey, NegativeIncludeEntry>>>,
     compile_shards: Vec<Mutex<HashMap<CompiledIncludeKey, Arc<CompiledUnit>>>>,
     compile_locks: Vec<IncludeCompileLockShard>,
     stats: IncludeCacheCounters,
@@ -127,6 +203,9 @@ impl IncludeCache {
         let shard_count = shards.max(1);
         Self {
             resolution_shards: (0..shard_count)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
+            negative_shards: (0..shard_count)
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect(),
             compile_shards: (0..shard_count)
@@ -238,13 +317,98 @@ impl IncludeCache {
                 }
             }
         }
+        if let Some(error) = self.lookup_negative_include(&key)? {
+            return Err(error);
+        }
         self.stats.resolution_misses.fetch_add(1, Ordering::Relaxed);
-        let resolved = loader.resolve_with_include_path(including_file, path, include_path, cwd)?;
+        let resolved = match loader.resolve_with_include_path_traced(
+            including_file,
+            path,
+            include_path,
+            cwd,
+        ) {
+            Ok(resolved) => resolved,
+            Err((error, candidates)) => {
+                self.maybe_install_negative_include(key, &error, &candidates);
+                return Err(error);
+            }
+        };
         let mut shard = self.resolution_shards[shard_index]
             .lock()
             .map_err(|_| include_cache_lock_error("resolution", "insert"))?;
         shard.entry(key).or_insert_with(|| resolved.clone());
         Ok(resolved)
+    }
+
+    /// Serves a cached missing-include failure only while every guard
+    /// directory version still matches. Any changed or unobservable guard
+    /// drops the entry and falls back to full resolution.
+    fn lookup_negative_include(
+        &self,
+        key: &IncludeResolutionKey,
+    ) -> Result<Option<VmError>, VmError> {
+        if !negative_include_cache_enabled() {
+            return Ok(None);
+        }
+        let shard_index = self.negative_shard_index(key);
+        let mut shard = self.negative_shards[shard_index]
+            .lock()
+            .map_err(|_| include_cache_lock_error("negative", "lookup"))?;
+        let Some(entry) = shard.get(key) else {
+            return Ok(None);
+        };
+        if entry.is_still_valid() {
+            self.stats
+                .negative_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(Some(entry.error.clone()));
+        }
+        shard.remove(key);
+        self.stats
+            .negative_cache_invalidations
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(None)
+    }
+
+    /// Installs a directory-version-guarded negative entry for a missing
+    /// include path. Fail-closed: only `E_PHP_VM_INCLUDE_MISSING` with every
+    /// candidate parent directory versionable is cacheable, and each shard is
+    /// capacity-bounded.
+    fn maybe_install_negative_include(
+        &self,
+        key: IncludeResolutionKey,
+        error: &VmError,
+        candidates: &[PathBuf],
+    ) {
+        if !negative_include_cache_enabled() || error.code() != "E_PHP_VM_INCLUDE_MISSING" {
+            return;
+        }
+        let Some(entry) = NegativeIncludeEntry::from_candidates(error, candidates) else {
+            self.stats
+                .negative_cache_blocked_unversioned
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let shard_index = self.negative_shard_index(&key);
+        let Ok(mut shard) = self.negative_shards[shard_index].lock() else {
+            return;
+        };
+        if shard.len() >= NEGATIVE_INCLUDE_CACHE_SHARD_CAPACITY && !shard.contains_key(&key) {
+            self.stats
+                .negative_cache_blocked_capacity
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        shard.insert(key, entry);
+        self.stats
+            .negative_cache_installs
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn negative_shard_index(&self, key: &IncludeResolutionKey) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.negative_shards.len()
     }
 
     /// Returns a compiled include unit for a resolved path, compiling on miss.
@@ -406,6 +570,12 @@ impl IncludeCache {
                 .map_err(|_| include_cache_lock_error("resolution", "clear"))?
                 .clear();
         }
+        for shard in &self.negative_shards {
+            shard
+                .lock()
+                .map_err(|_| include_cache_lock_error("negative", "clear"))?
+                .clear();
+        }
         for shard in &self.compile_shards {
             shard
                 .lock()
@@ -451,6 +621,20 @@ impl IncludeCache {
             deployment_fingerprint_stale: self
                 .stats
                 .deployment_fingerprint_stale
+                .load(Ordering::Relaxed),
+            negative_cache_hits: self.stats.negative_cache_hits.load(Ordering::Relaxed),
+            negative_cache_installs: self.stats.negative_cache_installs.load(Ordering::Relaxed),
+            negative_cache_invalidations: self
+                .stats
+                .negative_cache_invalidations
+                .load(Ordering::Relaxed),
+            negative_cache_blocked_unversioned: self
+                .stats
+                .negative_cache_blocked_unversioned
+                .load(Ordering::Relaxed),
+            negative_cache_blocked_capacity: self
+                .stats
+                .negative_cache_blocked_capacity
                 .load(Ordering::Relaxed),
         }
     }
@@ -532,6 +716,11 @@ pub struct IncludeCacheStats {
     pub deployment_fingerprint_present: u64,
     pub deployment_fingerprint_missing: u64,
     pub deployment_fingerprint_stale: u64,
+    pub negative_cache_hits: u64,
+    pub negative_cache_installs: u64,
+    pub negative_cache_invalidations: u64,
+    pub negative_cache_blocked_unversioned: u64,
+    pub negative_cache_blocked_capacity: u64,
 }
 
 #[derive(Debug, Default)]
@@ -551,6 +740,11 @@ struct IncludeCacheCounters {
     deployment_fingerprint_present: AtomicU64,
     deployment_fingerprint_missing: AtomicU64,
     deployment_fingerprint_stale: AtomicU64,
+    negative_cache_hits: AtomicU64,
+    negative_cache_installs: AtomicU64,
+    negative_cache_invalidations: AtomicU64,
+    negative_cache_blocked_unversioned: AtomicU64,
+    negative_cache_blocked_capacity: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -699,21 +893,48 @@ impl IncludeLoader {
         include_path: &[PathBuf],
         cwd: Option<&Path>,
     ) -> Result<ResolvedIncludePath, VmError> {
+        self.resolve_with_include_path_traced(including_file, path, include_path, cwd)
+            .map_err(|(error, _)| error)
+    }
+
+    /// Like [`Self::resolve_with_include_path`] but also reports the candidate
+    /// paths that were probed when resolution fails, so a caller can install a
+    /// directory-version-guarded negative cache entry. Non-local failures
+    /// (disabled loader, stream schemes, phar) report no candidates.
+    // The error variant is cold (resolution failures) and immediately
+    // consumed by the negative-cache installer; boxing would only add an
+    // allocation on the diagnostic path.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn resolve_with_include_path_traced(
+        &self,
+        including_file: Option<&Path>,
+        path: &str,
+        include_path: &[PathBuf],
+        cwd: Option<&Path>,
+    ) -> Result<ResolvedIncludePath, (VmError, Vec<PathBuf>)> {
         if self.allowed_roots.is_empty() {
-            return Err(include_error(
-                "E_PHP_VM_INCLUDE_DISABLED",
-                "include loader has no allowed roots",
+            return Err((
+                include_error(
+                    "E_PHP_VM_INCLUDE_DISABLED",
+                    "include loader has no allowed roots",
+                ),
+                Vec::new(),
             ));
         }
         if phar::is_phar_uri(path) {
-            return self.resolve_phar_include(path, cwd);
+            return self
+                .resolve_phar_include(path, cwd)
+                .map_err(|error| (error, Vec::new()));
         }
         if path.contains("://") {
-            return Err(include_error(
-                "E_PHP_VM_INCLUDE_UNSUPPORTED_SCHEME",
-                format!("stream include `{path}` is not supported"),
-            )
-            .with_context("path", path));
+            return Err((
+                include_error(
+                    "E_PHP_VM_INCLUDE_UNSUPPORTED_SCHEME",
+                    format!("stream include `{path}` is not supported"),
+                )
+                .with_context("path", path),
+                Vec::new(),
+            ));
         }
         let raw = Path::new(path);
         let mut candidates = Vec::new();
@@ -743,8 +964,8 @@ impl IncludeLoader {
         }
         let mut last_error = None;
         let mut canonical = None;
-        for candidate in candidates {
-            match fs::canonicalize(&candidate) {
+        for candidate in &candidates {
+            match fs::canonicalize(candidate) {
                 Ok(path) => {
                     canonical = Some(path);
                     break;
@@ -760,24 +981,29 @@ impl IncludeLoader {
                 }
             }
         }
-        let canonical = canonical.ok_or_else(|| {
-            last_error.unwrap_or_else(|| {
+        let Some(canonical) = canonical else {
+            let error = last_error.unwrap_or_else(|| {
                 include_error("E_PHP_VM_INCLUDE_MISSING", format!("{path}: not found"))
                     .with_context("path", path)
-            })
-        })?;
+            });
+            return Err((error, candidates));
+        };
         if !self
             .allowed_roots
             .iter()
             .any(|root| canonical.starts_with(root))
         {
-            return Err(include_error(
-                "E_PHP_VM_INCLUDE_OUTSIDE_ROOT",
-                format!("{} is outside allowed include roots", canonical.display()),
-            )
-            .with_context("canonical_path", canonical.display()));
+            return Err((
+                include_error(
+                    "E_PHP_VM_INCLUDE_OUTSIDE_ROOT",
+                    format!("{} is outside allowed include roots", canonical.display()),
+                )
+                .with_context("canonical_path", canonical.display()),
+                Vec::new(),
+            ));
         }
-        let fingerprint = include_path_file_fingerprint(&canonical)?;
+        let fingerprint =
+            include_path_file_fingerprint(&canonical).map_err(|error| (error, Vec::new()))?;
         let directory_version = canonical.parent().and_then(include_directory_version);
         Ok(ResolvedIncludePath {
             canonical_path: canonical,
@@ -1663,6 +1889,118 @@ mod tests {
             first.directory_version.is_some(),
             "resolutions capture the parent directory version"
         );
+    }
+
+    #[test]
+    fn negative_include_cache_replays_identical_diagnostics_and_invalidates_on_create() {
+        let fixture = IncludeCacheFixture::new("negative-cache");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        let first = cache
+            .resolve_with_include_path(&loader, None, "missing.php", &[], Some(&fixture.root))
+            .expect_err("missing include fails");
+        assert_eq!(first.code(), "E_PHP_VM_INCLUDE_MISSING");
+        assert_eq!(cache.cache_stats().negative_cache_installs, 1);
+
+        // Unchanged directories: the cached failure is replayed byte-for-byte
+        // without re-probing candidates.
+        let second = cache
+            .resolve_with_include_path(&loader, None, "missing.php", &[], Some(&fixture.root))
+            .expect_err("still missing");
+        assert_eq!(first, second, "cached diagnostics are identical");
+        assert_eq!(cache.cache_stats().negative_cache_hits, 1);
+
+        // Creating the file changes the candidate directory's version, which
+        // invalidates the entry and resolves for real.
+        fixture.write("missing.php", "<?php echo 'now present';\n");
+        let resolved = cache
+            .resolve_with_include_path(&loader, None, "missing.php", &[], Some(&fixture.root))
+            .expect("file now resolves");
+        assert!(resolved.canonical_path.ends_with("missing.php"));
+        assert_eq!(cache.cache_stats().negative_cache_invalidations, 1);
+        assert_eq!(cache.cache_stats().negative_cache_hits, 1, "no stale hit");
+    }
+
+    #[test]
+    fn negative_include_cache_blocks_unversionable_candidates() {
+        let fixture = IncludeCacheFixture::new("negative-blocked");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        // The candidate's parent directory does not exist, so a deeper chain
+        // could appear without changing any observed version — not cacheable.
+        let error = cache
+            .resolve_with_include_path(
+                &loader,
+                None,
+                "absent-dir/lib.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect_err("missing include fails");
+        assert_eq!(error.code(), "E_PHP_VM_INCLUDE_MISSING");
+        assert_eq!(cache.cache_stats().negative_cache_installs, 0);
+        assert_eq!(cache.cache_stats().negative_cache_blocked_unversioned, 1);
+
+        // Every retry re-resolves; nothing was cached.
+        let _ = cache
+            .resolve_with_include_path(
+                &loader,
+                None,
+                "absent-dir/lib.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect_err("still missing");
+        assert_eq!(cache.cache_stats().negative_cache_hits, 0);
+
+        // A directory chain appearing later resolves normally.
+        fixture.write("absent-dir/lib.php", "<?php\n");
+        cache
+            .resolve_with_include_path(
+                &loader,
+                None,
+                "absent-dir/lib.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect("file now resolves");
+    }
+
+    #[test]
+    fn negative_include_cache_clears_and_bounds_capacity() {
+        let fixture = IncludeCacheFixture::new("negative-capacity");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        let _ = cache
+            .resolve_with_include_path(&loader, None, "gone.php", &[], Some(&fixture.root))
+            .expect_err("missing include fails");
+        assert_eq!(cache.cache_stats().negative_cache_installs, 1);
+        cache.clear().expect("clear");
+        let _ = cache
+            .resolve_with_include_path(&loader, None, "gone.php", &[], Some(&fixture.root))
+            .expect_err("still missing after clear");
+        assert_eq!(
+            cache.cache_stats().negative_cache_hits,
+            0,
+            "clear() drops negative entries"
+        );
+        assert_eq!(cache.cache_stats().negative_cache_installs, 2);
+
+        for index in 0..NEGATIVE_INCLUDE_CACHE_SHARD_CAPACITY {
+            let _ = cache
+                .resolve_with_include_path(
+                    &loader,
+                    None,
+                    &format!("gone-{index}.php"),
+                    &[],
+                    Some(&fixture.root),
+                )
+                .expect_err("missing include fails");
+        }
+        assert!(cache.cache_stats().negative_cache_blocked_capacity > 0);
     }
 
     #[test]

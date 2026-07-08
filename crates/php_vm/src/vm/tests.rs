@@ -4746,6 +4746,89 @@ fn include_missing_warns_and_continues_but_require_missing_fails() {
 }
 
 #[test]
+fn negative_include_cache_preserves_missing_include_diagnostics() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-vm-negative-include-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create fixture root");
+    let loader = IncludeLoader::for_root(root.clone()).expect("loader");
+    let cache = std::sync::Arc::new(IncludeCache::new(1));
+    let source =
+        "<?php\necho 'a|';\ninclude 'nope.php';\necho 'b|';\ninclude 'nope.php';\necho 'c';";
+    let result = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            include_loader: Some(loader),
+            include_cache: Some(std::sync::Arc::clone(&cache)),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+    );
+    assert!(result.status.is_success(), "{:?}", result.status);
+    // Both failures present identically (modulo the include-site line number
+    // the VM appends per site); the second is served from the
+    // directory-version-guarded negative cache.
+    let output = String::from_utf8_lossy(result.output.as_bytes());
+    assert_eq!(
+        output
+            .matches("Failed to open stream: No such file or directory")
+            .count(),
+        2,
+        "{output}"
+    );
+    assert_eq!(
+        output.matches("Failed opening 'nope.php'").count(),
+        2,
+        "{output}"
+    );
+    let site_agnostic = |marker: &str| {
+        output
+            .split(marker)
+            .nth(1)
+            .and_then(|rest| rest.split(" on line ").next())
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        site_agnostic("a|"),
+        site_agnostic("b|"),
+        "cached failure renders the same diagnostics: {output}"
+    );
+    assert!(output.ends_with('c'), "{output}");
+    let stats = cache.cache_stats();
+    assert_eq!(stats.negative_cache_installs, 1, "{stats:?}");
+    assert_eq!(stats.negative_cache_hits, 1, "{stats:?}");
+    let counters = result.counters.expect("counters");
+    assert_eq!(counters.negative_include_cache_hits, 1, "{counters:?}");
+    assert_eq!(counters.negative_include_cache_installs, 1, "{counters:?}");
+
+    // The file appearing invalidates the cached miss in the same process.
+    std::fs::write(root.join("nope.php"), "<?php echo 'found';").expect("write include");
+    let loader = IncludeLoader::for_root(root.clone()).expect("loader");
+    let resolved = execute_source_with_options(
+        "<?php include 'nope.php';",
+        VmOptions {
+            include_loader: Some(loader),
+            include_cache: Some(std::sync::Arc::clone(&cache)),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+    );
+    assert!(resolved.status.is_success(), "{:?}", resolved.status);
+    assert_eq!(resolved.output.as_bytes(), b"found");
+    assert_eq!(cache.cache_stats().negative_cache_invalidations, 1);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn composer_map_fingerprint_counters_attribute_presence_per_request() {
     let root = std::env::temp_dir().join(format!(
         "phrust-vm-composer-{}-{}",

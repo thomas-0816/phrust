@@ -74,7 +74,7 @@ pub mod api {
         ComposerFingerprintTransition, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache,
         IncludeCacheStats, IncludeDirectoryVersion, IncludeLoader, IncludePathFileFingerprint,
         LoadedInclude, ResolvedIncludePath, composer_autoload_map_fingerprint,
-        include_directory_version,
+        include_directory_version, negative_include_cache_enabled,
     };
     pub use crate::inline_cache::InlineCacheMode;
     pub use crate::quickening::{QuickeningMode, QuickeningSiteKey, QuickeningSiteSnapshot};

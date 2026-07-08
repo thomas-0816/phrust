@@ -39,9 +39,28 @@ configuration input before it can affect execution.
   file's parent directory on every resolution — in both the request-local
   include-path IC and the shared process include cache. Revalidation compares
   it and reports `directory_version_hits`/`directory_version_misses`,
-  **counters only**: the comparison never affects whether a hit is accepted,
-  and missing include paths still fall back to normal resolution and
-  diagnostics. Phar entries carry no directory version (always a miss).
+  counters only on the positive path: the comparison never affects whether a
+  positive hit is accepted. Phar entries carry no directory version (always a
+  miss). Directory versions are **consumed** by the shared cache's negative
+  include-path entries (below).
+- `missing include -> negative cache`: the shared include cache caches
+  `E_PHP_VM_INCLUDE_MISSING` failures keyed by the full resolution key
+  (path, include_path, request cwd, calling-file directory, allowed roots),
+  guarded by the directory version of every probed candidate's parent. A
+  cached miss is served — replaying the identical deterministic diagnostics —
+  only while **every** guard directory version is byte-identical; creating or
+  removing an entry in any probed directory changes that directory's
+  mtime/identity and invalidates the entry, so a file appearing anywhere the
+  original probe looked resolves for real. Default **on**
+  (`PHRUST_NEGATIVE_INCLUDE_CACHE=off` disables); fail-closed installs: only
+  the missing-path error class is cacheable, every candidate parent must
+  exist and be versionable (relative candidates anchor at the process working
+  directory, which PHP-level `chdir` never moves — it is virtualized in
+  request state), and each shard is capacity-bounded against
+  autoload-probe-driven path explosion. Known limit: a filesystem with coarse
+  mtime granularity and no inode change could miss a creation inside the same
+  timestamp tick; this is far stricter than PHP's own realpath cache
+  (`realpath_cache_ttl` defaults to 120 seconds of staleness).
 - `autoload rule -> resolver`: SPL/Composer-style callbacks are represented by
   autoload stack epoch, registry epoch, lookup kind, normalized name,
   autoload-enabled flag, include-path configuration, and the Composer map
@@ -84,7 +103,8 @@ configuration input before it can affect execution.
 - `phar://`: PHAR includes are handled by the PHAR loader and counted as path
   semantics fallback for this graph layer.
 - Generated files: file mutation is guarded by file fingerprints; missing-file
-  negative include cache remains disabled until directory versions are available.
+  negative include entries are guarded by candidate-parent directory versions,
+  which change when a generated file appears in a probed directory.
 - Deployment swaps: cross-request reuse must treat deployment roots, symlink
   targets, and content versions as immutable engine-owned inputs.
 - Dev mode: Composer or framework dev mode can create files, regenerate maps, or
@@ -131,9 +151,15 @@ Ambiguous path semantics are not cached. They are reported through
 - `deployment_fingerprint_present` / `deployment_fingerprint_missing` /
   `deployment_fingerprint_stale` — server-level, exported as
   `phrust_server_deployment_fingerprint_*`.
+- `negative_include_cache_hits` / `negative_include_cache_installs` /
+  `negative_include_cache_invalidations` — directory-version-guarded negative
+  entries in the shared include cache (also exported as
+  `phrust_server_negative_include_cache_*`).
 - `negative_include_cache_blocked_by_reason` — why a missing include path was
-  *not* negatively cached (currently always
-  `directory_versions_unvalidated`).
+  *not* negatively cached: `directory_versions_unvalidated` (request-local IC
+  path, which performs no cross-request caching),
+  `candidate_directory_unversioned` (a probed candidate's parent is missing
+  or unobservable), or `capacity` (shard bound reached).
 
 The performance report includes the aggregate graph counters plus selected
 reason-map entries for file fingerprint invalidation and path semantics fallback.
@@ -155,16 +181,18 @@ decision yet:
   (`deployment_fingerprint_missing`); `--deployment-mode dev` (the default)
   declares the root mutable, which by itself blocks fingerprint-gated
   persistent reuse even when the fingerprint is present.
-- Missing include-path negative caching stays disabled unconditionally;
-  every candidate records `negative_include_cache_blocked_by_reason` instead
-  of installing an entry.
+- Negative include caching installs only for `E_PHP_VM_INCLUDE_MISSING` with
+  every candidate parent directory versionable and shard capacity available;
+  everything else records `negative_include_cache_blocked_by_reason` and
+  re-resolves. A served entry re-validates every guard on every lookup; any
+  changed or unobservable guard drops the entry and re-resolves.
 
 ## Deferred Integrations
 
 Persistent feedback and inline-cache expansion should consume this graph only
-after the directory-version, Composer-map, and deployment-root fingerprints
-prove stable under real workloads. The fingerprints now exist as metadata and
-counters; consuming them (directory-version-validated negative caching,
-cross-request cache keys) is the next, separately gated step. Until then,
-stale or ambiguous graph metadata must fall back to current include/autoload
+after the Composer-map and deployment-root fingerprints prove stable under
+real workloads. Directory versions are consumed today by the shared cache's
+negative include-path entries; cross-request positive cache keys and
+persistent (on-disk) reuse remain future, separately gated steps. Stale or
+ambiguous graph metadata must always fall back to current include/autoload
 logic.
