@@ -409,7 +409,15 @@ fn push_use(uses: &mut Vec<u32>, operand: DenseOperand) {
 /// can never silently miss a register use and mark an unsafe move. Raw `u32`
 /// register fields are classified against the IR field types (register vs local
 /// slot); local slots and name/block indices are intentionally excluded.
-fn collect_defs_uses(operands: &DenseOperands, defs: &mut Vec<u32>, uses: &mut Vec<u32>) {
+///
+/// Shared with [`crate::deopt`] so the report-only initialized-liveness analysis
+/// enumerates register definitions through this same exhaustive classification
+/// instead of a second, drift-prone copy.
+pub(crate) fn collect_defs_uses(
+    operands: &DenseOperands,
+    defs: &mut Vec<u32>,
+    uses: &mut Vec<u32>,
+) {
     match operands {
         DenseOperands::None => {}
         DenseOperands::RegConst { dst, .. } => defs.push(*dst),
