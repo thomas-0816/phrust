@@ -22,8 +22,11 @@ use php_ir::{
     IrReturnType, LocalId, Operand, RegId,
 };
 
-use crate::aarch64::{Aarch64Assembler, Cond, D0, D1, D2, Label, Reg, X0, X3, X4, X5, X6};
+use crate::aarch64::{
+    Aarch64Assembler, Cond, D0, D1, D2, Label, Reg, SP, X0, X1, X3, X4, X5, X6, X9,
+};
 use crate::abi::JitCValueTag;
+use crate::helpers::{JIT_HELPER_STATUS_OK, phrust_jit_abs_i64};
 use crate::region_ir::{
     NodeId, RegionBuilder, RegionCompareOp, RegionConst, RegionGraph, RegionId, RegionNode,
     RegionNodeKind, RegionValueType, VmSlotId,
@@ -190,6 +193,32 @@ pub enum ScalarIntOp {
     /// the general CFG lowering to move values between the register and local
     /// slot ranges without a type guard (downstream ops guard as needed).
     Copy { dst: u32, src: u32 },
+    /// Guarded native call to the pure builtin `abs()` on an int:
+    /// `slot[dst] = abs(slot[arg])`. Guards `slot[arg]` is `Int`, then `blr`s
+    /// the `phrust_jit_abs_i64` VM helper over the C ABI (fp/lr saved, a 16-byte
+    /// scratch frame holding the out value and the saved slot base). A non-OK
+    /// helper status — the `abs(PHP_INT_MIN)` overflow, where PHP returns a
+    /// float — takes the side exit so the interpreter produces the float. This
+    /// is only emitted when the VM bridge has confirmed the call resolves to the
+    /// real builtin `abs` (see [`NativeCallPermits`]).
+    CallAbsI64 { dst: u32, arg: u32 },
+}
+
+/// Which builtin function calls the copy-and-patch compiler may lower to a
+/// native helper call.
+///
+/// Function-name resolution (is `abs` the real math builtin, or a user-defined
+/// or namespaced shadow?) is owned by the VM, which has the function registry;
+/// `php_jit` has neither. So the VM bridge decides and passes explicit
+/// permission here, and this compiler emits a guarded helper call *only* when
+/// permitted. With the default (all-false) permits, every `CallFunction` is
+/// rejected and the interpreter runs it, exactly as before this tier existed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NativeCallPermits {
+    /// True when the callee name `abs` is confirmed to resolve to the real
+    /// builtin `abs` (not a user-defined or namespaced function that shadows
+    /// it). Set by the VM bridge after checking the function registry.
+    pub builtin_abs: bool,
 }
 
 /// A binary PHP float operation over IEEE-754 doubles. Add/Sub/Mul never fault
@@ -313,6 +342,58 @@ fn emit_bool_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.b_cond(Cond::NotEqual, deopt);
 }
 
+/// Emit a guarded native call `slot[dst] = abs(slot[arg])` through the pure
+/// `phrust_jit_abs_i64` VM helper.
+///
+/// The call stencil, in order:
+/// 1. Guard `slot[arg]` is `Int` (while `X0` still holds the slot base), taking
+///    the shared side exit otherwise.
+/// 2. Load the argument payload into a scratch register.
+/// 3. Enter a non-leaf frame: `push_fp_lr` (saves `x29`/`x30`, `sp -= 16`) then
+///    `sub sp, sp, #16` reserving `[sp+0]` for the helper's `*out i64` and
+///    `[sp+8]` for the saved slot base. `sp` stays 16-byte aligned per AAPCS64.
+/// 4. Marshal the C-ABI arguments: `x0 = arg value`, `x1 = &out` (`sp+0`).
+/// 5. Materialize the helper address into `x9` and `blr x9`.
+/// 6. Check `w0` (the status): non-`OK` (the `abs(PHP_INT_MIN)` overflow) tears
+///    the frame down and branches to the shared deopt so the interpreter runs.
+/// 7. On `OK`: reload `*out` and the slot base, tear the frame down, and store
+///    the `Int` result to `slot[dst]`.
+///
+/// Nothing is assumed to survive the `blr` except through the stack: both the
+/// result and the slot base are reloaded from the reserved frame afterward.
+fn emit_call_abs_i64(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32) {
+    // 1–2: guard + read the argument while X0 is still the slot base.
+    emit_int_guard(asm, deopt, arg);
+    asm.ldr_x(X4, X0, payload_off(arg));
+    // 3: non-leaf frame + 16-byte scratch ([sp+0]=out, [sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value, x1 = &out.
+    asm.mov(X0, X4);
+    asm.add_imm(X1, SP, 0);
+    // 5: call phrust_jit_abs_i64(value, &out) -> status in w0.
+    asm.mov_imm64(X9, phrust_jit_abs_i64 as *const () as usize as u64);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the result and slot base, free the frame, store the Int.
+    asm.ldr_x(X6, SP, 0);
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    emit_store_int(asm, dst, X6);
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
 /// Write `value` to `slot[dst]` tagged as `Int`.
 fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, INT_TAG);
@@ -354,7 +435,7 @@ fn emit_store_float(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
     match op {
         ScalarIntOp::Const { dst, .. } => check_slot(dst),
-        ScalarIntOp::Copy { dst, src } => {
+        ScalarIntOp::Copy { dst, src } | ScalarIntOp::CallAbsI64 { dst, arg: src } => {
             check_slot(dst)?;
             check_slot(src)
         }
@@ -380,6 +461,7 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
             emit_store_int(asm, dst, X6);
         }
         ScalarIntOp::Copy { dst, src } => emit_value_copy(asm, dst, src),
+        ScalarIntOp::CallAbsI64 { dst, arg } => emit_call_abs_i64(asm, deopt, dst, arg),
         ScalarIntOp::Binary { op, dst, lhs, rhs } => {
             emit_int_guard(asm, deopt, lhs);
             emit_int_guard(asm, deopt, rhs);
@@ -853,6 +935,27 @@ pub fn compile_scalar_int_function(
     constants: &[IrConstant],
     region_id: u32,
 ) -> Option<CompiledScalarRegion> {
+    compile_scalar_int_function_with_permits(
+        function,
+        constants,
+        region_id,
+        NativeCallPermits::default(),
+    )
+}
+
+/// [`compile_scalar_int_function`] with explicit native-call permission.
+///
+/// The straight-line leaf, counted-loop, and float-leaf recognizers never lower
+/// calls, so a function containing a permitted builtin call is rejected by them
+/// and reaches the general CFG compiler, which honors `permits` to lower the
+/// call to a guarded native helper (e.g. `abs` → [`ScalarIntOp::CallAbsI64`]).
+/// With the default permits this is identical to [`compile_scalar_int_function`].
+pub fn compile_scalar_int_function_with_permits(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    region_id: u32,
+    permits: NativeCallPermits,
+) -> Option<CompiledScalarRegion> {
     if let Some((graph, result)) = build_scalar_int_region(function, constants, region_id)
         && let Ok(compiled) = compile_scalar_int_region(&graph, result)
     {
@@ -861,7 +964,7 @@ pub fn compile_scalar_int_function(
     if let Some(compiled) = compile_counted_loop_function(function, constants) {
         return Some(compiled);
     }
-    if let Some(compiled) = compile_scalar_int_cfg(function, constants) {
+    if let Some(compiled) = compile_scalar_int_cfg(function, constants, permits) {
         return Some(compiled);
     }
     compile_scalar_float_leaf(function, constants)
@@ -1171,6 +1274,7 @@ fn move_to_slot(
 fn compile_scalar_int_cfg(
     function: &IrFunction,
     constants: &[IrConstant],
+    permits: NativeCallPermits,
 ) -> Option<CompiledScalarRegion> {
     let flags = function.flags;
     if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
@@ -1261,6 +1365,27 @@ fn compile_scalar_int_cfg(
                 lhs: reg_slot(*lhs),
                 rhs: reg_slot(*rhs),
             }),
+            // A call to the real builtin `abs` (confirmed by the VM bridge via
+            // `permits`) on a single by-value register argument lowers to the
+            // guarded native helper call. Any other name, arity, argument form,
+            // or an unconfirmed `abs` returns `None` so the interpreter runs it.
+            InstructionKind::CallFunction { dst, name, args }
+                if permits.builtin_abs && name.as_str() == "abs" =>
+            {
+                let [arg] = args.as_slice() else {
+                    return None;
+                };
+                if arg.name.is_some() || arg.unpack {
+                    return None;
+                }
+                let Operand::Register(arg_reg) = arg.value else {
+                    return None;
+                };
+                Some(ScalarIntOp::CallAbsI64 {
+                    dst: reg_slot(*dst),
+                    arg: reg_slot(arg_reg),
+                })
+            }
             _ => None,
         }
     };
@@ -1498,15 +1623,16 @@ fn ir_compare_to_region(op: CompareOp) -> Option<RegionCompareOp> {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuardedIntAddStep, MAX_SLOT, RegionCompileError, SlotSequenceError,
+        GuardedIntAddStep, MAX_SLOT, NativeCallPermits, RegionCompileError, SlotSequenceError,
         build_scalar_int_region, compile_counted_loop_function, compile_scalar_int_function,
-        compile_scalar_int_region, emit_guarded_int_add_sequence, int_bin_op,
+        compile_scalar_int_function_with_permits, compile_scalar_int_region,
+        emit_guarded_int_add_sequence, int_bin_op,
     };
     use crate::region_ir::{
         NodeId, RegionConst, RegionEffects, RegionGraph, RegionId, RegionNode, RegionNodeKind,
         RegionPlacement, RegionValueType, VmSlotId,
     };
-    use php_ir::instruction::TerminatorKind;
+    use php_ir::instruction::{IrCallArg, IrCallArgValueKind, TerminatorKind};
     use php_ir::{
         BasicBlock, BinaryOp, BlockId, CompareOp, ConstId, FunctionFlags, InstrId, Instruction,
         InstructionKind, IrConstant, IrParam, IrReturnType, IrSpan, LocalId, Operand, RegId,
@@ -1745,6 +1871,102 @@ mod tests {
         assert_eq!(compiled.result_slot, 2);
         assert_eq!(compiled.buffer_slots, 3);
         assert!(!compiled.code.is_empty());
+    }
+
+    /// `function f(int $x): int { return abs($x) + 1; }` as the frontend lowers
+    /// it (see `php-vm dump-ir`): a single block with a `CallFunction "abs"` on a
+    /// register argument, then `+ 1`.
+    fn abs_plus_one_function(call_name: &str) -> php_ir::IrFunction {
+        let span = IrSpan::default();
+        let ins = |kind| Instruction {
+            id: InstrId::new(0),
+            span,
+            kind,
+        };
+        let positional = |reg: u32| IrCallArg {
+            name: None,
+            value: Operand::Register(RegId::new(reg)),
+            unpack: false,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: Some(LocalId::new(0)),
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        };
+        php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![int_param("x", 0)],
+            locals: vec!["x".to_string()],
+            local_count: 1,
+            register_count: 4,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    ins(InstructionKind::LoadLocal {
+                        dst: RegId::new(1),
+                        local: LocalId::new(0),
+                    }),
+                    ins(InstructionKind::CallFunction {
+                        dst: RegId::new(0),
+                        name: call_name.to_string(),
+                        args: vec![positional(1)],
+                    }),
+                    ins(InstructionKind::LoadConst {
+                        dst: RegId::new(2),
+                        constant: ConstId::new(0),
+                    }),
+                    ins(InstructionKind::Binary {
+                        dst: RegId::new(3),
+                        op: BinaryOp::Add,
+                        lhs: Operand::Register(RegId::new(0)),
+                        rhs: Operand::Register(RegId::new(2)),
+                    }),
+                ],
+                terminator: Some(Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(3))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type: Some(IrReturnType::Int),
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_builtin_abs_call_only_with_permit() {
+        let function = abs_plus_one_function("abs");
+        let constants = [IrConstant::Int(1)];
+        let permits = NativeCallPermits { builtin_abs: true };
+
+        // Without permission the `abs` call is out of subset -> interpreter.
+        assert!(compile_scalar_int_function(&function, &constants, 1).is_none());
+
+        // With the VM's confirmation, the CFG compiler lowers it natively.
+        let compiled = compile_scalar_int_function_with_permits(&function, &constants, 1, permits)
+            .expect("abs leaf recognized when the builtin is confirmed");
+        // Locals: $x = slot 0; registers r0..r3 -> slots 1..4; result slot 5.
+        assert_eq!(compiled.result_slot, 5);
+        assert_eq!(compiled.buffer_slots, 6);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_namespaced_abs_call_even_with_permit() {
+        // A namespaced call keeps its `\` in the lowered name, so it is never
+        // matched as the builtin regardless of the permit.
+        let function = abs_plus_one_function("app\\abs");
+        let constants = [IrConstant::Int(1)];
+        let permits = NativeCallPermits { builtin_abs: true };
+        assert!(
+            compile_scalar_int_function_with_permits(&function, &constants, 1, permits).is_none()
+        );
     }
 
     #[test]

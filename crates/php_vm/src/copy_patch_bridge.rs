@@ -2,18 +2,19 @@
 //! `jit-copy-patch` feature).
 //!
 //! It marshals a frame's locals into the flat `JitCValue` slot buffer a
-//! [`CompiledScalarRegion`] expects, runs the emitted native code, and marshals
-//! the result back to a VM [`Value`]. Non-scalar locals are marshaled as
-//! `Uninitialized` so the region's `Int` guards take the interpreter side exit
-//! rather than misreading a heap handle as an integer.
+//! [`CompiledScalarRegion`](php_jit::copy_patch::CompiledScalarRegion) expects,
+//! runs the emitted native code, and marshals
+//! the result back to a VM [`Value`](php_runtime::Value). Non-scalar locals are
+//! marshaled as `Uninitialized` so the region's `Int` guards take the
+//! interpreter side exit rather than misreading a heap handle as an integer.
 //!
 //! This is the execution mechanism only. It is deliberately NOT yet triggered
 //! from the interpreter's function-entry fork: doing that needs an IR /
 //! dense-bytecode → `RegionGraph` builder (see
 //! `docs/research/copy-and-patch-stencil-tier.md`), which is the next step. The
-//! bridge is exercised by unit tests over a real [`LocalFile`] so the
-//! marshal-in / marshal-out ABI is proven end-to-end, and it stays inert unless
-//! both the `jit-copy-patch` feature and a caller opt in.
+//! bridge is exercised by unit tests over a real [`LocalFile`](crate::frame::LocalFile)
+//! so the marshal-in / marshal-out ABI is proven end-to-end, and it stays inert
+//! unless both the `jit-copy-patch` feature and a caller opt in.
 
 use std::sync::OnceLock;
 
@@ -130,6 +131,26 @@ pub fn copy_patch_leaf_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("PHRUST_JIT_COPY_PATCH").is_some())
 }
 
+/// Native-call permissions for a compile, derived from the unit's function
+/// registry — the VM owns function-name resolution, so it (not `php_jit`)
+/// decides whether a call name is the real builtin.
+///
+/// The only permission today is builtin `abs`. An unqualified `abs` call is the
+/// real math builtin unless the unit defines a *global* function literally named
+/// `abs`; PHP forbids redeclaring a builtin at global scope, so a shadow is only
+/// reachable via a namespace, where the call/registry name carries the namespace
+/// (`ns\abs`) and never matches the bare `abs` the native path lowers. Checking
+/// the registry for a bare-`abs` user function is therefore defense in depth, and
+/// mirrors the interpreter, which also resolves an unqualified builtin name to
+/// the builtin ahead of user functions. Any resolution doubt leaves the call
+/// unrecognized (interpreter fallback).
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn native_call_permits(unit: &CompiledUnit) -> php_jit::copy_patch::NativeCallPermits {
+    php_jit::copy_patch::NativeCallPermits {
+        builtin_abs: unit.lookup_function("abs").is_none(),
+    }
+}
+
 /// A recognized + compiled scalar-int leaf function, ready to invoke natively.
 ///
 /// Holds the finalized executable mapping so a function is recognized and lowered
@@ -160,8 +181,10 @@ impl NativeLeaf {
     ) -> Option<Self> {
         let inlined = inline_scalar_leaf_calls(function, unit, constants);
         let target = inlined.as_ref().unwrap_or(function);
-        let compiled =
-            php_jit::copy_patch::compile_scalar_int_function(target, constants, region_id)?;
+        let permits = native_call_permits(unit);
+        let compiled = php_jit::copy_patch::compile_scalar_int_function_with_permits(
+            target, constants, region_id, permits,
+        )?;
         let code = php_jit::code_memory::CodeMemory::new(&compiled.code).ok()?;
         Some(Self {
             code,

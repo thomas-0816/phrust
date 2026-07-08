@@ -1076,6 +1076,77 @@ mod tests {
         run(slots.as_mut_ptr())
     }
 
+    // The call stencil executed end-to-end: `slot[dst] = abs(slot[arg])`
+    // emitted as a real `blr` into the `phrust_jit_abs_i64` VM helper (fp/lr
+    // saved, a 16-byte scratch frame for the out value and the slot base). This
+    // is the safe subset of native-tier gap (b): a pure C-ABI call to a pure
+    // function, with the `abs(INT_MIN)` overflow taking the side exit so the
+    // interpreter produces PHP's float result.
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    #[test]
+    fn executes_native_abs_call_stencil() {
+        use crate::JitCValue;
+        use crate::abi::JitCValueTag;
+        use crate::copy_patch::{IntBinOp, ScalarIntOp};
+
+        // abs(5) = 5 and abs(-7) = 7, written to slot[1].
+        for (input, expected) in [(5i64, 5i64), (-7, 7), (0, 0), (i64::MAX, i64::MAX)] {
+            let mut slots = [JitCValue::int(input), JitCValue::uninitialized()];
+            assert_eq!(
+                run_scalar_ops(&[ScalarIntOp::CallAbsI64 { dst: 1, arg: 0 }], &mut slots),
+                0,
+                "abs({input}) runs natively"
+            );
+            assert_eq!(slots[1].tag, JitCValueTag::Int);
+            assert_eq!(slots[1].payload as i64, expected);
+        }
+
+        // abs(PHP_INT_MIN) overflows i64 (PHP returns a float): the helper
+        // reports fallback, so the stencil side-exits and leaves slot[1] alone.
+        let mut min = [JitCValue::int(i64::MIN), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[ScalarIntOp::CallAbsI64 { dst: 1, arg: 0 }], &mut min),
+            1,
+            "abs(INT_MIN) takes the side exit"
+        );
+        assert_eq!(min[1].tag, JitCValueTag::Uninitialized);
+
+        // A non-Int argument trips the type guard before the call.
+        let mut bad = [JitCValue::null(), JitCValue::uninitialized()];
+        assert_eq!(
+            run_scalar_ops(&[ScalarIntOp::CallAbsI64 { dst: 1, arg: 0 }], &mut bad),
+            1,
+            "a non-Int argument side-exits at the guard"
+        );
+
+        // The helper result feeds a following op — the `abs($x) + 1` shape:
+        // slot[2] = abs(slot[0]); slot[3] = slot[2] + slot[1].
+        let mut chain = [
+            JitCValue::int(-5),
+            JitCValue::int(1),
+            JitCValue::uninitialized(),
+            JitCValue::uninitialized(),
+        ];
+        assert_eq!(
+            run_scalar_ops(
+                &[
+                    ScalarIntOp::CallAbsI64 { dst: 2, arg: 0 },
+                    ScalarIntOp::Binary {
+                        op: IntBinOp::Add,
+                        dst: 3,
+                        lhs: 2,
+                        rhs: 1,
+                    },
+                ],
+                &mut chain,
+            ),
+            0
+        );
+        assert_eq!(chain[2].payload as i64, 5, "abs(-5) = 5 written to slot 2");
+        assert_eq!(chain[3].tag, JitCValueTag::Int);
+        assert_eq!(chain[3].payload as i64, 6, "abs(-5) + 1 = 6");
+    }
+
     #[test]
     fn executes_native_mod_shift_ops() {
         use crate::JitCValue;

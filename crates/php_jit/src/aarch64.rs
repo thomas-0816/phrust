@@ -34,6 +34,11 @@ pub const X9: Reg = 9;
 pub const FP: Reg = 29;
 /// Zero register.
 pub const XZR: Reg = 31;
+/// Stack pointer. Shares index `31` with `xzr`; in the base register field of
+/// load/store and add/sub-immediate encodings, index `31` denotes `sp` (not the
+/// zero register), which is exactly how the helper-call stencil reserves and
+/// addresses its scratch/out slot.
+pub const SP: Reg = 31;
 /// Link register (return address), used by `ret`.
 pub const LR: Reg = 30;
 
@@ -176,6 +181,21 @@ impl Aarch64Assembler {
     /// guards on PHP integer subtraction, checked via `b.vs`).
     pub fn subs(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         self.emit(0xEB00_0000 | (u32::from(rm) << 16) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `add Xd, Xn, #imm12` (64-bit add of an unsigned 12-bit immediate, no
+    /// shift). With `rn`/`rd` = `SP` (index 31) this addresses/adjusts the stack
+    /// pointer, which the helper-call stencil uses to free its scratch frame and
+    /// to compute the out-pointer (`add x1, sp, #0`).
+    pub fn add_imm(&mut self, rd: Reg, rn: Reg, imm12: u16) {
+        self.emit(0x9100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(rd));
+    }
+
+    /// `sub Xd, Xn, #imm12` (64-bit subtract of an unsigned 12-bit immediate, no
+    /// shift). With `rn`/`rd` = `SP` the helper-call stencil reserves its
+    /// 16-byte scratch frame (`sub sp, sp, #16`) while keeping `sp` 16-aligned.
+    pub fn sub_imm(&mut self, rd: Reg, rn: Reg, imm12: u16) {
+        self.emit(0xD100_0000 | (u32::from(imm12) << 10) | (u32::from(rn) << 5) | u32::from(rd));
     }
 
     /// `mul Xd, Xn, Xm` (64-bit multiply; `madd` with the zero-register addend).
@@ -532,6 +552,24 @@ mod tests {
                 0x89, 0x46, 0xA2, 0xF2, // movk x9, #0x1234, lsl 16
                 0x20, 0x01, 0x3F, 0xD6, // blr x9
                 0xFD, 0x7B, 0xC1, 0xA8, // pop fp/lr
+            ]
+        );
+    }
+
+    #[test]
+    fn encodes_stack_pointer_immediate_add_sub() {
+        // The helper-call stencil's frame ops: reserve/free a 16-byte scratch
+        // slot and compute the out-pointer as `sp + 0`.
+        let mut asm = Aarch64Assembler::new();
+        asm.sub_imm(SP, SP, 16); // sub sp, sp, #16  -> 0xD10043FF
+        asm.add_imm(X1, SP, 0); // add x1, sp, #0    -> 0x910003E1
+        asm.add_imm(SP, SP, 16); // add sp, sp, #16  -> 0x910043FF
+        assert_eq!(
+            asm.finish(),
+            vec![
+                0xFF, 0x43, 0x00, 0xD1, // sub sp, sp, #16
+                0xE1, 0x03, 0x00, 0x91, // add x1, sp, #0
+                0xFF, 0x43, 0x00, 0x91, // add sp, sp, #16
             ]
         );
     }
