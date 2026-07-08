@@ -1238,8 +1238,8 @@ pub fn composer_autoload_map_fingerprint(anchor_dir: &Path) -> Option<String> {
 }
 
 fn render_composer_map_fingerprint(composer_dir: &Path) -> String {
-    // The hashed text must be a defined serialization, not incidental `{:?}`
-    // Debug output (which Rust does not guarantee stable across toolchains) —
+    // The hashed text must be a defined serialization, not incidental Debug
+    // formatting (which Rust does not guarantee stable across toolchains) —
     // fnv1a_64 was chosen precisely so a future persistent cache can key on
     // this fingerprint. Render each optional field with an explicit spelling.
     fn field<T: std::fmt::Display>(value: Option<T>) -> String {
