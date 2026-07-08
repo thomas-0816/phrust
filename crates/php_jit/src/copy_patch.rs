@@ -297,6 +297,34 @@ pub enum ScalarIntOp {
         metadata_ptr: u64,
         helper: u64,
     },
+    /// Guarded native call committing a monomorphic declared *untyped* property
+    /// store: `<object at slot[object]>-><declared property> = slot[value]`.
+    /// Guards `slot[object]` is an `OpaqueObject`, then `blr`s the
+    /// property-store ABI wrapper at `helper` over the C ABI, passing the
+    /// object slot's borrowed `*const Value` payload, the borrowed
+    /// `*const JitPropertyStoreMetadata` at `metadata_ptr` (VM-owned, alive for
+    /// the whole life of the compiled leaf), and the *address of*
+    /// `slot[value]` so the helper reads the marshaled `JitCValue` itself.
+    ///
+    /// The helper performs the layout guard (runtime class must equal the
+    /// expected receiver class) and commits the write to the declared untyped
+    /// slot only when the marshaled value is a scalar `Int`/`Bool`/`Float` and
+    /// the slot currently holds a plain initialized value; a reference-holding
+    /// slot, an absent/unset property, a class mismatch, a non-object, or a
+    /// non-scalar value returns a non-`OK` status and side-exits *before any
+    /// write*, so the interpreter performs the exact store (through the
+    /// reference cell, via `__set`, with the type/readonly error, …).
+    /// Typed/readonly/hooked/asymmetric-visibility slots are excluded at
+    /// recognition time. `php_jit` cannot name the runtime symbol or build the
+    /// class metadata, so both addresses are carried in the op (the VM bridge
+    /// recognizes the leaf and supplies them; see the bridge's
+    /// `recognize_property_store_leaf`).
+    CallPropertyStoreScalar {
+        object: u32,
+        value: u32,
+        metadata_ptr: u64,
+        helper: u64,
+    },
 }
 
 /// Which builtin function calls the copy-and-patch compiler may lower to a
@@ -767,6 +795,77 @@ fn emit_property_load(
     asm.b(done);
     asm.bind(call_deopt);
     asm.add_imm(SP, SP, 32);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
+/// Emit a guarded native call committing `<object at slot[object]>->prop =
+/// slot[value]` through the monomorphic property-store ABI wrapper at `helper`
+/// (an `extern "C" fn(value_ptr: usize, metadata_ptr: usize, new_value: *const
+/// JitCValue) -> i32`).
+///
+/// The call stencil, in order:
+///
+/// 1. Guard `slot[object]`'s tag is `OpaqueObject` (side exit otherwise).
+/// 2. Read the object slot's borrowed-pointer payload into `X4` and compute the
+///    *address of* `slot[value]` into `X5` (register-form `add`, so the byte
+///    offset is not bound by the `imm12` encoding) while `X0` is still the slot
+///    base.
+/// 3. Build a non-leaf frame (`push_fp_lr`) with a 16-byte scratch holding the
+///    saved slot base — the helper writes no out-value, so no out scratch.
+/// 4. C-ABI args — `x0` = object value ptr, `x1` = `metadata_ptr`, `x2` =
+///    `&slot[value]` (the helper reads the marshaled `JitCValue` itself, so
+///    `Int`/`Bool`/`Float` all cross the boundary faithfully).
+/// 5. `blr` the helper; status in `w0`.
+/// 6. A non-`OK` status — layout mismatch, absent/reference-holding slot, or a
+///    non-scalar value — tears the frame down and takes the shared side exit
+///    *with no write performed*, so the interpreter executes the exact store.
+/// 7. On `OK` the write is committed; reload the slot base and tear the frame
+///    down. The op writes no result slot (the recognized leaf returns `null`).
+///
+/// Nothing is assumed to survive the `blr` except through the stack; the helper
+/// commits exactly one declared untyped slot write through the runtime's own
+/// interior-mutability layer and never frees, invokes a hook/`__set`, or
+/// re-enters the VM (those shapes are excluded at recognition time or side-exit
+/// at the storage guard).
+fn emit_property_store(
+    asm: &mut Aarch64Assembler,
+    deopt: Label,
+    object: u32,
+    value: u32,
+    metadata_ptr: u64,
+    helper: u64,
+) {
+    // 1–2: guard the object slot + read its borrowed pointer and the value
+    // slot's address while X0 is still the slot base.
+    emit_object_guard(asm, deopt, object);
+    asm.ldr_x(X4, X0, payload_off(object));
+    asm.mov_imm64(X5, u64::from(tag_off(value)));
+    asm.add(X5, X0, X5);
+    // 3: non-leaf frame + 16-byte scratch ([sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value_ptr, x1 = metadata_ptr, x2 = &slot[value].
+    asm.mov(X0, X4);
+    asm.mov_imm64(X1, metadata_ptr);
+    asm.mov(X2, X5);
+    // 5: call helper(value_ptr, metadata_ptr, new_value) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — the store is committed; reload the slot base, free the frame.
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
     asm.pop_fp_lr();
     asm.b(deopt);
     asm.bind(done);
@@ -1350,6 +1449,10 @@ fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
             check_slot(lhs)?;
             check_slot(rhs)
         }
+        ScalarIntOp::CallPropertyStoreScalar { object, value, .. } => {
+            check_slot(object)?;
+            check_slot(value)
+        }
     }
 }
 
@@ -1386,6 +1489,12 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
             metadata_ptr,
             helper,
         } => emit_property_load(asm, deopt, dst, arg, metadata_ptr, helper),
+        ScalarIntOp::CallPropertyStoreScalar {
+            object,
+            value,
+            metadata_ptr,
+            helper,
+        } => emit_property_store(asm, deopt, object, value, metadata_ptr, helper),
         ScalarIntOp::Binary { op, dst, lhs, rhs } => {
             emit_int_guard(asm, deopt, lhs);
             emit_int_guard(asm, deopt, rhs);
@@ -2294,6 +2403,50 @@ pub fn compile_property_load_leaf(
     Some(CompiledScalarRegion {
         code,
         result_slot,
+        buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// Lower a VM-recognized monomorphic scalar property-*store* leaf to a native
+/// region: a single [`ScalarIntOp::CallPropertyStoreScalar`] over the flat slot
+/// buffer.
+///
+/// The VM bridge (which owns class/property resolution) recognizes the
+/// `$o->prop = $v;` void-setter leaf shape and builds the
+/// `JitPropertyStoreMetadata` the layout guard needs, passing its (borrowed,
+/// VM-owned, outlives-the-leaf) pointer as `metadata_ptr` and the
+/// property-store ABI wrapper address as `helper`. `object_slot` and
+/// `value_slot` are the two parameters' VM slots (their `LocalId` indices);
+/// `buffer_slots` sizes the caller's marshaled buffer. The region produces no
+/// result slot — the recognized leaf returns `null`, which the bridge
+/// synthesizes on an `OK` status — so `result_slot` is `0` and unread. Returns
+/// `None` if either address is unavailable (`0`) or a slot is outside the
+/// addressable range.
+///
+/// `php_jit` never recognizes this shape itself (it cannot resolve classes), so
+/// with no bridge caller this is dead-inert; it only lowers the exact `(slots,
+/// metadata, helper)` tuple the bridge hands it.
+pub fn compile_property_store_leaf(
+    object_slot: u32,
+    value_slot: u32,
+    buffer_slots: u32,
+    metadata_ptr: u64,
+    helper: u64,
+) -> Option<CompiledScalarRegion> {
+    if helper == 0 || metadata_ptr == 0 {
+        return None;
+    }
+    let code = emit_scalar_int_ops(&[ScalarIntOp::CallPropertyStoreScalar {
+        object: object_slot,
+        value: value_slot,
+        metadata_ptr,
+        helper,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot: 0,
         buffer_slots,
         tail_call: None,
     })

@@ -36,6 +36,7 @@ FIXTURES = (
     FIXTURE_DIR / "builtin_strlen.php",
     FIXTURE_DIR / "builtin_is_type.php",
     FIXTURE_DIR / "builtin_property_load.php",
+    FIXTURE_DIR / "builtin_property_store.php",
     FIXTURE_DIR / "userland_tailcall.php",
     FIXTURE_DIR / "userland_tailcall_safety.php",
 )

@@ -196,6 +196,30 @@ pub struct JitPropertyLoadMetadata {
     pub layout_version: u64,
 }
 
+/// Compile-time metadata for a monomorphic property-store fast path.
+///
+/// Same guard shape as [`JitPropertyLoadMetadata`] — the store helper performs
+/// the identical receiver-class layout guard before committing the write — but
+/// kept a distinct type because the store's recognition-time contract is
+/// stricter (declared *untyped*, non-readonly, hook-free, symmetric-visibility
+/// public slot), and conflating the two would let a load-eligible property leak
+/// into the write path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitPropertyStoreMetadata {
+    /// Normalized receiver class name expected by the guard.
+    pub receiver_class: String,
+    /// Stable class table ID expected by the guard.
+    pub class_id: u32,
+    /// Declared property name without `$`.
+    pub property: String,
+    /// Runtime storage name used by the safe helper ABI.
+    pub storage_name: String,
+    /// Declared property slot/index in the class metadata.
+    pub property_slot_index: usize,
+    /// Lookup/layout epoch captured when the handle was compiled.
+    pub layout_version: u64,
+}
+
 /// Native specialization kind used by the VM to attribute guarded exits.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum JitNativeSpecialization {

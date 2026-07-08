@@ -204,10 +204,12 @@ const JIT_BLACKLIST_GUARD_FAILURE_THRESHOLD: u64 = 2;
 const JIT_BLACKLIST_COMPILE_ERROR_THRESHOLD: u64 = 1;
 #[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_ABI_MISMATCH_THRESHOLD: u64 = 1;
-// The property-load fetch status codes are shared by both native tiers'
-// property-load helpers (Cranelift and copy-and-patch), so the three the shared
-// fetch core returns are available whenever either tier is compiled. LAYOUT_EXIT
-// is only produced/attributed on the Cranelift path, so it stays gated there.
+// The property-access status codes are shared by both native tiers'
+// property-load helpers (Cranelift and copy-and-patch) and reused by the
+// copy-and-patch store commit core (`jit_property_store_commit`), so the three
+// the shared cores return are available whenever either tier is compiled.
+// LAYOUT_EXIT is only produced/attributed on the Cranelift path, so it stays
+// gated there.
 #[cfg(any(
     feature = "jit-cranelift",
     all(feature = "jit-copy-patch", unix, target_arch = "aarch64")
@@ -446,6 +448,56 @@ pub(crate) fn jit_property_load_fetch(
         return Err(JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT);
     }
     Ok(value)
+}
+
+/// Monomorphic property-*store* commit core used by the copy-and-patch
+/// property-store helper (`copy_patch_property_store_abi` in
+/// `crate::copy_patch_bridge`). The write-side mirror of
+/// [`jit_property_load_fetch`]: it performs the same layout guard — the value
+/// must be an object whose runtime class equals the metadata's expected
+/// receiver class, so the recognition-time facts (declared, untyped,
+/// non-readonly, hook-free, symmetric-visibility public slot) provably hold for
+/// the instance being written — and then commits exactly one name-keyed write
+/// to the declared property's storage.
+///
+/// The store only proceeds when the slot currently holds a plain initialized
+/// value: an absent slot (`unset()` re-arms `__set`), a reference-holding slot
+/// (the write must go through the cell so aliases observe it), an uninitialized
+/// marker, or a concurrently borrowed storage all side-exit *before any write*,
+/// so the interpreter performs the exact store with full semantics. On `Err`
+/// nothing was written. It never invokes a hook/`__set`, frees, or re-enters
+/// the VM; the single mutation goes through the runtime's own
+/// interior-mutability layer (`try_set_property`), the same storage cell the
+/// interpreter writes.
+#[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
+pub(crate) fn jit_property_store_commit(
+    value: &Value,
+    metadata: &php_jit::JitPropertyStoreMetadata,
+    new_value: Value,
+) -> Result<(), i32> {
+    let effective = match value {
+        Value::Reference(cell) => cell.get(),
+        other => other.clone(),
+    };
+    let Value::Object(object) = effective else {
+        return Err(JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT);
+    };
+    if normalize_class_name(&object.class_name()) != metadata.receiver_class {
+        return Err(JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT);
+    }
+    let Ok(Some(current)) = object.try_get_property(&metadata.storage_name) else {
+        return Err(JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT);
+    };
+    if matches!(current, Value::Reference(_)) || current.is_uninitialized() {
+        return Err(JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT);
+    }
+    if object
+        .try_set_property(metadata.storage_name.clone(), new_value)
+        .is_err()
+    {
+        return Err(JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "jit-cranelift")]
