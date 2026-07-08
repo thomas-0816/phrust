@@ -32,9 +32,11 @@ use crate::region_ir::{
     RegionNodeKind, RegionValueType, VmSlotId,
 };
 
+const UNINIT_TAG: u16 = JitCValueTag::Uninitialized as u16;
 const INT_TAG: u16 = JitCValueTag::Int as u16;
 const BOOL_TAG: u16 = JitCValueTag::Bool as u16;
 const FLOAT_TAG: u16 = JitCValueTag::FloatBits as u16;
+const STRING_TAG: u16 = JitCValueTag::OpaqueString as u16;
 const ARRAY_TAG: u16 = JitCValueTag::OpaqueArray as u16;
 
 /// A single guarded PHP integer-add step: `slot[dst] = slot[lhs] + slot[rhs]`.
@@ -222,6 +224,44 @@ pub enum ScalarIntOp {
         arg: u32,
         array_len_helper: u64,
     },
+    /// Guarded native call to the builtin `strlen()` on a string:
+    /// `slot[dst] = strlen(slot[arg])`. Guards `slot[arg]` is an `OpaqueString`,
+    /// then `blr`s the runtime string-length ABI wrapper at `strlen_helper` over
+    /// the C ABI (identical frame discipline to [`Self::CallCountI64`]). The
+    /// string slot's payload is a borrowed `*const Value` the VM marshaled for
+    /// the call's duration; the helper only reads its byte length (PHP `strlen`
+    /// is a byte count, not a multibyte length). A non-`String` slot — a scalar,
+    /// an array, an object, or `null` (the interpreter would coerce or raise) —
+    /// side-exits at the tag guard, and the helper reports a non-OK status for
+    /// any value it cannot length (so an unexpected shape side-exits and the
+    /// interpreter reproduces the exact result/error). Emitted only when the VM
+    /// bridge confirms the call resolves to the real builtin `strlen` (see
+    /// [`NativeCallPermits`]) and provides the helper address (see
+    /// [`CopyPatchRuntimeHelpers`]).
+    CallStrlenI64 {
+        dst: u32,
+        arg: u32,
+        strlen_helper: u64,
+    },
+    /// Pure type predicate writing a `Bool` (0/1) to `slot[dst]`:
+    /// `slot[dst] = (slot[arg].tag == expected_tag)`. Backs the canonical
+    /// `is_int`/`is_string`/`is_array`/`is_float`/`is_bool` builtins — the answer
+    /// is exactly the marshaled tag, so no helper call and no payload deref is
+    /// needed (this is the safest stencil: it only reads the tag word).
+    ///
+    /// The one guard: an `Uninitialized`-marshaled argument is ambiguous (the
+    /// bridge collapses `null`, objects, resources, references, and every other
+    /// non-scalar/non-string/non-array value onto it), so the predicate cannot be
+    /// decided from the tag — the stencil side-exits and the interpreter answers.
+    /// Every *definite* tag (`Int`/`Bool`/`FloatBits`/`OpaqueString`/
+    /// `OpaqueArray`) yields a correct true/false. `expected_tag` selects the
+    /// predicate (e.g. [`INT_TAG`] for `is_int`). Emitted only when the VM bridge
+    /// confirms the call resolves to the real builtin (see [`NativeCallPermits`]).
+    IsType {
+        dst: u32,
+        arg: u32,
+        expected_tag: u16,
+    },
 }
 
 /// Which builtin function calls the copy-and-patch compiler may lower to a
@@ -256,6 +296,26 @@ pub struct NativeCallPermits {
     /// `builtin_abs`. A namespaced shadow also carries its namespace in the
     /// lowered call name, so the `count` recognizer never matches it regardless.
     pub builtin_count: bool,
+    /// True when the callee name `strlen` is confirmed to resolve to the real
+    /// builtin `strlen` (not a user-defined or namespaced shadow). Set by the VM
+    /// bridge after checking the function registry; mirrors `builtin_count`.
+    pub builtin_strlen: bool,
+    /// True when the callee name `is_int` is confirmed to resolve to the real
+    /// builtin `is_int`. Each type predicate carries its own permit so that a
+    /// user/namespaced shadow of one never enables the others.
+    pub builtin_is_int: bool,
+    /// True when the callee name `is_string` is confirmed to resolve to the real
+    /// builtin `is_string`.
+    pub builtin_is_string: bool,
+    /// True when the callee name `is_array` is confirmed to resolve to the real
+    /// builtin `is_array`.
+    pub builtin_is_array: bool,
+    /// True when the callee name `is_float` is confirmed to resolve to the real
+    /// builtin `is_float`.
+    pub builtin_is_float: bool,
+    /// True when the callee name `is_bool` is confirmed to resolve to the real
+    /// builtin `is_bool`.
+    pub builtin_is_bool: bool,
 }
 
 /// Runtime-owned helper addresses the copy-and-patch tier `blr`s from emitted
@@ -275,6 +335,12 @@ pub struct CopyPatchRuntimeHelpers {
     /// status for any non-packed-int array. `0` = unavailable → `count` is not
     /// lowered. Same ABI Cranelift uses for `packed_array_len`.
     pub array_len: u64,
+    /// Address of an `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`
+    /// wrapping the VM's string-length read: it reads the borrowed `Value` at
+    /// `value_ptr` and writes its byte length through `out`, returning a non-OK
+    /// status for any non-string value. `0` = unavailable → `strlen` is not
+    /// lowered. Same ABI shape as `array_len`.
+    pub strlen: u64,
 }
 
 /// A binary PHP float operation over IEEE-754 doubles. Add/Sub/Mul never fault
@@ -517,6 +583,82 @@ fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32,
     asm.bind(done);
 }
 
+/// Guard that `slot`'s tag is `OpaqueString`, taking the side exit otherwise.
+/// Only a genuine string slot reaches the length helper — a scalar, an array,
+/// an object, `null`, or any other value (all of which PHP's `strlen` would
+/// coerce or reject) side-exits here so the interpreter reproduces the exact
+/// semantics.
+fn emit_string_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
+    asm.ldr_w(X3, X0, tag_off(slot));
+    asm.cmp_imm_w(X3, STRING_TAG);
+    asm.b_cond(Cond::NotEqual, deopt);
+}
+
+/// Emit a guarded native call `slot[dst] = strlen(slot[arg])` through the
+/// runtime string-length ABI wrapper at `helper` (an
+/// `extern "C" fn(value_ptr: usize, out: *mut i64) -> i32`).
+///
+/// A near-clone of [`emit_call_count`], differing only in the guard (the arg
+/// must be an `OpaqueString`): guard the arg tag, load its borrowed
+/// `*const Value` payload, enter a non-leaf frame with a 16-byte scratch
+/// (`[sp+0]` = out length, `[sp+8]` = saved slot base), marshal `x0 = value_ptr`
+/// / `x1 = &out`, `blr` the helper, side-exit on a non-OK status, else reload
+/// the byte length and store the `Int` result. The helper only reads the
+/// borrowed value's byte length; it never mutates, frees, or re-enters the VM.
+fn emit_call_strlen(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
+    // 1–2: guard the arg is a string + read its borrowed-pointer payload while
+    // X0 is still the slot base.
+    emit_string_guard(asm, deopt, arg);
+    asm.ldr_x(X4, X0, payload_off(arg));
+    // 3: non-leaf frame + 16-byte scratch ([sp+0]=out length, [sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value_ptr, x1 = &out.
+    asm.mov(X0, X4);
+    asm.add_imm(X1, SP, 0);
+    // 5: call strlen_helper(value_ptr, &out) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the length and slot base, free the frame, store the Int.
+    asm.ldr_x(X6, SP, 0);
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    emit_store_int(asm, dst, X6);
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
+/// Emit a pure type-predicate stencil `slot[dst] = (slot[arg].tag ==
+/// expected_tag)`, guarding that the marshaled tag is decidable.
+///
+/// No call and no payload deref: it loads the tag word, side-exits when it is
+/// `Uninitialized` (the ambiguous case the bridge collapses `null`/objects/etc.
+/// onto — the interpreter must answer), then writes the `Bool` result of the tag
+/// comparison. Every definite tag yields a correct true/false, so there is no
+/// wrong-answer path: an unrecognized shape is either a decidable non-match or an
+/// `Uninitialized` side exit.
+fn emit_is_type(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, expected_tag: u16) {
+    asm.ldr_w(X3, X0, tag_off(arg));
+    // An Uninitialized-marshaled value is ambiguous; defer to the interpreter.
+    asm.cmp_imm_w(X3, UNINIT_TAG);
+    asm.b_cond(Cond::Equal, deopt);
+    // The answer is exactly whether the marshaled tag is the predicate's tag.
+    asm.cmp_imm_w(X3, expected_tag);
+    asm.cset(X6, Cond::Equal);
+    emit_store_bool(asm, dst, X6);
+}
+
 /// Write `value` to `slot[dst]` tagged as `Int`.
 fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, INT_TAG);
@@ -560,7 +702,9 @@ fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
         ScalarIntOp::Const { dst, .. } => check_slot(dst),
         ScalarIntOp::Copy { dst, src }
         | ScalarIntOp::CallAbsI64 { dst, arg: src }
-        | ScalarIntOp::CallCountI64 { dst, arg: src, .. } => {
+        | ScalarIntOp::CallCountI64 { dst, arg: src, .. }
+        | ScalarIntOp::CallStrlenI64 { dst, arg: src, .. }
+        | ScalarIntOp::IsType { dst, arg: src, .. } => {
             check_slot(dst)?;
             check_slot(src)
         }
@@ -592,6 +736,16 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
             arg,
             array_len_helper,
         } => emit_call_count(asm, deopt, dst, arg, array_len_helper),
+        ScalarIntOp::CallStrlenI64 {
+            dst,
+            arg,
+            strlen_helper,
+        } => emit_call_strlen(asm, deopt, dst, arg, strlen_helper),
+        ScalarIntOp::IsType {
+            dst,
+            arg,
+            expected_tag,
+        } => emit_is_type(asm, deopt, dst, arg, expected_tag),
         ScalarIntOp::Binary { op, dst, lhs, rhs } => {
             emit_int_guard(asm, deopt, lhs);
             emit_int_guard(asm, deopt, rhs);
@@ -1134,13 +1288,15 @@ pub fn compile_scalar_int_function_with_permits(
 }
 
 /// [`compile_scalar_int_function_with_permits`] plus runtime-helper addresses,
-/// enabling the heap-handle shapes that call a runtime helper (currently only
-/// `count` → `php_jit_array_len`; strlen/concat/property-load will follow).
+/// enabling the heap-handle and type-predicate shapes (currently `count` →
+/// `php_jit_array_len`, `strlen` → the string-length wrapper, and the pure
+/// `is_int`/`is_string`/`is_array`/`is_float`/`is_bool` predicates;
+/// concat/property-load will follow).
 ///
-/// The heap-handle recognizers run *first*: their shapes (an array/untyped
-/// parameter feeding a builtin) are disjoint from the int/float scalar subset
-/// the other recognizers accept, so trying them first never steals a scalar leaf
-/// — and with default helpers (all addresses `0`) this reduces exactly to
+/// These recognizers run *first*: their shapes (a string/array/untyped parameter
+/// feeding a builtin) are disjoint from the int/float scalar subset the other
+/// recognizers accept, so trying them first never steals a scalar leaf — and with
+/// the default permits (all false) each returns `None`, so this reduces exactly to
 /// [`compile_scalar_int_function_with_permits`].
 pub fn compile_scalar_int_function_with_permits_and_helpers(
     function: &IrFunction,
@@ -1152,35 +1308,40 @@ pub fn compile_scalar_int_function_with_permits_and_helpers(
     if let Some(compiled) = compile_scalar_int_count_leaf(function, permits, helpers) {
         return Some(compiled);
     }
+    if let Some(compiled) = compile_scalar_int_strlen_leaf(function, permits, helpers) {
+        return Some(compiled);
+    }
+    if let Some(compiled) = compile_scalar_int_is_type_leaf(function, permits) {
+        return Some(compiled);
+    }
     compile_scalar_int_function_with_permits(function, constants, region_id, permits)
 }
 
-/// Recognize and lower a `count($array)` leaf to a native
-/// [`ScalarIntOp::CallCountI64`], gated by `permits.builtin_count` and a resolved
-/// `helpers.array_len` address.
-///
-/// The matched shape is a single-block free function returning `int` (or with no
-/// declared return type — `count()` is always int-valued) with exactly one
-/// by-value, non-variadic, no-default parameter that is `array`-typed or
-/// untyped, whose body is exactly `LoadLocal($param)` then
-/// `CallFunction "count"` on that register, returned unchanged. A namespaced
-/// `count` shadow lowers its call name with the namespace (e.g. `ns\count`), so
-/// the literal `name == "count"` check never matches it — the interpreter runs
-/// the shadow. Everything else (methods, closures, generators, wrong arity,
-/// named/spread/by-ref-placeholder args, an int/float/etc.-typed parameter,
-/// any other body) is rejected so the interpreter runs it.
-///
-/// The stencil guards the runtime array tag and the helper's packed-int layout,
-/// so only a plain packed all-int array runs natively; every other value
-/// side-exits and the interpreter reproduces the exact result/error.
-fn compile_scalar_int_count_leaf(
-    function: &IrFunction,
-    permits: NativeCallPermits,
-    helpers: CopyPatchRuntimeHelpers,
-) -> Option<CompiledScalarRegion> {
-    if !permits.builtin_count || helpers.array_len == 0 {
-        return None;
-    }
+/// The structural match shared by the single-argument builtin-leaf recognizers
+/// (`count`/`strlen`/`is_*`): the sole parameter, the un-normalized call name,
+/// and the slot layout. Builtin-specific gates (name, permit, declared return
+/// and parameter types) are applied by each recognizer.
+struct SingleArgBuiltinLeaf<'a> {
+    /// The function's sole parameter (by-value, non-variadic, no default).
+    param: &'a php_ir::IrParam,
+    /// The call name exactly as written at the call site; a namespaced shadow
+    /// keeps its `\`, so a bare-name check never matches it.
+    call_name: String,
+    /// Slot the native result is written to (above locals + registers).
+    result_slot: u32,
+    /// `JitCValue` slots the caller's buffer must provide.
+    buffer_slots: u32,
+}
+
+/// Match the `return builtin($x)` leaf shape common to the `count`/`strlen`/
+/// `is_*` recognizers: a single-block free function with exactly one by-value,
+/// non-variadic, no-default parameter, whose body is exactly `LoadLocal($param)`
+/// then a single-positional-argument `CallFunction` on that register, returned
+/// unchanged. Returns the parameter, the un-normalized call name, and the slot
+/// layout, or `None` for any other shape (methods, closures, generators, wrong
+/// arity, named/spread args, by-ref params, extra body). Callers still apply the
+/// builtin-specific name/permit/type gates.
+fn match_single_arg_builtin_leaf(function: &IrFunction) -> Option<SingleArgBuiltinLeaf<'_>> {
     let flags = function.flags;
     if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
         return None;
@@ -1188,24 +1349,15 @@ fn compile_scalar_int_count_leaf(
     if function.returns_by_ref || !function.captures.is_empty() {
         return None;
     }
-    // `count()` returns int; accept an int-typed or untyped declared return.
-    if !matches!(function.return_type, None | Some(IrReturnType::Int)) {
-        return None;
-    }
-    // Exactly one parameter: by-value, non-variadic, no default. Its type must be
-    // `array` or untyped — an int/float/etc. parameter could never be an array at
-    // runtime, so it is outside this shape (and the guard would always fail).
+    // Exactly one parameter: by-value, non-variadic, no default.
     let [param] = function.params.as_slice() else {
         return None;
     };
     if param.by_ref || param.variadic || param.default.is_some() {
         return None;
     }
-    if !matches!(param.type_, None | Some(IrReturnType::Array)) {
-        return None;
-    }
 
-    // Single-block leaf: load the parameter, then `count()` it, then return.
+    // Single-block leaf: load the parameter, then call the builtin on it, return.
     let [block] = function.blocks.as_slice() else {
         return None;
     };
@@ -1224,13 +1376,13 @@ fn compile_scalar_int_count_leaf(
     else {
         return None;
     };
-    if *load_local != param.local || name.as_str() != "count" {
+    if *load_local != param.local {
         return None;
     }
     // A single plain positional argument, the loaded parameter register. A
     // by-reference *arg* annotation only tracks the variable's source location
-    // for potential write-back; `count` never writes back, so it is moot (as in
-    // the `abs` path).
+    // for potential write-back; these pure builtins never write back, so it is
+    // moot (as in the `abs` path).
     let [arg] = args.as_slice() else {
         return None;
     };
@@ -1256,25 +1408,169 @@ fn compile_scalar_int_count_leaf(
     }
 
     // Slot layout matches the other leaf compilers: locals occupy their indices,
-    // so the sole array parameter is marshaled into `slot[param.local]`; the
-    // result lands in a dedicated slot above locals + registers. The stencil
-    // reads the array handle straight from the parameter slot — no register copy.
-    let local_count = function.local_count;
-    let result_slot = local_count.checked_add(function.register_count)?;
+    // so the sole parameter is marshaled into `slot[param.local]`; the result
+    // lands in a dedicated slot above locals + registers. The stencil reads the
+    // argument straight from the parameter slot — no register copy.
+    let result_slot = function.local_count.checked_add(function.register_count)?;
     let buffer_slots = result_slot.checked_add(1)?;
     if result_slot > MAX_SLOT {
         return None;
     }
+    Some(SingleArgBuiltinLeaf {
+        param,
+        call_name: name.clone(),
+        result_slot,
+        buffer_slots,
+    })
+}
+
+/// Recognize and lower a `count($array)` leaf to a native
+/// [`ScalarIntOp::CallCountI64`], gated by `permits.builtin_count` and a resolved
+/// `helpers.array_len` address.
+///
+/// The matched shape is a single-argument builtin leaf (see
+/// [`match_single_arg_builtin_leaf`]) named `count`, returning `int` or untyped
+/// (`count()` is always int-valued), whose parameter is `array`-typed or untyped
+/// — an int/float/etc. parameter could never be an array at runtime, so it is
+/// outside this shape (and the guard would always fail). A namespaced `count`
+/// shadow keeps its namespace in the call name, so the literal `name == "count"`
+/// check never matches it — the interpreter runs the shadow.
+///
+/// The stencil guards the runtime array tag and the helper's packed-int layout,
+/// so only a plain packed all-int array runs natively; every other value
+/// side-exits and the interpreter reproduces the exact result/error.
+fn compile_scalar_int_count_leaf(
+    function: &IrFunction,
+    permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
+) -> Option<CompiledScalarRegion> {
+    if !permits.builtin_count || helpers.array_len == 0 {
+        return None;
+    }
+    // `count()` returns int; accept an int-typed or untyped declared return.
+    if !matches!(function.return_type, None | Some(IrReturnType::Int)) {
+        return None;
+    }
+    let leaf = match_single_arg_builtin_leaf(function)?;
+    if leaf.call_name != "count" {
+        return None;
+    }
+    if !matches!(leaf.param.type_, None | Some(IrReturnType::Array)) {
+        return None;
+    }
     let code = emit_scalar_int_ops(&[ScalarIntOp::CallCountI64 {
-        dst: result_slot,
-        arg: param.local.raw(),
+        dst: leaf.result_slot,
+        arg: leaf.param.local.raw(),
         array_len_helper: helpers.array_len,
     }])
     .ok()?;
     Some(CompiledScalarRegion {
         code,
-        result_slot,
-        buffer_slots,
+        result_slot: leaf.result_slot,
+        buffer_slots: leaf.buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// Recognize and lower a `strlen($string)` leaf to a native
+/// [`ScalarIntOp::CallStrlenI64`], gated by `permits.builtin_strlen` and a
+/// resolved `helpers.strlen` address.
+///
+/// The matched shape is a single-argument builtin leaf (see
+/// [`match_single_arg_builtin_leaf`]) named `strlen`, returning `int` or untyped
+/// (`strlen()` is always int-valued), whose parameter is `string`-typed or
+/// untyped. A `string`-typed parameter is always a genuine string (PHP coerces
+/// the argument at the boundary); an untyped parameter may be anything, and any
+/// non-string value side-exits at the tag guard so the interpreter applies
+/// `strlen`'s coercion/`TypeError` semantics. A namespaced `strlen` shadow keeps
+/// its namespace in the call name, so the literal check never matches it.
+///
+/// Only a genuine `Value::String` runs natively; its byte length (PHP `strlen`
+/// is a byte count) is read by the helper. Every other value side-exits.
+fn compile_scalar_int_strlen_leaf(
+    function: &IrFunction,
+    permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
+) -> Option<CompiledScalarRegion> {
+    if !permits.builtin_strlen || helpers.strlen == 0 {
+        return None;
+    }
+    // `strlen()` returns int; accept an int-typed or untyped declared return.
+    if !matches!(function.return_type, None | Some(IrReturnType::Int)) {
+        return None;
+    }
+    let leaf = match_single_arg_builtin_leaf(function)?;
+    if leaf.call_name != "strlen" {
+        return None;
+    }
+    if !matches!(leaf.param.type_, None | Some(IrReturnType::String)) {
+        return None;
+    }
+    let code = emit_scalar_int_ops(&[ScalarIntOp::CallStrlenI64 {
+        dst: leaf.result_slot,
+        arg: leaf.param.local.raw(),
+        strlen_helper: helpers.strlen,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot: leaf.result_slot,
+        buffer_slots: leaf.buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// Map a canonical type-predicate builtin name to the marshaled [`JitCValueTag`]
+/// its argument must carry, but only when the matching per-name permit is set.
+///
+/// Covers exactly the canonical spellings whose answer is a pure tag check:
+/// `is_int`/`is_string`/`is_array`/`is_float`/`is_bool`. The aliases
+/// (`is_integer`/`is_long`/`is_double`) and the predicates with non-tag semantics
+/// (`is_null`/`is_object`/`is_numeric`/`is_scalar`/`is_callable`/`is_iterable`/
+/// `is_a`) return `None` and fall through to the interpreter. A namespaced shadow
+/// keeps its `\`, so it never matches a bare name here.
+fn is_type_predicate_tag(name: &str, permits: NativeCallPermits) -> Option<u16> {
+    match name {
+        "is_int" if permits.builtin_is_int => Some(INT_TAG),
+        "is_string" if permits.builtin_is_string => Some(STRING_TAG),
+        "is_array" if permits.builtin_is_array => Some(ARRAY_TAG),
+        "is_float" if permits.builtin_is_float => Some(FLOAT_TAG),
+        "is_bool" if permits.builtin_is_bool => Some(BOOL_TAG),
+        _ => None,
+    }
+}
+
+/// Recognize and lower an `is_TYPE($x)` leaf for a canonical type predicate to a
+/// native [`ScalarIntOp::IsType`], gated by the predicate's own permit (see
+/// [`is_type_predicate_tag`]).
+///
+/// The matched shape is a single-argument builtin leaf (see
+/// [`match_single_arg_builtin_leaf`]) whose name is one of the canonical
+/// predicates and returning `bool` or untyped. The parameter may be of *any* (or
+/// no) declared type: the answer is the marshaled tag, which is correct for every
+/// definite tag, and an `Uninitialized`-marshaled argument (`null`, an object,
+/// etc.) side-exits so the interpreter answers — so no declared type can produce
+/// a wrong result. No helper is needed (the stencil only reads the tag word).
+fn compile_scalar_int_is_type_leaf(
+    function: &IrFunction,
+    permits: NativeCallPermits,
+) -> Option<CompiledScalarRegion> {
+    // `is_*()` returns bool; accept a bool-typed or untyped declared return.
+    if !matches!(function.return_type, None | Some(IrReturnType::Bool)) {
+        return None;
+    }
+    let leaf = match_single_arg_builtin_leaf(function)?;
+    let expected_tag = is_type_predicate_tag(&leaf.call_name, permits)?;
+    let code = emit_scalar_int_ops(&[ScalarIntOp::IsType {
+        dst: leaf.result_slot,
+        arg: leaf.param.local.raw(),
+        expected_tag,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot: leaf.result_slot,
+        buffer_slots: leaf.buffer_slots,
         tail_call: None,
     })
 }
@@ -2541,13 +2837,16 @@ mod tests {
         );
     }
 
-    /// `function f($a) { return count($a); }` as the frontend lowers it: one
-    /// untyped-or-array by-value parameter loaded into a register, a
-    /// `CallFunction "count"` on it, returned unchanged. `call_name` and
-    /// `param_type` vary to exercise the shadow and typed-parameter cases.
-    fn count_leaf_function(
+    /// `function f($x): $ret { return $name($x); }` as the frontend lowers it:
+    /// one by-value parameter loaded into a register, a single-positional
+    /// `CallFunction` on it, returned unchanged. The shared shape behind the
+    /// count/strlen/is_* recognizer tests; `call_name`, `param_type`, and
+    /// `return_type` vary to exercise the shadow, typed-parameter, and
+    /// return-type cases.
+    fn single_arg_builtin_leaf_function(
         call_name: &str,
         param_type: Option<IrReturnType>,
+        return_type: Option<IrReturnType>,
     ) -> php_ir::IrFunction {
         let span = IrSpan::default();
         let ins = |kind| Instruction {
@@ -2603,12 +2902,20 @@ mod tests {
             }],
             span,
             flags: FunctionFlags::default(),
-            // Untyped return, like the microbench `f($a){ return count($a); }`.
-            return_type: None,
+            return_type,
             returns_by_ref: false,
             captures: Vec::new(),
             attributes: Vec::new(),
         }
+    }
+
+    /// The count-specific shape: `function f($a) { return count($a); }` with an
+    /// untyped return (like the microbench). Delegates to the shared builder.
+    fn count_leaf_function(
+        call_name: &str,
+        param_type: Option<IrReturnType>,
+    ) -> php_ir::IrFunction {
+        single_arg_builtin_leaf_function(call_name, param_type, None)
     }
 
     #[test]
@@ -2616,7 +2923,10 @@ mod tests {
         let function = count_leaf_function("count", None);
         // A non-zero placeholder address; the recognizer only embeds it (the
         // emitted `blr` is exercised end-to-end in code_memory.rs).
-        let helpers = CopyPatchRuntimeHelpers { array_len: 0x1000 };
+        let helpers = CopyPatchRuntimeHelpers {
+            array_len: 0x1000,
+            strlen: 0,
+        };
         let permits = NativeCallPermits {
             builtin_count: true,
             ..NativeCallPermits::default()
@@ -2664,7 +2974,10 @@ mod tests {
     #[test]
     fn recognizes_count_leaf_with_array_typed_parameter() {
         let function = count_leaf_function("count", Some(IrReturnType::Array));
-        let helpers = CopyPatchRuntimeHelpers { array_len: 0x1000 };
+        let helpers = CopyPatchRuntimeHelpers {
+            array_len: 0x1000,
+            strlen: 0,
+        };
         let permits = NativeCallPermits {
             builtin_count: true,
             ..NativeCallPermits::default()
@@ -2686,7 +2999,10 @@ mod tests {
         // A namespaced call keeps its `\` in the lowered name, so it is never
         // matched as the builtin `count` regardless of the permit.
         let function = count_leaf_function("app\\count", None);
-        let helpers = CopyPatchRuntimeHelpers { array_len: 0x1000 };
+        let helpers = CopyPatchRuntimeHelpers {
+            array_len: 0x1000,
+            strlen: 0,
+        };
         let permits = NativeCallPermits {
             builtin_count: true,
             ..NativeCallPermits::default()
@@ -2698,6 +3014,311 @@ mod tests {
                 1,
                 permits,
                 helpers
+            )
+            .is_none()
+        );
+    }
+
+    /// Runtime helpers with only the `strlen` address resolved (a non-zero
+    /// placeholder; the emitted `blr` is exercised end-to-end in code_memory.rs).
+    fn strlen_helpers() -> CopyPatchRuntimeHelpers {
+        CopyPatchRuntimeHelpers {
+            array_len: 0,
+            strlen: 0x2000,
+        }
+    }
+
+    #[test]
+    fn recognizes_builtin_strlen_leaf_only_with_permit_and_helper() {
+        let function = single_arg_builtin_leaf_function("strlen", None, Some(IrReturnType::Int));
+        let helpers = strlen_helpers();
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+
+        // No permit -> outside every subset (the interpreter runs it).
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                NativeCallPermits::default(),
+                helpers,
+            )
+            .is_none()
+        );
+        // Permit but no resolved helper address -> not lowered.
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default(),
+            )
+            .is_none()
+        );
+
+        // Permit + helper -> recognized. $a=slot 0; regs r0,r1 -> slots 1,2; the
+        // strlen result lands in the dedicated result slot 3.
+        let compiled = compile_scalar_int_function_with_permits_and_helpers(
+            &function,
+            &[],
+            1,
+            permits,
+            helpers,
+        )
+        .expect("strlen leaf recognized when the builtin is confirmed and the helper resolves");
+        assert_eq!(compiled.result_slot, 3);
+        assert_eq!(compiled.buffer_slots, 4);
+        assert!(compiled.tail_call.is_none());
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
+    fn recognizes_strlen_leaf_with_string_typed_parameter() {
+        let function = single_arg_builtin_leaf_function(
+            "strlen",
+            Some(IrReturnType::String),
+            Some(IrReturnType::Int),
+        );
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                strlen_helpers()
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_strlen_leaf_with_int_typed_parameter() {
+        // An int-typed parameter can never be a string at runtime, so it is
+        // outside the strlen shape (the tag guard would always fail); the
+        // interpreter runs it.
+        let function = single_arg_builtin_leaf_function(
+            "strlen",
+            Some(IrReturnType::Int),
+            Some(IrReturnType::Int),
+        );
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                strlen_helpers()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_a_namespaced_strlen_call_even_with_permit() {
+        let function =
+            single_arg_builtin_leaf_function("app\\strlen", None, Some(IrReturnType::Int));
+        let permits = NativeCallPermits {
+            builtin_strlen: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                strlen_helpers()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn recognizes_is_type_leaves_only_with_matching_permit() {
+        // Each canonical predicate is recognized only when its own permit is set,
+        // and needs no runtime helper (the stencil only reads the tag).
+        let cases = [
+            (
+                "is_int",
+                NativeCallPermits {
+                    builtin_is_int: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_string",
+                NativeCallPermits {
+                    builtin_is_string: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_array",
+                NativeCallPermits {
+                    builtin_is_array: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_float",
+                NativeCallPermits {
+                    builtin_is_float: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_bool",
+                NativeCallPermits {
+                    builtin_is_bool: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+        ];
+        for (name, permits) in cases {
+            let function = single_arg_builtin_leaf_function(name, None, Some(IrReturnType::Bool));
+
+            // No permit -> the interpreter runs it.
+            assert!(
+                compile_scalar_int_function_with_permits_and_helpers(
+                    &function,
+                    &[],
+                    1,
+                    NativeCallPermits::default(),
+                    CopyPatchRuntimeHelpers::default(),
+                )
+                .is_none(),
+                "{name} without its permit falls back"
+            );
+
+            // Matching permit -> recognized; no helper address required.
+            let compiled = compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default(),
+            )
+            .unwrap_or_else(|| panic!("{name} recognized with its permit"));
+            assert_eq!(compiled.result_slot, 3);
+            assert_eq!(compiled.buffer_slots, 4);
+            assert!(compiled.tail_call.is_none());
+            assert!(!compiled.code.is_empty());
+        }
+    }
+
+    #[test]
+    fn is_type_permits_do_not_cross() {
+        // `is_string` must not be enabled by the `is_int` permit.
+        let function =
+            single_arg_builtin_leaf_function("is_string", None, Some(IrReturnType::Bool));
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn recognizes_is_type_leaf_with_typed_parameter() {
+        // The tag check is correct for any declared parameter type, so a typed
+        // parameter is still recognized (unlike strlen/count, no type restriction).
+        let function = single_arg_builtin_leaf_function(
+            "is_int",
+            Some(IrReturnType::Mixed),
+            Some(IrReturnType::Bool),
+        );
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default()
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_is_type_aliases_and_unhandled_predicates() {
+        // Every type-predicate permit ON, to prove it is the NAME (not a missing
+        // permit) that leaves these to the interpreter: aliases (is_integer/
+        // is_long/is_double) and the non-tag predicates.
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            builtin_is_string: true,
+            builtin_is_array: true,
+            builtin_is_float: true,
+            builtin_is_bool: true,
+            ..NativeCallPermits::default()
+        };
+        for name in [
+            "is_integer",
+            "is_long",
+            "is_double",
+            "is_null",
+            "is_object",
+            "is_numeric",
+            "is_scalar",
+            "is_iterable",
+            "is_callable",
+            "is_a",
+        ] {
+            let function = single_arg_builtin_leaf_function(name, None, Some(IrReturnType::Bool));
+            assert!(
+                compile_scalar_int_function_with_permits_and_helpers(
+                    &function,
+                    &[],
+                    1,
+                    permits,
+                    CopyPatchRuntimeHelpers::default()
+                )
+                .is_none(),
+                "{name} is left to the interpreter"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_namespaced_is_type_call() {
+        let function =
+            single_arg_builtin_leaf_function("app\\is_int", None, Some(IrReturnType::Bool));
+        let permits = NativeCallPermits {
+            builtin_is_int: true,
+            ..NativeCallPermits::default()
+        };
+        assert!(
+            compile_scalar_int_function_with_permits_and_helpers(
+                &function,
+                &[],
+                1,
+                permits,
+                CopyPatchRuntimeHelpers::default()
             )
             .is_none()
         );

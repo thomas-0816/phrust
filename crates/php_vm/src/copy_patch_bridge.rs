@@ -37,7 +37,10 @@ use php_ir::{
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_jit::copy_patch::{CopyPatchRuntimeHelpers, TailCallPlan};
 #[cfg(all(unix, target_arch = "aarch64"))]
-use php_jit::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, JitCValue, JitCValueTag};
+use php_jit::{
+    JIT_HELPER_STATUS_FALLBACK, JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, JitCValue,
+    JitCValueTag,
+};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use std::cell::RefCell;
 #[cfg(all(unix, target_arch = "aarch64"))]
@@ -51,12 +54,17 @@ use crate::compiled_unit::CompiledUnit;
 /// Marshal a VM `Value` into the flat-buffer `JitCValue` the native tier reads.
 ///
 /// Scalar ints, bools, and floats cross as themselves. An `Array` crosses as a
-/// read-only borrowed handle: an `OpaqueArray`-tagged slot whose `payload` is
-/// `value as *const Value`, a pointer the array helpers read but never mutate,
-/// free, or store. Every other value (strings, objects, references, null,
-/// uninitialized, …) becomes `Uninitialized`, so a region expecting a scalar or
-/// a different heap shape takes the interpreter side exit instead of
-/// misinterpreting a handle.
+/// read-only borrowed `OpaqueArray` handle and a `String` as a read-only borrowed
+/// `OpaqueString` handle — in both cases an opaque-tagged slot whose `payload` is
+/// `value as *const Value`, a pointer the helpers read but never mutate, free, or
+/// store. Every other value (objects, references, null, uninitialized, …) becomes
+/// `Uninitialized`, so a region expecting a scalar or a different heap shape takes
+/// the interpreter side exit instead of misinterpreting a handle.
+///
+/// The real (non-`Uninitialized`) tag is also exactly what the pure `is_*` type
+/// predicates read: `is_int` = `Int`, `is_bool` = `Bool`, `is_float` =
+/// `FloatBits`, `is_string` = `OpaqueString`, `is_array` = `OpaqueArray`; an
+/// `Uninitialized`-marshaled argument is ambiguous, so those stencils side-exit.
 ///
 /// SAFETY / POINTER-LIFETIME CONTRACT: the returned `JitCValue` may embed a raw
 /// pointer *into* `value`. The caller MUST keep the pointed-to `Value` alive and
@@ -65,10 +73,11 @@ use crate::compiled_unit::CompiledUnit;
 /// sites uphold this — [`run_scalar_int_region`] marshals pointers into an owned
 /// backing `Vec<Option<Value>>` that outlives the call, and
 /// [`NativeLeaf::run_outcome`] marshals pointers into the caller's `&[Value]`
-/// params slice, which likewise outlives the call. The only consumer of an
-/// `OpaqueArray` payload is the `count` stencil, whose helper
-/// ([`copy_patch_array_len_abi`]) performs a synchronous read-only length query
-/// with no mutation, free, or VM re-entry.
+/// params slice, which likewise outlives the call. The consumers of a borrowed
+/// handle payload are the `count`/`strlen` stencils, whose helpers
+/// ([`copy_patch_array_len_abi`] / [`copy_patch_strlen_abi`]) perform a
+/// synchronous read-only length query with no mutation, free, or VM re-entry (the
+/// `is_*` stencils never deref the payload at all — they only read the tag word).
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn marshal_local(value: &Value) -> JitCValue {
     match value {
@@ -79,6 +88,14 @@ fn marshal_local(value: &Value) -> JitCValue {
         // only for the synchronous native call (see the contract above).
         Value::Array(_) => JitCValue {
             tag: JitCValueTag::OpaqueArray,
+            reserved: 0,
+            payload: value as *const Value as u64,
+            aux: 0,
+        },
+        // Read-only borrowed string handle, same lifetime contract as the array
+        // handle above; the payload is read only for its byte length.
+        Value::String(_) => JitCValue {
+            tag: JitCValueTag::OpaqueString,
             reserved: 0,
             payload: value as *const Value as u64,
             aux: 0,
@@ -121,6 +138,46 @@ extern "C" fn copy_patch_array_len_abi(value_ptr: usize, out: *mut i64) -> i32 {
         *out = length;
     }
     php_runtime::PHP_JIT_ARRAY_STATUS_OK
+}
+
+/// C-ABI wrapper the `strlen` stencil `blr`s: read the borrowed `Value` at
+/// `value_ptr` and write its byte length through `out`. Mirrors
+/// [`copy_patch_array_len_abi`] (identical `extern "C" fn(usize, *mut i64) ->
+/// i32` shape) and the Cranelift `jit_strlen_known_abi`, so both native tiers
+/// reuse the one string-length primitive (`PhpString::len`, exactly what the
+/// `strlen` builtin returns) rather than re-implementing it. PHP `strlen` is a
+/// *byte* count (not a multibyte length), which is precisely `PhpString::len`.
+///
+/// Read-only and non-re-entrant: it only reads the borrowed value's byte length
+/// and never mutates, frees, or re-enters the VM. It returns a non-OK status (so
+/// the stencil side-exits to the interpreter) for a null pointer, a non-string
+/// value (the interpreter then applies `strlen`'s coercion/`TypeError`
+/// semantics), or a length that does not fit an `i64`. The bridge only marshals a
+/// genuine `Value::String` as `OpaqueString`, so the string-tag guard normally
+/// ensures a string reaches here; the type check is defense in depth.
+///
+/// SAFETY: `value_ptr` is the `payload` of an `OpaqueString` slot the bridge
+/// marshaled as `&Value as *const Value` into the live params/backing buffer, so
+/// it is a valid `Value` pointer for this synchronous call (see `marshal_local`).
+/// `out` is the stencil's stack out-slot, non-null and valid for the call.
+#[cfg(all(unix, target_arch = "aarch64"))]
+extern "C" fn copy_patch_strlen_abi(value_ptr: usize, out: *mut i64) -> i32 {
+    if value_ptr == 0 || out.is_null() {
+        return JIT_HELPER_STATUS_FALLBACK;
+    }
+    // SAFETY: a live, borrowed `Value` valid for this call (see the doc above).
+    let value = unsafe { &*(value_ptr as *const Value) };
+    let Value::String(string) = value else {
+        return JIT_HELPER_STATUS_FALLBACK;
+    };
+    let Ok(length) = i64::try_from(string.len()) else {
+        return JIT_HELPER_STATUS_FALLBACK;
+    };
+    // SAFETY: `out` is non-null and valid for this synchronous call (checked).
+    unsafe {
+        *out = length;
+    }
+    JIT_HELPER_STATUS_OK
 }
 
 /// Marshal a native result `JitCValue` back to a VM `Value`. Returns `None` for
@@ -219,11 +276,13 @@ pub fn copy_patch_leaf_enabled() -> bool {
 /// registry — the VM owns function-name resolution, so it (not `php_jit`)
 /// decides whether a call name is the real builtin.
 ///
-/// The builtin permissions today are `abs` and `count`. An unqualified `abs`
-/// (or `count`) call is the real builtin unless the unit defines a *global*
-/// function literally named that; PHP forbids redeclaring a builtin at global
-/// scope, so a shadow is only reachable via a namespace, where the call/registry
-/// name carries the namespace (`ns\abs`, `ns\count`) and never matches the bare
+/// The builtin permissions today are `abs`, `count`, `strlen`, and the canonical
+/// type predicates `is_int`/`is_string`/`is_array`/`is_float`/`is_bool`. An
+/// unqualified call to any of these is the real builtin unless the unit defines a
+/// *global* function literally named that; PHP forbids redeclaring a builtin at
+/// global scope, so a shadow is only reachable via a namespace, where the
+/// call/registry name carries the namespace (`ns\abs`, `ns\count`, `ns\strlen`,
+/// `ns\is_int`, …) and never matches the bare
 /// name the native path lowers. Checking the registry for a bare-name user
 /// function is therefore defense in depth, and mirrors the interpreter, which
 /// also resolves an unqualified builtin name to the builtin ahead of user
@@ -241,6 +300,12 @@ fn native_call_permits(unit: &CompiledUnit) -> php_jit::copy_patch::NativeCallPe
         // true — correctness does not depend on any registry check here.
         allow_userland_tailcall: true,
         builtin_count: unit.lookup_function("count").is_none(),
+        builtin_strlen: unit.lookup_function("strlen").is_none(),
+        builtin_is_int: unit.lookup_function("is_int").is_none(),
+        builtin_is_string: unit.lookup_function("is_string").is_none(),
+        builtin_is_array: unit.lookup_function("is_array").is_none(),
+        builtin_is_float: unit.lookup_function("is_float").is_none(),
+        builtin_is_bool: unit.lookup_function("is_bool").is_none(),
     }
 }
 
@@ -296,9 +361,11 @@ impl NativeLeaf {
         let permits = native_call_permits(unit);
         // Runtime-owned helper addresses `php_jit` cannot name itself (mirrors the
         // Cranelift `JitRuntimeHelperAddresses` plumbing). `count` reads array
-        // length through this wrapper over `php_runtime::php_jit_array_len`.
+        // length through the wrapper over `php_runtime::php_jit_array_len`, and
+        // `strlen` reads string byte length through its wrapper.
         let helpers = CopyPatchRuntimeHelpers {
             array_len: copy_patch_array_len_abi as *const () as usize as u64,
+            strlen: copy_patch_strlen_abi as *const () as usize as u64,
         };
         let compiled = php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
             target, constants, region_id, permits, helpers,
@@ -944,6 +1011,7 @@ mod tests {
         };
         let helpers = php_jit::copy_patch::CopyPatchRuntimeHelpers {
             array_len: super::copy_patch_array_len_abi as *const () as usize as u64,
+            strlen: super::copy_patch_strlen_abi as *const () as usize as u64,
         };
         php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
             &function,
@@ -1007,5 +1075,251 @@ mod tests {
             None,
             "a non-array argument side-exits at the tag guard"
         );
+    }
+
+    /// Build `function f($a): $ret { return $name($a); }` (the single-argument
+    /// builtin-leaf shape) and compile it with `permits` and the real
+    /// `copy_patch_array_len_abi`/`copy_patch_strlen_abi` helpers wired in.
+    fn single_arg_builtin_leaf_region(
+        call_name: &str,
+        param_type: Option<php_ir::IrReturnType>,
+        return_type: Option<php_ir::IrReturnType>,
+        permits: php_jit::copy_patch::NativeCallPermits,
+    ) -> php_jit::copy_patch::CompiledScalarRegion {
+        use php_ir::instruction::{IrCallArg, IrCallArgValueKind, TerminatorKind};
+        use php_ir::{
+            BasicBlock, BlockId, FunctionFlags, InstrId, Instruction, InstructionKind, IrParam,
+            IrSpan, Operand, RegId,
+        };
+
+        let span = IrSpan::default();
+        let function = php_ir::IrFunction {
+            name: "f".to_string(),
+            params: vec![IrParam {
+                name: "a".to_string(),
+                local: LocalId::new(0),
+                required: true,
+                default: None,
+                type_: param_type,
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            }],
+            locals: vec!["a".to_string()],
+            local_count: 1,
+            register_count: 2,
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                instructions: vec![
+                    Instruction {
+                        id: InstrId::new(0),
+                        span,
+                        kind: InstructionKind::LoadLocal {
+                            dst: RegId::new(1),
+                            local: LocalId::new(0),
+                        },
+                    },
+                    Instruction {
+                        id: InstrId::new(1),
+                        span,
+                        kind: InstructionKind::CallFunction {
+                            dst: RegId::new(0),
+                            name: call_name.to_string(),
+                            args: vec![IrCallArg {
+                                name: None,
+                                value: Operand::Register(RegId::new(1)),
+                                unpack: false,
+                                value_kind: IrCallArgValueKind::Direct,
+                                by_ref_local: Some(LocalId::new(0)),
+                                by_ref_dim: None,
+                                by_ref_property: None,
+                                by_ref_property_dim: None,
+                            }],
+                        },
+                    },
+                ],
+                terminator: Some(php_ir::Terminator {
+                    span,
+                    kind: TerminatorKind::Return {
+                        value: Some(Operand::Register(RegId::new(0))),
+                        by_ref_local: None,
+                    },
+                }),
+            }],
+            span,
+            flags: FunctionFlags::default(),
+            return_type,
+            returns_by_ref: false,
+            captures: Vec::new(),
+            attributes: Vec::new(),
+        };
+        let helpers = php_jit::copy_patch::CopyPatchRuntimeHelpers {
+            array_len: super::copy_patch_array_len_abi as *const () as usize as u64,
+            strlen: super::copy_patch_strlen_abi as *const () as usize as u64,
+        };
+        php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
+            &function,
+            &[],
+            1,
+            permits,
+            helpers,
+        )
+        .expect("single-arg builtin leaf compiles with the helpers wired in")
+    }
+
+    #[test]
+    fn strlen_stencil_runs_over_real_string_handles() {
+        let permits = php_jit::copy_patch::NativeCallPermits {
+            builtin_strlen: true,
+            ..php_jit::copy_patch::NativeCallPermits::default()
+        };
+        let compiled = single_arg_builtin_leaf_region(
+            "strlen",
+            None,
+            Some(php_ir::IrReturnType::Int),
+            permits,
+        );
+
+        // ASCII, empty, embedded-NUL, and multibyte-UTF-8 strings all measure
+        // their *byte* length natively (PHP strlen is a byte count): "héllo" is 6
+        // bytes (é is two UTF-8 bytes), not 5 characters.
+        for (bytes, expected) in [
+            (b"hello".to_vec(), 5_i64),
+            (Vec::new(), 0),
+            (b"a\0b".to_vec(), 3),
+            ("héllo".as_bytes().to_vec(), 6),
+        ] {
+            let mut locals = LocalFile::new(compiled.buffer_slots);
+            locals
+                .set(LocalId::new(0), Value::string(bytes.clone()))
+                .unwrap();
+            assert_eq!(
+                run_scalar_int_region(&compiled, &locals),
+                Some(Value::Int(expected)),
+                "strlen byte length runs natively for {bytes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strlen_stencil_side_exits_on_a_non_string() {
+        let permits = php_jit::copy_patch::NativeCallPermits {
+            builtin_strlen: true,
+            ..php_jit::copy_patch::NativeCallPermits::default()
+        };
+        let compiled = single_arg_builtin_leaf_region(
+            "strlen",
+            None,
+            Some(php_ir::IrReturnType::Int),
+            permits,
+        );
+        // A non-string local marshals as Int (or Uninitialized), tripping the
+        // string-tag guard, so the interpreter applies strlen's coercion/TypeError
+        // semantics instead.
+        let mut locals = LocalFile::new(compiled.buffer_slots);
+        locals.set(LocalId::new(0), Value::Int(123)).unwrap();
+        assert_eq!(
+            run_scalar_int_region(&compiled, &locals),
+            None,
+            "a non-string argument side-exits at the tag guard"
+        );
+    }
+
+    /// True when the canonical predicate `name` holds for `value` (the answer the
+    /// native tag check must reproduce for every definite-tag value).
+    fn predicate_holds(name: &str, value: &Value) -> bool {
+        match name {
+            "is_int" => matches!(value, Value::Int(_)),
+            "is_string" => matches!(value, Value::String(_)),
+            "is_array" => matches!(value, Value::Array(_)),
+            "is_float" => matches!(value, Value::Float(_)),
+            "is_bool" => matches!(value, Value::Bool(_)),
+            _ => unreachable!("unhandled predicate {name}"),
+        }
+    }
+
+    #[test]
+    fn is_type_stencils_answer_true_false_from_the_marshaled_tag() {
+        use php_jit::copy_patch::NativeCallPermits;
+
+        // Each predicate with only its own permit set.
+        let predicates: [(&str, NativeCallPermits); 5] = [
+            (
+                "is_int",
+                NativeCallPermits {
+                    builtin_is_int: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_string",
+                NativeCallPermits {
+                    builtin_is_string: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_array",
+                NativeCallPermits {
+                    builtin_is_array: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_float",
+                NativeCallPermits {
+                    builtin_is_float: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+            (
+                "is_bool",
+                NativeCallPermits {
+                    builtin_is_bool: true,
+                    ..NativeCallPermits::default()
+                },
+            ),
+        ];
+        // One value per definite category — every marshaled tag the stencil can
+        // observe (int, string, array, float, bool).
+        let definite = || {
+            vec![
+                Value::Int(7),
+                Value::string("hi"),
+                Value::packed_array(vec![Value::Int(1), Value::Int(2)]),
+                Value::Float(php_runtime::FloatValue::from_f64(1.5)),
+                Value::Bool(true),
+            ]
+        };
+
+        for (name, permits) in predicates {
+            let compiled = single_arg_builtin_leaf_region(
+                name,
+                None,
+                Some(php_ir::IrReturnType::Bool),
+                permits,
+            );
+
+            for value in definite() {
+                let expected = predicate_holds(name, &value);
+                let mut locals = LocalFile::new(compiled.buffer_slots);
+                locals.set(LocalId::new(0), value.clone()).unwrap();
+                assert_eq!(
+                    run_scalar_int_region(&compiled, &locals),
+                    Some(Value::Bool(expected)),
+                    "{name}({value:?}) must equal {expected} natively"
+                );
+            }
+
+            // An ambiguous argument (null, marshaled as Uninitialized) side-exits
+            // so the interpreter answers — it could be null/object/etc.
+            let mut locals = LocalFile::new(compiled.buffer_slots);
+            locals.set(LocalId::new(0), Value::Null).unwrap();
+            assert_eq!(
+                run_scalar_int_region(&compiled, &locals),
+                None,
+                "{name}(null) side-exits (Uninitialized is ambiguous)"
+            );
+        }
     }
 }
