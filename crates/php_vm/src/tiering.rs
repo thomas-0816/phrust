@@ -541,6 +541,7 @@ mod tests {
         });
         state.record_inline_cache(InlineCacheObservation {
             candidate: true,
+            seeded: false,
             slot_allocated: true,
             kind: None,
             hit: false,

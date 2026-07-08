@@ -1,14 +1,17 @@
 # Persistent Type Feedback and Invalidation
 
 FPE-20 adds the first engine-owned persistent feedback contract. Metadata is
-loaded, validated, and reported; validator-accepted quickening sites may also
-seed the next run's adaptive state. Consumption is governed by a dedicated
-policy (`--persistent-feedback-consume=off|quickening`,
+loaded, validated, and reported; validator-accepted quickening sites and
+monomorphic entry-unit function callsites may also seed the next run's
+adaptive state. Consumption is governed by a dedicated policy
+(`--persistent-feedback-consume=off|quickening|quickening-ics`,
 `PHRUST_PERSISTENT_FEEDBACK_CONSUME`) that is separate from reading, writing,
 and stats. The `php-vm run` default follows the sidecar default (consume on,
-like the bytecode cache); seeded sites always run behind the full runtime guard
-protocol, so a stale seed self-corrects through dequickening and never changes
-PHP-visible behavior.
+like the bytecode cache, in the full `quickening-ics` mode); seeded sites
+always run behind the full runtime guard protocol — quickening seeds
+self-correct through dequickening, and seeded IC entries validate name, arity
+shape, and observation epoch at the callsite before dispatch — so a stale
+seed never changes PHP-visible behavior.
 
 ## Key Model
 
@@ -139,8 +142,10 @@ seeded site is attributed via `persistent_feedback_seeded_guard_hits` /
   replay-stable identity: their targets carry request-local class IDs and
   dynamic-unit indexes; scalar/array/branch observations already travel with
   the quickening sub-field where specializations exist;
-- extend consumption from quickening to **inline-cache** templates and later
-  tiers, as additional `--persistent-feedback-consume` modes (the flag and the
-  seeded/dequickened attribution exist; IC seeding does not);
+- extend inline-cache seeding beyond monomorphic entry-unit function
+  callsites (consumed today under `quickening-ics`, attributed via
+  `persistent_feedback_seeded_callsites`/`_seeded_ic_hits`/
+  `_seeded_ic_invalidations`) to method/property templates and later tiers —
+  blocked on replay-stable class identity, as for payload persistence above;
 - add Composer map fingerprints when the autoload graph model is promoted from
   request-local runtime behavior into persistent engine metadata.

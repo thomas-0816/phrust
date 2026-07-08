@@ -438,6 +438,9 @@ pub struct VmCounters {
     pub persistent_feedback_seeded_sites: u64,
     pub persistent_feedback_seeded_guard_hits: u64,
     pub persistent_feedback_seeded_dequickens: u64,
+    pub persistent_feedback_seeded_callsites: u64,
+    pub persistent_feedback_seeded_ic_hits: u64,
+    pub persistent_feedback_seeded_ic_invalidations: u64,
     pub adaptive_tiny_unit_setup_skips: u64,
     pub native_candidates: u64,
     pub native_compiled_regions: u64,
@@ -2000,6 +2003,10 @@ impl VmCounters {
         self.persistent_feedback_seeded_sites += installed;
     }
 
+    pub(crate) fn record_persistent_feedback_seeded_callsites(&mut self, installed: u64) {
+        self.persistent_feedback_seeded_callsites += installed;
+    }
+
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
     pub(crate) fn record_jit_compile_attempt(&mut self) {
         self.jit_compile_attempts += 1;
@@ -2195,6 +2202,9 @@ impl VmCounters {
         }
         if observation.hit {
             self.inline_cache_hits += 1;
+            if observation.seeded {
+                self.persistent_feedback_seeded_ic_hits += 1;
+            }
             if observation.kind == Some(InlineCacheKind::MethodCall) {
                 self.method_ic_hits += 1;
                 if observation.polymorphic {
@@ -2252,6 +2262,9 @@ impl VmCounters {
         }
         if observation.invalidation {
             self.inline_cache_invalidations += 1;
+            if observation.seeded {
+                self.persistent_feedback_seeded_ic_invalidations += 1;
+            }
             if observation.kind == Some(InlineCacheKind::IncludePath) {
                 self.include_path_ic_invalidations += 1;
                 self.record_invalidation_by_reason("include_path_epoch_or_guard");
@@ -4079,6 +4092,24 @@ impl VmCounters {
             &mut json,
             "persistent_feedback_seeded_dequickens",
             self.persistent_feedback_seeded_dequickens,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_callsites",
+            self.persistent_feedback_seeded_callsites,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_ic_hits",
+            self.persistent_feedback_seeded_ic_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_ic_invalidations",
+            self.persistent_feedback_seeded_ic_invalidations,
             true,
         );
         push_field(

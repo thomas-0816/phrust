@@ -61,6 +61,11 @@ pub struct VmOptions {
     /// Advisory quickening sites exported by a prior run. Seeded sites keep
     /// the full guard/fallback protocol, so stale seeds self-correct.
     pub quickening_seed: Vec<QuickeningSiteSnapshot>,
+    /// Advisory monomorphic function-callsite IC sites exported by a prior
+    /// run. Seeded entries keep the full lookup guard protocol (name, arity
+    /// shape, and epoch validate at the callsite), so stale seeds invalidate
+    /// back to generic resolution.
+    pub callsite_seed: Vec<crate::inline_cache::FunctionCallSiteSnapshot>,
     /// Allocate request-local inline-cache slots without changing semantics.
     pub inline_caches: InlineCacheMode,
     /// Select the experimental performance JIT tier for eligible hot leaf functions.
@@ -128,6 +133,7 @@ impl Default for VmOptions {
             bytecode_layout_profile: None,
             quickening: QuickeningMode::Off,
             quickening_seed: Vec::new(),
+            callsite_seed: Vec::new(),
             inline_caches: InlineCacheMode::Off,
             jit: JitMode::Off,
             copy_patch_leaf_override: None,

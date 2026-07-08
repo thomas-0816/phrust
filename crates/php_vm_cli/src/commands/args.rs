@@ -263,6 +263,8 @@ pub(super) struct PersistentFeedbackOptions {
 pub(super) enum PersistentFeedbackConsumeMode {
     Off,
     Quickening,
+    /// Quickening plus monomorphic function-callsite inline-cache seeding.
+    QuickeningIcs,
 }
 
 impl PersistentFeedbackConsumeMode {
@@ -270,24 +272,31 @@ impl PersistentFeedbackConsumeMode {
         match self {
             Self::Off => "off",
             Self::Quickening => "quickening",
+            Self::QuickeningIcs => "quickening-ics",
         }
     }
 
     pub(super) const fn enabled(self) -> bool {
-        matches!(self, Self::Quickening)
+        matches!(self, Self::Quickening | Self::QuickeningIcs)
+    }
+
+    pub(super) const fn ics_enabled(self) -> bool {
+        matches!(self, Self::QuickeningIcs)
     }
 }
 
-/// Consumption follows the sidecar default (on, like the bytecode cache); the
-/// `PHRUST_PERSISTENT_FEEDBACK_CONSUME` environment variable overrides the
-/// default and the `--persistent-feedback-consume` flag overrides both.
-/// Unrecognized values keep the default so a typo cannot silently change the
-/// consumption policy.
+/// Consumption follows the sidecar default (on, like the bytecode cache, and
+/// covering both quickening and callsite-IC seeding — every seed runs behind
+/// the full runtime guard protocol); the `PHRUST_PERSISTENT_FEEDBACK_CONSUME`
+/// environment variable overrides the default and the
+/// `--persistent-feedback-consume` flag overrides both. Unrecognized values
+/// keep the default so a typo cannot silently change the consumption policy.
 impl Default for PersistentFeedbackConsumeMode {
     fn default() -> Self {
         match std::env::var("PHRUST_PERSISTENT_FEEDBACK_CONSUME").as_deref() {
             Ok("off") | Ok("0") | Ok("false") => Self::Off,
-            _ => Self::Quickening,
+            Ok("quickening") => Self::Quickening,
+            _ => Self::QuickeningIcs,
         }
     }
 }
@@ -1167,8 +1176,9 @@ pub(super) fn parse_persistent_feedback_consume_mode(
     match value {
         "off" => Ok(PersistentFeedbackConsumeMode::Off),
         "quickening" => Ok(PersistentFeedbackConsumeMode::Quickening),
+        "quickening-ics" => Ok(PersistentFeedbackConsumeMode::QuickeningIcs),
         _ => Err(format!(
-            "unsupported persistent-feedback-consume mode `{value}`; expected off or quickening"
+            "unsupported persistent-feedback-consume mode `{value}`; expected off, quickening, or quickening-ics"
         )),
     }
 }

@@ -2301,6 +2301,16 @@ impl Vm {
                 .seed_persistent_sites(&self.options.quickening_seed);
         }
         *self.inline_caches.borrow_mut() = InlineCacheTable::default();
+        let mut persistent_feedback_seeded_callsites = 0usize;
+        if self.options.inline_caches.enabled() && !self.options.callsite_seed.is_empty() {
+            persistent_feedback_seeded_callsites = self
+                .inline_caches
+                .borrow_mut()
+                .seed_persistent_function_callsites(
+                    compiled_unit_cache_key(&unit),
+                    &self.options.callsite_seed,
+                );
+        }
         *self.jit.borrow_mut() = JitRuntimeState::default();
         *self.tiering.borrow_mut() = TieringState::new(self.options.tiering.clone());
         self.internal_function_dispatch_cache.borrow_mut().clear();
@@ -2314,6 +2324,11 @@ impl Vm {
             if persistent_feedback_seeded_sites > 0 {
                 counters.record_persistent_feedback_seeded_sites(
                     persistent_feedback_seeded_sites as u64,
+                );
+            }
+            if persistent_feedback_seeded_callsites > 0 {
+                counters.record_persistent_feedback_seeded_callsites(
+                    persistent_feedback_seeded_callsites as u64,
                 );
             }
             counters

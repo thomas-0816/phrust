@@ -974,6 +974,9 @@ where
     if run_options.persistent_feedback.consume.enabled() {
         vm_options.quickening_seed = persistent_feedback.quickening_seed();
     }
+    if run_options.persistent_feedback.consume.ics_enabled() {
+        vm_options.callsite_seed = persistent_feedback.callsite_seed();
+    }
     let started = Instant::now();
     let executor = PhpExecutor::with_options(PhpExecutorOptions {
         optimization_level: run_options.opt_level,
@@ -1990,6 +1993,15 @@ impl PersistentFeedbackRuntime {
             .filter_map(|entry| entry.payload.quickening)
             .collect()
     }
+
+    fn callsite_seed(&self) -> Vec<FunctionCallSiteSnapshot> {
+        self.report
+            .store
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.payload.function_callsite.clone())
+            .collect()
+    }
 }
 
 /// Persistent feedback follows the bytecode cache by default: it reads and
@@ -2767,7 +2779,7 @@ fn region_profile_json_from_env() -> Option<String> {
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nCaching defaults:\n  run uses a read-write bytecode cache plus a persistent-feedback sidecar in the user cache directory,\n  and accepted feedback seeds quickening sites behind the full runtime guard protocol\n  (override dir: PHRUST_BYTECODE_CACHE_DIR; disable: PHRUST_BYTECODE_CACHE=off, PHRUST_PERSISTENT_FEEDBACK=off,\n  PHRUST_PERSISTENT_FEEDBACK_CONSUME=off; --engine-preset=baseline runs uncached)\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --last-use-moves off|on --reuse-class-context-frames off|on --dense-jump-threading off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-write <path> --persistent-feedback-consume off|quickening --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
+        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nCaching defaults:\n  run uses a read-write bytecode cache plus a persistent-feedback sidecar in the user cache directory,\n  and accepted feedback seeds quickening and monomorphic call-IC sites behind the full runtime guard protocol\n  (override dir: PHRUST_BYTECODE_CACHE_DIR; disable: PHRUST_BYTECODE_CACHE=off, PHRUST_PERSISTENT_FEEDBACK=off,\n  PHRUST_PERSISTENT_FEEDBACK_CONSUME=off; --engine-preset=baseline runs uncached)\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --last-use-moves off|on --reuse-class-context-frames off|on --dense-jump-threading off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-write <path> --persistent-feedback-consume off|quickening|quickening-ics --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
     )
     .map_err(|error| error.to_string())
 }
@@ -6085,7 +6097,7 @@ mod tests {
                 "run".to_string(),
                 "--persistent-feedback-read".to_string(),
                 feedback_path.display().to_string(),
-                "--persistent-feedback-consume=quickening".to_string(),
+                "--persistent-feedback-consume=quickening-ics".to_string(),
                 "--persistent-feedback-stats-json".to_string(),
                 stats_path.display().to_string(),
                 "--counters-json".to_string(),
@@ -6104,7 +6116,7 @@ mod tests {
         assert!(json.contains("\"rejected_corrupt\": 0"));
         assert!(json.contains("\"fallback_to_baseline\": false"));
         assert!(json.contains("\"advisory_only\": false"));
-        assert!(json.contains("\"consume_mode\": \"quickening\""));
+        assert!(json.contains("\"consume_mode\": \"quickening-ics\""));
         let accepted: u64 = json
             .lines()
             .find_map(|line| {
@@ -6127,6 +6139,20 @@ mod tests {
             })
             .expect("persistent_feedback_seeded_sites present");
         assert!(seeded > 0, "expected seeded sites, got: {counters}");
+        let seeded_callsites: u64 = counters
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("\"persistent_feedback_seeded_callsites\": ")?
+                    .trim_end_matches(',')
+                    .parse()
+                    .ok()
+            })
+            .expect("persistent_feedback_seeded_callsites present");
+        assert!(
+            seeded_callsites > 0,
+            "expected seeded callsites, got: {counters}"
+        );
 
         // Consumption off: the sidecar still validates and reports, but the
         // VM starts cold and no seeded-site attribution appears.
@@ -6159,6 +6185,7 @@ mod tests {
         assert!(json.contains("\"advisory_only\": true"));
         assert!(json.contains("\"consume_mode\": \"off\""));
         assert!(counters.contains("\"persistent_feedback_seeded_sites\": 0"));
+        assert!(counters.contains("\"persistent_feedback_seeded_callsites\": 0"));
     }
 
     #[test]
