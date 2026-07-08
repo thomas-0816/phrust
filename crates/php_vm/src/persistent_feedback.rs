@@ -15,6 +15,11 @@ use crate::quickening::{
 /// Stable line-format header for advisory persistent feedback files.
 pub const PERSISTENT_FEEDBACK_FORMAT_VERSION: &str = "phrust-persistent-feedback-v1";
 
+/// Upper bound on a persisted callsite's argument count. Real PHP signatures
+/// never approach this; the cap only stops a corrupt/tampered sidecar from
+/// forcing a large allocation when the seeder materializes the by-ref shape.
+pub const MAX_PERSISTED_CALL_ARITY: u32 = 4096;
+
 /// JSON/report schema version for persistent feedback stats.
 ///
 /// v2 splits the collapsed `rejected_stale` counter into explicit
@@ -834,14 +839,22 @@ fn parse_function_callsite(
     if fields.get("site").copied() != Some("ic_function_call") {
         return Ok(None);
     }
+    // Parse the u32-range fields strictly: an out-of-range value is corrupt,
+    // never silently truncated into a different valid id. `arity` is
+    // additionally capped so a corrupt entry cannot force a huge allocation
+    // when the seeder builds the by-ref shape vector.
+    let arity = parse_u32(required(fields, "call_arity")?)?;
+    if arity > MAX_PERSISTED_CALL_ARITY {
+        return Err(PersistentFeedbackRejectReason::Corrupt);
+    }
     Ok(Some(crate::inline_cache::FunctionCallSiteSnapshot {
         function: function_id,
-        block: parse_u64(required(fields, "ic_block")?)? as u32,
+        block: parse_u32(required(fields, "ic_block")?)?,
         instruction: instruction_id,
         lowered_name: required(fields, "call_name")?.to_owned(),
-        arity: parse_u64(required(fields, "call_arity")?)? as u32,
+        arity,
         epoch: parse_u64(required(fields, "call_site_epoch")?)?,
-        target_function: parse_u64(required(fields, "call_target_function")?)? as u32,
+        target_function: parse_u32(required(fields, "call_target_function")?)?,
     }))
 }
 
@@ -1124,6 +1137,44 @@ mod tests {
         assert_eq!(report.stats.entries_accepted, 1, "{:?}", report.stats);
         let entry = &report.store.entries()[0];
         assert_eq!(entry.payload.function_callsite.as_ref(), Some(&callsite));
+    }
+
+    #[test]
+    fn function_callsite_out_of_range_or_huge_arity_is_rejected_not_truncated() {
+        // A u32-overflowing target id must reject as corrupt, never wrap into
+        // a different valid function id.
+        let overflow = text_with_callsite_field("call_target_function", "4294967305");
+        let report = context().validate_bytes(overflow.as_bytes());
+        assert_eq!(report.stats.entries_accepted, 0, "{:?}", report.stats);
+        assert_eq!(report.stats.rejected_corrupt, 1);
+
+        // An absurd arity must reject rather than survive to force a huge
+        // allocation in the seeder.
+        let huge_arity = text_with_callsite_field("call_arity", "4294967295");
+        let report = context().validate_bytes(huge_arity.as_bytes());
+        assert_eq!(report.stats.entries_accepted, 0, "{:?}", report.stats);
+        assert_eq!(report.stats.rejected_corrupt, 1);
+    }
+
+    fn text_with_callsite_field(field: &str, value: &str) -> String {
+        let callsite = crate::inline_cache::FunctionCallSiteSnapshot {
+            function: 0,
+            block: 2,
+            instruction: 7,
+            lowered_name: "probe".to_owned(),
+            arity: 7,
+            epoch: 1,
+            target_function: 3,
+        };
+        let (text, _) = context().render_feedback_counted(&[], std::slice::from_ref(&callsite));
+        let base = match field {
+            "call_arity" => "call_arity=7",
+            "call_target_function" => "call_target_function=3",
+            other => panic!("unhandled field {other}"),
+        };
+        let replaced = text.replacen(base, &format!("{field}={value}"), 1);
+        assert_ne!(replaced, text, "field {field} not found to replace");
+        replaced
     }
 
     #[test]

@@ -1132,18 +1132,31 @@ impl InlineCacheTable {
 
     /// Seeds monomorphic function-call IC sites exported by a prior run.
     ///
-    /// Seeded entries enter already installed but behind the **full lookup
-    /// guard protocol**: name, arity shape, and observation epoch must all
-    /// match at the callsite before a seeded target is used, and any mismatch
-    /// invalidates back to the generic resolution path. Already-touched slots
-    /// are skipped; the returned count reflects seeds that took effect.
+    /// `target_resolves` re-derives the seed's soundness against the current
+    /// entry unit: it must return true only when the recorded target function
+    /// exists and is the one the recorded call name resolves to *now*. This
+    /// closes the gap that the lookup guard cannot — the guard matches
+    /// name/arity/epoch but never re-resolves name→target, so a seed whose
+    /// recorded target no longer matches the name (a namespace-fallback call
+    /// whose namespaced definition now exists, a tampered target id, or an
+    /// out-of-range id) would otherwise dispatch the wrong function. Rejected
+    /// seeds never create a slot or intern a name.
+    ///
+    /// Seeded entries that pass still run behind the **full lookup guard
+    /// protocol**: name, arity shape, and observation epoch must all match at
+    /// the callsite. Already-touched slots are skipped; the returned count
+    /// reflects seeds that took effect.
     pub fn seed_persistent_function_callsites(
         &mut self,
         entry_unit_key: u64,
         sites: &[FunctionCallSiteSnapshot],
+        target_resolves: impl Fn(&FunctionCallSiteSnapshot) -> bool,
     ) -> usize {
         let mut seeded = 0usize;
         for site in sites {
+            if !target_resolves(site) {
+                continue;
+            }
             let function = FunctionId::new(site.function);
             let block = BlockId::new(site.block);
             let instruction = InstrId::new(site.instruction);
@@ -3691,6 +3704,45 @@ mod tests {
     }
 
     #[test]
+    fn seed_rejects_callsites_whose_target_no_longer_resolves() {
+        let mut table = InlineCacheTable::default();
+        let snapshot = FunctionCallSiteSnapshot {
+            function: 0,
+            block: 2,
+            instruction: 7,
+            lowered_name: "app\\f".to_owned(),
+            arity: 0,
+            epoch: 1,
+            target_function: 5,
+        };
+        // Target resolution fails (e.g. the recorded global-f target no longer
+        // matches the namespaced call name, or the id is out of range): no
+        // slot is created, so a later lookup misses instead of dispatching the
+        // wrong function.
+        assert_eq!(
+            table.seed_persistent_function_callsites(1, std::slice::from_ref(&snapshot), |_| false),
+            0
+        );
+        let name = PhpString::intern(b"app\\f");
+        let shape = FunctionCallShape {
+            arity: 0,
+            named_arguments: Vec::new(),
+            by_ref_arguments: Vec::new(),
+        };
+        let (target, _) = table.lookup_function_call(
+            1,
+            FunctionId::new(0),
+            BlockId::new(2),
+            InstrId::new(7),
+            &name,
+            InvalidationEpoch::new(1),
+            &shape,
+            None,
+        );
+        assert!(target.is_none(), "rejected seed must not install a target");
+    }
+
+    #[test]
     fn seeded_function_callsites_hit_behind_the_full_guard_protocol() {
         let mut table = InlineCacheTable::default();
         let snapshot = FunctionCallSiteSnapshot {
@@ -3702,7 +3754,12 @@ mod tests {
             epoch: 3,
             target_function: 9,
         };
-        assert_eq!(table.seed_persistent_function_callsites(42, &[snapshot]), 1);
+        // This test exercises the lookup guard protocol, not target
+        // resolution, so accept the seed unconditionally.
+        assert_eq!(
+            table.seed_persistent_function_callsites(42, &[snapshot], |_| true),
+            1
+        );
 
         let name = PhpString::intern(b"probe_tag");
         let shape = FunctionCallShape {

@@ -2303,12 +2303,27 @@ impl Vm {
         *self.inline_caches.borrow_mut() = InlineCacheTable::default();
         let mut persistent_feedback_seeded_callsites = 0usize;
         if self.options.inline_caches.enabled() && !self.options.callsite_seed.is_empty() {
+            // Only seed a callsite whose recorded target function still exists
+            // in this unit and whose normalized name equals the recorded call
+            // name. The lookup guard matches name/arity/epoch but never
+            // re-resolves name→target, so this is the one place a seed with a
+            // stale or tampered (name, target) pair — including a
+            // namespace-fallback call whose namespaced definition now exists —
+            // is rejected before it can dispatch the wrong function.
+            let entry_functions = &unit.unit().functions;
             persistent_feedback_seeded_callsites = self
                 .inline_caches
                 .borrow_mut()
                 .seed_persistent_function_callsites(
                     compiled_unit_cache_key(&unit),
                     &self.options.callsite_seed,
+                    |site| {
+                        entry_functions
+                            .get(site.target_function as usize)
+                            .is_some_and(|function| {
+                                normalize_function_name(&function.name) == site.lowered_name
+                            })
+                    },
                 );
         }
         *self.jit.borrow_mut() = JitRuntimeState::default();
