@@ -1282,12 +1282,7 @@ fn unix_file_identity(_metadata: Option<&fs::Metadata>) -> (Option<u64>, Option<
 }
 
 fn stable_hash_hex(bytes: &[u8]) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    format!("{:016x}", crate::include::fnv1a_64(bytes))
 }
 
 fn push_json_map_u64(

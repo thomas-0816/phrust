@@ -10,16 +10,20 @@ name = "phrust-server"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 bytes = "1"
 futures-util = "0.3"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
 http-body-util = "0.1"
 httpdate = "1"
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["http1", "server", "tokio"] }
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
 php_executor = { path = "../php_executor", version = "0.0.0" }
 php_diagnostics = { path = "../php_diagnostics", version = "0.0.0" }
 php_runtime = { path = "../php_runtime", version = "0.0.0" }
 php_vm = { path = "../php_vm", version = "0.0.0" }
+quinn = "0.11"
 rustls-pki-types = { version = "1", features = ["std"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

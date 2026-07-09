@@ -14,6 +14,11 @@ cargo test -p php_vm --features jit-cranelift jit_
 cargo test -p php_vm_cli
 cargo build -p php_vm_cli --bin php-vm --features jit-cranelift
 
+# This smoke proves the Cranelift tier specifically compiles and executes the
+# int leaf. The copy-patch leaf tier (default-on) would otherwise claim the
+# leaf before Cranelift tiering ever sees it, so isolate it for these runs.
+export PHRUST_JIT_COPY_PATCH=0
+
 "$VM" run --jit=off "$FIXTURES_DIR/int-leaf-hot-loop.php" >"$OUT_DIR/jit-off.out"
 "$VM" run --exec-format=ir --jit=cranelift --counters-json "$OUT_DIR/jit-cranelift-counters.json" "$FIXTURES_DIR/int-leaf-hot-loop.php" >"$OUT_DIR/jit-cranelift.out"
 diff -u "$OUT_DIR/jit-off.out" "$OUT_DIR/jit-cranelift.out"

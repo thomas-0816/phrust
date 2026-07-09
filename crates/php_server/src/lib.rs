@@ -9,6 +9,7 @@
 mod access_log;
 pub mod config;
 mod diagnostics;
+mod http3;
 mod metrics;
 mod multipart;
 mod perf_trace;

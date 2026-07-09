@@ -16,6 +16,14 @@
 //! so the marshal-in / marshal-out ABI is proven end-to-end, and it stays inert
 //! unless both the `jit-copy-patch` feature and a caller opt in.
 
+// This is php_vm's single sanctioned native-execution boundary: marshaling
+// raw `Value`/metadata pointers across the JIT ABI and calling emitted machine
+// code are irreducibly `unsafe`, each guarded by a local `// SAFETY:`
+// contract. The `runtime-hardening-lints` gate denies `unsafe` across the
+// interpreter core; scope the exemption to this one module so the invariant
+// still holds for the rest of php_vm.
+#![allow(unsafe_code)]
+
 use std::sync::OnceLock;
 
 use php_jit::copy_patch::CompiledScalarRegion;

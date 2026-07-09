@@ -61,11 +61,22 @@ pub struct VmOptions {
     /// Advisory quickening sites exported by a prior run. Seeded sites keep
     /// the full guard/fallback protocol, so stale seeds self-correct.
     pub quickening_seed: Vec<QuickeningSiteSnapshot>,
+    /// Advisory monomorphic function-callsite IC sites exported by a prior
+    /// run. Seeded entries keep the full lookup guard protocol (name, arity
+    /// shape, and epoch validate at the callsite), so stale seeds invalidate
+    /// back to generic resolution.
+    pub callsite_seed: Vec<crate::inline_cache::FunctionCallSiteSnapshot>,
     /// Allocate request-local inline-cache slots without changing semantics.
     pub inline_caches: InlineCacheMode,
     /// Select the experimental performance JIT tier for eligible hot leaf functions.
     /// Unsupported builds or ineligible functions stay on managed VM paths.
     pub jit: JitMode,
+    /// Per-VM override for the copy-and-patch native leaf tier. `None` follows
+    /// the process default (`PHRUST_JIT_COPY_PATCH`, on by default). The tier
+    /// runs before dense dispatch and tiering, so tests or harnesses isolating
+    /// the Cranelift/interpreter paths must set `Some(false)` — the process env
+    /// gate is latched once and cannot be toggled per VM.
+    pub copy_patch_leaf_override: Option<bool>,
     /// Hot-call threshold requested by the CLI for JIT compilation.
     pub jit_threshold: u64,
     /// Process-local JIT blacklist policy.
@@ -122,8 +133,10 @@ impl Default for VmOptions {
             bytecode_layout_profile: None,
             quickening: QuickeningMode::Off,
             quickening_seed: Vec::new(),
+            callsite_seed: Vec::new(),
             inline_caches: InlineCacheMode::Off,
             jit: JitMode::Off,
+            copy_patch_leaf_override: None,
             jit_threshold: TieringOptions::default().function_entry_threshold,
             jit_blacklist: JitBlacklistMode::On,
             jit_dump_clif: None,

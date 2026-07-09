@@ -102,8 +102,11 @@ pub struct RuntimeHttpRequestContext {
     pub scheme: String,
     pub host: String,
     pub server_name: String,
+    pub server_addr: String,
     pub server_port: u16,
     pub server_protocol: String,
+    pub server_software: String,
+    pub gateway_interface: String,
     pub https: bool,
     pub request_uri: String,
     pub path: String,
@@ -114,6 +117,11 @@ pub struct RuntimeHttpRequestContext {
     pub document_root: String,
     pub path_info: Option<String>,
     pub remote_addr: String,
+    pub remote_port: Option<u16>,
+    pub auth_type: Option<String>,
+    pub remote_user: Option<String>,
+    pub php_auth_user: Option<String>,
+    pub php_auth_pw: Option<String>,
     pub request_time: i64,
     pub request_time_float_micros: i64,
     pub headers: Vec<(String, String)>,
@@ -313,9 +321,12 @@ impl RuntimeHttpRequestContext {
             method: method.into(),
             scheme: "http".to_string(),
             server_name: server_name_from_host(&host),
+            server_addr: String::new(),
             host,
             server_port: 80,
             server_protocol: "HTTP/1.1".to_string(),
+            server_software: "phrust-server".to_string(),
+            gateway_interface: "CGI/1.1".to_string(),
             https: false,
             request_uri,
             path,
@@ -326,6 +337,11 @@ impl RuntimeHttpRequestContext {
             document_root: document_root.into(),
             path_info: None,
             remote_addr: String::new(),
+            remote_port: None,
+            auth_type: None,
+            remote_user: None,
+            php_auth_user: None,
+            php_auth_pw: None,
             request_time: 0,
             request_time_float_micros: 0,
             headers: Vec::new(),
@@ -896,8 +912,11 @@ fn http_server_array(request: &RuntimeHttpRequestContext) -> PhpArray {
     insert_string(&mut array, "REQUEST_SCHEME", &request.scheme);
     insert_string(&mut array, "HTTP_HOST", &request.host);
     insert_string(&mut array, "SERVER_NAME", &request.server_name);
+    insert_string(&mut array, "SERVER_ADDR", &request.server_addr);
     insert_string(&mut array, "SERVER_PORT", &request.server_port.to_string());
     insert_string(&mut array, "SERVER_PROTOCOL", &request.server_protocol);
+    insert_string(&mut array, "SERVER_SOFTWARE", &request.server_software);
+    insert_string(&mut array, "GATEWAY_INTERFACE", &request.gateway_interface);
     insert_string(
         &mut array,
         "HTTPS",
@@ -911,6 +930,21 @@ fn http_server_array(request: &RuntimeHttpRequestContext) -> PhpArray {
     insert_string(&mut array, "DOCUMENT_ROOT", &request.document_root);
     insert_string(&mut array, "QUERY_STRING", &request.query_string);
     insert_string(&mut array, "REMOTE_ADDR", &request.remote_addr);
+    if let Some(remote_port) = request.remote_port {
+        insert_string(&mut array, "REMOTE_PORT", &remote_port.to_string());
+    }
+    if let Some(auth_type) = &request.auth_type {
+        insert_string(&mut array, "AUTH_TYPE", auth_type);
+    }
+    if let Some(remote_user) = &request.remote_user {
+        insert_string(&mut array, "REMOTE_USER", remote_user);
+    }
+    if let Some(user) = &request.php_auth_user {
+        insert_string(&mut array, "PHP_AUTH_USER", user);
+    }
+    if let Some(password) = &request.php_auth_pw {
+        insert_string(&mut array, "PHP_AUTH_PW", password);
+    }
     array.insert(string_key("REQUEST_TIME"), Value::Int(request.request_time));
     array.insert(
         string_key("REQUEST_TIME_FLOAT"),
@@ -1571,8 +1605,11 @@ mod tests {
         assert_string(&server, "REQUEST_SCHEME", "http");
         assert_string(&server, "HTTP_HOST", "example.test");
         assert_string(&server, "SERVER_NAME", "example.test");
+        assert_string(&server, "SERVER_ADDR", "127.0.0.1");
         assert_string(&server, "SERVER_PORT", "8080");
         assert_string(&server, "SERVER_PROTOCOL", "HTTP/1.1");
+        assert_string(&server, "SERVER_SOFTWARE", "phrust-server");
+        assert_string(&server, "GATEWAY_INTERFACE", "CGI/1.1");
         assert_string(&server, "HTTPS", "off");
         assert_string(&server, "REQUEST_URI", "/submit.php?name=phrust");
         assert_string(&server, "SCRIPT_NAME", "/submit.php");
@@ -1582,6 +1619,11 @@ mod tests {
         assert_string(&server, "PATH_INFO", "/extra");
         assert_string(&server, "QUERY_STRING", "name=phrust");
         assert_string(&server, "REMOTE_ADDR", "127.0.0.1");
+        assert_string(&server, "REMOTE_PORT", "50123");
+        assert_string(&server, "AUTH_TYPE", "Basic");
+        assert_string(&server, "REMOTE_USER", "alice");
+        assert_string(&server, "PHP_AUTH_USER", "alice");
+        assert_string(&server, "PHP_AUTH_PW", "s3cret");
         assert_string(&server, "CONTENT_TYPE", "application/x-www-form-urlencoded");
         assert_string(&server, "CONTENT_LENGTH", "7");
         assert_string(&server, "HTTP_X_TEST_HEADER", "yes");
@@ -1968,9 +2010,15 @@ mod tests {
             "/srv/app",
         );
         request.server_port = 8080;
+        request.server_addr = "127.0.0.1".to_string();
         request.path_info = Some("/extra".to_string());
         request.php_self = "/submit.php/extra".to_string();
         request.remote_addr = "127.0.0.1".to_string();
+        request.remote_port = Some(50123);
+        request.auth_type = Some("Basic".to_string());
+        request.remote_user = Some("alice".to_string());
+        request.php_auth_user = Some("alice".to_string());
+        request.php_auth_pw = Some("s3cret".to_string());
         request.request_time = 123;
         request.request_time_float_micros = 123_456_789;
         request.content_type = Some("application/x-www-form-urlencoded".to_string());

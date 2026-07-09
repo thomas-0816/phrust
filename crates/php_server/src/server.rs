@@ -1,6 +1,7 @@
 use crate::{
     access_log::AccessLogger,
     config::{ConfigError, ServerConfig},
+    http3::build_http3_endpoint,
     metrics::ServerMetrics,
     multipart::MultipartConfig,
     routing::RouteConfig,
@@ -13,7 +14,7 @@ use php_diagnostics::{
     DiagnosticCause, DiagnosticEnvelope, DiagnosticLayer, DiagnosticPhase, DiagnosticSeverity,
     DiagnosticSuggestion,
 };
-use php_executor::{CompiledScriptCache, IncludeCache};
+use php_executor::{CompiledScriptCache, DeploymentRootFingerprint, IncludeCache};
 use std::{
     collections::BTreeMap,
     fmt,
@@ -133,8 +134,30 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let startup_perf_trace = config.perf_trace.clone();
     let startup_request_profile = config.request_profile.clone();
     let startup_tls_enabled = config.tls_cert.is_some();
+    let startup_http3_enabled = config.http3_enabled;
+    let http3_listen = config.http3_listen.unwrap_or(local_addr);
     let engine_profile = config.engine_preset;
     let tls_acceptor = build_tls_acceptor(config.tls_cert.as_deref(), config.tls_key.as_deref())?;
+    let http3_endpoint = if config.http3_enabled {
+        let cert_path = config.tls_cert.as_deref().ok_or_else(|| {
+            ConfigError::new(
+                "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3",
+            )
+        })?;
+        let key_path = config.tls_key.as_deref().ok_or_else(|| {
+            ConfigError::new(
+                "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3",
+            )
+        })?;
+        Some(build_http3_endpoint(cert_path, key_path, http3_listen)?)
+    } else {
+        None
+    };
+    let http3_local_addr = http3_endpoint
+        .as_ref()
+        .map(|endpoint| endpoint.local_addr())
+        .transpose()?;
+    let http3_alt_svc = http3_local_addr.map(|addr| format!("h3=\":{}\"; ma=86400", addr.port()));
     let access_log = config
         .access_log
         .as_deref()
@@ -160,7 +183,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
     let startup_scheme = if startup_tls_enabled { "https" } else { "http" };
     println!("listening {startup_scheme}://{local_addr}");
     eprintln!(
-        "startup docroot={} front_controller={} engine_preset={} script_cache={} script_cache_shards={} script_cache_max_entries={} upload_temp_dir={} session_save_path={} metrics_endpoint={} metrics_token={} access_log={} perf_trace={} request_profile={} tls={} tls_alpn={}",
+        "startup docroot={} front_controller={} engine_preset={} script_cache={} script_cache_shards={} script_cache_max_entries={} upload_temp_dir={} session_save_path={} metrics_endpoint={} metrics_token={} access_log={} perf_trace={} request_profile={} tls={} tls_alpn={} http3={} http3_addr={}",
         docroot.display(),
         startup_front_controller
             .as_ref()
@@ -181,7 +204,15 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             .as_ref()
             .map_or("-", |path| path.to_str().unwrap_or("<non-utf8>")),
         startup_tls_enabled,
-        if startup_tls_enabled { "http/1.1" } else { "-" },
+        if startup_tls_enabled {
+            "h2,http/1.1"
+        } else {
+            "-"
+        },
+        startup_http3_enabled,
+        http3_local_addr
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "-".to_string()),
     );
     debug!(%local_addr, docroot=%docroot.display(), "starting phrust server");
     let script_cache = Arc::new(if config.script_cache_enabled {
@@ -194,6 +225,13 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         CompiledScriptCache::disabled()
     });
     let include_cache = Arc::new(IncludeCache::new(config.script_cache_shards));
+    // Deployment-root fingerprint: metadata + counters only. A root that
+    // cannot be observed counts as `deployment_fingerprint_missing` and keeps
+    // every fingerprint-gated persistent reuse blocked.
+    include_cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+        &docroot,
+        config.deployment_mode,
+    ));
     let engine = Arc::new(ServerEngineState::new(
         engine_profile,
         config.max_vm_steps,
@@ -248,9 +286,10 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         session_store,
         local_addr,
         request_scheme: if startup_tls_enabled { "https" } else { "http" },
+        http3_alt_svc,
     });
     preload_script_cache(&state, script_cache_preload.as_deref(), strict_preload)?;
-    serve_until_shutdown(listener, state, tls_acceptor).await;
+    serve_until_shutdown(listener, state, tls_acceptor, http3_endpoint).await;
     Ok(())
 }
 
@@ -269,9 +308,9 @@ mod tests {
         config::ServerPerfAblation,
         perf_trace::{PerfTraceEvent, PerfTraceWriter},
         php_request::{
-            RequestCounterMode, append_vm_counters_to_trace, execute_compiled_php_with_state,
-            http_runtime_context, php_runtime_context_for_http, request_counter_mode,
-            server_env_for_request,
+            RequestCounterMode, RequestLocalAddr, append_vm_counters_to_trace,
+            execute_compiled_php_with_state, http_runtime_context, php_output_response,
+            php_runtime_context_for_http, request_counter_mode, server_env_for_request,
         },
         request_profile::RequestProfileWriter,
         routing::RequestRewriteRule,
@@ -279,15 +318,23 @@ mod tests {
         static_files::{
             ByteRange, RangeParseError, accepts_encoding, parse_single_byte_range, weak_etag,
         },
-        tls::{load_tls_certs, load_tls_private_key},
+        tls::{
+            build_quic_server_config, http3_alpn_protocols, load_tls_certs, load_tls_private_key,
+            tls_alpn_protocols,
+        },
     };
     use hyper::{
         Request, StatusCode, header,
         http::{HeaderMap, HeaderValue},
     };
     use php_diagnostics::DiagnosticOutputFormat;
-    use php_executor::{EngineProfileName, IncludeLoader, OptimizationLevel, PhpExecutionStatus};
-    use php_runtime::api::{RuntimeContext, RuntimeHttpRequestContext, SessionState};
+    use php_executor::{
+        EngineProfileName, IncludeLoader, OptimizationLevel, PhpExecutionOutput, PhpExecutionStatus,
+    };
+    use php_runtime::api::{
+        RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionState,
+        UploadRegistry,
+    };
     use php_vm::api::{
         DenseIncludeMode, DenseJumpThreadingMode, InlineCacheMode, JitMode, QuickeningMode,
     };
@@ -818,6 +865,7 @@ mod tests {
             .method("GET")
             .uri("/index.php?name=phrust")
             .header(header::HOST, "example.test:8443")
+            .header(header::AUTHORIZATION, "Basic YWxpY2U6czNjcmV0")
             .body(())
             .expect("request")
             .into_parts();
@@ -835,12 +883,48 @@ mod tests {
         assert_eq!(context.scheme, "https");
         assert_eq!(context.host, "example.test:8443");
         assert_eq!(context.server_name, "example.test");
+        assert_eq!(context.server_addr, "127.0.0.1");
         assert_eq!(context.server_port, 8443);
         assert!(context.https);
         assert_eq!(context.remote_addr, "192.0.2.44");
+        assert_eq!(context.remote_port, Some(50123));
+        assert_eq!(context.auth_type.as_deref(), Some("Basic"));
+        assert_eq!(context.remote_user.as_deref(), Some("alice"));
+        assert_eq!(context.php_auth_user.as_deref(), Some("alice"));
+        assert_eq!(context.php_auth_pw.as_deref(), Some("s3cret"));
         assert_eq!(context.request_uri, "/index.php?name=phrust");
         assert!(context.request_time > 0);
         assert!(context.request_time_float_micros >= context.request_time * 1_000_000);
+    }
+
+    #[test]
+    fn http_runtime_context_uses_request_local_addr_override() {
+        let fixture = ServerCacheFixture::new();
+        let state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        let script_path = fixture.write_named("index.php", "<?php echo 'ok';");
+        let (mut parts, _) = Request::builder()
+            .method("GET")
+            .uri("/index.php")
+            .header(header::HOST, "example.test")
+            .body(())
+            .expect("request")
+            .into_parts();
+        parts.extensions.insert(RequestLocalAddr(
+            "127.0.0.1:9443".parse().expect("local addr"),
+        ));
+
+        let context = http_runtime_context(
+            &parts,
+            &state,
+            &script_path,
+            "/index.php",
+            None,
+            Arc::from(&b""[..]),
+            "192.0.2.44:50123".parse().expect("peer addr"),
+        );
+
+        assert_eq!(context.server_addr, "127.0.0.1");
+        assert_eq!(context.server_port, 9443);
     }
 
     #[test]
@@ -887,17 +971,58 @@ mod tests {
     }
 
     #[test]
+    fn php_success_response_uses_streaming_transport_without_content_length_for_h2() {
+        let response = php_output_response(
+            PhpExecutionOutput {
+                stdout: b"stream me".to_vec(),
+                diagnostics_text: String::new(),
+                diagnostics: Vec::new(),
+                status: PhpExecutionStatus::Success,
+                runtime_diagnostics: Vec::new(),
+                http_response: RuntimeHttpResponseState::default(),
+                upload_registry: UploadRegistry::default(),
+                session: SessionState::default(),
+                return_value: None,
+                trace: Vec::new(),
+                counters: None,
+                tiering_stats: None,
+                quickening_feedback: Vec::new(),
+                callsite_feedback: Vec::new(),
+                persistent_feedback_epochs: None,
+            },
+            false,
+            hyper::Version::HTTP_2,
+        );
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some(crate::php_request::PHP_CONTENT_TYPE)
+        );
+    }
+
+    #[test]
     fn tls_fixture_cert_and_key_load() {
         let cert = tls_fixture("localhost.crt");
         let key = tls_fixture("localhost.key");
 
         assert_eq!(load_tls_certs(&cert).expect("load cert").len(), 1);
         assert!(load_tls_private_key(&key).is_ok());
+        assert_eq!(
+            tls_alpn_protocols(),
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+        assert_eq!(http3_alpn_protocols(), vec![b"h3".to_vec()]);
         assert!(
             build_tls_acceptor(Some(&cert), Some(&key))
                 .expect("build acceptor")
                 .is_some()
         );
+        build_quic_server_config(&cert, &key).expect("build QUIC server config");
     }
 
     fn test_state(
@@ -956,6 +1081,7 @@ mod tests {
             session_store: Arc::new(SessionStore::new(fixture.root.join("sessions"))),
             local_addr: "127.0.0.1:8080".parse().expect("local addr"),
             request_scheme: "http",
+            http3_alt_svc: None,
         }
     }
 

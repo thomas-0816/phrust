@@ -1061,6 +1061,10 @@ struct ExecutionState {
     autoload_registry: AutoloadRegistry,
     autoload_stack: Vec<String>,
     spl_autoload_extensions: String,
+    /// Composer autoload-map fingerprint observed once per request on first
+    /// autoload-cache use. Outer `None` = not yet computed; inner `None` = no
+    /// map detected (unknown, blocks persistent reuse keyed on it).
+    composer_map_fingerprint: Option<Option<Arc<str>>>,
     dynamic_units: Vec<CompiledUnit>,
     dynamic_functions: Vec<DynamicFunctionEntry>,
     dynamic_classes: Vec<DynamicClassEntry>,
@@ -2177,6 +2181,14 @@ pub struct Vm {
     counters: RefCell<Option<VmCounters>>,
     literal_pool: RefCell<LiteralPool>,
     quickening: RefCell<QuickeningTable>,
+    /// Final invalidation epochs of the last `execute` call, stashed before
+    /// request state drops so the persistent-feedback writer can stamp entries
+    /// with the true observation state instead of cold-start zeros.
+    persistent_feedback_epochs: Cell<Option<crate::persistent_feedback::PersistentFeedbackEpochs>>,
+    /// IC-table unit key (`compiled_unit_cache_key`) of the last executed
+    /// entry unit, for scoping persistent callsite exports to replay-stable
+    /// (entry-unit) IC sites.
+    persistent_feedback_entry_unit_key: Cell<Option<u64>>,
     inline_caches: RefCell<InlineCacheTable>,
     jit: RefCell<JitRuntimeState>,
     tiering: RefCell<TieringState>,
@@ -2244,6 +2256,8 @@ impl Vm {
             default_slot_template_cache: RefCell::new(DefaultSlotTemplateCache::default()),
             constructor_resolution_cache: RefCell::new(ConstructorResolutionCache::default()),
             quickening: RefCell::new(QuickeningTable::default()),
+            persistent_feedback_epochs: Cell::new(None),
+            persistent_feedback_entry_unit_key: Cell::new(None),
             inline_caches: RefCell::new(InlineCacheTable::default()),
             jit: RefCell::new(JitRuntimeState::default()),
             tiering: RefCell::new(tiering),
@@ -2274,12 +2288,44 @@ impl Vm {
         *self.default_slot_template_cache.borrow_mut() = DefaultSlotTemplateCache::default();
         *self.constructor_resolution_cache.borrow_mut() = ConstructorResolutionCache::default();
         *self.quickening.borrow_mut() = QuickeningTable::default();
+        self.persistent_feedback_epochs.set(None);
+        // IC slots key units by compiled_unit_cache_key (the IR-unit address),
+        // so the entry-unit scope filter must use the same key.
+        self.persistent_feedback_entry_unit_key
+            .set(Some(compiled_unit_cache_key(&unit)));
+        let mut persistent_feedback_seeded_sites = 0usize;
         if self.options.quickening.enabled() && !self.options.quickening_seed.is_empty() {
-            self.quickening
+            persistent_feedback_seeded_sites = self
+                .quickening
                 .borrow_mut()
                 .seed_persistent_sites(&self.options.quickening_seed);
         }
         *self.inline_caches.borrow_mut() = InlineCacheTable::default();
+        let mut persistent_feedback_seeded_callsites = 0usize;
+        if self.options.inline_caches.enabled() && !self.options.callsite_seed.is_empty() {
+            // Only seed a callsite whose recorded target function still exists
+            // in this unit and whose normalized name equals the recorded call
+            // name. The lookup guard matches name/arity/epoch but never
+            // re-resolves name→target, so this is the one place a seed with a
+            // stale or tampered (name, target) pair — including a
+            // namespace-fallback call whose namespaced definition now exists —
+            // is rejected before it can dispatch the wrong function.
+            let entry_functions = &unit.unit().functions;
+            persistent_feedback_seeded_callsites = self
+                .inline_caches
+                .borrow_mut()
+                .seed_persistent_function_callsites(
+                    compiled_unit_cache_key(&unit),
+                    &self.options.callsite_seed,
+                    |site| {
+                        entry_functions
+                            .get(site.target_function as usize)
+                            .is_some_and(|function| {
+                                normalize_function_name(&function.name) == site.lowered_name
+                            })
+                    },
+                );
+        }
         *self.jit.borrow_mut() = JitRuntimeState::default();
         *self.tiering.borrow_mut() = TieringState::new(self.options.tiering.clone());
         self.internal_function_dispatch_cache.borrow_mut().clear();
@@ -2289,6 +2335,16 @@ impl Vm {
             counters.set_jit_config(self.options.jit.as_str(), self.options.jit_threshold);
             if skip_adaptive_tiny_unit_setup {
                 counters.record_adaptive_tiny_unit_setup_skip();
+            }
+            if persistent_feedback_seeded_sites > 0 {
+                counters.record_persistent_feedback_seeded_sites(
+                    persistent_feedback_seeded_sites as u64,
+                );
+            }
+            if persistent_feedback_seeded_callsites > 0 {
+                counters.record_persistent_feedback_seeded_callsites(
+                    persistent_feedback_seeded_callsites as u64,
+                );
             }
             counters
         });
@@ -2476,6 +2532,14 @@ impl Vm {
         let output_len = output.len();
         let output_stats = output.stats();
         sync_session_state_from_globals(&mut state);
+        self.persistent_feedback_epochs.set(Some(
+            crate::persistent_feedback::PersistentFeedbackEpochs {
+                class_table: state.class_table_epoch,
+                function_table: state.function_table_epoch,
+                autoload: state.autoload_stack_epoch,
+                include_path: state.include_config_epoch,
+            },
+        ));
         result.diagnostics.extend(state.diagnostics);
         result.output = output.clone();
         result.http_response = state.http_response;
@@ -2511,6 +2575,31 @@ impl Vm {
     #[must_use]
     pub fn export_persistent_quickening(&self) -> Vec<crate::quickening::QuickeningSiteSnapshot> {
         self.quickening.borrow().export_persistent_sites()
+    }
+
+    /// Final invalidation epochs of the last `execute` call, for stamping
+    /// persistent-feedback entries with their true observation state. `None`
+    /// when the last execution ended before request teardown (compile
+    /// errors), which callers must treat as cold-start zeros.
+    #[must_use]
+    pub fn export_persistent_feedback_epochs(
+        &self,
+    ) -> Option<crate::persistent_feedback::PersistentFeedbackEpochs> {
+        self.persistent_feedback_epochs.get()
+    }
+
+    /// Exports the last `execute` call's replay-stable monomorphic
+    /// function-call IC sites (entry unit only) for persistent feedback.
+    #[must_use]
+    pub fn export_persistent_function_callsites(
+        &self,
+    ) -> Vec<crate::inline_cache::FunctionCallSiteSnapshot> {
+        let Some(entry_unit_key) = self.persistent_feedback_entry_unit_key.get() else {
+            return Vec::new();
+        };
+        self.inline_caches
+            .borrow()
+            .export_persistent_function_callsites(entry_unit_key)
     }
 
     fn should_skip_adaptive_tiny_unit_setup(&self, unit: &IrUnit) -> bool {
@@ -2988,6 +3077,48 @@ impl Vm {
             {
                 counters.record_include_stale_invalidation_by_reason("file_fingerprint_changed");
             }
+            for _ in 0..after
+                .directory_version_hits
+                .saturating_sub(before.directory_version_hits)
+            {
+                counters.record_directory_version_hit();
+            }
+            for _ in 0..after
+                .directory_version_misses
+                .saturating_sub(before.directory_version_misses)
+            {
+                counters.record_directory_version_miss();
+            }
+            for _ in 0..after
+                .negative_cache_hits
+                .saturating_sub(before.negative_cache_hits)
+            {
+                counters.record_negative_include_cache_hit();
+            }
+            for _ in 0..after
+                .negative_cache_installs
+                .saturating_sub(before.negative_cache_installs)
+            {
+                counters.record_negative_include_cache_install();
+            }
+            for _ in 0..after
+                .negative_cache_invalidations
+                .saturating_sub(before.negative_cache_invalidations)
+            {
+                counters.record_negative_include_cache_invalidation();
+            }
+            for _ in 0..after
+                .negative_cache_blocked_unversioned
+                .saturating_sub(before.negative_cache_blocked_unversioned)
+            {
+                counters.record_negative_include_cache_blocked("candidate_directory_unversioned");
+            }
+            for _ in 0..after
+                .negative_cache_blocked_capacity
+                .saturating_sub(before.negative_cache_blocked_capacity)
+            {
+                counters.record_negative_include_cache_blocked("capacity");
+            }
         }
     }
 
@@ -3000,9 +3131,112 @@ impl Vm {
             self.record_counter_fallback_by_path_semantics("outside_allowed_root");
         } else if message.contains("MISSING") {
             self.record_counter_fallback_by_path_semantics("missing_path");
+            // The shared include cache installs directory-version-guarded
+            // negative entries for missing paths (its install/blocked
+            // accounting arrives via the cache stats delta). The request-local
+            // IC path performs no such validation, so its misses stay
+            // uncached and record why.
+            if self.options.include_cache.is_none() {
+                self.record_counter_negative_include_cache_blocked(
+                    "directory_versions_unvalidated",
+                );
+            }
         } else {
             self.record_counter_fallback_by_path_semantics("loader_error");
         }
+    }
+
+    /// Compares an include-path IC target's stored parent-directory version
+    /// against the current one, counters only (never hit acceptance).
+    fn record_counter_directory_version_observation(&self, target: &IncludePathCacheTarget) {
+        if !self.options.collect_counters {
+            return;
+        }
+        let current = target
+            .canonical_path
+            .parent()
+            .and_then(crate::include::include_directory_version);
+        let matches = match (&target.directory_version, &current) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            if matches {
+                counters.record_directory_version_hit();
+            } else {
+                counters.record_directory_version_miss();
+            }
+        }
+    }
+
+    fn record_counter_negative_include_cache_blocked(&self, reason: &str) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_negative_include_cache_blocked(reason);
+        }
+    }
+
+    /// Returns the request's Composer autoload-map fingerprint, computing it
+    /// once on first use. The value is stable for the whole request, so wiring
+    /// it into autoload cache keys never changes hit/miss behavior within a
+    /// request; it only keys the (request-local) entries on the deployment's
+    /// autoload maps. `None` means no map was detected — unknown, which any
+    /// future persistent reuse must treat as blocking.
+    fn composer_map_fingerprint(&self, state: &mut ExecutionState) -> Option<Arc<str>> {
+        // The fingerprint keys only the (request-local) autoload inline cache;
+        // when inline caches are disabled (baseline/oracle mode) the key is
+        // never stored or compared, so skip the ~10-stat vendor/composer probe
+        // entirely rather than paying it per lookup for a discarded key.
+        if !self.options.inline_caches.enabled() {
+            return None;
+        }
+        if state.composer_map_fingerprint.is_none() {
+            let fingerprint = self
+                .composer_probe_anchor(state)
+                .and_then(|anchor| crate::include::composer_autoload_map_fingerprint(&anchor))
+                .map(Arc::<str>::from);
+            if self.options.collect_counters
+                && let Some(counters) = self.counters.borrow_mut().as_mut()
+            {
+                counters.record_composer_fingerprint(fingerprint.is_some());
+            }
+            if let Some(cache) = &self.options.include_cache
+                && matches!(
+                    cache.note_composer_fingerprint(fingerprint.as_deref()),
+                    crate::include::ComposerFingerprintTransition::Changed
+                )
+                && self.options.collect_counters
+                && let Some(counters) = self.counters.borrow_mut().as_mut()
+            {
+                counters.record_composer_fingerprint_stale();
+            }
+            state.composer_map_fingerprint = Some(fingerprint);
+        }
+        state.composer_map_fingerprint.clone().unwrap_or(None)
+    }
+
+    /// Anchor directory for the Composer map probe: the entry script's
+    /// directory (HTTP script filename or CLI argv[0]), falling back to the
+    /// request CWD.
+    fn composer_probe_anchor(&self, state: &ExecutionState) -> Option<PathBuf> {
+        let script = match &self.options.runtime_context.request_mode {
+            php_runtime::RuntimeRequestMode::Http(request) => {
+                Some(PathBuf::from(&request.script_filename))
+            }
+            _ => self.options.runtime_context.argv.first().map(PathBuf::from),
+        };
+        let script = script.filter(|path| !path.as_os_str().is_empty())?;
+        let script = if script.is_absolute() {
+            script
+        } else {
+            state.cwd.join(script)
+        };
+        script
+            .parent()
+            .map(Path::to_path_buf)
+            .or_else(|| Some(state.cwd.clone()))
     }
 
     fn record_counter_frame_activation(&self, reused: bool, register_count: u32, local_count: u32) {
@@ -6130,8 +6364,9 @@ impl Vm {
         None
     }
 
-    /// Copy-and-patch native leaf tier (default-off, behind `jit-copy-patch` +
-    /// the `PHRUST_JIT_COPY_PATCH` env gate). Runs before the dense-dispatch and
+    /// Copy-and-patch native leaf tier (behind the default-on `jit-copy-patch`
+    /// feature; disable per process via `PHRUST_JIT_COPY_PATCH=0` or per VM via
+    /// `VmOptions::copy_patch_leaf_override`). Runs before the dense-dispatch and
     /// interpreter paths: if the callee is a recognized scalar-int leaf called
     /// with plain positional value arguments, compile it once (cached), run it
     /// natively over the argument values, and return the result — otherwise
@@ -6150,7 +6385,11 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Option<VmResult> {
-        if !crate::copy_patch_bridge::copy_patch_leaf_enabled() {
+        if !self
+            .options
+            .copy_patch_leaf_override
+            .unwrap_or_else(crate::copy_patch_bridge::copy_patch_leaf_enabled)
+        {
             return None;
         }
         // Free function, plain positional value arguments only.
@@ -40317,6 +40556,7 @@ impl Vm {
                                 block_id,
                                 instruction_id,
                             );
+                            self.record_counter_directory_version_observation(&target);
                             match loader.load_resolved(target.canonical_path) {
                                 Ok(loaded) => loaded,
                                 Err(message) => {
@@ -40353,6 +40593,7 @@ impl Vm {
                                     let target = IncludePathCacheTarget {
                                         canonical_path: resolved.canonical_path.clone(),
                                         fingerprint: resolved.fingerprint.clone(),
+                                        directory_version: resolved.directory_version,
                                     };
                                     self.install_include_path_inline_cache(
                                         unit_key,
@@ -40407,6 +40648,7 @@ impl Vm {
                             let target = IncludePathCacheTarget {
                                 canonical_path: resolved.canonical_path.clone(),
                                 fingerprint: resolved.fingerprint.clone(),
+                                directory_version: resolved.directory_version,
                             };
                             self.install_include_path_inline_cache(
                                 unit_key,
@@ -42922,7 +43164,7 @@ impl Vm {
             autoload_enabled: autoload,
             autoload_stack_depth: state.autoload_stack.len(),
             include_path_config: state.ini.get("include_path").unwrap_or(".").to_owned(),
-            composer_map_fingerprint: None,
+            composer_map_fingerprint: self.composer_map_fingerprint(state),
         };
         let epochs = state.autoload_class_lookup_epochs();
         if let Some((unit_key, function, block, instruction)) = call_site {
@@ -56884,12 +57126,11 @@ fn trace_value_for_bound_param(
 ) -> Value {
     if param_is_sensitive(param) {
         trace_value_for_param(value, true)
-    } else if trace_holds_reference {
-        Value::Reference(
-            reference
-                .cloned()
-                .expect("by-ref trace argument retains its cell"),
-        )
+    } else if let Some(cell) = reference.filter(|_| trace_holds_reference) {
+        // A by-ref trace argument is expected to carry its cell; if it does
+        // not (an unexpected binder state), degrade to the value snapshot the
+        // non-reference branch produces rather than panic on the trace path.
+        Value::Reference(cell.clone())
     } else {
         value.clone()
     }

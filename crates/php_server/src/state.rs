@@ -58,6 +58,7 @@ pub(crate) struct AppState {
     pub(crate) session_store: Arc<SessionStore>,
     pub(crate) local_addr: SocketAddr,
     pub(crate) request_scheme: &'static str,
+    pub(crate) http3_alt_svc: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct ServerEngineState {

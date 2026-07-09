@@ -1,4 +1,5 @@
 use crate::server::ServerError;
+use quinn::crypto::rustls::QuicServerConfig;
 use rustls_pki_types::pem::PemObject;
 use std::{path::Path, sync::Arc};
 use tokio_rustls::{
@@ -26,8 +27,42 @@ pub(crate) fn build_tls_acceptor(
                 "TLS certificate/key configuration is invalid: {error}"
             ))
         })?;
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = tls_alpn_protocols();
     Ok(Some(TlsAcceptor::from(Arc::new(config))))
+}
+
+pub(crate) fn tls_alpn_protocols() -> Vec<Vec<u8>> {
+    vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+}
+
+pub(crate) fn http3_alpn_protocols() -> Vec<Vec<u8>> {
+    vec![b"h3".to_vec()]
+}
+
+pub(crate) fn build_quic_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<quinn::ServerConfig, ServerError> {
+    let certs = load_tls_certs(cert_path)?;
+    let key = load_tls_private_key(key_path)?;
+    let mut crypto = RustlsServerConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&tokio_rustls::rustls::version::TLS13])
+    .map_err(|error| ServerError::Tls(format!("HTTP/3 TLS 1.3 setup failed: {error}")))?
+    .with_no_client_auth()
+    .with_single_cert(certs, key)
+    .map_err(|error| {
+        ServerError::Tls(format!(
+            "HTTP/3 TLS certificate/key configuration is invalid: {error}"
+        ))
+    })?;
+    crypto.alpn_protocols = http3_alpn_protocols();
+    Ok(quinn::ServerConfig::with_crypto(Arc::new(
+        QuicServerConfig::try_from(crypto).map_err(|error| {
+            ServerError::Tls(format!("HTTP/3 QUIC TLS configuration is invalid: {error}"))
+        })?,
+    )))
 }
 
 pub(crate) fn load_tls_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, ServerError> {

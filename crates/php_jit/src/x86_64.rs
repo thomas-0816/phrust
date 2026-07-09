@@ -35,6 +35,9 @@ pub const RCX: Reg = 1;
 /// `rdx` — scratch; `cqo` sign-extends `rax` into it and `idiv` leaves the
 /// remainder there.
 pub const RDX: Reg = 2;
+/// `rsp` — stack pointer. Only used by non-leaf helper stencils to reserve
+/// aligned scratch storage.
+pub const RSP: Reg = 4;
 /// `rsi` — second integer argument / scratch.
 pub const RSI: Reg = 6;
 /// `rdi` — first integer argument; the slot-base pointer for emitted stencils.
@@ -343,6 +346,24 @@ impl X86Assembler {
         self.emit(&[0xC3]);
     }
 
+    /// `sub rsp, imm8` (`REX.W 83 /5 ib`) — reserve a small stack frame.
+    pub fn sub_rsp_imm8(&mut self, imm: u8) {
+        self.emit(&[0x48, 0x83, 0xEC, imm]);
+    }
+
+    /// `add rsp, imm8` (`REX.W 83 /0 ib`) — release a small stack frame.
+    pub fn add_rsp_imm8(&mut self, imm: u8) {
+        self.emit(&[0x48, 0x83, 0xC4, imm]);
+    }
+
+    /// `call reg` (`FF /2`) — indirect call through a helper address register.
+    pub fn call_reg(&mut self, reg: Reg) {
+        if reg >= 8 {
+            self.emit(&[0x41]);
+        }
+        self.emit(&[0xFF, 0xD0 | (reg & 7)]);
+    }
+
     // --- Loads / stores over `[base + disp32]` (the flat JitCValue slots) ---
 
     /// `mov reg32, [base + disp]` (`8B /r`) — 32-bit load (e.g. a `repr(u32)`
@@ -539,6 +560,24 @@ mod tests {
                 0x49, 0xF7, 0xFA, // idiv r10
                 0x48, 0xD3, 0xE0, // shl rax, cl
                 0x48, 0xD3, 0xF8, // sar rax, cl
+            ]
+        );
+    }
+
+    #[test]
+    fn encodes_stack_adjustment_and_indirect_call() {
+        let mut asm = X86Assembler::new();
+        asm.sub_rsp_imm8(24); // sub rsp, 24 -> 48 83 EC 18
+        asm.call_reg(RAX); // call rax    -> FF D0
+        asm.call_reg(R11); // call r11    -> 41 FF D3
+        asm.add_rsp_imm8(24); // add rsp, 24 -> 48 83 C4 18
+        assert_eq!(
+            asm.finish(),
+            vec![
+                0x48, 0x83, 0xEC, 0x18, // sub rsp, 24
+                0xFF, 0xD0, // call rax
+                0x41, 0xFF, 0xD3, // call r11
+                0x48, 0x83, 0xC4, 0x18, // add rsp, 24
             ]
         );
     }

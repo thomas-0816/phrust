@@ -4692,6 +4692,15 @@ fn include_missing_warns_and_continues_but_require_missing_fails() {
         Some(&1),
         "{counters:?}"
     );
+    // A missing path is where a negative include cache would install an
+    // entry; it stays disabled and records why.
+    assert_eq!(
+        counters
+            .negative_include_cache_blocked_by_reason
+            .get("directory_versions_unvalidated"),
+        Some(&1),
+        "{counters:?}"
+    );
 
     let require = execute_fixture_file_with_options(
         "fixtures/runtime/invalid/includes/require-missing.php",
@@ -4734,6 +4743,203 @@ fn include_missing_warns_and_continues_but_require_missing_fails() {
         Some(&1),
         "{counters:?}"
     );
+}
+
+#[test]
+fn negative_include_cache_preserves_missing_include_diagnostics() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-vm-negative-include-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create fixture root");
+    let loader = IncludeLoader::for_root(root.clone()).expect("loader");
+    let cache = std::sync::Arc::new(IncludeCache::new(1));
+    let source =
+        "<?php\necho 'a|';\ninclude 'nope.php';\necho 'b|';\ninclude 'nope.php';\necho 'c';";
+    let result = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            include_loader: Some(loader),
+            include_cache: Some(std::sync::Arc::clone(&cache)),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+    );
+    assert!(result.status.is_success(), "{:?}", result.status);
+    // Both failures present identically (modulo the include-site line number
+    // the VM appends per site); the second is served from the
+    // directory-version-guarded negative cache.
+    let output = String::from_utf8_lossy(result.output.as_bytes());
+    assert_eq!(
+        output
+            .matches("Failed to open stream: No such file or directory")
+            .count(),
+        2,
+        "{output}"
+    );
+    assert_eq!(
+        output.matches("Failed opening 'nope.php'").count(),
+        2,
+        "{output}"
+    );
+    let site_agnostic = |marker: &str| {
+        output
+            .split(marker)
+            .nth(1)
+            .and_then(|rest| rest.split(" on line ").next())
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        site_agnostic("a|"),
+        site_agnostic("b|"),
+        "cached failure renders the same diagnostics: {output}"
+    );
+    assert!(output.ends_with('c'), "{output}");
+    let stats = cache.cache_stats();
+    assert_eq!(stats.negative_cache_installs, 1, "{stats:?}");
+    assert_eq!(stats.negative_cache_hits, 1, "{stats:?}");
+    let counters = result.counters.expect("counters");
+    assert_eq!(counters.negative_include_cache_hits, 1, "{counters:?}");
+    assert_eq!(counters.negative_include_cache_installs, 1, "{counters:?}");
+
+    // The file appearing invalidates the cached miss in the same process.
+    std::fs::write(root.join("nope.php"), "<?php echo 'found';").expect("write include");
+    let loader = IncludeLoader::for_root(root.clone()).expect("loader");
+    let resolved = execute_source_with_options(
+        "<?php include 'nope.php';",
+        VmOptions {
+            include_loader: Some(loader),
+            include_cache: Some(std::sync::Arc::clone(&cache)),
+            runtime_context: RuntimeContext::default().with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+    );
+    assert!(resolved.status.is_success(), "{:?}", resolved.status);
+    assert_eq!(resolved.output.as_bytes(), b"found");
+    assert_eq!(cache.cache_stats().negative_cache_invalidations, 1);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn export_persistent_function_callsites_reports_monomorphic_entry_unit_sites() {
+    let source = "<?php function probe_tag(string $s): string { return $s . '!'; } $t = ''; for ($i = 0; $i < 64; $i++) { $t = probe_tag('x'); } echo $t;";
+    let frontend = php_semantics::analyze_source(source);
+    assert!(!frontend.has_errors());
+    let lowering = php_ir::lower_frontend_result(
+        &frontend,
+        php_ir::LoweringOptions {
+            source_path: "/tmp/phrust-callsite-export.php".to_owned(),
+            source_text: Some(source.to_owned()),
+            ..php_ir::LoweringOptions::default()
+        },
+    );
+    assert!(lowering.diagnostics.is_empty());
+    let mut lowering = lowering;
+    php_optimizer::PassPipeline::performance()
+        .run(
+            &mut lowering.unit,
+            &php_optimizer::PassContext::new(php_optimizer::OptimizationLevel::O2),
+        )
+        .expect("optimizer");
+    let vm = Vm::with_options(VmOptions {
+        collect_counters: true,
+        execution_format: ExecutionFormat::Auto,
+        quickening: QuickeningMode::On,
+        inline_caches: InlineCacheMode::On,
+        superinstructions: SuperinstructionMode::On,
+        jit: JitMode::Cranelift,
+        ..VmOptions::default()
+    });
+    let result = vm.execute(lowering.unit);
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let counters = result.counters.expect("counters");
+    let sites = vm.export_persistent_function_callsites();
+    assert_eq!(
+        sites.len(),
+        1,
+        "fn_ic hits={} misses={} slots={} sites={sites:?}",
+        counters.function_call_ic_hits,
+        counters.function_call_ic_misses,
+        counters.inline_cache_function_slots,
+    );
+    assert_eq!(sites[0].lowered_name, "probe_tag");
+    assert_eq!(sites[0].arity, 1);
+}
+
+#[test]
+fn composer_map_fingerprint_counters_attribute_presence_per_request() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-vm-composer-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos()
+    ));
+    let composer_dir = root.join("vendor").join("composer");
+    std::fs::create_dir_all(&composer_dir).expect("create composer fixture");
+    std::fs::write(
+        composer_dir.join("autoload_classmap.php"),
+        "<?php return [];\n",
+    )
+    .expect("write classmap");
+    let script_path = root.join("index.php");
+    // class_exists drives the autoload lookup cache, whose key carries the
+    // Composer map fingerprint. Autoload lookups without a registered
+    // callback preserve output either way — this is metadata + counters.
+    let source = "<?php var_dump(class_exists('PhrustComposerProbeMissing'));";
+    std::fs::write(&script_path, source).expect("write script");
+
+    let with_map = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            runtime_context: RuntimeContext::controlled_cli(
+                script_path.to_string_lossy().into_owned(),
+                Vec::new(),
+            )
+            .with_cwd(root.clone()),
+            ..VmOptions::default()
+        },
+    );
+    assert!(with_map.status.is_success(), "{:?}", with_map.status);
+    assert_eq!(with_map.output.as_bytes(), b"bool(false)\n");
+    let counters = with_map.counters.expect("counters");
+    assert_eq!(counters.composer_fingerprint_present, 1, "{counters:?}");
+    assert_eq!(counters.composer_fingerprint_missing, 0, "{counters:?}");
+
+    let without_map = execute_source_with_options(
+        source,
+        VmOptions {
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            runtime_context: RuntimeContext::controlled_cli(
+                "/nonexistent-phrust-root/index.php".to_owned(),
+                Vec::new(),
+            ),
+            ..VmOptions::default()
+        },
+    );
+    assert!(without_map.status.is_success(), "{:?}", without_map.status);
+    assert_eq!(with_map.output, without_map.output);
+    let counters = without_map.counters.expect("counters");
+    assert_eq!(counters.composer_fingerprint_present, 0, "{counters:?}");
+    assert_eq!(counters.composer_fingerprint_missing, 1, "{counters:?}");
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -5367,6 +5573,10 @@ fn include_path_inline_cache_records_hits_and_preserves_semantics() {
     assert!(counters.include_path_ic_misses > 0, "{counters:?}");
     assert!(counters.include_graph_hits > 0, "{counters:?}");
     assert!(counters.include_graph_misses > 0, "{counters:?}");
+    // Every IC revalidation also observes the parent-directory version
+    // (metadata only): a stable fixture directory always matches.
+    assert!(counters.directory_version_hits > 0, "{counters:?}");
+    assert_eq!(counters.directory_version_misses, 0, "{counters:?}");
 }
 
 #[test]
@@ -5495,6 +5705,7 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
         IncludePathCacheTarget {
             canonical_path: resolved.canonical_path.clone(),
             fingerprint: resolved.fingerprint.clone(),
+            directory_version: resolved.directory_version,
         },
     );
     std::fs::write(&include_path, "<?php echo 'changed';\n").expect("rewrite include");
@@ -8396,6 +8607,10 @@ fn jit_int_leaf_hot_loop_executes_after_warmup() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            // This test proves the Cranelift tier compiles and executes; the
+            // copy-patch leaf tier would otherwise claim this scalar-int leaf
+            // before tiering ever sees it.
+            copy_patch_leaf_override: Some(false),
             ..VmOptions::default()
         },
     );
@@ -8443,6 +8658,7 @@ fn cranelift_threshold_tiering_compiles_hot_function() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             jit_threshold: 2,
             tiering: TieringOptions {
                 function_entry_threshold: 2,
@@ -8472,6 +8688,7 @@ fn cranelift_eager_tiering_compiles_first_call_for_tests() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             jit_threshold: 1,
             tiering: TieringOptions {
                 jit_eager: true,
@@ -8500,6 +8717,7 @@ fn cranelift_compile_budget_rejection_falls_back_to_interpreter() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             jit_threshold: 1,
             tiering: TieringOptions {
                 jit_eager: true,
@@ -8529,6 +8747,7 @@ fn cranelift_inline_arithmetic_executes_native_and_counts_fast_paths() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -8935,6 +9154,7 @@ fn cranelift_known_strlen_executes_native_and_counts_fast_hit() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -9010,6 +9230,7 @@ fn cranelift_known_count_executes_for_packed_and_mixed_arrays() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -9218,6 +9439,7 @@ echo perf_jit_unstable_types(4), "\n";
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -9267,6 +9489,7 @@ echo perf_jit_unstable_types_debug(4), "\n";
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             jit_blacklist: JitBlacklistMode::Off,
             tiering: TieringOptions {
                 function_entry_threshold: 1,
@@ -9300,6 +9523,7 @@ fn cranelift_constant_return_executes_native_after_abi_check() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
@@ -9331,6 +9555,7 @@ fn cranelift_compile_cache_reuses_same_function() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            copy_patch_leaf_override: Some(false),
             tiering: TieringOptions {
                 jit_eager: true,
                 function_entry_threshold: 1,
@@ -9464,6 +9689,9 @@ fn jit_on_off_output_is_identical() {
             collect_profile_spans: false,
             collect_layout_source_attribution: true,
             jit: JitMode::Cranelift,
+            // Compare interpreter vs Cranelift specifically; without this the
+            // copy-patch leaf tier claims the leaf and `jit_executed` stays 0.
+            copy_patch_leaf_override: Some(false),
             ..VmOptions::default()
         },
     );

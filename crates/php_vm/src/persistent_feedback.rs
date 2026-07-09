@@ -15,12 +15,17 @@ use crate::quickening::{
 /// Stable line-format header for advisory persistent feedback files.
 pub const PERSISTENT_FEEDBACK_FORMAT_VERSION: &str = "phrust-persistent-feedback-v1";
 
+/// Upper bound on a persisted callsite's argument count. Real PHP signatures
+/// never approach this; the cap only stops a corrupt/tampered sidecar from
+/// forcing a large allocation when the seeder materializes the by-ref shape.
+pub const MAX_PERSISTED_CALL_ARITY: u32 = 4096;
+
 /// JSON/report schema version for persistent feedback stats.
 ///
 /// v2 splits the collapsed `rejected_stale` counter into explicit
 /// epoch/architecture/config mismatch reasons and adds `entries_written`
 /// for the engine-owned writer path.
-pub const PERSISTENT_FEEDBACK_STATS_SCHEMA_VERSION: u32 = 2;
+pub const PERSISTENT_FEEDBACK_STATS_SCHEMA_VERSION: u32 = 3;
 
 /// Invalidation epochs that must match before feedback can be advisory input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -29,6 +34,23 @@ pub struct PersistentFeedbackEpochs {
     pub function_table: u64,
     pub autoload: u64,
     pub include_path: u64,
+}
+
+/// How a load validates entry epochs against the context.
+///
+/// Entries record the invalidation epochs of the run that *observed* them.
+/// A live in-process consumer knows its current epochs and can require an
+/// exact match. A cold-start load (the CLI reading a sidecar before any code
+/// has executed) cannot know the epochs this run will reach — for a matching
+/// source/config/IR fingerprint the declaration sequence replays
+/// deterministically, so the recorded epochs are the expectation, and every
+/// consumer re-validates against live state at seed or lookup time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistentFeedbackEpochValidation {
+    /// Entries must match the context's epochs exactly.
+    Exact,
+    /// Accept recorded epochs; consumers re-validate against live state.
+    DeferToConsumption,
 }
 
 /// Current-source context used to validate persisted feedback.
@@ -40,6 +62,7 @@ pub struct PersistentFeedbackContext {
     pub compile_options: String,
     pub ir_fingerprint: String,
     pub epochs: PersistentFeedbackEpochs,
+    pub epoch_validation: PersistentFeedbackEpochValidation,
     pub target_arch_config: String,
 }
 
@@ -61,8 +84,24 @@ impl PersistentFeedbackContext {
             compile_options: compile_options.into(),
             ir_fingerprint: ir_fingerprint.into(),
             epochs,
+            epoch_validation: PersistentFeedbackEpochValidation::Exact,
             target_arch_config: target_arch_config.into(),
         }
+    }
+
+    /// Returns the context with the given epochs, e.g. the final epochs of
+    /// the run whose observations are being written.
+    #[must_use]
+    pub fn with_epochs(mut self, epochs: PersistentFeedbackEpochs) -> Self {
+        self.epochs = epochs;
+        self
+    }
+
+    /// Returns the context with the given epoch-validation policy.
+    #[must_use]
+    pub fn with_epoch_validation(mut self, policy: PersistentFeedbackEpochValidation) -> Self {
+        self.epoch_validation = policy;
+        self
     }
 
     #[must_use]
@@ -242,6 +281,46 @@ impl PersistentFeedbackContext {
         (text, written)
     }
 
+    /// Renders quickening sites plus monomorphic entry-unit function-call IC
+    /// sites, returning the rendered text and how many entries it contains.
+    #[must_use]
+    pub fn render_feedback_counted(
+        &self,
+        sites: &[QuickeningSiteSnapshot],
+        callsites: &[crate::inline_cache::FunctionCallSiteSnapshot],
+    ) -> (String, u64) {
+        let (mut text, mut written) = self.render_sites_counted(sites);
+        for site in callsites {
+            let _ = writeln!(
+                text,
+                "entry source={} engine={} php={} compile={} function={} ir={} \
+                 instruction={} class_epoch={} function_epoch={} autoload_epoch={} \
+                 include_epoch={} target={} state=monomorphic site=ic_function_call \
+                 ic_block={} call_name={} call_arity={} call_site_epoch={} \
+                 call_target_function={}",
+                self.source_fingerprint,
+                self.engine_version,
+                self.php_target_version,
+                self.compile_options,
+                site.function,
+                self.ir_fingerprint,
+                site.instruction,
+                self.epochs.class_table,
+                self.epochs.function_table,
+                self.epochs.autoload,
+                self.epochs.include_path,
+                self.target_arch_config,
+                site.block,
+                site.lowered_name,
+                site.arity,
+                site.epoch,
+                site.target_function,
+            );
+            written = written.saturating_add(1);
+        }
+        (text, written)
+    }
+
     fn validate_entry(
         &self,
         entry: PersistentFeedbackEntry,
@@ -259,7 +338,9 @@ impl PersistentFeedbackContext {
         if key.target_arch_config != self.target_arch_config {
             return Err(PersistentFeedbackRejectReason::ArchitectureMismatch);
         }
-        if key.epochs != self.epochs {
+        if self.epoch_validation == PersistentFeedbackEpochValidation::Exact
+            && key.epochs != self.epochs
+        {
             return Err(PersistentFeedbackRejectReason::EpochMismatch);
         }
         if key.source_fingerprint != self.source_fingerprint
@@ -323,10 +404,17 @@ impl PersistentFeedbackLoadReport {
 }
 
 /// Feedback load/validation counters. These are reported outside PHP stdout.
+///
+/// `advisory_only` reports the consumption *policy* of the run that produced
+/// the stats: `true` means accepted entries could not seed adaptive VM state.
+/// `consume_mode` names the resolved mode (`off` or `quickening`). The
+/// validator itself never consumes, so both default to the advisory reading;
+/// the embedding CLI/server stamps the real policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PersistentFeedbackStats {
     pub schema_version: u32,
     pub advisory_only: bool,
+    pub consume_mode: &'static str,
     pub default_enabled: bool,
     pub files_considered: u64,
     pub files_loaded: u64,
@@ -348,6 +436,7 @@ impl Default for PersistentFeedbackStats {
         Self {
             schema_version: PERSISTENT_FEEDBACK_STATS_SCHEMA_VERSION,
             advisory_only: true,
+            consume_mode: "off",
             default_enabled: false,
             files_considered: 0,
             files_loaded: 0,
@@ -374,6 +463,7 @@ impl PersistentFeedbackStats {
                 "{{\n",
                 "  \"schema_version\": {},\n",
                 "  \"advisory_only\": {},\n",
+                "  \"consume_mode\": \"{}\",\n",
                 "  \"default_enabled\": {},\n",
                 "  \"files_considered\": {},\n",
                 "  \"files_loaded\": {},\n",
@@ -392,6 +482,7 @@ impl PersistentFeedbackStats {
             ),
             self.schema_version,
             self.advisory_only,
+            self.consume_mode,
             self.default_enabled,
             self.files_considered,
             self.files_loaded,
@@ -498,6 +589,9 @@ pub struct PersistentFeedbackPayload {
     pub guard_failures: PersistentGuardFailureSummary,
     /// Adaptive quickening site snapshot, when the entry carries one.
     pub quickening: Option<QuickeningSiteSnapshot>,
+    /// Monomorphic entry-unit function-call IC site, when the entry carries
+    /// one (see `FunctionCallSiteSnapshot` for the persistable subset).
+    pub function_callsite: Option<crate::inline_cache::FunctionCallSiteSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -571,6 +665,7 @@ fn parse_entry_line(line: &str) -> Result<PersistentFeedbackEntry, PersistentFee
             key.instruction_id,
             guard_failures.failures,
         )?,
+        function_callsite: parse_function_callsite(&fields, key.function_id, key.instruction_id)?,
     };
 
     Ok(PersistentFeedbackEntry {
@@ -734,6 +829,35 @@ fn parse_optional_branch_bias(
         .transpose()
 }
 
+/// Parses a monomorphic function-call IC site from `site=ic_function_call`
+/// entries. Any missing or malformed field rejects the entry as corrupt.
+fn parse_function_callsite(
+    fields: &BTreeMap<&str, &str>,
+    function_id: u32,
+    instruction_id: u32,
+) -> Result<Option<crate::inline_cache::FunctionCallSiteSnapshot>, PersistentFeedbackRejectReason> {
+    if fields.get("site").copied() != Some("ic_function_call") {
+        return Ok(None);
+    }
+    // Parse the u32-range fields strictly: an out-of-range value is corrupt,
+    // never silently truncated into a different valid id. `arity` is
+    // additionally capped so a corrupt entry cannot force a huge allocation
+    // when the seeder builds the by-ref shape vector.
+    let arity = parse_u32(required(fields, "call_arity")?)?;
+    if arity > MAX_PERSISTED_CALL_ARITY {
+        return Err(PersistentFeedbackRejectReason::Corrupt);
+    }
+    Ok(Some(crate::inline_cache::FunctionCallSiteSnapshot {
+        function: function_id,
+        block: parse_u32(required(fields, "ic_block")?)?,
+        instruction: instruction_id,
+        lowered_name: required(fields, "call_name")?.to_owned(),
+        arity,
+        epoch: parse_u64(required(fields, "call_site_epoch")?)?,
+        target_function: parse_u32(required(fields, "call_target_function")?)?,
+    }))
+}
+
 fn parse_quickening_site(
     fields: &BTreeMap<&str, &str>,
     function: u32,
@@ -754,6 +878,9 @@ fn parse_quickening_site(
             function,
             instruction,
         },
+        // Non-quickening site kinds (inline-cache callsites) are parsed by
+        // their own payload parsers.
+        "ic_function_call" => return Ok(None),
         _ => return Err(PersistentFeedbackRejectReason::Corrupt),
     };
     let (state, specialization) = match required(fields, "quickening_state")? {
@@ -946,8 +1073,9 @@ mod tests {
             .stats
             .to_json();
 
-        assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"schema_version\": 3"));
         assert!(json.contains("\"advisory_only\": true"));
+        assert!(json.contains("\"consume_mode\": \"off\""));
         assert!(json.contains("\"default_enabled\": false"));
         assert!(json.contains("\"entries_accepted\": 1"));
         assert!(json.contains("\"entries_written\": 0"));
@@ -965,6 +1093,115 @@ mod tests {
         assert_eq!(report.stats.rejected_epoch_mismatch, 1);
         assert_eq!(report.stats.rejected_stale, 0);
         assert!(report.stats.fallback_to_baseline);
+    }
+
+    #[test]
+    fn deferred_epoch_validation_accepts_recorded_epochs_for_consumers() {
+        // A cold-start load cannot know this run's final epochs; the recorded
+        // observation epochs are kept on the entry for consumers to
+        // re-validate against live state. Fingerprint mismatches still reject.
+        let text = valid_entry().replace("class_epoch=1", "class_epoch=99");
+        let report = context()
+            .with_epoch_validation(PersistentFeedbackEpochValidation::DeferToConsumption)
+            .validate_bytes(text.as_bytes());
+
+        assert_eq!(report.stats.entries_accepted, 1);
+        assert_eq!(report.stats.rejected_epoch_mismatch, 0);
+        assert_eq!(report.store.entries()[0].key.epochs.class_table, 99);
+
+        let stale = valid_entry().replace("source=source-1", "source=source-2");
+        let report = context()
+            .with_epoch_validation(PersistentFeedbackEpochValidation::DeferToConsumption)
+            .validate_bytes(stale.as_bytes());
+        assert_eq!(report.stats.entries_accepted, 0);
+        assert_eq!(report.stats.rejected_stale, 1);
+    }
+
+    #[test]
+    fn function_callsite_entries_roundtrip_through_render_and_validate() {
+        let callsite = crate::inline_cache::FunctionCallSiteSnapshot {
+            function: 0,
+            block: 2,
+            instruction: 7,
+            lowered_name: "app\\helpers\\format_row".to_owned(),
+            arity: 2,
+            epoch: 5,
+            target_function: 9,
+        };
+        let (text, written) =
+            context().render_feedback_counted(&[], std::slice::from_ref(&callsite));
+        assert_eq!(written, 1);
+        assert!(text.contains("site=ic_function_call"), "{text}");
+
+        let report = context().validate_bytes(text.as_bytes());
+        assert_eq!(report.stats.entries_accepted, 1, "{:?}", report.stats);
+        let entry = &report.store.entries()[0];
+        assert_eq!(entry.payload.function_callsite.as_ref(), Some(&callsite));
+    }
+
+    #[test]
+    fn function_callsite_out_of_range_or_huge_arity_is_rejected_not_truncated() {
+        // A u32-overflowing target id must reject as corrupt, never wrap into
+        // a different valid function id.
+        let overflow = text_with_callsite_field("call_target_function", "4294967305");
+        let report = context().validate_bytes(overflow.as_bytes());
+        assert_eq!(report.stats.entries_accepted, 0, "{:?}", report.stats);
+        assert_eq!(report.stats.rejected_corrupt, 1);
+
+        // An absurd arity must reject rather than survive to force a huge
+        // allocation in the seeder.
+        let huge_arity = text_with_callsite_field("call_arity", "4294967295");
+        let report = context().validate_bytes(huge_arity.as_bytes());
+        assert_eq!(report.stats.entries_accepted, 0, "{:?}", report.stats);
+        assert_eq!(report.stats.rejected_corrupt, 1);
+    }
+
+    fn text_with_callsite_field(field: &str, value: &str) -> String {
+        let callsite = crate::inline_cache::FunctionCallSiteSnapshot {
+            function: 0,
+            block: 2,
+            instruction: 7,
+            lowered_name: "probe".to_owned(),
+            arity: 7,
+            epoch: 1,
+            target_function: 3,
+        };
+        let (text, _) = context().render_feedback_counted(&[], std::slice::from_ref(&callsite));
+        let base = match field {
+            "call_arity" => "call_arity=7",
+            "call_target_function" => "call_target_function=3",
+            other => panic!("unhandled field {other}"),
+        };
+        let replaced = text.replacen(base, &format!("{field}={value}"), 1);
+        assert_ne!(replaced, text, "field {field} not found to replace");
+        replaced
+    }
+
+    #[test]
+    fn writer_stamps_context_epochs_on_entries() {
+        let exported = crate::quickening::QuickeningSiteSnapshot {
+            site: crate::quickening::QuickeningSiteKey::Dense {
+                unit: 0,
+                function: 3,
+                instruction: 7,
+            },
+            state: crate::quickening::QuickeningState::Specialized,
+            specialization: Some(crate::quickening::QuickeningSpecialization::AddIntInt),
+            guard_failures: 0,
+        };
+        let (text, written) = context()
+            .with_epochs(PersistentFeedbackEpochs {
+                class_table: 11,
+                function_table: 12,
+                autoload: 13,
+                include_path: 14,
+            })
+            .render_sites_counted(&[exported]);
+        assert_eq!(written, 1);
+        assert!(
+            text.contains("class_epoch=11 function_epoch=12 autoload_epoch=13 include_epoch=14"),
+            "{text}"
+        );
     }
 
     #[test]

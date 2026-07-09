@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use php_runtime::PhpString;
 
-use crate::include::IncludePathFileFingerprint;
+use crate::include::{IncludeDirectoryVersion, IncludePathFileFingerprint};
 use crate::{DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolStats};
 
 use php_ir::{
@@ -158,6 +158,25 @@ pub struct FunctionCallShape {
     pub arity: u32,
     pub named_arguments: Vec<String>,
     pub by_ref_arguments: Vec<bool>,
+}
+
+/// Persistable snapshot of one monomorphic entry-unit function-call IC site.
+///
+/// Only engine-owned, replay-stable metadata: the callsite coordinates and
+/// target function are IR-derived (guarded by the feedback IR fingerprint),
+/// the lowered name is an interned engine name, and the epoch records the
+/// observation state. Dynamic-unit targets, builtins with implementation
+/// metadata, named arguments, and by-reference shapes carry request-local or
+/// broader guard state and are deliberately not persisted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FunctionCallSiteSnapshot {
+    pub function: u32,
+    pub block: u32,
+    pub instruction: u32,
+    pub lowered_name: String,
+    pub arity: u32,
+    pub epoch: u64,
+    pub target_function: u32,
 }
 
 /// Guarded VM/runtime builtin implementation metadata.
@@ -430,6 +449,9 @@ pub struct IncludePathCacheKey {
 pub struct IncludePathCacheTarget {
     pub canonical_path: PathBuf,
     pub fingerprint: IncludePathFileFingerprint,
+    /// Parent-directory version at resolve time, compared on revalidation for
+    /// the `directory_version_*` counters only — never for hit acceptance.
+    pub directory_version: Option<IncludeDirectoryVersion>,
 }
 
 /// Class-like lookup flavor cached by autoload lookup IC slots.
@@ -450,7 +472,10 @@ pub struct AutoloadClassLookupCacheKey {
     pub autoload_enabled: bool,
     pub autoload_stack_depth: usize,
     pub include_path_config: String,
-    pub composer_map_fingerprint: Option<String>,
+    /// Composer autoload-map fingerprint for the request. `Arc` so building
+    /// one key per class-like lookup is a refcount bump, not a heap copy of
+    /// the (request-constant) fingerprint string.
+    pub composer_map_fingerprint: Option<std::sync::Arc<str>>,
 }
 
 /// Epoch guards that make autoload lookup cache entries request-local and
@@ -597,6 +622,9 @@ impl ClassRelationCache {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InlineCacheSlot {
     pub id: InlineCacheId,
+    /// Entries were installed from persistent feedback (attribution only;
+    /// every guard still validates at lookup).
+    pub seeded: bool,
     pub kind: InlineCacheKind,
     pub state: InlineCacheState,
     pub unit_key: u64,
@@ -641,6 +669,8 @@ pub struct InlineCacheSlot {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InlineCacheObservation {
     pub candidate: bool,
+    /// The slot's current entries were installed from persistent feedback.
+    pub seeded: bool,
     pub slot_allocated: bool,
     pub kind: Option<InlineCacheKind>,
     pub hit: bool,
@@ -714,6 +744,7 @@ impl InlineCacheObservation {
     pub const fn empty() -> Self {
         Self {
             candidate: false,
+            seeded: false,
             slot_allocated: false,
             kind: None,
             hit: false,
@@ -749,6 +780,7 @@ fn record_slot_hit(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
     slot.stats.hits = slot.stats.hits.saturating_add(1);
     slot.stats.protocol.record_guard_hit();
     InlineCacheObservation {
+        seeded: slot.seeded,
         monomorphic: slot.state == InlineCacheState::Monomorphic,
         polymorphic: slot.state == InlineCacheState::Polymorphic,
         ..InlineCacheObservation::hit()
@@ -766,8 +798,13 @@ fn record_slot_invalidation(slot: &mut InlineCacheSlot) -> InlineCacheObservatio
     slot.stats.misses = slot.stats.misses.saturating_add(1);
     slot.stats.protocol.record_cold_fallback();
     slot.state = InlineCacheState::Cold;
+    let seeded = slot.seeded;
+    slot.seeded = false;
     clear_slot_targets(slot);
-    InlineCacheObservation::invalidation()
+    InlineCacheObservation {
+        seeded,
+        ..InlineCacheObservation::invalidation()
+    }
 }
 
 fn record_slot_guard_failure(slot: &mut InlineCacheSlot) -> InlineCacheObservation {
@@ -932,6 +969,7 @@ impl InlineCacheTable {
             key,
             InlineCacheSlot {
                 id,
+                seeded: false,
                 kind,
                 state: InlineCacheState::Cold,
                 unit_key,
@@ -1031,6 +1069,140 @@ impl InlineCacheTable {
                 .then(|| slot.function_call_builtin_metadata.clone())
                 .flatten()
             })
+    }
+
+    /// Exports the entry unit's monomorphic function-call sites in the
+    /// persistable subset (see [`FunctionCallSiteSnapshot`]) for persistent
+    /// feedback. Deterministically ordered by callsite coordinates.
+    #[must_use]
+    pub fn export_persistent_function_callsites(
+        &self,
+        entry_unit_key: u64,
+    ) -> Vec<FunctionCallSiteSnapshot> {
+        let mut sites: Vec<FunctionCallSiteSnapshot> = self
+            .slots
+            .values()
+            .filter_map(|slot| {
+                if slot.kind != InlineCacheKind::FunctionCall
+                    || slot.state != InlineCacheState::Monomorphic
+                    || slot.unit_key != entry_unit_key
+                {
+                    return None;
+                }
+                // A monomorphic site stores either the legacy singleton
+                // fields or exactly one polymorphic-model entry.
+                let (name, shape, builtin_metadata, target, epoch) =
+                    match slot.function_call_polymorphic_entries.as_slice() {
+                        [] => (
+                            slot.function_call_name.as_ref()?,
+                            slot.function_call_shape.as_ref()?,
+                            slot.function_call_builtin_metadata.as_ref(),
+                            slot.function_call_target.as_ref()?,
+                            slot.epoch,
+                        ),
+                        [entry] => (
+                            &entry.lowered_name,
+                            &entry.shape,
+                            entry.builtin_metadata.as_ref(),
+                            &entry.target,
+                            entry.epoch,
+                        ),
+                        _ => return None,
+                    };
+                if builtin_metadata.is_some()
+                    || !shape.named_arguments.is_empty()
+                    || shape.by_ref_arguments.iter().any(|by_ref| *by_ref)
+                {
+                    return None;
+                }
+                let FunctionCallCacheTarget::CurrentUnit { function } = target else {
+                    return None;
+                };
+                Some(FunctionCallSiteSnapshot {
+                    function: slot.function.raw(),
+                    block: slot.block.raw(),
+                    instruction: slot.instruction.raw(),
+                    lowered_name: name.to_string(),
+                    arity: shape.arity,
+                    epoch: epoch.raw(),
+                    target_function: function.raw(),
+                })
+            })
+            .collect();
+        sites.sort_by_key(|site| (site.function, site.block, site.instruction));
+        sites
+    }
+
+    /// Seeds monomorphic function-call IC sites exported by a prior run.
+    ///
+    /// `target_resolves` re-derives the seed's soundness against the current
+    /// entry unit: it must return true only when the recorded target function
+    /// exists and is the one the recorded call name resolves to *now*. This
+    /// closes the gap that the lookup guard cannot — the guard matches
+    /// name/arity/epoch but never re-resolves name→target, so a seed whose
+    /// recorded target no longer matches the name (a namespace-fallback call
+    /// whose namespaced definition now exists, a tampered target id, or an
+    /// out-of-range id) would otherwise dispatch the wrong function. Rejected
+    /// seeds never create a slot or intern a name.
+    ///
+    /// Seeded entries that pass still run behind the **full lookup guard
+    /// protocol**: name, arity shape, and observation epoch must all match at
+    /// the callsite. Already-touched slots are skipped; the returned count
+    /// reflects seeds that took effect.
+    pub fn seed_persistent_function_callsites(
+        &mut self,
+        entry_unit_key: u64,
+        sites: &[FunctionCallSiteSnapshot],
+        target_resolves: impl Fn(&FunctionCallSiteSnapshot) -> bool,
+    ) -> usize {
+        let mut seeded = 0usize;
+        for site in sites {
+            if !target_resolves(site) {
+                continue;
+            }
+            let function = FunctionId::new(site.function);
+            let block = BlockId::new(site.block);
+            let instruction = InstrId::new(site.instruction);
+            let key = inline_cache_key(
+                entry_unit_key,
+                function,
+                block,
+                instruction,
+                InlineCacheKind::FunctionCall,
+            );
+            if self.slots.contains_key(&key) {
+                continue;
+            }
+            self.observe_slot(
+                entry_unit_key,
+                function,
+                block,
+                instruction,
+                InlineCacheKind::FunctionCall,
+            );
+            self.install_function_call(
+                entry_unit_key,
+                function,
+                block,
+                instruction,
+                &PhpString::intern(site.lowered_name.as_bytes()),
+                InvalidationEpoch::new(site.epoch),
+                FunctionCallShape {
+                    arity: site.arity,
+                    named_arguments: Vec::new(),
+                    by_ref_arguments: vec![false; site.arity as usize],
+                },
+                None,
+                FunctionCallCacheTarget::CurrentUnit {
+                    function: FunctionId::new(site.target_function),
+                },
+            );
+            if let Some(slot) = self.slots.get_mut(&key) {
+                slot.seeded = true;
+                seeded += 1;
+            }
+        }
+        seeded
     }
 
     #[expect(
@@ -1187,6 +1359,11 @@ impl InlineCacheTable {
             ) {
                 return;
             }
+            // A runtime install means the slot is no longer purely
+            // seed-derived, so drop seed attribution; the seeder re-sets
+            // `seeded` after its own install call, keeping the flag true only
+            // for slots touched exclusively by seeding.
+            slot.seeded = false;
             let new_entry = FunctionCallPolymorphicEntry {
                 lowered_name: lowered_name.clone(),
                 epoch,
@@ -2343,9 +2520,9 @@ mod tests {
         ClassConstantStaticPropertyCacheTarget, ClassRelationCache, ClassRelationCacheKey,
         ClassRelationCacheLookup, ClassRelationCacheTarget, ClassRelationEpochs, ClassRelationKind,
         FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
-        FunctionCallShape, IncludePathCacheKey, IncludePathCacheTarget, InlineCacheKind,
-        InlineCacheState, InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget,
-        MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape,
+        FunctionCallShape, FunctionCallSiteSnapshot, IncludePathCacheKey, IncludePathCacheTarget,
+        InlineCacheKind, InlineCacheState, InlineCacheTable, InvalidationEpoch,
+        MethodCallCacheTarget, MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape,
         PropertyFetchCacheTarget, PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
     };
     use crate::include::IncludePathFileFingerprint;
@@ -3395,7 +3572,7 @@ mod tests {
             autoload_enabled: true,
             autoload_stack_depth: 0,
             include_path_config: "vendor".to_owned(),
-            composer_map_fingerprint: Some("classmap:1".to_owned()),
+            composer_map_fingerprint: Some(std::sync::Arc::from("classmap:1")),
         };
         let epochs = AutoloadClassLookupEpochs {
             autoload_stack_epoch: 1,
@@ -3535,6 +3712,179 @@ mod tests {
     }
 
     #[test]
+    fn runtime_install_over_a_seeded_slot_drops_seed_attribution() {
+        let mut table = InlineCacheTable::default();
+        let snapshot = FunctionCallSiteSnapshot {
+            function: 0,
+            block: 0,
+            instruction: 0,
+            lowered_name: "seeded".to_owned(),
+            arity: 0,
+            epoch: 1,
+            target_function: 4,
+        };
+        assert_eq!(
+            table.seed_persistent_function_callsites(7, std::slice::from_ref(&snapshot), |_| true),
+            1
+        );
+        // A runtime install at the same site (a second distinct call) clears
+        // the seed flag, so later hits are not misattributed as seeded.
+        table.observe_slot(
+            7,
+            FunctionId::new(0),
+            BlockId::new(0),
+            InstrId::new(0),
+            InlineCacheKind::FunctionCall,
+        );
+        table.install_function_call(
+            7,
+            FunctionId::new(0),
+            BlockId::new(0),
+            InstrId::new(0),
+            &PhpString::intern(b"learned"),
+            InvalidationEpoch::new(1),
+            FunctionCallShape {
+                arity: 0,
+                named_arguments: Vec::new(),
+                by_ref_arguments: Vec::new(),
+            },
+            None,
+            FunctionCallCacheTarget::CurrentUnit {
+                function: FunctionId::new(9),
+            },
+        );
+        let name = PhpString::intern(b"learned");
+        let shape = FunctionCallShape {
+            arity: 0,
+            named_arguments: Vec::new(),
+            by_ref_arguments: Vec::new(),
+        };
+        let (_, observation) = table.lookup_function_call(
+            7,
+            FunctionId::new(0),
+            BlockId::new(0),
+            InstrId::new(0),
+            &name,
+            InvalidationEpoch::new(1),
+            &shape,
+            None,
+        );
+        assert!(observation.hit);
+        assert!(
+            !observation.seeded,
+            "a runtime-learned hit must not attribute to the seed"
+        );
+    }
+
+    #[test]
+    fn seed_rejects_callsites_whose_target_no_longer_resolves() {
+        let mut table = InlineCacheTable::default();
+        let snapshot = FunctionCallSiteSnapshot {
+            function: 0,
+            block: 2,
+            instruction: 7,
+            lowered_name: "app\\f".to_owned(),
+            arity: 0,
+            epoch: 1,
+            target_function: 5,
+        };
+        // Target resolution fails (e.g. the recorded global-f target no longer
+        // matches the namespaced call name, or the id is out of range): no
+        // slot is created, so a later lookup misses instead of dispatching the
+        // wrong function.
+        assert_eq!(
+            table.seed_persistent_function_callsites(1, std::slice::from_ref(&snapshot), |_| false),
+            0
+        );
+        let name = PhpString::intern(b"app\\f");
+        let shape = FunctionCallShape {
+            arity: 0,
+            named_arguments: Vec::new(),
+            by_ref_arguments: Vec::new(),
+        };
+        let (target, _) = table.lookup_function_call(
+            1,
+            FunctionId::new(0),
+            BlockId::new(2),
+            InstrId::new(7),
+            &name,
+            InvalidationEpoch::new(1),
+            &shape,
+            None,
+        );
+        assert!(target.is_none(), "rejected seed must not install a target");
+    }
+
+    #[test]
+    fn seeded_function_callsites_hit_behind_the_full_guard_protocol() {
+        let mut table = InlineCacheTable::default();
+        let snapshot = FunctionCallSiteSnapshot {
+            function: 0,
+            block: 2,
+            instruction: 7,
+            lowered_name: "probe_tag".to_owned(),
+            arity: 1,
+            epoch: 3,
+            target_function: 9,
+        };
+        // This test exercises the lookup guard protocol, not target
+        // resolution, so accept the seed unconditionally.
+        assert_eq!(
+            table.seed_persistent_function_callsites(42, &[snapshot], |_| true),
+            1
+        );
+
+        let name = PhpString::intern(b"probe_tag");
+        let shape = FunctionCallShape {
+            arity: 1,
+            named_arguments: Vec::new(),
+            by_ref_arguments: vec![false],
+        };
+        // Matching name/shape/epoch: the seeded target dispatches and the hit
+        // attributes to the seed.
+        let (target, observation) = table.lookup_function_call(
+            42,
+            FunctionId::new(0),
+            BlockId::new(2),
+            InstrId::new(7),
+            &name,
+            InvalidationEpoch::new(3),
+            &shape,
+            None,
+        );
+        assert_eq!(
+            target,
+            Some(FunctionCallCacheTarget::CurrentUnit {
+                function: FunctionId::new(9)
+            })
+        );
+        assert!(observation.hit);
+        assert!(observation.seeded);
+
+        // A live epoch that diverges from the recorded observation epoch
+        // invalidates the seed back to generic resolution.
+        let (target, observation) = table.lookup_function_call(
+            42,
+            FunctionId::new(0),
+            BlockId::new(2),
+            InstrId::new(7),
+            &name,
+            InvalidationEpoch::new(4),
+            &shape,
+            None,
+        );
+        assert!(target.is_none());
+        assert!(observation.invalidation);
+        assert!(
+            observation.seeded,
+            "the invalidation attributes to the seed"
+        );
+
+        // Exporting a seeded-then-invalidated slot yields nothing.
+        assert!(table.export_persistent_function_callsites(42).is_empty());
+    }
+
+    #[test]
     fn include_path_cache_hits_same_request_and_epoch_after_validation() {
         let function = FunctionId::new(0);
         let block = BlockId::new(0);
@@ -3555,6 +3905,7 @@ mod tests {
                 inode: None,
                 device: None,
             },
+            directory_version: None,
         };
 
         table.observe_slot(
@@ -3630,6 +3981,7 @@ mod tests {
                     inode: None,
                     device: None,
                 },
+                directory_version: None,
             },
         );
         let (cached, event) = table.lookup_include_path(
@@ -3683,6 +4035,7 @@ mod tests {
                     inode: None,
                     device: None,
                 },
+                directory_version: None,
             },
         );
         let (cached, event) = table.lookup_include_path(

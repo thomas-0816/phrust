@@ -171,6 +171,17 @@ phrust_server_include_dependency_metadata_validations_total {}\n\
 phrust_server_include_stale_invalidations_total {}\n\
 phrust_server_include_stale_dependency_invalidations_total {}\n\
 phrust_server_include_compile_errors_total {}\n\
+phrust_server_include_directory_version_hits_total {}\n\
+phrust_server_include_directory_version_misses_total {}\n\
+phrust_server_negative_include_cache_hits_total {}\n\
+phrust_server_negative_include_cache_installs_total {}\n\
+phrust_server_negative_include_cache_invalidations_total {}\n\
+phrust_server_negative_include_cache_blocked_unversioned_total {}\n\
+phrust_server_negative_include_cache_blocked_capacity_total {}\n\
+phrust_server_composer_fingerprint_stale_total {}\n\
+phrust_server_deployment_fingerprint_present_total {}\n\
+phrust_server_deployment_fingerprint_missing_total {}\n\
+phrust_server_deployment_fingerprint_stale_total {}\n\
 phrust_server_entry_script_source_reads_total {}\n\
 phrust_server_include_source_reads_total {}\n\
 phrust_server_response_output_bytes_total {}\n\
@@ -252,6 +263,17 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             include_cache.stale_invalidations,
             include_cache.stale_dependency_invalidations,
             include_cache.compile_errors,
+            include_cache.directory_version_hits,
+            include_cache.directory_version_misses,
+            include_cache.negative_cache_hits,
+            include_cache.negative_cache_installs,
+            include_cache.negative_cache_invalidations,
+            include_cache.negative_cache_blocked_unversioned,
+            include_cache.negative_cache_blocked_capacity,
+            include_cache.composer_fingerprint_stale,
+            include_cache.deployment_fingerprint_present,
+            include_cache.deployment_fingerprint_missing,
+            include_cache.deployment_fingerprint_stale,
             cache.source_reads,
             include_cache.source_reads,
             self.response_output_bytes.load(Ordering::Relaxed),
@@ -328,6 +350,10 @@ pub(crate) fn metrics_response(state: &AppState, parts: &Parts) -> Response<Resp
     {
         return response::text(HttpStatusCode::FORBIDDEN, "forbidden\n");
     }
+    // Re-observe the deployment root's directory version per scrape so
+    // `deployment_fingerprint_stale` attributes root mutations. One stat call;
+    // metadata only.
+    state.engine.include_cache.revalidate_deployment_root();
     response::text_dynamic(
         HttpStatusCode::OK,
         state.metrics.render(

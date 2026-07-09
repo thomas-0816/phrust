@@ -13,9 +13,11 @@ use super::{
     static_files::static_file_response,
 };
 use crate::{
-    response::{self, ResponseBody},
+    response::{self, RequestBody, ResponseBody},
     routing::{ResolvedRoute, resolve_route},
 };
+use bytes::Bytes;
+use http_body_util::BodyExt;
 use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
@@ -46,8 +48,15 @@ pub(crate) async fn serve_until_shutdown(
     listener: TcpListener,
     state: Arc<AppState>,
     tls_acceptor: Option<TlsAcceptor>,
+    http3_endpoint: Option<quinn::Endpoint>,
 ) {
     let mut tasks = JoinSet::new();
+    if let Some(endpoint) = http3_endpoint {
+        let http3_state = Arc::clone(&state);
+        tasks.spawn(async move {
+            super::http3::serve_http3_endpoint(endpoint, http3_state).await;
+        });
+    }
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
     loop {
@@ -103,11 +112,21 @@ pub(crate) async fn handle(
     state: Arc<AppState>,
     peer: SocketAddr,
 ) -> Response<ResponseBody> {
+    let (parts, body) = request.into_parts();
+    handle_parts(parts, incoming_request_body(body), state, peer).await
+}
+
+pub(crate) async fn handle_parts(
+    parts: Parts,
+    body: RequestBody,
+    state: Arc<AppState>,
+    peer: SocketAddr,
+) -> Response<ResponseBody> {
     let started = Instant::now();
     let request_id = state.next_request_id();
     state.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
-    let (parts, body) = request.into_parts();
     let method = parts.method.clone();
+    let request_version = parts.version;
     let request_target = parts
         .uri
         .path_and_query()
@@ -196,7 +215,7 @@ pub(crate) async fn handle(
         route=?route,
         "classified request"
     );
-    let (response, route_kind, cache_hit) = match route {
+    let (mut response, route_kind, cache_hit) = match route {
         ResolvedRoute::Health => match method {
             Method::GET => (response::text(StatusCode::OK, "ok\n"), "health", None),
             Method::HEAD => (response::empty(StatusCode::OK), "health", None),
@@ -323,6 +342,21 @@ pub(crate) async fn handle(
         }
         ResolvedRoute::MethodNotAllowed => (method_not_allowed(), "method-not-allowed", None),
     };
+    if let Some(alt_svc) = &state.http3_alt_svc
+        && request_version != hyper::Version::HTTP_3
+    {
+        match HeaderValue::from_str(alt_svc) {
+            Ok(value) => {
+                response
+                    .headers_mut()
+                    .entry(header::ALT_SVC)
+                    .or_insert(value);
+            }
+            Err(error) => {
+                warn!(%alt_svc, %error, "HTTP/3 Alt-Svc header value is invalid");
+            }
+        }
+    }
     state.metrics.record_response(response.status());
     emit_server_debug(
         &state,
@@ -376,7 +410,7 @@ pub(crate) fn response_content_length(response: &Response<ResponseBody>) -> u64 
 
 async fn execute_builtin_router_before_normal_route(
     parts: &Parts,
-    body: Incoming,
+    body: RequestBody,
     state: Arc<AppState>,
     peer: SocketAddr,
     request_id: &str,
@@ -505,4 +539,13 @@ pub(crate) fn overloaded() -> Response<ResponseBody> {
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
     response
+}
+
+pub(crate) fn incoming_request_body(body: Incoming) -> RequestBody {
+    body.map_err(|error| std::io::Error::other(error.to_string()))
+        .boxed()
+}
+
+pub(crate) fn bytes_request_body(body: Bytes) -> RequestBody {
+    response::request_body_from_bytes(body)
 }

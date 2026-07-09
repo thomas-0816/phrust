@@ -331,9 +331,12 @@ def command_for(
             counters_args = ["--counters-json", str(counters_path)]
         feedback_args: list[str] = []
         if row.require_persistent_feedback and run_dir is not None:
+            # Pin the consumption policy so the row keeps measuring seeded
+            # execution even if the engine default changes.
             feedback_args = [
                 "--persistent-feedback-read",
                 str(run_dir / "advisory-feedback.pff"),
+                "--persistent-feedback-consume=quickening",
                 "--persistent-feedback-stats-json",
                 str(run_dir / f"iter-{label}.persistent-feedback.json"),
             ]

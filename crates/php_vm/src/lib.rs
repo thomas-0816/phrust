@@ -71,10 +71,13 @@ pub mod api {
     };
     pub use crate::error::{VmError, VmErrorSeverity};
     pub use crate::include::{
-        IncludeCache, IncludeCacheStats, IncludeLoader, IncludePathFileFingerprint, LoadedInclude,
-        ResolvedIncludePath,
+        ComposerFingerprintTransition, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache,
+        IncludeCacheStats, IncludeDirectoryVersion, IncludeLoader, IncludePathFileFingerprint,
+        LoadedInclude, ResolvedIncludePath, composer_autoload_map_fingerprint,
+        include_directory_version, negative_include_cache_enabled,
     };
-    pub use crate::inline_cache::InlineCacheMode;
+    pub use crate::inline_cache::{FunctionCallSiteSnapshot, InlineCacheMode};
+    pub use crate::persistent_feedback::PersistentFeedbackEpochs;
     pub use crate::quickening::{QuickeningMode, QuickeningSiteKey, QuickeningSiteSnapshot};
     pub use crate::tiering::{TieringOptions, TieringStats};
     pub use crate::vm::{
@@ -131,6 +134,8 @@ pub mod experimental {
     #[doc(hidden)]
     pub use crate::frame::{CallStack, Frame, RegisterFile};
     #[doc(hidden)]
+    pub use crate::inline_cache::FunctionCallSiteSnapshot;
+    #[doc(hidden)]
     pub use crate::inline_cache::{
         ClassConstantStaticPropertyCacheKind, ClassConstantStaticPropertyCacheTarget,
         ClassRelationCache, ClassRelationCacheEntry, ClassRelationCacheKey,
@@ -152,9 +157,9 @@ pub mod experimental {
         PERSISTENT_FEEDBACK_FORMAT_VERSION, PERSISTENT_FEEDBACK_STATS_SCHEMA_VERSION,
         PersistentArrayKeyShape, PersistentArrayLayout, PersistentBranchBias,
         PersistentCallsiteState, PersistentFeedbackContext, PersistentFeedbackEntry,
-        PersistentFeedbackEpochs, PersistentFeedbackKey, PersistentFeedbackLoadReport,
-        PersistentFeedbackPayload, PersistentFeedbackStats, PersistentFeedbackStore,
-        PersistentGuardFailureSummary, PersistentIncludeAutoloadStability,
+        PersistentFeedbackEpochValidation, PersistentFeedbackEpochs, PersistentFeedbackKey,
+        PersistentFeedbackLoadReport, PersistentFeedbackPayload, PersistentFeedbackStats,
+        PersistentFeedbackStore, PersistentGuardFailureSummary, PersistentIncludeAutoloadStability,
         PersistentObjectShapeObservation, PersistentScalarKind,
     };
     #[doc(hidden)]

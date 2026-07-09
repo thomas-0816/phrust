@@ -59,6 +59,9 @@ pub struct QuickeningObservation {
     pub dequickened: bool,
     pub megamorphic: bool,
     pub disabled: bool,
+    /// The site's specialization came from persistent feedback, so guard
+    /// hits/dequickens here attribute to the seed, not runtime warm-up.
+    pub seeded: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -163,6 +166,9 @@ struct QuickeningEntry {
     /// slots live in pre-grown vectors, and only slots a writer has handed
     /// out (observe or candidate observation) read as present.
     present: bool,
+    /// This site's state was installed from persistent feedback rather than
+    /// learned at runtime; kept for seeded-vs-dequickened attribution.
+    seeded: bool,
 }
 
 impl Default for QuickeningEntry {
@@ -173,6 +179,7 @@ impl Default for QuickeningEntry {
             specialization: None,
             stats: FallbackProtocolStats::default(),
             present: false,
+            seeded: false,
         }
     }
 }
@@ -220,11 +227,13 @@ impl QuickeningEntry {
 
     fn record_specialized_guard(&mut self, hit: bool) -> QuickeningObservation {
         let specialization = self.specialization;
+        let seeded = self.seeded;
         if hit {
             let event = self.stats.record_guard_hit();
             return QuickeningObservation {
                 specialization,
                 guard_hit: event.guard_hit,
+                seeded,
                 ..QuickeningObservation::default()
             };
         }
@@ -249,6 +258,7 @@ impl QuickeningEntry {
             fallback_call: fallback.fallback_call,
             dequickened,
             megamorphic,
+            seeded,
             ..QuickeningObservation::default()
         }
     }
@@ -666,6 +676,7 @@ impl QuickeningTable {
                     entry.state = QuickeningState::Specialized;
                     entry.specialization = Some(specialization);
                     entry.executions = SPECIALIZE_AFTER_EXECUTIONS;
+                    entry.seeded = true;
                     seeded += 1;
                 }
                 QuickeningState::Blacklisted => {
@@ -674,6 +685,7 @@ impl QuickeningTable {
                         continue;
                     }
                     entry.state = QuickeningState::Blacklisted;
+                    entry.seeded = true;
                     seeded += 1;
                 }
                 QuickeningState::Uninitialized
@@ -894,6 +906,10 @@ mod tests {
         assert!(second.fallback_call);
         assert!(second.dequickened);
         assert!(second.megamorphic);
+        assert!(
+            !second.seeded,
+            "a runtime-learned site never attributes to persistent feedback"
+        );
         assert_eq!(
             table.state(function, block, instruction),
             Some(QuickeningState::Dequickened)
@@ -993,11 +1009,45 @@ mod tests {
             Some(QuickeningState::Specialized)
         );
 
-        // A wrong seed still dequickens through the normal guard protocol.
-        cold.record_dense_specialized_guard(unit, function, 3, false);
+        // A wrong seed still dequickens through the normal guard protocol,
+        // and both observations attribute to the persistent-feedback seed.
+        let first = cold.record_dense_specialized_guard(unit, function, 3, false);
+        assert!(first.seeded);
         let second = cold.record_dense_specialized_guard(unit, function, 3, false);
         assert!(second.dequickened);
+        assert!(
+            second.seeded,
+            "the dequicken of a seeded site attributes to the seed"
+        );
         assert_eq!(cold.dense_specialization(unit, function, 3), None);
+    }
+
+    #[test]
+    fn seeded_guard_hits_attribute_to_the_persistent_seed() {
+        let mut warm = QuickeningTable::default();
+        let unit = UnitId::new(0);
+        let function = FunctionId::new(0);
+        for _ in 0..8 {
+            warm.observe_dense(unit, function, 3);
+        }
+        warm.observe_dense_int_int_candidate(
+            unit,
+            function,
+            3,
+            QuickeningSpecialization::AddIntInt,
+        );
+        let exported = warm.export_persistent_sites();
+
+        let mut cold = QuickeningTable::default();
+        assert_eq!(cold.seed_persistent_sites(&exported), 1);
+        let hit = cold.record_dense_specialized_guard(unit, function, 3, true);
+        assert!(hit.guard_hit);
+        assert!(hit.seeded);
+
+        // The same guard hit on a runtime-learned table is not attributed.
+        let learned_hit = warm.record_dense_specialized_guard(unit, function, 3, true);
+        assert!(learned_hit.guard_hit);
+        assert!(!learned_hit.seeded);
     }
 
     #[test]

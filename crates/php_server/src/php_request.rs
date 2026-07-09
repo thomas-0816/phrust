@@ -10,14 +10,14 @@ use crate::{
     multipart::{
         MultipartError, cleanup_uploaded_files, multipart_boundary, parse_multipart_into_context,
     },
-    response::{self, ResponseBody},
+    response::{self, RequestBody, ResponseBody},
     routing::RequestRewriteRule,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::{
-    Method, Response, StatusCode,
-    body::Incoming,
+    Method, Response, StatusCode, Version,
     header::{self, HeaderName, HeaderValue},
     http::{HeaderMap, request::Parts},
 };
@@ -41,8 +41,14 @@ use tracing::{debug, warn};
 
 pub(crate) struct PartsAndBody {
     pub(crate) parts: Parts,
-    pub(crate) body: Incoming,
+    pub(crate) body: RequestBody,
 }
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RequestLocalAddr(pub(crate) SocketAddr);
+
+#[derive(Clone, Copy, Debug)]
+struct PhpResponseBytes(u64);
 
 pub(crate) async fn execute_php_request(
     request: PartsAndBody,
@@ -247,7 +253,8 @@ pub(crate) async fn execute_php_request(
                     ),
                 ]),
             );
-            let response = php_output_response(*output, parts.method == Method::HEAD);
+            let response =
+                php_output_response(*output, parts.method == Method::HEAD, parts.version);
             return finish_php_request(&state, trace, response, None, Some("script_cache"));
         }
         Err(PhpExecutionError::Engine(_)) => {
@@ -626,7 +633,7 @@ pub(crate) async fn execute_php_request(
             }
             log_php_execution_failure(&script_log_path, &output);
             let response_started = Instant::now();
-            let response = php_output_response(output, is_head);
+            let response = php_output_response(output, is_head, parts.version);
             record_phase(
                 &state,
                 &mut trace,
@@ -657,7 +664,7 @@ pub(crate) async fn execute_php_request(
                     ),
                 ]),
             );
-            let response = php_output_response(*output, is_head);
+            let response = php_output_response(*output, is_head, parts.version);
             finish_php_request(
                 &state,
                 trace,
@@ -752,7 +759,7 @@ pub(crate) fn execute_builtin_router_if_configured(
     let lookup = match state.compile_script(&router_path) {
         Ok(lookup) => lookup,
         Err(PhpExecutionError::Compile(output)) => {
-            return Some(php_output_response(*output, false));
+            return Some(php_output_response(*output, false, parts.version));
         }
         Err(PhpExecutionError::Engine(error)) => {
             warn!(script=%router_path.display(), %error, "router compile engine error");
@@ -792,7 +799,11 @@ pub(crate) fn execute_builtin_router_if_configured(
     if matches!(output.return_value, Some(Value::Bool(false))) {
         None
     } else {
-        Some(php_output_response(output, parts.method == Method::HEAD))
+        Some(php_output_response(
+            output,
+            parts.method == Method::HEAD,
+            parts.version,
+        ))
     }
 }
 
@@ -1212,6 +1223,7 @@ pub(crate) fn multipart_error_response(
 pub(crate) fn php_output_response(
     output: PhpExecutionOutput,
     is_head: bool,
+    request_version: Version,
 ) -> Response<ResponseBody> {
     let status = match output.status {
         PhpExecutionStatus::Success => {
@@ -1231,7 +1243,13 @@ pub(crate) fn php_output_response(
     } else {
         Bytes::from(output.stdout)
     };
-    let content_length = if is_head { stdout_len } else { body.len() };
+    let content_length = if is_head {
+        Some(stdout_len)
+    } else if execution_failed || request_version != Version::HTTP_2 {
+        Some(body.len())
+    } else {
+        None
+    };
     php_transport_response(status, body, content_length, &output.http_response)
 }
 
@@ -1259,7 +1277,7 @@ pub(crate) fn php_timeout_response(
     php_transport_response(
         StatusCode::GATEWAY_TIMEOUT,
         body,
-        content_length,
+        Some(content_length),
         http_response,
     )
 }
@@ -1267,12 +1285,18 @@ pub(crate) fn php_timeout_response(
 pub(crate) fn php_transport_response(
     status: StatusCode,
     body: Bytes,
-    content_length: usize,
+    content_length: Option<usize>,
     http_response: &RuntimeHttpResponseState,
 ) -> Response<ResponseBody> {
+    let response_bytes = body.len() as u64;
+    let response_body = if content_length.is_some() {
+        response::full_body(body)
+    } else {
+        response::stream_body_from_bytes(body)
+    };
     let mut response = Response::builder()
         .status(status)
-        .body(response::full_body(body))
+        .body(response_body)
         .expect("php response builder is valid");
     let headers = response.headers_mut();
     for header in &http_response.headers {
@@ -1293,10 +1317,16 @@ pub(crate) fn php_transport_response(
             HeaderValue::from_static(PHP_CONTENT_TYPE),
         );
     }
-    headers.insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&content_length.to_string()).expect("content length header is valid"),
-    );
+    if let Some(content_length) = content_length {
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&content_length.to_string())
+                .expect("content length header is valid"),
+        );
+    }
+    response
+        .extensions_mut()
+        .insert(PhpResponseBytes(response_bytes));
     response
 }
 
@@ -1309,7 +1339,7 @@ pub(crate) enum BodyReadError {
 }
 
 pub(crate) async fn read_limited_body(
-    mut body: Incoming,
+    mut body: RequestBody,
     max_body_bytes: usize,
 ) -> Result<Arc<[u8]>, BodyReadError> {
     let mut bytes = Vec::new();
@@ -1354,12 +1384,24 @@ pub(crate) fn http_runtime_context(
     context.scheme = state.request_scheme.to_string();
     context.host = host;
     context.server_name = server_name_from_host(&context.host);
-    context.server_port = state.local_addr.port();
+    let local_addr = parts
+        .extensions
+        .get::<RequestLocalAddr>()
+        .map_or(state.local_addr, |addr| addr.0);
+    context.server_addr = local_addr.ip().to_string();
+    context.server_port = local_addr.port();
     context.server_protocol = format!("{:?}", parts.version);
     context.https = state.request_scheme == "https";
     context.php_self = php_self_for(script_name, path_info.as_deref());
     context.path_info = path_info;
     context.remote_addr = peer.ip().to_string();
+    context.remote_port = Some(peer.port());
+    if let Some((user, password)) = basic_authorization(&parts.headers) {
+        context.auth_type = Some("Basic".to_string());
+        context.remote_user = Some(user.clone());
+        context.php_auth_user = Some(user);
+        context.php_auth_pw = Some(password);
+    }
     context.request_time = request_time;
     context.request_time_float_micros = request_time_float_micros;
     let header_snapshot = runtime_headers(&parts.headers);
@@ -1526,6 +1568,12 @@ fn finish_php_request(
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| {
+            response
+                .extensions()
+                .get::<PhpResponseBytes>()
+                .map(|bytes| bytes.0)
+        })
         .unwrap_or(0);
     state
         .metrics
@@ -1550,6 +1598,23 @@ pub(crate) fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Opt
         .get(name)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
+}
+
+fn basic_authorization(headers: &HeaderMap) -> Option<(String, String)> {
+    let authorization = header_value(headers, header::AUTHORIZATION)?;
+    let mut parts = authorization.splitn(2, char::is_whitespace);
+    let scheme = parts.next()?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let token = parts.next()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let decoded = BASE64_STANDARD.decode(token.as_bytes()).ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (user, password) = decoded.split_once(':')?;
+    Some((user.to_string(), password.to_string()))
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]

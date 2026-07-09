@@ -43,6 +43,43 @@ pub struct IncludePathFileFingerprint {
     pub device: Option<u64>,
 }
 
+/// Portable directory version for the include/autoload graph.
+///
+/// Captures the directory's modification time and filesystem identity where
+/// the platform exposes them. Compared by equality: a `None` field only ever
+/// matches another `None`, so missing platform data narrows reuse instead of
+/// widening it (fail-closed). Directory versions are metadata and counters
+/// only today — negative include-path caching stays disabled until a
+/// validated policy consumes them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IncludeDirectoryVersion {
+    pub modified_unix_nanos: Option<u128>,
+    pub inode: Option<u64>,
+    pub device: Option<u64>,
+}
+
+/// Observes a directory's current version. `None` means the directory could
+/// not be inspected; callers must treat that as "unvalidated", never as a
+/// match.
+#[must_use]
+pub fn include_directory_version(dir: &Path) -> Option<IncludeDirectoryVersion> {
+    let metadata = fs::metadata(dir).ok()?;
+    if !metadata.is_dir() {
+        return None;
+    }
+    let modified_unix_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    let (inode, device) = file_identity(&metadata);
+    Some(IncludeDirectoryVersion {
+        modified_unix_nanos,
+        inode,
+        device,
+    })
+}
+
 /// Result of resolving one include target without loading its contents.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedIncludePath {
@@ -50,15 +87,110 @@ pub struct ResolvedIncludePath {
     pub canonical_path: PathBuf,
     /// File metadata fingerprint used to invalidate stale path resolutions.
     pub fingerprint: IncludePathFileFingerprint,
+    /// Version of the canonical path's parent directory at resolve time.
+    /// Metadata only: revalidation compares it for the directory-version
+    /// counters without changing whether the resolution is accepted. `None`
+    /// (phar entries, uninspectable directories) always counts as a miss.
+    pub directory_version: Option<IncludeDirectoryVersion>,
+}
+
+/// Per-shard capacity bound for negative include-path entries. Autoloader
+/// probing can generate unbounded distinct missing paths (class names can be
+/// user-influenced), so growth must be capped; overflow skips installation
+/// and counts `negative_cache_blocked_capacity` instead.
+const NEGATIVE_INCLUDE_CACHE_SHARD_CAPACITY: usize = 1024;
+
+/// Process-global enable for directory-version-validated negative
+/// include-path caching, read once. Default **on**: a cached miss is only
+/// served while the directory version of every probed candidate's parent is
+/// byte-identical to install time, so a file appearing anywhere the original
+/// probe looked invalidates the entry (a directory's mtime/identity changes
+/// when entries are created or removed). Set `PHRUST_NEGATIVE_INCLUDE_CACHE`
+/// to a falsey value (`0`, `off`, `false`, `no`, or empty) to disable.
+#[must_use]
+pub fn negative_include_cache_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("PHRUST_NEGATIVE_INCLUDE_CACHE") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "false" | "no" | ""
+        ),
+        Err(_) => true,
+    })
+}
+
+/// Directory-version guards for a candidate parent, captured by the loader
+/// immediately BEFORE probing that candidate so a file created concurrently
+/// with (or after) the probe changes the version and invalidates the guard.
+/// `None` means the miss is not cacheable — an unversionable/relative parent,
+/// a non-`NotFound` (transient) failure, or a symlink candidate whose target
+/// could appear in a directory these guards do not cover.
+pub(crate) struct NegativeProbeTrace {
+    guards: Option<Vec<NegativeProbeGuard>>,
+}
+
+impl NegativeProbeTrace {
+    fn uncacheable() -> Self {
+        Self { guards: None }
+    }
+}
+
+/// One probed missing candidate and the parent-directory version observed
+/// before the probe. The candidate path itself is rechecked on replay so files
+/// that appear on filesystems with coarse directory-mtime granularity still
+/// invalidate the cached miss.
+#[derive(Clone, Debug)]
+struct NegativeProbeGuard {
+    candidate: PathBuf,
+    directory: PathBuf,
+    directory_version: IncludeDirectoryVersion,
+}
+
+/// One cached missing-include resolution: the deterministic error to replay
+/// plus the directory-version guards that must all still match for the entry
+/// to be served.
+#[derive(Clone, Debug)]
+struct NegativeIncludeEntry {
+    error: VmError,
+    guards: Vec<NegativeProbeGuard>,
+}
+
+impl NegativeIncludeEntry {
+    fn is_still_valid(&self) -> bool {
+        self.guards.iter().all(|guard| {
+            fs::symlink_metadata(&guard.candidate).is_err()
+                && include_directory_version(&guard.directory)
+                    .is_some_and(|current| current == guard.directory_version)
+        })
+    }
 }
 
 /// Shared process-local include cache for resolution and compiled include units.
 #[derive(Debug)]
 pub struct IncludeCache {
     resolution_shards: Vec<Mutex<HashMap<IncludeResolutionKey, ResolvedIncludePath>>>,
+    negative_shards: Vec<Mutex<HashMap<IncludeResolutionKey, NegativeIncludeEntry>>>,
     compile_shards: Vec<Mutex<HashMap<CompiledIncludeKey, Arc<CompiledUnit>>>>,
     compile_locks: Vec<IncludeCompileLockShard>,
     stats: IncludeCacheCounters,
+    /// Deployment-root fingerprint installed by production-mode server runs.
+    /// Metadata only: revalidation feeds the `deployment_fingerprint_*`
+    /// counters without changing any cache decision.
+    deployment_root: Mutex<Option<DeploymentRootFingerprint>>,
+    /// Last Composer map fingerprint observed by a request, for cross-request
+    /// staleness attribution. `Some(None)` records "observed, no map found".
+    composer_last_fingerprint: Mutex<Option<Option<String>>>,
+}
+
+/// Cross-request transition of the observed Composer map fingerprint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComposerFingerprintTransition {
+    /// First observation in this process, or unchanged since the last one.
+    Unchanged,
+    /// The fingerprint differs from the previous request's observation — the
+    /// deployment's autoload maps changed while the process was running.
+    Changed,
 }
 
 impl IncludeCache {
@@ -70,6 +202,9 @@ impl IncludeCache {
             resolution_shards: (0..shard_count)
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect(),
+            negative_shards: (0..shard_count)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
             compile_shards: (0..shard_count)
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect(),
@@ -77,7 +212,75 @@ impl IncludeCache {
                 .map(|_| IncludeCompileLockShard::default())
                 .collect(),
             stats: IncludeCacheCounters::default(),
+            deployment_root: Mutex::new(None),
+            composer_last_fingerprint: Mutex::new(None),
         }
+    }
+
+    /// Installs the deployment-root fingerprint for this process. Counts
+    /// `deployment_fingerprint_present` when the root was observable and
+    /// `deployment_fingerprint_missing` otherwise; a `None` fingerprint keeps
+    /// the slot empty so later revalidations keep counting `missing`.
+    pub fn set_deployment_root_fingerprint(&self, fingerprint: Option<DeploymentRootFingerprint>) {
+        match &fingerprint {
+            Some(_) => {
+                self.stats
+                    .deployment_fingerprint_present
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            None => {
+                self.stats
+                    .deployment_fingerprint_missing
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if let Ok(mut slot) = self.deployment_root.lock() {
+            *slot = fingerprint;
+        }
+    }
+
+    /// Re-observes the deployment root's directory version and counts
+    /// `deployment_fingerprint_stale` when it no longer matches the installed
+    /// fingerprint. Metadata only — no cache entries are invalidated here.
+    pub fn revalidate_deployment_root(&self) {
+        let Ok(slot) = self.deployment_root.lock() else {
+            return;
+        };
+        let Some(fingerprint) = slot.as_ref() else {
+            return;
+        };
+        let current = include_directory_version(&fingerprint.canonical_root);
+        let matches = match (&fingerprint.directory_version, &current) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        if !matches {
+            self.stats
+                .deployment_fingerprint_stale
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Records the Composer map fingerprint a request observed and reports
+    /// whether it changed since the previous request in this process.
+    pub fn note_composer_fingerprint(
+        &self,
+        current: Option<&str>,
+    ) -> ComposerFingerprintTransition {
+        let Ok(mut last) = self.composer_last_fingerprint.lock() else {
+            return ComposerFingerprintTransition::Unchanged;
+        };
+        let transition = match last.as_ref() {
+            Some(previous) if previous.as_deref() != current => {
+                self.stats
+                    .composer_fingerprint_stale
+                    .fetch_add(1, Ordering::Relaxed);
+                ComposerFingerprintTransition::Changed
+            }
+            _ => ComposerFingerprintTransition::Unchanged,
+        };
+        *last = Some(current.map(str::to_owned));
+        transition
     }
 
     /// Resolves an include path through a shared process-local cache.
@@ -99,6 +302,11 @@ impl IncludeCache {
                 match include_path_file_fingerprint(&resolved.canonical_path) {
                     Ok(current) if current == resolved.fingerprint => {
                         self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
+                        // Observe the directory version after dropping the
+                        // shard lock so the extra stat never serializes other
+                        // threads on this shard.
+                        drop(shard);
+                        self.observe_directory_version(&resolved);
                         return Ok(resolved);
                     }
                     Ok(_) | Err(_) => {
@@ -110,13 +318,105 @@ impl IncludeCache {
                 }
             }
         }
+        if let Some(error) = self.lookup_negative_include(&key) {
+            return Err(error);
+        }
         self.stats.resolution_misses.fetch_add(1, Ordering::Relaxed);
-        let resolved = loader.resolve_with_include_path(including_file, path, include_path, cwd)?;
+        let resolved = match loader.resolve_with_include_path_traced(
+            including_file,
+            path,
+            include_path,
+            cwd,
+        ) {
+            Ok(resolved) => resolved,
+            Err((error, trace)) => {
+                self.maybe_install_negative_include(key, &error, trace);
+                return Err(error);
+            }
+        };
         let mut shard = self.resolution_shards[shard_index]
             .lock()
             .map_err(|_| include_cache_lock_error("resolution", "insert"))?;
         shard.entry(key).or_insert_with(|| resolved.clone());
         Ok(resolved)
+    }
+
+    /// Serves a cached missing-include failure only while every guard
+    /// directory version still matches. Any changed or unobservable guard
+    /// drops the entry and falls back to full resolution.
+    fn lookup_negative_include(&self, key: &IncludeResolutionKey) -> Option<VmError> {
+        if !negative_include_cache_enabled() {
+            return None;
+        }
+        let shard_index = self.negative_shard_index(key);
+        // Clone the entry out, then validate its directory-version guards
+        // (a stat per guard) WITHOUT holding the shard lock, so concurrent
+        // threads hashing to this shard do not convoy on filesystem I/O.
+        // A poisoned shard is advisory-degraded to a cache miss, never a hard
+        // include failure.
+        let entry = {
+            let shard = self.negative_shards[shard_index].lock().ok()?;
+            shard.get(key)?.clone()
+        };
+        if entry.is_still_valid() {
+            self.stats
+                .negative_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return Some(entry.error);
+        }
+        if let Ok(mut shard) = self.negative_shards[shard_index].lock() {
+            shard.remove(key);
+        }
+        self.stats
+            .negative_cache_invalidations
+            .fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    /// Installs a directory-version-guarded negative entry for a missing
+    /// include path. Fail-closed: only a genuine `E_PHP_VM_INCLUDE_MISSING`
+    /// whose loader trace captured pre-probe versions for every (absolute,
+    /// non-symlink, ENOENT) candidate parent is cacheable, and each shard is
+    /// capacity-bounded.
+    fn maybe_install_negative_include(
+        &self,
+        key: IncludeResolutionKey,
+        error: &VmError,
+        trace: NegativeProbeTrace,
+    ) {
+        if !negative_include_cache_enabled() || error.code() != "E_PHP_VM_INCLUDE_MISSING" {
+            return;
+        }
+        let Some(guards) = trace.guards.filter(|guards| !guards.is_empty()) else {
+            self.stats
+                .negative_cache_blocked_unversioned
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let entry = NegativeIncludeEntry {
+            error: error.clone(),
+            guards,
+        };
+        let shard_index = self.negative_shard_index(&key);
+        let Ok(mut shard) = self.negative_shards[shard_index].lock() else {
+            return;
+        };
+        if shard.len() >= NEGATIVE_INCLUDE_CACHE_SHARD_CAPACITY && !shard.contains_key(&key) {
+            self.stats
+                .negative_cache_blocked_capacity
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        shard.insert(key, entry);
+        self.stats
+            .negative_cache_installs
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn negative_shard_index(&self, key: &IncludeResolutionKey) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.negative_shards.len()
     }
 
     /// Returns a compiled include unit for a resolved path, compiling on miss.
@@ -232,6 +532,31 @@ impl IncludeCache {
         Ok(None)
     }
 
+    /// Compares the stored parent-directory version against the current one
+    /// and records the directory-version counters. Metadata only: this never
+    /// affects whether the resolution hit is accepted — it measures how often
+    /// a future directory-version-validated negative cache would have been
+    /// consistent.
+    fn observe_directory_version(&self, resolved: &ResolvedIncludePath) {
+        let current = resolved
+            .canonical_path
+            .parent()
+            .and_then(include_directory_version);
+        let matches = match (&resolved.directory_version, &current) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        if matches {
+            self.stats
+                .directory_version_hits
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.stats
+                .directory_version_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn dependencies_are_fresh(&self, key: &CompiledIncludeKey) -> Result<bool, VmError> {
         for dependency in &key.local_dependencies {
             self.stats
@@ -251,6 +576,12 @@ impl IncludeCache {
             shard
                 .lock()
                 .map_err(|_| include_cache_lock_error("resolution", "clear"))?
+                .clear();
+        }
+        for shard in &self.negative_shards {
+            shard
+                .lock()
+                .map_err(|_| include_cache_lock_error("negative", "clear"))?
                 .clear();
         }
         for shard in &self.compile_shards {
@@ -281,6 +612,38 @@ impl IncludeCache {
                 .stale_dependency_invalidations
                 .load(Ordering::Relaxed),
             compile_errors: self.stats.compile_errors.load(Ordering::Relaxed),
+            directory_version_hits: self.stats.directory_version_hits.load(Ordering::Relaxed),
+            directory_version_misses: self.stats.directory_version_misses.load(Ordering::Relaxed),
+            composer_fingerprint_stale: self
+                .stats
+                .composer_fingerprint_stale
+                .load(Ordering::Relaxed),
+            deployment_fingerprint_present: self
+                .stats
+                .deployment_fingerprint_present
+                .load(Ordering::Relaxed),
+            deployment_fingerprint_missing: self
+                .stats
+                .deployment_fingerprint_missing
+                .load(Ordering::Relaxed),
+            deployment_fingerprint_stale: self
+                .stats
+                .deployment_fingerprint_stale
+                .load(Ordering::Relaxed),
+            negative_cache_hits: self.stats.negative_cache_hits.load(Ordering::Relaxed),
+            negative_cache_installs: self.stats.negative_cache_installs.load(Ordering::Relaxed),
+            negative_cache_invalidations: self
+                .stats
+                .negative_cache_invalidations
+                .load(Ordering::Relaxed),
+            negative_cache_blocked_unversioned: self
+                .stats
+                .negative_cache_blocked_unversioned
+                .load(Ordering::Relaxed),
+            negative_cache_blocked_capacity: self
+                .stats
+                .negative_cache_blocked_capacity
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -355,6 +718,17 @@ pub struct IncludeCacheStats {
     pub stale_invalidations: u64,
     pub stale_dependency_invalidations: u64,
     pub compile_errors: u64,
+    pub directory_version_hits: u64,
+    pub directory_version_misses: u64,
+    pub composer_fingerprint_stale: u64,
+    pub deployment_fingerprint_present: u64,
+    pub deployment_fingerprint_missing: u64,
+    pub deployment_fingerprint_stale: u64,
+    pub negative_cache_hits: u64,
+    pub negative_cache_installs: u64,
+    pub negative_cache_invalidations: u64,
+    pub negative_cache_blocked_unversioned: u64,
+    pub negative_cache_blocked_capacity: u64,
 }
 
 #[derive(Debug, Default)]
@@ -368,6 +742,17 @@ struct IncludeCacheCounters {
     stale_invalidations: AtomicU64,
     stale_dependency_invalidations: AtomicU64,
     compile_errors: AtomicU64,
+    directory_version_hits: AtomicU64,
+    directory_version_misses: AtomicU64,
+    composer_fingerprint_stale: AtomicU64,
+    deployment_fingerprint_present: AtomicU64,
+    deployment_fingerprint_missing: AtomicU64,
+    deployment_fingerprint_stale: AtomicU64,
+    negative_cache_hits: AtomicU64,
+    negative_cache_installs: AtomicU64,
+    negative_cache_invalidations: AtomicU64,
+    negative_cache_blocked_unversioned: AtomicU64,
+    negative_cache_blocked_capacity: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -516,21 +901,51 @@ impl IncludeLoader {
         include_path: &[PathBuf],
         cwd: Option<&Path>,
     ) -> Result<ResolvedIncludePath, VmError> {
+        self.resolve_with_include_path_traced(including_file, path, include_path, cwd)
+            .map_err(|(error, _)| error)
+    }
+
+    /// Like [`Self::resolve_with_include_path`] but also reports, when
+    /// resolution fails as a genuine missing path, the directory-version
+    /// guards needed to install a negative-cache entry — captured immediately
+    /// BEFORE probing each candidate so a file created concurrently with the
+    /// probe invalidates the guard. Non-local failures (disabled loader,
+    /// stream schemes, phar, non-`NotFound` errors, symlink/relative
+    /// candidates) yield an uncacheable trace.
+    // The error variant is cold (resolution failures) and immediately
+    // consumed by the negative-cache installer; boxing would only add an
+    // allocation on the diagnostic path.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn resolve_with_include_path_traced(
+        &self,
+        including_file: Option<&Path>,
+        path: &str,
+        include_path: &[PathBuf],
+        cwd: Option<&Path>,
+    ) -> Result<ResolvedIncludePath, (VmError, NegativeProbeTrace)> {
         if self.allowed_roots.is_empty() {
-            return Err(include_error(
-                "E_PHP_VM_INCLUDE_DISABLED",
-                "include loader has no allowed roots",
+            return Err((
+                include_error(
+                    "E_PHP_VM_INCLUDE_DISABLED",
+                    "include loader has no allowed roots",
+                ),
+                NegativeProbeTrace::uncacheable(),
             ));
         }
         if phar::is_phar_uri(path) {
-            return self.resolve_phar_include(path, cwd);
+            return self
+                .resolve_phar_include(path, cwd)
+                .map_err(|error| (error, NegativeProbeTrace::uncacheable()));
         }
         if path.contains("://") {
-            return Err(include_error(
-                "E_PHP_VM_INCLUDE_UNSUPPORTED_SCHEME",
-                format!("stream include `{path}` is not supported"),
-            )
-            .with_context("path", path));
+            return Err((
+                include_error(
+                    "E_PHP_VM_INCLUDE_UNSUPPORTED_SCHEME",
+                    format!("stream include `{path}` is not supported"),
+                )
+                .with_context("path", path),
+                NegativeProbeTrace::uncacheable(),
+            ));
         }
         let raw = Path::new(path);
         let mut candidates = Vec::new();
@@ -558,15 +973,71 @@ impl IncludeLoader {
             }
             push_include_candidate(&mut candidates, raw.to_path_buf());
         }
+        // Capture negative-cache guards only when the cache would use them.
+        // Each guard is the version of a candidate's parent directory read
+        // *before* that candidate is probed, so a file created concurrently
+        // with (or after) the probe changes the version and invalidates the
+        // guard. `cacheable` stays true only while every failed candidate is a
+        // non-symlink path that failed with NotFound and whose parent is
+        // versionable; a non-NotFound (transient permission/IO) failure or a
+        // dangling symlink (whose target may appear in an unguarded directory)
+        // makes the miss unsafe to cache. Relative candidates are anchored at
+        // the process working directory, matching how `fs::canonicalize`
+        // resolves them (residual limit: a mid-process `chdir` is not captured
+        // in the resolution key — the server and CLI never chdir while serving).
+        let capture_guards = negative_include_cache_enabled();
+        let mut process_cwd: Option<Option<PathBuf>> = None;
+        let mut guards: Vec<NegativeProbeGuard> = Vec::new();
+        let mut cacheable = capture_guards;
         let mut last_error = None;
         let mut canonical = None;
-        for candidate in candidates {
-            match fs::canonicalize(&candidate) {
+        for candidate in &candidates {
+            let mut guard_candidate = None;
+            if cacheable {
+                let absolute = if candidate.is_absolute() {
+                    Some(candidate.clone())
+                } else {
+                    let cwd = process_cwd
+                        .get_or_insert_with(|| std::env::current_dir().ok())
+                        .clone();
+                    cwd.map(|cwd| cwd.join(candidate))
+                };
+                match absolute.and_then(|path| {
+                    let parent = path.parent()?.to_path_buf();
+                    Some((path, parent))
+                }) {
+                    Some((path, parent)) => match include_directory_version(&parent) {
+                        Some(version) => {
+                            guard_candidate = Some(NegativeProbeGuard {
+                                candidate: path,
+                                directory: parent,
+                                directory_version: version,
+                            });
+                        }
+                        None => cacheable = false,
+                    },
+                    None => cacheable = false,
+                }
+            }
+            match fs::canonicalize(candidate) {
                 Ok(path) => {
                     canonical = Some(path);
                     break;
                 }
                 Err(error) => {
+                    if cacheable
+                        && (error.kind() != std::io::ErrorKind::NotFound
+                            || fs::symlink_metadata(candidate).is_ok())
+                    {
+                        cacheable = false;
+                    }
+                    if cacheable {
+                        if let Some(guard) = guard_candidate {
+                            guards.push(guard);
+                        } else {
+                            cacheable = false;
+                        }
+                    }
                     last_error = Some(
                         include_error(
                             "E_PHP_VM_INCLUDE_MISSING",
@@ -577,27 +1048,37 @@ impl IncludeLoader {
                 }
             }
         }
-        let canonical = canonical.ok_or_else(|| {
-            last_error.unwrap_or_else(|| {
+        let Some(canonical) = canonical else {
+            let error = last_error.unwrap_or_else(|| {
                 include_error("E_PHP_VM_INCLUDE_MISSING", format!("{path}: not found"))
                     .with_context("path", path)
-            })
-        })?;
+            });
+            let trace = NegativeProbeTrace {
+                guards: cacheable.then_some(guards),
+            };
+            return Err((error, trace));
+        };
         if !self
             .allowed_roots
             .iter()
             .any(|root| canonical.starts_with(root))
         {
-            return Err(include_error(
-                "E_PHP_VM_INCLUDE_OUTSIDE_ROOT",
-                format!("{} is outside allowed include roots", canonical.display()),
-            )
-            .with_context("canonical_path", canonical.display()));
+            return Err((
+                include_error(
+                    "E_PHP_VM_INCLUDE_OUTSIDE_ROOT",
+                    format!("{} is outside allowed include roots", canonical.display()),
+                )
+                .with_context("canonical_path", canonical.display()),
+                NegativeProbeTrace::uncacheable(),
+            ));
         }
-        let fingerprint = include_path_file_fingerprint(&canonical)?;
+        let fingerprint = include_path_file_fingerprint(&canonical)
+            .map_err(|error| (error, NegativeProbeTrace::uncacheable()))?;
+        let directory_version = canonical.parent().and_then(include_directory_version);
         Ok(ResolvedIncludePath {
             canonical_path: canonical,
             fingerprint,
+            directory_version,
         })
     }
 
@@ -654,6 +1135,9 @@ impl IncludeLoader {
         Ok(ResolvedIncludePath {
             canonical_path,
             fingerprint,
+            // Phar entries have no meaningful parent-directory version; `None`
+            // always counts as a directory-version miss (conservative).
+            directory_version: None,
         })
     }
 
@@ -735,6 +1219,125 @@ pub fn include_path_file_fingerprint(path: &Path) -> Result<IncludePathFileFinge
     })
 }
 
+/// Stable, dependency-free 64-bit FNV-1a hash for engine-owned content
+/// identity. `DefaultHasher` is explicitly unstable across releases and
+/// processes, so it must never leak into anything a future persistent cache
+/// could key on.
+#[must_use]
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Well-known Composer autoload map files, fingerprinted as engine metadata.
+/// This never changes runtime behavior: the fingerprint feeds cache keys and
+/// counters only, and a missing map yields `None` (unknown), which blocks any
+/// persistent reuse keyed on it.
+const COMPOSER_MAP_FILES: &[&str] = &[
+    "autoload_classmap.php",
+    "autoload_files.php",
+    "autoload_psr4.php",
+    "autoload_real.php",
+    "autoload_static.php",
+];
+
+/// Fingerprints a detected Composer `vendor/composer` autoload map near
+/// `anchor_dir` (the entry script's directory), walking at most four ancestor
+/// levels so front controllers under `public/`/`web/` still find the project
+/// root. Returns `None` when no map directory is detected.
+#[must_use]
+pub fn composer_autoload_map_fingerprint(anchor_dir: &Path) -> Option<String> {
+    let mut dir = Some(anchor_dir);
+    for _ in 0..=4 {
+        let candidate = dir?;
+        let composer_dir = candidate.join("vendor").join("composer");
+        if composer_dir.is_dir() {
+            return Some(render_composer_map_fingerprint(&composer_dir));
+        }
+        dir = candidate.parent();
+    }
+    None
+}
+
+fn render_composer_map_fingerprint(composer_dir: &Path) -> String {
+    // The hashed text must be a defined serialization, not incidental Debug
+    // formatting (which Rust does not guarantee stable across toolchains) —
+    // fnv1a_64 was chosen precisely so a future persistent cache can key on
+    // this fingerprint. Render each optional field with an explicit spelling.
+    fn field<T: std::fmt::Display>(value: Option<T>) -> String {
+        value.map_or_else(|| "none".to_owned(), |value| value.to_string())
+    }
+    let mut rendered = format!("{}\n", composer_dir.display());
+    for name in COMPOSER_MAP_FILES {
+        match include_path_file_fingerprint(&composer_dir.join(name)) {
+            Ok(fingerprint) => {
+                rendered.push_str(&format!(
+                    "{name}|{}|{}|{}|{}|{}\n",
+                    fingerprint.len,
+                    field(fingerprint.modified_unix_nanos),
+                    u8::from(fingerprint.readonly),
+                    field(fingerprint.inode),
+                    field(fingerprint.device),
+                ));
+            }
+            Err(_) => rendered.push_str(&format!("{name}|absent\n")),
+        }
+    }
+    format!("composer-map-v1:{:016x}", fnv1a_64(rendered.as_bytes()))
+}
+
+/// Declared mutability of a deployment root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeploymentRootMode {
+    /// Development default: the root may mutate at any time, so persistent
+    /// reuse keyed on the root stays blocked.
+    DevMutable,
+    /// Operator-declared immutable deployment root (for example an atomically
+    /// swapped release directory). Declaration is a config input, not a
+    /// filesystem probe — the engine still revalidates the directory version.
+    ImmutableDeclared,
+}
+
+impl DeploymentRootMode {
+    /// Stable config/report spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DevMutable => "dev",
+            Self::ImmutableDeclared => "immutable",
+        }
+    }
+}
+
+/// Deployment-root fingerprint for production-mode server runs: the canonical
+/// root, its directory version at startup, and the operator-declared
+/// mutability mode. Metadata and counters only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeploymentRootFingerprint {
+    pub canonical_root: PathBuf,
+    pub directory_version: Option<IncludeDirectoryVersion>,
+    pub mode: DeploymentRootMode,
+}
+
+impl DeploymentRootFingerprint {
+    /// Observes a deployment root. `None` when the root cannot be
+    /// canonicalized, which callers count as `deployment_fingerprint_missing`.
+    #[must_use]
+    pub fn observe(root: &Path, mode: DeploymentRootMode) -> Option<Self> {
+        let canonical_root = fs::canonicalize(root).ok()?;
+        let directory_version = include_directory_version(&canonical_root);
+        Some(Self {
+            canonical_root,
+            directory_version,
+            mode,
+        })
+    }
+}
+
 /// Filesystem identity `(inode, device)` when the platform exposes it. Unix
 /// reports both; other platforms report `(None, None)`, which keeps caching
 /// conservative rather than optimistic.
@@ -810,6 +1413,12 @@ struct CompiledIncludeKey {
     len: u64,
     modified_unix_nanos: Option<u128>,
     readonly: bool,
+    /// Stable FNV-1a hash of the source read at compile time. Costs no extra
+    /// I/O (the source is already in memory) and gives the compiled-unit
+    /// identity a content dimension the stat-based probe cannot: a future
+    /// persistent cache must validate by content, and probe-time fingerprints
+    /// never carry a hash, so absence stays conservative by construction.
+    source_content_hash: u64,
     local_dependencies: Vec<CompiledIncludeDependencyKey>,
     compiler_version: &'static str,
     debug_assertions: bool,
@@ -835,6 +1444,7 @@ impl CompiledIncludeKey {
             len: resolved.fingerprint.len,
             modified_unix_nanos: resolved.fingerprint.modified_unix_nanos,
             readonly: resolved.fingerprint.readonly,
+            source_content_hash: fnv1a_64(source.as_bytes()),
             local_dependencies: local_psr_source_dependencies(source, &resolved.canonical_path),
             compiler_version: env!("CARGO_PKG_VERSION"),
             debug_assertions: cfg!(debug_assertions),
@@ -1349,6 +1959,286 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(cache.cache_stats().resolution_misses, 1);
         assert_eq!(cache.cache_stats().resolution_hits, 1);
+        // The revalidated hit also observed a stable parent-directory version.
+        assert_eq!(cache.cache_stats().directory_version_hits, 1);
+        assert_eq!(cache.cache_stats().directory_version_misses, 0);
+        assert!(
+            first.directory_version.is_some(),
+            "resolutions capture the parent directory version"
+        );
+    }
+
+    #[test]
+    fn negative_include_cache_replays_identical_diagnostics_and_invalidates_on_create() {
+        let fixture = IncludeCacheFixture::new("negative-cache");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        let first = cache
+            .resolve_with_include_path(&loader, None, "missing.php", &[], Some(&fixture.root))
+            .expect_err("missing include fails");
+        assert_eq!(first.code(), "E_PHP_VM_INCLUDE_MISSING");
+        assert_eq!(cache.cache_stats().negative_cache_installs, 1);
+
+        // Unchanged directories: the cached failure is replayed byte-for-byte
+        // without re-probing candidates.
+        let second = cache
+            .resolve_with_include_path(&loader, None, "missing.php", &[], Some(&fixture.root))
+            .expect_err("still missing");
+        assert_eq!(first, second, "cached diagnostics are identical");
+        assert_eq!(cache.cache_stats().negative_cache_hits, 1);
+
+        // Creating the file changes the candidate directory's version, which
+        // invalidates the entry and resolves for real.
+        fixture.write("missing.php", "<?php echo 'now present';\n");
+        let resolved = cache
+            .resolve_with_include_path(&loader, None, "missing.php", &[], Some(&fixture.root))
+            .expect("file now resolves");
+        assert!(resolved.canonical_path.ends_with("missing.php"));
+        assert_eq!(cache.cache_stats().negative_cache_invalidations, 1);
+        assert_eq!(cache.cache_stats().negative_cache_hits, 1, "no stale hit");
+    }
+
+    #[test]
+    fn negative_include_cache_blocks_unversionable_candidates() {
+        let fixture = IncludeCacheFixture::new("negative-blocked");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        // The candidate's parent directory does not exist, so a deeper chain
+        // could appear without changing any observed version — not cacheable.
+        let error = cache
+            .resolve_with_include_path(
+                &loader,
+                None,
+                "absent-dir/lib.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect_err("missing include fails");
+        assert_eq!(error.code(), "E_PHP_VM_INCLUDE_MISSING");
+        assert_eq!(cache.cache_stats().negative_cache_installs, 0);
+        assert_eq!(cache.cache_stats().negative_cache_blocked_unversioned, 1);
+
+        // Every retry re-resolves; nothing was cached.
+        let _ = cache
+            .resolve_with_include_path(
+                &loader,
+                None,
+                "absent-dir/lib.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect_err("still missing");
+        assert_eq!(cache.cache_stats().negative_cache_hits, 0);
+
+        // A directory chain appearing later resolves normally.
+        fixture.write("absent-dir/lib.php", "<?php\n");
+        cache
+            .resolve_with_include_path(
+                &loader,
+                None,
+                "absent-dir/lib.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect("file now resolves");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn negative_include_cache_does_not_cache_permission_failures() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixture = IncludeCacheFixture::new("negative-eacces");
+        fixture.write("locked/lib.php", "<?php\n");
+        let locked = fixture.root.join("locked");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        // Remove search permission so canonicalize fails with EACCES, not
+        // NotFound. Skip if running as root (permission bits are ignored).
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
+        let blocked = cache.resolve_with_include_path(
+            &loader,
+            None,
+            "locked/lib.php",
+            &[],
+            Some(&fixture.root),
+        );
+        let permission_denied = blocked.is_err()
+            && fs::metadata(locked.join("lib.php"))
+                .err()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod restore");
+        if !permission_denied {
+            return; // running as root or platform ignores the mode bits
+        }
+        // A transient permission failure must not be cached: fixing perms
+        // (which changes ctime, not the guarded dir mtime) resolves normally.
+        assert_eq!(cache.cache_stats().negative_cache_installs, 0);
+        cache
+            .resolve_with_include_path(&loader, None, "locked/lib.php", &[], Some(&fixture.root))
+            .expect("include resolves once permission is restored");
+    }
+
+    #[test]
+    fn negative_include_cache_clears_and_bounds_capacity() {
+        let fixture = IncludeCacheFixture::new("negative-capacity");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+
+        let _ = cache
+            .resolve_with_include_path(&loader, None, "gone.php", &[], Some(&fixture.root))
+            .expect_err("missing include fails");
+        assert_eq!(cache.cache_stats().negative_cache_installs, 1);
+        cache.clear().expect("clear");
+        let _ = cache
+            .resolve_with_include_path(&loader, None, "gone.php", &[], Some(&fixture.root))
+            .expect_err("still missing after clear");
+        assert_eq!(
+            cache.cache_stats().negative_cache_hits,
+            0,
+            "clear() drops negative entries"
+        );
+        assert_eq!(cache.cache_stats().negative_cache_installs, 2);
+
+        for index in 0..NEGATIVE_INCLUDE_CACHE_SHARD_CAPACITY {
+            let _ = cache
+                .resolve_with_include_path(
+                    &loader,
+                    None,
+                    &format!("gone-{index}.php"),
+                    &[],
+                    Some(&fixture.root),
+                )
+                .expect_err("missing include fails");
+        }
+        assert!(cache.cache_stats().negative_cache_blocked_capacity > 0);
+    }
+
+    #[test]
+    fn directory_version_observes_directories_only_and_is_stable() {
+        let fixture = IncludeCacheFixture::new("dir-version");
+        fixture.write("lib.php", "<?php echo 'lib';\n");
+        let first = include_directory_version(&fixture.root).expect("directory version");
+        let second = include_directory_version(&fixture.root).expect("directory version");
+        assert_eq!(first, second, "unchanged directory has a stable version");
+        assert_eq!(
+            include_directory_version(&fixture.root.join("lib.php")),
+            None,
+            "files are not directories"
+        );
+        assert_eq!(
+            include_directory_version(&fixture.root.join("missing")),
+            None,
+            "missing directories are unvalidated, never a match"
+        );
+    }
+
+    #[test]
+    fn fnv1a_64_is_stable_across_processes() {
+        // Standard FNV-1a test vectors; a persistent cache may key on these.
+        assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a_64(b"foobar"), 0x85944171f73967e8);
+    }
+
+    #[test]
+    fn composer_map_fingerprint_detects_maps_and_walks_ancestors() {
+        let fixture = IncludeCacheFixture::new("composer-map");
+        assert_eq!(
+            composer_autoload_map_fingerprint(&fixture.root),
+            None,
+            "no vendor/composer directory means unknown"
+        );
+
+        fixture.write(
+            "vendor/composer/autoload_classmap.php",
+            "<?php return [];\n",
+        );
+        let from_root =
+            composer_autoload_map_fingerprint(&fixture.root).expect("map detected at root");
+        assert!(from_root.starts_with("composer-map-v1:"), "{from_root}");
+
+        // A front controller under public/ finds the same project root map.
+        fixture.write("public/index.php", "<?php\n");
+        let from_public = composer_autoload_map_fingerprint(&fixture.root.join("public"))
+            .expect("map detected from public/");
+        assert_eq!(from_root, from_public);
+
+        // Rewriting a map file changes the fingerprint.
+        fixture.write(
+            "vendor/composer/autoload_classmap.php",
+            "<?php return ['App\\\\A' => 'src/A.php'];\n",
+        );
+        let after_rewrite =
+            composer_autoload_map_fingerprint(&fixture.root).expect("map still detected");
+        assert_ne!(from_root, after_rewrite);
+    }
+
+    #[test]
+    fn composer_fingerprint_transitions_attribute_staleness() {
+        let cache = IncludeCache::new(1);
+        assert_eq!(
+            cache.note_composer_fingerprint(Some("composer-map-v1:aa")),
+            ComposerFingerprintTransition::Unchanged,
+            "first observation is not stale"
+        );
+        assert_eq!(
+            cache.note_composer_fingerprint(Some("composer-map-v1:aa")),
+            ComposerFingerprintTransition::Unchanged
+        );
+        assert_eq!(
+            cache.note_composer_fingerprint(Some("composer-map-v1:bb")),
+            ComposerFingerprintTransition::Changed
+        );
+        assert_eq!(
+            cache.note_composer_fingerprint(None),
+            ComposerFingerprintTransition::Changed,
+            "a map disappearing is a change"
+        );
+        assert_eq!(cache.cache_stats().composer_fingerprint_stale, 2);
+    }
+
+    #[test]
+    fn deployment_root_fingerprint_counts_present_missing_and_stale() {
+        let fixture = IncludeCacheFixture::new("deployment-root");
+        let cache = IncludeCache::new(1);
+
+        cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+            &fixture.root.join("missing"),
+            DeploymentRootMode::DevMutable,
+        ));
+        assert_eq!(cache.cache_stats().deployment_fingerprint_missing, 1);
+
+        let observed = DeploymentRootFingerprint::observe(
+            &fixture.root,
+            DeploymentRootMode::ImmutableDeclared,
+        )
+        .expect("observable root");
+        assert_eq!(observed.mode, DeploymentRootMode::ImmutableDeclared);
+        cache.set_deployment_root_fingerprint(Some(observed.clone()));
+        assert_eq!(cache.cache_stats().deployment_fingerprint_present, 1);
+        cache.revalidate_deployment_root();
+        assert_eq!(
+            cache.cache_stats().deployment_fingerprint_stale,
+            0,
+            "unchanged root is not stale"
+        );
+
+        // A stored version that no longer matches attributes staleness. Use a
+        // synthetic mismatch so the test does not depend on filesystem mtime
+        // granularity.
+        cache.set_deployment_root_fingerprint(Some(DeploymentRootFingerprint {
+            directory_version: Some(IncludeDirectoryVersion {
+                modified_unix_nanos: Some(1),
+                inode: Some(1),
+                device: Some(1),
+            }),
+            ..observed
+        }));
+        cache.revalidate_deployment_root();
+        assert_eq!(cache.cache_stats().deployment_fingerprint_stale, 1);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use futures_util::TryStreamExt;
+use futures_util::{TryStreamExt, stream};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::{Response, StatusCode, body::Frame, header};
 use std::convert::Infallible;
@@ -7,6 +7,7 @@ use tokio::io::AsyncRead;
 use tokio_util::io::ReaderStream;
 
 pub type ResponseBody = BoxBody<Bytes, std::io::Error>;
+pub type RequestBody = BoxBody<Bytes, std::io::Error>;
 
 pub fn text(status: StatusCode, body: &'static str) -> Response<ResponseBody> {
     response(status, Bytes::from_static(body.as_bytes()))
@@ -61,6 +62,17 @@ pub fn full_body(body: Bytes) -> ResponseBody {
     Full::new(body)
         .map_err(|never: Infallible| match never {})
         .boxed()
+}
+
+pub fn request_body_from_bytes(body: Bytes) -> RequestBody {
+    Full::new(body)
+        .map_err(|never: Infallible| match never {})
+        .boxed()
+}
+
+pub fn stream_body_from_bytes(body: Bytes) -> ResponseBody {
+    let stream = stream::once(async move { Ok::<_, std::io::Error>(Frame::data(body)) });
+    StreamBody::new(stream).boxed()
 }
 
 pub fn reader_body<R>(reader: R) -> ResponseBody

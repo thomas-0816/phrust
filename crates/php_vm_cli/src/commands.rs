@@ -21,10 +21,11 @@ use php_vm::api::{
     Vm, VmOptions, VmResult,
 };
 use php_vm::experimental::{
-    BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, JitCompileDescriptor,
-    PersistentFeedbackContext, PersistentFeedbackEpochs, PersistentFeedbackLoadReport,
-    PersistentFeedbackStats, PersistentFeedbackStore, QuickeningSiteSnapshot, RegionProfile,
-    VmCounters, plan_dependency_units,
+    BytecodeLayoutProfile, DenseBytecodeUnit, DenseOpcode, DenseOperands, FunctionCallSiteSnapshot,
+    JitCompileDescriptor, PersistentFeedbackContext, PersistentFeedbackEpochValidation,
+    PersistentFeedbackEpochs, PersistentFeedbackLoadReport, PersistentFeedbackStats,
+    PersistentFeedbackStore, QuickeningSiteSnapshot, RegionProfile, VmCounters,
+    plan_dependency_units,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -967,7 +968,15 @@ where
     let jit_eligibility_json = build_jit_eligibility_json(compiled.ir_unit(), run_options.jit);
     let persistent_feedback =
         prepare_persistent_feedback(run_options, path, cache_context.as_ref())?;
-    vm_options.quickening_seed = persistent_feedback.quickening_seed();
+    // Consumption is governed separately from reading/validating/writing: with
+    // `--persistent-feedback-consume=off` the sidecar still round-trips and
+    // reports stats, but adaptive execution starts cold.
+    if run_options.persistent_feedback.consume.enabled() {
+        vm_options.quickening_seed = persistent_feedback.quickening_seed();
+    }
+    if run_options.persistent_feedback.consume.ics_enabled() {
+        vm_options.callsite_seed = persistent_feedback.callsite_seed();
+    }
     let started = Instant::now();
     let executor = PhpExecutor::with_options(PhpExecutorOptions {
         optimization_level: run_options.opt_level,
@@ -1084,8 +1093,18 @@ where
         persistent_feedback.write_path.as_deref(),
         persistent_feedback.context.as_ref(),
     ) {
-        entries_written =
-            store_persistent_feedback(write_path, context, &output.quickening_feedback);
+        // Stamp entries with the executed run's final invalidation epochs —
+        // the true observation state — instead of cold-start zeros. A run
+        // that ended before teardown keeps the conservative zeros.
+        let write_context = context
+            .clone()
+            .with_epochs(output.persistent_feedback_epochs.unwrap_or_default());
+        entries_written = store_persistent_feedback(
+            write_path,
+            &write_context,
+            &output.quickening_feedback,
+            &output.callsite_feedback,
+        );
     }
     if let Some(path) = run_options.persistent_feedback.stats_json.clone() {
         let mut stats = persistent_feedback.report.stats.clone();
@@ -1974,6 +1993,15 @@ impl PersistentFeedbackRuntime {
             .filter_map(|entry| entry.payload.quickening)
             .collect()
     }
+
+    fn callsite_seed(&self) -> Vec<FunctionCallSiteSnapshot> {
+        self.report
+            .store
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.payload.function_callsite.clone())
+            .collect()
+    }
 }
 
 /// Persistent feedback follows the bytecode cache by default: it reads and
@@ -1985,12 +2013,27 @@ fn persistent_feedback_env_enabled() -> bool {
     )
 }
 
+/// Upper bound on a persistent-feedback sidecar read into memory. A validly
+/// warmed sidecar is far smaller; the cap stops a corrupt or tampered file
+/// from forcing an unbounded read (and, via the validator, unbounded symbol
+/// interning). An oversized file is treated as a corrupt/absent sidecar.
+const MAX_PERSISTENT_FEEDBACK_BYTES: u64 = 8 * 1024 * 1024;
+
+fn read_capped_persistent_feedback(path: &Path) -> Option<Vec<u8>> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_PERSISTENT_FEEDBACK_BYTES {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
 fn prepare_persistent_feedback(
     run_options: &RunOptions<'_>,
     path: &str,
     cache_context: Option<&BytecodeCacheContext>,
 ) -> Result<PersistentFeedbackRuntime, String> {
     let default_enabled = persistent_feedback_env_enabled() && cache_context.is_some();
+    let consume = run_options.persistent_feedback.consume;
     if run_options.persistent_feedback.read.is_none()
         && run_options.persistent_feedback.write.is_none()
         && !default_enabled
@@ -2012,10 +2055,11 @@ fn prepare_persistent_feedback(
             .map(|dir| dir.join(format!("{}.pfbk", context.source_fingerprint)))
     });
     let mut report = if let Some(feedback_path) = run_options.persistent_feedback.read.as_deref() {
-        // An explicit read path is strict: a missing file is a reported fallback.
-        match fs::read(feedback_path) {
-            Ok(bytes) => context.validate_bytes(&bytes),
-            Err(_) => PersistentFeedbackLoadReport::new(
+        // An explicit read path is strict: a missing (or oversized) file is a
+        // reported fallback.
+        match read_capped_persistent_feedback(Path::new(feedback_path)) {
+            Some(bytes) => context.validate_bytes(&bytes),
+            None => PersistentFeedbackLoadReport::new(
                 PersistentFeedbackStore::default(),
                 PersistentFeedbackStats {
                     files_considered: 1,
@@ -2027,7 +2071,7 @@ fn prepare_persistent_feedback(
         }
     } else if default_enabled
         && let Some(default_path) = default_path.as_ref()
-        && let Ok(bytes) = fs::read(default_path)
+        && let Some(bytes) = read_capped_persistent_feedback(default_path)
     {
         // The default sidecar is advisory: a missing file is a cold start.
         context.validate_bytes(&bytes)
@@ -2038,6 +2082,8 @@ fn prepare_persistent_feedback(
         )
     };
     report.stats.default_enabled = default_enabled;
+    report.stats.consume_mode = consume.as_str();
+    report.stats.advisory_only = !consume.enabled();
     let write_path = run_options
         .persistent_feedback
         .write
@@ -2059,11 +2105,12 @@ fn store_persistent_feedback(
     write_path: &Path,
     context: &PersistentFeedbackContext,
     sites: &[QuickeningSiteSnapshot],
+    callsites: &[FunctionCallSiteSnapshot],
 ) -> u64 {
-    if sites.is_empty() && !write_path.exists() {
+    if sites.is_empty() && callsites.is_empty() && !write_path.exists() {
         return 0;
     }
-    let (text, written) = context.render_sites_counted(sites);
+    let (text, written) = context.render_feedback_counted(sites, callsites);
     if let Some(parent) = write_path.parent()
         && fs::create_dir_all(parent).is_err()
     {
@@ -2110,6 +2157,10 @@ fn persistent_feedback_context(
     let ir_fingerprint = stable_feedback_fingerprint(
         format!("{}:{}", fingerprint.digest, php_ir::IR_LOWERING_REVISION).as_bytes(),
     );
+    // Cold-start loads cannot know this run's final epochs; entries keep
+    // their recorded observation epochs and consumers re-validate against
+    // live state at seed time. The write path replaces the epochs with the
+    // executed run's final state before rendering.
     Ok(PersistentFeedbackContext::new(
         fingerprint.digest,
         env!("CARGO_PKG_VERSION"),
@@ -2118,7 +2169,8 @@ fn persistent_feedback_context(
         ir_fingerprint,
         PersistentFeedbackEpochs::default(),
         rust_target_label(),
-    ))
+    )
+    .with_epoch_validation(PersistentFeedbackEpochValidation::DeferToConsumption))
 }
 
 fn persistent_feedback_compile_options(run_options: &RunOptions<'_>) -> String {
@@ -2742,7 +2794,7 @@ fn region_profile_json_from_env() -> Option<String> {
 fn print_usage<W: Write>(stdout: &mut W) -> Result<(), String> {
     writeln!(
         stdout,
-        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nCaching defaults:\n  run uses a read-write bytecode cache plus a persistent-feedback sidecar in the user cache directory\n  (override dir: PHRUST_BYTECODE_CACHE_DIR; disable: PHRUST_BYTECODE_CACHE=off, PHRUST_PERSISTENT_FEEDBACK=off;\n  --engine-preset=baseline runs uncached)\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --last-use-moves off|on --reuse-class-context-frames off|on --dense-jump-threading off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-write <path> --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
+        "Usage:\n  php-vm compile <file> [--json] [--opt-level 0|1|2] [--timings-json <path>]\n  php-vm dump-ir <file> [--with-source]\n  php-vm dump-bytecode-patterns <file> [--json]\n  php-vm dump-rule-selection <file> [--json]\n  php-vm dump-dependency-units <file> [--json]\n  php-vm dump-baseline-native-stencil <file> [--json]\n  php-vm dump-copy-patch-stencils <file> [--json]\n  php-vm dump-mid-tier-plan <file> [--json]\n  php-vm dump-cranelift-clif\n  php-vm run [--engine-preset baseline|default|fast|experimental-jit] [--trace] [--trace-runtime] [--env KEY=VALUE] [--bytecode-cache=off|read|write|read-write] [--bytecode-cache-dir <path>] [--bytecode-cache-stats] [--clear-bytecode-cache] [--timings-json <path>] [developer engine flags] <file> [-- arg ...]\n  php-vm report <file> [--format markdown|html]\n  php-vm compare <file>\n\nEngine presets:\n  default          managed fast runtime with guarded native tier where available; also accepted as fast\n  baseline         compatibility/debug oracle with adaptive VM features off\n  experimental-jit developer native diagnostics profile using the same guarded tier\n\nCaching defaults:\n  run uses a read-write bytecode cache plus a persistent-feedback sidecar in the user cache directory,\n  and accepted feedback seeds quickening and monomorphic call-IC sites behind the full runtime guard protocol\n  (override dir: PHRUST_BYTECODE_CACHE_DIR; disable: PHRUST_BYTECODE_CACHE=off, PHRUST_PERSISTENT_FEEDBACK=off,\n  PHRUST_PERSISTENT_FEEDBACK_CONSUME=off; --engine-preset=baseline runs uncached)\n\nAdvanced engine flags (developer diagnostics):\n  --opt-level 0|1|2 --exec-format ir|auto|bytecode --superinstructions off|on --last-use-moves off|on --reuse-class-context-frames off|on --dense-jump-threading off|on --bytecode-layout source|profiled --bytecode-layout-profile <path> --quickening off|on --inline-caches off|on --jit off|noop|cranelift --jit-threshold N --jit-max-compile-us N --jit-max-functions N --jit-eager --jit-blacklist off|on --jit-dump-clif PATH --jit-stats json --tiering off|on --tiering-function-threshold N --tiering-loop-threshold N --tiering-ic-stability-threshold N --tiering-guard-failure-threshold N --tiering-stats-json <path> --persistent-feedback-read <path> --persistent-feedback-write <path> --persistent-feedback-consume off|quickening|quickening-ics --persistent-feedback-stats-json <path> --counters-json <path> --timings-json <path> --region-profile-json <path>"
     )
     .map_err(|error| error.to_string())
 }
@@ -4313,10 +4365,11 @@ fn workspace_relative_path(path: &str) -> PathBuf {
 mod tests {
     use super::{
         BytecodeCacheMode, EXIT_COMPILE_ERROR, EXIT_PHP_FATAL_ERROR, EXIT_RUNTIME_ERROR,
-        EXIT_SUCCESS, EXIT_USAGE, JitStatsMode, OptimizationLevel, PersistentFeedbackOptions,
-        QuickeningMode, cache_file_for, compile_pipeline_with_optimization,
-        default_bytecode_cache_mode, parse_compile_args, parse_dump_dependency_units_args,
-        parse_dump_rule_selection_args, parse_run_args, run, run_with_stdin,
+        EXIT_SUCCESS, EXIT_USAGE, JitStatsMode, OptimizationLevel, PersistentFeedbackConsumeMode,
+        PersistentFeedbackOptions, QuickeningMode, cache_file_for,
+        compile_pipeline_with_optimization, default_bytecode_cache_mode, parse_compile_args,
+        parse_dump_dependency_units_args, parse_dump_rule_selection_args, parse_run_args, run,
+        run_with_stdin,
     };
     use php_bytecode_cache::{CacheFingerprint, CacheFingerprintInput};
     use php_runtime::api::RuntimeContext;
@@ -5858,6 +5911,7 @@ mod tests {
             "6".to_string(),
             "--tiering-stats-json=target/performance/tiering.json".to_string(),
             "--persistent-feedback-read=target/performance/feedback/input.pff".to_string(),
+            "--persistent-feedback-consume=off".to_string(),
             "--persistent-feedback-stats-json".to_string(),
             "target/performance/feedback/stats.json".to_string(),
             "fixtures/runtime/valid/hello.php".to_string(),
@@ -5911,6 +5965,10 @@ mod tests {
             options.persistent_feedback.stats_json,
             Some("target/performance/feedback/stats.json".to_string())
         );
+        assert_eq!(
+            options.persistent_feedback.consume,
+            PersistentFeedbackConsumeMode::Off
+        );
     }
 
     #[test]
@@ -5963,6 +6021,7 @@ mod tests {
                 "run".to_string(),
                 "--persistent-feedback-read".to_string(),
                 feedback_path.display().to_string(),
+                "--persistent-feedback-consume=off".to_string(),
                 "--persistent-feedback-stats-json".to_string(),
                 stats_path.display().to_string(),
                 fixture("fixtures/runtime/valid/hello.php"),
@@ -5978,6 +6037,7 @@ mod tests {
         let _ = std::fs::remove_file(&feedback_path);
         let _ = std::fs::remove_file(&stats_path);
         assert!(json.contains("\"advisory_only\": true"));
+        assert!(json.contains("\"consume_mode\": \"off\""));
         assert!(json.contains("\"default_enabled\": false"));
         assert!(json.contains("\"rejected_corrupt\": 1"));
         assert!(json.contains("\"fallback_to_baseline\": true"));
@@ -5994,7 +6054,7 @@ mod tests {
         let stats_path = base.with_extension("json");
         std::fs::write(
             &source_path,
-            "<?php\n$sum = 0;\nfor ($i = 0; $i < 64; $i++) {\n    $sum = $sum + $i;\n}\necho $sum, \"\\n\";\n",
+            "<?php\nclass FeedbackEpochProbe {}\n$probe = new FeedbackEpochProbe();\nfunction feedback_probe_tag(string $s): string { return $s . '!'; }\n$sum = 0;\n$tag = '';\nfor ($i = 0; $i < 64; $i++) {\n    $sum = $sum + $i;\n    $tag = feedback_probe_tag('x');\n}\necho $sum, $tag, \"\\n\";\n",
         )
         .expect("write temporary PHP source");
         let _ = std::fs::remove_file(&feedback_path);
@@ -6002,22 +6062,49 @@ mod tests {
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
+        let counters_path = base.with_extension("write-counters.json");
+        let _ = std::fs::remove_file(&counters_path);
         let code = run(
             [
                 "run".to_string(),
                 "--persistent-feedback-write".to_string(),
                 feedback_path.display().to_string(),
+                "--counters-json".to_string(),
+                counters_path.display().to_string(),
                 source_path.display().to_string(),
             ],
             &mut stdout,
             &mut stderr,
         );
         assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
-        assert_eq!(stdout, b"2016\n");
+        assert_eq!(stdout, b"2016x!\n");
+        let write_counters =
+            std::fs::read_to_string(&counters_path).expect("write-run counters JSON");
+        let _ = std::fs::remove_file(&counters_path);
+        let ic_lines: String = write_counters
+            .lines()
+            .filter(|line| line.contains("_call_ic") || line.contains("function_slots"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let feedback = std::fs::read_to_string(&feedback_path).expect("feedback file written");
         assert!(feedback.starts_with("phrust-persistent-feedback-v1"));
         assert!(feedback.contains("specialization=add_int_int"));
+        // The hot monomorphic userland call persists as a callsite entry.
+        assert!(
+            feedback.contains("site=ic_function_call")
+                && feedback.contains("call_name=feedback_probe_tag"),
+            "{ic_lines}\n{feedback}"
+        );
+        // Entries carry the executed run's final invalidation epochs (the
+        // class declaration bumped the class-table epoch), not cold-start
+        // zeros.
+        assert!(
+            !feedback.contains("class_epoch=0"),
+            "entries must carry observed epochs: {feedback}"
+        );
 
+        let counters_path = base.with_extension("counters.json");
+        let _ = std::fs::remove_file(&counters_path);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let code = run(
@@ -6025,22 +6112,26 @@ mod tests {
                 "run".to_string(),
                 "--persistent-feedback-read".to_string(),
                 feedback_path.display().to_string(),
+                "--persistent-feedback-consume=quickening-ics".to_string(),
                 "--persistent-feedback-stats-json".to_string(),
                 stats_path.display().to_string(),
+                "--counters-json".to_string(),
+                counters_path.display().to_string(),
                 source_path.display().to_string(),
             ],
             &mut stdout,
             &mut stderr,
         );
         assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
-        assert_eq!(stdout, b"2016\n");
+        assert_eq!(stdout, b"2016x!\n");
         let json = std::fs::read_to_string(&stats_path).expect("feedback JSON should be written");
-        let _ = std::fs::remove_file(&source_path);
-        let _ = std::fs::remove_file(&feedback_path);
-        let _ = std::fs::remove_file(&stats_path);
+        let counters =
+            std::fs::read_to_string(&counters_path).expect("counters JSON should be written");
         assert!(json.contains("\"rejected_stale\": 0"));
         assert!(json.contains("\"rejected_corrupt\": 0"));
         assert!(json.contains("\"fallback_to_baseline\": false"));
+        assert!(json.contains("\"advisory_only\": false"));
+        assert!(json.contains("\"consume_mode\": \"quickening-ics\""));
         let accepted: u64 = json
             .lines()
             .find_map(|line| {
@@ -6052,6 +6143,64 @@ mod tests {
             })
             .expect("entries_accepted present");
         assert!(accepted > 0, "expected accepted entries, got: {json}");
+        let seeded: u64 = counters
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("\"persistent_feedback_seeded_sites\": ")?
+                    .trim_end_matches(',')
+                    .parse()
+                    .ok()
+            })
+            .expect("persistent_feedback_seeded_sites present");
+        assert!(seeded > 0, "expected seeded sites, got: {counters}");
+        let seeded_callsites: u64 = counters
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("\"persistent_feedback_seeded_callsites\": ")?
+                    .trim_end_matches(',')
+                    .parse()
+                    .ok()
+            })
+            .expect("persistent_feedback_seeded_callsites present");
+        assert!(
+            seeded_callsites > 0,
+            "expected seeded callsites, got: {counters}"
+        );
+
+        // Consumption off: the sidecar still validates and reports, but the
+        // VM starts cold and no seeded-site attribution appears.
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run(
+            [
+                "run".to_string(),
+                "--persistent-feedback-read".to_string(),
+                feedback_path.display().to_string(),
+                "--persistent-feedback-consume=off".to_string(),
+                "--persistent-feedback-stats-json".to_string(),
+                stats_path.display().to_string(),
+                "--counters-json".to_string(),
+                counters_path.display().to_string(),
+                source_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, EXIT_SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(stdout, b"2016x!\n");
+        let json = std::fs::read_to_string(&stats_path).expect("feedback JSON should be written");
+        let counters =
+            std::fs::read_to_string(&counters_path).expect("counters JSON should be written");
+        let _ = std::fs::remove_file(&source_path);
+        let _ = std::fs::remove_file(&feedback_path);
+        let _ = std::fs::remove_file(&stats_path);
+        let _ = std::fs::remove_file(&counters_path);
+        assert!(json.contains("\"advisory_only\": true"));
+        assert!(json.contains("\"consume_mode\": \"off\""));
+        assert!(counters.contains("\"persistent_feedback_seeded_sites\": 0"));
+        assert!(counters.contains("\"persistent_feedback_seeded_callsites\": 0"));
     }
 
     #[test]

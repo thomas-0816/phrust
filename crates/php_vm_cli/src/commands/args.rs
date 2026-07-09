@@ -253,6 +253,56 @@ pub(super) struct PersistentFeedbackOptions {
     pub(super) read: Option<String>,
     pub(super) write: Option<String>,
     pub(super) stats_json: Option<String>,
+    pub(super) consume: PersistentFeedbackConsumeMode,
+}
+
+/// Whether validator-accepted persistent feedback may seed adaptive VM state.
+/// Reading/validating/writing the sidecar is separate: with consumption off,
+/// stats and the writer still run but execution starts cold.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PersistentFeedbackConsumeMode {
+    Off,
+    Quickening,
+    /// Quickening plus monomorphic function-callsite inline-cache seeding.
+    QuickeningIcs,
+}
+
+impl PersistentFeedbackConsumeMode {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Quickening => "quickening",
+            Self::QuickeningIcs => "quickening-ics",
+        }
+    }
+
+    pub(super) const fn enabled(self) -> bool {
+        matches!(self, Self::Quickening | Self::QuickeningIcs)
+    }
+
+    pub(super) const fn ics_enabled(self) -> bool {
+        matches!(self, Self::QuickeningIcs)
+    }
+}
+
+/// Consumption follows the sidecar default (on, like the bytecode cache, and
+/// covering both quickening and callsite-IC seeding — every seed runs behind
+/// the full runtime guard protocol); the `PHRUST_PERSISTENT_FEEDBACK_CONSUME`
+/// environment variable overrides the default and the
+/// `--persistent-feedback-consume` flag overrides both. The value is trimmed
+/// and lowercased so the kill switch cannot silently fail open on `OFF`/`No`
+/// (matching the other `PHRUST_*` gates); an explicit `quickening` narrows to
+/// quickening-only, and any unrecognized value keeps the full default so a
+/// typo cannot quietly weaken consumption.
+impl Default for PersistentFeedbackConsumeMode {
+    fn default() -> Self {
+        let value = std::env::var("PHRUST_PERSISTENT_FEEDBACK_CONSUME");
+        match value.as_deref().map(|v| v.trim().to_ascii_lowercase()) {
+            Ok(v) if matches!(v.as_str(), "off" | "0" | "false" | "no") => Self::Off,
+            Ok(v) if v == "quickening" => Self::Quickening,
+            _ => Self::QuickeningIcs,
+        }
+    }
 }
 
 impl Default for BytecodeCacheOptions {
@@ -914,6 +964,19 @@ pub(super) fn parse_run_args(args: &[String]) -> Result<RunOptions<'_>, String> 
             arg if let Some(value) = arg.strip_prefix("--persistent-feedback-stats-json=") => {
                 persistent_feedback.stats_json = Some(value.to_owned());
             }
+            "--persistent-feedback-consume" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(
+                        "run --persistent-feedback-consume requires off, quickening, or quickening-ics"
+                            .to_string(),
+                    );
+                };
+                persistent_feedback.consume = parse_persistent_feedback_consume_mode(value)?;
+            }
+            arg if let Some(value) = arg.strip_prefix("--persistent-feedback-consume=") => {
+                persistent_feedback.consume = parse_persistent_feedback_consume_mode(value)?;
+            }
             "--counters-json" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -1108,6 +1171,19 @@ pub(super) fn parse_quickening_mode(value: &str) -> Result<QuickeningMode, Strin
         "on" => Ok(QuickeningMode::On),
         _ => Err(format!(
             "unsupported quickening mode `{value}`; expected off or on"
+        )),
+    }
+}
+
+pub(super) fn parse_persistent_feedback_consume_mode(
+    value: &str,
+) -> Result<PersistentFeedbackConsumeMode, String> {
+    match value {
+        "off" => Ok(PersistentFeedbackConsumeMode::Off),
+        "quickening" => Ok(PersistentFeedbackConsumeMode::Quickening),
+        "quickening-ics" => Ok(PersistentFeedbackConsumeMode::QuickeningIcs),
+        _ => Err(format!(
+            "unsupported persistent-feedback-consume mode `{value}`; expected off, quickening, or quickening-ics"
         )),
     }
 }

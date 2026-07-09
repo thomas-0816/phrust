@@ -76,6 +76,22 @@ the `overload` rejection counter. It is an internal plain-text endpoint. It can
 be disabled with `--disable-metrics-endpoint` or protected with
 `--metrics-token`.
 
+The include cache additionally reports production-fingerprint counters:
+`phrust_server_include_directory_version_hits/misses_total`,
+`phrust_server_composer_fingerprint_stale_total`,
+`phrust_server_deployment_fingerprint_present/missing/stale_total`, and the
+default-on directory-version-guarded negative include cache
+(`phrust_server_negative_include_cache_hits/installs/invalidations/`
+`blocked_unversioned/blocked_capacity_total`; disable with
+`PHRUST_NEGATIVE_INCLUDE_CACHE=off`). The
+deployment-root fingerprint is installed at startup from the docroot and the
+`--deployment-mode dev|immutable` declaration (config key `deployment_mode`,
+default `dev` = mutable, which keeps fingerprint-gated persistent reuse
+blocked); each metrics scrape re-observes the root's directory version to
+attribute staleness. See
+`docs/research/include-autoload-dependency-graph.md` for the fingerprint
+model.
+
 ## Validation
 
 Use these gates for server work:

@@ -10,7 +10,7 @@ use php_diagnostics::{
     DiagnosticSeverity, DiagnosticSuggestion,
 };
 use php_executor::EngineProfileName;
-use php_vm::api::DenseIncludeMode;
+use php_vm::api::{DenseIncludeMode, DeploymentRootMode};
 
 use crate::routing::RequestRewriteRule;
 
@@ -55,12 +55,19 @@ pub struct ServerConfig {
     pub max_vm_steps: usize,
     pub execution_deadline_enabled: bool,
     pub engine_preset: EngineProfileName,
+    /// Declared mutability of the deployment root. `dev` (default) marks the
+    /// docroot as mutable, which keeps every deployment-fingerprint-gated
+    /// persistent reuse blocked; `immutable` is an operator declaration for
+    /// atomically swapped release directories. Metadata and counters only.
+    pub deployment_mode: DeploymentRootMode,
     pub dense_includes: Option<DenseIncludeMode>,
     pub perf_ablation: ServerPerfAblation,
     pub metrics_endpoint_enabled: bool,
     pub metrics_token: Option<String>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    pub http3_enabled: bool,
+    pub http3_listen: Option<SocketAddr>,
     pub script_cache_enabled: bool,
     pub script_cache_shards: usize,
     pub script_cache_max_entries: usize,
@@ -97,7 +104,7 @@ pub struct ConfigError {
 }
 
 impl ConfigError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         let message = message.into();
         let mut diagnostic = DiagnosticEnvelope::new(
             "E_PHRUST_SERVER_CONFIG",
@@ -208,6 +215,11 @@ impl ServerConfig {
             .map(|value| parse_engine_preset("engine_preset", &value))
             .transpose()?
             .unwrap_or_default();
+        let mut deployment_mode = file_config
+            .string("deployment_mode")
+            .map(|value| parse_deployment_mode("deployment_mode", &value))
+            .transpose()?
+            .unwrap_or(DeploymentRootMode::DevMutable);
         let file_dense_includes = file_config
             .string("dense_includes")
             .map(|value| parse_dense_includes("dense_includes", &value))
@@ -230,6 +242,8 @@ impl ServerConfig {
         let mut metrics_token = file_config.string("metrics_token");
         let mut tls_cert = file_config.path("tls_cert");
         let mut tls_key = file_config.path("tls_key");
+        let mut http3_enabled = file_config.bool("http3_enabled")?.unwrap_or(false);
+        let mut http3_listen = file_config.parse_listen("http3_listen")?;
         let mut script_cache_enabled = file_config.bool("script_cache_enabled")?.unwrap_or(true);
         let mut script_cache_shards = file_config
             .positive_usize("script_cache_shards")?
@@ -344,6 +358,14 @@ impl ServerConfig {
                 "--engine-preset" => {
                     engine_preset = parse_engine_preset(&arg, &required_value(&arg, &mut args)?)?;
                 }
+                "--deployment-mode" => {
+                    deployment_mode =
+                        parse_deployment_mode(&arg, &required_value(&arg, &mut args)?)?;
+                }
+                _ if arg.starts_with("--deployment-mode=") => {
+                    let value = arg.trim_start_matches("--deployment-mode=");
+                    deployment_mode = parse_deployment_mode("--deployment-mode", value)?;
+                }
                 "--dense-includes" => {
                     dense_includes = Some(parse_dense_includes(
                         &arg,
@@ -367,6 +389,10 @@ impl ServerConfig {
                 }
                 "--tls-cert" => tls_cert = Some(PathBuf::from(required_value(&arg, &mut args)?)),
                 "--tls-key" => tls_key = Some(PathBuf::from(required_value(&arg, &mut args)?)),
+                "--enable-http3" => http3_enabled = true,
+                "--http3-listen" => {
+                    http3_listen = Some(parse_listen(&required_value(&arg, &mut args)?)?)
+                }
                 "--no-script-cache" => script_cache_enabled = false,
                 "--script-cache-shards" => {
                     script_cache_shards =
@@ -422,6 +448,11 @@ impl ServerConfig {
                 "TLS configuration requires both --tls-cert <path> and --tls-key <path>; provide both flags or neither",
             ));
         }
+        if http3_enabled && tls_cert.is_none() {
+            return Err(ConfigError::new(
+                "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3",
+            ));
+        }
 
         if help {
             return Ok(Self {
@@ -448,12 +479,15 @@ impl ServerConfig {
                 max_vm_steps,
                 execution_deadline_enabled,
                 engine_preset,
+                deployment_mode,
                 dense_includes,
                 perf_ablation,
                 metrics_endpoint_enabled,
                 metrics_token,
                 tls_cert,
                 tls_key,
+                http3_enabled,
+                http3_listen,
                 script_cache_enabled,
                 script_cache_shards,
                 script_cache_max_entries,
@@ -500,12 +534,15 @@ impl ServerConfig {
             max_vm_steps,
             execution_deadline_enabled,
             engine_preset,
+            deployment_mode,
             dense_includes,
             perf_ablation,
             metrics_endpoint_enabled,
             metrics_token,
             tls_cert,
             tls_key,
+            http3_enabled,
+            http3_listen,
             script_cache_enabled,
             script_cache_shards,
             script_cache_max_entries,
@@ -573,12 +610,15 @@ impl ServerConfig {
             max_vm_steps: DEFAULT_MAX_VM_STEPS,
             execution_deadline_enabled: true,
             engine_preset: EngineProfileName::default(),
+            deployment_mode: DeploymentRootMode::DevMutable,
             dense_includes: env_value_dense_includes()?,
             perf_ablation: env_value_perf_ablation()?.unwrap_or_default(),
             metrics_endpoint_enabled: false,
             metrics_token: None,
             tls_cert: None,
             tls_key: None,
+            http3_enabled: false,
+            http3_listen: None,
             script_cache_enabled: true,
             script_cache_shards: DEFAULT_SCRIPT_CACHE_SHARDS,
             script_cache_max_entries: DEFAULT_SCRIPT_CACHE_MAX_ENTRIES,
@@ -628,6 +668,8 @@ Options:\n\
   --metrics-token <token>      require Authorization: Bearer token for metrics\n\
   --tls-cert <path>            PEM certificate chain for HTTPS\n\
   --tls-key <path>             PEM private key for HTTPS\n\
+  --enable-http3               enable HTTP/3 over QUIC using the TLS certificate\n\
+  --http3-listen <addr>        UDP listen address for HTTP/3 (default: TCP listen address)\n\
   --access-log <path|->        write compact access logs to file or stdout\n\
   --perf-trace <path>          append per-PHP-request performance trace JSONL\n\
   --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
@@ -893,6 +935,16 @@ fn env_value_perf_ablation() -> Result<Option<ServerPerfAblation>, ConfigError> 
         .transpose()
 }
 
+fn parse_deployment_mode(flag: &str, value: &str) -> Result<DeploymentRootMode, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "dev" | "mutable" => Ok(DeploymentRootMode::DevMutable),
+        "immutable" => Ok(DeploymentRootMode::ImmutableDeclared),
+        _ => Err(ConfigError::new(format!(
+            "invalid {flag} `{value}`; expected dev or immutable"
+        ))),
+    }
+}
+
 fn parse_dense_includes(flag: &str, value: &str) -> Result<DenseIncludeMode, ConfigError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "0" | "false" | "no" | "off" => Ok(DenseIncludeMode::Off),
@@ -1077,7 +1129,7 @@ fn default_max_in_flight() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, ServerConfig};
+    use super::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, DeploymentRootMode, ServerConfig};
     use php_diagnostics::DiagnosticOutputFormat;
     use php_executor::EngineProfileName;
     use php_vm::api::DenseIncludeMode;
@@ -1090,6 +1142,23 @@ mod tests {
     };
 
     static TEMP_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn parses_deployment_mode_flag_and_rejects_unknown_values() {
+        let config =
+            ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "immutable"])
+                .unwrap();
+        assert_eq!(
+            config.deployment_mode,
+            DeploymentRootMode::ImmutableDeclared
+        );
+        let config =
+            ServerConfig::parse_from(["--docroot", "public", "--deployment-mode=dev"]).unwrap();
+        assert_eq!(config.deployment_mode, DeploymentRootMode::DevMutable);
+        let error = ServerConfig::parse_from(["--docroot", "public", "--deployment-mode", "prod"])
+            .unwrap_err();
+        assert!(error.to_string().contains("expected dev or immutable"));
+    }
 
     #[test]
     fn parses_required_docroot_and_defaults() {
@@ -1123,12 +1192,15 @@ mod tests {
         assert_eq!(config.max_vm_steps, 100_000);
         assert!(config.execution_deadline_enabled);
         assert_eq!(config.engine_preset, EngineProfileName::Default);
+        assert_eq!(config.deployment_mode, DeploymentRootMode::DevMutable);
         assert_eq!(config.dense_includes, None);
         assert_eq!(config.perf_ablation, Default::default());
         assert!(config.metrics_endpoint_enabled);
         assert_eq!(config.metrics_token, None);
         assert_eq!(config.tls_cert, None);
         assert_eq!(config.tls_key, None);
+        assert!(!config.http3_enabled);
+        assert_eq!(config.http3_listen, None);
         assert_eq!(config.access_log, None);
         assert_eq!(config.perf_trace, None);
         assert!(!config.perf_trace_vm_counters);
@@ -1196,6 +1268,9 @@ mod tests {
             "tls/cert.pem",
             "--tls-key",
             "tls/key.pem",
+            "--enable-http3",
+            "--http3-listen",
+            "127.0.0.1:9443",
             "--access-log",
             "-",
             "--perf-trace",
@@ -1255,6 +1330,11 @@ mod tests {
         assert_eq!(config.metrics_token, Some("secret".to_string()));
         assert_eq!(config.tls_cert, Some(PathBuf::from("tls/cert.pem")));
         assert_eq!(config.tls_key, Some(PathBuf::from("tls/key.pem")));
+        assert!(config.http3_enabled);
+        assert_eq!(
+            config.http3_listen,
+            Some("127.0.0.1:9443".parse::<SocketAddr>().unwrap())
+        );
         assert_eq!(config.access_log, Some("-".to_string()));
         assert_eq!(config.perf_trace, Some(PathBuf::from("perf.jsonl")));
         assert!(config.perf_trace_vm_counters);
@@ -1314,6 +1394,8 @@ metrics_token = "from-file-token"
 access_log = "access.log"
 tls_cert = "cert.pem"
 tls_key = "key.pem"
+http3_enabled = true
+http3_listen = "127.0.0.1:9443"
 script_cache_max_entries = 12
 strict_preload = true
 engine_preset = "baseline"
@@ -1355,6 +1437,11 @@ rewrite_prefix_query = "/api=route,/legacy=path"
         assert_eq!(config.access_log, Some("access.log".to_string()));
         assert_eq!(config.tls_cert, Some(PathBuf::from("cert.pem")));
         assert_eq!(config.tls_key, Some(PathBuf::from("key.pem")));
+        assert!(config.http3_enabled);
+        assert_eq!(
+            config.http3_listen,
+            Some("127.0.0.1:9443".parse::<SocketAddr>().unwrap())
+        );
         assert_eq!(config.script_cache_max_entries, 12);
         assert!(config.strict_preload);
         assert!(config.network_requests_enabled);
@@ -1599,6 +1686,17 @@ index = "../bad.php"
         assert_eq!(
             error.to_string(),
             "TLS configuration requires both --tls-cert <path> and --tls-key <path>; provide both flags or neither"
+        );
+    }
+
+    #[test]
+    fn rejects_http3_without_tls_pair() {
+        let error =
+            ServerConfig::parse_from(["--docroot", "public", "--enable-http3"]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "HTTP/3 requires TLS; provide --tls-cert <path> and --tls-key <path> with --enable-http3"
         );
     }
 

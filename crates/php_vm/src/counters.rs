@@ -396,6 +396,15 @@ pub struct VmCounters {
     pub include_fallback_by_reason: BTreeMap<String, u64>,
     pub include_stale_invalidation_by_reason: BTreeMap<String, u64>,
     pub include_graph_hits: u64,
+    pub directory_version_hits: u64,
+    pub directory_version_misses: u64,
+    pub composer_fingerprint_present: u64,
+    pub composer_fingerprint_missing: u64,
+    pub composer_fingerprint_stale: u64,
+    pub negative_include_cache_hits: u64,
+    pub negative_include_cache_installs: u64,
+    pub negative_include_cache_invalidations: u64,
+    pub negative_include_cache_blocked_by_reason: BTreeMap<String, u64>,
     pub include_graph_misses: u64,
     pub autoload_graph_hits: u64,
     pub autoload_graph_misses: u64,
@@ -426,6 +435,12 @@ pub struct VmCounters {
     pub quickening_dequickened_by_reason: BTreeMap<String, u64>,
     pub quickening_megamorphic: u64,
     pub quickening_disabled: u64,
+    pub persistent_feedback_seeded_sites: u64,
+    pub persistent_feedback_seeded_guard_hits: u64,
+    pub persistent_feedback_seeded_dequickens: u64,
+    pub persistent_feedback_seeded_callsites: u64,
+    pub persistent_feedback_seeded_ic_hits: u64,
+    pub persistent_feedback_seeded_ic_invalidations: u64,
     pub adaptive_tiny_unit_setup_skips: u64,
     pub native_candidates: u64,
     pub native_compiled_regions: u64,
@@ -720,6 +735,45 @@ impl VmCounters {
 
     pub(crate) fn record_include_graph_hit(&mut self) {
         self.include_graph_hits += 1;
+    }
+
+    pub(crate) fn record_directory_version_hit(&mut self) {
+        self.directory_version_hits += 1;
+    }
+
+    pub(crate) fn record_directory_version_miss(&mut self) {
+        self.directory_version_misses += 1;
+    }
+
+    pub(crate) fn record_composer_fingerprint(&mut self, present: bool) {
+        if present {
+            self.composer_fingerprint_present += 1;
+        } else {
+            self.composer_fingerprint_missing += 1;
+        }
+    }
+
+    pub(crate) fn record_composer_fingerprint_stale(&mut self) {
+        self.composer_fingerprint_stale += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_blocked(&mut self, reason: &str) {
+        *self
+            .negative_include_cache_blocked_by_reason
+            .entry(reason.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_hit(&mut self) {
+        self.negative_include_cache_hits += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_install(&mut self) {
+        self.negative_include_cache_installs += 1;
+    }
+
+    pub(crate) fn record_negative_include_cache_invalidation(&mut self) {
+        self.negative_include_cache_invalidations += 1;
     }
 
     pub(crate) fn record_include_graph_miss(&mut self) {
@@ -1893,6 +1947,9 @@ impl VmCounters {
         }
         if observation.guard_hit {
             self.quickening_guard_hits += 1;
+            if observation.seeded {
+                self.persistent_feedback_seeded_guard_hits += 1;
+            }
             if let Some(family) = family {
                 *self
                     .quickened_executions_by_family
@@ -1922,6 +1979,9 @@ impl VmCounters {
         }
         if observation.dequickened {
             self.quickening_dequickens += 1;
+            if observation.seeded {
+                self.persistent_feedback_seeded_dequickens += 1;
+            }
             *self
                 .quickening_dequickened_by_reason
                 .entry("guard_failure_threshold".to_owned())
@@ -1937,6 +1997,14 @@ impl VmCounters {
 
     pub(crate) fn record_adaptive_tiny_unit_setup_skip(&mut self) {
         self.adaptive_tiny_unit_setup_skips += 1;
+    }
+
+    pub(crate) fn record_persistent_feedback_seeded_sites(&mut self, installed: u64) {
+        self.persistent_feedback_seeded_sites += installed;
+    }
+
+    pub(crate) fn record_persistent_feedback_seeded_callsites(&mut self, installed: u64) {
+        self.persistent_feedback_seeded_callsites += installed;
     }
 
     #[cfg_attr(not(feature = "jit-cranelift"), allow(dead_code))]
@@ -2134,6 +2202,9 @@ impl VmCounters {
         }
         if observation.hit {
             self.inline_cache_hits += 1;
+            if observation.seeded {
+                self.persistent_feedback_seeded_ic_hits += 1;
+            }
             if observation.kind == Some(InlineCacheKind::MethodCall) {
                 self.method_ic_hits += 1;
                 if observation.polymorphic {
@@ -2191,6 +2262,9 @@ impl VmCounters {
         }
         if observation.invalidation {
             self.inline_cache_invalidations += 1;
+            if observation.seeded {
+                self.persistent_feedback_seeded_ic_invalidations += 1;
+            }
             if observation.kind == Some(InlineCacheKind::IncludePath) {
                 self.include_path_ic_invalidations += 1;
                 self.record_invalidation_by_reason("include_path_epoch_or_guard");
@@ -3812,6 +3886,60 @@ impl VmCounters {
             self.negative_lookup_hits,
             true,
         );
+        push_field(
+            &mut json,
+            "directory_version_hits",
+            self.directory_version_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "directory_version_misses",
+            self.directory_version_misses,
+            true,
+        );
+        push_field(
+            &mut json,
+            "composer_fingerprint_present",
+            self.composer_fingerprint_present,
+            true,
+        );
+        push_field(
+            &mut json,
+            "composer_fingerprint_missing",
+            self.composer_fingerprint_missing,
+            true,
+        );
+        push_field(
+            &mut json,
+            "composer_fingerprint_stale",
+            self.composer_fingerprint_stale,
+            true,
+        );
+        push_field(
+            &mut json,
+            "negative_include_cache_hits",
+            self.negative_include_cache_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "negative_include_cache_installs",
+            self.negative_include_cache_installs,
+            true,
+        );
+        push_field(
+            &mut json,
+            "negative_include_cache_invalidations",
+            self.negative_include_cache_invalidations,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "negative_include_cache_blocked_by_reason",
+            &self.negative_include_cache_blocked_by_reason,
+            true,
+        );
         push_string_u64_map_field(
             &mut json,
             "invalidations_by_reason",
@@ -3946,6 +4074,42 @@ impl VmCounters {
             &mut json,
             "quickening_disabled",
             self.quickening_disabled,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_sites",
+            self.persistent_feedback_seeded_sites,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_guard_hits",
+            self.persistent_feedback_seeded_guard_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_dequickens",
+            self.persistent_feedback_seeded_dequickens,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_callsites",
+            self.persistent_feedback_seeded_callsites,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_ic_hits",
+            self.persistent_feedback_seeded_ic_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "persistent_feedback_seeded_ic_invalidations",
+            self.persistent_feedback_seeded_ic_invalidations,
             true,
         );
         push_field(
@@ -5650,6 +5814,7 @@ mod tests {
             dequickened: true,
             megamorphic: true,
             disabled: true,
+            seeded: true,
         });
         counters.record_adaptive_tiny_unit_setup_skip();
         counters.record_native_candidate();
@@ -5672,6 +5837,15 @@ mod tests {
         counters.record_autoload_graph_hit();
         counters.record_autoload_graph_miss();
         counters.record_negative_lookup_hit();
+        counters.record_directory_version_hit();
+        counters.record_directory_version_miss();
+        counters.record_composer_fingerprint(true);
+        counters.record_composer_fingerprint(false);
+        counters.record_composer_fingerprint_stale();
+        counters.record_negative_include_cache_hit();
+        counters.record_negative_include_cache_install();
+        counters.record_negative_include_cache_invalidation();
+        counters.record_negative_include_cache_blocked("directory_versions_unvalidated");
         counters.record_invalidation_by_reason("file_fingerprint_changed");
         counters.record_fallback_by_path_semantics("missing_path");
         counters.record_inline_cache(InlineCacheObservation {
@@ -6093,6 +6267,8 @@ mod tests {
         );
         assert_eq!(counters.quickening_megamorphic, 1);
         assert_eq!(counters.quickening_disabled, 1);
+        assert_eq!(counters.persistent_feedback_seeded_guard_hits, 1);
+        assert_eq!(counters.persistent_feedback_seeded_dequickens, 1);
         assert_eq!(counters.adaptive_tiny_unit_setup_skips, 1);
         assert_eq!(counters.native_candidates, 1);
         assert_eq!(counters.native_platform_unavailable, 1);
@@ -6240,6 +6416,20 @@ mod tests {
         assert_eq!(counters.autoload_graph_hits, 2);
         assert_eq!(counters.autoload_graph_misses, 2);
         assert_eq!(counters.negative_lookup_hits, 1);
+        assert_eq!(counters.directory_version_hits, 1);
+        assert_eq!(counters.directory_version_misses, 1);
+        assert_eq!(counters.composer_fingerprint_present, 1);
+        assert_eq!(counters.composer_fingerprint_missing, 1);
+        assert_eq!(counters.composer_fingerprint_stale, 1);
+        assert_eq!(counters.negative_include_cache_hits, 1);
+        assert_eq!(counters.negative_include_cache_installs, 1);
+        assert_eq!(counters.negative_include_cache_invalidations, 1);
+        assert_eq!(
+            counters
+                .negative_include_cache_blocked_by_reason
+                .get("directory_versions_unvalidated"),
+            Some(&1)
+        );
         assert_eq!(
             counters
                 .invalidations_by_reason
@@ -6459,6 +6649,9 @@ mod tests {
         assert!(json.contains("\"quickening_dequickened_by_reason\": {}"));
         assert!(json.contains("\"quickening_megamorphic\": 0"));
         assert!(json.contains("\"quickening_disabled\": 0"));
+        assert!(json.contains("\"persistent_feedback_seeded_sites\": 0"));
+        assert!(json.contains("\"persistent_feedback_seeded_guard_hits\": 0"));
+        assert!(json.contains("\"persistent_feedback_seeded_dequickens\": 0"));
         assert!(json.contains("\"adaptive_tiny_unit_setup_skips\": 0"));
         assert!(json.contains("\"native_candidates\": 0"));
         assert!(json.contains("\"native_compiled_regions\": 0"));
@@ -6532,6 +6725,15 @@ mod tests {
         assert!(json.contains("\"inline_cache_disabled\": 0"));
         assert!(json.contains("\"include_graph_hits\": 0"));
         assert!(json.contains("\"include_graph_misses\": 0"));
+        assert!(json.contains("\"directory_version_hits\": 0"));
+        assert!(json.contains("\"directory_version_misses\": 0"));
+        assert!(json.contains("\"composer_fingerprint_present\": 0"));
+        assert!(json.contains("\"composer_fingerprint_missing\": 0"));
+        assert!(json.contains("\"composer_fingerprint_stale\": 0"));
+        assert!(json.contains("\"negative_include_cache_hits\": 0"));
+        assert!(json.contains("\"negative_include_cache_installs\": 0"));
+        assert!(json.contains("\"negative_include_cache_invalidations\": 0"));
+        assert!(json.contains("\"negative_include_cache_blocked_by_reason\": {}"));
         assert!(json.contains("\"include_resolution_hits\": 0"));
         assert!(json.contains("\"include_resolution_misses\": 0"));
         assert!(json.contains("\"include_compile_hits\": 0"));

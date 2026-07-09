@@ -22,8 +22,10 @@ use php_ir::{
     IrReturnType, LocalId, Operand, RegId,
 };
 
+use crate::aarch64::Cond;
+#[cfg(target_arch = "aarch64")]
 use crate::aarch64::{
-    Aarch64Assembler, Cond, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
+    Aarch64Assembler, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
 };
 use crate::abi::JitCValueTag;
 use crate::helpers::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, phrust_jit_abs_i64};
@@ -60,6 +62,8 @@ pub enum SlotSequenceError {
     /// A slot index whose tag/payload byte offset exceeds the scaled-immediate
     /// range (`imm12`), so it cannot be addressed with a single load/store.
     SlotIndexOutOfRange(u32),
+    /// The current CPU target has no native emitter for this stencil.
+    UnsupportedNativeTarget,
 }
 
 /// `JitCValue` is `repr(C)` and 24 bytes: `tag` (u32) at 0, `payload` (u64) at
@@ -118,6 +122,7 @@ pub enum IntBinOp {
 impl IntBinOp {
     /// Emit the operation on `X4` (lhs) / `X5` (rhs) into `X6`, taking `deopt`
     /// on overflow or an out-of-domain operand. `X3` is used as scratch.
+    #[cfg(target_arch = "aarch64")]
     fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
         match self {
             IntBinOp::Add => {
@@ -256,7 +261,7 @@ pub enum ScalarIntOp {
     /// decided from the tag — the stencil side-exits and the interpreter answers.
     /// Every *definite* tag (`Int`/`Bool`/`FloatBits`/`OpaqueString`/
     /// `OpaqueArray`) yields a correct true/false. `expected_tag` selects the
-    /// predicate (e.g. [`INT_TAG`] for `is_int`). Emitted only when the VM bridge
+    /// predicate (e.g. `INT_TAG` for `is_int`). Emitted only when the VM bridge
     /// confirms the call resolves to the real builtin (see [`NativeCallPermits`]).
     IsType {
         dst: u32,
@@ -391,6 +396,7 @@ pub enum FloatBinOp {
 impl FloatBinOp {
     /// Emit the operation on `D0`/`D1` into `D2`, taking `deopt` on a zero
     /// divisor (Div only).
+    #[cfg(target_arch = "aarch64")]
     fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
         match self {
             FloatBinOp::Add => asm.fadd(D2, D0, D1),
@@ -441,6 +447,7 @@ fn check_float_op_slots(op: ScalarFloatOp) -> Result<(), SlotSequenceError> {
 
 /// Emit a copy of the whole 24-byte value `slot[dst] = slot[src]` (tag +
 /// payload + aux); the tag travels with the value so downstream ops still guard.
+#[cfg(target_arch = "aarch64")]
 fn emit_value_copy(asm: &mut Aarch64Assembler, dst: u32, src: u32) {
     asm.ldr_w(X3, X0, tag_off(src));
     asm.str_w(X3, X0, tag_off(dst));
@@ -450,6 +457,7 @@ fn emit_value_copy(asm: &mut Aarch64Assembler, dst: u32, src: u32) {
     asm.str_x(X5, X0, aux_off(dst));
 }
 
+#[cfg(target_arch = "aarch64")]
 fn emit_float_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarFloatOp) {
     match op {
         ScalarFloatOp::Const { dst, bits } => {
@@ -479,6 +487,7 @@ fn check_slot(slot: u32) -> Result<(), SlotSequenceError> {
 }
 
 /// Guard that `slot`'s tag is `Int`, taking the side exit otherwise.
+#[cfg(target_arch = "aarch64")]
 fn emit_int_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, INT_TAG);
@@ -488,6 +497,7 @@ fn emit_int_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 /// Guard that `slot`'s tag is `Bool`, taking the side exit otherwise. Used on a
 /// branch condition so arbitrary-truthiness conditions (int, string, …) fall
 /// back to the interpreter rather than being mis-tested here.
+#[cfg(target_arch = "aarch64")]
 fn emit_bool_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, BOOL_TAG);
@@ -513,6 +523,7 @@ fn emit_bool_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 ///
 /// Nothing is assumed to survive the `blr` except through the stack: both the
 /// result and the slot base are reloaded from the reserved frame afterward.
+#[cfg(target_arch = "aarch64")]
 fn emit_call_abs_i64(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32) {
     // 1–2: guard + read the argument while X0 is still the slot base.
     emit_int_guard(asm, deopt, arg);
@@ -550,6 +561,7 @@ fn emit_call_abs_i64(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u3
 /// Only a genuine array slot reaches the length helper — a scalar, a `Countable`
 /// object (marshaled as `Uninitialized`), or any other value side-exits here so
 /// the interpreter reproduces `count()`'s exact semantics/errors.
+#[cfg(target_arch = "aarch64")]
 fn emit_array_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, ARRAY_TAG);
@@ -579,6 +591,7 @@ fn emit_array_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 ///
 /// Nothing is assumed to survive the `blr` except through the stack; the helper
 /// only reads the borrowed value and never mutates, frees, or re-enters the VM.
+#[cfg(target_arch = "aarch64")]
 fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
     // 1–2: guard the arg is an array + read its borrowed-pointer payload while
     // X0 is still the slot base.
@@ -618,6 +631,7 @@ fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32,
 /// an object, `null`, or any other value (all of which PHP's `strlen` would
 /// coerce or reject) side-exits here so the interpreter reproduces the exact
 /// semantics.
+#[cfg(target_arch = "aarch64")]
 fn emit_string_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, STRING_TAG);
@@ -635,6 +649,7 @@ fn emit_string_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 /// / `x1 = &out`, `blr` the helper, side-exit on a non-OK status, else reload
 /// the byte length and store the `Int` result. The helper only reads the
 /// borrowed value's byte length; it never mutates, frees, or re-enters the VM.
+#[cfg(target_arch = "aarch64")]
 fn emit_call_strlen(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
     // 1–2: guard the arg is a string + read its borrowed-pointer payload while
     // X0 is still the slot base.
@@ -673,6 +688,7 @@ fn emit_call_strlen(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32
 /// Only a genuine object slot reaches the property-load helper — a scalar, a
 /// string, an array, `null`, or any other value side-exits here so the
 /// interpreter reproduces the exact property-access semantics/errors.
+#[cfg(target_arch = "aarch64")]
 fn emit_object_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, OBJECT_TAG);
@@ -707,6 +723,7 @@ fn emit_object_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 /// Nothing is assumed to survive the `blr` except through the stack; the helper
 /// only reads the borrowed object's declared property and never mutates, frees,
 /// invokes a hook/`__get`, or re-enters the VM.
+#[cfg(target_arch = "aarch64")]
 fn emit_property_load(
     asm: &mut Aarch64Assembler,
     deopt: Label,
@@ -764,6 +781,7 @@ fn emit_property_load(
 /// comparison. Every definite tag yields a correct true/false, so there is no
 /// wrong-answer path: an unrecognized shape is either a decidable non-match or an
 /// `Uninitialized` side exit.
+#[cfg(target_arch = "aarch64")]
 fn emit_is_type(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, expected_tag: u16) {
     asm.ldr_w(X3, X0, tag_off(arg));
     // An Uninitialized-marshaled value is ambiguous; defer to the interpreter.
@@ -776,6 +794,7 @@ fn emit_is_type(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, ex
 }
 
 /// Write `value` to `slot[dst]` tagged as `Int`.
+#[cfg(target_arch = "aarch64")]
 fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, INT_TAG);
     asm.str_w(X3, X0, tag_off(dst));
@@ -783,6 +802,7 @@ fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 }
 
 /// Write `value` (0 or 1 in the low bit) to `slot[dst]` tagged as `Bool`.
+#[cfg(target_arch = "aarch64")]
 fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, BOOL_TAG);
     asm.str_w(X3, X0, tag_off(dst));
@@ -790,6 +810,7 @@ fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 }
 
 /// Guard that `slot`'s tag is `FloatBits`, taking the side exit otherwise.
+#[cfg(target_arch = "aarch64")]
 fn emit_float_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, FLOAT_TAG);
@@ -797,10 +818,505 @@ fn emit_float_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 }
 
 /// Write the double register `value` to `slot[dst]` tagged as `FloatBits`.
+#[cfg(target_arch = "aarch64")]
 fn emit_store_float(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, FLOAT_TAG);
     asm.str_w(X3, X0, tag_off(dst));
     asm.str_d(value, X0, payload_off(dst));
+}
+
+#[cfg(target_arch = "x86_64")]
+mod x86_emit {
+    use super::*;
+    use crate::x86_64 as x;
+
+    fn disp(offset: u32) -> i32 {
+        i32::try_from(offset).expect("checked slot offsets fit in i32")
+    }
+
+    fn cond(cond: Cond) -> x::Cond {
+        match cond {
+            Cond::Overflow => x::Cond::Overflow,
+            Cond::Equal => x::Cond::Equal,
+            Cond::NotEqual => x::Cond::NotEqual,
+            Cond::LessThan => x::Cond::LessThan,
+            Cond::LessEqual => x::Cond::LessEqual,
+            Cond::GreaterThan => x::Cond::GreaterThan,
+            Cond::GreaterEqual => x::Cond::GreaterEqual,
+            Cond::UnsignedHigher => x::Cond::UnsignedHigher,
+        }
+    }
+
+    fn guard_tag(asm: &mut x::X86Assembler, deopt: x::Label, slot: u32, tag: u16) {
+        asm.ldr_w(x::R8, x::RDI, disp(tag_off(slot)));
+        asm.cmp_imm32(x::R8, i32::from(tag));
+        asm.jcc(x::Cond::NotEqual, deopt);
+    }
+
+    fn emit_value_copy(asm: &mut x::X86Assembler, dst: u32, src: u32) {
+        asm.ldr_w(x::R8, x::RDI, disp(tag_off(src)));
+        asm.str_w(x::R8, x::RDI, disp(tag_off(dst)));
+        asm.ldr_x(x::R9, x::RDI, disp(payload_off(src)));
+        asm.str_x(x::R9, x::RDI, disp(payload_off(dst)));
+        asm.ldr_x(x::R10, x::RDI, disp(aux_off(src)));
+        asm.str_x(x::R10, x::RDI, disp(aux_off(dst)));
+    }
+
+    fn store_tag_payload(asm: &mut x::X86Assembler, dst: u32, tag: u16, value: x::Reg) {
+        asm.mov_imm64(x::R11, u64::from(tag));
+        asm.str_w(x::R11, x::RDI, disp(tag_off(dst)));
+        asm.str_x(value, x::RDI, disp(payload_off(dst)));
+    }
+
+    fn store_int(asm: &mut x::X86Assembler, dst: u32, value: x::Reg) {
+        store_tag_payload(asm, dst, INT_TAG, value);
+    }
+
+    fn store_bool(asm: &mut x::X86Assembler, dst: u32, value: x::Reg) {
+        store_tag_payload(asm, dst, BOOL_TAG, value);
+    }
+
+    fn store_float(asm: &mut x::X86Assembler, dst: u32, value: x::Xmm) {
+        asm.mov_imm64(x::R11, u64::from(FLOAT_TAG));
+        asm.str_w(x::R11, x::RDI, disp(tag_off(dst)));
+        asm.movq_xmm_to_gpr(x::R10, value);
+        asm.str_x(x::R10, x::RDI, disp(payload_off(dst)));
+    }
+
+    fn emit_int_bin(asm: &mut x::X86Assembler, deopt: x::Label, op: IntBinOp) {
+        match op {
+            IntBinOp::Add => {
+                asm.mov_reg(x::R10, x::R8);
+                asm.add(x::R10, x::R9);
+                asm.jcc(x::Cond::Overflow, deopt);
+            }
+            IntBinOp::Sub => {
+                asm.mov_reg(x::R10, x::R8);
+                asm.sub(x::R10, x::R9);
+                asm.jcc(x::Cond::Overflow, deopt);
+            }
+            IntBinOp::Mul => {
+                asm.mov_reg(x::R10, x::R8);
+                asm.imul(x::R10, x::R9);
+                asm.jcc(x::Cond::Overflow, deopt);
+            }
+            IntBinOp::Mod => {
+                let do_div = asm.new_label();
+                let done = asm.new_label();
+                asm.cmp_imm32(x::R9, 0);
+                asm.jcc(x::Cond::Equal, deopt);
+                // x86 idiv traps on INT_MIN / -1; PHP's remainder is 0.
+                asm.mov_imm64(x::R11, i64::MIN as u64);
+                asm.cmp_reg(x::R8, x::R11);
+                asm.jcc(x::Cond::NotEqual, do_div);
+                asm.cmp_imm32(x::R9, -1);
+                asm.jcc(x::Cond::NotEqual, do_div);
+                asm.mov_imm64(x::R10, 0);
+                asm.jmp(done);
+                asm.bind(do_div);
+                asm.mov_reg(x::RAX, x::R8);
+                asm.cqo();
+                asm.idiv(x::R9);
+                asm.mov_reg(x::R10, x::RDX);
+                asm.bind(done);
+            }
+            IntBinOp::BitAnd => {
+                asm.mov_reg(x::R10, x::R8);
+                asm.and_reg(x::R10, x::R9);
+            }
+            IntBinOp::BitOr => {
+                asm.mov_reg(x::R10, x::R8);
+                asm.or_reg(x::R10, x::R9);
+            }
+            IntBinOp::BitXor => {
+                asm.mov_reg(x::R10, x::R8);
+                asm.xor_reg(x::R10, x::R9);
+            }
+            IntBinOp::Shl => {
+                asm.cmp_imm32(x::R9, 63);
+                asm.jcc(x::Cond::UnsignedHigher, deopt);
+                asm.mov_reg(x::RCX, x::R9);
+                asm.mov_reg(x::R10, x::R8);
+                asm.shl(x::R10);
+            }
+            IntBinOp::Shr => {
+                asm.cmp_imm32(x::R9, 63);
+                asm.jcc(x::Cond::UnsignedHigher, deopt);
+                asm.mov_reg(x::RCX, x::R9);
+                asm.mov_reg(x::R10, x::R8);
+                asm.sar(x::R10);
+            }
+        }
+    }
+
+    fn call_i64_helper(
+        asm: &mut x::X86Assembler,
+        deopt: x::Label,
+        dst: u32,
+        arg: u32,
+        tag: u16,
+        helper: u64,
+    ) {
+        guard_tag(asm, deopt, arg, tag);
+        asm.ldr_x(x::R8, x::RDI, disp(payload_off(arg)));
+        // Entry rsp is 8 mod 16 under SysV; 24 bytes gives aligned helper calls.
+        asm.sub_rsp_imm8(24);
+        asm.str_x(x::RDI, x::RSP, 8);
+        asm.mov_reg(x::RDI, x::R8);
+        asm.mov_reg(x::RSI, x::RSP);
+        asm.mov_imm64(x::R11, helper);
+        asm.call_reg(x::R11);
+
+        let call_deopt = asm.new_label();
+        let done = asm.new_label();
+        asm.cmp_imm32(x::RAX, JIT_HELPER_STATUS_OK);
+        asm.jcc(x::Cond::NotEqual, call_deopt);
+        asm.ldr_x(x::R8, x::RSP, 0);
+        asm.ldr_x(x::RDI, x::RSP, 8);
+        asm.add_rsp_imm8(24);
+        store_int(asm, dst, x::R8);
+        asm.jmp(done);
+
+        asm.bind(call_deopt);
+        asm.add_rsp_imm8(24);
+        asm.jmp(deopt);
+        asm.bind(done);
+    }
+
+    fn property_load(
+        asm: &mut x::X86Assembler,
+        deopt: x::Label,
+        dst: u32,
+        arg: u32,
+        metadata_ptr: u64,
+        helper: u64,
+    ) {
+        guard_tag(asm, deopt, arg, OBJECT_TAG);
+        asm.ldr_x(x::R8, x::RDI, disp(payload_off(arg)));
+        // 24-byte out value + padding + saved slot base; keeps rsp aligned.
+        asm.sub_rsp_imm8(56);
+        asm.str_x(x::RDI, x::RSP, 32);
+        asm.mov_reg(x::RDI, x::R8);
+        asm.mov_imm64(x::RSI, metadata_ptr);
+        asm.mov_reg(x::RDX, x::RSP);
+        asm.mov_imm64(x::R11, helper);
+        asm.call_reg(x::R11);
+
+        let call_deopt = asm.new_label();
+        let done = asm.new_label();
+        asm.cmp_imm32(x::RAX, JIT_HELPER_STATUS_OK);
+        asm.jcc(x::Cond::NotEqual, call_deopt);
+        asm.ldr_x(x::RDI, x::RSP, 32);
+        asm.ldr_x(x::R8, x::RSP, 0);
+        asm.str_x(x::R8, x::RDI, disp(tag_off(dst)));
+        asm.ldr_x(x::R9, x::RSP, 8);
+        asm.str_x(x::R9, x::RDI, disp(payload_off(dst)));
+        asm.ldr_x(x::R10, x::RSP, 16);
+        asm.str_x(x::R10, x::RDI, disp(aux_off(dst)));
+        asm.add_rsp_imm8(56);
+        asm.jmp(done);
+
+        asm.bind(call_deopt);
+        asm.add_rsp_imm8(56);
+        asm.jmp(deopt);
+        asm.bind(done);
+    }
+
+    fn emit_is_type(
+        asm: &mut x::X86Assembler,
+        deopt: x::Label,
+        dst: u32,
+        arg: u32,
+        expected_tag: u16,
+    ) {
+        asm.ldr_w(x::R8, x::RDI, disp(tag_off(arg)));
+        asm.cmp_imm32(x::R8, i32::from(UNINIT_TAG));
+        asm.jcc(x::Cond::Equal, deopt);
+        asm.cmp_imm32(x::R8, i32::from(expected_tag));
+        asm.setcc(x::R10, x::Cond::Equal);
+        store_bool(asm, dst, x::R10);
+    }
+
+    fn emit_op(asm: &mut x::X86Assembler, deopt: x::Label, op: ScalarIntOp) {
+        match op {
+            ScalarIntOp::Const { dst, value } => {
+                asm.mov_imm64(x::R10, value as u64);
+                store_int(asm, dst, x::R10);
+            }
+            ScalarIntOp::Copy { dst, src } => emit_value_copy(asm, dst, src),
+            ScalarIntOp::CallAbsI64 { dst, arg } => call_i64_helper(
+                asm,
+                deopt,
+                dst,
+                arg,
+                INT_TAG,
+                phrust_jit_abs_i64 as *const () as usize as u64,
+            ),
+            ScalarIntOp::CallCountI64 {
+                dst,
+                arg,
+                array_len_helper,
+            } => call_i64_helper(asm, deopt, dst, arg, ARRAY_TAG, array_len_helper),
+            ScalarIntOp::CallStrlenI64 {
+                dst,
+                arg,
+                strlen_helper,
+            } => call_i64_helper(asm, deopt, dst, arg, STRING_TAG, strlen_helper),
+            ScalarIntOp::IsType {
+                dst,
+                arg,
+                expected_tag,
+            } => emit_is_type(asm, deopt, dst, arg, expected_tag),
+            ScalarIntOp::CallPropertyLoadScalar {
+                dst,
+                arg,
+                metadata_ptr,
+                helper,
+            } => property_load(asm, deopt, dst, arg, metadata_ptr, helper),
+            ScalarIntOp::Binary { op, dst, lhs, rhs } => {
+                guard_tag(asm, deopt, lhs, INT_TAG);
+                guard_tag(asm, deopt, rhs, INT_TAG);
+                asm.ldr_x(x::R8, x::RDI, disp(payload_off(lhs)));
+                asm.ldr_x(x::R9, x::RDI, disp(payload_off(rhs)));
+                emit_int_bin(asm, deopt, op);
+                store_int(asm, dst, x::R10);
+            }
+            ScalarIntOp::BinaryConst { op, dst, lhs, rhs } => {
+                guard_tag(asm, deopt, lhs, INT_TAG);
+                asm.ldr_x(x::R8, x::RDI, disp(payload_off(lhs)));
+                asm.mov_imm64(x::R9, rhs as u64);
+                emit_int_bin(asm, deopt, op);
+                store_int(asm, dst, x::R10);
+            }
+            ScalarIntOp::Compare {
+                cond,
+                dst,
+                lhs,
+                rhs,
+            } => {
+                guard_tag(asm, deopt, lhs, INT_TAG);
+                guard_tag(asm, deopt, rhs, INT_TAG);
+                asm.ldr_x(x::R8, x::RDI, disp(payload_off(lhs)));
+                asm.ldr_x(x::R9, x::RDI, disp(payload_off(rhs)));
+                asm.cmp_reg(x::R8, x::R9);
+                asm.setcc(x::R10, self::cond(cond));
+                store_bool(asm, dst, x::R10);
+            }
+        }
+    }
+
+    fn emit_float_op(asm: &mut x::X86Assembler, deopt: x::Label, op: ScalarFloatOp) {
+        match op {
+            ScalarFloatOp::Const { dst, bits } => {
+                asm.mov_imm64(x::R10, bits);
+                store_tag_payload(asm, dst, FLOAT_TAG, x::R10);
+            }
+            ScalarFloatOp::Copy { dst, src } => emit_value_copy(asm, dst, src),
+            ScalarFloatOp::Binary { op, dst, lhs, rhs } => {
+                guard_tag(asm, deopt, lhs, FLOAT_TAG);
+                guard_tag(asm, deopt, rhs, FLOAT_TAG);
+                asm.movsd_load(x::XMM0, x::RDI, disp(payload_off(lhs)));
+                asm.movsd_load(x::XMM1, x::RDI, disp(payload_off(rhs)));
+                match op {
+                    FloatBinOp::Add => asm.addsd(x::XMM0, x::XMM1),
+                    FloatBinOp::Sub => asm.subsd(x::XMM0, x::XMM1),
+                    FloatBinOp::Mul => asm.mulsd(x::XMM0, x::XMM1),
+                    FloatBinOp::Div => {
+                        asm.xorpd(x::XMM2, x::XMM2);
+                        asm.ucomisd(x::XMM1, x::XMM2);
+                        asm.jcc(x::Cond::Equal, deopt);
+                        asm.divsd(x::XMM0, x::XMM1);
+                    }
+                }
+                store_float(asm, dst, x::XMM0);
+            }
+        }
+    }
+
+    pub(super) fn emit_scalar_int_ops(ops: &[ScalarIntOp]) -> Vec<u8> {
+        let mut asm = x::X86Assembler::new();
+        let deopt = asm.new_label();
+        for op in ops {
+            emit_op(&mut asm, deopt, *op);
+        }
+        asm.mov_imm64(x::RAX, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.mov_imm64(x::RAX, 1);
+        asm.ret();
+        asm.finish()
+    }
+
+    pub(super) fn emit_scalar_float_ops(ops: &[ScalarFloatOp]) -> Vec<u8> {
+        let mut asm = x::X86Assembler::new();
+        let deopt = asm.new_label();
+        for op in ops {
+            emit_float_op(&mut asm, deopt, *op);
+        }
+        asm.mov_imm64(x::RAX, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.mov_imm64(x::RAX, 1);
+        asm.ret();
+        asm.finish()
+    }
+
+    pub(super) fn emit_counted_loop(counted: &CountedLoop) -> Vec<u8> {
+        let mut asm = x::X86Assembler::new();
+        let deopt = asm.new_label();
+        let header = asm.new_label();
+        let end = asm.new_label();
+
+        for op in &counted.prologue {
+            emit_op(&mut asm, deopt, *op);
+        }
+
+        asm.bind(header);
+        guard_tag(&mut asm, deopt, counted.counter, INT_TAG);
+        guard_tag(&mut asm, deopt, counted.limit, INT_TAG);
+        asm.ldr_x(x::R8, x::RDI, disp(payload_off(counted.counter)));
+        asm.ldr_x(x::R9, x::RDI, disp(payload_off(counted.limit)));
+        asm.cmp_reg(x::R8, x::R9);
+        asm.jcc(x::Cond::GreaterEqual, end);
+
+        for op in &counted.body {
+            emit_op(&mut asm, deopt, *op);
+        }
+
+        asm.ldr_x(x::R8, x::RDI, disp(payload_off(counted.counter)));
+        asm.mov_imm64(x::R9, 1);
+        asm.mov_reg(x::R10, x::R8);
+        asm.add(x::R10, x::R9);
+        asm.jcc(x::Cond::Overflow, deopt);
+        store_int(&mut asm, counted.counter, x::R10);
+        asm.jmp(header);
+
+        asm.bind(end);
+        asm.mov_imm64(x::RAX, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.mov_imm64(x::RAX, 1);
+        asm.ret();
+        asm.finish()
+    }
+
+    pub(super) fn emit_tailcall_region(
+        prefix: &[ScalarIntOp],
+        args: &[TailArgSource],
+        param_slots: &[u32],
+        arg_slots: &[u32],
+    ) -> Vec<u8> {
+        let mut asm = x::X86Assembler::new();
+        let deopt = asm.new_label();
+        for &slot in param_slots {
+            guard_tag(&mut asm, deopt, slot, INT_TAG);
+        }
+        for op in prefix {
+            emit_op(&mut asm, deopt, *op);
+        }
+        for (arg, &slot) in args.iter().zip(arg_slots.iter()) {
+            match arg {
+                TailArgSource::GuardedCopy { src } => {
+                    guard_tag(&mut asm, deopt, *src, INT_TAG);
+                    emit_value_copy(&mut asm, slot, *src);
+                }
+                TailArgSource::Const { value } => {
+                    asm.mov_imm64(x::R10, *value as u64);
+                    store_int(&mut asm, slot, x::R10);
+                }
+            }
+        }
+        asm.mov_imm64(x::RAX, JIT_HELPER_STATUS_TAILCALL as u64);
+        asm.ret();
+        asm.bind(deopt);
+        asm.mov_imm64(x::RAX, 1);
+        asm.ret();
+        asm.finish()
+    }
+
+    pub(super) fn emit_cfg(
+        function: &IrFunction,
+        constants: &[IrConstant],
+        permits: NativeCallPermits,
+        result_slot: u32,
+    ) -> Option<Vec<u8>> {
+        let local_count = function.local_count;
+        let reg_slot = |r: RegId| local_count + r.raw();
+        let to_op = |kind: &InstructionKind| -> Option<ScalarIntOp> {
+            if let InstructionKind::CallFunction { dst, name, args } = kind
+                && permits.builtin_abs
+                && name.as_str() == "abs"
+            {
+                let [arg] = args.as_slice() else {
+                    return None;
+                };
+                if arg.name.is_some() || arg.unpack {
+                    return None;
+                }
+                let Operand::Register(arg_reg) = arg.value else {
+                    return None;
+                };
+                return Some(ScalarIntOp::CallAbsI64 {
+                    dst: reg_slot(*dst),
+                    arg: reg_slot(arg_reg),
+                });
+            }
+            scalar_int_prefix_op(kind, constants, local_count, reg_slot)
+        };
+
+        let mut asm = x::X86Assembler::new();
+        let deopt = asm.new_label();
+        let block_labels: Vec<x::Label> = function.blocks.iter().map(|_| asm.new_label()).collect();
+        let mut label_of = HashMap::new();
+        for (pos, block) in function.blocks.iter().enumerate() {
+            label_of.insert(block.id.index(), block_labels[pos]);
+        }
+
+        for (pos, block) in function.blocks.iter().enumerate() {
+            asm.bind(block_labels[pos]);
+            for kind in meaningful_kinds(block) {
+                emit_op(&mut asm, deopt, to_op(&kind)?);
+            }
+            match &block.terminator.as_ref()?.kind {
+                TerminatorKind::Jump { target } => {
+                    asm.jmp(*label_of.get(&target.index())?);
+                }
+                TerminatorKind::JumpIf {
+                    condition: Operand::Register(condition),
+                    if_true,
+                    if_false,
+                } => {
+                    let slot = reg_slot(*condition);
+                    guard_tag(&mut asm, deopt, slot, BOOL_TAG);
+                    asm.ldr_x(x::R8, x::RDI, disp(payload_off(slot)));
+                    asm.cmp_imm32(x::R8, 0);
+                    asm.jcc(x::Cond::NotEqual, *label_of.get(&if_true.index())?);
+                    asm.jmp(*label_of.get(&if_false.index())?);
+                }
+                TerminatorKind::Return {
+                    value: Some(Operand::Register(reg)),
+                    by_ref_local: None,
+                } => {
+                    emit_op(
+                        &mut asm,
+                        deopt,
+                        ScalarIntOp::Copy {
+                            dst: result_slot,
+                            src: reg_slot(*reg),
+                        },
+                    );
+                    asm.mov_imm64(x::RAX, 0);
+                    asm.ret();
+                }
+                _ => return None,
+            }
+        }
+
+        asm.bind(deopt);
+        asm.mov_imm64(x::RAX, 1);
+        asm.ret();
+        Some(asm.finish())
+    }
 }
 
 /// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` that applies
@@ -840,6 +1356,7 @@ fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
 /// Emit one scalar-int op, reading operands from and writing the result to the
 /// slot buffer. `X3`..`X6` are scratch; nothing is kept in registers across ops
 /// (values live in slots), so ops compose freely — including inside a loop body.
+#[cfg(target_arch = "aarch64")]
 fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
     match op {
         ScalarIntOp::Const { dst, value } => {
@@ -905,17 +1422,31 @@ pub fn emit_scalar_int_ops(ops: &[ScalarIntOp]) -> Result<Vec<u8>, SlotSequenceE
     for op in ops {
         check_op_slots(*op)?;
     }
-    let mut asm = Aarch64Assembler::new();
-    let deopt = asm.new_label();
-    for op in ops {
-        emit_op(&mut asm, deopt, *op);
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        Ok(x86_emit::emit_scalar_int_ops(ops))
     }
-    asm.movz(X0, 0);
-    asm.ret();
-    asm.bind(deopt);
-    asm.movz(X0, 1);
-    asm.ret();
-    Ok(asm.finish())
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        for op in ops {
+            emit_op(&mut asm, deopt, *op);
+        }
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        Ok(asm.finish())
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        Err(SlotSequenceError::UnsupportedNativeTarget)
+    }
 }
 
 /// Emit a native `extern "C" fn(slot_base: *mut JitCValue) -> i32` that applies
@@ -925,17 +1456,31 @@ pub fn emit_scalar_float_ops(ops: &[ScalarFloatOp]) -> Result<Vec<u8>, SlotSeque
     for op in ops {
         check_float_op_slots(*op)?;
     }
-    let mut asm = Aarch64Assembler::new();
-    let deopt = asm.new_label();
-    for op in ops {
-        emit_float_op(&mut asm, deopt, *op);
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        Ok(x86_emit::emit_scalar_float_ops(ops))
     }
-    asm.movz(X0, 0);
-    asm.ret();
-    asm.bind(deopt);
-    asm.movz(X0, 1);
-    asm.ret();
-    Ok(asm.finish())
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        for op in ops {
+            emit_float_op(&mut asm, deopt, *op);
+        }
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        Ok(asm.finish())
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        Err(SlotSequenceError::UnsupportedNativeTarget)
+    }
 }
 
 /// A native counted loop over the flat slot buffer: run `prologue` once, then
@@ -966,43 +1511,56 @@ pub fn emit_counted_loop(counted: &CountedLoop) -> Result<Vec<u8>, SlotSequenceE
     check_slot(counted.counter)?;
     check_slot(counted.limit)?;
 
-    let mut asm = Aarch64Assembler::new();
-    let deopt = asm.new_label();
-    let header = asm.new_label();
-    let end = asm.new_label();
-
-    for op in &counted.prologue {
-        emit_op(&mut asm, deopt, *op);
+    #[cfg(target_arch = "x86_64")]
+    {
+        Ok(x86_emit::emit_counted_loop(counted))
     }
 
-    asm.bind(header);
-    // Condition: while slot[counter] < slot[limit].
-    emit_int_guard(&mut asm, deopt, counted.counter);
-    emit_int_guard(&mut asm, deopt, counted.limit);
-    asm.ldr_x(X4, X0, payload_off(counted.counter));
-    asm.ldr_x(X5, X0, payload_off(counted.limit));
-    asm.cmp_reg(X4, X5);
-    asm.b_cond(Cond::GreaterEqual, end);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        let header = asm.new_label();
+        let end = asm.new_label();
 
-    for op in &counted.body {
-        emit_op(&mut asm, deopt, *op);
+        for op in &counted.prologue {
+            emit_op(&mut asm, deopt, *op);
+        }
+
+        asm.bind(header);
+        // Condition: while slot[counter] < slot[limit].
+        emit_int_guard(&mut asm, deopt, counted.counter);
+        emit_int_guard(&mut asm, deopt, counted.limit);
+        asm.ldr_x(X4, X0, payload_off(counted.counter));
+        asm.ldr_x(X5, X0, payload_off(counted.limit));
+        asm.cmp_reg(X4, X5);
+        asm.b_cond(Cond::GreaterEqual, end);
+
+        for op in &counted.body {
+            emit_op(&mut asm, deopt, *op);
+        }
+
+        // slot[counter] += 1 (overflow-guarded).
+        asm.ldr_x(X4, X0, payload_off(counted.counter));
+        asm.movz(X5, 1);
+        asm.adds(X6, X4, X5);
+        asm.b_cond(Cond::Overflow, deopt);
+        emit_store_int(&mut asm, counted.counter, X6);
+        asm.b(header);
+
+        asm.bind(end);
+        asm.movz(X0, 0);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        Ok(asm.finish())
     }
 
-    // slot[counter] += 1 (overflow-guarded).
-    asm.ldr_x(X4, X0, payload_off(counted.counter));
-    asm.movz(X5, 1);
-    asm.adds(X6, X4, X5);
-    asm.b_cond(Cond::Overflow, deopt);
-    emit_store_int(&mut asm, counted.counter, X6);
-    asm.b(header);
-
-    asm.bind(end);
-    asm.movz(X0, 0);
-    asm.ret();
-    asm.bind(deopt);
-    asm.movz(X0, 1);
-    asm.ret();
-    Ok(asm.finish())
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        Err(SlotSequenceError::UnsupportedNativeTarget)
+    }
 }
 
 /// Emit a guarded int-add sequence — the `Add`-only special case of
@@ -1080,6 +1638,9 @@ impl From<SlotSequenceError> for RegionCompileError {
     fn from(err: SlotSequenceError) -> Self {
         match err {
             SlotSequenceError::SlotIndexOutOfRange(slot) => Self::SlotIndexOutOfRange(slot),
+            SlotSequenceError::UnsupportedNativeTarget => {
+                Self::UnsupportedNode("unsupported-native-target")
+            }
         }
     }
 }
@@ -2146,97 +2707,116 @@ fn compile_scalar_int_cfg(
     if result_slot > MAX_SLOT {
         return None;
     }
-    let reg_slot = |r: RegId| local_count + r.raw();
 
-    // Translate one instruction to its slot op. `None` means "outside the
-    // subset", which aborts the whole compile (the interpreter runs it). The
-    // non-call subset is shared with the tail-call recognizer via
-    // `scalar_int_prefix_op`; only the `abs` helper call is CFG-specific.
-    let to_op = |kind: &InstructionKind| -> Option<ScalarIntOp> {
-        // A call to the real builtin `abs` (confirmed by the VM bridge via
-        // `permits`) on a single by-value register argument lowers to the
-        // guarded native helper call. Any other name, arity, argument form,
-        // or an unconfirmed `abs` returns `None` so the interpreter runs it.
-        if let InstructionKind::CallFunction { dst, name, args } = kind
-            && permits.builtin_abs
-            && name.as_str() == "abs"
-        {
-            let [arg] = args.as_slice() else {
-                return None;
-            };
-            if arg.name.is_some() || arg.unpack {
-                return None;
-            }
-            let Operand::Register(arg_reg) = arg.value else {
-                return None;
-            };
-            return Some(ScalarIntOp::CallAbsI64 {
-                dst: reg_slot(*dst),
-                arg: reg_slot(arg_reg),
-            });
-        }
-        scalar_int_prefix_op(kind, constants, local_count, reg_slot)
-    };
-
-    let mut asm = Aarch64Assembler::new();
-    let deopt = asm.new_label();
-    let block_labels: Vec<Label> = function.blocks.iter().map(|_| asm.new_label()).collect();
-    // Block IDs need not equal their vec position, so index labels by id.
-    let mut label_of = HashMap::new();
-    for (pos, block) in function.blocks.iter().enumerate() {
-        label_of.insert(block.id.index(), block_labels[pos]);
+    #[cfg(target_arch = "x86_64")]
+    {
+        let code = x86_emit::emit_cfg(function, constants, permits, result_slot)?;
+        Some(CompiledScalarRegion {
+            code,
+            result_slot,
+            buffer_slots,
+            tail_call: None,
+        })
     }
 
-    for (pos, block) in function.blocks.iter().enumerate() {
-        asm.bind(block_labels[pos]);
-        for kind in meaningful_kinds(block) {
-            emit_op(&mut asm, deopt, to_op(&kind)?);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let reg_slot = |r: RegId| local_count + r.raw();
+        // Translate one instruction to its slot op. `None` means "outside the
+        // subset", which aborts the whole compile (the interpreter runs it). The
+        // non-call subset is shared with the tail-call recognizer via
+        // `scalar_int_prefix_op`; only the `abs` helper call is CFG-specific.
+        let to_op = |kind: &InstructionKind| -> Option<ScalarIntOp> {
+            // A call to the real builtin `abs` (confirmed by the VM bridge via
+            // `permits`) on a single by-value register argument lowers to the
+            // guarded native helper call. Any other name, arity, argument form,
+            // or an unconfirmed `abs` returns `None` so the interpreter runs it.
+            if let InstructionKind::CallFunction { dst, name, args } = kind
+                && permits.builtin_abs
+                && name.as_str() == "abs"
+            {
+                let [arg] = args.as_slice() else {
+                    return None;
+                };
+                if arg.name.is_some() || arg.unpack {
+                    return None;
+                }
+                let Operand::Register(arg_reg) = arg.value else {
+                    return None;
+                };
+                return Some(ScalarIntOp::CallAbsI64 {
+                    dst: reg_slot(*dst),
+                    arg: reg_slot(arg_reg),
+                });
+            }
+            scalar_int_prefix_op(kind, constants, local_count, reg_slot)
+        };
+
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        let block_labels: Vec<Label> = function.blocks.iter().map(|_| asm.new_label()).collect();
+        // Block IDs need not equal their vec position, so index labels by id.
+        let mut label_of = HashMap::new();
+        for (pos, block) in function.blocks.iter().enumerate() {
+            label_of.insert(block.id.index(), block_labels[pos]);
         }
-        match &block.terminator.as_ref()?.kind {
-            TerminatorKind::Jump { target } => {
-                asm.b(*label_of.get(&target.index())?);
+
+        for (pos, block) in function.blocks.iter().enumerate() {
+            asm.bind(block_labels[pos]);
+            for kind in meaningful_kinds(block) {
+                emit_op(&mut asm, deopt, to_op(&kind)?);
             }
-            TerminatorKind::JumpIf {
-                condition: Operand::Register(cond),
-                if_true,
-                if_false,
-            } => {
-                let slot = reg_slot(*cond);
-                emit_bool_guard(&mut asm, deopt, slot);
-                asm.ldr_x(X4, X0, payload_off(slot));
-                asm.cmp_imm_x(X4, 0);
-                asm.b_cond(Cond::NotEqual, *label_of.get(&if_true.index())?);
-                asm.b(*label_of.get(&if_false.index())?);
+            match &block.terminator.as_ref()?.kind {
+                TerminatorKind::Jump { target } => {
+                    asm.b(*label_of.get(&target.index())?);
+                }
+                TerminatorKind::JumpIf {
+                    condition: Operand::Register(cond),
+                    if_true,
+                    if_false,
+                } => {
+                    let slot = reg_slot(*cond);
+                    emit_bool_guard(&mut asm, deopt, slot);
+                    asm.ldr_x(X4, X0, payload_off(slot));
+                    asm.cmp_imm_x(X4, 0);
+                    asm.b_cond(Cond::NotEqual, *label_of.get(&if_true.index())?);
+                    asm.b(*label_of.get(&if_false.index())?);
+                }
+                TerminatorKind::Return {
+                    value: Some(Operand::Register(reg)),
+                    by_ref_local: None,
+                } => {
+                    emit_op(
+                        &mut asm,
+                        deopt,
+                        ScalarIntOp::Copy {
+                            dst: result_slot,
+                            src: reg_slot(*reg),
+                        },
+                    );
+                    asm.movz(X0, 0);
+                    asm.ret();
+                }
+                _ => return None,
             }
-            TerminatorKind::Return {
-                value: Some(Operand::Register(reg)),
-                by_ref_local: None,
-            } => {
-                emit_op(
-                    &mut asm,
-                    deopt,
-                    ScalarIntOp::Copy {
-                        dst: result_slot,
-                        src: reg_slot(*reg),
-                    },
-                );
-                asm.movz(X0, 0);
-                asm.ret();
-            }
-            _ => return None,
         }
+
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+
+        Some(CompiledScalarRegion {
+            code: asm.finish(),
+            result_slot,
+            buffer_slots,
+            tail_call: None,
+        })
     }
 
-    asm.bind(deopt);
-    asm.movz(X0, 1);
-    asm.ret();
-
-    Some(CompiledScalarRegion {
-        code: asm.finish(),
-        result_slot,
-        buffer_slots,
-        tail_call: None,
-    })
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        None
+    }
 }
 
 /// One positional argument of a native→userland tail call: how the emitted
@@ -2289,35 +2869,51 @@ fn emit_tailcall_region(
         arg_slots.push(slot);
     }
 
-    let mut asm = Aarch64Assembler::new();
-    let deopt = asm.new_label();
-    // Guard every parameter is `Int` up front (see the note above).
-    for &slot in param_slots {
-        emit_int_guard(&mut asm, deopt, slot);
+    #[cfg(target_arch = "x86_64")]
+    {
+        Ok((
+            x86_emit::emit_tailcall_region(prefix, args, param_slots, &arg_slots),
+            arg_slots,
+        ))
     }
-    for op in prefix {
-        emit_op(&mut asm, deopt, *op);
-    }
-    for (arg, &slot) in args.iter().zip(arg_slots.iter()) {
-        match arg {
-            TailArgSource::GuardedCopy { src } => {
-                emit_int_guard(&mut asm, deopt, *src);
-                emit_value_copy(&mut asm, slot, *src);
-            }
-            TailArgSource::Const { value } => {
-                asm.mov_imm64(X6, *value as u64);
-                emit_store_int(&mut asm, slot, X6);
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut asm = Aarch64Assembler::new();
+        let deopt = asm.new_label();
+        // Guard every parameter is `Int` up front (see the note above).
+        for &slot in param_slots {
+            emit_int_guard(&mut asm, deopt, slot);
+        }
+        for op in prefix {
+            emit_op(&mut asm, deopt, *op);
+        }
+        for (arg, &slot) in args.iter().zip(arg_slots.iter()) {
+            match arg {
+                TailArgSource::GuardedCopy { src } => {
+                    emit_int_guard(&mut asm, deopt, *src);
+                    emit_value_copy(&mut asm, slot, *src);
+                }
+                TailArgSource::Const { value } => {
+                    asm.mov_imm64(X6, *value as u64);
+                    emit_store_int(&mut asm, slot, X6);
+                }
             }
         }
+        // Tail call requested: the arguments are in their slots and the VM performs
+        // the call. No result is written — the region returns before the call.
+        asm.movz(X0, JIT_HELPER_STATUS_TAILCALL as u16);
+        asm.ret();
+        asm.bind(deopt);
+        asm.movz(X0, 1);
+        asm.ret();
+        Ok((asm.finish(), arg_slots))
     }
-    // Tail call requested: the arguments are in their slots and the VM performs
-    // the call. No result is written — the region returns before the call.
-    asm.movz(X0, JIT_HELPER_STATUS_TAILCALL as u16);
-    asm.ret();
-    asm.bind(deopt);
-    asm.movz(X0, 1);
-    asm.ret();
-    Ok((asm.finish(), arg_slots))
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        Err(SlotSequenceError::UnsupportedNativeTarget)
+    }
 }
 
 /// Recognize a native→userland *tail-call* leaf and lower its argument-computing
@@ -2775,9 +3371,17 @@ mod tests {
 
     #[test]
     fn empty_sequence_emits_only_the_return_epilogue() {
-        // movz x0,#0 ; ret ; movz x0,#1 ; ret = four 32-bit instructions.
         let code = emit_guarded_int_add_sequence(&[]).expect("empty sequence emits");
-        assert_eq!(code.len(), 4 * 4);
+        #[cfg(target_arch = "aarch64")]
+        {
+            // movz x0,#0 ; ret ; movz x0,#1 ; ret = four 32-bit instructions.
+            assert_eq!(code.len(), 4 * 4);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            // mov rax,0 ; ret ; mov rax,1 ; ret.
+            assert_eq!(code.len(), (10 + 1) * 2);
+        }
     }
 
     #[test]
@@ -2801,9 +3405,11 @@ mod tests {
             },
         ])
         .expect("two steps emit");
+        let empty = emit_guarded_int_add_sequence(&[]).expect("empty sequence emits");
         // Each step emits the same fixed-size stencil, so two steps add exactly
         // one step's worth of instructions over one step.
-        assert_eq!(two.len() - one.len(), one.len() - 4 * 4);
+        assert_eq!(two.len() - one.len(), one.len() - empty.len());
+        #[cfg(target_arch = "aarch64")]
         assert!(one.len().is_multiple_of(4) && two.len().is_multiple_of(4));
     }
 
