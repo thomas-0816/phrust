@@ -4,6 +4,7 @@ use crate::{ObjectRef, Value};
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_GENERATOR_ID: AtomicU64 = AtomicU64::new(1);
@@ -38,9 +39,9 @@ struct GeneratorStorage {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GeneratorCallContext {
     pub this_value: Option<ObjectRef>,
-    pub scope_class: Option<String>,
-    pub called_class: Option<String>,
-    pub declaring_class: Option<String>,
+    pub scope_class: Option<Arc<str>>,
+    pub called_class: Option<Arc<str>>,
+    pub declaring_class: Option<Arc<str>>,
     pub call_site_strict_types: Option<bool>,
 }
 

@@ -298,15 +298,18 @@ impl Vm {
             &class_owner,
             plan,
             method_entry.function,
-            FunctionCall::new(args, Vec::new())
-                .with_call_site_strict_types(compiled.unit().strict_types)
-                .with_optional_call_span(call_span)
-                .with_this(object.clone())
-                .with_class_context(
-                    declaring_class.name.clone(),
-                    object.display_name(),
-                    declaring_class.name.clone(),
-                ),
+            {
+                let declaring = self.class_name_handles(&declaring_class.name).normalized;
+                FunctionCall::new(args, Vec::new())
+                    .with_call_site_strict_types(compiled.unit().strict_types)
+                    .with_optional_call_span(call_span)
+                    .with_this(object.clone())
+                    .with_class_context_handles(
+                        declaring.clone(),
+                        object_called_class_handle(&object),
+                        declaring,
+                    )
+            },
             output,
             stack,
             state,
@@ -765,12 +768,13 @@ impl Vm {
             plan,
             method_entry.function,
             {
+                let declaring = self.class_name_handles(&declaring_class.name).normalized;
                 let mut call = FunctionCall::new(args, Vec::new())
                     .with_call_site_strict_types(compiled.unit().strict_types)
-                    .with_class_context(
-                        declaring_class.name.clone(),
-                        called_class,
-                        declaring_class.name.clone(),
+                    .with_class_context_handles(
+                        declaring.clone(),
+                        self.class_name_handles(&called_class).display,
+                        declaring,
                     )
                     .with_optional_call_span(call_span);
                 if let Some(bound_this) = bound_this_for_scoped_call {
@@ -884,13 +888,14 @@ impl Vm {
             plan,
             method_entry.function,
             {
+                let declaring = self.class_name_handles(&declaring_class.name).normalized;
                 let mut call = FunctionCall::new(args, Vec::new())
                     .with_call_site_strict_types(compiled.unit().strict_types)
                     .with_optional_call_span(call_span)
-                    .with_class_context(
-                        declaring_class.name.clone(),
-                        called_class,
-                        declaring_class.name,
+                    .with_class_context_handles(
+                        declaring.clone(),
+                        self.class_name_handles(&called_class).display,
+                        declaring,
                     );
                 if let Some(bound_this) = bound_this_for_scoped_call {
                     call = call.with_this(bound_this);
@@ -1030,15 +1035,18 @@ impl Vm {
                 &class_owner,
                 plan,
                 constructor.method.function,
-                FunctionCall::new(args, Vec::new())
-                    .with_call_site_strict_types(compiled.unit().strict_types)
-                    .with_optional_call_span(call_span)
-                    .with_this(object.clone())
-                    .with_class_context(
-                        constructor.class.name.clone(),
-                        object.display_name(),
-                        constructor.class.name.clone(),
-                    ),
+                {
+                    let declaring = self.class_name_handles(&constructor.class.name).normalized;
+                    FunctionCall::new(args, Vec::new())
+                        .with_call_site_strict_types(compiled.unit().strict_types)
+                        .with_optional_call_span(call_span)
+                        .with_this(object.clone())
+                        .with_class_context_handles(
+                            declaring.clone(),
+                            object_called_class_handle(&object),
+                            declaring,
+                        )
+                },
                 output,
                 stack,
                 state,

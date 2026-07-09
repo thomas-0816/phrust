@@ -1997,9 +1997,9 @@ struct FunctionCall<'a> {
     allow_by_ref_value_warnings: bool,
     by_ref_warning_callable_name: Option<String>,
     this_value: Option<ObjectRef>,
-    scope_class: Option<String>,
-    called_class: Option<String>,
-    declaring_class: Option<String>,
+    scope_class: Option<Arc<str>>,
+    called_class: Option<Arc<str>>,
+    declaring_class: Option<Arc<str>>,
     shared_top_level_locals: Option<&'a mut HashMap<String, Slot>>,
     shared_top_level_bind_missing_globals: bool,
     running_generator: Option<GeneratorRef>,
@@ -2146,9 +2146,28 @@ impl FunctionCall<'_> {
         called_class: impl Into<String>,
         declaring_class: impl Into<String>,
     ) -> Self {
-        self.scope_class = Some(normalize_class_name(&scope_class.into()));
-        self.called_class = Some(display_class_name(&called_class.into()));
-        self.declaring_class = Some(normalize_class_name(&declaring_class.into()));
+        self.scope_class = Some(Arc::from(normalize_class_name(&scope_class.into())));
+        self.called_class = Some(Arc::from(display_class_name(&called_class.into())));
+        self.declaring_class = Some(Arc::from(normalize_class_name(&declaring_class.into())));
+        self
+    }
+
+    /// Class-context fast path: the handles are already in the exact
+    /// normalized/display form `with_class_context` would produce, so
+    /// attaching them is three refcount bumps instead of three fresh
+    /// normalizing allocations.
+    fn with_class_context_handles(
+        mut self,
+        scope_class: Arc<str>,
+        called_class: Arc<str>,
+        declaring_class: Arc<str>,
+    ) -> Self {
+        debug_assert_eq!(normalize_class_name(&scope_class), *scope_class);
+        debug_assert_eq!(display_class_name(&called_class), *called_class);
+        debug_assert_eq!(normalize_class_name(&declaring_class), *declaring_class);
+        self.scope_class = Some(scope_class);
+        self.called_class = Some(called_class);
+        self.declaring_class = Some(declaring_class);
         self
     }
 }
@@ -2510,6 +2529,11 @@ pub struct Vm {
     /// body scan, so repeated calls to the same function do not re-scan its
     /// whole body on every invocation to classify the call frame.
     frame_shape_flags: RefCell<HashMap<(u64, u32), FrameShapeFlags>>,
+    /// Memoized activation-context class-name handles keyed by the exact name
+    /// spelling dispatch sees. The normalized/display forms of a spelling never
+    /// change, so hot method-call sites attach shared handles with refcount
+    /// bumps instead of re-normalizing three fresh `String`s per call.
+    class_name_handles: RefCell<HashMap<String, ClassNameHandles>>,
     /// Memoized resolved runtime class entries so repeated instantiations of a
     /// class do not rebuild the whole entry (lineage walk, property/constant
     /// evaluation, method mapping) on every `new`. Invalidated whenever the
@@ -2559,6 +2583,7 @@ impl Vm {
             argument_vector_observers: RefCell::new(HashMap::new()),
             trivial_method_plans: RefCell::new(HashMap::new()),
             frame_shape_flags: RefCell::new(HashMap::new()),
+            class_name_handles: RefCell::new(HashMap::new()),
             runtime_class_entry_cache: RefCell::new(RuntimeClassEntryCache::default()),
             ir_class_entry_cache: RefCell::new(IrClassEntryCache::default()),
             default_slot_template_cache: RefCell::new(DefaultSlotTemplateCache::default()),
@@ -5238,6 +5263,24 @@ impl Vm {
         };
         self.frame_shape_flags.borrow_mut().insert(key, shape);
         shape
+    }
+
+    /// Returns shared normalized/display handles for a class-name spelling,
+    /// allocating them only on its first sighting. `with_class_context`
+    /// re-derives both forms per call; the forms are pure functions of the
+    /// spelling, so reusing the handles is behavior-neutral.
+    fn class_name_handles(&self, name: &str) -> ClassNameHandles {
+        if let Some(handles) = self.class_name_handles.borrow().get(name) {
+            return handles.clone();
+        }
+        let handles = ClassNameHandles {
+            normalized: Arc::from(normalize_class_name(name)),
+            display: Arc::from(display_class_name(name)),
+        };
+        self.class_name_handles
+            .borrow_mut()
+            .insert(name.to_owned(), handles.clone());
+        handles
     }
 
     /// Returns the resolved runtime class entry for a class, building it only on
@@ -18766,10 +18809,10 @@ impl Vm {
                                     .with_call_site_strict_types(compiled.unit().strict_types)
                                     .with_call_span(instruction.span)
                                     .with_this(object.clone())
-                                    .with_class_context(
-                                        constructor.class.name.clone(),
-                                        object.display_name(),
-                                        constructor.class.name.clone(),
+                                    .with_class_context_handles(
+                                        self.class_name_handles(&constructor.class.name).normalized,
+                                        object_called_class_handle(&object),
+                                        self.class_name_handles(&constructor.class.name).normalized,
                                     )
                                     .inherit_fiber_context(&running_fiber),
                                 output,
@@ -20222,10 +20265,10 @@ impl Vm {
                                     .with_call_site_strict_types(compiled.unit().strict_types)
                                     .with_call_span(instruction.span)
                                     .with_this(object.clone())
-                                    .with_class_context(
-                                        constructor.class.name.clone(),
-                                        object.display_name(),
-                                        constructor.class.name.clone(),
+                                    .with_class_context_handles(
+                                        self.class_name_handles(&constructor.class.name).normalized,
+                                        object_called_class_handle(&object),
+                                        self.class_name_handles(&constructor.class.name).normalized,
                                     )
                                     .inherit_fiber_context(&running_fiber),
                                 output,
@@ -27508,10 +27551,12 @@ impl Vm {
                                                 )
                                                 .with_call_span(instruction.span)
                                                 .with_this(object.clone())
-                                                .with_class_context(
-                                                    resolved.class.name.clone(),
-                                                    object.display_name(),
-                                                    resolved.class.name.clone(),
+                                                .with_class_context_handles(
+                                                    self.class_name_handles(&resolved.class.name)
+                                                        .normalized,
+                                                    object_called_class_handle(&object),
+                                                    self.class_name_handles(&resolved.class.name)
+                                                        .normalized,
                                                 ),
                                             output,
                                             stack,
@@ -28903,10 +28948,10 @@ impl Vm {
                                 .with_call_site_strict_types(compiled.unit().strict_types)
                                 .with_call_span(instruction.span)
                                 .with_this(object.clone())
-                                .with_class_context(
-                                    declaring_class.name.clone(),
-                                    class.display_name.clone(),
-                                    declaring_class.name.clone(),
+                                .with_class_context_handles(
+                                    self.class_name_handles(&declaring_class.name).normalized,
+                                    self.class_name_handles(&class.display_name).display,
+                                    self.class_name_handles(&declaring_class.name).normalized,
                                 )
                                 .inherit_fiber_context(&running_fiber),
                             output,
@@ -29909,10 +29954,10 @@ impl Vm {
                         let mut call = FunctionCall::new(values, Vec::new())
                             .with_call_site_strict_types(compiled.unit().strict_types)
                             .with_call_span(instruction.span)
-                            .with_class_context(
-                                declaring_class.name.clone(),
-                                called_class,
-                                declaring_class.name.clone(),
+                            .with_class_context_handles(
+                                self.class_name_handles(&declaring_class.name).normalized,
+                                self.class_name_handles(&called_class).display,
+                                self.class_name_handles(&declaring_class.name).normalized,
                             )
                             .inherit_fiber_context(&running_fiber);
                         if let Some(bound_this) = bound_this_for_scoped_call {
@@ -30020,7 +30065,7 @@ impl Vm {
                             call = call.with_this(bound_this.clone());
                         }
                         if let Some(scope_class) = &payload.context.scope_class {
-                            call = call.with_class_context(
+                            call = call.with_class_context_handles(
                                 scope_class.clone(),
                                 payload
                                     .context
@@ -34626,7 +34671,7 @@ impl Vm {
                         call = call.with_this(bound_this);
                     }
                     if let Some(scope_class) = payload.context.scope_class {
-                        call = call.with_class_context(
+                        call = call.with_class_context_handles(
                             scope_class.clone(),
                             payload
                                 .context
@@ -35756,10 +35801,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    declaring_class_name.clone(),
-                    object.display_name(),
-                    declaring_class_name,
+                .with_class_context_handles(
+                    self.class_name_handles(&declaring_class_name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&declaring_class_name).normalized,
                 )
                 .inherit_fiber_context(running_fiber),
             output,
@@ -36310,10 +36355,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -36404,10 +36449,10 @@ impl Vm {
             resolved.method.function,
             FunctionCall::new(args, Vec::new())
                 .with_call_site_strict_types(compiled.unit().strict_types)
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    class.display_name.clone(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    self.class_name_handles(&class.display_name).display,
+                    self.class_name_handles(&resolved.class.name).normalized,
                 )
                 .with_optional_call_span(call_span),
             output,
@@ -36537,10 +36582,10 @@ impl Vm {
                                 .with_call_site_strict_types(compiled.unit().strict_types)
                                 .with_optional_call_span(call_span)
                                 .with_this(object.clone())
-                                .with_class_context(
-                                    resolved.class.name.clone(),
-                                    object.display_name(),
-                                    resolved.class.name.clone(),
+                                .with_class_context_handles(
+                                    self.class_name_handles(&resolved.class.name).normalized,
+                                    object_called_class_handle(&object),
+                                    self.class_name_handles(&resolved.class.name).normalized,
                                 ),
                             output,
                             stack,
@@ -36985,10 +37030,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    declaring_class.name.clone(),
-                    object.display_name(),
-                    declaring_class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&declaring_class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&declaring_class.name).normalized,
                 ),
             output,
             stack,
@@ -39697,10 +39742,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -39769,10 +39814,10 @@ impl Vm {
             FunctionCall::new(magic_args, Vec::new())
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    called_class,
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    self.class_name_handles(&called_class).display,
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -39837,7 +39882,9 @@ impl Vm {
             context.called_class,
             context.declaring_class,
         ) {
-            call = call.with_class_context(scope_class, called_class, declaring_class);
+            // Captured from a call that already went through
+            // `with_class_context`, so the handles keep their exact form.
+            call = call.with_class_context_handles(scope_class, called_class, declaring_class);
         }
         let result = self.execute_function(
             compiled,
@@ -40576,10 +40623,10 @@ impl Vm {
                 FunctionCall::new(Vec::new(), Vec::new())
                     .with_call_site_strict_types(owner.unit().strict_types)
                     .with_this(object.clone())
-                    .with_class_context(
-                        resolved.class.name.clone(),
-                        object.display_name(),
-                        resolved.class.name.clone(),
+                    .with_class_context_handles(
+                        self.class_name_handles(&resolved.class.name).normalized,
+                        object_called_class_handle(&object),
+                        self.class_name_handles(&resolved.class.name).normalized,
                     )
                     .with_optional_call_span(call_span),
                 output,
@@ -40663,10 +40710,10 @@ impl Vm {
             FunctionCall::new(Vec::new(), Vec::new())
                 .with_call_site_strict_types(owner.unit().strict_types)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 )
                 .with_optional_call_span(call_span),
             output,
@@ -43420,10 +43467,10 @@ impl Vm {
             FunctionCall::new(args, Vec::new())
                 .with_call_site_strict_types(owner.unit().strict_types)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -43476,10 +43523,10 @@ impl Vm {
             FunctionCall::new(args, Vec::new())
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_this(object.clone())
-                .with_class_context(
-                    class.name.clone(),
-                    object.display_name(),
-                    class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&class.name).normalized,
                 ),
             output,
             stack,
@@ -43817,10 +43864,10 @@ impl Vm {
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
         let mut call = FunctionCall::new(args, Vec::new())
             .with_call_site_strict_types(compiled.unit().strict_types)
-            .with_class_context(
-                declaring_class.name.clone(),
-                called_class,
-                declaring_class.name.clone(),
+            .with_class_context_handles(
+                self.class_name_handles(&declaring_class.name).normalized,
+                self.class_name_handles(&called_class).display,
+                self.class_name_handles(&declaring_class.name).normalized,
             )
             .with_optional_call_span(call_span);
         if let Some(bound_this) = bound_this_for_scoped_call {
@@ -47435,10 +47482,10 @@ impl Vm {
                     .with_call_site_strict_types(compiled.unit().strict_types)
                     .with_call_span(call_span)
                     .with_this(object.clone())
-                    .with_class_context(
-                        constructor.class.name.clone(),
-                        object.display_name(),
-                        constructor.class.name.clone(),
+                    .with_class_context_handles(
+                        self.class_name_handles(&constructor.class.name).normalized,
+                        object_called_class_handle(&object),
+                        self.class_name_handles(&constructor.class.name).normalized,
                     ),
                 output,
                 stack,
@@ -49569,6 +49616,28 @@ impl PhpTokenStaticMethodError {
             Self::RuntimeClass(error) => error.into_message(),
             Self::Runtime(message) => message,
         }
+    }
+}
+
+/// Activation-context handles for one class-name spelling; see
+/// `Vm::class_name_handles`.
+#[derive(Clone, Debug)]
+struct ClassNameHandles {
+    /// `normalize_class_name` form for scope/declaring-class fields.
+    normalized: Arc<str>,
+    /// `display_class_name` form for the late-static-binding called class.
+    display: Arc<str>,
+}
+
+/// Late-static-binding handle for a receiver object. The stored display name
+/// already carries the PHP-visible spelling, so the shared handle is reused
+/// directly unless a leading root slash still needs stripping.
+fn object_called_class_handle(object: &ObjectRef) -> Arc<str> {
+    let display = object.display_name_handle();
+    if display.starts_with('\\') {
+        Arc::from(display_class_name(&display))
+    } else {
+        display
     }
 }
 
@@ -54465,7 +54534,7 @@ fn closure_static_method_value(
 fn bind_closure_callable_value(callable: CallableValue, bound_this: Option<ObjectRef>) -> Value {
     match callable {
         CallableValue::Closure(payload) => {
-            let rebound_class = bound_this.as_ref().map(ObjectRef::class_name);
+            let rebound_class = bound_this.as_ref().map(ObjectRef::class_name_handle);
             let context = ClosureContext {
                 owner_unit: payload.context.owner_unit,
                 scope_class: rebound_class.clone().or(payload.context.scope_class),
@@ -54812,9 +54881,9 @@ fn current_closure_value(
             .with_bound_this(bound_this)
             .with_context(ClosureContext {
                 owner_unit: dynamic_unit_index_for_compiled(state, compiled),
-                scope_class: current_scope_class(compiled, stack),
-                called_class: current_called_class(compiled, stack),
-                declaring_class: current_scope_class(compiled, stack),
+                scope_class: current_scope_class(compiled, stack).map(Arc::from),
+                called_class: current_called_class(compiled, stack).map(Arc::from),
+                declaring_class: current_scope_class(compiled, stack).map(Arc::from),
             }),
     ))
 }
@@ -61985,9 +62054,9 @@ fn make_closure_value(
             .with_bound_this(bound_this)
             .with_context(ClosureContext {
                 owner_unit: dynamic_unit_index_for_compiled(state, compiled),
-                scope_class: current_scope_class(compiled, stack),
-                called_class: current_called_class(compiled, stack),
-                declaring_class: current_scope_class(compiled, stack),
+                scope_class: current_scope_class(compiled, stack).map(Arc::from),
+                called_class: current_called_class(compiled, stack).map(Arc::from),
+                declaring_class: current_scope_class(compiled, stack).map(Arc::from),
             }),
     )
 }

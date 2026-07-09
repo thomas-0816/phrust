@@ -219,7 +219,7 @@ impl Vm {
                     call = call.with_this(bound_this);
                 }
                 if let Some(scope_class) = payload.context.scope_class {
-                    call = call.with_class_context(
+                    call = call.with_class_context_handles(
                         scope_class.clone(),
                         payload
                             .context
@@ -231,9 +231,12 @@ impl Vm {
                             .unwrap_or_else(|| scope_class.clone()),
                     );
                 } else if let Some(this_value) = call.this_value.as_ref() {
-                    let scope_class = this_value.display_name();
-                    call =
-                        call.with_class_context(scope_class.clone(), scope_class.clone(), scope_class);
+                    let handles = self.class_name_handles(&this_value.display_name_handle());
+                    call = call.with_class_context_handles(
+                        handles.normalized.clone(),
+                        handles.display,
+                        handles.normalized,
+                    );
                 }
                 let call = if allow_by_ref_value_warnings {
                     call.with_by_ref_value_warnings()

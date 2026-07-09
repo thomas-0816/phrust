@@ -1,6 +1,7 @@
 //! Runtime callable and closure value payloads.
 
 use crate::{ObjectRef, ReferenceCell, object::next_object_id, value::Value};
+use std::sync::Arc;
 
 /// Debug metadata PHP exposes when dumping a runtime `Closure` value.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,11 +31,11 @@ pub struct ClosureContext {
     /// Optional owning dynamic VM unit for closures created by include/eval.
     pub owner_unit: Option<usize>,
     /// Lexical class scope captured when the closure was created.
-    pub scope_class: Option<String>,
+    pub scope_class: Option<Arc<str>>,
     /// Late-bound class captured when the closure was created.
-    pub called_class: Option<String>,
+    pub called_class: Option<Arc<str>>,
     /// Declaring class captured when the closure was created.
-    pub declaring_class: Option<String>,
+    pub declaring_class: Option<Arc<str>>,
 }
 
 /// Runtime closure payload.

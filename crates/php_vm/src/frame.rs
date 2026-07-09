@@ -1,5 +1,7 @@
 //! Stack frame and register storage for the first VM core.
 
+use std::sync::Arc;
+
 use crate::error::VmError;
 use php_ir::IrSpan;
 use php_ir::ids::{FunctionId, LocalId, RegId};
@@ -296,11 +298,11 @@ pub struct Frame {
     /// Function being executed.
     pub function: FunctionId,
     /// Class scope used for `self::`, visibility, and private member lookup.
-    pub scope_class: Option<String>,
+    pub scope_class: Option<Arc<str>>,
     /// Late-static-binding called class used for `static::`.
-    pub called_class: Option<String>,
+    pub called_class: Option<Arc<str>>,
     /// Class that declares the selected method body.
-    pub declaring_class: Option<String>,
+    pub declaring_class: Option<Arc<str>>,
     /// PHP-visible arguments supplied to this call after default/variadic
     /// normalization.
     pub arguments: Vec<Value>,
@@ -321,11 +323,11 @@ pub struct Frame {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FrameActivationContext {
     /// Class scope used for `self::`, visibility, and private member lookup.
-    pub scope_class: Option<String>,
+    pub scope_class: Option<Arc<str>>,
     /// Late-static-binding called class used for `static::`.
-    pub called_class: Option<String>,
+    pub called_class: Option<Arc<str>>,
     /// Class that declares the selected method body.
-    pub declaring_class: Option<String>,
+    pub declaring_class: Option<Arc<str>>,
     /// Source span of the call site that activated this frame, when known.
     pub call_span: Option<IrSpan>,
 }
@@ -570,6 +572,8 @@ impl CallStack {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{CallStack, Frame, FrameActivationContext, FrameTraceArgument, TraceArguments};
     use php_ir::IrSpan;
     use php_ir::ids::{FileId, FunctionId, LocalId, RegId};
@@ -594,9 +598,9 @@ mod tests {
 
     fn activation(scope: &str, start: u32) -> FrameActivationContext {
         FrameActivationContext {
-            scope_class: Some(scope.to_owned()),
-            called_class: Some(format!("{scope}Called")),
-            declaring_class: Some(format!("{scope}Decl")),
+            scope_class: Some(Arc::from(scope)),
+            called_class: Some(Arc::from(format!("{scope}Called"))),
+            declaring_class: Some(Arc::from(format!("{scope}Decl"))),
             call_span: Some(IrSpan::new(FileId::new(1), start, start + 1)),
         }
     }
