@@ -1,6 +1,6 @@
 use crate::constants::IrConstant;
 use crate::ids::{BlockId, FunctionId, LocalId, RegId};
-use crate::instruction::{BinaryOp, CastKind, CompareOp, IncludeKind, UnaryOp};
+use crate::instruction::{BinaryOp, CastKind, CompareOp, IncludeKind, IrCallArg, UnaryOp};
 use crate::source_map::IrSpan;
 use php_semantics::hir::ExprId;
 use php_source::TextRange;
@@ -34,6 +34,26 @@ pub(super) struct CaptureSpec {
 pub(super) struct StaticLocalSpec {
     pub(super) name: String,
     pub(super) initializer: Option<ExprId>,
+}
+
+fn call_argument_discard_registers(args: &[IrCallArg], dst: RegId) -> Vec<RegId> {
+    let mut registers = Vec::new();
+    for arg in args {
+        let Operand::Register(register) = arg.value else {
+            continue;
+        };
+        if register == dst
+            || arg.by_ref_local.is_some()
+            || arg.by_ref_dim.is_some()
+            || arg.by_ref_property.is_some()
+            || arg.by_ref_property_dim.is_some()
+            || registers.contains(&register)
+        {
+            continue;
+        }
+        registers.push(register);
+    }
+    registers
 }
 
 #[derive(Clone, Debug)]
@@ -2141,6 +2161,14 @@ impl LoweringContext<'_> {
                     element,
                     site.span,
                 );
+                self.emit_register_discards(
+                    builder,
+                    site.function,
+                    current,
+                    element,
+                    site.span,
+                    &[source.register],
+                );
                 continue;
             }
             let key = if let Some(key) = key {
@@ -2298,6 +2326,13 @@ impl LoweringContext<'_> {
                 current = value.block;
                 (value, None)
             };
+            let mut discard_registers = Vec::new();
+            if let Some(Operand::Register(key_register)) = key {
+                discard_registers.push(key_register);
+            }
+            if by_ref_local.is_none() {
+                discard_registers.push(value.register);
+            }
             let instruction = builder.emit(
                 site.function,
                 current,
@@ -2316,6 +2351,14 @@ impl LoweringContext<'_> {
                 instruction,
                 element,
                 site.span,
+            );
+            self.emit_register_discards(
+                builder,
+                site.function,
+                current,
+                element,
+                site.span,
+                &discard_registers,
             );
         }
 
@@ -2677,6 +2720,28 @@ impl LoweringContext<'_> {
         }
     }
 
+    fn emit_register_discards(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+        expr: ExprId,
+        span: IrSpan,
+        registers: &[RegId],
+    ) {
+        for register in registers {
+            let discard = builder.emit(
+                function,
+                block,
+                InstructionKind::Discard {
+                    src: Operand::Register(*register),
+                },
+                span,
+            );
+            self.add_expr_source_map(builder, function, block, discard, expr, span);
+        }
+    }
+
     pub(super) fn lower_call_to_register(
         &mut self,
         builder: &mut IrBuilder,
@@ -2705,7 +2770,7 @@ impl LoweringContext<'_> {
             return self.lower_dynamic_static_method_call_to_register(builder, site, callee, args);
         }
         let dst = builder.alloc_register(site.function);
-        let (kind, current) =
+        let (kind, current, discard_args) =
             if let Some(name) = callee.and_then(|callee| self.static_function_call_name(callee)) {
                 let normalized_name = normalize_function_name(&name);
                 if let Some(lowered) = self.lower_static_property_first_arg_by_ref_call(
@@ -2719,6 +2784,7 @@ impl LoweringContext<'_> {
                 }
                 let (operands, current) =
                     self.lower_call_args_for_function(builder, site, &normalized_name, &args)?;
+                let discard_args = call_argument_discard_registers(&operands, dst);
                 (
                     InstructionKind::CallFunction {
                         dst,
@@ -2726,12 +2792,17 @@ impl LoweringContext<'_> {
                         args: operands,
                     },
                     current,
+                    discard_args,
                 )
             } else if let Some(callee) = callee {
                 let (operands, mut current) = self.lower_call_args(builder, site, &args)?;
                 let callee_value =
                     self.lower_expr_to_register(builder, site.function, current, callee)?;
                 current = callee_value.block;
+                let mut discard_args = call_argument_discard_registers(&operands, dst);
+                if callee_value.register != dst && !discard_args.contains(&callee_value.register) {
+                    discard_args.push(callee_value.register);
+                }
                 (
                     InstructionKind::CallCallable {
                         dst,
@@ -2739,6 +2810,7 @@ impl LoweringContext<'_> {
                         args: operands,
                     },
                     current,
+                    discard_args,
                 )
             } else {
                 self.unsupported(
@@ -2756,6 +2828,14 @@ impl LoweringContext<'_> {
             instruction,
             site.expr,
             site.span,
+        );
+        self.emit_register_discards(
+            builder,
+            site.function,
+            current,
+            site.expr,
+            site.span,
+            &discard_args,
         );
         Some(LoweredExpr {
             register: dst,
@@ -5311,6 +5391,13 @@ impl LoweringContext<'_> {
     ) -> Option<LoweredExpr> {
         let left = left?;
         let right = right?;
+        if matches!(operator, "&&" | "and" | "||" | "or") {
+            if let Some(exit_expr) = self.exit_operand_for_expr(right) {
+                return self.lower_short_circuit_exit_to_register(
+                    builder, site, operator, left, right, exit_expr,
+                );
+            }
+        }
         let left_value = if operator == "??" {
             self.lower_coalesce_left_to_register(builder, site, left)?
         } else {
@@ -5438,6 +5525,95 @@ impl LoweringContext<'_> {
             register: dst,
             block: after_block,
         })
+    }
+
+    fn lower_short_circuit_exit_to_register(
+        &mut self,
+        builder: &mut IrBuilder,
+        site: LowerSite,
+        operator: &str,
+        left: ExprId,
+        right: ExprId,
+        exit_expr: Option<ExprId>,
+    ) -> Option<LoweredExpr> {
+        let left_value = self.lower_expr_to_register(builder, site.function, site.block, left)?;
+        let dst = builder.alloc_register(site.function);
+        let skip_block = builder.append_block(site.function);
+        let exit_block = builder.append_block(site.function);
+        let after_block = builder.append_block(site.function);
+
+        match operator {
+            "&&" | "and" => {
+                builder.terminate_jump_if(
+                    site.function,
+                    left_value.block,
+                    Operand::Register(left_value.register),
+                    exit_block,
+                    skip_block,
+                    site.span,
+                );
+                self.emit_bool_move(builder, site.function, skip_block, dst, false, site.span);
+            }
+            "||" | "or" => {
+                builder.terminate_jump_if(
+                    site.function,
+                    left_value.block,
+                    Operand::Register(left_value.register),
+                    skip_block,
+                    exit_block,
+                    site.span,
+                );
+                self.emit_bool_move(builder, site.function, skip_block, dst, true, site.span);
+            }
+            _ => return None,
+        }
+        self.jump_if_open(builder, site.function, skip_block, after_block, site.span);
+        self.terminate_exit_expr(builder, site.function, exit_block, right, exit_expr)?;
+
+        Some(LoweredExpr {
+            register: dst,
+            block: after_block,
+        })
+    }
+
+    fn exit_operand_for_expr(&self, expr: ExprId) -> Option<Option<ExprId>> {
+        let module = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())?;
+        match module.expressions().get(expr)?.kind() {
+            HirExprKind::Exit { expr } => Some(*expr),
+            _ => None,
+        }
+    }
+
+    fn terminate_exit_expr(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+        expr: ExprId,
+        exit_expr: Option<ExprId>,
+    ) -> Option<()> {
+        let range = self.span_for(SourceMappedId::from(expr));
+        let span = span_from_range(self.file, range);
+        let mut exit_block = block;
+        let mut exit_value = None;
+        if let Some(exit_expr) = exit_expr {
+            let value = self.lower_expr_to_register(builder, function, block, exit_expr)?;
+            exit_block = value.block;
+            exit_value = Some(Operand::Register(value.register));
+        }
+        builder.terminate_exit(function, exit_block, exit_value, span);
+        builder.add_source_map(
+            IrSourceMapTarget::Terminator {
+                function,
+                block: exit_block,
+            },
+            format!("hir:expr:{}", expr.raw()),
+            span,
+        );
+        Some(())
     }
 
     pub(super) fn lower_logical_xor_to_register(
@@ -5946,8 +6122,77 @@ impl LoweringContext<'_> {
                     block: site.block,
                 })
             }
-            _ => self.lower_expr_to_register(builder, site.function, site.block, inner),
+            _ => {
+                let (old_reporting, current) = self.emit_error_reporting_call(
+                    builder,
+                    site.function,
+                    site.block,
+                    site.expr,
+                    site.span,
+                    None,
+                );
+                let zero = builder.intern_constant(IrConstant::Int(0));
+                let (_, current) = self.emit_error_reporting_call(
+                    builder,
+                    site.function,
+                    current,
+                    site.expr,
+                    site.span,
+                    Some(Operand::Constant(zero)),
+                );
+                let suppressed =
+                    self.lower_expr_to_register(builder, site.function, current, inner)?;
+                let (_, current) = self.emit_error_reporting_call(
+                    builder,
+                    site.function,
+                    suppressed.block,
+                    site.expr,
+                    site.span,
+                    Some(Operand::Register(old_reporting)),
+                );
+                Some(LoweredExpr {
+                    register: suppressed.register,
+                    block: current,
+                })
+            }
         }
+    }
+
+    fn emit_error_reporting_call(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+        expr: ExprId,
+        span: IrSpan,
+        arg: Option<Operand>,
+    ) -> (RegId, BlockId) {
+        let dst = builder.alloc_register(function);
+        let args = arg
+            .into_iter()
+            .map(|value| IrCallArg {
+                name: None,
+                value,
+                unpack: false,
+                value_kind: IrCallArgValueKind::Direct,
+                by_ref_local: None,
+                by_ref_dim: None,
+                by_ref_property: None,
+                by_ref_property_dim: None,
+            })
+            .collect();
+        let instruction = builder.emit(
+            function,
+            block,
+            InstructionKind::CallFunction {
+                dst,
+                name: normalize_function_name("error_reporting"),
+                args,
+            },
+            span,
+        );
+        self.add_expr_source_map(builder, function, block, instruction, expr, span);
+        (dst, block)
     }
 
     pub(super) fn emit_bool_move(
@@ -6197,6 +6442,22 @@ impl LoweringContext<'_> {
                 logical_left,
                 logical_right,
                 right,
+            );
+        }
+        if operator == "="
+            && let Some(left) = left
+            && let Some(local) = self.variable_local(builder, site.function, left)
+            && let Some((logical_operator, logical_left, logical_right, exit_expr)) =
+                self.logical_exit_assignment_rhs(right)
+        {
+            return self.lower_local_assignment_logical_exit_guard_to_register(
+                builder,
+                site,
+                &logical_operator,
+                local,
+                logical_left,
+                logical_right,
+                exit_expr,
             );
         }
         if operator == "="
@@ -8632,6 +8893,103 @@ impl LoweringContext<'_> {
             register: dst,
             block: after_block,
         })
+    }
+
+    fn lower_local_assignment_logical_exit_guard_to_register(
+        &mut self,
+        builder: &mut IrBuilder,
+        site: LowerSite,
+        logical_operator: &str,
+        local: LocalId,
+        logical_left: ExprId,
+        logical_right: ExprId,
+        exit_expr: Option<ExprId>,
+    ) -> Option<LoweredExpr> {
+        let assigned =
+            self.lower_expr_to_register(builder, site.function, site.block, logical_left)?;
+        let store = builder.emit(
+            site.function,
+            assigned.block,
+            InstructionKind::StoreLocal {
+                local,
+                src: Operand::Register(assigned.register),
+            },
+            site.span,
+        );
+        self.add_expr_source_map(
+            builder,
+            site.function,
+            assigned.block,
+            store,
+            site.expr,
+            site.span,
+        );
+
+        let dst = builder.alloc_register(site.function);
+        let skip_block = builder.append_block(site.function);
+        let exit_block = builder.append_block(site.function);
+        let after_block = builder.append_block(site.function);
+        match logical_operator {
+            "&&" | "and" => {
+                builder.terminate_jump_if(
+                    site.function,
+                    assigned.block,
+                    Operand::Register(assigned.register),
+                    exit_block,
+                    skip_block,
+                    site.span,
+                );
+                self.emit_bool_move(builder, site.function, skip_block, dst, false, site.span);
+            }
+            "||" | "or" => {
+                builder.terminate_jump_if(
+                    site.function,
+                    assigned.block,
+                    Operand::Register(assigned.register),
+                    skip_block,
+                    exit_block,
+                    site.span,
+                );
+                self.emit_bool_move(builder, site.function, skip_block, dst, true, site.span);
+            }
+            _ => return None,
+        }
+        self.jump_if_open(builder, site.function, skip_block, after_block, site.span);
+        self.terminate_exit_expr(builder, site.function, exit_block, logical_right, exit_expr)?;
+
+        Some(LoweredExpr {
+            register: dst,
+            block: after_block,
+        })
+    }
+
+    fn logical_exit_assignment_rhs(
+        &self,
+        right: Option<ExprId>,
+    ) -> Option<(String, ExprId, ExprId, Option<ExprId>)> {
+        let right = right?;
+        let module = self
+            .frontend
+            .database()
+            .module(self.frontend.module().module_id())?;
+        let expression = module.expressions().get(right)?;
+        let (operator, logical_left, logical_right) = match expression.kind() {
+            HirExprKind::Binary {
+                operator,
+                left,
+                right,
+            } if matches!(operator.as_str(), "&&" | "and" | "||" | "or") => {
+                (operator.clone(), *left, *right)
+            }
+            _ => return None,
+        };
+        let logical_left = logical_left?;
+        let logical_right = logical_right?;
+        let exit_expr = match module.expressions().get(logical_right)?.kind() {
+            HirExprKind::Exit { expr } => *expr,
+            _ => return None,
+        };
+        Some((operator, logical_left, logical_right, exit_expr))
     }
 
     pub(super) fn lower_dim_coalesce_assign_to_register(

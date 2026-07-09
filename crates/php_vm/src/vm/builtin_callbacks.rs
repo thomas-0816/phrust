@@ -55,7 +55,7 @@ impl Vm {
             result.return_value = Some(Value::Bool(false));
             state.json_last_error = php_runtime::JSON_ERROR_RECURSION;
         }
-        release_unrooted_object_handles(&original_first, stack, state);
+        release_unrooted_direct_object_handle(&original_first, stack, state);
         result
     }
 
@@ -282,6 +282,267 @@ impl Vm {
             vec![
                 CallArgument::positional(Value::Object(handle.clone())),
                 CallArgument::positional(payload),
+            ],
+            output,
+            stack,
+            state,
+        );
+        diagnostics.extend(callback_result.diagnostics.clone());
+        Some(callback_result)
+    }
+
+    pub(super) fn execute_xml_parse_with_handlers(
+        &self,
+        entry: BuiltinEntry,
+        values: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+        call_span: Option<php_ir::IrSpan>,
+    ) -> VmResult {
+        let parser = values
+            .first()
+            .and_then(|value| match effective_value(value) {
+                Value::Object(object)
+                    if normalize_class_name(&object.class_name()) == "xmlparser" =>
+                {
+                    Some(object)
+                }
+                _ => None,
+            });
+        let input = values
+            .get(1)
+            .and_then(|value| match effective_value(value) {
+                Value::String(input) => Some(input.to_string_lossy()),
+                _ => None,
+            });
+        let mut result = execute_builtin_entry(
+            entry,
+            values,
+            output,
+            &self.options.runtime_context,
+            state,
+            builtin_source_span(compiled, call_span),
+        );
+        if !result.status.is_success()
+            || !matches!(result.return_value.as_ref(), Some(Value::Int(1)))
+        {
+            return result;
+        }
+        let (Some(parser), Some(input)) = (parser, input) else {
+            return result;
+        };
+        let Ok(document) = php_runtime::xml::parse_xml(&input) else {
+            return result;
+        };
+        let mut diagnostics = std::mem::take(&mut result.diagnostics);
+        let case_folding = xml_parser_case_folding(&parser);
+        let context = XmlSaxCallbackContext {
+            parser,
+            case_folding,
+        };
+        if let Some(callback_result) = self.dispatch_xml_element_callbacks(
+            compiled,
+            &context,
+            &document.root,
+            output,
+            stack,
+            state,
+            &mut diagnostics,
+        ) && !callback_result.status.is_success()
+        {
+            return callback_result;
+        }
+        VmResult::success_with_diagnostics_no_output(result.return_value, diagnostics)
+    }
+
+    fn dispatch_xml_element_callbacks(
+        &self,
+        compiled: &CompiledUnit,
+        context: &XmlSaxCallbackContext,
+        element: &php_runtime::xml::XmlElement,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Option<VmResult> {
+        let name = xml_sax_name(&element.name, context.case_folding);
+        let start_callback = context
+            .parser
+            .get_property(php_runtime::xml::XML_PARSER_START_ELEMENT_HANDLER);
+        if xml_callback_is_enabled(&start_callback) {
+            let callback_result = self.call_callable_with_by_ref_value_warnings(
+                compiled,
+                start_callback.unwrap(),
+                vec![
+                    CallArgument::positional(Value::Object(context.parser.clone())),
+                    CallArgument::positional(Value::string(name.as_bytes().to_vec())),
+                    CallArgument::positional(xml_sax_attributes(element, context.case_folding)),
+                ],
+                output,
+                stack,
+                state,
+            );
+            diagnostics.extend(callback_result.diagnostics.clone());
+            if !callback_result.status.is_success() {
+                return Some(callback_result);
+            }
+        } else if let Some(callback_result) = self.dispatch_xml_default_callback(
+            compiled,
+            context,
+            &xml_sax_start_tag(element),
+            output,
+            stack,
+            state,
+            diagnostics,
+        ) && !callback_result.status.is_success()
+        {
+            return Some(callback_result);
+        }
+
+        for child in &element.children {
+            match child {
+                php_runtime::xml::XmlNode::Element(child) => {
+                    if let Some(callback_result) = self.dispatch_xml_element_callbacks(
+                        compiled,
+                        context,
+                        child,
+                        output,
+                        stack,
+                        state,
+                        diagnostics,
+                    ) && !callback_result.status.is_success()
+                    {
+                        return Some(callback_result);
+                    }
+                }
+                php_runtime::xml::XmlNode::Text(text) | php_runtime::xml::XmlNode::Cdata(text) => {
+                    if let Some(callback_result) = self.dispatch_xml_character_data_callback(
+                        compiled,
+                        context,
+                        text,
+                        output,
+                        stack,
+                        state,
+                        diagnostics,
+                    ) && !callback_result.status.is_success()
+                    {
+                        return Some(callback_result);
+                    }
+                }
+                php_runtime::xml::XmlNode::Comment(text) => {
+                    if let Some(callback_result) = self.dispatch_xml_default_callback(
+                        compiled,
+                        context,
+                        &format!("<!--{text}-->"),
+                        output,
+                        stack,
+                        state,
+                        diagnostics,
+                    ) && !callback_result.status.is_success()
+                    {
+                        return Some(callback_result);
+                    }
+                }
+            }
+        }
+
+        let end_callback = context
+            .parser
+            .get_property(php_runtime::xml::XML_PARSER_END_ELEMENT_HANDLER);
+        if xml_callback_is_enabled(&end_callback) {
+            let callback_result = self.call_callable_with_by_ref_value_warnings(
+                compiled,
+                end_callback.unwrap(),
+                vec![
+                    CallArgument::positional(Value::Object(context.parser.clone())),
+                    CallArgument::positional(Value::string(name.as_bytes().to_vec())),
+                ],
+                output,
+                stack,
+                state,
+            );
+            diagnostics.extend(callback_result.diagnostics.clone());
+            if !callback_result.status.is_success() {
+                return Some(callback_result);
+            }
+        } else if let Some(callback_result) = self.dispatch_xml_default_callback(
+            compiled,
+            context,
+            &format!("</{}>", element.name),
+            output,
+            stack,
+            state,
+            diagnostics,
+        ) && !callback_result.status.is_success()
+        {
+            return Some(callback_result);
+        }
+        None
+    }
+
+    fn dispatch_xml_character_data_callback(
+        &self,
+        compiled: &CompiledUnit,
+        context: &XmlSaxCallbackContext,
+        text: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Option<VmResult> {
+        let callback = context
+            .parser
+            .get_property(php_runtime::xml::XML_PARSER_CHARACTER_DATA_HANDLER);
+        if xml_callback_is_enabled(&callback) {
+            let callback_result = self.call_callable_with_by_ref_value_warnings(
+                compiled,
+                callback.unwrap(),
+                vec![
+                    CallArgument::positional(Value::Object(context.parser.clone())),
+                    CallArgument::positional(Value::string(text.as_bytes().to_vec())),
+                ],
+                output,
+                stack,
+                state,
+            );
+            diagnostics.extend(callback_result.diagnostics.clone());
+            return Some(callback_result);
+        }
+        self.dispatch_xml_default_callback(
+            compiled,
+            context,
+            text,
+            output,
+            stack,
+            state,
+            diagnostics,
+        )
+    }
+
+    fn dispatch_xml_default_callback(
+        &self,
+        compiled: &CompiledUnit,
+        context: &XmlSaxCallbackContext,
+        data: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Option<VmResult> {
+        let callback = context
+            .parser
+            .get_property(php_runtime::xml::XML_PARSER_DEFAULT_HANDLER);
+        if !xml_callback_is_enabled(&callback) {
+            return None;
+        }
+        let callback_result = self.call_callable_with_by_ref_value_warnings(
+            compiled,
+            callback.unwrap(),
+            vec![
+                CallArgument::positional(Value::Object(context.parser.clone())),
+                CallArgument::positional(Value::string(data.as_bytes().to_vec())),
             ],
             output,
             stack,
@@ -771,11 +1032,11 @@ impl Vm {
                             result.append(value);
                             continue;
                         };
-                        let key = match array_key_from_value(&key) {
+                        let key = match self.iterator_to_array_preserved_key(
+                            &key, call_span, output, stack, state, compiled,
+                        ) {
                             Ok(key) => key,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
+                            Err(result) => return result,
                         };
                         result.insert(key, value);
                     } else {
@@ -796,6 +1057,55 @@ impl Vm {
                     return result;
                 }
             }
+        }
+    }
+
+    fn iterator_to_array_preserved_key(
+        &self,
+        key: &Value,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> Result<ArrayKey, VmResult> {
+        match effective_value(key) {
+            Value::Float(float) => {
+                let number = float.to_f64();
+                if number.is_finite() && number.fract() != 0.0 {
+                    emit_iterator_to_array_key_deprecation(
+                        output,
+                        stack,
+                        state,
+                        compiled,
+                        call_span,
+                        "E_PHP_VM_ITERATOR_TO_ARRAY_FLOAT_KEY_DEPRECATED",
+                        format!("Implicit conversion from float {float} to int loses precision"),
+                    );
+                }
+                Ok(ArrayKey::Int(number as i64))
+            }
+            Value::Null => {
+                emit_iterator_to_array_key_deprecation(
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                    call_span,
+                    "E_PHP_VM_ITERATOR_TO_ARRAY_NULL_KEY_DEPRECATED",
+                    "Using null as an array offset is deprecated, use an empty string instead"
+                        .to_owned(),
+                );
+                Ok(ArrayKey::String(PhpString::from_bytes(Vec::new())))
+            }
+            Value::Array(_) => Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                "E_PHP_VM_ARRAY_KEY_CONVERSION: Cannot access offset of type array on array",
+            )),
+            other => array_key_from_value(&other)
+                .map_err(|message| self.runtime_error(output, compiled, stack, message)),
         }
     }
 
@@ -879,6 +1189,100 @@ impl Vm {
             diagnostic,
         ))
     }
+}
+
+fn emit_iterator_to_array_key_deprecation(
+    output: &mut OutputBuffer,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    compiled: &CompiledUnit,
+    call_span: Option<php_ir::IrSpan>,
+    id: &'static str,
+    message: String,
+) {
+    let diagnostic = RuntimeDiagnostic::new(
+        id,
+        RuntimeSeverity::Deprecation,
+        message,
+        builtin_source_span(compiled, call_span),
+        stack_trace(compiled, stack),
+        None,
+    );
+    emit_vm_diagnostic(
+        output,
+        state,
+        &diagnostic,
+        php_runtime::PhpDiagnosticChannel::Deprecated,
+        php_runtime::PHP_E_DEPRECATED,
+    );
+    state.diagnostics.push(diagnostic);
+}
+
+#[derive(Clone)]
+struct XmlSaxCallbackContext {
+    parser: ObjectRef,
+    case_folding: bool,
+}
+
+fn xml_parser_case_folding(parser: &ObjectRef) -> bool {
+    match parser.get_property("__phrust_xml_case_folding") {
+        Some(Value::Bool(enabled)) => enabled,
+        Some(value) => to_bool(&value).unwrap_or(true),
+        None => true,
+    }
+}
+
+fn xml_callback_is_enabled(callback: &Option<Value>) -> bool {
+    !matches!(callback, None | Some(Value::Null))
+}
+
+fn xml_sax_name(name: &str, case_folding: bool) -> String {
+    if case_folding {
+        name.to_ascii_uppercase()
+    } else {
+        name.to_owned()
+    }
+}
+
+fn xml_sax_attributes(element: &php_runtime::xml::XmlElement, case_folding: bool) -> Value {
+    let mut attributes = PhpArray::new();
+    for (name, value) in &element.attributes {
+        let key = xml_sax_name(name, case_folding);
+        attributes.insert(
+            ArrayKey::String(PhpString::from_bytes(key.into_bytes())),
+            Value::string(value.as_bytes().to_vec()),
+        );
+    }
+    Value::Array(attributes)
+}
+
+fn xml_sax_start_tag(element: &php_runtime::xml::XmlElement) -> String {
+    let mut tag = String::new();
+    tag.push('<');
+    tag.push_str(&element.name);
+    for (name, value) in &element.attributes {
+        tag.push(' ');
+        tag.push_str(name);
+        tag.push_str("=\"");
+        tag.push_str(&xml_sax_escape_attribute(value));
+        tag.push('"');
+    }
+    tag.push('>');
+    tag
+}
+
+fn xml_sax_escape_attribute(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '"' => escaped.push_str("&quot;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 #[derive(Default)]

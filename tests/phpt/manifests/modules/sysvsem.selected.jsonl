@@ -1,1 +1,3 @@
 {"path":"tests/phpt/generated/sysvsem/basic.phpt","module":"sysvsem","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers extension visibility, SysvSemaphore handles, deterministic acquire/release limit behavior, nonblocking acquisition failure, and removal semantics"}
+{"path":"ext/sysvsem/tests/sysv.phpt","module":"sysvsem","kind":"upstream","reason":"passes with standard ftok() keys plus request-local sysvsem/sysvshm integration"}
+{"path":"ext/sysvsem/tests/nowait.phpt","module":"sysvsem","kind":"upstream","reason":"covers forked nonblocking acquire behavior and semaphore handoff ordering with SysV-backed semaphores"}

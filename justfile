@@ -167,10 +167,23 @@ help:
       '  just phpt-verify-baseline Verify committed PHPT full baseline files' \
       '  just phpt-verify-source-integrity Verify pinned php-src was not mutated' \
       '  just install-hooks       Install versioned git hooks' \
+      '  just pre-commit          Run the lightweight local commit gate' \
+      '  just pre-push            Run the bounded local push gate' \
       '  just ci-local            Run the local GitHub Actions parity gate'
 
 install-hooks:
     scripts/git/install-hooks.sh
+
+pre-commit:
+    @just fmt
+    @just source-integrity
+
+pre-push:
+    @just pre-commit
+    PHRUST_DIAGNOSTICS_AUDIT_QUIET=1 scripts/diagnostics/audit.py
+    @just known-gaps
+    @just quality-deps-quiet
+    cargo check --workspace --all-targets --all-features
 
 fmt:
     cargo fmt --all --check
@@ -270,10 +283,17 @@ quality-fast:
 
 quality-deps:
     @if ! command -v cargo-deny >/dev/null 2>&1; then \
-      printf '%s\n' '[skip] cargo-deny unavailable; enter nix develop or install cargo-deny.'; \
-      exit 0; \
+        printf '%s\n' '[skip] cargo-deny unavailable; enter nix develop or install cargo-deny.'; \
+        exit 0; \
     fi; \
     cargo deny check advisories bans licenses sources
+
+quality-deps-quiet:
+    @if ! command -v cargo-deny >/dev/null 2>&1; then \
+        printf '%s\n' '[skip] cargo-deny unavailable; enter nix develop or install cargo-deny.'; \
+        exit 0; \
+    fi; \
+    cargo deny check --hide-inclusion-graph -A duplicate advisories bans licenses sources
 
 quality-unused-deps:
     @if ! command -v cargo-machete >/dev/null 2>&1; then \

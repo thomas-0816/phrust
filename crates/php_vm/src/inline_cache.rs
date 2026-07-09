@@ -130,6 +130,7 @@ pub enum FunctionCallBuiltinKind {
     OutputBuffering,
     Environment,
     Process,
+    FilterCallback,
     PcreCallback,
     ArrayCallback,
     ArraySort,

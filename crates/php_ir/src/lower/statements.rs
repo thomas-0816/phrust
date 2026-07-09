@@ -137,6 +137,11 @@ impl LoweringContext<'_> {
                     if self.lower_exit_stmt(builder, function, block, expr, module) {
                         return block;
                     }
+                    if let Some(next_block) =
+                        self.lower_short_circuit_exit_stmt(builder, function, block, expr, module)
+                    {
+                        return next_block;
+                    }
                     if let Some(value) = self.lower_expr_to_register(builder, function, block, expr)
                     {
                         let span =
@@ -1334,6 +1339,65 @@ impl LoweringContext<'_> {
             span,
         );
         true
+    }
+
+    fn lower_short_circuit_exit_stmt(
+        &mut self,
+        builder: &mut IrBuilder,
+        function: FunctionId,
+        block: BlockId,
+        expr: ExprId,
+        module: &php_semantics::hir::HirModule,
+    ) -> Option<BlockId> {
+        let expression = module.expressions().get(expr)?;
+        let HirExprKind::Binary {
+            operator,
+            left,
+            right,
+        } = expression.kind()
+        else {
+            return None;
+        };
+        if !matches!(operator.as_str(), "&&" | "and" | "||" | "or") {
+            return None;
+        }
+        let left = (*left)?;
+        let right = (*right)?;
+        if !matches!(
+            module.expressions().get(right).map(|expr| expr.kind()),
+            Some(HirExprKind::Exit { .. })
+        ) {
+            return None;
+        }
+
+        let range = self.span_for(SourceMappedId::from(expr));
+        let span = span_from_range(self.file, range);
+        let left_value = self.lower_expr_to_register(builder, function, block, left)?;
+        let exit_block = builder.append_block(function);
+        let after_block = builder.append_block(function);
+        match operator.as_str() {
+            "&&" | "and" => builder.terminate_jump_if(
+                function,
+                left_value.block,
+                Operand::Register(left_value.register),
+                exit_block,
+                after_block,
+                span,
+            ),
+            "||" | "or" => builder.terminate_jump_if(
+                function,
+                left_value.block,
+                Operand::Register(left_value.register),
+                after_block,
+                exit_block,
+                span,
+            ),
+            _ => return None,
+        }
+        if !self.lower_exit_stmt(builder, function, exit_block, right, module) {
+            return None;
+        }
+        Some(after_block)
     }
 
     pub(super) fn lower_return_stmt(

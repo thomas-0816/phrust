@@ -4,22 +4,32 @@
   "priority": "Calendar conversion MVP",
   "selected_manifest": "tests/phpt/manifests/modules/calendar.selected.jsonl",
   "corpus_count": 53,
-  "selected_count": 3,
-  "pass_count": 3,
+  "selected_count": 46,
+  "pass_count": 46,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
   "scope": [
-    "Calendar constants and extension metadata",
+    "Calendar constants and extension metadata through upstream cal_info-adjacent rows",
     "Gregorian and Julian serial day number conversions",
-    "Month/day names, cal_info, Easter day offsets, and Unix JD helpers",
-    "Jewish and French republican serial day number conversions"
+    "Month/day names and calendar day-of-week helpers",
+    "Easter day offsets and Unix JD helpers",
+    "French calendar final-month day count",
+    "Exact jdtounix upper/lower bound behavior and ValueError message",
+    "Exact 64-bit easter_date lower/upper timestamp year diagnostics",
+    "Jewish and French republican serial day number conversions",
+    "Hebrew-letter jdtojewish() byte formatting and Jewish formatting flags",
+    "Overflow-safe Gregorian and Julian serial-day conversion for extreme upstream bug rows",
+    "Overflow-safe easter_days/easter_date year validation for PHP_INT_MAX",
+    "PHP-compatible 64-bit to 32-bit year narrowing for juliantojd() overflow rows",
+    "Exact calendar argument ValueError labels and integer bounds diagnostics",
+    "Invalid Jewish calendar serial day output shape"
   ],
   "non_scope": [
-    "Hebrew-letter formatting for jdtojewish()",
-    "Host-local timezone behavior for easter_date"
+    "Host-local timezone behavior for easter_date",
+    "Upstream calendar PHPT rows that skip under the pinned reference environment"
   ],
   "target_gates": ["just phpt-dev-module MODULE=calendar"],
-  "next_step": "Add Hebrew-letter jdtojewish() formatting and expand with more upstream ext/calendar PHPT rows when the pinned reference binary loads ext/calendar."
+  "next_step": "Selected upstream calendar PHPT coverage is fully promoted for all non-skipped rows in the pinned oracle environment."
 }

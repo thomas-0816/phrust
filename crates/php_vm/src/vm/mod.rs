@@ -65,7 +65,7 @@ use crate::literal_pool::LiteralPool;
 use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
 use crate::tiering::{ExecutionTier, TieringState};
 use operand_read::operand_truthy_at_frame;
-use operand_read::take_consumed_operand_at_frame;
+use operand_read::take_discard_operand_at_frame;
 use operand_read::{DenseOperandRead, read_operand_at_frame, read_operand_ref_at_frame};
 use php_ir::constants::IrConstant;
 use php_ir::function::{IrFunction, IrParam, IrReturnType};
@@ -107,13 +107,13 @@ use php_runtime::{
     emit_php_diagnostic, equal, error_reporting_allows_level, identical,
     reset_float_string_precision, runtime_type_name, serialize as serialize_value,
     set_float_string_precision, to_arithmetic_number, to_bool, to_float, to_int, to_number,
-    to_string, to_string_php, undefined_function, undefined_variable_warning,
-    unserialize as unserialize_value, unsupported_feature, value_matches_runtime_type,
-    value_type_name,
+    to_string, to_string_php, undefined_function, undefined_global_variable_warning,
+    undefined_variable_warning, unserialize as unserialize_value, unsupported_feature,
+    value_matches_runtime_type, value_type_name,
 };
 use request_profile::{RequestProfileFrame, RequestProfileOperationCategory};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -133,6 +133,11 @@ const SORT_ASC: i64 = 4;
 const SORT_LOCALE_STRING: i64 = 5;
 const SORT_NATURAL: i64 = 6;
 const SPL_RUNTIME_CLASS_PROPERTY: &str = "__spl_runtime_class";
+const HASH_CONTEXT_ALGORITHM_PROPERTY: &str = "__phrust_hash_algorithm";
+const HASH_CONTEXT_FLAGS_PROPERTY: &str = "__phrust_hash_flags";
+const HASH_CONTEXT_DATA_PROPERTY: &str = "__phrust_hash_data";
+const HASH_CONTEXT_FINALIZED_PROPERTY: &str = "__phrust_hash_finalized";
+const HASH_HMAC_FLAG: i64 = 1;
 const SPL_PRIORITY_QUEUE_EXTR_DATA: i64 = 1;
 const SPL_PRIORITY_QUEUE_EXTR_PRIORITY: i64 = 2;
 const SPL_PRIORITY_QUEUE_EXTR_BOTH: i64 = 3;
@@ -156,8 +161,26 @@ const ZIP_CREATE: i64 = 1;
 const ZIP_EXCL: i64 = 2;
 const ZIP_CHECKCONS: i64 = 4;
 const ZIP_OVERWRITE: i64 = 8;
+const ZIP_RDONLY: i64 = 16;
+const ZIP_FL_NOCASE: i64 = 1;
+const ZIP_FL_NODIR: i64 = 2;
+const ZIP_FL_UNCHANGED: i64 = 8;
 const ZIP_FL_OVERWRITE: i64 = 8192;
+const ZIP_FL_OPEN_FILE_NOW: i64 = 1 << 30;
 const ZIP_LENGTH_TO_END: i64 = 0;
+const ZIP_CM_STORE: i64 = 0;
+const ZIP_CM_DEFLATE: i64 = 8;
+const ZIP_CM_BZIP2: i64 = 12;
+const ZIP_CM_XZ: i64 = 95;
+const ZIP_EM_NONE: i64 = 0;
+const ZIP_EM_TRAD_PKWARE: i64 = 1;
+const ZIP_EM_AES_128: i64 = 257;
+const ZIP_EM_AES_192: i64 = 258;
+const ZIP_EM_AES_256: i64 = 259;
+const ZIP_ER_EXISTS: i64 = 10;
+const ZIP_ER_RDONLY: i64 = 25;
+const ZIP_AFL_RDONLY: i64 = 2;
+const ZIP_AFL_CREATE_OR_KEEP_FILE_FOR_EMPTY_ARCHIVE: i64 = 16;
 const SPL_REGEX_MATCH: i64 = 0;
 const SPL_REGEX_GET_MATCH: i64 = 1;
 const SPL_REGEX_ALL_MATCHES: i64 = 2;
@@ -181,10 +204,12 @@ const JIT_BLACKLIST_GUARD_FAILURE_THRESHOLD: u64 = 2;
 const JIT_BLACKLIST_COMPILE_ERROR_THRESHOLD: u64 = 1;
 #[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_ABI_MISMATCH_THRESHOLD: u64 = 1;
-// The property-load fetch status codes are shared by both native tiers'
-// property-load helpers (Cranelift and copy-and-patch), so the three the shared
-// fetch core returns are available whenever either tier is compiled. LAYOUT_EXIT
-// is only produced/attributed on the Cranelift path, so it stays gated there.
+// The property-access status codes are shared by both native tiers'
+// property-load helpers (Cranelift and copy-and-patch) and reused by the
+// copy-and-patch store commit core (`jit_property_store_commit`), so the three
+// the shared cores return are available whenever either tier is compiled.
+// LAYOUT_EXIT is only produced/attributed on the Cranelift path, so it stays
+// gated there.
 #[cfg(any(
     feature = "jit-cranelift",
     all(feature = "jit-copy-patch", unix, target_arch = "aarch64")
@@ -423,6 +448,56 @@ pub(crate) fn jit_property_load_fetch(
         return Err(JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT);
     }
     Ok(value)
+}
+
+/// Monomorphic property-*store* commit core used by the copy-and-patch
+/// property-store helper (`copy_patch_property_store_abi` in
+/// `crate::copy_patch_bridge`). The write-side mirror of
+/// [`jit_property_load_fetch`]: it performs the same layout guard — the value
+/// must be an object whose runtime class equals the metadata's expected
+/// receiver class, so the recognition-time facts (declared, untyped,
+/// non-readonly, hook-free, symmetric-visibility public slot) provably hold for
+/// the instance being written — and then commits exactly one name-keyed write
+/// to the declared property's storage.
+///
+/// The store only proceeds when the slot currently holds a plain initialized
+/// value: an absent slot (`unset()` re-arms `__set`), a reference-holding slot
+/// (the write must go through the cell so aliases observe it), an uninitialized
+/// marker, or a concurrently borrowed storage all side-exit *before any write*,
+/// so the interpreter performs the exact store with full semantics. On `Err`
+/// nothing was written. It never invokes a hook/`__set`, frees, or re-enters
+/// the VM; the single mutation goes through the runtime's own
+/// interior-mutability layer (`try_set_property`), the same storage cell the
+/// interpreter writes.
+#[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
+pub(crate) fn jit_property_store_commit(
+    value: &Value,
+    metadata: &php_jit::JitPropertyStoreMetadata,
+    new_value: Value,
+) -> Result<(), i32> {
+    let effective = match value {
+        Value::Reference(cell) => cell.get(),
+        other => other.clone(),
+    };
+    let Value::Object(object) = effective else {
+        return Err(JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT);
+    };
+    if normalize_class_name(&object.class_name()) != metadata.receiver_class {
+        return Err(JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT);
+    }
+    let Ok(Some(current)) = object.try_get_property(&metadata.storage_name) else {
+        return Err(JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT);
+    };
+    if matches!(current, Value::Reference(_)) || current.is_uninitialized() {
+        return Err(JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT);
+    }
+    if object
+        .try_set_property(metadata.storage_name.clone(), new_value)
+        .is_err()
+    {
+        return Err(JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "jit-cranelift")]
@@ -1034,6 +1109,81 @@ impl InternalFunctionDispatchCache {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct UserStreamWrapperRegistry {
+    wrappers: BTreeMap<String, UserStreamWrapperClass>,
+    open_streams: BTreeMap<php_runtime::ResourceId, UserStreamWrapperInstance>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UserStreamWrapperClass {
+    protocol: String,
+    class_name: String,
+    display_class_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UserStreamWrapperInstance {
+    object: ObjectRef,
+    close_called: bool,
+}
+
+impl UserStreamWrapperRegistry {
+    fn register(&mut self, protocol: &str, class_name: &str, display_class_name: &str) -> bool {
+        let normalized = normalize_stream_wrapper_protocol(protocol);
+        if normalized.is_empty() || self.wrappers.contains_key(&normalized) {
+            return false;
+        }
+        self.wrappers.insert(
+            normalized.clone(),
+            UserStreamWrapperClass {
+                protocol: normalized,
+                class_name: class_name.to_owned(),
+                display_class_name: display_class_name.to_owned(),
+            },
+        );
+        true
+    }
+
+    fn wrapper_for_uri(&self, uri: &str) -> Option<UserStreamWrapperClass> {
+        let protocol = stream_uri_protocol(uri)?;
+        self.wrappers.get(&protocol).cloned()
+    }
+
+    fn protocols(&self) -> Vec<String> {
+        self.wrappers
+            .values()
+            .map(|wrapper| wrapper.protocol.clone())
+            .collect()
+    }
+
+    fn register_open_stream(&mut self, resource: &php_runtime::ResourceRef, object: ObjectRef) {
+        self.open_streams.insert(
+            resource.id(),
+            UserStreamWrapperInstance {
+                object,
+                close_called: false,
+            },
+        );
+    }
+
+    fn pending_close_object(&mut self, id: php_runtime::ResourceId) -> Option<ObjectRef> {
+        let instance = self.open_streams.get_mut(&id)?;
+        if instance.close_called {
+            return None;
+        }
+        instance.close_called = true;
+        Some(instance.object.clone())
+    }
+
+    fn pending_close_ids(&self) -> Vec<php_runtime::ResourceId> {
+        self.open_streams
+            .iter()
+            .filter_map(|(id, instance)| (!instance.close_called).then_some(*id))
+            .collect()
+    }
+}
+
 #[derive(Debug, Default)]
 struct ExecutionState {
     globals: GlobalSymbolTable,
@@ -1075,7 +1225,7 @@ struct ExecutionState {
     shutdown_functions: Vec<ShutdownFunctionEntry>,
     ini: IniRegistry,
     default_timezone: String,
-    env: Vec<(String, String)>,
+    env: Arc<Vec<(String, String)>>,
     resources: ResourceTable,
     stdin: Option<php_runtime::ResourceRef>,
     stdout: Option<php_runtime::ResourceRef>,
@@ -1101,7 +1251,10 @@ struct ExecutionState {
     socket_state: php_runtime::SocketState,
     filesystem_state: php_runtime::FilesystemRuntimeState,
     stream_context_state: php_runtime::StreamContextState,
+    user_stream_wrappers: UserStreamWrapperRegistry,
     mb_internal_encoding: String,
+    mb_substitute_character: php_runtime::MbSubstituteCharacter,
+    pcre_cache: php_runtime::pcre::PcreCache,
     preg_last_error: php_runtime::pcre::PcreLastErrorState,
     json_last_error: i64,
     json_serializable_active_objects: Vec<u64>,
@@ -1441,6 +1594,9 @@ fn php_visible_root_object_ids(stack: &CallStack, state: &ExecutionState) -> Has
     let mut object_ids = HashSet::new();
     let mut seen = HashSet::new();
     for frame in stack.frames() {
+        for (_, value) in frame.registers.iter() {
+            collect_reachable_object_ids(value, &mut seen, &mut object_ids);
+        }
         for (_, slot) in frame.locals.iter() {
             collect_reachable_object_ids(&slot.read(), &mut seen, &mut object_ids);
         }
@@ -1473,12 +1629,77 @@ fn php_visible_root_object_ids(stack: &CallStack, state: &ExecutionState) -> Has
         &mut object_ids,
     );
     for continuation in state.generator_continuations.values() {
+        for (_, value) in continuation.frame.registers.iter() {
+            collect_reachable_object_ids(value, &mut seen, &mut object_ids);
+        }
         for (_, slot) in continuation.frame.locals.iter() {
             collect_reachable_object_ids(&slot.read(), &mut seen, &mut object_ids);
         }
     }
     for continuations in state.fiber_continuations.values() {
         for continuation in continuations {
+            for (_, value) in continuation.frame.registers.iter() {
+                collect_reachable_object_ids(value, &mut seen, &mut object_ids);
+            }
+            for (_, slot) in continuation.frame.locals.iter() {
+                collect_reachable_object_ids(&slot.read(), &mut seen, &mut object_ids);
+            }
+        }
+    }
+    object_ids
+}
+
+fn php_visible_non_register_root_object_ids(
+    stack: &CallStack,
+    state: &ExecutionState,
+) -> HashSet<u64> {
+    let mut object_ids = HashSet::new();
+    let mut seen = HashSet::new();
+    for frame in stack.frames() {
+        for (_, slot) in frame.locals.iter() {
+            collect_reachable_object_ids(&slot.read(), &mut seen, &mut object_ids);
+        }
+    }
+    for cell in state.static_locals.values() {
+        collect_reachable_object_ids(&Value::Reference(cell.clone()), &mut seen, &mut object_ids);
+    }
+    for value in state.static_properties.values() {
+        collect_reachable_object_ids(value, &mut seen, &mut object_ids);
+    }
+    for object in state.enum_cases.values() {
+        object_ids.insert(object.id());
+    }
+    for entry in &state.shutdown_functions {
+        collect_reachable_object_ids(&entry.callback, &mut seen, &mut object_ids);
+        for arg in &entry.args {
+            collect_reachable_object_ids(&arg.value, &mut seen, &mut object_ids);
+        }
+    }
+    for callback in state.autoload_registry.callbacks() {
+        collect_reachable_object_ids(
+            &Value::Callable(Box::new(callback.clone())),
+            &mut seen,
+            &mut object_ids,
+        );
+    }
+    collect_reachable_object_ids(
+        &Value::Array(state.globals.globals_array()),
+        &mut seen,
+        &mut object_ids,
+    );
+    for continuation in state.generator_continuations.values() {
+        for (_, value) in continuation.frame.registers.iter() {
+            collect_reachable_object_ids(value, &mut seen, &mut object_ids);
+        }
+        for (_, slot) in continuation.frame.locals.iter() {
+            collect_reachable_object_ids(&slot.read(), &mut seen, &mut object_ids);
+        }
+    }
+    for continuations in state.fiber_continuations.values() {
+        for continuation in continuations {
+            for (_, value) in continuation.frame.registers.iter() {
+                collect_reachable_object_ids(value, &mut seen, &mut object_ids);
+            }
             for (_, slot) in continuation.frame.locals.iter() {
                 collect_reachable_object_ids(&slot.read(), &mut seen, &mut object_ids);
             }
@@ -1678,12 +1899,56 @@ struct DestructorSweep {
 ///
 /// Object ids are recycled naturally when the last handle drops
 /// (`ObjectIdGuard` frees the id from the storage drop). Eager scanning only
-/// tightened id-reuse timing for objects kept alive by stale VM temporaries
-/// or reference cycles; those ids now recycle when the temporaries drop.
-/// Destructor timing is unaffected: it runs through the separate
+/// tightens id-reuse timing for objects kept alive by stale VM temporaries
+/// or reference cycles. Keep that eager release local to the dropped object
+/// graph, and avoid the previous full-heap root traversal. Destructor timing
+/// is unaffected: it runs through the separate
 /// `run_destructors_for_unreferenced_value` path, which is gated on the
 /// destructor queue.
-fn release_unrooted_object_handles(_value: &Value, _stack: &CallStack, _state: &ExecutionState) {}
+fn release_unrooted_object_handles(value: &Value, stack: &CallStack, state: &ExecutionState) {
+    // Hot-path guard: the deep root traversal below walks every frame local/
+    // register/reference plus globals per call, which turned every
+    // object-overwriting store into a full-heap scan (measured 5x on the
+    // WordPress request). The common shapes never need it:
+    // - A top-level object whose storage is held only by the dropped value
+    //   and the candidate list (strong count <= 2) provably has no other
+    //   holder, so it is unrooted — release it without any scan.
+    // - Anything shared or nested keeps its handle until the natural drop
+    //   recycles the id; per this function's contract the eager scan only
+    //   tightens id-reuse timing (destructor timing runs through the separate
+    //   destructor queue), so skipping it is safe, just less eager.
+    if let Value::Object(object) = value {
+        if object.gc_refcount_estimate() <= 1 {
+            object.release_php_handle();
+        }
+        return;
+    }
+    let candidates = destructor_candidates_for_value(value);
+    if candidates.is_empty() {
+        return;
+    }
+    if candidates
+        .iter()
+        .all(|object| object.gc_refcount_estimate() > 2)
+    {
+        return;
+    }
+    let rooted_object_ids = php_visible_root_object_ids(stack, state);
+    for object in candidates {
+        if !rooted_object_ids.contains(&object.id()) {
+            object.release_php_handle();
+        }
+    }
+}
+
+fn release_unrooted_direct_object_handle(value: &Value, stack: &CallStack, state: &ExecutionState) {
+    let Value::Object(object) = effective_value(value) else {
+        return;
+    };
+    if !php_visible_root_object_ids(stack, state).contains(&object.id()) {
+        object.release_php_handle();
+    }
+}
 
 fn foreach_iterator_candidate_value(iterator: ForeachIterator) -> Option<Value> {
     match iterator {
@@ -2101,6 +2366,12 @@ struct MultisortArraySpec {
     flags: i64,
 }
 
+struct TokenizerStaticCallTraceContext {
+    call: String,
+    values: Vec<Value>,
+    call_span: php_ir::IrSpan,
+}
+
 enum ArrayCallbackError {
     Runtime(Box<VmResult>),
     BuiltinType {
@@ -2108,6 +2379,20 @@ enum ArrayCallbackError {
         actual: String,
     },
     Message(String),
+}
+
+const VM_FILTER_DEFAULT: i64 = 516;
+const VM_FILTER_CALLBACK: i64 = 1_024;
+const VM_FILTER_REQUIRE_ARRAY: i64 = 16_777_216;
+const VM_FILTER_REQUIRE_SCALAR: i64 = 33_554_432;
+const VM_FILTER_FORCE_ARRAY: i64 = 67_108_864;
+const VM_FILTER_NULL_ON_FAILURE: i64 = 134_217_728;
+
+#[derive(Clone, Debug, Default)]
+struct VmFilterCallbackOptions {
+    flags: i64,
+    callback: Option<Value>,
+    default_value: Option<Value>,
 }
 
 impl CallArgument {
@@ -2427,6 +2712,14 @@ impl Vm {
         );
         register_dynamic_unit(&mut state, &unit, unit.clone(), DeclarationLoadKind::Main);
         apply_float_string_precision(&state.ini);
+        let auto_start_span = unit
+            .unit()
+            .functions
+            .get(entry.index())
+            .map_or_else(RuntimeSourceSpan::default, |function| {
+                runtime_source_span(&unit, function.span)
+            });
+        auto_start_session_if_configured(&mut state, auto_start_span);
         seed_runtime_globals(&mut state.globals, &self.options.runtime_context);
         emit_private_final_method_warnings(&unit, &mut output, &mut state);
         emit_serializable_interface_deprecations(&unit, &mut output, &mut state);
@@ -2505,6 +2798,17 @@ impl Vm {
         }
         if result.status.is_success() {
             match self.run_shutdown_functions(&unit, &mut output, &mut state) {
+                Ok(diagnostics) => {
+                    result.diagnostics.extend(diagnostics);
+                    result.output = output.clone();
+                }
+                Err(error) => {
+                    result = error;
+                }
+            }
+        }
+        if result.status.is_success() {
+            match self.run_shutdown_user_stream_wrappers(&unit, &mut output, &mut state) {
                 Ok(diagnostics) => {
                     result.diagnostics.extend(diagnostics);
                     result.output = output.clone();
@@ -4825,6 +5129,9 @@ impl Vm {
         }
         let plan = Rc::new(crate::last_use::LastUseMovePlan::analyze(dense_function));
         self.record_counter_last_use_move_ineligible(&plan);
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_last_use_plan_built(plan.eligible_reads(), plan.array_release_reads());
+        }
         self.last_use_move_plans
             .borrow_mut()
             .insert(key, Rc::clone(&plan));
@@ -4846,11 +5153,15 @@ impl Vm {
     ) -> Result<Value, String> {
         if let Some(plan) = move_plan
             && operand.kind == DenseOperandKind::Register
-            && plan.is_move_eligible(dense_instruction_index, operand.index)
         {
-            let value = self.take_consumed_dense_operand(compiled, stack, operand)?;
-            self.record_counter_last_use_move_applied(value_clone_is_heap(&value));
-            return Ok(value);
+            if let Some(counters) = self.counters.borrow_mut().as_mut() {
+                counters.record_last_use_move_consultation();
+            }
+            if plan.is_move_eligible(dense_instruction_index, operand.index) {
+                let value = self.take_consumed_dense_operand(compiled, stack, operand)?;
+                self.record_counter_last_use_move_applied(value_clone_is_heap(&value));
+                return Ok(value);
+            }
         }
         self.read_dense_operand(compiled, stack, operand)
     }
@@ -6367,13 +6678,16 @@ impl Vm {
     /// Copy-and-patch native leaf tier (behind the default-on `jit-copy-patch`
     /// feature; disable per process via `PHRUST_JIT_COPY_PATCH=0` or per VM via
     /// `VmOptions::copy_patch_leaf_override`). Runs before the dense-dispatch and
-    /// interpreter paths: if the callee is a recognized scalar-int leaf called
-    /// with plain positional value arguments, compile it once (cached), run it
-    /// natively over the argument values, and return the result — otherwise
-    /// `None` to fall through. Methods (`$this`), closures (captures), named
-    /// arguments, by-reference arguments, and arity mismatches are rejected here;
-    /// non-int operands and overflow take the region's side exit (also `None`),
-    /// so behavior is identical to interpreting the function.
+    /// interpreter paths: if the callee is a recognized leaf called with plain
+    /// positional value arguments, compile it once (cached), run it natively
+    /// over the argument values, and return the result — otherwise `None` to
+    /// fall through. An instance-method leaf (the `$this` property
+    /// getter/setter shapes) marshals the call's receiver into slot `0` ahead
+    /// of the declared parameters (`$this` is local `0` in method IR); the
+    /// receiver's presence must match the function's methodness. Closures
+    /// (captures), named arguments, by-reference arguments, and arity
+    /// mismatches are rejected here; guard failures take the region's side exit
+    /// (also `None`), so behavior is identical to interpreting the function.
     #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
     fn try_execute_copy_patch_leaf(
         &self,
@@ -6392,8 +6706,10 @@ impl Vm {
         {
             return None;
         }
-        // Free function, plain positional value arguments only.
-        if call.this_value.is_some() || !call.captures.is_empty() {
+        // Plain positional value arguments only; the receiver's presence must
+        // match the function's methodness (an instance-method leaf needs
+        // `$this` for slot 0, a free function must not get one).
+        if function.flags.is_method != call.this_value.is_some() || !call.captures.is_empty() {
             return None;
         }
         if call.args.len() != function.params.len() {
@@ -6413,7 +6729,30 @@ impl Vm {
             function,
             &compiled.unit().constants,
         )?;
-        let params: Vec<Value> = call.args.iter().map(|arg| arg.value.clone()).collect();
+        // Buffer slot `i` is marshaled from `params[i]`; a method's `$this`
+        // occupies local 0 in method IR, so the receiver leads and the
+        // declared parameters follow at their local indices.
+        let mut params: Vec<Value> =
+            Vec::with_capacity(call.args.len() + usize::from(call.this_value.is_some()));
+        if let Some(this) = call.this_value.as_ref() {
+            params.push(Value::Object(this.clone()));
+        }
+        params.extend(call.args.iter().map(|arg| arg.value.clone()));
+        // Return-and-resume call compositions need the VM to drive the
+        // suspend/perform-call/re-enter loop rather than a single region run.
+        if leaf.resume_plan().is_some() {
+            return self.execute_copy_patch_resume_leaf(
+                compiled,
+                function_id,
+                function,
+                call,
+                &leaf,
+                &params,
+                output,
+                stack,
+                state,
+            );
+        }
         match leaf.run_outcome(&params) {
             crate::copy_patch_bridge::LeafOutcome::Value(value) => {
                 Some(VmResult::success_no_output(Some(value)))
@@ -6547,9 +6886,248 @@ impl Vm {
             .with_call_site_strict_types(compiled.unit().strict_types)
             .with_optional_call_span(callee_call_span)
             .inherit_fiber_context(running_fiber);
-        let result = self.execute_function(&callee_unit, callee_id, sub_call, output, stack, state);
+        let mut result =
+            self.execute_function(&callee_unit, callee_id, sub_call, output, stack, state);
+        // The interpreter coerces the callee's value against the *leaf's*
+        // declared return type at the leaf's `return g(...)` site (weak-mode
+        // `"5"` → `int(5)` through `: int`, or the exact `TypeError`); the
+        // callee's own return coercion does not subsume it. Mirror that here on
+        // the normal-return path only — an exception/exit/suspension result
+        // never reaches the leaf's return, so it propagates untouched. The
+        // leaf's frame is still on the stack, so a thrown `TypeError`
+        // attributes exactly as under the interpreter.
+        if result.status.is_success()
+            && result.process_exit_code.is_none()
+            && result.yielded.is_none()
+            && result.fiber_suspension.is_none()
+        {
+            match coerce_return_value(
+                compiled,
+                state,
+                leaf_function,
+                result.return_value.take(),
+                self.typecheck_fast_path_context(),
+            ) {
+                Ok(value) => result.return_value = value,
+                Err(message) => {
+                    let error = self.runtime_error(output, compiled, stack, message);
+                    stack.pop_recycle();
+                    return Some(error);
+                }
+            }
+        }
         stack.pop_recycle();
         Some(result)
+    }
+
+    /// Drive a return-and-resume call-composition leaf: run the region until
+    /// it suspends, perform each requested userland call through the normal
+    /// interpreter path, write the `Int` result into the site's slot, and
+    /// re-enter the region — repeating until the region completes.
+    ///
+    /// Soundness contract (mirrors `compile_scalar_int_resume_leaf`):
+    ///
+    /// - Before the first performed call nothing has run but pure native
+    ///   prefix work, so any mismatch (side exit, resolution change) falls
+    ///   back to interpreting the whole leaf.
+    /// - After a call has been performed, re-running is unsound (the callee's
+    ///   side effects happened). Every anomaly past that point is an engine
+    ///   invariant violation surfaced as a deterministic runtime error — by
+    ///   construction none is reachable: arguments are guarded/proven `Int`,
+    ///   callees are compile-time-resolved unit functions whose names cannot
+    ///   be legally redeclared, and their declared `: int` return coercion
+    ///   guarantees an `Int` result or a throw (which propagates instead of
+    ///   resuming).
+    /// - Generator/fiber/continuation contexts are rejected up front: a
+    ///   suspension inside a callee could otherwise abandon the region with
+    ///   the call half-performed. Outside a fiber, `Fiber::suspend()` inside
+    ///   the callee is PHP error behavior and propagates as such.
+    ///
+    /// The leaf's own frame is materialized around the whole loop (exactly
+    /// like the tail-call path) so throwing or stack-inspecting callees
+    /// observe the interpreter-identical stack, and the final result runs
+    /// through the leaf's return-site coercion.
+    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
+    #[allow(clippy::too_many_arguments)]
+    fn execute_copy_patch_resume_leaf(
+        &self,
+        compiled: &CompiledUnit,
+        leaf_function_id: FunctionId,
+        leaf_function: &IrFunction,
+        call: &FunctionCall<'_>,
+        leaf: &std::rc::Rc<crate::copy_patch_bridge::NativeLeaf>,
+        params: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Option<VmResult> {
+        use crate::copy_patch_bridge::ResumeStep;
+
+        if call.resume_continuation.is_some()
+            || call.resume_fiber_continuation.is_some()
+            || call.running_generator.is_some()
+            || call.running_fiber.is_some()
+        {
+            return None;
+        }
+        let plan = leaf.resume_plan()?;
+        let (mut session, mut step) = leaf.begin_resume(params)?;
+        let mut frame_pushed = false;
+        let mut calls_performed = false;
+        let resume_invariant = |this: &Self,
+                                output: &mut OutputBuffer,
+                                stack: &mut CallStack,
+                                detail: &str|
+         -> VmResult {
+            this.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!("E_PHP_VM_COPY_PATCH_RESUME_INVARIANT: {detail}"),
+            )
+        };
+        loop {
+            match step {
+                ResumeStep::Fallback => {
+                    if calls_performed {
+                        // Unreachable by construction; never re-run a leaf
+                        // whose callee side effects already happened.
+                        let result = resume_invariant(
+                            self,
+                            output,
+                            stack,
+                            "post-call side exit or unrepresentable result",
+                        );
+                        stack.pop_recycle();
+                        return Some(result);
+                    }
+                    // Pure native prefix only — interpreting the whole leaf is
+                    // sound (no frame was pushed yet).
+                    return None;
+                }
+                ResumeStep::CallRequest { site } => {
+                    let expected = plan.targets.get(site).copied()?;
+                    let normalized = plan.normalized_names.get(site)?;
+                    let resolved = self.resolve_function_call_target(compiled, state, normalized);
+                    let matches_expected = matches!(
+                        resolved,
+                        Some(FunctionCallCacheTarget::CurrentUnit { function })
+                            if function == expected
+                    );
+                    if !matches_expected {
+                        if calls_performed {
+                            let result = resume_invariant(
+                                self,
+                                output,
+                                stack,
+                                "resume callee resolution changed mid-region",
+                            );
+                            stack.pop_recycle();
+                            return Some(result);
+                        }
+                        // Nothing ran yet; the interpreter handles whatever
+                        // the divergent resolution means.
+                        return None;
+                    }
+                    let Some(args) = leaf.resume_args(&session, site) else {
+                        if calls_performed {
+                            let result = resume_invariant(
+                                self,
+                                output,
+                                stack,
+                                "non-int marshaled argument slot",
+                            );
+                            stack.pop_recycle();
+                            return Some(result);
+                        }
+                        return None;
+                    };
+                    if !frame_pushed {
+                        // Materialize the leaf's frame around the whole loop
+                        // (mirrors `execute_copy_patch_tailcall`).
+                        stack.push_fresh_frame(
+                            leaf_function_id,
+                            leaf_function.register_count,
+                            leaf_function.local_count,
+                            FrameActivationContext {
+                                scope_class: None,
+                                called_class: None,
+                                declaring_class: None,
+                                call_span: call.call_span,
+                            },
+                        );
+                        if let Some(frame) = stack.current_mut() {
+                            frame.trace_arguments.reserve(params.len());
+                            for value in params.iter() {
+                                frame.trace_arguments.push(FrameTraceArgument {
+                                    name: None,
+                                    value: value.clone(),
+                                });
+                            }
+                            frame.arguments = params.to_vec();
+                        }
+                        frame_pushed = true;
+                    }
+                    let sub_args: Vec<CallArgument> =
+                        args.into_iter().map(CallArgument::positional).collect();
+                    let sub_call = FunctionCall::new(sub_args, Vec::new())
+                        .with_call_site_strict_types(compiled.unit().strict_types)
+                        .with_optional_call_span(plan.call_spans.get(site).copied().flatten())
+                        .inherit_fiber_context(&call.running_fiber);
+                    let result =
+                        self.execute_function(compiled, expected, sub_call, output, stack, state);
+                    calls_performed = true;
+                    if !result.status.is_success()
+                        || result.process_exit_code.is_some()
+                        || result.yielded.is_some()
+                        || result.fiber_suspension.is_some()
+                    {
+                        // Exception/exit/suspension: the leaf's return never
+                        // completes; propagate faithfully.
+                        stack.pop_recycle();
+                        return Some(result);
+                    }
+                    let value = result.return_value.unwrap_or(Value::Null);
+                    if !matches!(value, Value::Int(_)) {
+                        let result = resume_invariant(
+                            self,
+                            output,
+                            stack,
+                            "resume callee returned a non-int despite a declared int return",
+                        );
+                        stack.pop_recycle();
+                        return Some(result);
+                    }
+                    step = leaf.resume(&mut session, site, &value);
+                }
+                ResumeStep::Value(value) => {
+                    // The interpreter coerces at the leaf's return site; mirror
+                    // it exactly (identity for the proven-`Int` result, and the
+                    // frame is still pushed for error attribution).
+                    match coerce_return_value(
+                        compiled,
+                        state,
+                        leaf_function,
+                        Some(value),
+                        self.typecheck_fast_path_context(),
+                    ) {
+                        Ok(value) => {
+                            if frame_pushed {
+                                stack.pop_recycle();
+                            }
+                            return Some(VmResult::success_no_output(value));
+                        }
+                        Err(message) => {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            if frame_pushed {
+                                stack.pop_recycle();
+                            }
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Hosts without the copy-patch emitter always fall back to the interpreter.
@@ -7854,6 +8432,31 @@ impl Vm {
                 stack.pop_recycle();
                 return result;
             };
+            match try_execute_dense_pcre_ascii_offset_block_fast_path(
+                compiled,
+                dense,
+                instructions,
+                stack,
+                state,
+            ) {
+                Ok(Some((next_block, truthy))) => {
+                    self.record_counter_dense_branch(
+                        function_id.raw(),
+                        block_index,
+                        next_block,
+                        truthy,
+                        false,
+                    );
+                    block_index = next_block;
+                    continue 'dispatch;
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    let result = self.runtime_error(output, compiled, stack, message);
+                    stack.pop_recycle();
+                    return result;
+                }
+            }
             let mut instruction_offset = 0_usize;
             while instruction_offset < instructions.len() {
                 let instruction = &instructions[instruction_offset];
@@ -7913,7 +8516,13 @@ impl Vm {
                             &name,
                             FunctionId::new(function),
                         ) {
-                            let result = self.runtime_error(output, compiled, stack, message);
+                            let result = function_redeclaration_fatal_result(
+                                output,
+                                compiled,
+                                stack,
+                                dense_instruction_span(dense, instruction),
+                                message,
+                            );
                             stack.pop_recycle();
                             return result;
                         }
@@ -8281,9 +8890,14 @@ impl Vm {
                                 return result;
                             }
                         };
-                        let value = match self
-                            .clone_object_value(compiled, &object, output, stack, state)
-                        {
+                        let value = match self.clone_object_value(
+                            compiled,
+                            &object,
+                            dense_instruction_span(dense, instruction),
+                            output,
+                            stack,
+                            state,
+                        ) {
                             Ok(value) => value,
                             Err(ClassConstantFetch::Throwable(result)) => {
                                 let result = *result;
@@ -8768,6 +9382,34 @@ impl Vm {
                         ) {
                             Ok(value) => value,
                             Err(result) => {
+                                if let Some(throwable) = runtime_error_throwable(&result) {
+                                    let span = dense_instruction_span(dense, instruction);
+                                    tag_throwable_location(&throwable, compiled, span);
+                                    let is_caching_iterator_string_cast = matches!(
+                                        effective_value(&src),
+                                        Value::Object(object)
+                                            if spl_runtime_marker(&object)
+                                                .is_some_and(|class| is_spl_caching_iterator_class(&class))
+                                    );
+                                    state.pending_trace = Some(
+                                        if matches!(kind, CastKind::String)
+                                            && is_caching_iterator_string_cast
+                                        {
+                                            capture_backtrace_string_with_builtin_failed_call(
+                                                compiled,
+                                                stack,
+                                                "CachingIterator->__toString",
+                                                &[],
+                                                span,
+                                            )
+                                        } else {
+                                            capture_backtrace_string(compiled, stack)
+                                        },
+                                    );
+                                    state.pending_throw = Some(throwable);
+                                    stack.pop_recycle();
+                                    return VmResult::propagating_exception(output.clone());
+                                }
                                 stack.pop_recycle();
                                 return result;
                             }
@@ -8820,8 +9462,20 @@ impl Vm {
                             .get(instruction.span.index())
                             .copied()
                             .unwrap_or_default();
-                        let suppress_undefined_warning =
-                            dense_load_local_is_pre_call_by_ref_out_param(
+                        // The lookahead scan only matters when the local is
+                        // actually undefined (it decides whether to suppress
+                        // the undefined-variable warning for a by-ref out
+                        // parameter); defined locals — the overwhelmingly
+                        // common case — skip it entirely.
+                        let local_is_defined = stack
+                            .current()
+                            .and_then(|frame| frame.locals.get_slot(LocalId::new(src.index)))
+                            .is_some_and(|slot| match slot {
+                                Slot::Value(value) => !value.is_uninitialized(),
+                                Slot::Reference(_) => true,
+                            });
+                        let suppress_undefined_warning = !local_is_defined
+                            && dense_load_local_is_pre_call_by_ref_out_param(
                                 compiled,
                                 state,
                                 dense,
@@ -9069,7 +9723,23 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let value = match self.read_dense_operand(compiled, stack, src) {
+                        // The discard variant unsets the source register right
+                        // after the store, so a register read here is a move by
+                        // definition — take it instead of clone-then-unset. The
+                        // plain store keeps the register live and only moves
+                        // when the last-use plan proves this read is dead.
+                        let value = if instruction.opcode == DenseOpcode::StoreLocalDiscard {
+                            self.take_consumed_dense_operand(compiled, stack, src)
+                        } else {
+                            self.read_dense_operand_last_use(
+                                compiled,
+                                stack,
+                                src,
+                                move_plan,
+                                dense_instruction_index,
+                            )
+                        };
+                        let value = match value {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
@@ -9077,9 +9747,6 @@ impl Vm {
                                 return result;
                             }
                         };
-                        // Only the discard variant inspects the overwritten
-                        // value (for destructor timing); plain stores skip
-                        // the previous-value clone entirely.
                         let previous = if instruction.opcode == DenseOpcode::StoreLocalDiscard {
                             stack
                                 .current()
@@ -9088,7 +9755,15 @@ impl Vm {
                                 .get(LocalId::new(local))
                                 .unwrap_or(Value::Uninitialized)
                         } else {
-                            Value::Uninitialized
+                            match stack
+                                .current()
+                                .expect("bytecode frame was pushed")
+                                .locals
+                                .get(LocalId::new(local))
+                            {
+                                Some(Value::Object(object)) => Value::Object(object),
+                                _ => Value::Uninitialized,
+                            }
                         };
                         if let Err(message) = stack
                             .current_mut()
@@ -9757,7 +10432,7 @@ impl Vm {
                             stack,
                             state,
                         );
-                        if !result.status.is_success() {
+                        if !result.status.is_success() || state.pending_throw.is_some() {
                             if include_failure_allows_continuation(kind, &result) {
                                 diagnostics.extend(result.diagnostics);
                                 if let Err(message) = stack
@@ -9817,6 +10492,95 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
+                        let dense_pcre_fast = self
+                            .try_execute_dense_preg_match_start_offset_ascii_fast(
+                                name, args, compiled, stack, state,
+                            );
+                        match dense_pcre_fast {
+                            Ok(Some(return_value)) => {
+                                if let Err(message) = stack
+                                    .frame_mut(frame_index)
+                                    .expect("bytecode frame is active")
+                                    .registers
+                                    .set(RegId::new(dst), return_value)
+                                {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                if let Err(message) =
+                                    unset_consumed_dense_call_arg_registers_at_frame(
+                                        stack,
+                                        frame_index,
+                                        args,
+                                        Some(RegId::new(dst)),
+                                    )
+                                {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                                if instruction.opcode == DenseOpcode::CallFunctionDiscard {
+                                    let discard_src = DenseOperand {
+                                        kind: DenseOperandKind::Register,
+                                        index: dst,
+                                    };
+                                    let value = match self.take_consumed_dense_operand(
+                                        compiled,
+                                        stack,
+                                        discard_src,
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(message) => {
+                                            let result = self
+                                                .runtime_error(output, compiled, stack, message);
+                                            stack.pop_recycle();
+                                            return result;
+                                        }
+                                    };
+                                    let mut exception_handlers = Vec::new();
+                                    let mut pending_control = None;
+                                    if let Some(outcome) = self
+                                        .run_destructors_for_unreferenced_value(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            &value,
+                                        )
+                                    {
+                                        match outcome {
+                                            RaiseOutcome::Done(result) => {
+                                                stack.pop_recycle();
+                                                return *result;
+                                            }
+                                            RaiseOutcome::Caught(_) => {
+                                                let result = self.runtime_error(
+                                                    output,
+                                                    compiled,
+                                                    stack,
+                                                    "E_PHP_VM_BYTECODE_DESTRUCTOR_CATCH_UNSUPPORTED: bytecode discard cannot route a caught destructor exception",
+                                                );
+                                                stack.pop_recycle();
+                                                return result;
+                                            }
+                                        }
+                                    }
+                                }
+                                instruction_offset = next_instruction_offset;
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        }
                         let values = match self
                             .read_dense_call_args_for_function(dense, compiled, stack, name, args)
                         {
@@ -10055,6 +10819,16 @@ impl Vm {
                             .registers
                             .set(RegId::new(dst), return_value)
                         {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        if let Err(message) = unset_consumed_dense_call_arg_registers_at_frame(
+                            stack,
+                            frame_index,
+                            args,
+                            Some(RegId::new(dst)),
+                        ) {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
                             return result;
@@ -10393,6 +11167,16 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         }
+                        if let Err(message) = unset_consumed_dense_call_arg_registers_at_frame(
+                            stack,
+                            frame_index,
+                            args,
+                            Some(RegId::new(dst)),
+                        ) {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
                     }
                     DenseOpcode::ResolveCallable => {
                         let DenseOperands::ResolveCallable { dst, kind, target } =
@@ -10727,6 +11511,16 @@ impl Vm {
                             .registers
                             .set(RegId::new(dst), return_value)
                         {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                        if let Err(message) = unset_consumed_dense_call_arg_registers_at_frame(
+                            stack,
+                            frame_index,
+                            args,
+                            Some(RegId::new(dst)),
+                        ) {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
                             return result;
@@ -11615,14 +12409,20 @@ impl Vm {
                                 return result;
                             }
                         };
+                        // The assignment-expression result register is dead
+                        // for plain `$a[$k] = $v;` statements (nothing reads
+                        // it), so the value moves into the array slot instead
+                        // of being cloned for a store nobody observes.
+                        let mut register_value = (!move_plan
+                            .is_some_and(|plan| plan.is_dead_write(dst)))
+                        .then(|| value.clone());
                         let result = if is_globals_local(ir_function, local) {
-                            assign_globals_dim(&mut state.globals, &dims, value.clone(), append)
+                            assign_globals_dim(&mut state.globals, &dims, value, append)
                         } else {
                             let was_packed = local_array_is_packed_fast(stack, local);
                             let cow_or_reference =
                                 local_array_has_cow_or_reference_fallback(stack, local);
-                            let result =
-                                assign_dim_local(stack, local, &dims, value.clone(), append);
+                            let result = assign_dim_local(stack, local, &dims, value, append);
                             if let Ok(path) = &result {
                                 self.record_counter_map_update_slot_path(*path, &dims, append);
                             }
@@ -11661,11 +12461,12 @@ impl Vm {
                                         .unwrap_or_default(),
                                     index,
                                 );
-                                if let Err(message) = stack
-                                    .current_mut()
-                                    .expect("bytecode frame was pushed")
-                                    .registers
-                                    .set(RegId::new(dst), value)
+                                if let Some(register_value) = register_value.take()
+                                    && let Err(message) = stack
+                                        .current_mut()
+                                        .expect("bytecode frame was pushed")
+                                        .registers
+                                        .set(RegId::new(dst), register_value)
                                 {
                                     let result =
                                         self.runtime_error(output, compiled, stack, message);
@@ -11688,11 +12489,12 @@ impl Vm {
                             local,
                             &dims,
                         );
-                        if let Err(message) = stack
-                            .current_mut()
-                            .expect("bytecode frame was pushed")
-                            .registers
-                            .set(RegId::new(dst), value)
+                        if let Some(register_value) = register_value.take()
+                            && let Err(message) = stack
+                                .current_mut()
+                                .expect("bytecode frame was pushed")
+                                .registers
+                                .set(RegId::new(dst), register_value)
                         {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
@@ -12587,11 +13389,19 @@ impl Vm {
                     .get(local.index())
                     .cloned()
                     .unwrap_or_else(|| format!("local:{}", local.raw()));
-                let diagnostic = undefined_variable_warning(
-                    local_name,
-                    runtime_source_span(compiled, span),
-                    stack_trace(compiled, stack),
-                );
+                let diagnostic = if is_auto_global_name(&local_name) {
+                    undefined_global_variable_warning(
+                        local_name,
+                        runtime_source_span(compiled, span),
+                        stack_trace(compiled, stack),
+                    )
+                } else {
+                    undefined_variable_warning(
+                        local_name,
+                        runtime_source_span(compiled, span),
+                        stack_trace(compiled, stack),
+                    )
+                };
                 let handled = self.dispatch_error_handler(
                     compiled,
                     output,
@@ -12862,7 +13672,7 @@ impl Vm {
                     stack,
                     state,
                     diagnostics,
-                    &object.class_name(),
+                    &object.display_name(),
                     property,
                     span,
                 )?;
@@ -12971,7 +13781,7 @@ impl Vm {
                 stack,
                 state,
                 diagnostics,
-                &object.class_name(),
+                &object.display_name(),
                 property,
                 span,
             )?;
@@ -15048,7 +15858,13 @@ impl Vm {
                         if let Err(message) =
                             declare_runtime_function(compiled, state, name, *function)
                         {
-                            return self.runtime_error(output, compiled, stack, message);
+                            return function_redeclaration_fatal_result(
+                                output,
+                                compiled,
+                                stack,
+                                instruction.span,
+                                message,
+                            );
                         }
                     }
                     InstructionKind::DeclareClass { name } => {
@@ -15302,13 +16118,14 @@ impl Vm {
                             Err(result) => {
                                 if let Some(throwable) = runtime_error_throwable(&result) {
                                     tag_throwable_location(&throwable, compiled, instruction.span);
+                                    let is_caching_iterator_string_cast = matches!(
+                                        effective_value(&src),
+                                        Value::Object(object)
+                                            if spl_runtime_marker(&object)
+                                                .is_some_and(|class| is_spl_caching_iterator_class(&class))
+                                    );
                                     if matches!(*kind, CastKind::String)
-                                        && matches!(
-                                            &src,
-                                            Value::Object(object)
-                                                if spl_runtime_marker(object)
-                                                    .is_some_and(|class| is_spl_caching_iterator_class(&class))
-                                        )
+                                        && is_caching_iterator_string_cast
                                     {
                                         state.pending_trace = Some(
                                             capture_backtrace_string_with_builtin_failed_call(
@@ -15353,30 +16170,32 @@ impl Vm {
                     }
                     InstructionKind::Discard { src } => {
                         let value =
-                            match take_consumed_operand_at_frame(unit, stack, frame_index, *src) {
+                            match take_discard_operand_at_frame(unit, stack, frame_index, *src) {
                                 Ok(value) => value,
                                 Err(message) => {
                                     return self.runtime_error(output, compiled, stack, message);
                                 }
                             };
-                        if let Some(outcome) = self.run_destructors_for_unreferenced_value(
-                            compiled,
-                            output,
-                            stack,
-                            state,
-                            &mut exception_handlers,
-                            &mut pending_control,
-                            &value,
-                        ) {
-                            match outcome {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
+                        if let Some(value) = value {
+                            if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                &value,
+                            ) {
+                                match outcome {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                                RaiseOutcome::Done(result) => return *result,
                             }
+                            release_unrooted_object_handles(&value, stack, state);
                         }
-                        release_unrooted_object_handles(&value, stack, state);
                     }
                     InstructionKind::LoadLocal { dst, local } => {
                         let value = if is_globals_local(function, *local) {
@@ -15430,11 +16249,19 @@ impl Vm {
                                         .get(local.index())
                                         .cloned()
                                         .unwrap_or_else(|| format!("local:{}", local.raw()));
-                                    let diagnostic = undefined_variable_warning(
-                                        local_name,
-                                        runtime_source_span(compiled, instruction.span),
-                                        stack_trace(compiled, stack),
-                                    );
+                                    let diagnostic = if is_auto_global_name(&local_name) {
+                                        undefined_global_variable_warning(
+                                            local_name,
+                                            runtime_source_span(compiled, instruction.span),
+                                            stack_trace(compiled, stack),
+                                        )
+                                    } else {
+                                        undefined_variable_warning(
+                                            local_name,
+                                            runtime_source_span(compiled, instruction.span),
+                                            stack_trace(compiled, stack),
+                                        )
+                                    };
                                     let handled = match self.dispatch_error_handler(
                                         compiled,
                                         output,
@@ -16667,6 +17494,7 @@ impl Vm {
                         ) {
                             return self.runtime_error(output, compiled, stack, message);
                         }
+                        let previous_effective = effective_value(&current);
                         if let Err(message) = bind_static_property_lvalue(
                             &mut state.static_properties,
                             key,
@@ -16682,7 +17510,7 @@ impl Vm {
                             state,
                             &mut exception_handlers,
                             &mut pending_control,
-                            &current,
+                            &previous_effective,
                         ) {
                             match outcome {
                                 RaiseOutcome::Caught(target) => {
@@ -16967,7 +17795,22 @@ impl Vm {
                             ) {
                                 Ok(value) => value,
                                 Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                             };
                             if let Some(shared) = call.shared_top_level_locals.as_deref_mut() {
@@ -17211,6 +18054,23 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_fileinfo_runtime_class(&class_name) {
+                            let object = match new_fileinfo_object(&class_name, values) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if is_date_time_runtime_class(&class_name) {
                             let object = match new_date_time_object(
                                 &class_name,
@@ -17322,6 +18182,23 @@ impl Vm {
                         }
                         if is_memcached_runtime_class(&class_name) {
                             let object = match new_memcached_object(&class_name, values) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_soap_runtime_class(&class_name) {
+                            let object = match new_soap_object(&class_name, values) {
                                 Ok(object) => object,
                                 Err(message) => {
                                     return self.runtime_error(output, compiled, stack, message);
@@ -17746,6 +18623,13 @@ impl Vm {
                         {
                             return self.runtime_error(output, compiled, stack, message);
                         }
+                        if let Err(message) = unset_indirect_temporary_call_arg_registers_at_frame(
+                            stack,
+                            frame_index,
+                            args,
+                        ) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
                     }
                     InstructionKind::NewObject {
                         dst,
@@ -18155,6 +19039,31 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_fileinfo_runtime_class(class_name) {
+                            let values =
+                                match read_call_args_at_frame(unit, stack, frame_index, args) {
+                                    Ok(values) => values,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
+                            let object = match new_fileinfo_object(class_name, values) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if is_date_time_runtime_class(class_name) {
                             let values =
                                 match read_call_args_at_frame(unit, stack, frame_index, args) {
@@ -18308,6 +19217,31 @@ impl Vm {
                                     }
                                 };
                             let object = match new_memcached_object(class_name, values) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame was pushed")
+                                .registers
+                                .set(*dst, Value::Object(object))
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_soap_runtime_class(class_name) {
+                            let values =
+                                match read_call_args_at_frame(unit, stack, frame_index, args) {
+                                    Ok(values) => values,
+                                    Err(message) => {
+                                        return self
+                                            .runtime_error(output, compiled, stack, message);
+                                    }
+                                };
+                            let object = match new_soap_object(class_name, values) {
                                 Ok(object) => object,
                                 Err(message) => {
                                     return self.runtime_error(output, compiled, stack, message);
@@ -19145,6 +20079,13 @@ impl Vm {
                         {
                             return self.runtime_error(output, compiled, stack, message);
                         }
+                        if let Err(message) = unset_indirect_temporary_call_arg_registers_at_frame(
+                            stack,
+                            frame_index,
+                            args,
+                        ) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
                     }
                     InstructionKind::CloneObject { dst, object } => {
                         let object = match read_operand_at_frame(unit, stack, frame_index, *object)
@@ -19154,7 +20095,14 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        match self.clone_object_value(compiled, &object, output, stack, state) {
+                        match self.clone_object_value(
+                            compiled,
+                            &object,
+                            instruction.span,
+                            output,
+                            stack,
+                            state,
+                        ) {
                             Ok(value) => {
                                 if let Err(message) = stack
                                     .frame_mut(frame_index)
@@ -19780,7 +20728,7 @@ impl Vm {
                                     stack,
                                     state,
                                     &mut diagnostics,
-                                    &object.class_name(),
+                                    &object.display_name(),
                                     property,
                                     instruction.span,
                                 ) {
@@ -20073,7 +21021,7 @@ impl Vm {
                                     stack,
                                     state,
                                     &mut diagnostics,
-                                    &object.class_name(),
+                                    &object.display_name(),
                                     property,
                                     instruction.span,
                                 ) {
@@ -23018,12 +23966,14 @@ impl Vm {
                         ) {
                             return self.runtime_error(output, compiled, stack, message);
                         }
-                        let value = match read_operand_at_frame(unit, stack, frame_index, *value) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
+                        let value_operand = *value;
+                        let value =
+                            match read_operand_at_frame(unit, stack, frame_index, value_operand) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                         let property_type = ir_runtime_type(resolved.property.type_.as_ref());
                         if let Err(message) = check_property_type(
                             compiled,
@@ -23077,6 +24027,7 @@ impl Vm {
                         ) {
                             return self.runtime_error(output, compiled, stack, message);
                         }
+                        let previous_effective = effective_value(&current);
                         if let Err(message) = write_static_property_lvalue(
                             &mut state.static_properties,
                             key,
@@ -23092,7 +24043,7 @@ impl Vm {
                             state,
                             &mut exception_handlers,
                             &mut pending_control,
-                            &current,
+                            &previous_effective,
                         ) {
                             match outcome {
                                 RaiseOutcome::Caught(target) => {
@@ -23108,6 +24059,14 @@ impl Vm {
                             .registers
                             .set(*dst, value)
                         {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        if let Err(message) = unset_consumed_assignment_value_operand_at_frame(
+                            stack,
+                            frame_index,
+                            value_operand,
+                            *dst,
+                        ) {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
@@ -23238,12 +24197,14 @@ impl Vm {
                         ) {
                             return self.runtime_error(output, compiled, stack, message);
                         }
-                        let value = match read_operand_at_frame(unit, stack, frame_index, *value) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
+                        let value_operand = *value;
+                        let value =
+                            match read_operand_at_frame(unit, stack, frame_index, value_operand) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                         let property_type = ir_runtime_type(resolved.property.type_.as_ref());
                         if let Err(message) = check_property_type(
                             compiled,
@@ -23297,6 +24258,7 @@ impl Vm {
                         ) {
                             return self.runtime_error(output, compiled, stack, message);
                         }
+                        let previous_effective = effective_value(&current);
                         if let Err(message) = write_static_property_lvalue(
                             &mut state.static_properties,
                             key,
@@ -23312,7 +24274,7 @@ impl Vm {
                             state,
                             &mut exception_handlers,
                             &mut pending_control,
-                            &current,
+                            &previous_effective,
                         ) {
                             match outcome {
                                 RaiseOutcome::Caught(target) => {
@@ -23328,6 +24290,14 @@ impl Vm {
                             .registers
                             .set(*dst, value)
                         {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
+                        if let Err(message) = unset_consumed_assignment_value_operand_at_frame(
+                            stack,
+                            frame_index,
+                            value_operand,
+                            *dst,
+                        ) {
                             return self.runtime_error(output, compiled, stack, message);
                         }
                     }
@@ -25541,6 +26511,30 @@ impl Vm {
                         }
                     }
                     InstructionKind::CallFunction { dst, name, args } => {
+                        match self.try_execute_rich_preg_match_start_offset_ascii_fast(
+                            name,
+                            args,
+                            unit,
+                            stack,
+                            frame_index,
+                            state,
+                        ) {
+                            Ok(Some(return_value)) => {
+                                if let Err(message) = stack
+                                    .frame_mut(frame_index)
+                                    .expect("frame is active")
+                                    .registers
+                                    .set(*dst, return_value)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(message) => {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                        }
                         let values = match read_call_args_for_function_at_frame(
                             unit,
                             stack,
@@ -25620,7 +26614,47 @@ impl Vm {
                             state,
                             &running_fiber,
                         );
-                        if !result.status.is_success()
+                        if !result.status.is_success() {
+                            let original_throwable = state
+                                .pending_throw
+                                .take()
+                                .or_else(|| runtime_error_throwable(&result));
+                            if let Some((arg_operand, arg_value)) = temporary_iterator_arg.clone() {
+                                if let Err(message) =
+                                    unset_register_operand_at_frame(stack, frame_index, arg_operand)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                let candidates = destructor_candidates_for_value(&arg_value);
+                                let rooted_object_ids =
+                                    php_visible_non_register_root_object_ids(stack, state);
+                                let sweep = self
+                                    .run_destructors_for_unreferenced_candidates_with_roots(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        candidates,
+                                        &rooted_object_ids,
+                                        None,
+                                    );
+                                if let Some(outcome) = sweep.outcome {
+                                    match outcome {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            }
+                            if let Some(throwable) = original_throwable {
+                                state.pending_throw = Some(throwable);
+                            }
+                        }
+                        if (!result.status.is_success() || state.pending_throw.is_some())
                             && let Some(throwable) = state
                                 .pending_throw
                                 .take()
@@ -25639,7 +26673,7 @@ impl Vm {
                             }
                             return self.propagate_exception(output, stack, state, throwable);
                         }
-                        if !result.status.is_success() {
+                        if !result.status.is_success() || state.pending_throw.is_some() {
                             return result;
                         }
                         if result.fiber_suspension.is_some() {
@@ -25664,7 +26698,8 @@ impl Vm {
                             {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
-                            let mut rooted_object_ids = php_visible_root_object_ids(stack, state);
+                            let mut rooted_object_ids =
+                                php_visible_non_register_root_object_ids(stack, state);
                             rooted_object_ids.extend(preserved_destructor_object_ids(
                                 std::slice::from_ref(&return_value),
                             ));
@@ -25679,6 +26714,7 @@ impl Vm {
                                     &mut pending_control,
                                     candidates,
                                     &rooted_object_ids,
+                                    None,
                                 );
                             if let Some(outcome) = sweep.outcome {
                                 match outcome {
@@ -25689,6 +26725,14 @@ impl Vm {
                                     RaiseOutcome::Done(result) => return *result,
                                 }
                             }
+                        }
+                        if let Err(message) = unset_consumed_call_arg_registers_at_frame(
+                            stack,
+                            frame_index,
+                            args,
+                            Some(*dst),
+                        ) {
+                            return self.runtime_error(output, compiled, stack, message);
                         }
                         if let Err(message) = stack
                             .frame_mut(frame_index)
@@ -25705,6 +26749,7 @@ impl Vm {
                         method,
                         args,
                     } => {
+                        let object_operand = *object;
                         let receiver =
                             match read_operand_at_frame(unit, stack, frame_index, *object) {
                                 Ok(receiver) => receiver,
@@ -26129,6 +27174,50 @@ impl Vm {
                             }
                             continue;
                         }
+                        if spl_runtime_marker(&object).is_some_and(|class| {
+                            is_spl_file_runtime_class(&class)
+                                && spl_file_method_is_supported(method)
+                        }) && normalize_method_name(method) == "fpassthru"
+                            && !spl_file_is_initialized(&object)
+                        {
+                            let value = match call_spl_file_method_in_state(
+                                compiled,
+                                state,
+                                &object,
+                                method,
+                                values,
+                                &self.options.runtime_context,
+                            ) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if let Some(spl_class) = spl_runtime_marker(&object) {
                             let object_display_class = object.display_name();
                             let object_class = normalize_class_name(&object_display_class);
@@ -26421,7 +27510,12 @@ impl Vm {
                                     }
                                 }
                                 let value = match self.spl_caching_iterator_to_string(
-                                    compiled, &object, output, stack, state,
+                                    compiled,
+                                    &object,
+                                    runtime_source_span(compiled, instruction.span),
+                                    output,
+                                    stack,
+                                    state,
                                 ) {
                                     Ok(value) => Value::String(value),
                                     Err(result) => {
@@ -26470,6 +27564,23 @@ impl Vm {
                                     state,
                                 );
                                 if !result.status.is_success() || state.pending_throw.is_some() {
+                                    let cleanup_values =
+                                        match take_method_call_temporary_registers_at_frame(
+                                            stack,
+                                            frame_index,
+                                            object_operand,
+                                            args,
+                                        ) {
+                                            Ok(values) => values,
+                                            Err(message) => {
+                                                return self.runtime_error(
+                                                    output, compiled, stack, message,
+                                                );
+                                            }
+                                        };
+                                    for value in &cleanup_values {
+                                        release_unrooted_object_handles(value, stack, state);
+                                    }
                                     match self.route_throwable_result(
                                         compiled,
                                         output,
@@ -26487,13 +27598,30 @@ impl Vm {
                                     }
                                 }
                                 diagnostics.extend(result.diagnostics);
+                                let return_value = result.return_value.unwrap_or(Value::Null);
                                 if let Err(message) = stack
                                     .frame_mut(frame_index)
                                     .expect("frame is active")
                                     .registers
-                                    .set(*dst, result.return_value.unwrap_or(Value::Null))
+                                    .set(*dst, return_value)
                                 {
                                     return self.runtime_error(output, compiled, stack, message);
+                                }
+                                let cleanup_values =
+                                    match take_method_call_temporary_registers_at_frame(
+                                        stack,
+                                        frame_index,
+                                        object_operand,
+                                        args,
+                                    ) {
+                                        Ok(values) => values,
+                                        Err(message) => {
+                                            return self
+                                                .runtime_error(output, compiled, stack, message);
+                                        }
+                                    };
+                                for value in &cleanup_values {
+                                    release_unrooted_object_handles(value, stack, state);
                                 }
                                 continue;
                             }
@@ -26680,6 +27808,41 @@ impl Vm {
                             }
                             continue;
                         }
+                        if is_hash_context_runtime_class(&object.class_name())
+                            && hash_context_method_is_supported(method)
+                        {
+                            let value =
+                                match self.call_hash_context_method(&object, method, &values) {
+                                    Ok(value) => value,
+                                    Err(message) => {
+                                        match self.raise_runtime_error(
+                                            compiled,
+                                            output,
+                                            stack,
+                                            state,
+                                            &mut exception_handlers,
+                                            &mut pending_control,
+                                            instruction.span,
+                                            message,
+                                        ) {
+                                            RaiseOutcome::Caught(target) => {
+                                                block_id = target;
+                                                continue 'dispatch;
+                                            }
+                                            RaiseOutcome::Done(result) => return *result,
+                                        }
+                                    }
+                                };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if spl_runtime_marker(&object).is_some_and(|class| {
                             is_spl_file_runtime_class(&class)
                                 && spl_file_method_is_supported(method)
@@ -26825,6 +27988,19 @@ impl Vm {
                             continue;
                         }
                         if is_zip_runtime_class(&object.class_name()) {
+                            if zip_open_uses_empty_file(
+                                method,
+                                &values,
+                                &self.options.runtime_context,
+                            ) {
+                                emit_zip_open_empty_file_deprecation(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    runtime_source_span(compiled, instruction.span),
+                                );
+                            }
                             let value = match call_zip_method(
                                 &object,
                                 method,
@@ -26833,7 +28009,22 @@ impl Vm {
                             ) {
                                 Ok(value) => value,
                                 Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
                                 }
                             };
                             if let Err(message) = stack
@@ -26894,6 +28085,49 @@ impl Vm {
                                     return self.runtime_error(output, compiled, stack, message);
                                 }
                             };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_soap_runtime_class(&object.class_name()) {
+                            let value = match call_soap_method(&object, method, values) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
+                        if is_fileinfo_runtime_class(&object.class_name()) {
+                            let result = call_fileinfo_method(
+                                self,
+                                compiled,
+                                object,
+                                method,
+                                values,
+                                Some(instruction.span),
+                                output,
+                                stack,
+                                state,
+                            );
+                            if !result.status.is_success() {
+                                return result;
+                            }
+                            let value = result.return_value.unwrap_or(Value::Null);
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame is active")
@@ -27433,7 +28667,7 @@ impl Vm {
                             stack,
                             state,
                         );
-                        if !result.status.is_success()
+                        if (!result.status.is_success() || state.pending_throw.is_some())
                             && let Some(throwable) = state
                                 .pending_throw
                                 .take()
@@ -27571,14 +28805,49 @@ impl Vm {
                                             .runtime_error(output, compiled, stack, message);
                                     }
                                 };
-                            let value =
-                                match php_token_static_method_value(class_name, method, values) {
-                                    Ok(value) => value,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
+                            let trace_values = values
+                                .iter()
+                                .map(|arg| arg.value.clone())
+                                .collect::<Vec<_>>();
+                            let result = match php_token_static_method_value_with_diagnostics(
+                                class_name, method, values,
+                            ) {
+                                Ok(result) => result,
+                                Err(message) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
                                     }
-                                };
+                                }
+                            };
+                            let trace_context = TokenizerStaticCallTraceContext {
+                                call: format!("{class_name}::{method}"),
+                                values: trace_values,
+                                call_span: instruction.span,
+                            };
+                            if let Err(result) = self.route_tokenizer_static_method_diagnostics(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                result.diagnostics,
+                                Some(&trace_context),
+                            ) {
+                                return result;
+                            }
+                            let value = result.value;
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame is active")
@@ -27682,6 +28951,80 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
+                        if class_extends_php_token(compiled, state, &class)
+                            && normalize_method_name(method) == "tokenize"
+                        {
+                            let trace_values = values
+                                .iter()
+                                .map(|arg| arg.value.clone())
+                                .collect::<Vec<_>>();
+                            let result = match self.php_token_static_method_value_for_class(
+                                compiled, state, &class, class_name, values,
+                            ) {
+                                Ok(result) => result,
+                                Err(PhpTokenStaticMethodError::RuntimeClass(error)) => {
+                                    match self.raise_runtime_class_entry_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        error,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                                Err(PhpTokenStaticMethodError::Runtime(message)) => {
+                                    match self.raise_runtime_error(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        instruction.span,
+                                        message,
+                                    ) {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            };
+                            let trace_context = TokenizerStaticCallTraceContext {
+                                call: format!("{class_name}::{method}"),
+                                values: trace_values,
+                                call_span: instruction.span,
+                            };
+                            if let Err(result) = self.route_tokenizer_static_method_diagnostics(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                result.diagnostics,
+                                Some(&trace_context),
+                            ) {
+                                return result;
+                            }
+                            let value = result.value;
+                            if let Err(message) = stack
+                                .frame_mut(frame_index)
+                                .expect("frame is active")
+                                .registers
+                                .set(*dst, value)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            continue;
+                        }
                         if normalize_method_name(method) == "__construct"
                             && is_supported_spl_runtime_class(&class.name)
                         {
@@ -28591,6 +29934,8 @@ impl Vm {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
+                        let temporary_iterator_arg =
+                            callable_iterator_function_temporary_arg_value(&callee, args, &values);
                         let result = self.execute_callable_value_call(
                             compiled,
                             callee,
@@ -28604,6 +29949,46 @@ impl Vm {
                             state,
                             &running_fiber,
                         );
+                        if !result.status.is_success() {
+                            let original_throwable = state
+                                .pending_throw
+                                .take()
+                                .or_else(|| runtime_error_throwable(&result));
+                            if let Some((arg_operand, arg_value)) = temporary_iterator_arg.clone() {
+                                if let Err(message) =
+                                    unset_register_operand_at_frame(stack, frame_index, arg_operand)
+                                {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                                let candidates = destructor_candidates_for_value(&arg_value);
+                                let rooted_object_ids =
+                                    php_visible_non_register_root_object_ids(stack, state);
+                                let sweep = self
+                                    .run_destructors_for_unreferenced_candidates_with_roots(
+                                        compiled,
+                                        output,
+                                        stack,
+                                        state,
+                                        &mut exception_handlers,
+                                        &mut pending_control,
+                                        candidates,
+                                        &rooted_object_ids,
+                                        None,
+                                    );
+                                if let Some(outcome) = sweep.outcome {
+                                    match outcome {
+                                        RaiseOutcome::Caught(target) => {
+                                            block_id = target;
+                                            continue 'dispatch;
+                                        }
+                                        RaiseOutcome::Done(result) => return *result,
+                                    }
+                                }
+                            }
+                            if let Some(throwable) = original_throwable {
+                                state.pending_throw = Some(throwable);
+                            }
+                        }
                         if !result.status.is_success()
                             && let Some(throwable) = state
                                 .pending_throw
@@ -28628,6 +30013,47 @@ impl Vm {
                         }
                         diagnostics.extend(result.diagnostics);
                         let return_value = result.return_value.unwrap_or(Value::Null);
+                        if let Some((arg_operand, arg_value)) = temporary_iterator_arg {
+                            if let Err(message) =
+                                unset_register_operand_at_frame(stack, frame_index, arg_operand)
+                            {
+                                return self.runtime_error(output, compiled, stack, message);
+                            }
+                            let mut rooted_object_ids = php_visible_root_object_ids(stack, state);
+                            rooted_object_ids.extend(preserved_destructor_object_ids(
+                                std::slice::from_ref(&return_value),
+                            ));
+                            let candidates = destructor_candidates_for_value(&arg_value);
+                            let sweep = self
+                                .run_destructors_for_unreferenced_candidates_with_roots(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    candidates,
+                                    &rooted_object_ids,
+                                    None,
+                                );
+                            if let Some(outcome) = sweep.outcome {
+                                match outcome {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
+                        }
+                        if let Err(message) = unset_consumed_call_arg_registers_at_frame(
+                            stack,
+                            frame_index,
+                            args,
+                            Some(*dst),
+                        ) {
+                            return self.runtime_error(output, compiled, stack, message);
+                        }
                         if let Err(message) = stack
                             .frame_mut(frame_index)
                             .expect("frame is active")
@@ -28987,6 +30413,7 @@ impl Vm {
                     if let Some(shared) = call.shared_top_level_locals.as_deref_mut() {
                         export_shared_locals_at_frame(function, stack, frame_index, shared);
                     }
+                    let completed_scope = current_scope_class(compiled, stack);
                     stack.pop_frame_recycle(frame_index);
                     if !state.destructor_queue.is_empty()
                         && function_may_hold_destructor_sensitive_value(function)
@@ -29014,6 +30441,7 @@ impl Vm {
                             &mut destructor_pending_control,
                             candidates,
                             &rooted_object_ids,
+                            completed_scope.as_deref(),
                         );
                         if let Some(outcome) = sweep.outcome {
                             match outcome {
@@ -29337,6 +30765,7 @@ impl Vm {
         compiled: &CompiledUnit,
         name: &str,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -29410,9 +30839,158 @@ impl Vm {
                     Ok(value) => value.to_string_lossy(),
                     Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
+                let mut diagnostics = Vec::new();
+                if session_ini_cannot_change_when_active(&option)
+                    && state.session.status() == php_runtime::PHP_SESSION_ACTIVE
+                {
+                    let (started_file, started_line) = state
+                        .session
+                        .started_location()
+                        .map(|(file, line)| (file.to_owned(), line))
+                        .unwrap_or_else(|| ("Unknown".to_owned(), 0));
+                    let diagnostic = RuntimeDiagnostic::new(
+                        "E_PHP_VM_SESSION_INI_ACTIVE",
+                        RuntimeSeverity::Warning,
+                        format!(
+                            "ini_set(): Session ini settings cannot be changed when a session is active (started from {started_file} on line {started_line})"
+                        ),
+                        builtin_source_span(compiled, call_span),
+                        stack_trace(compiled, stack),
+                        None,
+                    );
+                    let handled = match self.dispatch_error_handler(
+                        compiled,
+                        output,
+                        stack,
+                        state,
+                        php_runtime::PHP_E_WARNING,
+                        &diagnostic,
+                    ) {
+                        Ok(handled) => handled,
+                        Err(result) => return result,
+                    };
+                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                        emit_vm_diagnostic(
+                            output,
+                            state,
+                            &diagnostic,
+                            php_runtime::PhpDiagnosticChannel::Warning,
+                            php_runtime::PHP_E_WARNING,
+                        );
+                    }
+                    diagnostics.push(diagnostic);
+                    return VmResult::success_with_diagnostics_no_output(
+                        Some(Value::Bool(false)),
+                        diagnostics,
+                    );
+                }
+                if let Some(message) = session_save_path_open_basedir_ini_error(
+                    &option, &value, &state.cwd, &state.ini,
+                ) {
+                    let diagnostic = RuntimeDiagnostic::new(
+                        "E_PHP_VM_SESSION_SAVE_PATH_OPEN_BASEDIR",
+                        RuntimeSeverity::Warning,
+                        message,
+                        builtin_source_span(compiled, call_span),
+                        stack_trace(compiled, stack),
+                        None,
+                    );
+                    let handled = match self.dispatch_error_handler(
+                        compiled,
+                        output,
+                        stack,
+                        state,
+                        php_runtime::PHP_E_WARNING,
+                        &diagnostic,
+                    ) {
+                        Ok(handled) => handled,
+                        Err(result) => return result,
+                    };
+                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                        emit_vm_diagnostic(
+                            output,
+                            state,
+                            &diagnostic,
+                            php_runtime::PhpDiagnosticChannel::Warning,
+                            php_runtime::PHP_E_WARNING,
+                        );
+                    }
+                    diagnostics.push(diagnostic);
+                    return VmResult::success_with_diagnostics_no_output(
+                        Some(Value::Bool(false)),
+                        diagnostics,
+                    );
+                }
+                if let Some(message) = session_serialize_handler_ini_error(&option, &value) {
+                    let diagnostic = RuntimeDiagnostic::new(
+                        "E_PHP_VM_SESSION_SERIALIZER_INI_UNKNOWN",
+                        RuntimeSeverity::Warning,
+                        message,
+                        builtin_source_span(compiled, call_span),
+                        stack_trace(compiled, stack),
+                        None,
+                    );
+                    let handled = match self.dispatch_error_handler(
+                        compiled,
+                        output,
+                        stack,
+                        state,
+                        php_runtime::PHP_E_WARNING,
+                        &diagnostic,
+                    ) {
+                        Ok(handled) => handled,
+                        Err(result) => return result,
+                    };
+                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+                        emit_vm_diagnostic(
+                            output,
+                            state,
+                            &diagnostic,
+                            php_runtime::PhpDiagnosticChannel::Warning,
+                            php_runtime::PHP_E_WARNING,
+                        );
+                    }
+                    diagnostics.push(diagnostic);
+                    return VmResult::success_with_diagnostics_no_output(
+                        Some(Value::Bool(false)),
+                        diagnostics,
+                    );
+                }
+                if let Some(message) = session_sid_ini_deprecation(&option, &value) {
+                    let diagnostic = RuntimeDiagnostic::new(
+                        "E_PHP_VM_SESSION_SID_INI_DEPRECATED",
+                        RuntimeSeverity::Deprecation,
+                        message,
+                        RuntimeSourceSpan::default(),
+                        stack_trace(compiled, stack),
+                        None,
+                    );
+                    let handled = match self.dispatch_error_handler(
+                        compiled,
+                        output,
+                        stack,
+                        state,
+                        php_runtime::PHP_E_DEPRECATED,
+                        &diagnostic,
+                    ) {
+                        Ok(handled) => handled,
+                        Err(result) => return result,
+                    };
+                    if !handled && error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED) {
+                        emit_vm_diagnostic(
+                            output,
+                            state,
+                            &diagnostic,
+                            php_runtime::PhpDiagnosticChannel::Deprecated,
+                            php_runtime::PHP_E_DEPRECATED,
+                        );
+                    }
+                    diagnostics.push(diagnostic);
+                }
+                let effective_value = ini_set_effective_value(&option, value, &state.cwd);
                 let previous = state
                     .ini
-                    .set(&option, value)
+                    .set(&option, effective_value)
                     .map(Value::string)
                     .unwrap_or(Value::Bool(false));
                 if option.eq_ignore_ascii_case("include_path") {
@@ -29421,7 +30999,11 @@ impl Vm {
                 if option.eq_ignore_ascii_case("precision") {
                     apply_float_string_precision(&state.ini);
                 }
-                VmResult::success_no_output(Some(previous))
+                if diagnostics.is_empty() {
+                    VmResult::success_no_output(Some(previous))
+                } else {
+                    VmResult::success_with_diagnostics_no_output(Some(previous), diagnostics)
+                }
             }
             "ini_get_all" => {
                 if values.len() > 2 {
@@ -29444,10 +31026,13 @@ impl Vm {
                     if !extension.eq_ignore_ascii_case("standard")
                         && !extension.eq_ignore_ascii_case("core")
                         && !extension.eq_ignore_ascii_case("ffi")
+                        && !extension.eq_ignore_ascii_case("session")
                     {
                         return VmResult::success_no_output(Some(Value::Bool(false)));
                     }
-                    if extension.eq_ignore_ascii_case("ffi") {
+                    if extension.eq_ignore_ascii_case("ffi")
+                        || extension.eq_ignore_ascii_case("session")
+                    {
                         Some(extension)
                     } else {
                         None
@@ -29614,6 +31199,22 @@ impl Vm {
                     .push(ErrorHandlerEntry { callback, levels });
                 VmResult::success_no_output(Some(previous))
             }
+            "get_error_handler" => {
+                if !values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_ERROR_ARITY: get_error_handler expects no arguments",
+                    );
+                }
+                let handler = state
+                    .error_handlers
+                    .last()
+                    .map(|entry| Value::Callable(Box::new(entry.callback.clone())))
+                    .unwrap_or(Value::Null);
+                VmResult::success_no_output(Some(handler))
+            }
             "restore_error_handler" => {
                 if !values.is_empty() {
                     return self.runtime_error(
@@ -29658,6 +31259,22 @@ impl Vm {
                     .unwrap_or(Value::Null);
                 state.exception_handlers.push(callback);
                 VmResult::success_no_output(Some(previous))
+            }
+            "get_exception_handler" => {
+                if !values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_ERROR_ARITY: get_exception_handler expects no arguments",
+                    );
+                }
+                let handler = state
+                    .exception_handlers
+                    .last()
+                    .map(|callback| Value::Callable(Box::new(callback.clone())))
+                    .unwrap_or(Value::Null);
+                VmResult::success_no_output(Some(handler))
             }
             "restore_exception_handler" => {
                 if !values.is_empty() {
@@ -30175,7 +31792,11 @@ impl Vm {
                             "E_PHP_RUNTIME_BUILTIN_VALUE: putenv(): Argument #1 ($assignment) must have a valid syntax",
                         );
                     }
-                    set_env_entry(&mut state.env, key.to_string(), Some(value.to_string()));
+                    set_env_entry(
+                        Arc::make_mut(&mut state.env),
+                        key.to_string(),
+                        Some(value.to_string()),
+                    );
                 } else {
                     if assignment.is_empty() {
                         return self.runtime_error(
@@ -30185,7 +31806,7 @@ impl Vm {
                             "E_PHP_RUNTIME_BUILTIN_VALUE: putenv(): Argument #1 ($assignment) must have a valid syntax",
                         );
                     }
-                    set_env_entry(&mut state.env, assignment, None);
+                    set_env_entry(Arc::make_mut(&mut state.env), assignment, None);
                 }
                 VmResult::success_no_output(Some(Value::Bool(true)))
             }
@@ -30232,6 +31853,40 @@ impl Vm {
                     );
                 }
                 VmResult::success_no_output(Some(Value::string("phrust")))
+            }
+            "getmyuid" => {
+                if !values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_ENV_ARITY: getmyuid expects no arguments",
+                    );
+                }
+                VmResult::success_no_output(Some(Value::Int(script_owner_uid(
+                    self.options
+                        .runtime_context
+                        .argv
+                        .first()
+                        .map(String::as_str),
+                ))))
+            }
+            "getmygid" => {
+                if !values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_ENV_ARITY: getmygid expects no arguments",
+                    );
+                }
+                VmResult::success_no_output(Some(Value::Int(script_owner_gid(
+                    self.options
+                        .runtime_context
+                        .argv
+                        .first()
+                        .map(String::as_str),
+                ))))
             }
             _ => self.runtime_error(
                 output,
@@ -30346,25 +32001,28 @@ impl Vm {
         compiled: &CompiledUnit,
         name: &str,
         args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
-        let values =
-            match call_builtin_args_to_positional(compiled, name, args, None, output, stack, state)
-            {
-                Ok(values) => values,
-                Err(InternalBuiltinArgError::Message(message)) => {
-                    return self.runtime_error(output, compiled, stack, message);
-                }
-                Err(InternalBuiltinArgError::Fatal(result)) => return *result,
-            };
-        let result = match name {
-            "preg_replace_callback" => {
-                self.call_preg_replace_callback_builtin(compiled, values, output, stack, state)
+        let values = match call_builtin_args_to_positional(
+            self, compiled, name, args, None, output, stack, state,
+        ) {
+            Ok(values) => values,
+            Err(InternalBuiltinArgError::Message(message)) => {
+                return self.runtime_error(output, compiled, stack, message);
             }
-            "preg_replace_callback_array" => self
-                .call_preg_replace_callback_array_builtin(compiled, values, output, stack, state),
+            Err(InternalBuiltinArgError::Fatal(result)) => return *result,
+        };
+        let trace_values = values.clone();
+        let result = match name {
+            "preg_replace_callback" => self.call_preg_replace_callback_builtin(
+                compiled, values, call_span, output, stack, state,
+            ),
+            "preg_replace_callback_array" => self.call_preg_replace_callback_array_builtin(
+                compiled, values, call_span, output, stack, state,
+            ),
             _ => Err(ArrayCallbackError::Message(format!(
                 "E_PHP_VM_UNKNOWN_PCRE_CALLBACK_BUILTIN: {name}"
             ))),
@@ -30375,9 +32033,732 @@ impl Vm {
             Err(ArrayCallbackError::BuiltinType { function, actual }) => {
                 array_callback_type_error(output, compiled, stack, function, &actual)
             }
-            Err(ArrayCallbackError::Message(message)) => {
-                self.runtime_error(output, compiled, stack, message)
+            Err(ArrayCallbackError::Message(message)) => match builtin_type_error_message(&message)
+            {
+                Some(message) => builtin_type_error_result_with_failed_call(
+                    output,
+                    compiled,
+                    stack,
+                    state,
+                    name,
+                    &trace_values,
+                    call_span,
+                    message.to_owned(),
+                ),
+                None => self.runtime_error(output, compiled, stack, message),
+            },
+        }
+    }
+
+    fn call_filter_callback_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        args: Vec<CallArgument>,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        let values = match call_builtin_args_to_positional(
+            self, compiled, name, args, call_span, output, stack, state,
+        ) {
+            Ok(values) => values,
+            Err(InternalBuiltinArgError::Message(message)) => {
+                return self.runtime_error(output, compiled, stack, message);
             }
+            Err(InternalBuiltinArgError::Fatal(result)) => return *result,
+        };
+        if !filter_call_needs_vm_callback(name, &values) {
+            return self.execute_internal_registry_builtin(
+                name, values, call_span, output, stack, state, compiled,
+            );
+        }
+        let mut diagnostics = Vec::new();
+        let result = match name {
+            "filter_var" => self.filter_var_callback_value(
+                compiled,
+                name,
+                &values,
+                call_span,
+                output,
+                stack,
+                state,
+                &mut diagnostics,
+            ),
+            "filter_input" => self.filter_input_callback_value(
+                compiled,
+                name,
+                &values,
+                call_span,
+                output,
+                stack,
+                state,
+                &mut diagnostics,
+            ),
+            "filter_input_array" => self.filter_input_array_callback_value(
+                compiled,
+                name,
+                &values,
+                call_span,
+                output,
+                stack,
+                state,
+                &mut diagnostics,
+            ),
+            "filter_var_array" => self.filter_var_array_callback_value(
+                compiled,
+                name,
+                &values,
+                call_span,
+                output,
+                stack,
+                state,
+                &mut diagnostics,
+            ),
+            _ => Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!("E_PHP_VM_UNKNOWN_FILTER_CALLBACK_BUILTIN: {name}"),
+            )),
+        };
+        match result {
+            Ok(value) => VmResult::success_with_diagnostics_no_output(Some(value), diagnostics),
+            Err(result) => result,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn filter_var_callback_value(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        values: &[Value],
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        if values.is_empty() || values.len() > 3 {
+            return Ok(self
+                .execute_internal_registry_builtin(
+                    name,
+                    values.to_vec(),
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .unwrap_or(Value::Null));
+        }
+        let filter = values
+            .get(1)
+            .map(vm_filter_int)
+            .transpose()
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+            .unwrap_or(VM_FILTER_DEFAULT);
+        if filter != VM_FILTER_CALLBACK {
+            return Ok(self
+                .execute_internal_registry_builtin(
+                    name,
+                    values.to_vec(),
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .unwrap_or(Value::Null));
+        }
+        let options = vm_filter_callback_options(values.get(2))
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+        self.apply_filter_callback_value(
+            compiled,
+            name,
+            &values[0],
+            &options,
+            call_span,
+            output,
+            stack,
+            state,
+            diagnostics,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn filter_input_callback_value(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        values: &[Value],
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        if !(2..=5).contains(&values.len()) {
+            return Ok(self
+                .execute_internal_registry_builtin(
+                    name,
+                    values.to_vec(),
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .unwrap_or(Value::Null));
+        }
+        let source = vm_filter_int(&values[0])
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+        let input_name = to_string(&values[1])
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+            .to_string_lossy();
+        let filter = values
+            .get(2)
+            .map(vm_filter_int)
+            .transpose()
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+            .unwrap_or(VM_FILTER_DEFAULT);
+        if filter != VM_FILTER_CALLBACK {
+            return Ok(self
+                .execute_internal_registry_builtin(
+                    name,
+                    values.to_vec(),
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .unwrap_or(Value::Null));
+        }
+        let options = vm_filter_callback_options(values.get(3))
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+        let Some(source_array) = self.options.runtime_context.filter_input_array(source) else {
+            return Ok(vm_filter_input_missing_value(&options));
+        };
+        let Some(value) = source_array.get(&php_string_key(&input_name)) else {
+            return Ok(vm_filter_input_missing_value(&options));
+        };
+        self.apply_filter_callback_value(
+            compiled,
+            name,
+            value,
+            &options,
+            call_span,
+            output,
+            stack,
+            state,
+            diagnostics,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn filter_input_array_callback_value(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        values: &[Value],
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        if values.is_empty() || values.len() > 3 {
+            return Ok(self
+                .execute_internal_registry_builtin(
+                    name,
+                    values.to_vec(),
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .unwrap_or(Value::Null));
+        }
+        let source = vm_filter_int(&values[0])
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+        let Some(array) = self.options.runtime_context.filter_input_array(source) else {
+            return Ok(Value::Null);
+        };
+        if array.is_empty() {
+            return Ok(Value::Null);
+        }
+        let add_empty = values
+            .get(2)
+            .map(to_bool)
+            .transpose()
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+            .unwrap_or(true);
+        self.apply_filter_callback_array(
+            compiled,
+            name,
+            &array,
+            values.get(1),
+            add_empty,
+            call_span,
+            output,
+            stack,
+            state,
+            diagnostics,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn filter_var_array_callback_value(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        values: &[Value],
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        if values.is_empty() || values.len() > 3 {
+            return Ok(self
+                .execute_internal_registry_builtin(
+                    name,
+                    values.to_vec(),
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .unwrap_or(Value::Null));
+        }
+        let Value::Array(array) = effective_value(&values[0]) else {
+            return Ok(self
+                .execute_internal_registry_builtin(
+                    name,
+                    values.to_vec(),
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .unwrap_or(Value::Null));
+        };
+        let add_empty = values
+            .get(2)
+            .map(to_bool)
+            .transpose()
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?
+            .unwrap_or(true);
+        self.apply_filter_callback_array(
+            compiled,
+            name,
+            &array,
+            values.get(1),
+            add_empty,
+            call_span,
+            output,
+            stack,
+            state,
+            diagnostics,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_filter_callback_array(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        input: &PhpArray,
+        options: Option<&Value>,
+        add_empty: bool,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        match options.map(effective_value) {
+            None | Some(Value::Null) => self
+                .execute_internal_registry_builtin(
+                    name,
+                    vec![Value::Array(input.clone())],
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .ok_or_else(|| {
+                    self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!("E_PHP_VM_FILTER_CALLBACK_RESULT: {name} returned no value"),
+                    )
+                }),
+            Some(Value::Int(filter)) if filter == VM_FILTER_CALLBACK => {
+                let options = VmFilterCallbackOptions::default();
+                let mut result = PhpArray::new();
+                for (key, value) in input.iter() {
+                    let filtered = self.apply_filter_callback_value(
+                        compiled,
+                        name,
+                        value,
+                        &options,
+                        call_span,
+                        output,
+                        stack,
+                        state,
+                        diagnostics,
+                    )?;
+                    result.insert(key.clone(), filtered);
+                }
+                Ok(Value::Array(result))
+            }
+            Some(Value::Int(_)) => self
+                .execute_internal_registry_builtin(
+                    name,
+                    vec![
+                        Value::Array(input.clone()),
+                        options.cloned().unwrap_or(Value::Null),
+                    ],
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .ok_or_else(|| {
+                    self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!("E_PHP_VM_FILTER_CALLBACK_RESULT: {name} returned no value"),
+                    )
+                }),
+            Some(Value::Array(specs)) => {
+                let mut result = PhpArray::new();
+                for (key, spec) in specs.iter() {
+                    match input.get(&key) {
+                        Some(value) if vm_filter_spec_filter(spec) == Some(VM_FILTER_CALLBACK) => {
+                            let options =
+                                vm_filter_callback_options(Some(spec)).map_err(|message| {
+                                    self.runtime_error(output, compiled, stack, message)
+                                })?;
+                            let filtered = self.apply_filter_callback_value(
+                                compiled,
+                                name,
+                                value,
+                                &options,
+                                call_span,
+                                output,
+                                stack,
+                                state,
+                                diagnostics,
+                            )?;
+                            result.insert(key.clone(), filtered);
+                        }
+                        Some(value) => {
+                            let filtered = self
+                                .execute_internal_registry_builtin(
+                                    "filter_var",
+                                    vec![
+                                        value.clone(),
+                                        vm_filter_spec_filter_value(spec),
+                                        spec.clone(),
+                                    ],
+                                    call_span,
+                                    output,
+                                    stack,
+                                    state,
+                                    compiled,
+                                )
+                                .return_value
+                                .unwrap_or(Value::Null);
+                            result.insert(key.clone(), filtered);
+                        }
+                        None if add_empty => {
+                            result.insert(key.clone(), Value::Null);
+                        }
+                        None => {}
+                    }
+                }
+                Ok(Value::Array(result))
+            }
+            Some(_) => self
+                .execute_internal_registry_builtin(
+                    name,
+                    vec![
+                        Value::Array(input.clone()),
+                        options.cloned().unwrap_or(Value::Null),
+                    ],
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    compiled,
+                )
+                .return_value
+                .ok_or_else(|| {
+                    self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!("E_PHP_VM_FILTER_CALLBACK_RESULT: {name} returned no value"),
+                    )
+                }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_filter_callback_value(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        value: &Value,
+        options: &VmFilterCallbackOptions,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        if let Value::Array(array) = effective_value(value) {
+            if options.flags & VM_FILTER_REQUIRE_SCALAR != 0 {
+                return Ok(vm_filter_failure(options));
+            }
+            let mut result = PhpArray::new();
+            for (key, value) in array.iter() {
+                result.insert(
+                    key.clone(),
+                    self.apply_filter_callback_array_value(
+                        compiled,
+                        name,
+                        value,
+                        options,
+                        call_span,
+                        output,
+                        stack,
+                        state,
+                        diagnostics,
+                    )?,
+                );
+            }
+            return Ok(Value::Array(result));
+        }
+        if options.flags & VM_FILTER_REQUIRE_ARRAY != 0 {
+            return Ok(vm_filter_failure(options));
+        }
+        let filtered = self.invoke_filter_callback(
+            compiled,
+            name,
+            value,
+            options,
+            call_span,
+            output,
+            stack,
+            state,
+            diagnostics,
+        )?;
+        if options.flags & VM_FILTER_FORCE_ARRAY != 0 {
+            return Ok(Value::Array(PhpArray::from_packed(vec![filtered])));
+        }
+        Ok(filtered)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_filter_callback_array_value(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        value: &Value,
+        options: &VmFilterCallbackOptions,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        let Value::Array(array) = effective_value(value) else {
+            return self.invoke_filter_callback(
+                compiled,
+                name,
+                value,
+                options,
+                call_span,
+                output,
+                stack,
+                state,
+                diagnostics,
+            );
+        };
+        let mut result = PhpArray::new();
+        for (key, value) in array.iter() {
+            result.insert(
+                key.clone(),
+                self.apply_filter_callback_array_value(
+                    compiled,
+                    name,
+                    value,
+                    options,
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                    diagnostics,
+                )?,
+            );
+        }
+        Ok(Value::Array(result))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_filter_callback(
+        &self,
+        compiled: &CompiledUnit,
+        name: &str,
+        value: &Value,
+        options: &VmFilterCallbackOptions,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: &mut Vec<RuntimeDiagnostic>,
+    ) -> Result<Value, VmResult> {
+        let Some(callback) = options.callback.clone() else {
+            return Err(filter_callback_type_error_result(
+                output, compiled, stack, state, name, call_span,
+            ));
+        };
+        if !value_is_callable(compiled, state, &callback, false) {
+            return Err(filter_callback_type_error_result(
+                output, compiled, stack, state, name, call_span,
+            ));
+        }
+        let result = self.call_callable_inner(
+            compiled,
+            callback.clone(),
+            vec![CallArgument::positional(value.clone())],
+            call_span,
+            output,
+            stack,
+            state,
+            true,
+            filter_callback_callable_name(&callback),
+        );
+        if !result.status.is_success() {
+            return Err(result);
+        }
+        diagnostics.extend(result.diagnostics);
+        Ok(result.return_value.unwrap_or(Value::Null))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pcre_compile_warning(
+        &self,
+        compiled: &CompiledUnit,
+        function_name: &str,
+        call_span: Option<php_ir::IrSpan>,
+        error: &php_runtime::pcre::PcreFailure,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), ArrayCallbackError> {
+        state.preg_last_error.set(
+            error.code(),
+            php_runtime::pcre::preg_error_message(error.code()),
+        );
+        if error.code() != php_runtime::pcre::PREG_INTERNAL_ERROR {
+            return Ok(());
+        }
+
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_RUNTIME_PCRE_WARNING",
+            RuntimeSeverity::Warning,
+            format!("{function_name}(): {}", error.message()),
+            builtin_source_span(compiled, call_span),
+            stack_trace(compiled, stack),
+            Some(php_runtime::PhpReferenceClassification::Warning),
+        );
+        let handled = self
+            .dispatch_error_handler(
+                compiled,
+                output,
+                stack,
+                state,
+                php_runtime::PHP_E_WARNING,
+                &diagnostic,
+            )
+            .map_err(|result| ArrayCallbackError::Runtime(Box::new(result)))?;
+        if !handled && error_reporting_allows(state, php_runtime::PHP_E_WARNING) {
+            Self::record_last_error(state, php_runtime::PHP_E_WARNING, &diagnostic);
+            emit_vm_diagnostic(
+                output,
+                state,
+                &diagnostic,
+                php_runtime::PhpDiagnosticChannel::Warning,
+                php_runtime::PHP_E_WARNING,
+            );
+        }
+        Ok(())
+    }
+
+    fn pcre_callback_string_value(
+        &self,
+        compiled: &CompiledUnit,
+        value: &Value,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<PhpString, ArrayCallbackError> {
+        self.value_to_string_with_source_span(
+            compiled,
+            value,
+            output,
+            stack,
+            state,
+            builtin_source_span(compiled, call_span),
+        )
+        .map_err(|result| ArrayCallbackError::Runtime(Box::new(result)))
+    }
+
+    fn pcre_callback_subject_string_value(
+        &self,
+        compiled: &CompiledUnit,
+        function: &str,
+        position: usize,
+        param_name: &str,
+        value: &Value,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<PhpString, ArrayCallbackError> {
+        match effective_value(value) {
+            Value::Object(object) => Err(ArrayCallbackError::Message(format!(
+                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, {} given",
+                object.display_name()
+            ))),
+            Value::Fiber(_) | Value::Generator(_) => Err(ArrayCallbackError::Message(format!(
+                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, object given"
+            ))),
+            _ => self.pcre_callback_string_value(compiled, value, call_span, output, stack, state),
         }
     }
 
@@ -30385,6 +32766,7 @@ impl Vm {
         &self,
         compiled: &CompiledUnit,
         args: Vec<Value>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -30395,11 +32777,37 @@ impl Vm {
                     .to_owned(),
             ));
         }
-        let pattern = to_string(&args[0]).map_err(|message| {
-            ArrayCallbackError::Message(format!(
-                "preg_replace_callback: pattern must be string-compatible: {message}"
-            ))
-        })?;
+        self.validate_pcre_callback_subject_arg("preg_replace_callback", 3, "subject", &args[2])?;
+        let patterns = match effective_value(&args[0]) {
+            Value::Array(array) => {
+                let mut patterns = Vec::new();
+                for (_, value) in array.iter() {
+                    match self.pcre_callback_string_value(
+                        compiled, value, call_span, output, stack, state,
+                    ) {
+                        Ok(pattern) => patterns.push(pattern),
+                        Err(error) => {
+                            self.pcre_callback_coerce_array_subject_for_pattern_error(
+                                compiled, &args[2], call_span, output, stack, state,
+                            )?;
+                            return Err(error);
+                        }
+                    }
+                }
+                patterns
+            }
+            _ => match self
+                .pcre_callback_string_value(compiled, &args[0], call_span, output, stack, state)
+            {
+                Ok(pattern) => vec![pattern],
+                Err(error) => {
+                    self.pcre_callback_coerce_array_subject_for_pattern_error(
+                        compiled, &args[2], call_span, output, stack, state,
+                    )?;
+                    return Err(error);
+                }
+            },
+        };
         let callback = args[1].clone();
         validate_array_callback_arg(
             compiled,
@@ -30427,47 +32835,83 @@ impl Vm {
             })?
             .unwrap_or(0);
         let mut cache = php_runtime::pcre::PcreCache::default();
-        let compiled_pattern = match cache.compile(&pattern) {
-            Ok(compiled_pattern) => compiled_pattern,
-            Err(_) => return Ok(Value::Bool(false)),
-        };
+        let mut compiled_patterns = Vec::new();
+        for pattern in patterns {
+            let compiled_pattern = match cache.compile(&pattern) {
+                Ok(compiled_pattern) => compiled_pattern,
+                Err(error) => {
+                    self.emit_pcre_compile_warning(
+                        compiled,
+                        "preg_replace_callback",
+                        call_span,
+                        &error,
+                        output,
+                        stack,
+                        state,
+                    )?;
+                    return Ok(Value::Null);
+                }
+            };
+            compiled_patterns.push((compiled_pattern, callback.clone()));
+        }
         let mut count = 0i64;
         let value = match effective_value(&args[2]) {
             Value::Array(array) => {
                 let mut replaced = PhpArray::new();
-                for (key, value) in array.iter() {
-                    let text = to_string(value).map_err(|message| {
-                        ArrayCallbackError::Message(format!(
-                            "preg_replace_callback: subject must be string-compatible: {message}"
-                        ))
-                    })?;
-                    let bytes = self.preg_replace_callback_bytes(
+                let entries = array
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<Vec<_>>();
+                for (index, (key, value)) in entries.iter().enumerate() {
+                    let text = self.pcre_callback_string_value(
+                        compiled, value, call_span, output, stack, state,
+                    )?;
+                    let bytes = match self.preg_replace_callback_array_bytes(
                         compiled,
-                        &compiled_pattern,
-                        callback.clone(),
+                        &compiled_patterns,
                         text.as_bytes(),
+                        call_span,
                         limit,
                         flags,
                         &mut count,
                         output,
                         stack,
                         state,
-                    )?;
+                    ) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            self.pcre_callback_emit_remaining_array_subject_warnings(
+                                compiled,
+                                &entries[index + 1..],
+                                call_span,
+                                output,
+                                stack,
+                                state,
+                            )?;
+                            return Err(error);
+                        }
+                    };
                     replaced.insert(key.clone(), Value::string(bytes));
                 }
                 Value::Array(replaced)
             }
             subject => {
-                let text = to_string(&subject).map_err(|message| {
-                    ArrayCallbackError::Message(format!(
-                        "preg_replace_callback: subject must be string-compatible: {message}"
-                    ))
-                })?;
-                let bytes = self.preg_replace_callback_bytes(
+                let text = self.pcre_callback_subject_string_value(
                     compiled,
-                    &compiled_pattern,
-                    callback,
+                    "preg_replace_callback",
+                    3,
+                    "subject",
+                    &subject,
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                )?;
+                let bytes = self.preg_replace_callback_array_bytes(
+                    compiled,
+                    &compiled_patterns,
                     text.as_bytes(),
+                    call_span,
                     limit,
                     flags,
                     &mut count,
@@ -30484,10 +32928,67 @@ impl Vm {
         Ok(value)
     }
 
+    fn validate_pcre_callback_subject_arg(
+        &self,
+        function: &str,
+        position: usize,
+        param_name: &str,
+        value: &Value,
+    ) -> Result<(), ArrayCallbackError> {
+        match effective_value(value) {
+            Value::Object(object) => Err(ArrayCallbackError::Message(format!(
+                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, {} given",
+                object.display_name()
+            ))),
+            Value::Fiber(_) | Value::Generator(_) => Err(ArrayCallbackError::Message(format!(
+                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, object given"
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pcre_callback_coerce_array_subject_for_pattern_error(
+        &self,
+        compiled: &CompiledUnit,
+        value: &Value,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), ArrayCallbackError> {
+        let Value::Array(subjects) = effective_value(value) else {
+            return Ok(());
+        };
+        for (_, subject) in subjects.iter() {
+            self.pcre_callback_string_value(compiled, subject, call_span, output, stack, state)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pcre_callback_emit_remaining_array_subject_warnings(
+        &self,
+        compiled: &CompiledUnit,
+        entries: &[(ArrayKey, Value)],
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), ArrayCallbackError> {
+        for (_, value) in entries {
+            if matches!(effective_value(value), Value::Array(_)) {
+                self.pcre_callback_string_value(compiled, value, call_span, output, stack, state)?;
+            }
+        }
+        Ok(())
+    }
+
     fn call_preg_replace_callback_array_builtin(
         &self,
         compiled: &CompiledUnit,
         args: Vec<Value>,
+        call_span: Option<php_ir::IrSpan>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -30520,8 +33021,9 @@ impl Vm {
                 ArrayCallbackError::Message(format!("preg_replace_callback_array: {message}"))
             })?
             .unwrap_or(0);
-        let mut compiled_patterns = Vec::new();
         let mut cache = php_runtime::pcre::PcreCache::default();
+        let mut count = 0i64;
+        let mut value = args[1].clone();
         for (key, callback) in patterns.iter() {
             let ArrayKey::String(pattern) = key else {
                 return Err(ArrayCallbackError::Message(
@@ -30546,60 +33048,128 @@ impl Vm {
             })?;
             let compiled_pattern = match cache.compile(&pattern) {
                 Ok(compiled_pattern) => compiled_pattern,
-                Err(_) => return Ok(Value::Bool(false)),
-            };
-            compiled_patterns.push((compiled_pattern, callback.clone()));
-        }
-
-        let mut count = 0i64;
-        let value = match effective_value(&args[1]) {
-            Value::Array(subjects) => {
-                let mut replaced = PhpArray::new();
-                for (key, subject) in subjects.iter() {
-                    let text = to_string(subject).map_err(|message| {
-                        ArrayCallbackError::Message(format!(
-                            "preg_replace_callback_array: subject must be string-compatible: {message}"
-                        ))
-                    })?;
-                    let bytes = self.preg_replace_callback_array_bytes(
+                Err(error) => {
+                    self.emit_pcre_compile_warning(
                         compiled,
-                        &compiled_patterns,
-                        text.as_bytes(),
-                        limit,
-                        flags,
-                        &mut count,
+                        "preg_replace_callback_array",
+                        call_span,
+                        &error,
                         output,
                         stack,
                         state,
                     )?;
-                    replaced.insert(key.clone(), Value::string(bytes));
+                    return Ok(Value::Null);
                 }
-                Value::Array(replaced)
-            }
-            subject => {
-                let text = to_string(&subject).map_err(|message| {
-                    ArrayCallbackError::Message(format!(
-                        "preg_replace_callback_array: subject must be string-compatible: {message}"
-                    ))
-                })?;
-                let bytes = self.preg_replace_callback_array_bytes(
-                    compiled,
-                    &compiled_patterns,
-                    text.as_bytes(),
-                    limit,
-                    flags,
-                    &mut count,
-                    output,
-                    stack,
-                    state,
-                )?;
-                Value::string(bytes)
-            }
-        };
+            };
+            value = self.preg_replace_callback_array_subject_value(
+                compiled,
+                &[(compiled_pattern, callback.clone())],
+                value,
+                call_span,
+                limit,
+                flags,
+                &mut count,
+                output,
+                stack,
+                state,
+            )?;
+        }
         if let Some(Value::Reference(cell)) = args.get(3) {
             cell.set(Value::Int(count));
         }
         Ok(value)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preg_replace_callback_array_subject_bytes(
+        &self,
+        compiled: &CompiledUnit,
+        patterns: &[(std::sync::Arc<php_runtime::pcre::CompiledPattern>, Value)],
+        subjects: PhpArray,
+        call_span: Option<php_ir::IrSpan>,
+        limit: i64,
+        flags: i64,
+        count: &mut i64,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<PhpArray, ArrayCallbackError> {
+        let mut replaced = subjects;
+        for (pattern, callback) in patterns {
+            let entries = replaced
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<Vec<_>>();
+            for (key, subject) in entries {
+                let text = self.pcre_callback_string_value(
+                    compiled, &subject, call_span, output, stack, state,
+                )?;
+                let bytes = self.preg_replace_callback_array_bytes(
+                    compiled,
+                    &[(pattern.clone(), callback.clone())],
+                    text.as_bytes(),
+                    call_span,
+                    limit,
+                    flags,
+                    count,
+                    output,
+                    stack,
+                    state,
+                )?;
+                replaced.insert(key, Value::string(bytes));
+            }
+        }
+        Ok(replaced)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preg_replace_callback_array_subject_value(
+        &self,
+        compiled: &CompiledUnit,
+        patterns: &[(std::sync::Arc<php_runtime::pcre::CompiledPattern>, Value)],
+        subject: Value,
+        call_span: Option<php_ir::IrSpan>,
+        limit: i64,
+        flags: i64,
+        count: &mut i64,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, ArrayCallbackError> {
+        match effective_value(&subject) {
+            Value::Array(subjects) => Ok(Value::Array(
+                self.preg_replace_callback_array_subject_bytes(
+                    compiled, patterns, subjects, call_span, limit, flags, count, output, stack,
+                    state,
+                )?,
+            )),
+            subject => {
+                let text = self.pcre_callback_subject_string_value(
+                    compiled,
+                    "preg_replace_callback_array",
+                    2,
+                    "subject",
+                    &subject,
+                    call_span,
+                    output,
+                    stack,
+                    state,
+                )?;
+                let bytes = self.preg_replace_callback_array_bytes(
+                    compiled,
+                    patterns,
+                    text.as_bytes(),
+                    call_span,
+                    limit,
+                    flags,
+                    count,
+                    output,
+                    stack,
+                    state,
+                )?;
+                Ok(Value::string(bytes))
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -30608,6 +33178,7 @@ impl Vm {
         compiled: &CompiledUnit,
         patterns: &[(std::sync::Arc<php_runtime::pcre::CompiledPattern>, Value)],
         subject: &[u8],
+        call_span: Option<php_ir::IrSpan>,
         limit: i64,
         flags: i64,
         count: &mut i64,
@@ -30622,6 +33193,7 @@ impl Vm {
                 pattern,
                 callback.clone(),
                 &current,
+                call_span,
                 limit,
                 flags,
                 count,
@@ -30640,6 +33212,7 @@ impl Vm {
         pattern: &php_runtime::pcre::CompiledPattern,
         callback: Value,
         subject: &[u8],
+        call_span: Option<php_ir::IrSpan>,
         limit: i64,
         flags: i64,
         count: &mut i64,
@@ -30677,11 +33250,14 @@ impl Vm {
                 stack,
                 state,
             )?;
-            let callback_text = to_string(&callback_result).map_err(|message| {
-                ArrayCallbackError::Message(format!(
-                    "preg_replace_callback: callback result must be string-compatible: {message}"
-                ))
-            })?;
+            let callback_text = self.pcre_callback_string_value(
+                compiled,
+                &callback_result,
+                call_span,
+                output,
+                stack,
+                state,
+            )?;
             replaced.extend_from_slice(callback_text.as_bytes());
             last_end = full.end();
             *count += 1;
@@ -31911,7 +34487,15 @@ impl Vm {
             );
         }
         if is_config_builtin_name(&normalized) {
-            return self.call_config_builtin(compiled, &normalized, args, output, stack, state);
+            return self.call_config_builtin(
+                compiled,
+                &normalized,
+                args,
+                call_span,
+                output,
+                stack,
+                state,
+            );
         }
         if is_error_handling_builtin_name(&normalized) {
             return self.call_error_handling_builtin(
@@ -31944,6 +34528,18 @@ impl Vm {
                 compiled,
                 &normalized,
                 args,
+                call_span,
+                output,
+                stack,
+                state,
+            );
+        }
+        if is_filter_callback_builtin_name(&normalized) {
+            return self.call_filter_callback_builtin(
+                compiled,
+                &normalized,
+                args,
+                call_span,
                 output,
                 stack,
                 state,
@@ -31963,8 +34559,18 @@ impl Vm {
         if is_array_sort_builtin_name(&normalized) {
             return self.call_array_sort_builtin(compiled, &normalized, args, output, stack, state);
         }
+        if let Some(result) = self.try_execute_preg_match_start_offset_ascii_call_fast(
+            &normalized,
+            &args,
+            compiled,
+            stack,
+            state,
+        ) {
+            return result;
+        }
         if BuiltinRegistry::new().contains(&normalized) {
             let values = match call_builtin_args_to_positional(
+                self,
                 compiled,
                 &normalized,
                 args,
@@ -32108,9 +34714,9 @@ impl Vm {
                         .call_autoload_builtin(
                             compiled, &name, args, call_site, call_span, output, stack, state,
                         ),
-                    FunctionCallBuiltinKind::Config => {
-                        self.call_config_builtin(compiled, &name, args, output, stack, state)
-                    }
+                    FunctionCallBuiltinKind::Config => self.call_config_builtin(
+                        compiled, &name, args, call_span, output, stack, state,
+                    ),
                     FunctionCallBuiltinKind::ErrorHandling => self
                         .call_error_handling_builtin(compiled, &name, args, output, stack, state),
                     FunctionCallBuiltinKind::OutputBuffering => {
@@ -32122,9 +34728,12 @@ impl Vm {
                     FunctionCallBuiltinKind::Process => {
                         self.call_process_builtin(compiled, &name, args, output, stack)
                     }
-                    FunctionCallBuiltinKind::PcreCallback => {
-                        self.call_pcre_callback_builtin(compiled, &name, args, output, stack, state)
-                    }
+                    FunctionCallBuiltinKind::PcreCallback => self.call_pcre_callback_builtin(
+                        compiled, &name, args, call_span, output, stack, state,
+                    ),
+                    FunctionCallBuiltinKind::FilterCallback => self.call_filter_callback_builtin(
+                        compiled, &name, args, call_span, output, stack, state,
+                    ),
                     FunctionCallBuiltinKind::ArrayCallback => self.call_array_callback_builtin(
                         compiled, &name, args, call_span, output, stack, state,
                     ),
@@ -32132,8 +34741,15 @@ impl Vm {
                         self.call_array_sort_builtin(compiled, &name, args, output, stack, state)
                     }
                     FunctionCallBuiltinKind::InternalRegistry => {
+                        if let Some(result) = self
+                            .try_execute_preg_match_start_offset_ascii_call_fast(
+                                &name, &args, compiled, stack, state,
+                            )
+                        {
+                            return result;
+                        }
                         let values = match call_builtin_args_to_positional(
-                            compiled, &name, args, call_span, output, stack, state,
+                            self, compiled, &name, args, call_span, output, stack, state,
                         ) {
                             Ok(values) => values,
                             Err(InternalBuiltinArgError::Message(message)) => {
@@ -32704,6 +35320,27 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
+        // Copy-and-patch native leaf tier for method-path calls: dense method
+        // dispatch executes bodies directly (bypassing `execute_function`), so
+        // without this hook a recognized `$this` accessor leaf would never
+        // engage on the default engine. Same placement contract as the hook in
+        // `execute_function`: before dense dispatch, fall through on `None`.
+        // The leaf is compiled against `owner` — the unit whose IR owns the
+        // function — exactly like the dense body below.
+        #[cfg(feature = "jit-copy-patch")]
+        if let Some(ir_function) = owner.unit().functions.get(function.index())
+            && let Some(result) = self.try_execute_copy_patch_leaf(
+                owner,
+                function,
+                ir_function,
+                &call,
+                output,
+                stack,
+                state,
+            )
+        {
+            return result;
+        }
         if let Some(plan) = plan {
             self.record_counter_dense_method_dispatch_attempt();
             // Bodies defined in another unit (an include) execute through
@@ -33559,6 +36196,22 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
+        if is_hash_context_runtime_class(&object.class_name())
+            && hash_context_method_is_supported(method)
+        {
+            return match self.call_hash_context_method(&object, method, &args) {
+                Ok(value) => VmResult::success_no_output(Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
+        if is_php_token_runtime_class(&object.class_name()) {
+            let values = args.into_iter().map(|arg| arg.value).collect::<Vec<_>>();
+            let value = match php_token_method_value(&object, method, values) {
+                Ok(value) => value,
+                Err(message) => return self.runtime_error(output, compiled, stack, message),
+            };
+            return VmResult::success_no_output(Some(value));
+        }
         if spl_runtime_marker(&object).is_some_and(|class| is_spl_heap_runtime_class(&class))
             && spl_heap_method_is_supported(method)
             && normalize_method_name(method) != "compare"
@@ -33578,6 +36231,23 @@ impl Vm {
                 Ok(true) => {}
                 Err(message) => return self.runtime_error(output, compiled, stack, message),
             }
+        }
+        if spl_runtime_marker(&object).is_some_and(|class| {
+            is_spl_file_runtime_class(&class) && spl_file_method_is_supported(method)
+        }) && normalize_method_name(method) == "fpassthru"
+            && !spl_file_is_initialized(&object)
+        {
+            return match call_spl_file_method_in_state(
+                compiled,
+                state,
+                &object,
+                method,
+                args,
+                &self.options.runtime_context,
+            ) {
+                Ok(value) => VmResult::success_no_output(Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
         }
         if let Some(spl_class) = spl_runtime_marker(&object) {
             let object_display_class = object.display_name();
@@ -33742,9 +36412,14 @@ impl Vm {
                 {
                     return self.runtime_error(output, compiled, stack, message);
                 }
-                return match self
-                    .spl_caching_iterator_to_string(compiled, &object, output, stack, state)
-                {
+                return match self.spl_caching_iterator_to_string(
+                    compiled,
+                    &object,
+                    builtin_source_span(compiled, call_span),
+                    output,
+                    stack,
+                    state,
+                ) {
                     Ok(value) => VmResult::success_no_output(Some(Value::String(value))),
                     Err(result) => result,
                 };
@@ -33852,6 +36527,32 @@ impl Vm {
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
         }
+        if is_pdo_runtime_class(&object.class_name()) {
+            return match call_pdo_method(
+                &object,
+                method,
+                args,
+                &mut state.sqlite,
+                &mut state.mysql,
+                &mut state.postgres,
+                &self.options.runtime_context,
+            ) {
+                Ok(value) => VmResult::success_no_output(Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
+        if is_sqlite_runtime_class(&object.class_name()) {
+            return match call_sqlite_method(
+                &object,
+                method,
+                args,
+                &mut state.sqlite,
+                &self.options.runtime_context,
+            ) {
+                Ok(value) => VmResult::success_no_output(Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
         if is_redis_runtime_class(&object.class_name()) {
             return match call_redis_method(&object, method, args) {
                 Ok(value) => VmResult::success_no_output(Some(value)),
@@ -33864,7 +36565,33 @@ impl Vm {
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
         }
+        if is_soap_runtime_class(&object.class_name()) {
+            return match call_soap_method(&object, method, args) {
+                Ok(value) => VmResult::success_no_output(Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
+        if is_fileinfo_runtime_class(&object.class_name()) {
+            return call_fileinfo_method(
+                self, compiled, object, method, args, call_span, output, stack, state,
+            );
+        }
+        if is_phar_runtime_class(&object.class_name()) {
+            return match call_phar_method(&object, method, args, &self.options.runtime_context) {
+                Ok(value) => VmResult::success_no_output(Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
         if is_zip_runtime_class(&object.class_name()) {
+            if zip_open_uses_empty_file(method, &args, &self.options.runtime_context) {
+                emit_zip_open_empty_file_deprecation(
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    builtin_source_span(compiled, call_span),
+                );
+            }
             return match call_zip_method(&object, method, args, &self.options.runtime_context) {
                 Ok(value) => VmResult::success_no_output(Some(value)),
                 Err(message) => self.runtime_error(output, compiled, stack, message),
@@ -37396,7 +40123,26 @@ impl Vm {
             self.serialize_object_with_magic(compiled, object, call_span, output, stack, state);
         Some(match result {
             Ok(value) => VmResult::success(OutputBuffer::new(), Some(Value::String(value))),
-            Err(result) => result,
+            Err(result) => {
+                if let Some(throwable) = runtime_error_throwable(&result) {
+                    if let Some(call_span) = call_span {
+                        tag_throwable_location(&throwable, compiled, call_span);
+                        reapply_throwable_diagnostic_overrides(&throwable, &result);
+                        state.pending_trace = Some(attach_builtin_failed_call_trace(
+                            &throwable,
+                            compiled,
+                            stack,
+                            "serialize",
+                            values,
+                            call_span,
+                        ));
+                    } else {
+                        state.pending_trace = Some(capture_backtrace_string(compiled, stack));
+                    }
+                    state.pending_throw = Some(throwable);
+                }
+                result
+            }
         })
     }
 
@@ -37499,6 +40245,9 @@ impl Vm {
     ) -> Option<String> {
         let (class_name, payload) = parse_indexed_serialized_object_payload(input)?;
         let normalized = normalize_class_name(&class_name);
+        if normalized == "hashcontext" {
+            return validate_hash_context_unserialize_payload(&payload);
+        }
         match normalized.as_str() {
             "arrayobject" | "arrayiterator" => validate_spl_array_container_unserialize_payload(
                 compiled,
@@ -37509,6 +40258,19 @@ impl Vm {
             "spldoublylinkedlist" => validate_spl_doubly_linked_list_unserialize_payload(&payload),
             "splobjectstorage" => validate_spl_object_storage_unserialize_payload(&payload),
             _ => None,
+        }
+    }
+
+    fn vm_serialize_error_message(message: &str) -> String {
+        if message == "Serialization of 'XMLParser' is not allowed" {
+            format!("E_PHP_VM_EXCEPTION: {message}")
+        } else if message == "HashContext with HASH_HMAC option cannot be serialized"
+            || (message.starts_with("HashContext for algorithm \"")
+                && message.ends_with("\" cannot be serialized"))
+        {
+            format!("E_PHP_VM_SPL_RUNTIME_EXCEPTION: {message}")
+        } else {
+            format!("E_PHP_VM_SERIALIZE_ERROR: {message}")
         }
     }
 
@@ -37527,7 +40289,7 @@ impl Vm {
                     output,
                     compiled,
                     stack,
-                    format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                    Self::vm_serialize_error_message(error.message()),
                 )
             });
         };
@@ -37589,7 +40351,7 @@ impl Vm {
                     compiled,
                     stack,
                     format!(
-                        "E_PHP_VM_SLEEP_RETURN_TYPE: {}::__serialize(): Return value must be of type array",
+                        "E_PHP_VM_SLEEP_RETURN_TYPE: {}::__serialize() must return an array",
                         class.display_name
                     ),
                 ));
@@ -37619,7 +40381,7 @@ impl Vm {
                     output,
                     compiled,
                     stack,
-                    format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                    Self::vm_serialize_error_message(error.message()),
                 )
             });
         }
@@ -37631,7 +40393,7 @@ impl Vm {
                         output,
                         compiled,
                         stack,
-                        format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                        Self::vm_serialize_error_message(error.message()),
                     )
                 });
             }
@@ -37719,7 +40481,7 @@ impl Vm {
                 output,
                 compiled,
                 stack,
-                format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                Self::vm_serialize_error_message(error.message()),
             )
         })
     }
@@ -37735,7 +40497,8 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Result<Value, VmResult> {
-        if normalize_method_name(method) == "serialize" {
+        let normalized_method = normalize_method_name(method);
+        if normalized_method == "serialize" {
             let runtime_class = spl_runtime_marker(&object)
                 .unwrap_or_else(|| normalize_class_name(&object.class_name()));
             if matches!(
@@ -37756,8 +40519,45 @@ impl Vm {
                 return Ok(Value::String(bytes));
             }
         }
-        call_spl_container_method(object, method, args)
-            .map_err(|message| self.runtime_error(output, compiled, stack, message))
+        let replaced_storage_info = if spl_runtime_marker(&object).as_deref()
+            == Some("splobjectstorage")
+            && normalized_method == "setinfo"
+        {
+            let pos = spl_position(&object);
+            spl_storage_entries(&object)
+                .get(pos)
+                .map(|(_, _, info)| info.clone())
+        } else {
+            None
+        };
+        let value = call_spl_container_method(object, method, args)
+            .map_err(|message| self.runtime_error(output, compiled, stack, message))?;
+        if let Some(info) = replaced_storage_info {
+            let candidates = destructor_candidates_for_value(&info);
+            if !candidates.is_empty() {
+                let rooted_object_ids = php_visible_non_register_root_object_ids(stack, state);
+                let mut handlers = Vec::new();
+                let mut pending_control = None;
+                let sweep = self.run_destructors_for_unreferenced_candidates_with_roots(
+                    compiled,
+                    output,
+                    stack,
+                    state,
+                    &mut handlers,
+                    &mut pending_control,
+                    candidates,
+                    &rooted_object_ids,
+                    None,
+                );
+                if let Some(outcome) = sweep.outcome {
+                    match outcome {
+                        RaiseOutcome::Caught(_) => {}
+                        RaiseOutcome::Done(result) => return Err(*result),
+                    }
+                }
+            }
+        }
+        Ok(value)
     }
 
     fn serialize_spl_container_legacy(
@@ -37845,9 +40645,60 @@ impl Vm {
                     output,
                     compiled,
                     stack,
-                    format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                    Self::vm_serialize_error_message(error.message()),
                 )
             }),
+        }
+    }
+
+    fn call_hash_context_method(
+        &self,
+        object: &ObjectRef,
+        method: &str,
+        args: &[CallArgument],
+    ) -> Result<Value, String> {
+        match normalize_method_name(method).as_str() {
+            "__debuginfo" => {
+                if !args.is_empty() {
+                    return Err(format!(
+                        "E_PHP_VM_TOO_MANY_ARGS: HashContext::__debugInfo() expects exactly 0 arguments, {} given",
+                        args.len()
+                    ));
+                }
+                let Some(properties) = hash_context_debug_info_array(object) else {
+                    return Err(
+                        "E_PHP_VM_INVALID_HASH_CONTEXT: invalid HashContext state".to_owned()
+                    );
+                };
+                Ok(Value::Array(properties))
+            }
+            "__serialize" => {
+                validate_hash_context_arg_count("__serialize", args, 0)?;
+                hash_context_serialize_array(object).map(Value::Array)
+            }
+            "__unserialize" => {
+                validate_hash_context_arg_count("__unserialize", args, 1)?;
+                if hash_context_object_is_initialized(object) {
+                    return Err(hash_context_runtime_exception(
+                        "HashContext::__unserialize called on initialized object",
+                    ));
+                }
+                let Value::Array(payload) = effective_value(&args[0].value) else {
+                    return Err(format!(
+                        "E_PHP_VM_TYPE_ERROR: HashContext::__unserialize(): Argument #1 ($data) must be of type array, {} given",
+                        value_type_name(&args[0].value)
+                    ));
+                };
+                if let Some(message) = validate_hash_context_unserialize_payload(&payload) {
+                    return Err(hash_context_runtime_exception(message));
+                }
+                Err(hash_context_runtime_exception(
+                    "Incomplete or ill-formed serialization data",
+                ))
+            }
+            _ => Err(format!(
+                "E_PHP_VM_METHOD_NOT_FOUND: Call to undefined method HashContext::{method}()"
+            )),
         }
     }
 
@@ -37869,7 +40720,7 @@ impl Vm {
                         output,
                         compiled,
                         stack,
-                        format!("E_PHP_VM_SERIALIZE_ERROR: {}", error.message()),
+                        Self::vm_serialize_error_message(error.message()),
                     )
                 });
             }
@@ -38157,7 +41008,14 @@ impl Vm {
             };
         }
         if spl_runtime_marker(&object).is_some_and(|class| is_spl_caching_iterator_class(&class)) {
-            return self.spl_caching_iterator_to_string(compiled, &object, output, stack, state);
+            return self.spl_caching_iterator_to_string(
+                compiled,
+                &object,
+                source_span,
+                output,
+                stack,
+                state,
+            );
         }
         if is_spl_file_runtime_class(&object.class_name()) {
             return match call_spl_file_method(
@@ -38412,6 +41270,7 @@ impl Vm {
         &self,
         compiled: &CompiledUnit,
         object: &ObjectRef,
+        source_span: RuntimeSourceSpan,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -38462,10 +41321,11 @@ impl Vm {
             );
             return Ok(PhpString::from_bytes(bytes));
         }
-        Err(self.runtime_error(
+        Err(self.runtime_error_with_source_span(
             output,
             compiled,
             stack,
+            source_span,
             "E_PHP_VM_SPL_BAD_METHOD_CALL: CachingIterator does not fetch string value (see CachingIterator::__construct)"
                 .to_owned(),
         ))
@@ -38642,6 +41502,240 @@ impl Vm {
         ))
     }
 
+    fn execute_stream_wrapper_register(
+        &self,
+        values: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> VmResult {
+        if values.len() < 2 || values.len() > 3 {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_BUILTIN_ARITY: stream_wrapper_register expects two or three argument(s), {} given",
+                    values.len()
+                ),
+            );
+        }
+        let protocol = match to_string(&effective_value(&values[0])) {
+            Ok(protocol) => protocol.to_string_lossy(),
+            Err(message) => return self.runtime_error(output, compiled, stack, message),
+        };
+        let class_name = match to_string(&effective_value(&values[1])) {
+            Ok(class_name) => class_name.to_string_lossy(),
+            Err(message) => return self.runtime_error(output, compiled, stack, message),
+        };
+        let Some(class) = lookup_class_in_state(compiled, state, &class_name) else {
+            return VmResult::success_no_output(Some(Value::Bool(false)));
+        };
+        let registered =
+            state
+                .user_stream_wrappers
+                .register(&protocol, &class.name, &class.display_name);
+        VmResult::success_no_output(Some(Value::Bool(registered)))
+    }
+
+    fn execute_stream_get_wrappers_with_user_wrappers(
+        &self,
+        values: Vec<Value>,
+        state: &ExecutionState,
+    ) -> VmResult {
+        if !values.is_empty() {
+            return VmResult::success_no_output(Some(Value::Bool(false)));
+        }
+        let mut wrappers = vec![Value::string("file"), Value::string("php")];
+        wrappers.extend(
+            state
+                .user_stream_wrappers
+                .protocols()
+                .into_iter()
+                .map(Value::string),
+        );
+        VmResult::success_no_output(Some(Value::packed_array(wrappers)))
+    }
+
+    fn try_execute_user_stream_fopen(
+        &self,
+        values: Vec<Value>,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> Option<VmResult> {
+        let uri = match values.first().map(effective_value) {
+            Some(value) => match to_string(&value) {
+                Ok(uri) => uri.to_string_lossy(),
+                Err(message) => {
+                    return Some(self.runtime_error(output, compiled, stack, message));
+                }
+            },
+            None => return None,
+        };
+        let wrapper = state.user_stream_wrappers.wrapper_for_uri(&uri)?;
+        let mode = match values.get(1).map(effective_value) {
+            Some(value) => match to_string(&value) {
+                Ok(mode) => mode.to_string_lossy(),
+                Err(message) => {
+                    return Some(self.runtime_error(output, compiled, stack, message));
+                }
+            },
+            None => "r".to_owned(),
+        };
+        let Some(class) = lookup_class_in_state(compiled, state, &wrapper.class_name) else {
+            return Some(VmResult::success_no_output(Some(Value::Bool(false))));
+        };
+        if lookup_resolved_method_in_state(compiled, state, &class.name, "stream_open", None)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return Some(VmResult::success_no_output(Some(Value::Bool(false))));
+        }
+        let class_owner = class_owner_in_state(compiled, state, &class.name);
+        let runtime_class = match runtime_class_entry(
+            &class_owner,
+            state,
+            &class,
+            &|value| self.constant_value(class_owner.unit(), value),
+            &|reference| class_constant_reference_value(&class_owner, state, reference),
+            &|reference| named_constant_reference_value(&class_owner, state, reference),
+        ) {
+            Ok(class) => class,
+            Err(error) => {
+                return Some(self.runtime_error(output, compiled, stack, error.into_message()));
+            }
+        };
+        if let Err(message) = validate_object_mvp(&runtime_class) {
+            return Some(self.runtime_error(output, compiled, stack, message));
+        }
+        let object = ObjectRef::new_with_display_name(&runtime_class, wrapper.display_class_name);
+        let opened_path = ReferenceCell::new(Value::Null);
+        let open_result = self.call_object_method_callable(
+            compiled,
+            object.clone(),
+            "stream_open",
+            vec![
+                CallArgument::positional(Value::string(uri.clone())),
+                CallArgument::positional(Value::string(mode.clone())),
+                CallArgument::positional(Value::Int(0)),
+                CallArgument::positional(Value::Reference(opened_path)),
+            ],
+            call_span,
+            output,
+            stack,
+            state,
+        );
+        if let Some(throwable) = state.pending_throw.take() {
+            return Some(self.handle_uncaught_exception(compiled, output, stack, state, throwable));
+        }
+        if !open_result.status.is_success() {
+            return Some(open_result);
+        }
+        let opened = open_result
+            .return_value
+            .as_ref()
+            .map_or(Ok(false), to_bool)
+            .unwrap_or(false);
+        if !opened {
+            return Some(VmResult::success_no_output(Some(Value::Bool(false))));
+        }
+        let resource = state.resources.register_stream(
+            php_runtime::StreamFlags::new(true, true, true),
+            php_runtime::StreamMetadata::new(&wrapper.protocol, "stream", &mode, &uri),
+        );
+        state
+            .user_stream_wrappers
+            .register_open_stream(&resource, object);
+        Some(VmResult::success_no_output(Some(Value::Resource(resource))))
+    }
+
+    fn try_execute_user_stream_fclose(
+        &self,
+        values: &[Value],
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> Option<VmResult> {
+        let Some(Value::Resource(resource)) = values.first().map(effective_value) else {
+            return None;
+        };
+        self.close_user_stream_resource(resource.id(), call_span, output, stack, state, compiled)
+    }
+
+    fn close_user_stream_resource(
+        &self,
+        id: php_runtime::ResourceId,
+        call_span: Option<php_ir::IrSpan>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        compiled: &CompiledUnit,
+    ) -> Option<VmResult> {
+        let object = state.user_stream_wrappers.pending_close_object(id)?;
+        if lookup_resolved_method_in_state(
+            compiled,
+            state,
+            &object.class_name(),
+            "stream_close",
+            None,
+        )
+        .ok()
+        .flatten()
+        .is_some()
+        {
+            let close_result = self.call_object_method_callable(
+                compiled,
+                object,
+                "stream_close",
+                Vec::new(),
+                call_span,
+                output,
+                stack,
+                state,
+            );
+            if let Some(throwable) = state.pending_throw.take() {
+                return Some(
+                    self.handle_uncaught_exception(compiled, output, stack, state, throwable),
+                );
+            }
+            if !close_result.status.is_success() {
+                return Some(close_result);
+            }
+        }
+        Some(VmResult::success_no_output(Some(Value::Bool(
+            state.resources.close(id),
+        ))))
+    }
+
+    fn run_shutdown_user_stream_wrappers(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        state: &mut ExecutionState,
+    ) -> Result<Vec<RuntimeDiagnostic>, VmResult> {
+        let mut diagnostics = Vec::new();
+        for id in state.user_stream_wrappers.pending_close_ids() {
+            let mut stack = CallStack::new();
+            let Some(result) =
+                self.close_user_stream_resource(id, None, output, &mut stack, state, compiled)
+            else {
+                continue;
+            };
+            if !result.status.is_success() {
+                return Err(result);
+            }
+            diagnostics.extend(result.diagnostics);
+        }
+        Ok(diagnostics)
+    }
+
     fn run_shutdown_destructors(
         &self,
         compiled: &CompiledUnit,
@@ -38775,6 +41869,7 @@ impl Vm {
             pending_control,
             candidates,
             &rooted_object_ids,
+            None,
         )
         .outcome
     }
@@ -38790,6 +41885,7 @@ impl Vm {
         pending_control: &mut Option<PendingControl>,
         candidates: Vec<ObjectRef>,
         rooted_object_ids: &HashSet<u64>,
+        scope_override: Option<&str>,
     ) -> DestructorSweep {
         for object in candidates {
             if rooted_object_ids.contains(&object.id()) {
@@ -38799,7 +41895,9 @@ impl Vm {
                 object.release_php_handle();
                 continue;
             };
-            let scope = current_scope_class(compiled, stack);
+            let scope = scope_override
+                .map(str::to_owned)
+                .or_else(|| current_scope_class(compiled, stack));
             if let Some(message) =
                 self.inaccessible_destructor_message(compiled, state, &entry, scope.as_deref())
             {
@@ -39160,6 +42258,8 @@ impl Vm {
         } else if let Some(value) = pdo_class_constant_value(&class.name, constant) {
             value
         } else if let Some(value) = zip_class_constant_value(&class.name, constant) {
+            value
+        } else if let Some(value) = redis_class_constant_value(&class.name, constant) {
             value
         } else if let Some(value) = memcached_class_constant_value(&class.name, constant) {
             value
@@ -39619,6 +42719,7 @@ impl Vm {
         &self,
         compiled: &CompiledUnit,
         object: &Value,
+        span: IrSpan,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
@@ -39629,6 +42730,12 @@ impl Vm {
                 value_type_name(object)
             )));
         };
+        if self.is_finalized_hash_context_object(object) {
+            return Err(ClassConstantFetch::Raise(
+                span,
+                "E_PHP_VM_SPL_ERROR: Cannot clone a finalized HashContext".to_owned(),
+            ));
+        }
         let class = match lookup_class_in_state(compiled, state, &object.class_name()) {
             Some(class) => class,
             None if internal_runtime_class_entry(&object.class_name()).is_some() => {
@@ -39669,6 +42776,14 @@ impl Vm {
         };
         self.register_destructor_if_needed(compiled, &class, copy.clone(), state);
         Ok(Value::Object(copy))
+    }
+
+    fn is_finalized_hash_context_object(&self, object: &ObjectRef) -> bool {
+        object.class_name().eq_ignore_ascii_case("HashContext")
+            && matches!(
+                object.get_property("__phrust_hash_finalized"),
+                Some(Value::Bool(true))
+            )
     }
 
     /// `$object->property[dims...] = value` (or `[] =` append), shared by the
@@ -40132,6 +43247,105 @@ impl Vm {
         }
     }
 
+    fn php_token_static_method_error_result(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        error: PhpTokenStaticMethodError,
+    ) -> VmResult {
+        self.runtime_error(output, compiled, stack, error.into_message())
+    }
+
+    fn route_tokenizer_static_method_diagnostics(
+        &self,
+        compiled: &CompiledUnit,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+        diagnostics: Vec<RuntimeDiagnostic>,
+        trace_context: Option<&TokenizerStaticCallTraceContext>,
+    ) -> Result<(), VmResult> {
+        for diagnostic in diagnostics {
+            let (level, channel) = match diagnostic.severity() {
+                RuntimeSeverity::Warning => (
+                    php_runtime::PHP_E_WARNING,
+                    php_runtime::PhpDiagnosticChannel::Warning,
+                ),
+                RuntimeSeverity::Deprecation => (
+                    php_runtime::PHP_E_DEPRECATED,
+                    php_runtime::PhpDiagnosticChannel::Deprecated,
+                ),
+                _ => {
+                    state.diagnostics.push(diagnostic);
+                    continue;
+                }
+            };
+            let handled = match self.dispatch_error_handler(
+                compiled,
+                output,
+                stack,
+                state,
+                level,
+                &diagnostic,
+            ) {
+                Ok(handled) => handled,
+                Err(result) => {
+                    if let Some(trace_context) = trace_context {
+                        attach_tokenizer_static_error_handler_throw_trace(
+                            compiled,
+                            stack,
+                            state,
+                            &result,
+                            trace_context,
+                            level,
+                            &diagnostic,
+                        );
+                    }
+                    return Err(result);
+                }
+            };
+            if handled {
+                continue;
+            }
+            if error_reporting_allows(state, level) {
+                Self::record_last_error(state, level, &diagnostic);
+                emit_vm_diagnostic(output, state, &diagnostic, channel, level);
+                state.diagnostics.push(diagnostic);
+            }
+        }
+        Ok(())
+    }
+
+    fn php_token_static_method_value_for_class(
+        &self,
+        compiled: &CompiledUnit,
+        state: &ExecutionState,
+        class: &php_ir::module::ClassEntry,
+        called_class_name: &str,
+        args: Vec<CallArgument>,
+    ) -> Result<PhpTokenStaticMethodValue, PhpTokenStaticMethodError> {
+        let runtime_class = runtime_class_entry(
+            compiled,
+            state,
+            class,
+            &|value| self.constant_value(compiled.unit(), value),
+            &|reference| class_constant_reference_value(compiled, state, reference),
+            &|reference| named_constant_reference_value(compiled, state, reference),
+        )
+        .map_err(PhpTokenStaticMethodError::RuntimeClass)?;
+        validate_object_mvp_with_display_name(&runtime_class, &class.display_name)
+            .map_err(PhpTokenStaticMethodError::Runtime)?;
+        php_token_static_method_value_for_class_with_diagnostics(
+            called_class_name,
+            "tokenize",
+            args,
+            &runtime_class,
+            class.display_name.clone(),
+        )
+        .map_err(PhpTokenStaticMethodError::Runtime)
+    }
+
     fn call_static_method_callable(
         &self,
         compiled: &CompiledUnit,
@@ -40161,11 +43375,28 @@ impl Vm {
             return VmResult::success_no_output(Some(value));
         }
         if is_php_token_runtime_class(class_name) {
-            let value = match php_token_static_method_value(class_name, method, args) {
-                Ok(value) => value,
-                Err(message) => return self.runtime_error(output, compiled, stack, message),
-            };
-            return VmResult::success_no_output(Some(value));
+            let trace_values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+            let result =
+                match php_token_static_method_value_with_diagnostics(class_name, method, args) {
+                    Ok(result) => result,
+                    Err(message) => return self.runtime_error(output, compiled, stack, message),
+                };
+            let trace_context = call_span.map(|call_span| TokenizerStaticCallTraceContext {
+                call: format!("{class_name}::{method}"),
+                values: trace_values,
+                call_span,
+            });
+            if let Err(result) = self.route_tokenizer_static_method_diagnostics(
+                compiled,
+                output,
+                stack,
+                state,
+                result.diagnostics,
+                trace_context.as_ref(),
+            ) {
+                return result;
+            }
+            return VmResult::success_no_output(Some(result.value));
         }
         if internal_extension_static_class(class_name) {
             let values = args.into_iter().map(|arg| arg.value).collect();
@@ -40205,6 +43436,33 @@ impl Vm {
                 Err(message) => return self.runtime_error(output, compiled, stack, message),
             };
             return VmResult::success_no_output(Some(value));
+        }
+        if class_extends_php_token(compiled, state, &class) && normalized_method == "tokenize" {
+            let trace_values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+            let result = match self
+                .php_token_static_method_value_for_class(compiled, state, &class, class_name, args)
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    return self.runtime_error(output, compiled, stack, error.into_message());
+                }
+            };
+            let trace_context = call_span.map(|call_span| TokenizerStaticCallTraceContext {
+                call: format!("{class_name}::{method}"),
+                values: trace_values,
+                call_span,
+            });
+            if let Err(result) = self.route_tokenizer_static_method_diagnostics(
+                compiled,
+                output,
+                stack,
+                state,
+                result.diagnostics,
+                trace_context.as_ref(),
+            ) {
+                return result;
+            }
+            return VmResult::success_no_output(Some(result.value));
         }
         let scope = method_lookup_scope_for_static_call(compiled, stack, class_name);
         let resolved = match lookup_resolved_method_in_state(
@@ -41224,8 +44482,9 @@ impl Vm {
                     Ok(name) => name.to_string_lossy(),
                     Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
-                let value = match global_constant_value(compiled, state, stack, &constant_name) {
-                    Ok(Some(value)) => value,
+                let resolved = match global_constant_lookup(compiled, state, stack, &constant_name)
+                {
+                    Ok(Some(resolved)) => resolved,
                     Ok(None) => {
                         return self.runtime_error(
                             output,
@@ -41238,7 +44497,21 @@ impl Vm {
                     }
                     Err(message) => return self.runtime_error(output, compiled, stack, message),
                 };
-                VmResult::success_no_output(Some(value))
+                let mut diagnostics = Vec::new();
+                if let Some(constant) = resolved.predefined
+                    && let Err(result) = self.emit_predefined_constant_deprecation(
+                        compiled,
+                        output,
+                        stack,
+                        state,
+                        &mut diagnostics,
+                        call_span.unwrap_or_else(|| IrSpan::new(php_ir::FileId::new(0), 0, 0)),
+                        constant,
+                    )
+                {
+                    return result;
+                }
+                VmResult::success_with_diagnostics_no_output(Some(resolved.value), diagnostics)
             }
             "extension_loaded" => {
                 let Some(extension_name) = values.first() else {
@@ -41303,6 +44576,9 @@ impl Vm {
                     .first()
                     .is_some_and(|value| to_bool(value).unwrap_or(false));
                 self.call_get_defined_constants_builtin(compiled, output, state, categorize)
+            }
+            "get_defined_vars" => {
+                self.call_get_defined_vars_builtin(compiled, values, output, stack)
             }
             "compact" => self.call_compact_builtin(compiled, values, output, stack),
             "class_exists" | "interface_exists" | "trait_exists" | "enum_exists" => {
@@ -41402,6 +44678,37 @@ impl Vm {
                     php_std::introspection::get_loaded_extensions_value(registry),
                 ))
             }
+            "get_extension_funcs" => {
+                if values.len() != 1 {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_SYMBOL_ARITY: get_extension_funcs expects one argument",
+                    );
+                }
+                let extension_name = match to_string(&values[0]) {
+                    Ok(name) => name.to_string_lossy(),
+                    Err(message) => return self.runtime_error(output, compiled, stack, message),
+                };
+                let registry = php_std::ExtensionRegistry::standard_library();
+                VmResult::success_no_output(Some(
+                    php_std::introspection::get_extension_funcs_value(registry, &extension_name),
+                ))
+            }
+            "get_included_files" | "get_required_files" => {
+                if !values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        format!("E_PHP_VM_SYMBOL_ARITY: {name} expects no arguments"),
+                    );
+                }
+                VmResult::success_no_output(Some(Self::get_included_files_value(
+                    compiled, stack, state,
+                )))
+            }
             "phpversion" => {
                 if values.len() > 1 {
                     return self.runtime_error(
@@ -41429,6 +44736,17 @@ impl Vm {
                     }
                 };
                 VmResult::success_no_output(Some(value))
+            }
+            "zend_version" => {
+                if !values.is_empty() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_SYMBOL_ARITY: zend_version expects no arguments",
+                    );
+                }
+                VmResult::success_no_output(Some(Value::string(php_std::constants::ZEND_VERSION)))
             }
             _ => self.runtime_error(
                 output,
@@ -41630,6 +44948,80 @@ impl Vm {
         }
 
         VmResult::success_no_output(Some(Value::Array(result)))
+    }
+
+    fn call_get_defined_vars_builtin(
+        &self,
+        compiled: &CompiledUnit,
+        values: Vec<Value>,
+        output: &mut OutputBuffer,
+        stack: &CallStack,
+    ) -> VmResult {
+        if !values.is_empty() {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                "E_PHP_VM_SYMBOL_ARITY: get_defined_vars expects no arguments",
+            );
+        }
+        let Some(frame) = stack.current() else {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                "E_PHP_VM_DEFINED_VARS_FRAME: get_defined_vars requires an active frame",
+            );
+        };
+        let Some(function) = compiled.unit().functions.get(frame.function.index()) else {
+            return self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_DEFINED_VARS_FRAME: invalid function {}",
+                    frame.function.raw()
+                ),
+            );
+        };
+
+        let mut result = PhpArray::new();
+        for (index, name) in function.locals.iter().enumerate() {
+            let Some(slot) = frame.locals.get_slot(LocalId::new(index as u32)) else {
+                continue;
+            };
+            if slot.is_uninitialized() {
+                continue;
+            }
+            result.insert(
+                ArrayKey::String(PhpString::from_test_str(name)),
+                effective_value(&slot.read()),
+            );
+        }
+
+        VmResult::success_no_output(Some(Value::Array(result)))
+    }
+
+    fn get_included_files_value(
+        compiled: &CompiledUnit,
+        stack: &CallStack,
+        state: &ExecutionState,
+    ) -> Value {
+        let mut paths = Vec::new();
+        if let Some(path) = current_source_path(compiled, stack) {
+            paths.push(path);
+        }
+        for path in &state.included_once {
+            if !paths.iter().any(|existing| existing == path) {
+                paths.push(path.clone());
+            }
+        }
+        Value::Array(PhpArray::from_packed(
+            paths
+                .into_iter()
+                .map(|path| Value::string(path.to_string_lossy().into_owned()))
+                .collect(),
+        ))
     }
 
     fn call_method_exists_builtin(
@@ -44457,6 +47849,36 @@ fn vm_result_has_php_fatal_output(result: &VmResult) -> bool {
     result.output.to_string_lossy().contains("Fatal error:")
 }
 
+fn function_redeclaration_fatal_result(
+    output: &mut OutputBuffer,
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    span: php_ir::IrSpan,
+    message: String,
+) -> VmResult {
+    let display_message = message
+        .strip_prefix("E_PHP_VM_FUNCTION_REDECLARATION: ")
+        .unwrap_or(&message);
+    let (file, line) = source_span_file_line(compiled, span).unwrap_or_else(|| {
+        let file = compiled
+            .unit()
+            .files
+            .get(span.file.index())
+            .map_or_else(String::new, |file| file.path.clone());
+        (file, i64::from(span.start))
+    });
+    output.write_test_str(&format!(
+        "Fatal error: {display_message} in {file} on line {line}\n"
+    ));
+    let diagnostic = runtime_diagnostic_for_message_with_source_span(
+        &message,
+        compiled,
+        stack,
+        runtime_source_span(compiled, span),
+    );
+    VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
+}
+
 fn format_instruction_kind(kind: &InstructionKind) -> String {
     format!("{kind:?}")
         .split_whitespace()
@@ -44865,6 +48287,7 @@ fn internal_throwable_display_name(class_name: &str) -> String {
         "throwable" => "Throwable".to_owned(),
         "exception" => "Exception".to_owned(),
         "error" => "Error".to_owned(),
+        "parseerror" => "ParseError".to_owned(),
         "typeerror" => "TypeError".to_owned(),
         "valueerror" => "ValueError".to_owned(),
         "unhandledmatcherror" => "UnhandledMatchError".to_owned(),
@@ -44892,7 +48315,9 @@ fn internal_throwable_display_name(class_name: &str) -> String {
 
 fn internal_throwable_parent(class_name: &str) -> Option<&'static str> {
     match normalize_class_name(class_name).as_str() {
-        "typeerror" | "valueerror" | "unhandledmatcherror" | "fibererror" => Some("Error"),
+        "parseerror" | "typeerror" | "valueerror" | "unhandledmatcherror" | "fibererror" => {
+            Some("Error")
+        }
         "argumentcounterror" => Some("TypeError"),
         "jsonexception"
         | "pdoexception"
@@ -44921,6 +48346,7 @@ fn internal_throwable_instanceof(object_class: &str, target_class: &str) -> Opti
         object_class.as_str(),
         "exception"
             | "error"
+            | "parseerror"
             | "typeerror"
             | "valueerror"
             | "unhandledmatcherror"
@@ -44971,10 +48397,22 @@ fn throwable_class_name(value: &Value) -> String {
     }
 }
 
-const THROWABLE_STRING_PROPERTY: &str = "private:Exception:string";
-const THROWABLE_TRACE_PROPERTY: &str = "private:Exception:trace";
-const THROWABLE_PREVIOUS_PROPERTY: &str = "private:Exception:previous";
+const THROWABLE_EXCEPTION_STRING_PROPERTY: &str = "private:Exception:string";
+const THROWABLE_EXCEPTION_TRACE_PROPERTY: &str = "private:Exception:trace";
+const THROWABLE_EXCEPTION_PREVIOUS_PROPERTY: &str = "private:Exception:previous";
 const THROWABLE_TRACE_STRING_PROPERTY: &str = "__phrust_trace_string";
+
+fn throwable_private_owner(class_name: &str) -> &'static str {
+    if internal_throwable_instanceof(class_name, "Error") == Some(true) {
+        "Error"
+    } else {
+        "Exception"
+    }
+}
+
+fn throwable_private_property_name(class_name: &str, name: &str) -> String {
+    format!("private:{}:{name}", throwable_private_owner(class_name))
+}
 
 fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef, String> {
     let message = to_string(message)?.to_string_lossy();
@@ -45013,7 +48451,7 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
                 protected_flags,
             ),
             throwable_property(
-                THROWABLE_STRING_PROPERTY,
+                &throwable_private_property_name(&class_name, "string"),
                 Value::string(Vec::new()),
                 Some(RuntimeType::String),
                 private_flags,
@@ -45037,13 +48475,13 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
                 protected_flags,
             ),
             throwable_property(
-                THROWABLE_TRACE_PROPERTY,
+                &throwable_private_property_name(&class_name, "trace"),
                 Value::Array(PhpArray::new()),
                 None,
                 private_flags,
             ),
             throwable_property(
-                THROWABLE_PREVIOUS_PROPERTY,
+                &throwable_private_property_name(&class_name, "previous"),
                 Value::Null,
                 None,
                 private_flags,
@@ -45061,25 +48499,41 @@ fn make_exception_object(class_name: &str, message: &Value) -> Result<ObjectRef,
 
 fn throwable_property_storage_name(name: &str) -> &str {
     match name {
-        "string" => THROWABLE_STRING_PROPERTY,
-        "trace" => THROWABLE_TRACE_PROPERTY,
-        "previous" => THROWABLE_PREVIOUS_PROPERTY,
+        "string" => THROWABLE_EXCEPTION_STRING_PROPERTY,
+        "trace" => THROWABLE_EXCEPTION_TRACE_PROPERTY,
+        "previous" => THROWABLE_EXCEPTION_PREVIOUS_PROPERTY,
         "trace_string" => THROWABLE_TRACE_STRING_PROPERTY,
         _ => name,
     }
 }
 
+fn throwable_property_storage_name_for_object(object: &ObjectRef, name: &str) -> String {
+    match name {
+        "string" | "trace" | "previous" => {
+            throwable_private_property_name(&object.class_name(), name)
+        }
+        "trace_string" => THROWABLE_TRACE_STRING_PROPERTY.to_owned(),
+        _ => name.to_owned(),
+    }
+}
+
 fn get_throwable_property(object: &ObjectRef, name: &str) -> Option<Value> {
-    let storage_name = throwable_property_storage_name(name);
-    object.get_property(storage_name).or_else(|| {
-        (storage_name != name)
-            .then(|| object.get_property(name))
-            .flatten()
-    })
+    let storage_name = throwable_property_storage_name_for_object(object, name);
+    object
+        .get_property(&storage_name)
+        .or_else(|| object.get_property(throwable_property_storage_name(name)))
+        .or_else(|| {
+            (storage_name != name)
+                .then(|| object.get_property(name))
+                .flatten()
+        })
 }
 
 fn set_throwable_property(object: &ObjectRef, name: &str, value: Value) {
-    object.set_property(throwable_property_storage_name(name), value);
+    object.set_property(
+        throwable_property_storage_name_for_object(object, name),
+        value,
+    );
 }
 
 fn new_internal_throwable_object(
@@ -45235,7 +48689,7 @@ fn parse_legacy_serializable_payload(input: &PhpString) -> Option<LegacySerializ
 }
 
 fn parse_indexed_serialized_object_payload(input: &PhpString) -> Option<(String, PhpArray)> {
-    let bytes = input.as_bytes();
+    let bytes = trim_serialized_outer_ascii_whitespace(input.as_bytes());
     let mut offset = 0usize;
     expect_serialized_byte(bytes, &mut offset, b'O')?;
     expect_serialized_byte(bytes, &mut offset, b':')?;
@@ -45263,6 +48717,114 @@ fn parse_indexed_serialized_object_payload(input: &PhpString) -> Option<(String,
         return None;
     };
     Some((String::from_utf8_lossy(&class).into_owned(), array))
+}
+
+fn trim_serialized_outer_ascii_whitespace(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    &bytes[start..end]
+}
+
+fn validate_hash_context_unserialize_payload(payload: &PhpArray) -> Option<String> {
+    if hash_context_payload_is_internal_property_shape(payload) {
+        return None;
+    }
+    if payload.len() != 5 {
+        return Some(hash_context_ill_formed_message());
+    }
+    let algorithm = match payload.get(&ArrayKey::Int(0)).map(effective_value) {
+        Some(Value::String(algorithm)) => algorithm.to_string_lossy(),
+        _ => return Some(hash_context_ill_formed_message()),
+    };
+    let flags = match payload.get(&ArrayKey::Int(1)).map(effective_value) {
+        Some(Value::Int(flags)) => flags,
+        _ => return Some(hash_context_ill_formed_message()),
+    };
+    if flags & HASH_HMAC_FLAG != 0 {
+        return Some("HashContext with HASH_HMAC option cannot be serialized".to_owned());
+    }
+    if !php_runtime::builtins::hash_algorithm_exists(&algorithm) {
+        return Some("Unknown hash algorithm".to_owned());
+    }
+    let internals = match payload.get(&ArrayKey::Int(2)).map(effective_value) {
+        Some(Value::Array(internals)) => internals,
+        _ => return Some(hash_context_ill_formed_code_message(&algorithm, -1)),
+    };
+    let magic = match payload.get(&ArrayKey::Int(3)).map(effective_value) {
+        Some(Value::Int(magic)) => magic,
+        _ => return Some(hash_context_ill_formed_code_message(&algorithm, -1)),
+    };
+    if !hash_context_serialization_magic_is_supported(magic) {
+        return Some(hash_context_ill_formed_code_message(&algorithm, -1));
+    }
+    if !matches!(
+        payload.get(&ArrayKey::Int(4)).map(effective_value),
+        Some(Value::Array(_))
+    ) {
+        return Some(hash_context_ill_formed_code_message(&algorithm, -1));
+    }
+    validate_hash_context_serialized_internals(&algorithm, &internals)
+}
+
+fn hash_context_payload_is_internal_property_shape(payload: &PhpArray) -> bool {
+    !payload.is_empty()
+        && payload.get(&ArrayKey::Int(0)).is_none()
+        && payload
+            .iter()
+            .any(|(key, _)| matches!(key, ArrayKey::String(_)))
+}
+
+fn validate_hash_context_serialized_internals(
+    algorithm: &str,
+    internals: &PhpArray,
+) -> Option<String> {
+    match normalize_hash_algorithm_name(algorithm).as_str() {
+        "sha1"
+            if !matches!(
+                internals.get(&ArrayKey::Int(6)).map(effective_value),
+                Some(Value::Int(_))
+            ) =>
+        {
+            return Some(hash_context_ill_formed_code_message(algorithm, -1024));
+        }
+        "xxh32" if hash_context_serialized_memsize(internals, 10).is_some_and(|size| size > 16) => {
+            return Some(hash_context_ill_formed_code_message(algorithm, -2000));
+        }
+        "xxh64" if hash_context_serialized_memsize(internals, 18).is_some_and(|size| size > 32) => {
+            return Some(hash_context_ill_formed_code_message(algorithm, -2000));
+        }
+        _ => {}
+    }
+    None
+}
+
+fn hash_context_serialized_memsize(internals: &PhpArray, index: i64) -> Option<i64> {
+    match internals.get(&ArrayKey::Int(index)).map(effective_value) {
+        Some(Value::Int(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn hash_context_serialization_magic_is_supported(magic: i64) -> bool {
+    matches!(magic, 2 | 100 | 101)
+}
+
+fn hash_context_ill_formed_message() -> String {
+    "Incomplete or ill-formed serialization data".to_owned()
+}
+
+fn hash_context_ill_formed_code_message(algorithm: &str, code: i64) -> String {
+    format!("Incomplete or ill-formed serialization data (\"{algorithm}\" code {code})")
+}
+
+fn normalize_hash_algorithm_name(algorithm: &str) -> String {
+    algorithm.to_ascii_lowercase()
 }
 
 fn validate_spl_array_container_unserialize_payload(
@@ -45584,6 +49146,19 @@ fn tag_throwable_location(throwable: &Value, compiled: &CompiledUnit, span: php_
     }
 }
 
+fn reapply_throwable_diagnostic_overrides(throwable: &Value, result: &VmResult) {
+    let Value::Object(object) = throwable else {
+        return;
+    };
+    for diagnostic in &result.diagnostics {
+        if diagnostic.id() == "E_PHP_RUNTIME_TOKENIZER_PARSE"
+            && let Some(RuntimeDiagnosticPayload::TokenizerParse(payload)) = diagnostic.payload()
+        {
+            set_throwable_property(object, "line", Value::Int(payload.line()));
+        }
+    }
+}
+
 fn tag_throwable_location_from_diagnostic(object: &ObjectRef, diagnostic: &RuntimeDiagnostic) {
     let span = diagnostic.source_span();
     let Some(file) = span.file.as_deref().filter(|file| !file.is_empty()) else {
@@ -45731,6 +49306,21 @@ impl From<String> for RuntimeClassEntryError {
 impl From<RuntimeClassEntryError> for String {
     fn from(error: RuntimeClassEntryError) -> Self {
         error.into_message()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum PhpTokenStaticMethodError {
+    RuntimeClass(RuntimeClassEntryError),
+    Runtime(String),
+}
+
+impl PhpTokenStaticMethodError {
+    fn into_message(self) -> String {
+        match self {
+            Self::RuntimeClass(error) => error.into_message(),
+            Self::Runtime(message) => message,
+        }
     }
 }
 
@@ -46115,6 +49705,16 @@ pub(crate) fn normalize_function_name(name: &str) -> String {
     name.trim_start_matches('\\').to_ascii_lowercase()
 }
 
+fn normalize_stream_wrapper_protocol(protocol: &str) -> String {
+    protocol.trim().trim_end_matches("://").to_ascii_lowercase()
+}
+
+fn stream_uri_protocol(uri: &str) -> Option<String> {
+    uri.find("://")
+        .map(|index| normalize_stream_wrapper_protocol(&uri[..index]))
+        .filter(|protocol| !protocol.is_empty())
+}
+
 fn normalize_exit_code(code: i64) -> i32 {
     code.clamp(0, 255) as i32
 }
@@ -46383,6 +49983,7 @@ fn spl_internal_debug_info_object(source: &ObjectRef) -> Option<ObjectRef> {
     let runtime_class =
         spl_runtime_marker(source).unwrap_or_else(|| normalize_class_name(&source.class_name()));
     match runtime_class.as_str() {
+        "hashcontext" => hash_context_debug_info_object(source),
         "arrayiterator" | "recursivearrayiterator" => {
             let storage =
                 spl_entries_to_debug_php_array_excluding(spl_entries(source), source.id());
@@ -46429,8 +50030,106 @@ fn spl_internal_debug_info_object(source: &ObjectRef) -> Option<ObjectRef> {
             Some(spl_file_info_debug_info_object(source))
         }
         "phar" => Some(phar_debug_info_object(source)),
+        "ziparchive" => Some(zip_archive_debug_info_object(source)),
         _ => None,
     }
+}
+
+fn hash_context_debug_info_object(source: &ObjectRef) -> Option<ObjectRef> {
+    Some(debug_info_object(
+        source,
+        hash_context_debug_info_array(source)?,
+    ))
+}
+
+fn hash_context_debug_info_array(source: &ObjectRef) -> Option<PhpArray> {
+    let Some(Value::String(algorithm)) = source.get_property(HASH_CONTEXT_ALGORITHM_PROPERTY)
+    else {
+        return None;
+    };
+    let mut properties = PhpArray::new();
+    properties.insert(
+        ArrayKey::String(PhpString::from_test_str("algo")),
+        Value::String(algorithm),
+    );
+    Some(properties)
+}
+
+fn hash_context_method_is_supported(method: &str) -> bool {
+    matches!(
+        normalize_method_name(method).as_str(),
+        "__debuginfo" | "__serialize" | "__unserialize"
+    )
+}
+
+fn validate_hash_context_arg_count(
+    method: &str,
+    args: &[CallArgument],
+    expected: usize,
+) -> Result<(), String> {
+    if args.len() == expected {
+        return Ok(());
+    }
+    Err(format!(
+        "E_PHP_VM_ARGUMENT_COUNT: HashContext::{method}() expects exactly {expected} argument{}, {} given",
+        if expected == 1 { "" } else { "s" },
+        args.len()
+    ))
+}
+
+fn hash_context_runtime_exception(message: impl AsRef<str>) -> String {
+    format!("E_PHP_VM_SPL_RUNTIME_EXCEPTION: {}", message.as_ref())
+}
+
+fn hash_context_object_is_initialized(object: &ObjectRef) -> bool {
+    object
+        .get_property(HASH_CONTEXT_ALGORITHM_PROPERTY)
+        .is_some()
+}
+
+fn hash_context_serialize_array(object: &ObjectRef) -> Result<PhpArray, String> {
+    let algorithm = match object.get_property(HASH_CONTEXT_ALGORITHM_PROPERTY) {
+        Some(Value::String(algorithm)) => algorithm,
+        _ => {
+            return Err("E_PHP_VM_INVALID_HASH_CONTEXT: invalid HashContext state".to_owned());
+        }
+    };
+    let flags = match object.get_property(HASH_CONTEXT_FLAGS_PROPERTY) {
+        Some(Value::Int(flags)) => flags,
+        _ => {
+            return Err("E_PHP_VM_INVALID_HASH_CONTEXT: invalid HashContext state".to_owned());
+        }
+    };
+    if flags & HASH_HMAC_FLAG != 0 {
+        return Err(hash_context_runtime_exception(
+            "HashContext with HASH_HMAC option cannot be serialized",
+        ));
+    }
+    if matches!(
+        object.get_property(HASH_CONTEXT_FINALIZED_PROPERTY),
+        Some(Value::Bool(true))
+    ) {
+        return Err(hash_context_runtime_exception(format!(
+            "HashContext for algorithm \"{}\" cannot be serialized",
+            algorithm.to_string_lossy()
+        )));
+    }
+
+    let mut internals = PhpArray::new();
+    internals.insert(
+        ArrayKey::Int(0),
+        object
+            .get_property(HASH_CONTEXT_DATA_PROPERTY)
+            .unwrap_or_else(|| Value::string(Vec::new())),
+    );
+
+    let mut payload = PhpArray::new();
+    payload.insert(ArrayKey::Int(0), Value::String(algorithm));
+    payload.insert(ArrayKey::Int(1), Value::Int(flags));
+    payload.insert(ArrayKey::Int(2), Value::Array(internals));
+    payload.insert(ArrayKey::Int(3), Value::Int(2));
+    payload.insert(ArrayKey::Int(4), Value::Array(PhpArray::new()));
+    Ok(payload)
 }
 
 fn spl_file_info_debug_info_object(source: &ObjectRef) -> ObjectRef {
@@ -46477,6 +50176,28 @@ fn phar_debug_info_object(source: &ObjectRef) -> ObjectRef {
                 Value::string(Vec::new()),
             ),
         ],
+    )
+}
+
+fn zip_archive_debug_info_object(source: &ObjectRef) -> ObjectRef {
+    ObjectRef::debug_view_with_properties(
+        source,
+        vec![
+            zip_archive_debug_property(source, "lastId"),
+            zip_archive_debug_property(source, "status"),
+            zip_archive_debug_property(source, "statusSys"),
+            zip_archive_debug_property(source, "numFiles"),
+            zip_archive_debug_property(source, "filename"),
+            zip_archive_debug_property(source, "comment"),
+        ],
+    )
+}
+
+fn zip_archive_debug_property(source: &ObjectRef, name: &str) -> (String, String, Value) {
+    (
+        name.to_owned(),
+        format!("\"{name}\""),
+        source.get_property(name).unwrap_or(Value::Null),
     )
 }
 
@@ -47623,22 +51344,29 @@ fn method_signature_compatible(
 }
 
 fn validate_object_mvp(class: &RuntimeClassEntry) -> Result<(), String> {
+    validate_object_mvp_with_display_name(class, &class.name)
+}
+
+fn validate_object_mvp_with_display_name(
+    class: &RuntimeClassEntry,
+    display_name: &str,
+) -> Result<(), String> {
     if class.flags.is_enum {
         return Err(format!(
             "E_PHP_VM_ENUM_INSTANTIATION: enum {} cannot be instantiated",
-            class.name
+            display_name
         ));
     }
     if class.flags.is_interface {
         return Err(format!(
             "E_PHP_VM_INTERFACE_INSTANTIATION: Cannot instantiate interface {}",
-            class.name
+            display_name
         ));
     }
     if class.flags.is_abstract {
         return Err(format!(
             "E_PHP_VM_ABSTRACT_CLASS_INSTANTIATION: Cannot instantiate abstract class {}",
-            class.name
+            display_name
         ));
     }
     for method in &class.methods {
@@ -48962,7 +52690,11 @@ fn resolve_static_class_name(
     state: &ExecutionState,
     stack: &CallStack,
     class_name: &str,
-) -> Result<php_ir::module::ClassEntry, String> {
+) -> Result<Arc<php_ir::module::ClassEntry>, String> {
+    // Returns a shared handle: `ClassEntry` is a large struct (method/property
+    // tables), and this resolver runs on every `Name::`/`self::`/`static::`
+    // access — deep-cloning it here was a top CPU hotspot on the WordPress
+    // request profile.
     match normalize_class_name(class_name).as_str() {
         "self" => {
             let Some(scope) = current_scope_class(compiled, stack) else {
@@ -48971,7 +52703,6 @@ fn resolve_static_class_name(
                 ));
             };
             lookup_class_in_state(compiled, state, &scope)
-                .map(|class| (*class).clone())
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {scope} is not defined"))
         }
         "static" => {
@@ -48984,8 +52715,9 @@ fn resolve_static_class_name(
                 );
             };
             lookup_class_in_state(compiled, state, &called)
-                .map(|class| (*class).clone())
-                .or_else(|| current_this_called_class(compiled, state, stack, &called))
+                .or_else(|| {
+                    current_this_called_class(compiled, state, stack, &called).map(Arc::new)
+                })
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {called} is not defined"))
         }
         "parent" => {
@@ -49003,7 +52735,7 @@ fn resolve_static_class_name(
             if let Some(parent) = class.parent.as_deref()
                 && let Some(parent) = internal_runtime_class_entry(&normalize_class_name(parent))
             {
-                return Ok(parent);
+                return Ok(Arc::new(parent));
             }
             let Some(parent_name) = class.parent.as_deref() else {
                 return Err(format!(
@@ -49011,18 +52743,17 @@ fn resolve_static_class_name(
                     class.name
                 ));
             };
-            lookup_class_in_state(compiled, state, parent_name)
-                .map(|class| (*class).clone())
-                .ok_or_else(|| {
-                    format!(
-                        "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
-                        class.name, parent_name
-                    )
-                })
+            lookup_class_in_state(compiled, state, parent_name).ok_or_else(|| {
+                format!(
+                    "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
+                    class.name, parent_name
+                )
+            })
         }
         _ => lookup_class_in_state(compiled, state, class_name)
-            .map(|class| (*class).clone())
-            .or_else(|| internal_runtime_class_entry(&normalize_class_name(class_name)))
+            .or_else(|| {
+                internal_runtime_class_entry(&normalize_class_name(class_name)).map(Arc::new)
+            })
             .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined")),
     }
 }
@@ -49228,6 +52959,27 @@ fn class_is_or_implements(
         return Ok(true);
     }
     class_implements_interface(compiled, class_name, target_name, &mut Vec::new())
+}
+
+fn class_extends_php_token(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class: &php_ir::module::ClassEntry,
+) -> bool {
+    let mut parent = class.parent.clone();
+    let mut seen = HashSet::new();
+    while let Some(parent_name) = parent {
+        let normalized = normalize_class_name(&parent_name);
+        if is_php_token_runtime_class(&normalized) {
+            return true;
+        }
+        if !seen.insert(normalized.clone()) {
+            return false;
+        }
+        parent = lookup_class_in_state(compiled, state, &normalized)
+            .and_then(|entry| entry.parent.clone());
+    }
+    false
 }
 
 fn internal_runtime_parent_name(class_name: &str) -> Option<String> {
@@ -49497,6 +53249,12 @@ fn object_instanceof(
             if let Some(result) = internal_memcached_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
+            if let Some(result) = internal_soap_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_fileinfo_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
             if let Some(result) = internal_phar_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
@@ -49568,6 +53326,12 @@ fn object_instanceof_in_state(
                 return Ok(result);
             }
             if let Some(result) = internal_memcached_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_soap_instanceof(&object.class_name(), class_name) {
+                return Ok(result);
+            }
+            if let Some(result) = internal_fileinfo_instanceof(&object.class_name(), class_name) {
                 return Ok(result);
             }
             if let Some(result) = internal_phar_instanceof(&object.class_name(), class_name) {
@@ -50332,16 +54096,21 @@ pub(crate) fn dense_new_object_lowering_supported(class_name: &str) -> bool {
         || is_closure_runtime_class(class_name)
         || is_fiber_runtime_class(class_name)
         || is_reflection_runtime_class(class_name)
+        || is_phar_runtime_class(class_name)
         || is_zip_runtime_class(class_name)
         || is_xml_runtime_class(class_name)
+        || is_pdo_runtime_class(class_name)
+        || is_sqlite_runtime_class(class_name)
         || is_spl_iterator_runtime_class(class_name)
         || is_spl_container_runtime_class(class_name)
         || is_spl_heap_runtime_class(class_name)
         || is_spl_file_runtime_class(class_name)
         || is_std_class_runtime_class(class_name)
         || is_php_token_runtime_class(class_name)
+        || is_fileinfo_runtime_class(class_name)
         || is_imagick_runtime_class(class_name)
         || is_xsl_runtime_class(class_name)
+        || is_soap_runtime_class(class_name)
         || is_date_time_runtime_class(class_name))
 }
 
@@ -50700,6 +54469,34 @@ fn emit_relative_callable_deprecation(
         "E_PHP_VM_RELATIVE_CALLABLE_DEPRECATED",
         RuntimeSeverity::Deprecation,
         format!("Use of \"{keyword}\" in callables is deprecated"),
+        source_span,
+        stack_trace(compiled, stack),
+        None,
+    );
+    emit_vm_diagnostic(
+        output,
+        state,
+        &diagnostic,
+        php_runtime::PhpDiagnosticChannel::Deprecated,
+        php_runtime::PHP_E_DEPRECATED,
+    );
+    state.diagnostics.push(diagnostic);
+}
+
+fn emit_zip_open_empty_file_deprecation(
+    compiled: &CompiledUnit,
+    output: &mut OutputBuffer,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    source_span: RuntimeSourceSpan,
+) {
+    if !error_reporting_allows(state, php_runtime::PHP_E_DEPRECATED) {
+        return;
+    }
+    let diagnostic = RuntimeDiagnostic::new(
+        "E_PHP_VM_ZIP_EMPTY_FILE_DEPRECATED",
+        RuntimeSeverity::Deprecation,
+        "ZipArchive::open(): Using empty file as ZipArchive is deprecated",
         source_span,
         stack_trace(compiled, stack),
         None,
@@ -51113,6 +54910,7 @@ fn is_symbol_introspection_builtin_name(name: &str) -> bool {
             | "extension_loaded"
             | "function_exists"
             | "compact"
+            | "clone"
             | "class_exists"
             | "class_alias"
             | "call_user_func"
@@ -51143,8 +54941,13 @@ fn is_symbol_introspection_builtin_name(name: &str) -> bool {
             | "get_declared_traits"
             | "get_defined_functions"
             | "get_defined_constants"
+            | "get_defined_vars"
+            | "get_extension_funcs"
+            | "get_included_files"
             | "get_loaded_extensions"
+            | "get_required_files"
             | "phpversion"
+            | "zend_version"
             | "get_mangled_object_vars"
             | "get_object_vars"
     )
@@ -51163,12 +54966,14 @@ fn is_error_handling_builtin_name(name: &str) -> bool {
         "error_reporting"
             | "error_log"
             | "set_error_handler"
+            | "get_error_handler"
             | "restore_error_handler"
             | "error_get_last"
             | "register_shutdown_function"
             | "trigger_error"
             | "user_error"
             | "set_exception_handler"
+            | "get_exception_handler"
             | "restore_exception_handler"
     )
 }
@@ -51191,7 +54996,13 @@ fn is_output_buffering_builtin_name(name: &str) -> bool {
 fn is_environment_builtin_name(name: &str) -> bool {
     matches!(
         name,
-        "getenv" | "putenv" | "php_sapi_name" | "php_uname" | "get_current_user"
+        "getenv"
+            | "putenv"
+            | "php_sapi_name"
+            | "php_uname"
+            | "get_current_user"
+            | "getmyuid"
+            | "getmygid"
     )
 }
 
@@ -51676,10 +55487,19 @@ fn declare_runtime_function(
     function: FunctionId,
 ) -> Result<(), String> {
     let normalized = normalize_function_name(function_name);
-    if compiled.lookup_function(&normalized).is_some()
-        || dynamic_function_in_state(state, &normalized).is_some()
-        || BuiltinRegistry::new().contains(&normalized)
-    {
+    if let Some(existing) = compiled.lookup_function(&normalized) {
+        return Err(format!(
+            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}(){}",
+            function_previous_declaration_suffix(compiled, existing)
+        ));
+    }
+    if let Some(existing) = dynamic_function_entry_in_state(state, &normalized) {
+        return Err(format!(
+            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}() (previously declared in {}:{})",
+            existing.origin.source_path, existing.origin.line
+        ));
+    }
+    if BuiltinRegistry::new().contains(&normalized) {
         return Err(format!(
             "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}()"
         ));
@@ -51698,6 +55518,16 @@ fn declare_runtime_function(
     });
     state.bump_lookup_epoch();
     Ok(())
+}
+
+fn function_previous_declaration_suffix(compiled: &CompiledUnit, function: FunctionId) -> String {
+    let Some(function) = compiled.unit().functions.get(function.index()) else {
+        return String::new();
+    };
+    let Some((file, line)) = source_span_file_line(compiled, function.span) else {
+        return String::new();
+    };
+    format!(" (previously declared in {file}:{line})")
 }
 
 fn register_dynamic_classes(
@@ -51939,15 +55769,17 @@ fn internal_runtime_class_entry(normalized: &str) -> Option<php_ir::module::Clas
         return Some(internal_hash_context_class_entry());
     }
     if is_php_token_runtime_class(normalized) {
-        let mut entry = empty_internal_class_entry("PhpToken", None, None, false);
-        entry.interfaces.push(normalize_class_name("Stringable"));
-        return Some(entry);
+        return Some(internal_php_token_class_entry());
     }
     if is_redis_runtime_class(normalized) {
         return Some(empty_internal_class_entry("Redis", None, None, false));
     }
     if is_memcached_runtime_class(normalized) {
         return Some(empty_internal_class_entry("Memcached", None, None, false));
+    }
+    if is_soap_runtime_class(normalized) {
+        let display_name = soap_display_name(&normalize_class_name(normalized));
+        return Some(empty_internal_class_entry(display_name, None, None, false));
     }
     if is_supported_spl_runtime_class(normalized) {
         return Some(internal_spl_class_entry(normalized));
@@ -52068,6 +55900,24 @@ fn internal_hash_context_class_entry() -> php_ir::module::ClassEntry {
     entry
 }
 
+fn internal_php_token_class_entry() -> php_ir::module::ClassEntry {
+    let mut entry = empty_internal_class_entry("PhpToken", None, None, false);
+    entry.interfaces.push(normalize_class_name("Stringable"));
+    let constructor = FunctionId::new(u32::MAX);
+    entry.methods.push(php_ir::module::ClassMethodEntry {
+        name: "__construct".to_owned(),
+        origin_class: entry.name.clone(),
+        function: constructor,
+        flags: php_ir::module::ClassMethodFlags {
+            is_final: true,
+            ..php_ir::module::ClassMethodFlags::default()
+        },
+        attributes: Vec::new(),
+    });
+    entry.constructor = Some(constructor);
+    entry
+}
+
 fn internal_enum_class_entry(normalized: &str) -> Option<php_ir::module::ClassEntry> {
     match normalized {
         "roundingmode" => Some(rounding_mode_class_entry()),
@@ -52092,6 +55942,7 @@ fn internal_enum_class_entry(normalized: &str) -> Option<php_ir::module::ClassEn
             "memcachedexception",
             "MemcachedException",
         )),
+        "finfo" => Some(internal_empty_class_entry("finfo", "finfo")),
         "messagepack" => Some(internal_empty_class_entry("messagepack", "MessagePack")),
         "messagepackunpacker" => Some(internal_empty_class_entry(
             "messagepackunpacker",
@@ -52115,7 +55966,13 @@ fn internal_enum_class_entry(normalized: &str) -> Option<php_ir::module::ClassEn
         "gdimage" => Some(internal_empty_class_entry("gdimage", "GdImage")),
         "domdocument" => Some(internal_empty_class_entry("domdocument", "DOMDocument")),
         "domnode" => Some(internal_empty_class_entry("domnode", "DOMNode")),
+        "domattr" => Some(internal_empty_class_entry("domattr", "DOMAttr")),
         "domtext" => Some(internal_empty_class_entry("domtext", "DOMText")),
+        "domcomment" => Some(internal_empty_class_entry("domcomment", "DOMComment")),
+        "domcdatasection" => Some(internal_empty_class_entry(
+            "domcdatasection",
+            "DOMCdataSection",
+        )),
         "domelement" => Some(internal_empty_class_entry("domelement", "DOMElement")),
         "domnodelist" => Some(internal_empty_class_entry("domnodelist", "DOMNodeList")),
         "simplexmlelement" => Some(internal_empty_class_entry(
@@ -52687,6 +56544,12 @@ fn class_constant_value_by_name(
     if let Some(value) = zip_class_constant_value(class_name, constant_name) {
         return Ok(Some(value));
     }
+    if let Some(value) = redis_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = memcached_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
     if let Some(value) = xml_class_constant_value(class_name, constant_name) {
         return Ok(Some(value));
     }
@@ -52832,7 +56695,7 @@ fn lookup_class_constant_in_state(
     constant_name: &str,
 ) -> Result<
     Option<(
-        php_ir::module::ClassEntry,
+        Arc<php_ir::module::ClassEntry>,
         php_ir::module::ClassConstantEntry,
     )>,
     String,
@@ -52858,7 +56721,7 @@ fn lookup_class_constant_in_state_inner(
     seen: &mut Vec<String>,
 ) -> Result<
     Option<(
-        php_ir::module::ClassEntry,
+        Arc<php_ir::module::ClassEntry>,
         php_ir::module::ClassConstantEntry,
     )>,
     String,
@@ -52878,7 +56741,7 @@ fn lookup_class_constant_in_state_inner(
         .cloned()
     {
         seen.pop();
-        return Ok(Some(((*class).clone(), constant)));
+        return Ok(Some((class, constant)));
     }
     if let Some(parent_name) = class.parent.as_deref() {
         let Some(parent) = lookup_class_in_state(compiled, state, parent_name) else {
@@ -52955,6 +56818,152 @@ fn predefined_constant_value_for_state(state: &ExecutionState, name: &str) -> Op
 
 fn ini_option_name(value: &Value) -> Result<String, String> {
     to_string(value).map(|name| name.to_string_lossy())
+}
+
+fn session_ini_cannot_change_when_active(option: &str) -> bool {
+    matches!(
+        option.to_ascii_lowercase().as_str(),
+        "session.save_path"
+            | "session.name"
+            | "session.save_handler"
+            | "session.gc_probability"
+            | "session.gc_divisor"
+            | "session.gc_maxlifetime"
+            | "session.serialize_handler"
+            | "session.sid_length"
+            | "session.sid_bits_per_character"
+            | "session.use_strict_mode"
+            | "session.cookie_lifetime"
+            | "session.cookie_path"
+            | "session.cookie_domain"
+            | "session.cookie_secure"
+            | "session.cookie_partitioned"
+            | "session.cookie_httponly"
+            | "session.cookie_samesite"
+            | "session.use_cookies"
+            | "session.use_only_cookies"
+            | "session.referer_check"
+            | "session.cache_expire"
+            | "session.cache_limiter"
+            | "session.use_trans_sid"
+            | "session.lazy_write"
+    )
+}
+
+fn session_sid_ini_deprecation(option: &str, value: &str) -> Option<String> {
+    let (canonical, default) = if option.eq_ignore_ascii_case("session.sid_length") {
+        ("session.sid_length", 32)
+    } else if option.eq_ignore_ascii_case("session.sid_bits_per_character") {
+        ("session.sid_bits_per_character", 4)
+    } else {
+        return None;
+    };
+    let parsed = value.trim().parse::<i64>().unwrap_or(0);
+    (parsed != default).then(|| format!("ini_set(): {canonical} INI setting is deprecated"))
+}
+
+fn session_serialize_handler_ini_error(option: &str, value: &str) -> Option<String> {
+    if !option.eq_ignore_ascii_case("session.serialize_handler") {
+        return None;
+    }
+    match value {
+        "php" | "php_binary" | "php_serialize" => None,
+        _ => Some(format!(
+            "ini_set(): Serialization handler \"{value}\" cannot be found"
+        )),
+    }
+}
+
+fn ini_set_effective_value(option: &str, value: String, cwd: &Path) -> String {
+    if option.eq_ignore_ascii_case("open_basedir") {
+        return normalize_open_basedir_ini_value(&value, cwd);
+    }
+    value
+}
+
+fn normalize_open_basedir_ini_value(value: &str, cwd: &Path) -> String {
+    value
+        .split(open_basedir_separator())
+        .map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                String::new()
+            } else {
+                canonicalize_open_basedir_path(entry, cwd)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(&open_basedir_separator().to_string())
+}
+
+fn session_save_path_open_basedir_ini_error(
+    option: &str,
+    value: &str,
+    cwd: &Path,
+    registry: &IniRegistry,
+) -> Option<String> {
+    if !option.eq_ignore_ascii_case("session.save_path") {
+        return None;
+    }
+    let save_path = session_save_path_directory(value)?;
+    let open_basedir = registry.get("open_basedir")?.trim();
+    if open_basedir.is_empty() || open_basedir_allows_path(&save_path, open_basedir, cwd) {
+        return None;
+    }
+    Some(format!(
+        "ini_set(): open_basedir restriction in effect. File({save_path}) is not within the allowed path(s): ({open_basedir})"
+    ))
+}
+
+fn session_save_path_directory(raw_path: &str) -> Option<String> {
+    let path = raw_path
+        .split(';')
+        .next_back()
+        .unwrap_or(raw_path)
+        .trim()
+        .to_owned();
+    (!path.is_empty()).then_some(path)
+}
+
+fn open_basedir_allows_path(path: &str, open_basedir: &str, cwd: &Path) -> bool {
+    let candidate = canonicalize_open_basedir_path(path, cwd);
+    open_basedir
+        .split(open_basedir_separator())
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            (!entry.is_empty()).then(|| canonicalize_open_basedir_path(entry, cwd))
+        })
+        .any(|allowed| candidate == allowed || candidate.starts_with(&allowed))
+}
+
+fn canonicalize_open_basedir_path(path: &str, cwd: &Path) -> PathBuf {
+    let path = Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    fs::canonicalize(&absolute).unwrap_or_else(|_| normalize_open_basedir_path(&absolute))
+}
+
+fn normalize_open_basedir_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn open_basedir_separator() -> char {
+    if cfg!(windows) { ';' } else { ':' }
 }
 
 fn apply_float_string_precision(registry: &IniRegistry) {
@@ -53425,7 +57434,9 @@ fn class_hierarchy(
     compiled: &CompiledUnit,
     state: &ExecutionState,
     class: &php_ir::module::ClassEntry,
-) -> Vec<php_ir::module::ClassEntry> {
+) -> Vec<Arc<php_ir::module::ClassEntry>> {
+    // Shared handles: entries are large (method/property tables) and callers
+    // only read; one clone for the starting borrow, none per ancestor.
     let mut classes = Vec::new();
     let mut current = Some(Arc::new(class.clone()));
     let mut seen = BTreeSet::new();
@@ -53438,7 +57449,7 @@ fn class_hierarchy(
             .parent
             .as_deref()
             .and_then(|parent| lookup_class_in_state(compiled, state, parent));
-        classes.push((*class).clone());
+        classes.push(class);
     }
     classes
 }
@@ -54204,6 +58215,47 @@ fn current_frame_is_top_level(compiled: &CompiledUnit, stack: &CallStack) -> boo
         .is_some_and(|function| function.flags.is_top_level)
 }
 
+fn auto_start_session_if_configured(state: &mut ExecutionState, source_span: RuntimeSourceSpan) {
+    if !ini_bool(&state.ini, "session.auto_start")
+        || state.session.status() == php_runtime::PHP_SESSION_ACTIVE
+    {
+        return;
+    }
+    if state.session.needs_lazy_load() {
+        let id = state.session.id().to_owned();
+        if let Some(loader) = &state.session_loader
+            && let Ok(data) = loader.load(&id)
+        {
+            state.session.load_data(data);
+        }
+    }
+    let id_length = session_sid_length_from_ini(&state.ini);
+    let strict_mode = ini_bool(&state.ini, "session.use_strict_mode");
+    state.session.start_with_policy(id_length, strict_mode);
+    state.session.mark_started_automatically();
+    let location = php_runtime::PhpDiagnosticLocation::from_span(&source_span);
+    state
+        .session
+        .record_start_location(location.file, location.line);
+    state.globals.set("_SESSION", state.session.data_value());
+}
+
+fn session_sid_length_from_ini(ini: &IniRegistry) -> usize {
+    ini.get("session.sid_length")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| (22..=256).contains(value))
+        .unwrap_or(32)
+}
+
+fn ini_bool(ini: &IniRegistry, name: &str) -> bool {
+    ini.get(name).is_some_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off" | "no"
+        )
+    })
+}
+
 fn seed_runtime_globals(globals: &mut GlobalSymbolTable, context: &RuntimeContext) {
     for name in [
         "argc", "argv", "_SERVER", "_ENV", "_GET", "_POST", "_COOKIE", "_FILES", "_REQUEST",
@@ -54253,6 +58305,54 @@ fn php_uname_value(mode: &str) -> String {
             php_source::reference_php_version()
         ),
     }
+}
+
+fn script_owner_uid(script_path: Option<&str>) -> i64 {
+    script_path
+        .and_then(|path| fs::metadata(path).ok())
+        .map_or_else(current_directory_uid, |metadata| {
+            metadata_owner_uid(&metadata)
+        })
+}
+
+fn script_owner_gid(script_path: Option<&str>) -> i64 {
+    script_path
+        .and_then(|path| fs::metadata(path).ok())
+        .map_or_else(current_directory_gid, |metadata| {
+            metadata_owner_gid(&metadata)
+        })
+}
+
+#[cfg(unix)]
+fn metadata_owner_uid(metadata: &fs::Metadata) -> i64 {
+    use std::os::unix::fs::MetadataExt as _;
+
+    metadata.uid() as i64
+}
+
+#[cfg(not(unix))]
+fn metadata_owner_uid(_metadata: &fs::Metadata) -> i64 {
+    0
+}
+
+#[cfg(unix)]
+fn metadata_owner_gid(metadata: &fs::Metadata) -> i64 {
+    use std::os::unix::fs::MetadataExt as _;
+
+    metadata.gid() as i64
+}
+
+#[cfg(not(unix))]
+fn metadata_owner_gid(_metadata: &fs::Metadata) -> i64 {
+    0
+}
+
+fn current_directory_uid() -> i64 {
+    fs::metadata(".").map_or(0, |metadata| metadata_owner_uid(&metadata))
+}
+
+fn current_directory_gid() -> i64 {
+    fs::metadata(".").map_or(0, |metadata| metadata_owner_gid(&metadata))
 }
 
 fn validate_process_arity(name: &str, argc: usize) -> Option<String> {
@@ -54668,8 +58768,8 @@ fn format_trace_arg(value: &Value) -> String {
         }
         Value::String(value) => {
             let text = value.to_string_lossy();
-            if text.len() > 15 {
-                format!("'{}...'", &text[..15])
+            if let Some(preview) = trace_string_preview(&text, 15) {
+                format!("'{preview}...'")
             } else {
                 format!("'{text}'")
             }
@@ -54681,6 +58781,12 @@ fn format_trace_arg(value: &Value) -> String {
         Value::Resource(_) => "Resource".to_owned(),
         Value::Callable(_) => "Object(Closure)".to_owned(),
     }
+}
+
+fn trace_string_preview(text: &str, max_chars: usize) -> Option<&str> {
+    text.char_indices()
+        .nth(max_chars)
+        .map(|(index, _)| &text[..index])
 }
 
 /// Renders a frame's `Class->method(args)` / `func(args)` call descriptor.
@@ -54796,6 +58902,9 @@ fn attach_builtin_failed_call_trace(
     values: &[Value],
     call_span: php_ir::IrSpan,
 ) -> String {
+    let trace_string = capture_backtrace_string_with_builtin_failed_call(
+        compiled, stack, function, values, call_span,
+    );
     if let Value::Object(object) = throwable {
         set_throwable_property(
             object,
@@ -54804,8 +58913,136 @@ fn attach_builtin_failed_call_trace(
                 compiled, function, values, call_span,
             )),
         );
+        set_throwable_property(
+            object,
+            "trace_string",
+            Value::string(trace_string.clone().into_bytes()),
+        );
     }
-    capture_backtrace_string_with_builtin_failed_call(compiled, stack, function, values, call_span)
+    trace_string
+}
+
+fn attach_tokenizer_static_error_handler_throw_trace(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    result: &VmResult,
+    context: &TokenizerStaticCallTraceContext,
+    level: i64,
+    diagnostic: &RuntimeDiagnostic,
+) {
+    let handler_trace = state
+        .pending_trace
+        .take()
+        .unwrap_or_else(|| capture_backtrace_string(compiled, stack));
+    let trace = capture_backtrace_string_with_internal_error_handler_static_call(
+        compiled,
+        stack,
+        context,
+        &handler_trace,
+        level,
+        diagnostic,
+    );
+    if let Some(Value::Object(object)) = state
+        .pending_throw
+        .as_ref()
+        .cloned()
+        .or_else(|| runtime_error_throwable(result))
+    {
+        set_throwable_property(
+            &object,
+            "trace_string",
+            Value::string(trace.clone().into_bytes()),
+        );
+    }
+    state.pending_trace = Some(trace);
+}
+
+fn capture_backtrace_string_with_internal_error_handler_static_call(
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    context: &TokenizerStaticCallTraceContext,
+    handler_trace: &str,
+    level: i64,
+    diagnostic: &RuntimeDiagnostic,
+) -> String {
+    let file = compiled
+        .unit()
+        .files
+        .get(context.call_span.file.index())
+        .map(|file| file.path.clone())
+        .unwrap_or_default();
+    let line = source_span_display_line(compiled, context.call_span, false)
+        .unwrap_or_else(|| i64::from(context.call_span.start));
+    let args = context
+        .values
+        .iter()
+        .map(format_trace_arg)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut handler_lines = handler_trace.lines();
+    let first = handler_lines
+        .next()
+        .and_then(trace_line_call_descriptor)
+        .map(|call| {
+            let name = trace_call_name(call);
+            let span = diagnostic.source_span();
+            let handler_args = [
+                Value::Int(level),
+                Value::string(diagnostic.message()),
+                Value::string(span.file.clone().unwrap_or_default()),
+                Value::Int(span.start as i64),
+            ]
+            .iter()
+            .map(format_trace_arg)
+            .collect::<Vec<_>>()
+            .join(", ");
+            format!("{name}({handler_args})")
+        })
+        .unwrap_or_else(|| "{closure}()".to_owned());
+    let mut lines = vec![
+        format!("#0 [internal function]: {first}"),
+        format!("#1 {file}({line}): {}({args})", context.call),
+    ];
+    let mut index = 2;
+    let mut appended_rest = false;
+    for line in handler_lines {
+        lines.push(format!("#{index} {}", trace_line_without_index(line)));
+        index += 1;
+        appended_rest = true;
+    }
+    if !appended_rest {
+        let rest = capture_backtrace_string_from_index(compiled, stack, 1);
+        if !rest.is_empty() {
+            for line in rest.lines() {
+                lines.push(format!("#{index} {}", trace_line_without_index(line)));
+                index += 1;
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn trace_line_call_descriptor(line: &str) -> Option<&str> {
+    line.split_once(": ").map(|(_, call)| call)
+}
+
+fn trace_call_name(call: &str) -> &str {
+    call.split_once('(').map_or(call, |(name, _)| name)
+}
+
+fn trace_line_without_index(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix('#') else {
+        return line;
+    };
+    let Some((index, rest)) = rest.split_once(' ') else {
+        return line;
+    };
+    if index.chars().all(|char| char.is_ascii_digit()) {
+        rest
+    } else {
+        line
+    }
 }
 
 fn capture_backtrace_string_with_internal_iterator_builtin_call(
@@ -55476,6 +59713,7 @@ fn is_callable_builtin_name(name: &str) -> bool {
         || is_output_buffering_builtin_name(name)
         || is_environment_builtin_name(name)
         || is_process_builtin_name(name)
+        || is_filter_callback_builtin_name(name)
         || is_pcre_callback_builtin_name(name)
         || is_array_callback_builtin_name(name)
         || is_array_sort_builtin_name(name)
@@ -55576,6 +59814,8 @@ fn internal_builtin_string_arg_positions(name: &str, arity: usize) -> &'static [
         "fprintf" | "vfprintf" => &[1],
         "ucwords" => &[0, 1],
         "unpack" => &[0, 1],
+        "preg_grep" | "preg_match" | "preg_match_all" | "preg_split" => &[0, 1],
+        "preg_quote" => &[0, 1],
         _ => &[],
     }
 }
@@ -56339,7 +60579,7 @@ fn fast_builtin_stub_fallback_reason_for_spec(
 }
 
 fn builtin_intrinsic_metadata_matches(spec: &BuiltinIntrinsicSpec) -> bool {
-    let Some(metadata) = php_std::generated::arginfo::function_metadata(spec.name) else {
+    let Some(metadata) = php_std::arginfo::function_metadata_indexed(spec.name) else {
         return false;
     };
     if metadata.return_type != spec.return_type || metadata.params.len() != spec.params.len() {
@@ -56490,6 +60730,7 @@ fn execute_builtin_entry(
             .iter()
             .any(|(name, value)| name == "PHRUST_NET_TESTS" && value == "1"),
     );
+    context.set_env_entries(state.env.as_ref().clone());
     if let php_runtime::RuntimeRequestMode::Http(request) = &runtime_context.request_mode {
         context.set_php_input(request.raw_body.to_vec());
     }
@@ -56500,6 +60741,7 @@ fn execute_builtin_entry(
     });
     context.set_diagnostic_display(diagnostic_display);
     set_filter_input_arrays(&mut context, runtime_context);
+    context.set_pcre_cache_state(&mut state.pcre_cache);
     context.set_preg_last_error_state(&mut state.preg_last_error);
     context.set_json_last_error(state.json_last_error);
     context.set_bcmath_scale(state.bcmath_scale);
@@ -56533,29 +60775,32 @@ fn execute_builtin_entry(
     } else {
         state.mb_internal_encoding.clone()
     });
+    context.set_mb_substitute_character(state.mb_substitute_character.clone());
+    let initial_session_global =
+        if state.session.status() == php_runtime::PHP_SESSION_ACTIVE || state.session.started() {
+            state.session.data_value()
+        } else {
+            Value::Uninitialized
+        };
     let session_global = state
         .globals
-        .ensure_slot("_SESSION", state.session.data_value());
+        .ensure_slot("_SESSION", initial_session_global);
     context.set_session_state(&mut state.session, session_global);
     context.set_session_loader(state.session_loader.as_ref());
     context.sync_session_state_from_global();
     let time_limit_arg = (entry.name() == "set_time_limit").then(|| args.first().cloned());
-    let output_len_before = context.output().len();
     let result = (entry.function())(&mut context, args, source_span.clone());
-    let output_len_after = context.output().len();
     context.sync_session_state_from_global();
     state.cwd = context.cwd().to_path_buf();
+    state.ini = context.ini_registry().clone();
     state.json_last_error = context.json_last_error().0;
     state.posix_last_error = context.posix_last_error();
     state.bcmath_scale = context.bcmath_scale();
     state.default_timezone = context.default_timezone().to_owned();
     state.mb_internal_encoding = context.mb_internal_encoding().to_owned();
+    state.mb_substitute_character = context.mb_substitute_character().clone();
     let mut diagnostics = context.take_diagnostics();
-    let output_for_result = match &result {
-        Ok(_) if output_len_after != output_len_before => Some(context.output().clone()),
-        Err(_) => Some(context.output().clone()),
-        _ => None,
-    };
+    let error_output = result.as_ref().err().map(|_| context.output().clone());
     drop(context);
     match result {
         Ok(value) => {
@@ -56565,18 +60810,10 @@ fn execute_builtin_entry(
             {
                 state.reset_execution_deadline_seconds(seconds as u64);
             }
-            if output_len_after == output_len_before {
-                VmResult::success_with_diagnostics_no_output(Some(value), diagnostics)
-            } else {
-                VmResult::success_with_diagnostics(
-                    output_for_result.expect("changed output is cloned before context drop"),
-                    Some(value),
-                    diagnostics,
-                )
-            }
+            VmResult::success_with_diagnostics_no_output(Some(value), diagnostics)
         }
         Err(error) => {
-            let output = output_for_result.expect("error output is cloned before context drop");
+            let output = error_output.expect("error output is cloned before context drop");
             let mut error_diagnostic = RuntimeDiagnostic::new(
                 error.diagnostic_id(),
                 RuntimeSeverity::FatalError,
@@ -56594,6 +60831,16 @@ fn execute_builtin_entry(
                     )),
                 );
             }
+            if let Some(line) = error
+                .context()
+                .and_then(|context| context.tokenizer_parse_line)
+            {
+                error_diagnostic = error_diagnostic.with_diagnostic_payload(
+                    RuntimeDiagnosticPayload::TokenizerParse(
+                        php_runtime::TokenizerParseDiagnosticContext::new(line),
+                    ),
+                );
+            }
             diagnostics.push(error_diagnostic.clone());
             let mut result = VmResult::runtime_error_with_diagnostic(
                 output,
@@ -56607,7 +60854,7 @@ fn execute_builtin_entry(
 }
 
 fn set_filter_input_arrays(context: &mut BuiltinContext<'_>, runtime_context: &RuntimeContext) {
-    for source in [0, 1, 2, 5] {
+    for source in [0, 1, 2, 4, 5] {
         if let Some(array) = runtime_context.filter_input_array(source) {
             context.set_filter_input_array(source, array);
         }
@@ -56639,6 +60886,104 @@ fn unknown_builtin_result(name: &str, output: &OutputBuffer) -> VmResult {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn call_fileinfo_method(
+    vm: &Vm,
+    compiled: &CompiledUnit,
+    object: ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+    call_span: Option<IrSpan>,
+    output: &mut OutputBuffer,
+    stack: &mut CallStack,
+    state: &mut ExecutionState,
+) -> VmResult {
+    let values = match call_args_to_positional(&format!("finfo::{method}"), args) {
+        Ok(values) => values,
+        Err(message) => return vm.runtime_error(output, compiled, stack, message),
+    };
+    call_fileinfo_method_values(
+        vm, compiled, object, method, values, call_span, output, stack, state,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_fileinfo_method_values(
+    vm: &Vm,
+    compiled: &CompiledUnit,
+    object: ObjectRef,
+    method: &str,
+    mut values: Vec<Value>,
+    call_span: Option<IrSpan>,
+    output: &mut OutputBuffer,
+    stack: &mut CallStack,
+    state: &mut ExecutionState,
+) -> VmResult {
+    if normalize_method_name(method) == "__construct" {
+        if values.len() > 2 {
+            return vm.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_FILEINFO_ARG_COUNT: finfo::__construct expects 0 to 2 argument(s), {} given",
+                    values.len()
+                ),
+            );
+        }
+        let flags = match values.first().map(to_int).transpose() {
+            Ok(flags) => flags.unwrap_or(0),
+            Err(message) => return vm.runtime_error(output, compiled, stack, message),
+        };
+        let magic_file = match values.get(1) {
+            Some(Value::Null | Value::Uninitialized) | None => None,
+            Some(value) => match to_string(value) {
+                Ok(path) => Some(path.to_string_lossy()),
+                Err(message) => return vm.runtime_error(output, compiled, stack, message),
+            },
+        };
+        object.set_property("__fileinfo_flags", Value::Int(flags));
+        object.set_property(
+            "__fileinfo_magic_file",
+            magic_file.map(Value::string).unwrap_or(Value::Null),
+        );
+        return VmResult::success_no_output(Some(Value::Null));
+    }
+    let Some(function) = fileinfo_method_builtin_name(method) else {
+        return vm.runtime_error(
+            output,
+            compiled,
+            stack,
+            format!(
+                "E_PHP_VM_UNKNOWN_METHOD: method {}::{} is not defined",
+                object.class_name(),
+                method
+            ),
+        );
+    };
+    values.insert(0, Value::Object(object));
+    let Some(entry) = BuiltinRegistry::new().get(function) else {
+        return unknown_builtin_result(function, output);
+    };
+    execute_builtin_entry(
+        entry,
+        values,
+        output,
+        &vm.options.runtime_context,
+        state,
+        builtin_source_span(compiled, call_span),
+    )
+}
+
+fn fileinfo_method_builtin_name(method: &str) -> Option<&'static str> {
+    match normalize_method_name(method).as_str() {
+        "buffer" => Some("finfo_buffer"),
+        "file" => Some("finfo_file"),
+        "set_flags" => Some("finfo_set_flags"),
+        _ => None,
+    }
+}
+
 fn builtin_source_span(
     compiled: &CompiledUnit,
     call_span: Option<php_ir::IrSpan>,
@@ -56664,7 +61009,7 @@ fn validate_internal_builtin_args(
     if builtin_uses_custom_argument_validation(name) {
         return Ok(values);
     }
-    let Some(metadata) = php_std::generated::arginfo::function_metadata(name) else {
+    let Some(metadata) = php_std::arginfo::function_metadata_indexed(name) else {
         return Ok(values);
     };
     if metadata.params.iter().any(|param| param.by_ref) {
@@ -56702,9 +61047,12 @@ fn builtin_uses_custom_argument_validation(name: &str) -> bool {
         "decbin"
             | "dechex"
             | "decoct"
+            | "filter_var_array"
             | "hash_equals"
             | "number_format"
             | "range"
+            | "readline_callback_handler_install"
+            | "readline_completion_function"
             | "round"
             | "strip_tags"
             | "stristr"
@@ -56741,6 +61089,8 @@ fn runtime_diagnostic_throwable(diagnostic: &RuntimeDiagnostic) -> Option<Value>
         "E_PHP_RUNTIME_BUILTIN_ARITY" => "ArgumentCountError",
         "E_PHP_RUNTIME_BUILTIN_TYPE" => "TypeError",
         "E_PHP_RUNTIME_BUILTIN_VALUE" => "ValueError",
+        "E_PHP_RUNTIME_TOKENIZER_PARSE" => "ParseError",
+        "E_PHP_VM_EXCEPTION" => "Exception",
         "E_PHP_RUNTIME_JSON_EXCEPTION" => "JsonException",
         "E_PHP_VM_PDO_EXCEPTION" => "PDOException",
         "E_PHP_VM_SPL_RUNTIME_EXCEPTION" => "RuntimeException",
@@ -56758,12 +61108,14 @@ fn runtime_diagnostic_throwable(diagnostic: &RuntimeDiagnostic) -> Option<Value>
         "E_PHP_VM_ARRAY_ACCESS_BIND_REFERENCE" => "Error",
         "E_PHP_VM_FOREACH_BY_REF_ITERATOR" => "Error",
         "E_PHP_RUNTIME_SHMOP_READ_ONLY" => "Error",
+        "E_PHP_RUNTIME_SYSVSHM_INVALID" => "Error",
         "E_PHP_VM_UNKNOWN_NAMED_ARG" | "E_PHP_VM_DUPLICATE_NAMED_ARG" => "Error",
         "E_PHP_VM_UNHANDLED_MATCH" => "UnhandledMatchError",
         "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP" => "Error",
         "E_PHP_RUNTIME_NON_NUMERIC_STRING" => "TypeError",
         "E_PHP_RUNTIME_UNSUPPORTED_OPERAND_TYPES" => "TypeError",
         "E_PHP_VM_TOSTRING_RETURN_TYPE" => "TypeError",
+        "E_PHP_VM_SLEEP_RETURN_TYPE" => "TypeError",
         "E_PHP_VM_STRING_OFFSET_TYPE" => "TypeError",
         "E_PHP_VM_PARAM_TYPE_MISMATCH" => "TypeError",
         "E_PHP_VM_DYNAMIC_CLASS_NAME_TYPE" => "TypeError",
@@ -56791,6 +61143,7 @@ fn runtime_diagnostic_throwable(diagnostic: &RuntimeDiagnostic) -> Option<Value>
         | "E_PHP_VM_PIPE_RHS_NOT_CALLABLE"
         | "E_PHP_VM_UNKNOWN_METHOD"
         | "E_PHP_VM_UNKNOWN_CLASS"
+        | "E_PHP_VM_UNDEFINED_CONSTANT"
         | "E_PHP_VM_UNKNOWN_CLASS_CONSTANT"
         | "E_PHP_VM_PRIVATE_CLASS_CONSTANT_ACCESS"
         | "E_PHP_VM_PROTECTED_CLASS_CONSTANT_ACCESS"
@@ -56834,6 +61187,11 @@ fn runtime_diagnostic_throwable(diagnostic: &RuntimeDiagnostic) -> Option<Value>
         set_throwable_property(&object, "code", Value::Int(payload.error_code()));
     }
     tag_throwable_location_from_diagnostic(&object, diagnostic);
+    if diagnostic.id() == "E_PHP_RUNTIME_TOKENIZER_PARSE"
+        && let Some(RuntimeDiagnosticPayload::TokenizerParse(payload)) = diagnostic.payload()
+    {
+        set_throwable_property(&object, "line", Value::Int(payload.line()));
+    }
     Some(Value::Object(object))
 }
 
@@ -58984,6 +63342,9 @@ fn direct_builtin_arg_requires_reference(
         FunctionCallBuiltinKind::InternalRegistry | FunctionCallBuiltinKind::PcreCallback => {
             internal_builtin_param_requires_reference(&name, index)
         }
+        FunctionCallBuiltinKind::FilterCallback => {
+            internal_builtin_param_requires_reference(&name, index)
+        }
         FunctionCallBuiltinKind::Process => process_builtin_param_requires_reference(&name, index),
         FunctionCallBuiltinKind::ArraySort => {
             array_sort_builtin_param_requires_reference(&name, index, arg_is_referenceable)
@@ -59000,7 +63361,7 @@ fn array_callback_builtin_param_requires_reference(function: &str, index: usize)
 }
 
 fn internal_builtin_param_requires_reference(function: &str, index: usize) -> bool {
-    if let Some(metadata) = php_std::generated::arginfo::function_metadata(function)
+    if let Some(metadata) = php_std::arginfo::function_metadata_indexed(function)
         && metadata.params.get(index).is_some_and(|param| param.by_ref)
     {
         return true;
@@ -59111,6 +63472,329 @@ fn dense_load_local_is_pre_call_by_ref_out_param(
         }
     }
     false
+}
+
+fn try_execute_dense_pcre_ascii_offset_block_fast_path(
+    compiled: &CompiledUnit,
+    dense: &DenseBytecodeUnit,
+    instructions: &[DenseInstruction],
+    stack: &mut CallStack,
+    state: &mut ExecutionState,
+) -> Result<Option<(u32, bool)>, String> {
+    let mut active = [None; 8];
+    let mut active_len = 0_usize;
+    for instruction in instructions {
+        if instruction.opcode == DenseOpcode::Nop {
+            continue;
+        }
+        if active_len == active.len() {
+            return Ok(None);
+        }
+        active[active_len] = Some(instruction);
+        active_len += 1;
+    }
+    if !(5..=8).contains(&active_len) {
+        return Ok(None);
+    }
+    let Some((pattern_reg, pattern_const)) = dense_load_const_register(active[0].expect("active"))
+    else {
+        return Ok(None);
+    };
+    if !dense_constant_string_bytes_eq(compiled, pattern_const, br"/\G\w/u") {
+        return Ok(None);
+    }
+
+    let mut cursor = 1;
+    let Some((subject_reg, subject_local, fused_flags)) =
+        dense_load_local_register_with_optional_const(active[cursor].expect("active"))
+    else {
+        return Ok(None);
+    };
+    cursor += 1;
+
+    let flags_reg = if let Some((flags_reg, flags_const)) = fused_flags {
+        if !dense_constant_exact_int(compiled, flags_const, 0) {
+            return Ok(None);
+        }
+        flags_reg
+    } else {
+        let Some((flags_reg, flags_const)) = active[cursor].and_then(dense_load_const_register)
+        else {
+            return Ok(None);
+        };
+        if !dense_constant_exact_int(compiled, flags_const, 0) {
+            return Ok(None);
+        }
+        cursor += 1;
+        flags_reg
+    };
+
+    let Some((offset_reg, offset_local, None)) =
+        active[cursor].and_then(dense_load_local_register_with_optional_const)
+    else {
+        return Ok(None);
+    };
+    cursor += 1;
+
+    let Some((call_dst, name, args)) = active[cursor].and_then(dense_call_function_operands) else {
+        return Ok(None);
+    };
+    cursor += 1;
+
+    while let Some(instruction) = active.get(cursor).and_then(|instruction| *instruction) {
+        if instruction.opcode != DenseOpcode::Discard {
+            break;
+        }
+        cursor += 1;
+    }
+
+    let Some((condition, if_true, if_false)) = active[cursor].and_then(dense_jump_if_operands)
+    else {
+        return Ok(None);
+    };
+    if condition.kind != DenseOperandKind::Register || condition.index != call_dst {
+        return Ok(None);
+    }
+
+    let Some(name) = dense.names.get(name as usize) else {
+        return Ok(None);
+    };
+    if !name.eq_ignore_ascii_case("preg_match")
+        || name.contains('\\')
+        || args.len() != 5
+        || args.iter().any(|arg| arg.name.is_some())
+    {
+        return Ok(None);
+    }
+
+    if !dense_operand_is_register(args[0].value, pattern_reg)
+        || !dense_operand_is_register(args[1].value, subject_reg)
+        || !dense_operand_is_register(args[3].value, flags_reg)
+        || !dense_operand_is_register(args[4].value, offset_reg)
+    {
+        return Ok(None);
+    }
+    let Some(call_subject_local) = dense_plain_by_ref_local(&args[1]) else {
+        return Ok(None);
+    };
+    if call_subject_local != subject_local {
+        return Ok(None);
+    }
+    let Some(matches_local) = dense_plain_by_ref_local(&args[2]) else {
+        return Ok(None);
+    };
+    let Some(call_offset_local) = dense_plain_by_ref_local(&args[4]) else {
+        return Ok(None);
+    };
+    if call_offset_local != offset_local {
+        return Ok(None);
+    }
+
+    let Some(offset) = dense_local_exact_int(stack, LocalId::new(offset_local)) else {
+        return Ok(None);
+    };
+    if offset < 0 {
+        return Ok(None);
+    }
+    let start = offset as usize;
+    let Some(match_result) =
+        with_dense_local_string(stack, LocalId::new(subject_local), |subject| {
+            let subject_bytes = subject.as_bytes();
+            if start > subject_bytes.len() {
+                return Ok(None);
+            }
+            if !state
+                .pcre_cache
+                .validate_utf8_ascii_subject_at_offset(subject, start)
+                .map_err(|error| error.message().to_owned())?
+            {
+                return Ok(None);
+            }
+            Ok(Some(match subject_bytes.get(start).copied() {
+                Some(byte) if byte.is_ascii_alphanumeric() || byte == b'_' => {
+                    DensePcreAsciiOffsetBlockMatch::Matched(byte)
+                }
+                _ => DensePcreAsciiOffsetBlockMatch::NoMatch,
+            }))
+        })?
+    else {
+        return Ok(None);
+    };
+
+    let matches = stack
+        .current_mut()
+        .ok_or_else(|| "no active frame".to_owned())?
+        .locals
+        .ensure_reference_cell(LocalId::new(matches_local))?;
+    state.preg_last_error.clear();
+    let truthy = match match_result {
+        DensePcreAsciiOffsetBlockMatch::Matched(byte) => {
+            builtin_intrinsics::set_preg_match_single_byte_match(&matches, &[byte]);
+            true
+        }
+        DensePcreAsciiOffsetBlockMatch::NoMatch => {
+            builtin_intrinsics::set_preg_match_empty_matches(&matches);
+            false
+        }
+    };
+    let next_block = if truthy { if_true } else { if_false };
+    Ok(Some((next_block, truthy)))
+}
+
+fn dense_load_const_register(instruction: &DenseInstruction) -> Option<(u32, u32)> {
+    if instruction.opcode != DenseOpcode::LoadConst {
+        return None;
+    }
+    let DenseOperands::RegConst { dst, constant } = instruction.operands else {
+        return None;
+    };
+    Some((dst, constant))
+}
+
+type DenseLoadLocalInfo = (u32, u32, Option<(u32, u32)>);
+
+fn dense_load_local_register_with_optional_const(
+    instruction: &DenseInstruction,
+) -> Option<DenseLoadLocalInfo> {
+    match instruction.opcode {
+        DenseOpcode::LoadLocal => {
+            let DenseOperands::RegOperand { dst, src } = instruction.operands else {
+                return None;
+            };
+            if src.kind != DenseOperandKind::Local {
+                return None;
+            }
+            Some((dst, src.index, None))
+        }
+        DenseOpcode::LoadLocalLoadConst => {
+            let DenseOperands::LoadLocalLoadConst {
+                first_dst,
+                local,
+                second_dst,
+                constant,
+            } = instruction.operands
+            else {
+                return None;
+            };
+            Some((first_dst, local.index, Some((second_dst, constant))))
+        }
+        _ => None,
+    }
+}
+
+fn dense_call_function_operands(
+    instruction: &DenseInstruction,
+) -> Option<(u32, u32, &[DenseCallArg])> {
+    if instruction.opcode != DenseOpcode::CallFunction {
+        return None;
+    }
+    let DenseOperands::Call {
+        dst,
+        name,
+        ref args,
+    } = instruction.operands
+    else {
+        return None;
+    };
+    Some((dst, name, args))
+}
+
+fn dense_jump_if_operands(instruction: &DenseInstruction) -> Option<(DenseOperand, u32, u32)> {
+    if instruction.opcode != DenseOpcode::JumpIf {
+        return None;
+    }
+    let DenseOperands::JumpIfElse {
+        condition,
+        if_true,
+        if_false,
+    } = instruction.operands
+    else {
+        return None;
+    };
+    Some((condition, if_true, if_false))
+}
+
+fn dense_operand_is_register(operand: DenseOperand, register: u32) -> bool {
+    operand.kind == DenseOperandKind::Register && operand.index == register
+}
+
+fn dense_constant_string_bytes_eq(compiled: &CompiledUnit, constant: u32, expected: &[u8]) -> bool {
+    compiled
+        .unit()
+        .constants
+        .get(constant as usize)
+        .is_some_and(|constant| match constant {
+            IrConstant::String(value) => value.as_bytes() == expected,
+            IrConstant::StringBytes(value) => value.as_slice() == expected,
+            _ => false,
+        })
+}
+
+fn dense_constant_exact_int(compiled: &CompiledUnit, constant: u32, expected: i64) -> bool {
+    compiled
+        .unit()
+        .constants
+        .get(constant as usize)
+        .is_some_and(|constant| matches!(constant, IrConstant::Int(value) if *value == expected))
+}
+
+fn with_dense_local_string<T>(
+    stack: &CallStack,
+    local: LocalId,
+    f: impl FnOnce(&PhpString) -> Result<Option<T>, String>,
+) -> Result<Option<T>, String> {
+    let Some(slot) = stack
+        .current()
+        .and_then(|frame| frame.locals.get_slot(local))
+    else {
+        return Ok(None);
+    };
+    match slot {
+        Slot::Value(Value::String(value)) => f(value),
+        Slot::Reference(cell) => cell
+            .try_with_value(|value| match value {
+                Value::String(value) => f(value),
+                _ => Ok(None),
+            })
+            .unwrap_or_else(|message| Err(message.to_string())),
+        _ => Ok(None),
+    }
+}
+
+enum DensePcreAsciiOffsetBlockMatch {
+    Matched(u8),
+    NoMatch,
+}
+
+fn dense_plain_by_ref_local(arg: &DenseCallArg) -> Option<u32> {
+    if arg.by_ref_dim.is_none()
+        && arg.by_ref_property.is_none()
+        && arg.by_ref_property_dim.is_none()
+    {
+        arg.by_ref_local
+    } else {
+        None
+    }
+}
+
+fn dense_local_exact_int(stack: &CallStack, local: LocalId) -> Option<i64> {
+    stack
+        .current()
+        .and_then(|frame| frame.locals.get_slot(local))
+        .and_then(slot_exact_int)
+}
+
+fn slot_exact_int(slot: &Slot) -> Option<i64> {
+    match slot {
+        Slot::Value(Value::Int(value)) => Some(*value),
+        Slot::Reference(cell) => cell
+            .try_with_value(|value| match value {
+                Value::Int(value) => Some(*value),
+                _ => None,
+            })
+            .unwrap_or(None),
+        _ => None,
+    }
 }
 
 fn dense_call_function_load_is_actual_by_ref_arg(
@@ -59399,6 +64083,27 @@ fn iterator_function_temporary_arg_value(
         .then(|| (ir_arg.value, arg.value.clone()))
 }
 
+fn callable_iterator_function_temporary_arg_value(
+    callee: &Value,
+    ir_args: &[IrCallArg],
+    args: &[CallArgument],
+) -> Option<(Operand, Value)> {
+    let function = match effective_value(callee) {
+        Value::String(name) => String::from_utf8_lossy(name.as_bytes()).into_owned(),
+        Value::Callable(callable) => match callable.as_ref() {
+            CallableValue::UserFunction { name } | CallableValue::InternalBuiltin { name } => {
+                name.clone()
+            }
+            CallableValue::Closure(_)
+            | CallableValue::BoundMethod { .. }
+            | CallableValue::MethodPlaceholder { .. }
+            | CallableValue::UnresolvedDynamic { .. } => return None,
+        },
+        _ => return None,
+    };
+    iterator_function_temporary_arg_value(&function, ir_args, args)
+}
+
 fn iterator_function_releases_temporary_arg(function: &str) -> bool {
     matches!(
         normalize_function_name(function).as_str(),
@@ -59439,6 +64144,150 @@ fn is_pcre_callback_builtin_name(name: &str) -> bool {
         name,
         "preg_replace_callback" | "preg_replace_callback_array"
     )
+}
+
+fn is_filter_callback_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        "filter_var" | "filter_input" | "filter_input_array" | "filter_var_array"
+    )
+}
+
+fn filter_call_needs_vm_callback(name: &str, values: &[Value]) -> bool {
+    match name {
+        "filter_var" => {
+            values
+                .get(1)
+                .and_then(|value| vm_filter_int(value).ok())
+                .unwrap_or(VM_FILTER_DEFAULT)
+                == VM_FILTER_CALLBACK
+        }
+        "filter_input" => {
+            values
+                .get(2)
+                .and_then(|value| vm_filter_int(value).ok())
+                .unwrap_or(VM_FILTER_DEFAULT)
+                == VM_FILTER_CALLBACK
+        }
+        "filter_input_array" | "filter_var_array" => {
+            filter_array_options_need_vm_callback(values.get(1))
+        }
+        _ => false,
+    }
+}
+
+fn filter_array_options_need_vm_callback(options: Option<&Value>) -> bool {
+    match options.map(effective_value) {
+        Some(Value::Int(filter)) => filter == VM_FILTER_CALLBACK,
+        Some(Value::Array(specs)) => specs
+            .iter()
+            .any(|(_, spec)| vm_filter_spec_filter(spec) == Some(VM_FILTER_CALLBACK)),
+        _ => false,
+    }
+}
+
+fn vm_filter_callback_options(value: Option<&Value>) -> Result<VmFilterCallbackOptions, String> {
+    let Some(value) = value else {
+        return Ok(VmFilterCallbackOptions::default());
+    };
+    match effective_value(value) {
+        Value::Array(array) => {
+            let mut options = VmFilterCallbackOptions::default();
+            let flags_key = ArrayKey::String(PhpString::from_test_str("flags"));
+            if let Some(value) = array.get(&flags_key) {
+                options.flags = vm_filter_int(value)?;
+            }
+            let options_key = ArrayKey::String(PhpString::from_test_str("options"));
+            if let Some(value) = array.get(&options_key) {
+                options.callback = Some(value.clone());
+            }
+            let default_key = ArrayKey::String(PhpString::from_test_str("default"));
+            if let Some(value) = array.get(&default_key) {
+                options.default_value = Some(value.clone());
+            }
+            Ok(options)
+        }
+        other => Ok(VmFilterCallbackOptions {
+            flags: vm_filter_int(&other)?,
+            ..VmFilterCallbackOptions::default()
+        }),
+    }
+}
+
+fn vm_filter_spec_filter(value: &Value) -> Option<i64> {
+    match effective_value(value) {
+        Value::Array(array) => {
+            let key = ArrayKey::String(PhpString::from_test_str("filter"));
+            match array.get(&key) {
+                Some(value) => vm_filter_int(value).ok(),
+                None => Some(VM_FILTER_DEFAULT),
+            }
+        }
+        other => vm_filter_int(&other).ok(),
+    }
+}
+
+fn vm_filter_spec_filter_value(value: &Value) -> Value {
+    vm_filter_spec_filter(value)
+        .map(Value::Int)
+        .unwrap_or(Value::Int(VM_FILTER_DEFAULT))
+}
+
+fn vm_filter_int(value: &Value) -> Result<i64, String> {
+    to_int(value).map_err(|message| format!("E_PHP_RUNTIME_BUILTIN_TYPE: {message}"))
+}
+
+fn vm_filter_failure(options: &VmFilterCallbackOptions) -> Value {
+    if let Some(default_value) = options.default_value.clone() {
+        default_value
+    } else if options.flags & VM_FILTER_NULL_ON_FAILURE != 0 {
+        Value::Null
+    } else {
+        Value::Bool(false)
+    }
+}
+
+fn vm_filter_input_missing_value(options: &VmFilterCallbackOptions) -> Value {
+    if let Some(default_value) = options.default_value.clone() {
+        default_value
+    } else if options.flags & VM_FILTER_NULL_ON_FAILURE != 0 {
+        Value::Bool(false)
+    } else {
+        Value::Null
+    }
+}
+
+fn filter_callback_type_error_result(
+    output: &OutputBuffer,
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    function: &str,
+    call_span: Option<php_ir::IrSpan>,
+) -> VmResult {
+    builtin_type_error_result_with_failed_call(
+        output,
+        compiled,
+        stack,
+        state,
+        function,
+        &[],
+        call_span,
+        format!("{function}(): Option must be a valid callback"),
+    )
+}
+
+fn filter_callback_callable_name(callback: &Value) -> Option<String> {
+    match effective_value(callback) {
+        Value::String(name) => Some(name.to_string_lossy()),
+        Value::Callable(callable) => match *callable {
+            CallableValue::UserFunction { name } | CallableValue::InternalBuiltin { name } => {
+                Some(name)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn is_array_sort_builtin_name(name: &str) -> bool {
@@ -59623,6 +64472,42 @@ fn array_callback_type_error(
         Some(php_runtime::PhpReferenceClassification::TypeError),
     );
     VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
+}
+
+fn builtin_type_error_message(message: &str) -> Option<&str> {
+    message.strip_prefix("E_PHP_RUNTIME_BUILTIN_TYPE: ")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn builtin_type_error_result_with_failed_call(
+    output: &OutputBuffer,
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    function: &str,
+    values: &[Value],
+    call_span: Option<php_ir::IrSpan>,
+    message: String,
+) -> VmResult {
+    let diagnostic = RuntimeDiagnostic::new(
+        "E_PHP_RUNTIME_BUILTIN_TYPE",
+        RuntimeSeverity::FatalError,
+        message.clone(),
+        builtin_source_span(compiled, call_span),
+        stack_trace(compiled, stack),
+        Some(php_runtime::PhpReferenceClassification::TypeError),
+    );
+    let result = VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic);
+    if let Some(call_span) = call_span
+        && let Some(throwable) = runtime_error_throwable(&result)
+    {
+        tag_throwable_location(&throwable, compiled, call_span);
+        state.pending_trace = Some(capture_backtrace_string_with_builtin_failed_call(
+            compiled, stack, function, values, call_span,
+        ));
+        state.pending_throw = Some(throwable);
+    }
+    result
 }
 
 fn validate_array_callback_arg(
@@ -60392,6 +65277,7 @@ fn trim_leading_ascii_zeroes(bytes: &[u8]) -> &[u8] {
 }
 
 fn call_builtin_args_to_positional(
+    vm: &Vm,
     compiled: &CompiledUnit,
     function: &str,
     args: Vec<CallArgument>,
@@ -60407,8 +65293,9 @@ fn call_builtin_args_to_positional(
     } else {
         args
     };
+    let string_arg_positions = internal_builtin_string_arg_positions(function, args.len());
     let mut values = Vec::with_capacity(args.len());
-    for (index, arg) in args.into_iter().enumerate() {
+    for (index, mut arg) in args.into_iter().enumerate() {
         if let Some(name) = arg.name {
             return Err(InternalBuiltinArgError::Message(format!(
                 "E_PHP_VM_UNKNOWN_NAMED_ARG: function {function} has no builtin parameter ${name}"
@@ -60416,6 +65303,10 @@ fn call_builtin_args_to_positional(
         }
         let bind_by_ref = internal_builtin_param_requires_reference(function, index);
         if bind_by_ref {
+            if let Value::Reference(cell) = &arg.value {
+                values.push(Value::Reference(cell.clone()));
+                continue;
+            }
             if let Some(cell) = call_argument_reference_cell(compiled, Some(state), &arg, stack)
                 .map_err(InternalBuiltinArgError::Message)?
             {
@@ -60440,6 +65331,24 @@ fn call_builtin_args_to_positional(
                 ),
             )));
         }
+        if string_arg_positions.contains(&index)
+            && value_needs_vm_string_coercion_in_state(compiled, state, &arg.value)
+        {
+            let source_span = call_span
+                .map(|span| runtime_source_span(compiled, span))
+                .unwrap_or_default();
+            let coerced = vm
+                .value_to_string_with_source_span(
+                    compiled,
+                    &arg.value,
+                    output,
+                    stack,
+                    state,
+                    source_span,
+                )
+                .map_err(|result| InternalBuiltinArgError::Fatal(Box::new(result)))?;
+            arg.value = Value::String(coerced);
+        }
         values.push(arg.value);
     }
     Ok(values)
@@ -60450,6 +65359,7 @@ fn internal_builtin_generated_named_args_supported(function: &str) -> bool {
         function,
         "array_key_exists"
             | "count"
+            | "exif_thumbnail"
             | "explode"
             | "hash"
             | "hash_file"
@@ -60462,6 +65372,9 @@ fn internal_builtin_generated_named_args_supported(function: &str) -> bool {
             | "is_array"
             | "is_int"
             | "is_string"
+            | "openssl_decrypt"
+            | "openssl_digest"
+            | "openssl_encrypt"
             | "round"
             | "strlen"
             | "str_contains"
@@ -60482,7 +65395,7 @@ fn call_internal_builtin_named_args_to_positional(
         .iter()
         .find_map(|arg| arg.name.clone())
         .unwrap_or_else(|| "arg".to_owned());
-    let Some(metadata) = php_std::generated::arginfo::function_metadata(function) else {
+    let Some(metadata) = php_std::arginfo::function_metadata_indexed(function) else {
         return Err(InternalBuiltinArgError::Message(format!(
             "E_PHP_VM_UNKNOWN_NAMED_ARG: function {function} has no builtin parameter ${first_named}"
         )));
@@ -60533,12 +65446,14 @@ fn call_internal_builtin_named_args_to_positional(
         let Some(param) = metadata.params.get(index) else {
             break;
         };
-        // A default filled into a by-ref slot would be bound as a dead
-        // reference; supplied by-ref args (reordered above) stay intact.
+        // PHP permits later named by-ref arguments while earlier optional
+        // by-ref parameters are omitted. Keep the positional shape with a
+        // private reference that is not visible to userland.
         if param.by_ref {
-            return Err(InternalBuiltinArgError::Message(format!(
-                "E_PHP_VM_UNKNOWN_NAMED_ARG: function {function} has no builtin parameter ${first_named}"
+            positional.push(CallArgument::positional(Value::Reference(
+                ReferenceCell::new(Value::Null),
             )));
+            continue;
         }
         // A silently skipped hole would shift every later argument left;
         // reject unsupported defaults instead of guessing.
@@ -60591,7 +65506,7 @@ fn generated_default_value_for_call(default: Option<&str>) -> Option<Value> {
 }
 
 fn internal_builtin_by_ref_param_name(function: &str, index: usize) -> &'static str {
-    if let Some(metadata) = php_std::generated::arginfo::function_metadata(function)
+    if let Some(metadata) = php_std::arginfo::function_metadata_indexed(function)
         && let Some(param) = metadata.params.get(index)
         && param.by_ref
     {
@@ -60717,9 +65632,14 @@ fn internal_builtin_by_ref_temporary_fatal_result(
     let message = format!(
         "Uncaught Error: {function}(): Argument #{position} (${param_name}) could not be passed by reference"
     );
+    let diagnostic_separator = if output.as_bytes().is_empty() {
+        ""
+    } else {
+        "\n"
+    };
     output.write_bytes(
         format!(
-            "Fatal error: {message} in {}:{}\nStack trace:\n#0 {{main}}\n  thrown in {} on line {}\n",
+            "{diagnostic_separator}Fatal error: {message} in {}:{}\nStack trace:\n#0 {{main}}\n  thrown in {} on line {}\n",
             location.file, location.line, location.file, location.line
         )
         .as_bytes(),
@@ -61434,6 +66354,118 @@ fn unset_register_operand_at_frame(
     Ok(frame.registers.unset(id)?)
 }
 
+fn unset_consumed_assignment_value_operand_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    value_operand: Operand,
+    assignment_result: RegId,
+) -> Result<(), String> {
+    let Operand::Register(source) = value_operand else {
+        return Ok(());
+    };
+    if source == assignment_result {
+        return Ok(());
+    }
+    unset_register_operand_at_frame(stack, frame_index, value_operand)
+}
+
+fn unset_indirect_temporary_call_arg_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    args: &[IrCallArg],
+) -> Result<(), String> {
+    for arg in args {
+        if arg.value_kind == IrCallArgValueKind::IndirectTemporary {
+            unset_register_operand_at_frame(stack, frame_index, arg.value)?;
+        }
+    }
+    Ok(())
+}
+
+fn take_method_call_temporary_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    object: Operand,
+    args: &[IrCallArg],
+) -> Result<Vec<Value>, String> {
+    let mut values = Vec::new();
+    let mut taken = HashSet::new();
+    if let Operand::Register(id) = object {
+        let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
+        let value = frame.registers.take(id)?;
+        if !value.is_uninitialized() {
+            values.push(value);
+        }
+        taken.insert(id);
+    }
+    for arg in args {
+        let Operand::Register(id) = arg.value else {
+            continue;
+        };
+        if !taken.insert(id) {
+            continue;
+        }
+        let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
+        let value = frame.registers.take(id)?;
+        if !value.is_uninitialized() {
+            values.push(value);
+        }
+    }
+    Ok(values)
+}
+
+fn unset_consumed_call_arg_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    args: &[IrCallArg],
+    preserved: Option<RegId>,
+) -> Result<(), String> {
+    for arg in args {
+        if arg.by_ref_local.is_none()
+            && arg.by_ref_dim.is_none()
+            && arg.by_ref_property.is_none()
+            && arg.by_ref_property_dim.is_none()
+        {
+            continue;
+        }
+        let Operand::Register(id) = arg.value else {
+            continue;
+        };
+        if Some(id) == preserved {
+            continue;
+        }
+        unset_register_operand_at_frame(stack, frame_index, arg.value)?;
+    }
+    Ok(())
+}
+
+fn unset_consumed_dense_call_arg_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    args: &[DenseCallArg],
+    preserved: Option<RegId>,
+) -> Result<(), String> {
+    for arg in args {
+        if arg.by_ref_local.is_none()
+            && arg.by_ref_dim.is_none()
+            && arg.by_ref_property.is_none()
+            && arg.by_ref_property_dim.is_none()
+        {
+            continue;
+        }
+        if arg.value.kind != DenseOperandKind::Register {
+            continue;
+        }
+        let id = RegId::new(arg.value.index);
+        if Some(id) == preserved {
+            continue;
+        }
+        let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
+        frame.registers.unset(id)?;
+    }
+    Ok(())
+}
+
 fn unset_dense_register_operand(
     stack: &mut CallStack,
     operand: DenseOperand,
@@ -61793,6 +66825,12 @@ fn builtin_function_call_target(name: &str) -> Option<FunctionCallCacheTarget> {
     if is_pcre_callback_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::PcreCallback,
+            name: name.to_owned(),
+        });
+    }
+    if is_filter_callback_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::FilterCallback,
             name: name.to_owned(),
         });
     }

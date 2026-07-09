@@ -1,2 +1,38 @@
 {"path":"tests/phpt/generated/fileinfo/mime-basic.phpt"}
 {"path":"tests/phpt/generated/fileinfo/svg.phpt"}
+{"path":"tests/phpt/generated/fileinfo/set-flags.phpt","module":"fileinfo","kind":"contract","generated_timestamp":"20260707T000000Z","generator_version":"manual-extension-pack-v1","reason":"covers procedural finfo_set_flags stored flag updates without depending on the OO finfo class"}
+{"path":"ext/fileinfo/tests/finfo_file_basic.phpt"}
+{"path":"ext/fileinfo/tests/finfo_file_001.phpt"}
+{"path":"ext/fileinfo/tests/mime_content_type_001.phpt"}
+{"path":"ext/fileinfo/tests/bug67516.phpt","module":"fileinfo","kind":"upstream","reason":"covers PHP 8.5 finfo object MIME_TYPE file calls after object facade support"}
+{"path":"ext/fileinfo/tests/bug68731.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object buffer handling for previously failing libmagic edge case"}
+{"path":"ext/fileinfo/tests/bug68735.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object buffer handling for binary/text edge case"}
+{"path":"ext/fileinfo/tests/bug68819_001.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object MIME classification regression"}
+{"path":"ext/fileinfo/tests/bug68819_002.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object MIME classification regression variant"}
+{"path":"ext/fileinfo/tests/bug69320.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object buffer regression"}
+{"path":"ext/fileinfo/tests/bug79756.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object MIME regression"}
+{"path":"ext/fileinfo/tests/bug81723.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object file/buffer regression"}
+{"path":"ext/fileinfo/tests/cve-2014-3538-mb.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object CVE regression with mb variant"}
+{"path":"ext/fileinfo/tests/cve-2014-3538-nojit.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object CVE regression nojit variant"}
+{"path":"ext/fileinfo/tests/cve-2014-3538.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object CVE regression"}
+{"path":"ext/fileinfo/tests/finfo_apple_flag.phpt","module":"fileinfo","kind":"upstream","reason":"covers FILEINFO_APPLE flag through finfo object"}
+{"path":"ext/fileinfo/tests/finfo_extension_flag.phpt","module":"fileinfo","kind":"upstream","reason":"covers FILEINFO_EXTENSION flag through finfo object"}
+{"path":"ext/fileinfo/tests/gh17039.phpt","module":"fileinfo","kind":"upstream","reason":"covers finfo object MIME regression"}
+{"path":"ext/fileinfo/tests/precedural_finfo_in_method.phpt","module":"fileinfo","kind":"upstream","reason":"covers procedural finfo API use from methods with object facade support"}
+{"path":"ext/fileinfo/tests/bug-gh11891.phpt","module":"fileinfo","kind":"upstream","reason":"covers SVG MIME detection through PHP 8.5 finfo object return from finfo_open"}
+{"path":"ext/fileinfo/tests/bug57547.phpt","module":"fileinfo","kind":"upstream","reason":"covers directory and PHP source classification after finfo_open returns a finfo object"}
+{"path":"ext/fileinfo/tests/bug67647-mb.phpt","module":"fileinfo","kind":"upstream","reason":"covers QuickTime MIME regression with multibyte variant after object-backed finfo_open"}
+{"path":"ext/fileinfo/tests/bug67647.phpt","module":"fileinfo","kind":"upstream","reason":"covers QuickTime MIME regression after object-backed finfo_open"}
+{"path":"ext/fileinfo/tests/bug68398.phpt","module":"fileinfo","kind":"upstream","reason":"covers ZIP MIME and encoding output after object-backed finfo_open"}
+{"path":"ext/fileinfo/tests/bug69107.phpt","module":"fileinfo","kind":"upstream","reason":"covers PHP source MIME_TYPE mode through finfo objects"}
+{"path":"ext/fileinfo/tests/bug71434.phpt","module":"fileinfo","kind":"upstream","reason":"covers Python script MIME_TYPE mode through finfo objects"}
+{"path":"ext/fileinfo/tests/finfo_open_002.phpt","module":"fileinfo","kind":"upstream","reason":"covers repeated finfo::__construct calls on the PHP 8.5 object facade"}
+{"path":"ext/standard/tests/image/bug71848.phpt","module":"standard","kind":"upstream","reason":"covers getimagesize result shape and JPEG APP imageinfo keys"}
+{"path":"ext/standard/tests/image/getimagesize_jpgapp.phpt","module":"standard","kind":"upstream","reason":"covers getimagesize replacement of imageinfo with JPEG APP segment payloads"}
+{"path":"ext/standard/tests/image/getimagesize_variation2.phpt","module":"standard","kind":"upstream","reason":"covers getimagesize optional imageinfo argument type behavior after by-reference initialization"}
+{"path":"ext/standard/tests/image/getimagesizefromstring1.phpt","module":"standard.strings","kind":"upstream","reason":"covers matching getimagesize and getimagesizefromstring GIF size array metadata"}
+{"path":"ext/standard/tests/image/image_type_to_extension.phpt"}
+{"path":"ext/standard/tests/image/image_type_to_mime_type_basic.phpt"}
+{"path":"ext/standard/tests/image/image_type_to_mime_type_variation2.phpt"}
+{"path":"ext/standard/tests/image/image_type_to_mime_type_variation3.phpt"}
+{"path":"ext/standard/tests/image/image_type_to_mime_type_variation4.phpt"}

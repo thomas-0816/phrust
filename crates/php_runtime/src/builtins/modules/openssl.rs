@@ -8,20 +8,22 @@ use crate::builtins::{
     RuntimeSourceSpan,
 };
 use crate::{ArrayKey, PhpArray, PhpString, Value};
-use ::openssl::hash::MessageDigest;
+use ::openssl::hash::{MessageDigest, hash};
 use ::openssl::pkey::{PKey, Public};
 use ::openssl::sign::Verifier;
 use ::openssl::symm::{Cipher, Crypter, Mode};
 use ::openssl::x509::X509;
 use base64::{Engine, engine::general_purpose};
-use md5::{Digest as Md5Digest, Md5};
-use sha1::Sha1;
-use sha2::{Sha224, Sha256, Sha384, Sha512};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "openssl_cipher_iv_length",
         builtin_openssl_cipher_iv_length,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "openssl_cipher_key_length",
+        builtin_openssl_cipher_key_length,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -213,14 +215,20 @@ pub(in crate::builtins::modules) fn builtin_openssl_encrypt(
         .map(|value| string_arg("openssl_encrypt", value))
         .transpose()?;
     let Some(cipher) = cipher_for_method(&method) else {
-        queue_openssl_error(context, "openssl_encrypt", "Unknown cipher algorithm");
+        queue_openssl_warning_and_error(
+            context,
+            "openssl_encrypt",
+            "Unknown cipher algorithm",
+            _span,
+        );
         return Ok(Value::Bool(false));
     };
     if options & OPENSSL_DONT_ZERO_PAD_KEY != 0 {
-        queue_openssl_error(
+        queue_openssl_warning_and_error(
             context,
             "openssl_encrypt",
             "Key length cannot be set for the cipher algorithm",
+            _span,
         );
         return Ok(Value::Bool(false));
     }
@@ -274,14 +282,20 @@ pub(in crate::builtins::modules) fn builtin_openssl_decrypt(
         .map(|value| string_arg("openssl_decrypt", value))
         .transpose()?;
     let Some(cipher) = cipher_for_method(&method) else {
-        queue_openssl_error(context, "openssl_decrypt", "Unknown cipher algorithm");
+        queue_openssl_warning_and_error(
+            context,
+            "openssl_decrypt",
+            "Unknown cipher algorithm",
+            _span,
+        );
         return Ok(Value::Bool(false));
     };
     if options & OPENSSL_DONT_ZERO_PAD_KEY != 0 {
-        queue_openssl_error(
+        queue_openssl_warning_and_error(
             context,
             "openssl_decrypt",
             "Key length cannot be set for the cipher algorithm",
+            _span,
         );
         return Ok(Value::Bool(false));
     }
@@ -322,6 +336,21 @@ fn queue_openssl_error(context: &mut BuiltinContext<'_>, function: &str, message
     context.push_openssl_error(format!("{function}(): {}", message.as_ref()));
 }
 
+fn queue_openssl_warning_and_error(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    message: impl AsRef<str>,
+    span: RuntimeSourceSpan,
+) {
+    let message = message.as_ref();
+    context.php_warning(
+        "E_PHP_RUNTIME_OPENSSL",
+        format!("{function}(): {message}"),
+        span,
+    );
+    queue_openssl_error(context, function, message);
+}
+
 fn string_list(values: &[&str]) -> Value {
     let mut array = PhpArray::new();
     for (index, value) in values.iter().enumerate() {
@@ -335,10 +364,23 @@ fn string_list(values: &[&str]) -> Value {
 
 fn cipher_for_method(method: &str) -> Option<Cipher> {
     match method.to_ascii_lowercase().as_str() {
-        "aes-128-cbc" => Some(Cipher::aes_128_cbc()),
+        "aes-128-cbc" | "aes128" => Some(Cipher::aes_128_cbc()),
         "aes-256-cbc" => Some(Cipher::aes_256_cbc()),
         _ => None,
     }
+}
+
+pub(in crate::builtins::modules) fn builtin_openssl_cipher_key_length(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("openssl_cipher_key_length", &args, 1)?;
+    let method = string_arg("openssl_cipher_key_length", &args[0])?.to_string_lossy();
+    Ok(match cipher_for_method(&method) {
+        Some(cipher) => Value::Int(cipher.key_len() as i64),
+        None => Value::Bool(false),
+    })
 }
 
 fn openssl_crypt(
@@ -474,16 +516,9 @@ pub(in crate::builtins::modules) fn builtin_openssl_error_string(
 }
 
 fn digest_bytes(method: &str, data: &[u8]) -> Option<Vec<u8>> {
-    let normalized = method.to_ascii_lowercase().replace('-', "");
-    match normalized.as_str() {
-        "md5" => Some(Md5::digest(data).to_vec()),
-        "sha1" => Some(Sha1::digest(data).to_vec()),
-        "sha224" => Some(Sha224::digest(data).to_vec()),
-        "sha256" => Some(Sha256::digest(data).to_vec()),
-        "sha384" => Some(Sha384::digest(data).to_vec()),
-        "sha512" => Some(Sha512::digest(data).to_vec()),
-        _ => None,
-    }
+    hash(message_digest_for_name(method)?, data)
+        .ok()
+        .map(|digest| digest.to_vec())
 }
 
 fn message_digest_for_verify(

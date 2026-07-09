@@ -2,9 +2,13 @@
 
 #![allow(unsafe_code)]
 
-use super::core::{argument_type_error, arity_error, assign_reference_arg, int_arg, string_arg};
+use super::core::{
+    argument_type_error, argument_value_error, arity_error, assign_reference_arg, deref_value,
+    int_arg, string_arg,
+};
 use crate::builtins::{
-    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
+    RuntimeSourceSpan,
 };
 use crate::{ArrayKey, PhpArray, Value, to_bool};
 use std::ffi::{CStr, CString};
@@ -157,8 +161,8 @@ fn builtin_pcntl_exec(
             return Ok(Value::Bool(false));
         }
     };
-    let argv = cstring_array("pcntl_exec", &args, 1, Some(path.as_ref()))?;
-    let envp = cstring_array("pcntl_exec", &args, 2, None)?;
+    let argv = exec_argv(&args, path.as_ref())?;
+    let envp = exec_env(&args)?;
     let mut argv_ptrs = argv.iter().map(|arg| arg.as_ptr()).collect::<Vec<_>>();
     argv_ptrs.push(std::ptr::null());
     let mut env_ptrs = envp.iter().map(|arg| arg.as_ptr()).collect::<Vec<_>>();
@@ -178,6 +182,7 @@ fn builtin_pcntl_fork(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("pcntl_fork", &args, 0)?;
+    flush_root_output_before_fork(context.output());
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         context.pcntl_state().set_last_error(last_errno());
@@ -189,6 +194,28 @@ fn builtin_pcntl_fork(
     Ok(Value::Int(pid as i64))
 }
 
+fn flush_root_output_before_fork(output: &mut crate::OutputBuffer) {
+    if output.as_bytes().is_empty() {
+        return;
+    }
+    let mut written = 0;
+    let bytes = output.as_bytes();
+    while written < bytes.len() {
+        let result = unsafe {
+            libc::write(
+                libc::STDOUT_FILENO,
+                bytes[written..].as_ptr().cast(),
+                bytes.len() - written,
+            )
+        };
+        if result <= 0 {
+            break;
+        }
+        written += result as usize;
+    }
+    output.clear();
+}
+
 fn builtin_pcntl_getpriority(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -197,6 +224,7 @@ fn builtin_pcntl_getpriority(
     expect_between("pcntl_getpriority", &args, 0, 2)?;
     let process_id = optional_int("pcntl_getpriority", &args, 0, 0)?;
     let mode = optional_int("pcntl_getpriority", &args, 1, libc::PRIO_PROCESS as i64)?;
+    validate_getpriority_mode(process_id, mode)?;
     clear_errno();
     let priority = unsafe { libc::getpriority(mode as _, process_id as libc::id_t) };
     let error = last_errno();
@@ -211,19 +239,45 @@ fn builtin_pcntl_getpriority(
 fn builtin_pcntl_setpriority(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("pcntl_setpriority", &args, 1, 3)?;
     let priority = int_arg("pcntl_setpriority", &args[0])?;
     let process_id = optional_int("pcntl_setpriority", &args, 1, 0)?;
     let mode = optional_int("pcntl_setpriority", &args, 2, libc::PRIO_PROCESS as i64)?;
+    validate_setpriority_mode(priority, process_id, mode)?;
     let result =
         unsafe { libc::setpriority(mode as _, process_id as libc::id_t, priority as libc::c_int) };
     if result == 0 {
         context.pcntl_state().set_last_error(0);
         Ok(Value::Bool(true))
     } else {
-        context.pcntl_state().set_last_error(last_errno());
+        let error = last_errno();
+        context.pcntl_state().set_last_error(error);
+        match error {
+            libc::ESRCH => context.php_warning(
+                "E_PHP_RUNTIME_PCNTL_SETPRIORITY",
+                format!("pcntl_setpriority(): Error {error}: No process was located using the given parameters"),
+                span,
+            ),
+            libc::EPERM => context.php_warning(
+                "E_PHP_RUNTIME_PCNTL_SETPRIORITY",
+                format!(
+                    "pcntl_setpriority(): Error {error}: A process was located, but neither its effective nor real user ID matched the effective user ID of the caller"
+                ),
+                span,
+            ),
+            libc::EACCES => context.php_warning(
+                "E_PHP_RUNTIME_PCNTL_SETPRIORITY",
+                format!("pcntl_setpriority(): Error {error}: Only a super user may attempt to increase the process priority"),
+                span,
+            ),
+            _ => context.php_warning(
+                "E_PHP_RUNTIME_PCNTL_SETPRIORITY",
+                format!("pcntl_setpriority(): Unknown error {error} has occurred"),
+                span,
+            ),
+        }
         Ok(Value::Bool(false))
     }
 }
@@ -453,32 +507,203 @@ fn validate_signal_handler(name: &str, value: &Value) -> Result<(), crate::built
     }
 }
 
-fn cstring_array(
-    name: &str,
-    args: &[Value],
-    index: usize,
-    argv0: Option<&str>,
-) -> Result<Vec<CString>, crate::builtins::BuiltinError> {
-    let mut values = Vec::new();
-    if let Some(argv0) = argv0 {
-        values.push(
-            CString::new(argv0)
-                .map_err(|_| super::core::value_error(name, "path must not contain null bytes"))?,
-        );
-    }
-    let Some(value) = args.get(index) else {
+fn exec_argv(args: &[Value], argv0: &str) -> Result<Vec<CString>, BuiltinError> {
+    let mut values = vec![CString::new(argv0).map_err(|_| {
+        argument_value_error("pcntl_exec", "#1 ($path)", "must not contain null bytes")
+    })?];
+    let Some(value) = args.get(1) else {
         return Ok(values);
     };
     let Value::Array(array) = value else {
-        return Err(argument_type_error(name, "#2 ($args)", "array", value));
+        return Err(argument_type_error(
+            "pcntl_exec",
+            "#2 ($args)",
+            "array",
+            value,
+        ));
     };
     for (_, value) in array.iter() {
-        let string = string_arg(name, value)?.to_string_lossy();
+        let string = exec_string(value)?;
         values.push(CString::new(string.as_bytes()).map_err(|_| {
-            super::core::value_error(name, "array value must not contain null bytes")
+            argument_value_error(
+                "pcntl_exec",
+                "#2 ($args)",
+                "individual argument must not contain null bytes",
+            )
         })?);
     }
     Ok(values)
+}
+
+fn exec_env(args: &[Value]) -> Result<Vec<CString>, BuiltinError> {
+    let mut values = Vec::new();
+    let Some(value) = args.get(2) else {
+        return Ok(values);
+    };
+    let Value::Array(array) = value else {
+        return Err(argument_type_error(
+            "pcntl_exec",
+            "#3 ($env_vars)",
+            "array",
+            value,
+        ));
+    };
+    for (key, value) in array.iter() {
+        let name = match key {
+            ArrayKey::String(key) => key.to_string_lossy(),
+            ArrayKey::Int(key) => key.to_string(),
+        };
+        let value = exec_string(value)?;
+        let name = CString::new(name.as_bytes()).map_err(|_| {
+            argument_value_error(
+                "pcntl_exec",
+                "#3 ($env_vars)",
+                "name for environment variable must not contain null bytes",
+            )
+        })?;
+        let value = CString::new(value.as_bytes()).map_err(|_| {
+            argument_value_error(
+                "pcntl_exec",
+                "#3 ($env_vars)",
+                "value for environment variable must not contain null bytes",
+            )
+        })?;
+        let mut pair = Vec::with_capacity(name.as_bytes().len() + value.as_bytes().len() + 1);
+        pair.extend_from_slice(name.as_bytes());
+        pair.push(b'=');
+        pair.extend_from_slice(value.as_bytes());
+        values.push(CString::new(pair).expect("validated env name and value contain no nulls"));
+    }
+    Ok(values)
+}
+
+fn exec_string(value: &Value) -> Result<String, BuiltinError> {
+    match deref_value(value) {
+        Value::Object(object) => Err(BuiltinError::new(
+            "E_PHP_VM_SPL_ERROR",
+            format!(
+                "Object of class {} could not be converted to string",
+                object.display_name()
+            ),
+        )),
+        value => Ok(string_arg("pcntl_exec", &value)?.to_string_lossy()),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const PRIO_DARWIN_BG_VALUE: i64 = 0x1000;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const PRIO_DARWIN_THREAD_VALUE: i64 = 3;
+
+fn validate_getpriority_mode(process_id: i64, mode: i64) -> Result<(), BuiltinError> {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let allowed = [
+            libc::PRIO_PGRP as i64,
+            libc::PRIO_USER as i64,
+            libc::PRIO_PROCESS as i64,
+            PRIO_DARWIN_THREAD_VALUE,
+        ];
+        if !allowed.contains(&mode) {
+            return Err(argument_value_error(
+                "pcntl_getpriority",
+                "#2 ($mode)",
+                "must be one of PRIO_PGRP, PRIO_USER, PRIO_PROCESS or PRIO_DARWIN_THREAD",
+            ));
+        }
+        if mode == PRIO_DARWIN_THREAD_VALUE && process_id != 0 {
+            return Err(argument_value_error(
+                "pcntl_getpriority",
+                "#1 ($process_id)",
+                "must be 0 (zero) if PRIO_DARWIN_THREAD is provided as second parameter",
+            ));
+        }
+        if mode == libc::PRIO_PROCESS as i64 && process_id < 0 {
+            return Err(argument_value_error(
+                "pcntl_getpriority",
+                "#1 ($process_id)",
+                "is not a valid process, process group, or user ID",
+            ));
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    {
+        let allowed = [
+            libc::PRIO_PGRP as i64,
+            libc::PRIO_USER as i64,
+            libc::PRIO_PROCESS as i64,
+        ];
+        if !allowed.contains(&mode) {
+            return Err(argument_value_error(
+                "pcntl_getpriority",
+                "#2 ($mode)",
+                "must be one of PRIO_PGRP, PRIO_USER, or PRIO_PROCESS",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_setpriority_mode(
+    priority: i64,
+    process_id: i64,
+    mode: i64,
+) -> Result<(), BuiltinError> {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let allowed = [
+            libc::PRIO_PGRP as i64,
+            libc::PRIO_USER as i64,
+            libc::PRIO_PROCESS as i64,
+            PRIO_DARWIN_THREAD_VALUE,
+        ];
+        if !allowed.contains(&mode) {
+            return Err(argument_value_error(
+                "pcntl_setpriority",
+                "#3 ($mode)",
+                "must be one of PRIO_PGRP, PRIO_USER, PRIO_PROCESS or PRIO_DARWIN_THREAD",
+            ));
+        }
+        if mode == PRIO_DARWIN_THREAD_VALUE && process_id != 0 {
+            return Err(argument_value_error(
+                "pcntl_setpriority",
+                "#2 ($process_id)",
+                "must be 0 (zero) if PRIO_DARWIN_THREAD is provided as second parameter",
+            ));
+        }
+        if mode == PRIO_DARWIN_THREAD_VALUE && priority != 0 && priority != PRIO_DARWIN_BG_VALUE {
+            return Err(argument_value_error(
+                "pcntl_setpriority",
+                "#1 ($priority)",
+                "must be either 0 (zero) or PRIO_DARWIN_BG, for mode PRIO_DARWIN_THREAD",
+            ));
+        }
+        if mode == libc::PRIO_PROCESS as i64 && process_id < 0 {
+            return Err(argument_value_error(
+                "pcntl_setpriority",
+                "#2 ($process_id)",
+                "is not a valid process, process group, or user ID",
+            ));
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    {
+        let _ = process_id;
+        let _ = priority;
+        let allowed = [
+            libc::PRIO_PGRP as i64,
+            libc::PRIO_USER as i64,
+            libc::PRIO_PROCESS as i64,
+        ];
+        if !allowed.contains(&mode) {
+            return Err(argument_value_error(
+                "pcntl_setpriority",
+                "#3 ($mode)",
+                "must be one of PRIO_PGRP, PRIO_USER, or PRIO_PROCESS",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn rusage_value(usage: &libc::rusage) -> Value {

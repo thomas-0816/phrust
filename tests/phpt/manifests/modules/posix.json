@@ -3,15 +3,15 @@
   "module":"posix",
   "priority":"CLI/server host metadata compatibility MVP",
   "selected_manifest":"tests/phpt/manifests/modules/posix.selected.jsonl",
-  "corpus_count":48,
-  "selected_count":1,
-  "pass_count":1,
+  "corpus_count":56,
+  "selected_count":37,
+  "pass_count":37,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":47,
-  "scope":["extension visibility","selected process/user/group id helpers","passwd/group database arrays","posix_getgroups","posix_getlogin","posix_uname array shape","posix_access/eaccess local file checks","posix_get_last_error/posix_errno","posix_strerror","posix_sysconf","posix_pathconf","posix_times","posix_getrlimit","posix_kill signal 0 process probe","posix_isatty integer fd","posix_ttyname integer fd","selected POSIX access/path/sysconf/rlimit constants"],
-  "non_scope":["resource fd pathconf","tty resource mapping","signal callback delivery","identity mutation","process-group mutation","posix_setrlimit","mknod device handling","exact php-src warning strings"],
-  "target_gates":["nix develop -c cargo test -p php_runtime posix","nix develop -c cargo test -p php_std posix","nix develop -c just phpt-dev-module MODULE=posix"],
-  "next_step":"Promote resource-fd pathconf/ttyname and mutating process/identity PHPTs after phrust stream resources can expose host file descriptors and the runtime has safe process-mutation coverage."
+  "known_failure_count":19,
+  "scope":["extension visibility","selected process/user/group id helpers","passwd/group database arrays","Darwin nogroup lookup parity","posix_getgroups","posix_getlogin","posix_uname array shape","posix_access/eaccess local file checks and filename diagnostics","posix_get_last_error/posix_errno","posix_strerror","posix_sysconf","posix_pathconf","posix_times","posix_getrlimit","posix_kill signal 0 process probe","posix_getsid range diagnostics","posix_setuid denied-operation errno","posix_isatty integer fd","posix_ttyname integer fd","selected POSIX access/path/sysconf/rlimit constants"],
+  "non_scope":["resource fd pathconf","tty resource mapping","signal callback delivery","successful identity mutation","process-group mutation","posix_setrlimit","mknod device handling","remaining php-src warning strings"],
+  "target_gates":["nix develop -c cargo test -p php_runtime posix","nix develop -c cargo test -p php_std posix","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=posix"],
+  "next_step":"Promote resource-fd pathconf/ttyname, process-group mutation, setrlimit, and mknod PHPTs after phrust stream resources can expose host file descriptors and the runtime has safe process-mutation coverage."
 }

@@ -3,9 +3,9 @@
   "module": "memcached",
   "priority": "Deterministic in-process Memcached fake backend",
   "selected_manifest": "tests/phpt/manifests/modules/memcached.selected.jsonl",
-  "corpus_count": 1,
-  "selected_count": 1,
-  "pass_count": 1,
+  "corpus_count": 2,
+  "selected_count": 2,
+  "pass_count": 2,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
@@ -16,7 +16,8 @@
     "addServer/addServers and getServerList",
     "get/set/add/replace/delete and multi-key cache operations",
     "increment/decrement, touch, flush, options, result codes/messages",
-    "append/prepend, CAS-shaped writes, empty stats/version placeholders"
+    "append/prepend, CAS-shaped writes, empty stats/version placeholders",
+    "serializer/compression option constants and request-local option storage"
   ],
   "non_scope": [
     "External Memcached daemon protocol",

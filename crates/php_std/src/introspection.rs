@@ -27,6 +27,25 @@ pub fn get_loaded_extensions_value(registry: &ExtensionRegistry) -> Value {
     ))
 }
 
+/// Returns enabled PHP-visible function names for an extension.
+#[must_use]
+pub fn get_extension_funcs_value(registry: &ExtensionRegistry, extension: &str) -> Value {
+    let Some(extension) = registry.extension_case_insensitive(extension) else {
+        return Value::Bool(false);
+    };
+    if !registry.is_extension_enabled(extension.name()) {
+        return Value::Bool(false);
+    }
+    Value::Array(PhpArray::from_packed(
+        extension
+            .functions()
+            .iter()
+            .filter(|function| function.visibility() == crate::SymbolVisibility::PhpVisible)
+            .map(|function| Value::String(PhpString::from(function.name())))
+            .collect(),
+    ))
+}
+
 /// Returns whether a PHP-visible internal function is enabled.
 #[must_use]
 pub fn function_exists(registry: &ExtensionRegistry, name: &str) -> bool {
@@ -83,6 +102,27 @@ mod tests {
         assert!(!extension_loaded(&registry, "Json"));
         registry.disable_extension("core").expect("disable core");
         assert!(!extension_loaded(&registry, "core"));
+    }
+
+    #[test]
+    fn get_extension_funcs_returns_enabled_php_functions() {
+        let registry = ExtensionRegistry::standard_library();
+        let Value::Array(core_functions) = get_extension_funcs_value(registry, "CORE") else {
+            panic!("core extension functions should return an array");
+        };
+        let names = core_functions
+            .packed_elements()
+            .expect("function list should be packed")
+            .into_iter()
+            .filter_map(|value| value.as_php_string().map(PhpString::to_string_lossy))
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().any(|name| name == "zend_version"));
+        assert!(names.iter().any(|name| name == "get_defined_vars"));
+        assert_eq!(
+            get_extension_funcs_value(registry, "missing"),
+            Value::Bool(false)
+        );
     }
 
     #[test]

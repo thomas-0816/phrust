@@ -182,6 +182,7 @@ impl PhpReferenceClassification {
             "E_PHP_VM_UNHANDLED_MATCH" => Some(Self::UnhandledMatchError),
             "E_PHP_RUNTIME_UNDEFINED_FUNCTION"
             | "E_PHP_RUNTIME_OBJECT_TO_STRING_GAP"
+            | "E_PHP_RUNTIME_SYSVSHM_INVALID"
             | "E_PHP_VM_BY_REF_ARG_NOT_REFERENCEABLE"
             | "E_PHP_VM_UNKNOWN_NAMED_ARG"
             | "E_PHP_VM_DUPLICATE_NAMED_ARG"
@@ -646,6 +647,8 @@ pub enum RuntimeDiagnosticPayload {
     VmCompile(VmCompileDiagnostic),
     /// JSON builtin diagnostic payload.
     JsonBuiltin(JsonDiagnosticContext),
+    /// Tokenizer parse diagnostic payload.
+    TokenizerParse(TokenizerParseDiagnosticContext),
     /// Runtime bring-up diagnostic classification payload.
     Bringup(RuntimeBringupDiagnosticContext),
 }
@@ -657,8 +660,38 @@ impl RuntimeDiagnosticPayload {
         match self {
             Self::VmCompile(payload) => payload.envelope_context(),
             Self::JsonBuiltin(payload) => payload.envelope_context(),
+            Self::TokenizerParse(payload) => payload.envelope_context(),
             Self::Bringup(payload) => payload.envelope_context(),
         }
+    }
+}
+
+/// Additive diagnostic metadata for tokenizer ParseError failures.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenizerParseDiagnosticContext {
+    line: i64,
+}
+
+impl TokenizerParseDiagnosticContext {
+    /// Creates tokenizer parse diagnostic context.
+    #[must_use]
+    pub const fn new(line: i64) -> Self {
+        Self { line }
+    }
+
+    /// PHP source line inside the tokenized input string.
+    #[must_use]
+    pub const fn line(&self) -> i64 {
+        self.line
+    }
+
+    /// Structured payload fields for shared diagnostic envelopes.
+    #[must_use]
+    pub fn envelope_context(&self) -> BTreeMap<String, String> {
+        let mut context = BTreeMap::new();
+        context.insert("payload".to_string(), "tokenizer_parse".to_string());
+        context.insert("tokenizer_parse_line".to_string(), self.line.to_string());
+        context
     }
 }
 
@@ -1035,6 +1068,24 @@ pub fn undefined_variable_warning(
         "E_PHP_RUNTIME_UNDEFINED_VARIABLE_WARNING",
         RuntimeSeverity::Warning,
         format!("Undefined variable ${name}"),
+        source_span,
+        stack_trace,
+        Some(PhpReferenceClassification::Warning),
+    )
+}
+
+/// Undefined global variable warning helper.
+#[must_use]
+pub fn undefined_global_variable_warning(
+    name: impl Into<String>,
+    source_span: RuntimeSourceSpan,
+    stack_trace: Vec<RuntimeStackFrame>,
+) -> RuntimeDiagnostic {
+    let name = name.into();
+    RuntimeDiagnostic::new(
+        "E_PHP_RUNTIME_UNDEFINED_VARIABLE_WARNING",
+        RuntimeSeverity::Warning,
+        format!("Undefined global variable ${name}"),
         source_span,
         stack_trace,
         Some(PhpReferenceClassification::Warning),

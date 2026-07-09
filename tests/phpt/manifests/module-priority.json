@@ -212,12 +212,12 @@
       "module":"pcre",
       "leverage":66,
       "corpus_count":165,
-      "pass_count":41,
-      "skip_count":5,
-      "fail_count":117,
+      "pass_count":155,
+      "skip_count":7,
+      "fail_count":3,
       "bork_count":0,
-      "known_failure_count":126,
-      "next_step":"Use PCRE2 while documenting unsupported modifier/callout gaps."
+      "known_failure_count":3,
+      "next_step":"Close repeated UTF-8 validation performance and callback trampoline edge cases."
     },
     {
       "priority":19,

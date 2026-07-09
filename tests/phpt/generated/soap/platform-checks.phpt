@@ -24,6 +24,7 @@ var_dump(class_exists("Soap\\SoapFault", false));
 var_dump(is_soap_fault(new stdClass()));
 var_dump(use_soap_error_handler(false));
 var_dump(use_soap_error_handler(true));
+var_dump(use_soap_error_handler(false));
 ?>
 --EXPECT--
 bool(true)
@@ -38,5 +39,6 @@ bool(true)
 bool(true)
 bool(true)
 bool(false)
-bool(true)
 bool(false)
+bool(false)
+bool(true)

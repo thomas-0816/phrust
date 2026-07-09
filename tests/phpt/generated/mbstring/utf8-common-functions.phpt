@@ -4,6 +4,12 @@ mbstring: bounded UTF-8 common functions
 Focused mbstring UTF-8 coverage for length, substring, and case
 conversion. Reference output captured from PHP 8.5.7 php-src with
 --enable-mbstring --disable-mbregex.
+--SKIPIF--
+<?php
+if (!extension_loaded("mbstring")) {
+    die("skip mbstring extension not loaded\n");
+}
+?>
 --FILE--
 <?php
 var_dump(mb_strlen("Aé日", "UTF-8"));

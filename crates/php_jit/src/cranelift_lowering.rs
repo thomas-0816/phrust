@@ -2265,13 +2265,18 @@ fn property_load_candidate(
             "property-load fast path requires an ordinary leaf function",
         ));
     }
-    if matches!(
+    // The native result bypasses the interpreter's return-site coercion, so
+    // this tier only admits scalar return types and (below) requires the
+    // declared property type to be the *same* scalar — the typed-property
+    // invariant then proves the runtime value already matches and no coercion
+    // (`bool` → `int(1)`, `int` → `float`, `TypeError`) is skipped.
+    if !matches!(
         ir_function.return_type.as_ref(),
-        None | Some(IrReturnType::Void | IrReturnType::Never)
+        Some(IrReturnType::Int | IrReturnType::Float | IrReturnType::Bool)
     ) {
         return Err(CraneliftLoweringError::new(
             "JIT_CRANELIFT_REJECT_PROPERTY_LOAD_RETURN",
-            "property-load fast path requires a value return type",
+            "property-load fast path requires a scalar return type",
         ));
     }
     let [param] = ir_function.params.as_slice() else {
@@ -2372,6 +2377,17 @@ fn property_load_candidate(
             "property-load fast path rejects public __get",
         ));
     }
+    // Static exactness rule (see the return-type check above): the property's
+    // declared type must be exactly the declared return type, so the committed
+    // value provably needs no return-site coercion. This tier has no runtime
+    // result-tag guard (the copy-patch helper does), so untyped or
+    // differently-typed properties reject here.
+    if property_entry.type_ != ir_function.return_type {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_PROPERTY_LOAD_RETURN",
+            "property-load fast path requires the property type to equal the return type",
+        ));
+    }
     let Some(Terminator {
         kind:
             TerminatorKind::Return {
@@ -2403,6 +2419,15 @@ fn property_load_candidate(
             )
         })?;
 
+    // Recorded for parity with the copy-patch recognizer; this tier's helper
+    // does not consult it (the static exactness rule above already proves the
+    // committed value has this tag).
+    let expected_result_tag = match ir_function.return_type.as_ref() {
+        Some(IrReturnType::Int) => crate::JitCValueTag::Int as u16,
+        Some(IrReturnType::Float) => crate::JitCValueTag::FloatBits as u16,
+        Some(IrReturnType::Bool) => crate::JitCValueTag::Bool as u16,
+        _ => 0,
+    };
     Ok(PropertyLoadCandidate {
         object_param: param.local,
         metadata: JitPropertyLoadMetadata {
@@ -2412,6 +2437,7 @@ fn property_load_candidate(
             storage_name: property_storage_name(declaring_class, property_entry),
             property_slot_index,
             layout_version: 0,
+            expected_result_tag,
         },
     })
 }

@@ -1,4 +1,4 @@
-use crate::config::ServerPerfAblation;
+use crate::config::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, ServerPerfAblation};
 use crate::{
     access_log::AccessLogger,
     metrics::ServerMetrics,
@@ -60,6 +60,18 @@ pub(crate) struct AppState {
     pub(crate) request_scheme: &'static str,
     pub(crate) http3_alt_svc: Option<String>,
 }
+
+pub(crate) fn server_env_snapshot<I>(env: I) -> Arc<Vec<(String, String)>>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let mut env = env
+        .into_iter()
+        .filter(|(name, _)| name != BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV)
+        .collect::<Vec<_>>();
+    env.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    Arc::new(env)
+}
 #[derive(Clone, Debug)]
 pub(crate) struct ServerEngineState {
     pub(crate) engine_profile: EngineProfileName,
@@ -68,6 +80,16 @@ pub(crate) struct ServerEngineState {
     pub(crate) include_cache: Arc<IncludeCache>,
     pub(crate) compile_optimization_level: OptimizationLevel,
     persistent_metadata: Arc<PersistentMetadataStore>,
+    dense_includes: Option<DenseIncludeMode>,
+    perf_ablation: ServerPerfAblation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RequestExecutorCacheKey {
+    engine_profile: EngineProfileName,
+    max_vm_steps: usize,
+    include_cache_addr: usize,
+    compile_optimization_level: OptimizationLevel,
     dense_includes: Option<DenseIncludeMode>,
     perf_ablation: ServerPerfAblation,
 }
@@ -125,6 +147,7 @@ impl ServerEngineState {
         if let Some(mode) = self.dense_includes {
             options.vm_options.dense_include_execution = mode;
         }
+        options.vm_options.include_optimization_level = self.compile_optimization_level;
         if self.perf_ablation.disable_dense_includes {
             options.vm_options.dense_include_execution = DenseIncludeMode::Off;
         }
@@ -167,6 +190,17 @@ impl ServerEngineState {
                 .fetch_add(instantiated, Ordering::Relaxed);
         }
         options
+    }
+
+    pub(crate) fn request_executor_cache_key(&self) -> RequestExecutorCacheKey {
+        RequestExecutorCacheKey {
+            engine_profile: self.engine_profile,
+            max_vm_steps: self.max_vm_steps,
+            include_cache_addr: Arc::as_ptr(&self.include_cache) as usize,
+            compile_optimization_level: self.compile_optimization_level,
+            dense_includes: self.dense_includes,
+            perf_ablation: self.perf_ablation.clone(),
+        }
     }
 
     pub(crate) fn absorb_quickening_feedback(

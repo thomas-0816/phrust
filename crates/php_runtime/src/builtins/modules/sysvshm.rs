@@ -1,6 +1,6 @@
 //! Deterministic System V shared variable compatibility slice.
 
-use super::core::{argument_type_error, arity_error, int_arg};
+use super::core::{argument_type_error, argument_value_error, arity_error, int_arg};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
@@ -8,7 +8,6 @@ use crate::builtins::{
 use crate::{ClassEntry, ClassFlags, ObjectRef, Value, normalize_class_name};
 
 const SHM_CLASS: &str = "SysvSharedMemory";
-const SHM_ID_PROPERTY: &str = "__sysvshm_id";
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("shm_attach", builtin_shm_attach, BuiltinCompatibility::Php),
@@ -47,18 +46,28 @@ fn builtin_shm_attach(
         .get(1)
         .filter(|value| !matches!(value, Value::Null))
         .map_or(Ok(10_000), |value| int_arg("shm_attach", value))?;
+    if size <= 0 {
+        return Err(argument_value_error(
+            "shm_attach",
+            "#2 ($size)",
+            "must be greater than 0",
+        ));
+    }
     let permissions = optional_int("shm_attach", &args, 2, 0o666)?;
     let id = context.sysvshm_state().attach(key, size, permissions);
-    Ok(Value::Object(shm_object(id)))
+    let object = shm_object();
+    context.sysvshm_state().bind_object(object.id(), id);
+    Ok(Value::Object(object))
 }
 
 fn builtin_shm_detach(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_detach", &args, 1)?;
-    let _ = shm_id("shm_detach", &args[0])?;
+    let object_id = shm_bound_object_id(context, "shm_detach", &args[0])?;
+    context.sysvshm_state().destroy_object(object_id);
     Ok(Value::Bool(true))
 }
 
@@ -68,7 +77,7 @@ fn builtin_shm_has_var(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_has_var", &args, 2)?;
-    let shm_id = shm_id("shm_has_var", &args[0])?;
+    let shm_id = shm_handle(context, "shm_has_var", &args[0])?.segment_id;
     let key = int_arg("shm_has_var", &args[1])?;
     Ok(Value::Bool(
         context
@@ -84,12 +93,21 @@ fn builtin_shm_put_var(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_put_var", &args, 3)?;
-    let shm_id = shm_id("shm_put_var", &args[0])?;
+    let shm_id = shm_handle(context, "shm_put_var", &args[0])?.segment_id;
     let key = int_arg("shm_put_var", &args[1])?;
+    let stored_size = serialized_value_size(&args[2])?;
     let Some(segment) = context.sysvshm_state().segment_mut(shm_id) else {
         return Ok(Value::Bool(false));
     };
-    segment.put(key, args[2].clone());
+    if !segment.can_store(key, stored_size) {
+        context.php_warning(
+            "E_PHP_RUNTIME_SYSVSHM_NO_SPACE",
+            "shm_put_var(): Not enough shared memory left",
+            _span,
+        );
+        return Ok(Value::Bool(false));
+    }
+    segment.put(key, args[2].clone(), stored_size);
     Ok(Value::Bool(true))
 }
 
@@ -99,7 +117,7 @@ fn builtin_shm_get_var(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_get_var", &args, 2)?;
-    let shm_id = shm_id("shm_get_var", &args[0])?;
+    let shm_id = shm_handle(context, "shm_get_var", &args[0])?.segment_id;
     let key = int_arg("shm_get_var", &args[1])?;
     let Some(segment) = context.sysvshm_state().segment(shm_id) else {
         return Err(BuiltinError::new(
@@ -107,12 +125,16 @@ fn builtin_shm_get_var(
             "shm_get_var(): SysvSharedMemory object is no longer valid",
         ));
     };
-    segment.get(key).ok_or_else(|| {
-        BuiltinError::new(
+    if let Some(value) = segment.get(key) {
+        Ok(value)
+    } else {
+        context.php_warning(
             "E_PHP_RUNTIME_SYSVSHM_KEY",
-            format!("shm_get_var(): Variable key {key} does not exist"),
-        )
-    })
+            format!("shm_get_var(): Variable key {key} doesn't exist"),
+            _span,
+        );
+        Ok(Value::Bool(false))
+    }
 }
 
 fn builtin_shm_remove_var(
@@ -121,12 +143,21 @@ fn builtin_shm_remove_var(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_remove_var", &args, 2)?;
-    let shm_id = shm_id("shm_remove_var", &args[0])?;
+    let shm_id = shm_handle(context, "shm_remove_var", &args[0])?.segment_id;
     let key = int_arg("shm_remove_var", &args[1])?;
     let Some(segment) = context.sysvshm_state().segment_mut(shm_id) else {
         return Ok(Value::Bool(false));
     };
-    Ok(Value::Bool(segment.remove_var(key)))
+    if segment.remove_var(key) {
+        Ok(Value::Bool(true))
+    } else {
+        context.php_warning(
+            "E_PHP_RUNTIME_SYSVSHM_KEY",
+            format!("shm_remove_var(): Variable key {key} doesn't exist"),
+            _span,
+        );
+        Ok(Value::Bool(false))
+    }
 }
 
 fn builtin_shm_remove(
@@ -135,8 +166,9 @@ fn builtin_shm_remove(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("shm_remove", &args, 1)?;
-    let shm_id = shm_id("shm_remove", &args[0])?;
-    Ok(Value::Bool(context.sysvshm_state().remove(shm_id)))
+    let handle = shm_handle(context, "shm_remove", &args[0])?;
+    let removed = context.sysvshm_state().remove(handle.segment_id);
+    Ok(Value::Bool(removed))
 }
 
 fn expect_exact(name: &str, args: &[Value], expected: usize) -> Result<(), BuiltinError> {
@@ -164,26 +196,77 @@ fn optional_int(
         .map_or(Ok(default), |value| int_arg(name, value))
 }
 
-fn shm_id(name: &str, value: &Value) -> Result<i64, BuiltinError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ShmHandle {
+    segment_id: i64,
+}
+
+fn shm_bound_object_id(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    value: &Value,
+) -> Result<u64, BuiltinError> {
     let Value::Object(object) = value else {
         return Err(argument_type_error(name, "#1 ($shm)", SHM_CLASS, value));
     };
     if normalize_class_name(&object.class_name()) != "sysvsharedmemory" {
         return Err(argument_type_error(name, "#1 ($shm)", SHM_CLASS, value));
     }
-    match object.get_property(SHM_ID_PROPERTY) {
-        Some(Value::Int(id)) if id > 0 => Ok(id),
-        _ => Err(BuiltinError::new(
+    if context.sysvshm_state().object_destroyed(object.id()) {
+        return Err(BuiltinError::new(
             "E_PHP_RUNTIME_SYSVSHM_INVALID",
-            format!("{name}(): SysvSharedMemory object is no longer valid"),
-        )),
+            "Shared memory block has already been destroyed",
+        ));
     }
+    context
+        .sysvshm_state()
+        .bound_segment_id_for_object(object.id())
+        .map(|_| object.id())
+        .ok_or_else(|| {
+            BuiltinError::new(
+                "E_PHP_RUNTIME_SYSVSHM_INVALID",
+                "Shared memory block has already been destroyed",
+            )
+        })
 }
 
-fn shm_object(id: i64) -> ObjectRef {
-    let object = ObjectRef::new_with_display_name(&runtime_class(SHM_CLASS), SHM_CLASS);
-    object.set_property(SHM_ID_PROPERTY, Value::Int(id));
-    object
+fn shm_handle(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    value: &Value,
+) -> Result<ShmHandle, BuiltinError> {
+    let Value::Object(object) = value else {
+        return Err(argument_type_error(name, "#1 ($shm)", SHM_CLASS, value));
+    };
+    if normalize_class_name(&object.class_name()) != "sysvsharedmemory" {
+        return Err(argument_type_error(name, "#1 ($shm)", SHM_CLASS, value));
+    }
+    if context.sysvshm_state().object_destroyed(object.id()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_SYSVSHM_INVALID",
+            "Shared memory block has already been destroyed",
+        ));
+    }
+    context
+        .sysvshm_state()
+        .segment_id_for_object(object.id())
+        .map(|segment_id| ShmHandle { segment_id })
+        .ok_or_else(|| {
+            BuiltinError::new(
+                "E_PHP_RUNTIME_SYSVSHM_INVALID",
+                format!("{name}(): SysvSharedMemory object is no longer valid"),
+            )
+        })
+}
+
+fn shm_object() -> ObjectRef {
+    ObjectRef::new_with_display_name(&runtime_class(SHM_CLASS), SHM_CLASS)
+}
+
+fn serialized_value_size(value: &Value) -> Result<usize, BuiltinError> {
+    crate::serialize(value)
+        .map(|serialized| serialized.len())
+        .map_err(|error| BuiltinError::new("E_PHP_RUNTIME_SYSVSHM_SERIALIZE", error.message()))
 }
 
 fn runtime_class(name: &str) -> ClassEntry {
@@ -249,6 +332,150 @@ mod tests {
             builtin_shm_remove(&mut context, vec![shm], RuntimeSourceSpan::default(),)
                 .expect("remove"),
             Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn shared_memory_object_does_not_expose_internal_id_property() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let shm = builtin_shm_attach(
+            &mut context,
+            vec![Value::Int(111), Value::Int(1024)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("attach");
+        let Value::Object(shm) = shm else {
+            panic!("expected shared-memory object");
+        };
+
+        assert_eq!(shm.get_property("__sysvshm_id"), None);
+    }
+
+    #[test]
+    fn missing_variable_operations_warn_and_return_false() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let shm = builtin_shm_attach(
+            &mut context,
+            vec![Value::Int(222), Value::Int(1024)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("attach");
+
+        assert_eq!(
+            builtin_shm_get_var(
+                &mut context,
+                vec![shm.clone(), Value::Int(99)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("get"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            builtin_shm_remove_var(
+                &mut context,
+                vec![shm, Value::Int(99)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("remove var"),
+            Value::Bool(false)
+        );
+        let output = output.to_string_lossy();
+        assert!(output.contains("shm_get_var(): Variable key 99 doesn't exist"));
+        assert!(output.contains("shm_remove_var(): Variable key 99 doesn't exist"));
+    }
+
+    #[test]
+    fn put_var_respects_segment_size_budget() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let shm = builtin_shm_attach(
+            &mut context,
+            vec![Value::Int(333), Value::Int(16)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("attach");
+
+        assert_eq!(
+            builtin_shm_put_var(
+                &mut context,
+                vec![shm, Value::Int(1), Value::string("this value is too large")],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("put"),
+            Value::Bool(false)
+        );
+        assert!(
+            output
+                .to_string_lossy()
+                .contains("shm_put_var(): Not enough shared memory left")
+        );
+    }
+
+    #[test]
+    fn detach_destroys_object_handle() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let shm = builtin_shm_attach(
+            &mut context,
+            vec![Value::Int(444), Value::Int(1024)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("attach");
+        assert_eq!(
+            builtin_shm_detach(
+                &mut context,
+                vec![shm.clone()],
+                RuntimeSourceSpan::default()
+            )
+            .expect("detach"),
+            Value::Bool(true)
+        );
+
+        let error = builtin_shm_detach(&mut context, vec![shm], RuntimeSourceSpan::default())
+            .expect_err("destroyed handle");
+        assert_eq!(
+            error.message(),
+            "Shared memory block has already been destroyed"
+        );
+    }
+
+    #[test]
+    fn remove_allows_detach_before_destroying_handle() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let shm = builtin_shm_attach(
+            &mut context,
+            vec![Value::Int(555), Value::Int(1024)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("attach");
+
+        assert_eq!(
+            builtin_shm_remove(
+                &mut context,
+                vec![shm.clone()],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("remove"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            builtin_shm_detach(
+                &mut context,
+                vec![shm.clone()],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("detach"),
+            Value::Bool(true)
+        );
+
+        let error = builtin_shm_remove(&mut context, vec![shm], RuntimeSourceSpan::default())
+            .expect_err("destroyed handle");
+        assert_eq!(
+            error.message(),
+            "Shared memory block has already been destroyed"
         );
     }
 }

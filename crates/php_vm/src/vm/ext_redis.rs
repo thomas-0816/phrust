@@ -19,6 +19,10 @@ const REDIS_CONNECTED_PROPERTY: &str = "__redis_connected";
 const REDIS_DB_PROPERTY: &str = "__redis_db";
 const REDIS_STORE_PROPERTY: &str = "__redis_store";
 const REDIS_OPTIONS_PROPERTY: &str = "__redis_options";
+const REDIS_MODE_PROPERTY: &str = "__redis_mode";
+const REDIS_MODE_ATOMIC: i64 = 0;
+const REDIS_MODE_MULTI: i64 = 1;
+const REDIS_MODE_PIPELINE: i64 = 2;
 
 pub(super) fn new_redis_object(
     class_name: &str,
@@ -57,6 +61,47 @@ pub(super) fn redis_reset_object(object: &ObjectRef) {
     object.set_property(REDIS_DB_PROPERTY, Value::Int(0));
     object.set_property(REDIS_STORE_PROPERTY, Value::Array(PhpArray::new()));
     object.set_property(REDIS_OPTIONS_PROPERTY, Value::Array(PhpArray::new()));
+    object.set_property(REDIS_MODE_PROPERTY, Value::Int(REDIS_MODE_ATOMIC));
+}
+
+pub(super) fn redis_class_constant_value(class_name: &str, constant: &str) -> Option<Value> {
+    if !is_redis_runtime_class(class_name) {
+        return None;
+    }
+    let value = match constant.to_ascii_uppercase().as_str() {
+        "OPT_SERIALIZER" => 1,
+        "OPT_PREFIX" => 2,
+        "OPT_READ_TIMEOUT" => 3,
+        "OPT_SCAN" => 4,
+        "OPT_TCP_KEEPALIVE" => 6,
+        "OPT_COMPRESSION" => 7,
+        "OPT_REPLY_LITERAL" => 8,
+        "OPT_COMPRESSION_LEVEL" => 9,
+        "OPT_NULL_MULTIBULK_AS_NULL" => 10,
+        "OPT_MAX_RETRIES" => 11,
+        "OPT_BACKOFF_ALGORITHM" => 12,
+        "OPT_BACKOFF_BASE" => 13,
+        "OPT_BACKOFF_CAP" => 14,
+        "OPT_PACK_IGNORE_NUMBERS" => 15,
+        "SERIALIZER_NONE" => 0,
+        "SERIALIZER_PHP" => 1,
+        "SERIALIZER_IGBINARY" => 2,
+        "SERIALIZER_MSGPACK" => 3,
+        "SERIALIZER_JSON" => 4,
+        "COMPRESSION_NONE" => 0,
+        "COMPRESSION_LZF" => 1,
+        "COMPRESSION_ZSTD" => 2,
+        "COMPRESSION_LZ4" => 3,
+        "SCAN_NORETRY" => 0,
+        "SCAN_RETRY" => 1,
+        "SCAN_PREFIX" => 2,
+        "SCAN_NOPREFIX" => 3,
+        "ATOMIC" => REDIS_MODE_ATOMIC,
+        "MULTI" => REDIS_MODE_MULTI,
+        "PIPELINE" => REDIS_MODE_PIPELINE,
+        _ => return None,
+    };
+    Some(Value::Int(value))
 }
 
 pub(super) fn call_redis_method(
@@ -85,6 +130,12 @@ pub(super) fn call_redis_method(
         "ping" => {
             validate_redis_arg_count("Redis::ping", values.len(), 0, 1)?;
             Ok(Value::string("+PONG"))
+        }
+        "getmode" => {
+            validate_redis_arg_count("Redis::getMode", values.len(), 0, 0)?;
+            Ok(object
+                .get_property(REDIS_MODE_PROPERTY)
+                .unwrap_or(Value::Int(REDIS_MODE_ATOMIC)))
         }
         "isconnected" | "is_connected" => {
             validate_redis_arg_count("Redis::isConnected", values.len(), 0, 0)?;
@@ -138,14 +189,22 @@ pub(super) fn call_redis_method(
         }
         "multi" | "pipeline" => {
             validate_redis_arg_count("Redis::multi", values.len(), 0, 1)?;
+            let mode = if method == "pipeline" {
+                REDIS_MODE_PIPELINE
+            } else {
+                REDIS_MODE_MULTI
+            };
+            object.set_property(REDIS_MODE_PROPERTY, Value::Int(mode));
             Ok(Value::Object(object.clone()))
         }
         "exec" => {
             validate_redis_arg_count("Redis::exec", values.len(), 0, 0)?;
+            object.set_property(REDIS_MODE_PROPERTY, Value::Int(REDIS_MODE_ATOMIC));
             Ok(Value::Array(PhpArray::new()))
         }
         "discard" => {
             validate_redis_arg_count("Redis::discard", values.len(), 0, 0)?;
+            object.set_property(REDIS_MODE_PROPERTY, Value::Int(REDIS_MODE_ATOMIC));
             Ok(Value::Bool(true))
         }
         "scan" => redis_scan(object, &values),

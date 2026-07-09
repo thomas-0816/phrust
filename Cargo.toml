@@ -31,6 +31,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 
+[patch.crates-io]
+pcre2 = { path = "third_party/rust/pcre2" }
+tiger = { path = "third_party/rust/tiger" }
+
 [profile.dev]
 debug = "line-tables-only"
 incremental = false

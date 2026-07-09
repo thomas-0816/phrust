@@ -1,1 +1,4 @@
 {"path":"tests/phpt/generated/shmop/basic.phpt","module":"shmop","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers extension visibility, Shmop object handles, binary-safe read/write, keyed reopen, read-only mode, private key isolation, and delete semantics"}
+{"path":"ext/shmop/tests/001.phpt","module":"shmop","kind":"upstream","reason":"covers portable shmop create/read/write/reopen/delete behavior"}
+{"path":"ext/shmop/tests/002.phpt","module":"shmop","kind":"upstream","reason":"covers portable shmop validation, warning, and range diagnostics"}
+{"path":"ext/shmop/tests/shmop_open_private.phpt","module":"shmop","kind":"upstream","reason":"covers IPC_PRIVATE-style key zero isolation"}

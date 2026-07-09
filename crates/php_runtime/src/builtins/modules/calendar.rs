@@ -28,9 +28,14 @@ const CAL_EASTER_DEFAULT: i64 = 0;
 const CAL_EASTER_ROMAN: i64 = 1;
 const CAL_EASTER_ALWAYS_GREGORIAN: i64 = 2;
 const CAL_EASTER_ALWAYS_JULIAN: i64 = 3;
+const CAL_JEWISH_ADD_ALAFIM_GERESH: i64 = 2;
+const CAL_JEWISH_ADD_ALAFIM: i64 = 4;
+const CAL_JEWISH_ADD_GERESHAYIM: i64 = 8;
 
 const SECS_PER_DAY: i64 = 86_400;
 const UNIX_EPOCH_SDN: i64 = 2_440_588;
+const UNIX_MAX_JD: i64 = i64::MAX / SECS_PER_DAY + UNIX_EPOCH_SDN;
+const EASTER_MAX_YEAR: i64 = (i64::MAX / 5) * 4;
 const FRENCH_SDN_OFFSET: i64 = 2_375_474;
 const FRENCH_FIRST_VALID: i64 = 2_375_840;
 const FRENCH_LAST_VALID: i64 = 2_380_952;
@@ -113,6 +118,42 @@ const JEWISH_MONTH_NAME: [&str; 14] = [
     "", "Tishri", "Heshvan", "Kislev", "Tevet", "Shevat", "", "Adar", "Nisan", "Iyyar", "Sivan",
     "Tammuz", "Av", "Elul",
 ];
+const JEWISH_HEB_MONTH_NAME_LEAP: [&[u8]; 14] = [
+    b"",
+    b"\xFA\xF9\xF8\xE9",
+    b"\xE7\xF9\xE5\xEF",
+    b"\xEB\xF1\xEC\xE5",
+    b"\xE8\xE1\xFA",
+    b"\xF9\xE1\xE8",
+    b"\xE0\xE3\xF8 \xE0'",
+    b"\xE0\xE3\xF8 \xE1'",
+    b"\xF0\xE9\xF1\xEF",
+    b"\xE0\xE9\xE9\xF8",
+    b"\xF1\xE9\xE5\xEF",
+    b"\xFA\xEE\xE5\xE6",
+    b"\xE0\xE1",
+    b"\xE0\xEC\xE5\xEC",
+];
+const JEWISH_HEB_MONTH_NAME: [&[u8]; 14] = [
+    b"",
+    b"\xFA\xF9\xF8\xE9",
+    b"\xE7\xF9\xE5\xEF",
+    b"\xEB\xF1\xEC\xE5",
+    b"\xE8\xE1\xFA",
+    b"\xF9\xE1\xE8",
+    b"",
+    b"\xE0\xE3\xF8",
+    b"\xF0\xE9\xF1\xEF",
+    b"\xE0\xE9\xE9\xF8",
+    b"\xF1\xE9\xE5\xEF",
+    b"\xFA\xEE\xE5\xE6",
+    b"\xE0\xE1",
+    b"\xE0\xEC\xE5\xEC",
+];
+const HEBREW_NUMBER_LETTERS: [u8; 23] = [
+    b'0', 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEB, 0xEC, 0xEE, 0xF0, 0xF1,
+    0xF2, 0xF4, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA,
+];
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
@@ -180,14 +221,23 @@ fn builtin_cal_days_in_month(
     let year = bounded_less_than_i32_max_arg("cal_days_in_month", 3, &args[2])?;
     let start = calendar_to_sdn(cal, year, month, 1)?;
     if start == 0 {
-        return Err(value_error("cal_days_in_month", "Invalid date"));
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_VALUE",
+            "Invalid date",
+        ));
     }
     let mut next = calendar_to_sdn(cal, year, month + 1, 1)?;
     if next == 0 {
         next = calendar_to_sdn(cal, if year == -1 { 1 } else { year + 1 }, 1, 1)?;
+        if cal == CAL_FRENCH && next == 0 {
+            next = FRENCH_LAST_VALID + 1;
+        }
     }
     if next == 0 {
-        return Err(value_error("cal_days_in_month", "Invalid date"));
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_VALUE",
+            "Invalid date",
+        ));
     }
     Ok(Value::Int(next - start))
 }
@@ -219,6 +269,7 @@ fn builtin_cal_from_jd(
     let cal = calendar_arg("cal_from_jd", 2, &args[1])?;
     let (year, month, day) = calendar_from_sdn(cal, jd)?;
     let dow = day_of_week(jd);
+    let invalid_jewish_date = cal == CAL_JEWISH && year == 0 && month == 0 && day == 0;
     let mut result = PhpArray::new();
     result.insert(
         string_key("date"),
@@ -227,14 +278,29 @@ fn builtin_cal_from_jd(
     result.insert(string_key("month"), Value::Int(month));
     result.insert(string_key("day"), Value::Int(day));
     result.insert(string_key("year"), Value::Int(year));
-    result.insert(string_key("dow"), Value::Int(dow));
+    result.insert(
+        string_key("dow"),
+        if invalid_jewish_date {
+            Value::Null
+        } else {
+            Value::Int(dow)
+        },
+    );
     result.insert(
         string_key("abbrevdayname"),
-        Value::string(DAY_NAME_SHORT[dow as usize]),
+        Value::string(if invalid_jewish_date {
+            ""
+        } else {
+            DAY_NAME_SHORT[dow as usize]
+        }),
     );
     result.insert(
         string_key("dayname"),
-        Value::string(DAY_NAME_LONG[dow as usize]),
+        Value::string(if invalid_jewish_date {
+            ""
+        } else {
+            DAY_NAME_LONG[dow as usize]
+        }),
     );
     result.insert(
         string_key("abbrevmonth"),
@@ -304,7 +370,7 @@ fn builtin_juliantojd(
     }
     let month = bounded_i32_arg("juliantojd", 1, &args[0])?;
     let day = bounded_i32_arg("juliantojd", 2, &args[1])?;
-    let year = bounded_i32_arg("juliantojd", 3, &args[2])?;
+    let year = int_arg("juliantojd", &args[2])? as i32 as i64;
     Ok(Value::Int(julian_to_sdn(year, month, day)))
 }
 
@@ -378,9 +444,9 @@ fn builtin_jdtounix(
     }
     let jd = int_arg("jdtounix", &args[0])?;
     if jd < UNIX_EPOCH_SDN || jd - UNIX_EPOCH_SDN > i64::MAX / SECS_PER_DAY {
-        return Err(value_error(
-            "jdtounix",
-            "jday must be between 2440588 and the maximum representable Unix day",
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_VALUE",
+            format!("jday must be between {UNIX_EPOCH_SDN} and {UNIX_MAX_JD}"),
         ));
     }
     Ok(Value::Int((jd - UNIX_EPOCH_SDN) * SECS_PER_DAY))
@@ -489,13 +555,30 @@ fn builtin_jdtojewish(
         .transpose()
         .map_err(|message| value_error("jdtojewish", &message))?
         .unwrap_or(false);
-    if hebrew {
-        return Err(known_gap(
-            "jdtojewish",
-            "Hebrew-letter formatting is not implemented",
-        ));
-    }
+    let flags = args
+        .get(2)
+        .map(|value| int_arg("jdtojewish", value))
+        .transpose()?
+        .unwrap_or(0);
     let (year, month, day) = sdn_to_jewish(jd);
+    if hebrew {
+        if year <= 0 || year > 9999 {
+            return Err(value_error("jdtojewish", "Year out of range (0-9999)"));
+        }
+        let Some(day_text) = hebrew_number_to_chars(day, flags) else {
+            return Err(value_error("jdtojewish", "Day out of range (1-9999)"));
+        };
+        let Some(year_text) = hebrew_number_to_chars(year, flags) else {
+            return Err(value_error("jdtojewish", "Year out of range (0-9999)"));
+        };
+        let mut formatted = Vec::new();
+        formatted.extend_from_slice(&day_text);
+        formatted.push(b' ');
+        formatted.extend_from_slice(jewish_hebrew_month_name(year, month));
+        formatted.push(b' ');
+        formatted.extend_from_slice(&year_text);
+        return Ok(Value::string(formatted));
+    }
     Ok(Value::string(format!("{month}/{day}/{year}")))
 }
 
@@ -532,7 +615,7 @@ fn valid_calendar(name: &str, argument: usize, value: i64) -> Result<i64, Builti
     } else {
         Err(argument_value_error(
             name,
-            &format!("#{argument}"),
+            &calendar_arg_label(name, argument),
             "must be a valid calendar ID",
         ))
     }
@@ -547,7 +630,7 @@ fn bounded_i32_arg(name: &str, argument: usize, value: &Value) -> Result<i64, Bu
     if value < i32::MIN as i64 || value > i32::MAX as i64 {
         return Err(argument_value_error(
             name,
-            &format!("#{argument}"),
+            &calendar_arg_label(name, argument),
             "must be between -2147483648 and 2147483647",
         ));
     }
@@ -559,11 +642,11 @@ fn bounded_positive_i32_arg(
     argument: usize,
     value: &Value,
 ) -> Result<i64, BuiltinError> {
-    let value = bounded_i32_arg(name, argument, value)?;
-    if value <= 0 {
+    let value = int_arg(name, value)?;
+    if value <= 0 || value > i32::MAX as i64 - 1 {
         return Err(argument_value_error(
             name,
-            &format!("#{argument}"),
+            &calendar_arg_label(name, argument),
             "must be between 1 and 2147483646",
         ));
     }
@@ -576,14 +659,30 @@ fn bounded_less_than_i32_max_arg(
     value: &Value,
 ) -> Result<i64, BuiltinError> {
     let value = int_arg(name, value)?;
-    if value > i32::MAX as i64 - 1 {
+    if value >= i32::MAX as i64 - 1 {
         return Err(argument_value_error(
             name,
-            &format!("#{argument}"),
-            "must be less than 2147483647",
+            &calendar_arg_label(name, argument),
+            "must be less than 2147483646",
         ));
     }
     Ok(value)
+}
+
+fn calendar_arg_label(name: &str, argument: usize) -> String {
+    let argument_name = match (name, argument) {
+        ("cal_days_in_month", 1) | ("cal_info", 1) | ("cal_to_jd", 1) => "calendar",
+        ("cal_from_jd", 2) => "calendar",
+        ("cal_days_in_month", 2) | ("cal_to_jd", 2) => "month",
+        ("cal_days_in_month", 3) => "year",
+        ("cal_to_jd", 3) => "day",
+        ("cal_to_jd", 4) => "year",
+        ("gregoriantojd" | "juliantojd" | "jewishtojd" | "frenchtojd", 1) => "month",
+        ("gregoriantojd" | "juliantojd" | "jewishtojd" | "frenchtojd", 2) => "day",
+        ("gregoriantojd" | "juliantojd" | "jewishtojd" | "frenchtojd", 3) => "year",
+        _ => return format!("#{argument}"),
+    };
+    format!("#{argument} (${argument_name})")
 }
 
 fn calendar_to_sdn(cal: i64, year: i64, month: i64, day: i64) -> Result<i64, BuiltinError> {
@@ -701,9 +800,18 @@ fn sdn_to_gregorian(sdn: i64) -> (i64, i64, i64) {
     if sdn <= 0 {
         return (0, 0, 0);
     }
+    if sdn > (i64::MAX - 4 * GREGOR_SDN_OFFSET) / 4 {
+        return (0, 0, 0);
+    }
     let mut temp = (sdn + GREGOR_SDN_OFFSET) * 4 - 1;
+    if temp < 0 || temp / DAYS_PER_400_YEARS > i32::MAX as i64 {
+        return (0, 0, 0);
+    }
     let century = temp / DAYS_PER_400_YEARS;
     temp = ((temp % DAYS_PER_400_YEARS) / 4) * 4 + 3;
+    if century > (i32::MAX as i64 / 100) - (temp / DAYS_PER_4_YEARS) {
+        return (0, 0, 0);
+    }
     let mut year = (century * 100) + (temp / DAYS_PER_4_YEARS);
     let day_of_year = (temp % DAYS_PER_4_YEARS) / 4 + 1;
     temp = day_of_year * 5 - 3;
@@ -760,8 +868,14 @@ fn sdn_to_julian(sdn: i64) -> (i64, i64, i64) {
     if sdn <= 0 {
         return (0, 0, 0);
     }
+    if sdn > (i64::MAX - JULIAN_SDN_OFFSET * 4 + 1) / 4 || sdn < i64::MIN / 4 {
+        return (0, 0, 0);
+    }
     let mut temp = sdn * 4 + (JULIAN_SDN_OFFSET * 4 - 1);
     let mut year = temp / DAYS_PER_4_YEARS;
+    if year > i32::MAX as i64 || year < i32::MIN as i64 {
+        return (0, 0, 0);
+    }
     let day_of_year = (temp % DAYS_PER_4_YEARS) / 4 + 1;
     temp = day_of_year * 5 - 3;
     let mut month = temp / DAYS_PER_5_MONTHS;
@@ -1046,6 +1160,73 @@ fn jewish_month_name(year: i64, month: i64) -> &'static str {
     }
 }
 
+fn jewish_hebrew_month_name(year: i64, month: i64) -> &'static [u8] {
+    let Ok(index) = usize::try_from(month) else {
+        return b"";
+    };
+    if year > 0 && jewish_months_in_year(year) == 12 {
+        JEWISH_HEB_MONTH_NAME.get(index).copied().unwrap_or(b"")
+    } else {
+        JEWISH_HEB_MONTH_NAME_LEAP
+            .get(index)
+            .copied()
+            .unwrap_or(b"")
+    }
+}
+
+fn hebrew_number_to_chars(n: i64, flags: i64) -> Option<Vec<u8>> {
+    if !(1..=9999).contains(&n) {
+        return None;
+    }
+
+    let mut n = n;
+    let mut out = Vec::with_capacity(18);
+    let mut end_of_alafim = 0usize;
+
+    if n / 1000 > 0 {
+        out.push(HEBREW_NUMBER_LETTERS[(n / 1000) as usize]);
+        if flags & CAL_JEWISH_ADD_ALAFIM_GERESH != 0 {
+            out.push(b'\'');
+        }
+        if flags & CAL_JEWISH_ADD_ALAFIM != 0 {
+            out.extend_from_slice(b" \xE0\xEC\xF4\xE9\xED ");
+        }
+        end_of_alafim = out.len();
+        n %= 1000;
+    }
+
+    while n >= 400 {
+        out.push(HEBREW_NUMBER_LETTERS[22]);
+        n -= 400;
+    }
+    if n >= 100 {
+        out.push(HEBREW_NUMBER_LETTERS[(18 + n / 100) as usize]);
+        n %= 100;
+    }
+    if n == 15 || n == 16 {
+        out.push(HEBREW_NUMBER_LETTERS[9]);
+        out.push(HEBREW_NUMBER_LETTERS[(n - 9) as usize]);
+    } else {
+        if n >= 10 {
+            out.push(HEBREW_NUMBER_LETTERS[(9 + n / 10) as usize]);
+            n %= 10;
+        }
+        if n > 0 {
+            out.push(HEBREW_NUMBER_LETTERS[n as usize]);
+        }
+    }
+
+    if flags & CAL_JEWISH_ADD_GERESHAYIM != 0 {
+        match out.len().saturating_sub(end_of_alafim) {
+            0 => {}
+            1 => out.push(b'\''),
+            _ => out.insert(out.len() - 1, b'"'),
+        }
+    }
+
+    Some(out)
+}
+
 fn month_name_by_index(names: &'static [&'static str], month: i64) -> &'static str {
     let Ok(index) = usize::try_from(month) else {
         return "";
@@ -1085,18 +1266,25 @@ fn easter_days(year: i64, method: i64) -> i64 {
 }
 
 fn validate_easter_year(name: &str, year: i64, timestamp: bool) -> Result<(), BuiltinError> {
-    if year <= 0 {
+    if year <= 0 || year > EASTER_MAX_YEAR {
         return Err(argument_value_error(
             name,
             "#1 ($year)",
-            "must be at least 1",
+            &format!("must be between 1 and {EASTER_MAX_YEAR}"),
         ));
     }
-    if timestamp && !(1970..=2_000_000_000).contains(&year) {
+    if timestamp && year < 1970 {
         return Err(argument_value_error(
             name,
             "#1 ($year)",
-            "must be between 1970 and 2000000000",
+            "must be a year after 1970 (inclusive)",
+        ));
+    }
+    if timestamp && year > 2_000_000_000 {
+        return Err(argument_value_error(
+            name,
+            "#1 ($year)",
+            "must be a year before 2.000.000.000 (inclusive)",
         ));
     }
     Ok(())
@@ -1105,13 +1293,6 @@ fn validate_easter_year(name: &str, year: i64, timestamp: bool) -> Result<(), Bu
 fn positive_mod(value: i64, modulus: i64) -> i64 {
     let value = value % modulus;
     if value < 0 { value + modulus } else { value }
-}
-
-fn known_gap(function: &'static str, message: &str) -> BuiltinError {
-    BuiltinError::new(
-        "E_PHP_RUNTIME_CALENDAR_KNOWN_GAP",
-        format!("{function}(): {message}"),
-    )
 }
 
 fn string_key(value: &str) -> ArrayKey {
@@ -1124,6 +1305,10 @@ mod tests {
     use crate::OutputBuffer;
 
     fn call(name: &str, args: Vec<Value>) -> Value {
+        call_result(name, args).unwrap()
+    }
+
+    fn call_result(name: &str, args: Vec<Value>) -> BuiltinResult {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
         ENTRIES
@@ -1131,7 +1316,20 @@ mod tests {
             .find(|entry| entry.name() == name)
             .unwrap()
             .function()(&mut context, args, RuntimeSourceSpan::default())
-        .unwrap()
+    }
+
+    fn array_int(array: &PhpArray, key: &str) -> i64 {
+        let Some(Value::Int(value)) = array.get(&string_key(key)) else {
+            panic!("expected integer key {key}");
+        };
+        *value
+    }
+
+    fn string_bytes(value: Value) -> Vec<u8> {
+        let Value::String(value) = value else {
+            panic!("expected string value");
+        };
+        value.as_bytes().to_vec()
     }
 
     #[test]
@@ -1157,6 +1355,13 @@ mod tests {
         assert_eq!(
             call("jdtojulian", vec![Value::Int(2_461_226)]),
             Value::string("6/21/2026")
+        );
+        assert_eq!(
+            call(
+                "juliantojd",
+                vec![Value::Int(5), Value::Int(5), Value::Int(6_000_000_000)]
+            ),
+            Value::Int(622_764_916_319)
         );
     }
 
@@ -1194,6 +1399,24 @@ mod tests {
     }
 
     #[test]
+    fn french_final_month_and_unix_bounds_match_php_src() {
+        assert_eq!(
+            call(
+                "cal_days_in_month",
+                vec![Value::Int(CAL_FRENCH), Value::Int(13), Value::Int(14)]
+            ),
+            Value::Int(5)
+        );
+        assert_eq!(
+            call("jdtounix", vec![Value::Int(UNIX_MAX_JD)]),
+            Value::Int(9_223_372_036_854_720_000)
+        );
+        let error = call_result("jdtounix", vec![Value::Int(UNIX_MAX_JD + 1)])
+            .expect_err("out-of-range Julian day should fail");
+        assert!(format!("{error:?}").contains("jday must be between 2440588 and 106751993607888"));
+    }
+
+    #[test]
     fn easter_days_uses_php_src_algorithm() {
         assert_eq!(call("easter_days", vec![Value::Int(2026)]), Value::Int(15));
         assert_eq!(
@@ -1203,6 +1426,60 @@ mod tests {
             ),
             Value::Int(12)
         );
+    }
+
+    #[test]
+    fn calendar_extreme_serial_days_do_not_overflow() {
+        let Value::Array(julian) = call(
+            "cal_from_jd",
+            vec![
+                Value::Int(3_315_881_921_229_094_912),
+                Value::Int(CAL_JULIAN),
+            ],
+        ) else {
+            panic!("expected array");
+        };
+        assert_eq!(array_int(&julian, "month"), 0);
+        assert_eq!(array_int(&julian, "day"), 0);
+        assert_eq!(array_int(&julian, "year"), 0);
+        assert_eq!(array_int(&julian, "dow"), 3);
+
+        let Value::Array(gregorian) = call(
+            "cal_from_jd",
+            vec![
+                Value::Int(9_223_372_036_854_743_639),
+                Value::Int(CAL_GREGORIAN),
+            ],
+        ) else {
+            panic!("expected array");
+        };
+        assert_eq!(array_int(&gregorian, "month"), 0);
+        assert_eq!(array_int(&gregorian, "day"), 0);
+        assert_eq!(array_int(&gregorian, "year"), 0);
+    }
+
+    #[test]
+    fn easter_year_bounds_reject_overflow_inputs() {
+        let error = call_result(
+            "easter_days",
+            vec![Value::Int(i64::MAX), Value::Int(CAL_EASTER_DEFAULT)],
+        )
+        .expect_err("large Easter year should fail");
+        assert!(format!("{error:?}").contains("must be between 1 and"));
+
+        let too_early = call_result(
+            "easter_date",
+            vec![Value::Int(1969), Value::Int(CAL_EASTER_DEFAULT)],
+        )
+        .expect_err("pre-epoch Easter year should fail");
+        assert!(format!("{too_early:?}").contains("must be a year after 1970"));
+
+        let too_late = call_result(
+            "easter_date",
+            vec![Value::Int(2_000_000_001), Value::Int(CAL_EASTER_DEFAULT)],
+        )
+        .expect_err("large timestamp Easter year should fail");
+        assert!(format!("{too_late:?}").contains("must be a year before 2.000.000.000"));
     }
 
     #[test]
@@ -1247,6 +1524,26 @@ mod tests {
                 vec![Value::Int(2_453_396), Value::Int(CAL_MONTH_JEWISH)]
             ),
             Value::string("Shevat")
+        );
+    }
+
+    #[test]
+    fn jdtojewish_hebrew_formatting_matches_php_src_bytes() {
+        let jd = call(
+            "jewishtojd",
+            vec![Value::Int(1), Value::Int(1), Value::Int(5000)],
+        );
+        assert_eq!(
+            string_bytes(call("jdtojewish", vec![jd, Value::Bool(true)])),
+            b"\xE0 \xFA\xF9\xF8\xE9 \xE4".to_vec()
+        );
+
+        assert_eq!(
+            string_bytes(call(
+                "jdtojewish",
+                vec![Value::Int(2_452_576), Value::Bool(true), Value::Int(14)]
+            )),
+            b"\xEB\"\xE1 \xE7\xF9\xE5\xEF \xE4' \xE0\xEC\xF4\xE9\xED \xFA\xF9\xF1\"\xE2".to_vec()
         );
     }
 }

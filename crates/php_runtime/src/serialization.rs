@@ -8,6 +8,12 @@ use crate::{
 const DEFAULT_MAX_DEPTH: usize = 64;
 const DEFAULT_MAX_ITEMS: usize = 16_384;
 const DEFAULT_MAX_BYTES: usize = 1_048_576;
+const HASH_CONTEXT_CLASS: &str = "HashContext";
+const HASH_CONTEXT_ALGORITHM: &str = "__phrust_hash_algorithm";
+const HASH_CONTEXT_FLAGS: &str = "__phrust_hash_flags";
+const HASH_CONTEXT_FINALIZED: &str = "__phrust_hash_finalized";
+const HASH_HMAC_FLAG: i64 = 1;
+const XML_PARSER_CLASS: &str = "XMLParser";
 
 /// Security and compatibility limits for `unserialize`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,7 +58,15 @@ impl SerializationError {
 
 /// Serializes one runtime value in PHP's wire format for the standard-library MVP.
 pub fn serialize(value: &Value) -> Result<PhpString, SerializationError> {
-    let mut writer = Serializer::default();
+    serialize_with_precision(value, -1)
+}
+
+/// Serializes one runtime value using PHP's `serialize_precision` float formatting.
+pub fn serialize_with_precision(
+    value: &Value,
+    serialize_precision: i32,
+) -> Result<PhpString, SerializationError> {
+    let mut writer = Serializer::with_serialize_precision(serialize_precision);
     writer.write_value(value, 0)?;
     Ok(PhpString::from_bytes(writer.output))
 }
@@ -95,10 +109,46 @@ pub fn unserialize(
     Ok(value)
 }
 
-#[derive(Default)]
+/// Parses one PHP serialized value prefix and returns the consumed byte count.
+pub fn unserialize_prefix(
+    input: &PhpString,
+    options: UnserializeOptions,
+) -> Result<(Value, usize), SerializationError> {
+    if input.len() > options.max_bytes {
+        return Err(SerializationError::new(
+            "serialized input exceeds byte limit",
+        ));
+    }
+    let mut parser = Parser {
+        bytes: input.as_bytes(),
+        offset: 0,
+        options,
+        parsed_items: 0,
+    };
+    let value = parser.parse_value(0)?;
+    Ok((value, parser.offset))
+}
+
 struct Serializer {
     output: Vec<u8>,
     active_references: Vec<usize>,
+    serialize_precision: i32,
+}
+
+impl Default for Serializer {
+    fn default() -> Self {
+        Self::with_serialize_precision(-1)
+    }
+}
+
+impl Serializer {
+    fn with_serialize_precision(serialize_precision: i32) -> Self {
+        Self {
+            output: Vec::new(),
+            active_references: Vec::new(),
+            serialize_precision,
+        }
+    }
 }
 
 impl Serializer {
@@ -115,9 +165,9 @@ impl Serializer {
             Value::Int(value) => self
                 .output
                 .extend_from_slice(format!("i:{value};").as_bytes()),
-            Value::Float(value) => self
-                .output
-                .extend_from_slice(format!("d:{};", serialize_float(*value)).as_bytes()),
+            Value::Float(value) => self.output.extend_from_slice(
+                format!("d:{};", serialize_float(*value, self.serialize_precision)).as_bytes(),
+            ),
             Value::String(value) => {
                 self.output
                     .extend_from_slice(format!("s:{}:\"", value.len()).as_bytes());
@@ -134,6 +184,9 @@ impl Serializer {
                 self.output.extend_from_slice(b"}");
             }
             Value::Object(object) => {
+                if let Some(error) = object_serialization_error(object) {
+                    return Err(error);
+                }
                 self.write_object_properties(object, object.properties_snapshot(), depth)?;
             }
             Value::Fiber(_) | Value::Generator(_) | Value::Callable(_) => {
@@ -141,11 +194,7 @@ impl Serializer {
                     "serialization for this object-like runtime value is not implemented",
                 ));
             }
-            Value::Resource(_) => {
-                return Err(SerializationError::new(
-                    "serialization for resources is not implemented",
-                ));
-            }
+            Value::Resource(_) => self.output.extend_from_slice(b"i:0;"),
             Value::Reference(cell) => {
                 let id = cell.gc_debug_id();
                 if self.active_references.contains(&id) {
@@ -198,7 +247,44 @@ impl Serializer {
     }
 }
 
-fn serialize_float(value: crate::FloatValue) -> String {
+fn object_serialization_error(object: &ObjectRef) -> Option<SerializationError> {
+    if normalize_class_name(&object.class_name()) == normalize_class_name(XML_PARSER_CLASS) {
+        return Some(SerializationError::new(format!(
+            "Serialization of '{}' is not allowed",
+            object.display_name()
+        )));
+    }
+    hash_context_serialization_error(object)
+}
+
+fn hash_context_serialization_error(object: &ObjectRef) -> Option<SerializationError> {
+    if normalize_class_name(&object.class_name()) != normalize_class_name(HASH_CONTEXT_CLASS) {
+        return None;
+    }
+    if matches!(
+        object.get_property(HASH_CONTEXT_FLAGS),
+        Some(Value::Int(flags)) if flags & HASH_HMAC_FLAG != 0
+    ) {
+        return Some(SerializationError::new(
+            "HashContext with HASH_HMAC option cannot be serialized",
+        ));
+    }
+    if matches!(
+        object.get_property(HASH_CONTEXT_FINALIZED),
+        Some(Value::Bool(true))
+    ) {
+        let algorithm = match object.get_property(HASH_CONTEXT_ALGORITHM) {
+            Some(Value::String(algorithm)) => algorithm.to_string_lossy(),
+            _ => String::new(),
+        };
+        return Some(SerializationError::new(format!(
+            "HashContext for algorithm \"{algorithm}\" cannot be serialized"
+        )));
+    }
+    None
+}
+
+fn serialize_float(value: crate::FloatValue, serialize_precision: i32) -> String {
     let value = value.to_f64();
     if value.is_nan() {
         "NAN".to_owned()
@@ -208,9 +294,56 @@ fn serialize_float(value: crate::FloatValue) -> String {
         } else {
             "INF".to_owned()
         }
+    } else if serialize_precision >= 1 {
+        php_gcvt(value, serialize_precision as usize)
     } else {
         value.to_string()
     }
+}
+
+fn php_gcvt(value: f64, ndigit: usize) -> String {
+    let ndigit = ndigit.max(1);
+    if value == 0.0 {
+        return "0".to_owned();
+    }
+    let negative = value < 0.0;
+    let abs = value.abs();
+    let scientific = format!("{:.*E}", ndigit - 1, abs);
+    let exponent: i32 = scientific
+        .split_once('E')
+        .and_then(|(_, exp)| exp.parse().ok())
+        .unwrap_or(0);
+    let decimal_point = exponent + 1;
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+    if exponent < -4 || exponent >= ndigit as i32 {
+        let (mantissa, _) = scientific
+            .split_once('E')
+            .unwrap_or((scientific.as_str(), ""));
+        let mut mantissa = mantissa
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned();
+        if !mantissa.contains('.') {
+            mantissa.push_str(".0");
+        }
+        out.push_str(&mantissa);
+        out.push('E');
+        out.push(if exponent < 0 { '-' } else { '+' });
+        out.push_str(&exponent.abs().to_string());
+    } else {
+        let decimals = (ndigit as i32 - decimal_point).max(0) as usize;
+        let fixed = format!("{abs:.decimals$}");
+        let fixed = if fixed.contains('.') {
+            fixed.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            fixed.as_str()
+        };
+        out.push_str(fixed);
+    }
+    out
 }
 
 fn serialized_object_property_name(object: &ObjectRef, storage_name: &str) -> Vec<u8> {
@@ -446,10 +579,10 @@ fn empty_class(name: &str) -> ClassEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{UnserializeOptions, serialize, unserialize};
+    use super::{UnserializeOptions, serialize, serialize_with_precision, unserialize};
     use crate::{
         ClassEntry, ClassFlags, ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks,
-        ObjectRef, PhpArray, ReferenceCell, Value,
+        ObjectRef, PhpArray, ReferenceCell, ResourceTable, StreamFlags, StreamMetadata, Value,
     };
 
     #[test]
@@ -501,6 +634,28 @@ mod tests {
 
         let reference = Value::Reference(ReferenceCell::new(Value::Int(9)));
         assert_eq!(serialize(&reference).unwrap().to_string_lossy(), "i:9;");
+
+        let mut resources = ResourceTable::new();
+        let resource = resources.register_stream(
+            StreamFlags::new(true, true, true),
+            StreamMetadata::new("php", "stream", "w+", "php://memory"),
+        );
+        assert_eq!(
+            serialize(&Value::Resource(resource))
+                .unwrap()
+                .to_string_lossy(),
+            "i:0;"
+        );
+    }
+
+    #[test]
+    fn serialize_with_precision_uses_php_gcvt_float_shape() {
+        assert_eq!(
+            serialize_with_precision(&Value::float(12.3456789000e-10), 100)
+                .unwrap()
+                .to_string_lossy(),
+            "d:1.2345678899999999145113427164344339914681114578343112953007221221923828125E-9;"
+        );
     }
 
     #[test]
@@ -555,6 +710,40 @@ mod tests {
         assert_eq!(
             serialized.to_string_lossy().replace('\0', "\\0"),
             "O:3:\"bar\":3:{s:12:\"\\0foo\\0private\";s:7:\"private\";s:12:\"\\0*\\0protected\";s:9:\"protected\";s:6:\"public\";s:6:\"public\";}"
+        );
+    }
+
+    #[test]
+    fn rejects_unserializable_hash_context_states() {
+        let class = super::empty_class("HashContext");
+
+        let hmac = ObjectRef::new_with_display_name(&class, "HashContext");
+        hmac.set_property("__phrust_hash_algorithm", Value::string("sha256"));
+        hmac.set_property("__phrust_hash_flags", Value::Int(1));
+        hmac.set_property("__phrust_hash_finalized", Value::Bool(false));
+        assert_eq!(
+            serialize(&Value::Object(hmac)).unwrap_err().message(),
+            "HashContext with HASH_HMAC option cannot be serialized"
+        );
+
+        let finalized = ObjectRef::new_with_display_name(&class, "HashContext");
+        finalized.set_property("__phrust_hash_algorithm", Value::string("md5"));
+        finalized.set_property("__phrust_hash_flags", Value::Int(0));
+        finalized.set_property("__phrust_hash_finalized", Value::Bool(true));
+        assert_eq!(
+            serialize(&Value::Object(finalized)).unwrap_err().message(),
+            "HashContext for algorithm \"md5\" cannot be serialized"
+        );
+    }
+
+    #[test]
+    fn rejects_unserializable_xml_parser() {
+        let class = super::empty_class("XMLParser");
+        let parser = ObjectRef::new_with_display_name(&class, "XMLParser");
+
+        assert_eq!(
+            serialize(&Value::Object(parser)).unwrap_err().message(),
+            "Serialization of 'XMLParser' is not allowed"
         );
     }
 

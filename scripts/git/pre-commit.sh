@@ -14,13 +14,7 @@ if ! command -v nix >/dev/null 2>&1; then
   exit 1
 fi
 
-run() {
-  printf '[pre-commit] %s\n' "$*"
-  "$@"
-}
-
-run nix develop -c just fmt
-run nix develop -c just lint
-run nix develop -c just verify-phpt
+printf '%s\n' '[pre-commit] running lightweight commit gate'
+nix develop -c just pre-commit
 
 printf '%s\n' '[pre-commit] ok'

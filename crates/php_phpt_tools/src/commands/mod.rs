@@ -2064,6 +2064,16 @@ fn copy_phpt_support_files(phpt_path: &Path, work_dir: &Path) -> Result<(), Stri
     let Some(source_dir) = phpt_path.parent() else {
         return Ok(());
     };
+    if let Some(file_name) = phpt_path.file_name() {
+        let destination = work_dir.join(file_name);
+        fs::copy(phpt_path, &destination).map_err(|error| {
+            format!(
+                "{} -> {}: {error}",
+                phpt_path.display(),
+                destination.display()
+            )
+        })?;
+    }
     for entry in sorted_dir_entries(source_dir)? {
         let source = entry.path();
         if source == phpt_path || is_phpt_file(&source) {
@@ -2345,7 +2355,7 @@ fn target_cli_skip_reason(
         if manifest_path == "ext/standard/tests/hrtime/hrtime.phpt" {
             return Some("flaky hrtime busy-loop exceeds target VM step limit");
         }
-        if source.contains("passthru(")
+        if php_source_contains_function_call(source, "passthru")
             || source.contains("proc_open(")
             || source.contains("shell_exec(")
         {
@@ -2370,6 +2380,37 @@ fn target_cli_skip_reason(
     } else {
         None
     }
+}
+
+fn php_source_contains_function_call(source: &str, name: &str) -> bool {
+    let source_bytes = source.as_bytes();
+    let name_len = name.len();
+    let mut offset = 0;
+    while let Some(index) = source[offset..].find(name) {
+        let start = offset + index;
+        let before = start.checked_sub(1).and_then(|idx| source_bytes.get(idx));
+        if before.is_some_and(|byte| is_php_identifier_byte(*byte) || matches!(*byte, b'$' | b'>'))
+        {
+            offset = start + name_len;
+            continue;
+        }
+        let mut cursor = start + name_len;
+        while source_bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            cursor += 1;
+        }
+        if source_bytes.get(cursor) == Some(&b'(') {
+            return true;
+        }
+        offset = start + name_len;
+    }
+    false
+}
+
+fn is_php_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
 }
 
 fn required_extensions(sections: &[PhptSection]) -> Vec<String> {
@@ -6283,6 +6324,24 @@ mod tests {
         );
         assert_eq!(
             target_cli_skip_reason(
+                "ext/standard/tests/general_functions/passthru_basic.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php passthru('echo x');"
+            ),
+            Some("process-control functions are outside the php-cli target contract")
+        );
+        assert_eq!(
+            target_cli_skip_reason(
+                "tests/phpt/generated/zlib/gzip-stream-helpers.phpt",
+                TargetMode::PhpCli,
+                &sections,
+                "<?php gzpassthru($handle);"
+            ),
+            None
+        );
+        assert_eq!(
+            target_cli_skip_reason(
                 "sapi/cli/tests/bug77561.phpt",
                 TargetMode::PhpCli,
                 &sections,
@@ -6344,6 +6403,32 @@ mod tests {
             phpt_execution_filename(Path::new("Zend/tests/unset/this_in_unset.phpt")),
             "this_in_unset.php"
         );
+    }
+
+    #[test]
+    fn copy_support_files_mirrors_active_phpt_but_not_sibling_phpts() {
+        let base = env::temp_dir().join(format!("phrust-phpt-support-copy-{}", std::process::id()));
+        let source = base.join("source");
+        let work = base.join("work");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&source).expect("source dir");
+        fs::create_dir_all(&work).expect("work dir");
+        fs::write(source.join("003.phpt"), b"--TEST--\nactive\n").expect("active phpt");
+        fs::write(source.join("004.phpt"), b"--TEST--\nsibling\n").expect("sibling phpt");
+        fs::write(source.join("payload.inc"), b"payload").expect("payload");
+
+        copy_phpt_support_files(&source.join("003.phpt"), &work).expect("copy support files");
+
+        assert_eq!(
+            fs::read_to_string(work.join("003.phpt")).expect("active copied"),
+            "--TEST--\nactive\n"
+        );
+        assert!(!work.join("004.phpt").exists());
+        assert_eq!(
+            fs::read_to_string(work.join("payload.inc")).expect("payload copied"),
+            "payload"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -1,12 +1,11 @@
 use super::{
-    diagnostics::{RequestDiagnostic, emit_request_diagnostic, emit_server_debug},
+    diagnostics::{RequestDiagnostic, emit_request_diagnostic, emit_server_debug_lazy},
     metrics::RequestPhase,
     perf_trace::PerfTraceEvent,
     sessions::{finalize_session_state, seed_session_state},
-    state::AppState,
+    state::{AppState, RequestExecutorCacheKey},
 };
 use crate::{
-    config::BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV,
     multipart::{
         MultipartError, cleanup_uploaded_files, multipart_boundary, parse_multipart_into_context,
     },
@@ -22,14 +21,15 @@ use hyper::{
     http::{HeaderMap, request::Parts},
 };
 use php_executor::{
-    CompiledScriptCacheLookup, PhpExecutionError, PhpExecutionOutput, PhpExecutionStatus,
-    PhpExecutor, PhpRequestExecutionInput,
+    CompiledPhpScript, CompiledScriptCacheLookup, PhpExecutionError, PhpExecutionOutput,
+    PhpExecutionStatus, PhpExecutor, PhpRequestExecutionInput,
 };
 use php_runtime::api::{
     RuntimeContext, RuntimeHttpRequestContext, RuntimeHttpResponseState, SessionLoadCallback,
     SessionState, Value, parse_cookie_header, parse_form_urlencoded_body,
 };
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -42,6 +42,15 @@ use tracing::{debug, warn};
 pub(crate) struct PartsAndBody {
     pub(crate) parts: Parts,
     pub(crate) body: RequestBody,
+}
+
+thread_local! {
+    static REQUEST_EXECUTOR_CACHE: RefCell<Option<CachedRequestExecutor>> = const { RefCell::new(None) };
+}
+
+struct CachedRequestExecutor {
+    key: RequestExecutorCacheKey,
+    executor: PhpExecutor,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,16 +80,18 @@ pub(crate) async fn execute_php_request(
         phases: vec![("route_resolution", route_resolution.as_nanos())],
         ..PerfTraceEvent::default()
     };
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_BODY_READ_START",
         "body_read",
         "request body read started",
-        BTreeMap::from([(
-            "max_body_bytes".to_string(),
-            state.max_body_bytes.to_string(),
-        )]),
+        || {
+            BTreeMap::from([(
+                "max_body_bytes".to_string(),
+                state.max_body_bytes.to_string(),
+            )])
+        },
     );
     let body_started = Instant::now();
     let body = match timeout(
@@ -90,16 +101,18 @@ pub(crate) async fn execute_php_request(
     .await
     {
         Err(_) => {
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_BODY_READ_TIMEOUT",
                 "body_read",
                 "request body read timed out",
-                BTreeMap::from([(
-                    "timeout_ms".to_string(),
-                    state.request_timeout.as_millis().to_string(),
-                )]),
+                || {
+                    BTreeMap::from([(
+                        "timeout_ms".to_string(),
+                        state.request_timeout.as_millis().to_string(),
+                    )])
+                },
             );
             record_phase(
                 &state,
@@ -114,16 +127,18 @@ pub(crate) async fn execute_php_request(
         Ok(Ok(body)) => body,
         Ok(Err(BodyReadError::TooLarge)) => {
             state.metrics.body_too_large.fetch_add(1, Ordering::Relaxed);
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_BODY_TOO_LARGE",
                 "body_read",
                 "request body exceeded configured limit",
-                BTreeMap::from([(
-                    "max_body_bytes".to_string(),
-                    state.max_body_bytes.to_string(),
-                )]),
+                || {
+                    BTreeMap::from([(
+                        "max_body_bytes".to_string(),
+                        state.max_body_bytes.to_string(),
+                    )])
+                },
             );
             debug!(%peer, max_body_bytes=state.max_body_bytes, "request body too large");
             record_phase(
@@ -138,13 +153,13 @@ pub(crate) async fn execute_php_request(
         }
         Ok(Err(BodyReadError::Invalid)) => {
             let script_filename = script_path.display().to_string();
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_BODY_INVALID",
                 "body_read",
                 "request body read failed",
-                BTreeMap::new(),
+                BTreeMap::new,
             );
             emit_request_diagnostic(
                 &state,
@@ -179,13 +194,13 @@ pub(crate) async fn execute_php_request(
         body_started.elapsed(),
     );
     trace.body_bytes = body.len() as u64;
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_BODY_READ_END",
         "body_read",
         "request body read completed",
-        BTreeMap::from([("body_bytes".to_string(), body.len().to_string())]),
+        || BTreeMap::from([("body_bytes".to_string(), body.len().to_string())]),
     );
     if let Some(response) = execute_builtin_router_if_configured(
         &parts,
@@ -197,74 +212,80 @@ pub(crate) async fn execute_php_request(
     ) {
         return finish_php_request(&state, trace, response, None, Some("builtin_router"));
     }
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_SCRIPT_RESOLVED",
         "routing",
         "PHP script resolved",
-        BTreeMap::from([
-            ("script_path".to_string(), script_path.display().to_string()),
-            (
-                "path_info".to_string(),
-                path_info.clone().unwrap_or_default(),
-            ),
-        ]),
+        || {
+            BTreeMap::from([
+                ("script_path".to_string(), script_path.display().to_string()),
+                (
+                    "path_info".to_string(),
+                    path_info.clone().unwrap_or_default(),
+                ),
+            ])
+        },
     );
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_SCRIPT_CACHE_START",
         "cache",
         "script cache lookup started",
-        BTreeMap::from([("script_path".to_string(), script_path.display().to_string())]),
+        || BTreeMap::from([("script_path".to_string(), script_path.display().to_string())]),
     );
     let script_cache_before = state.engine.script_cache.cache_stats();
     let script_cache_started = Instant::now();
     let lookup = match state.compile_script(&script_path) {
         Ok(lookup) => {
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_SCRIPT_CACHE_END",
                 "cache",
                 "script cache lookup completed",
-                BTreeMap::from([
-                    ("script_path".to_string(), script_path.display().to_string()),
-                    ("cache_hit".to_string(), lookup.hit.to_string()),
-                ]),
+                || {
+                    BTreeMap::from([
+                        ("script_path".to_string(), script_path.display().to_string()),
+                        ("cache_hit".to_string(), lookup.hit.to_string()),
+                    ])
+                },
             );
             debug!(script=%script_path.display(), hit=lookup.hit, "compiled script cache lookup");
             lookup
         }
         Err(PhpExecutionError::Compile(output)) => {
             log_php_execution_failure(&script_path, &output);
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_SCRIPT_CACHE_ERROR",
                 "cache",
                 "script compile failed",
-                BTreeMap::from([
-                    ("script_path".to_string(), script_path.display().to_string()),
-                    (
-                        "diagnostic_text_bytes".to_string(),
-                        output.diagnostics_text.len().to_string(),
-                    ),
-                ]),
+                || {
+                    BTreeMap::from([
+                        ("script_path".to_string(), script_path.display().to_string()),
+                        (
+                            "diagnostic_text_bytes".to_string(),
+                            output.diagnostics_text.len().to_string(),
+                        ),
+                    ])
+                },
             );
             let response =
                 php_output_response(*output, parts.method == Method::HEAD, parts.version);
             return finish_php_request(&state, trace, response, None, Some("script_cache"));
         }
         Err(PhpExecutionError::Engine(_)) => {
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_SCRIPT_CACHE_ERROR",
                 "cache",
                 "script compile engine error",
-                BTreeMap::from([("script_path".to_string(), script_path.display().to_string())]),
+                || BTreeMap::from([("script_path".to_string(), script_path.display().to_string())]),
             );
             warn!(script=%script_path.display(), "php execution engine error");
             let response =
@@ -333,19 +354,21 @@ pub(crate) async fn execute_php_request(
             &state.multipart_config,
         ) {
             Ok(stats) => {
-                emit_server_debug(
+                emit_server_debug_lazy(
                     &state,
                     Some(&request_id),
                     "D_PHRUST_SERVER_MULTIPART_PARSED",
                     "multipart",
                     "multipart body parsed",
-                    BTreeMap::from([
-                        ("upload_count".to_string(), stats.uploads_total.to_string()),
-                        (
-                            "upload_bytes".to_string(),
-                            stats.upload_bytes_accepted.to_string(),
-                        ),
-                    ]),
+                    || {
+                        BTreeMap::from([
+                            ("upload_count".to_string(), stats.uploads_total.to_string()),
+                            (
+                                "upload_bytes".to_string(),
+                                stats.upload_bytes_accepted.to_string(),
+                            ),
+                        ])
+                    },
                 );
                 state
                     .metrics
@@ -383,16 +406,18 @@ pub(crate) async fn execute_php_request(
         request_context_started.elapsed(),
     );
     let upload_cleanup = request_context.uploaded_files.clone();
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_SESSION_SEED_START",
         "session",
         "session seed started",
-        BTreeMap::from([(
-            "sessions_enabled".to_string(),
-            state.session_config.enabled.to_string(),
-        )]),
+        || {
+            BTreeMap::from([(
+                "sessions_enabled".to_string(),
+                state.session_config.enabled.to_string(),
+            )])
+        },
     );
     let session_seed_started = Instant::now();
     let session_state = match seed_session_state(&request_context, &state) {
@@ -411,13 +436,13 @@ pub(crate) async fn execute_php_request(
                     &script_path.display().to_string(),
                 ),
             );
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_SESSION_ERROR",
                 "session",
                 "session seed failed",
-                BTreeMap::from([("error".to_string(), error.clone())]),
+                || BTreeMap::from([("error".to_string(), error.clone())]),
             );
             warn!(%peer, error=%error, "session state preparation failed");
             let response = response::text(
@@ -440,16 +465,18 @@ pub(crate) async fn execute_php_request(
         "session_seed",
         session_seed_started.elapsed(),
     );
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_SESSION_SEED_END",
         "session",
         "session seed completed",
-        BTreeMap::from([(
-            "session_active".to_string(),
-            (!session_state.id().is_empty()).to_string(),
-        )]),
+        || {
+            BTreeMap::from([(
+                "session_active".to_string(),
+                (!session_state.id().is_empty()).to_string(),
+            )])
+        },
     );
     let runtime_context = php_runtime_context_for_http(
         &state,
@@ -467,16 +494,18 @@ pub(crate) async fn execute_php_request(
     let is_head = parts.method == Method::HEAD;
     let script_log_path = script_path.clone();
     let execution_started = Instant::now();
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_EXECUTE_START",
         "execute",
         "PHP execution started",
-        BTreeMap::from([(
-            "script_path".to_string(),
-            script_log_path.display().to_string(),
-        )]),
+        || {
+            BTreeMap::from([(
+                "script_path".to_string(),
+                script_log_path.display().to_string(),
+            )])
+        },
     );
     let include_cache_before = state.engine.include_cache.cache_stats();
     let profile_requested = request_profile_requested(&state, &parts.headers);
@@ -534,39 +563,41 @@ pub(crate) async fn execute_php_request(
                 trace.profile_counters = output.counters.clone();
             }
             trace.profile_requested = profile_requested;
-            let mut execute_end_context = BTreeMap::from([
-                ("status".to_string(), format!("{:?}", output.status)),
-                (
-                    "duration_ms".to_string(),
-                    execution_started.elapsed().as_millis().to_string(),
-                ),
-                (
-                    "runtime_diagnostic_count".to_string(),
-                    output.runtime_diagnostics.len().to_string(),
-                ),
-            ]);
-            if !output.runtime_diagnostics.is_empty() {
-                execute_end_context.insert(
-                    "runtime_diagnostic_codes".to_string(),
-                    output
-                        .runtime_diagnostics
-                        .iter()
-                        .map(|diagnostic| diagnostic.id())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
-                execute_end_context.insert(
-                    "runtime_diagnostic_samples".to_string(),
-                    runtime_diagnostic_samples(&output),
-                );
-            }
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_EXECUTE_END",
                 "execute",
                 "PHP execution completed",
-                execute_end_context,
+                || {
+                    let mut execute_end_context = BTreeMap::from([
+                        ("status".to_string(), format!("{:?}", output.status)),
+                        (
+                            "duration_ms".to_string(),
+                            execution_started.elapsed().as_millis().to_string(),
+                        ),
+                        (
+                            "runtime_diagnostic_count".to_string(),
+                            output.runtime_diagnostics.len().to_string(),
+                        ),
+                    ]);
+                    if !output.runtime_diagnostics.is_empty() {
+                        execute_end_context.insert(
+                            "runtime_diagnostic_codes".to_string(),
+                            output
+                                .runtime_diagnostics
+                                .iter()
+                                .map(|diagnostic| diagnostic.id())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        );
+                        execute_end_context.insert(
+                            "runtime_diagnostic_samples".to_string(),
+                            runtime_diagnostic_samples(&output),
+                        );
+                    }
+                    execute_end_context
+                },
             );
             output.upload_registry.cleanup_unmoved();
             let session_finalize_started = Instant::now();
@@ -584,13 +615,13 @@ pub(crate) async fn execute_php_request(
                         &script_log_path.display().to_string(),
                     ),
                 );
-                emit_server_debug(
+                emit_server_debug_lazy(
                     &state,
                     Some(&request_id),
                     "D_PHRUST_SERVER_SESSION_ERROR",
                     "session",
                     "session finalization failed",
-                    BTreeMap::from([("error".to_string(), error.clone())]),
+                    || BTreeMap::from([("error".to_string(), error.clone())]),
                 );
                 warn!(%peer, error=%error, "session state finalization failed");
                 let response = response::text(
@@ -646,23 +677,25 @@ pub(crate) async fn execute_php_request(
         Err(PhpExecutionError::Compile(output)) => {
             cleanup_uploaded_files(&upload_cleanup);
             log_php_execution_failure(&script_log_path, &output);
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_EXECUTE_END",
                 "execute",
                 "PHP execution produced compile diagnostics",
-                BTreeMap::from([
-                    ("status".to_string(), "CompileError".to_string()),
-                    (
-                        "duration_ms".to_string(),
-                        execution_started.elapsed().as_millis().to_string(),
-                    ),
-                    (
-                        "diagnostic_text_bytes".to_string(),
-                        output.diagnostics_text.len().to_string(),
-                    ),
-                ]),
+                || {
+                    BTreeMap::from([
+                        ("status".to_string(), "CompileError".to_string()),
+                        (
+                            "duration_ms".to_string(),
+                            execution_started.elapsed().as_millis().to_string(),
+                        ),
+                        (
+                            "diagnostic_text_bytes".to_string(),
+                            output.diagnostics_text.len().to_string(),
+                        ),
+                    ])
+                },
             );
             let response = php_output_response(*output, is_head, parts.version);
             finish_php_request(
@@ -675,20 +708,22 @@ pub(crate) async fn execute_php_request(
         }
         Err(PhpExecutionError::Engine(error)) => {
             cleanup_uploaded_files(&upload_cleanup);
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
                 "D_PHRUST_SERVER_EXECUTE_END",
                 "execute",
                 "PHP execution engine error",
-                BTreeMap::from([
-                    ("status".to_string(), "EngineError".to_string()),
-                    (
-                        "duration_ms".to_string(),
-                        execution_started.elapsed().as_millis().to_string(),
-                    ),
-                    ("error".to_string(), error.to_string()),
-                ]),
+                || {
+                    BTreeMap::from([
+                        ("status".to_string(), "EngineError".to_string()),
+                        (
+                            "duration_ms".to_string(),
+                            execution_started.elapsed().as_millis().to_string(),
+                        ),
+                        ("error".to_string(), error.to_string()),
+                    ])
+                },
             );
             warn!(script=%script_log_path.display(), %error, "php execution engine error");
             let response =
@@ -785,16 +820,18 @@ pub(crate) fn execute_builtin_router_if_configured(
             ));
         }
     };
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(request_id),
         "D_PHRUST_SERVER_BUILTIN_ROUTER_END",
         "routing",
         "built-in router executed",
-        BTreeMap::from([(
-            "fallthrough".to_string(),
-            matches!(output.return_value, Some(Value::Bool(false))).to_string(),
-        )]),
+        || {
+            BTreeMap::from([(
+                "fallthrough".to_string(),
+                matches!(output.return_value, Some(Value::Bool(false))).to_string(),
+            )])
+        },
     );
     if matches!(output.return_value, Some(Value::Bool(false))) {
         None
@@ -843,9 +880,9 @@ pub(crate) fn perf_trace_counter_mode(state: &AppState) -> RequestCounterMode {
     RequestCounterMode::Off
 }
 
-/// True when this request opts into profiling: always when the header
-/// trigger is disabled, otherwise only when `x-phrust-request-profile: 1`
-/// is present.
+/// True when this request opts into profiling: only header-triggered by
+/// default; config/env can explicitly disable the header trigger for
+/// profiling every request in controlled benchmark runs.
 pub(crate) fn request_profile_requested(state: &AppState, headers: &HeaderMap) -> bool {
     if !state.request_profile_trigger_header {
         return true;
@@ -920,9 +957,8 @@ pub(crate) fn execute_compiled_php_with_state(
         .metrics
         .persistent_engine_policy_reuses
         .fetch_add(1, Ordering::Relaxed);
-    let executor =
-        PhpExecutor::with_options(state.engine.executor_options_for_request(&state.metrics));
-    let output = executor.execute_compiled(
+    let output = execute_compiled_with_request_executor(
+        state,
         &lookup.compiled,
         PhpRequestExecutionInput {
             real_path: Some(script_path),
@@ -944,6 +980,36 @@ pub(crate) fn execute_compiled_php_with_state(
             .fetch_add(absorbed as u64, Ordering::Relaxed);
     }
     Ok(output)
+}
+
+fn execute_compiled_with_request_executor(
+    state: &AppState,
+    compiled: &CompiledPhpScript,
+    input: PhpRequestExecutionInput,
+) -> PhpExecutionOutput {
+    let options = state.engine.executor_options_for_request(&state.metrics);
+    if !options.vm_options.quickening_seed.is_empty() {
+        return PhpExecutor::with_options(options).execute_compiled(compiled, input);
+    }
+
+    let key = state.engine.request_executor_cache_key();
+    REQUEST_EXECUTOR_CACHE.with(|cache| {
+        let mut cached = cache.borrow_mut();
+        let refresh = match cached.as_ref() {
+            Some(cached) => cached.key != key,
+            None => true,
+        };
+        if refresh {
+            *cached = Some(CachedRequestExecutor {
+                key,
+                executor: PhpExecutor::with_options(options.clone()),
+            });
+        }
+        match cached.as_mut() {
+            Some(cached) => cached.executor.execute_compiled(compiled, input),
+            None => PhpExecutor::with_options(options).execute_compiled(compiled, input),
+        }
+    })
 }
 
 pub(crate) fn log_php_execution_failure(script_path: &Path, output: &PhpExecutionOutput) {
@@ -1499,17 +1565,20 @@ fn hex_digit(nibble: u8) -> char {
     }
 }
 
-pub(crate) fn server_env_for_request(state: &AppState) -> Vec<(String, String)> {
-    let mut env = state
-        .env_snapshot
-        .iter()
-        .filter(|(name, _)| name != BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV)
-        .cloned()
-        .collect::<Vec<_>>();
-    if state.network_requests_enabled && !env.iter().any(|(name, _)| name == "PHRUST_NET_TESTS") {
-        env.push(("PHRUST_NET_TESTS".to_string(), "1".to_string()));
+pub(crate) fn server_env_for_request(state: &AppState) -> Arc<Vec<(String, String)>> {
+    if !state.network_requests_enabled
+        || state
+            .env_snapshot
+            .iter()
+            .any(|(name, _)| name == "PHRUST_NET_TESTS")
+    {
+        return Arc::clone(&state.env_snapshot);
     }
-    env
+
+    let mut env = state.env_snapshot.iter().cloned().collect::<Vec<_>>();
+    env.push(("PHRUST_NET_TESTS".to_string(), "1".to_string()));
+    env.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    Arc::new(env)
 }
 
 pub(crate) fn php_runtime_context_for_http(
@@ -1517,7 +1586,7 @@ pub(crate) fn php_runtime_context_for_http(
     request_context: RuntimeHttpRequestContext,
     session_state: SessionState,
     body: Arc<[u8]>,
-    env: Vec<(String, String)>,
+    env: Arc<Vec<(String, String)>>,
 ) -> RuntimeContext {
     RuntimeContext::controlled_http(request_context)
         .with_cwd(state.route_config.docroot.clone())
@@ -1525,7 +1594,7 @@ pub(crate) fn php_runtime_context_for_http(
         .with_session_state(session_state)
         .with_session_loader(session_load_callback(state))
         .with_execution_time_limit(state.execution_time_limit)
-        .with_env(env)
+        .with_sorted_env_arc(env)
         .with_stdin(body)
 }
 

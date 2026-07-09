@@ -49,9 +49,10 @@ pub use eligibility::{
 };
 pub use helpers::{
     JIT_HELPER_REGISTRY_ABI_HASH, JIT_HELPER_STATUS_FALLBACK, JIT_HELPER_STATUS_OK,
-    JIT_HELPER_STATUS_OVERFLOW, JIT_HELPER_STATUS_TAILCALL, JIT_HELPER_SYMBOLS, JitHelperArgKind,
-    JitHelperId, JitHelperReturnKind, JitHelperSymbol, helper_registry_is_stable,
-    helper_registry_layout_summary, lookup_helper_by_id, lookup_helper_by_name,
+    JIT_HELPER_STATUS_OVERFLOW, JIT_HELPER_STATUS_RESUME_CALL_BASE, JIT_HELPER_STATUS_TAILCALL,
+    JIT_HELPER_SYMBOLS, JitHelperArgKind, JitHelperId, JitHelperReturnKind, JitHelperSymbol,
+    helper_registry_is_stable, helper_registry_layout_summary, lookup_helper_by_id,
+    lookup_helper_by_name,
 };
 use php_ir::{FunctionId, IrUnit};
 use std::fmt;
@@ -182,6 +183,41 @@ pub struct JitFunctionHandle {
 /// Compile-time metadata for a monomorphic property-load fast path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitPropertyLoadMetadata {
+    /// Normalized receiver class name expected by the guard.
+    pub receiver_class: String,
+    /// Stable class table ID expected by the guard.
+    pub class_id: u32,
+    /// Declared property name without `$`.
+    pub property: String,
+    /// Runtime storage name used by the safe helper ABI.
+    pub storage_name: String,
+    /// Declared property slot/index in the class metadata.
+    pub property_slot_index: usize,
+    /// Lookup/layout epoch captured when the handle was compiled.
+    pub layout_version: u64,
+    /// `JitCValueTag` (as `u16`) the loading function's declared return type
+    /// requires the property value to already have, or `0` for no expectation.
+    ///
+    /// A leaf's native result bypasses the interpreter's return-site coercion,
+    /// so a scalar of a *different* type than the declared return type must
+    /// side-exit (the interpreter then coerces `bool` → `int(1)`, `int` →
+    /// `float`, or throws the exact `TypeError`) instead of committing the raw
+    /// property value. Recognizers set this from the return type (`int` →
+    /// `Int`, `float` → `FloatBits`, `bool` → `Bool`, `mixed` → `0`) and
+    /// reject return types with a richer coercion matrix.
+    pub expected_result_tag: u16,
+}
+
+/// Compile-time metadata for a monomorphic property-store fast path.
+///
+/// Same guard shape as [`JitPropertyLoadMetadata`] — the store helper performs
+/// the identical receiver-class layout guard before committing the write — but
+/// kept a distinct type because the store's recognition-time contract is
+/// stricter (declared *untyped*, non-readonly, hook-free, symmetric-visibility
+/// public slot), and conflating the two would let a load-eligible property leak
+/// into the write path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitPropertyStoreMetadata {
     /// Normalized receiver class name expected by the guard.
     pub receiver_class: String,
     /// Stable class table ID expected by the guard.

@@ -240,9 +240,22 @@ def classify_symbols(
             gap = KNOWN_GAP_BY_EXTENSION.get(extension)
             row["status"] = "known_gap" if gap else "missing"
             row["reason"] = gap or "reference symbol is not registered"
+        elif rust_symbol and not reference_symbol and kind == "functions":
+            if rust_symbol.get("runtime_builtin"):
+                row["status"] = "implemented"
+                row["reason"] = "registered and runtime builtin is wired; reference mapping unavailable or language construct"
+            else:
+                row["status"] = "stub"
+                row["reason"] = "Rust-only registry function has no runtime builtin"
+        elif rust_symbol and not reference_symbol and kind == "classes":
+            row["status"] = "partial"
+            row["reason"] = known_gap_reason(
+                extension,
+                "local registry class metadata is present; reference extension mapping unavailable",
+            )
         elif rust_symbol and not reference_symbol:
-            row["status"] = "stub"
-            row["reason"] = "Rust-only registry symbol or unavailable reference mapping"
+            row["status"] = "implemented"
+            row["reason"] = "registered in php_std; reference mapping unavailable"
         rows.append(row)
     return rows
 

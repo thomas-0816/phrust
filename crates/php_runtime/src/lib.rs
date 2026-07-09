@@ -64,9 +64,10 @@ pub mod api {
         ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
         BuiltinErrorContext, BuiltinRegistry, BuiltinResult, FilesystemRuntimeState,
         FtpOptionValue, FtpState, GettextState, IconvEncodingState, ImapState, InternalFunction,
-        LdapState, OpcacheState, OpenSslErrorState, PcntlState, ReadlineState, RuntimeSourceSpan,
-        ShmopState, SoapState, SocketState, Ssh2State, StreamContextState, StrtokState,
-        SysvMessageQueueState, SysvSemaphoreState, SysvSharedMemoryState,
+        LdapState, MbSubstituteCharacter, OpcacheState, OpenSslErrorState, PcntlState,
+        ReadlineState, RuntimeSourceSpan, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, ShmopState, SoapState,
+        SocketState, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
+        SysvSemaphoreState, SysvSharedMemoryState,
     };
     pub use crate::callable::{
         CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -100,11 +101,11 @@ pub mod api {
     pub use crate::diagnostic::{
         JsonDiagnosticContext, PhpReferenceClassification, RuntimeBringupDiagnosticContext,
         RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError, RuntimeEventKind,
-        RuntimeSeverity, RuntimeStackFrame, VmCompileDiagnostic, argument_count_error_mvp,
-        array_to_string_warning, division_by_zero_mvp, leading_numeric_string_warning,
-        non_numeric_string_type_error, type_error_mvp, undefined_function,
-        undefined_variable_warning, unhandled_match_error_mvp, unsupported_feature,
-        value_error_mvp,
+        RuntimeSeverity, RuntimeStackFrame, TokenizerParseDiagnosticContext, VmCompileDiagnostic,
+        argument_count_error_mvp, array_to_string_warning, division_by_zero_mvp,
+        leading_numeric_string_warning, non_numeric_string_type_error, type_error_mvp,
+        undefined_function, undefined_global_variable_warning, undefined_variable_warning,
+        unhandled_match_error_mvp, unsupported_feature, value_error_mvp,
     };
     pub use crate::error_output::{
         PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,
@@ -141,7 +142,7 @@ pub mod api {
         StreamWrapperRegistry,
     };
     pub use crate::serialization::{
-        SerializationError, UnserializeOptions, serialize, unserialize,
+        SerializationError, UnserializeOptions, serialize, unserialize, unserialize_prefix,
     };
     pub use crate::session::{
         PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState,
@@ -213,10 +214,10 @@ pub use builtins::{
     ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
     BuiltinErrorContext, BuiltinRegistry, BuiltinResult, FilesystemRuntimeState, FtpOptionValue,
     FtpState, GettextState, IconvEncodingState, ImapState, InternalFunction, JSON_ERROR_RECURSION,
-    JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, LdapState, OpcacheState, OpenSslErrorState,
-    PcntlState, ReadlineState, RuntimeSourceSpan, ShmopState, SoapState, SocketState, Ssh2State,
-    StreamContextState, StrtokState, SysvMessageQueueState, SysvSemaphoreState,
-    SysvSharedMemoryState,
+    JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, LdapState, MbSubstituteCharacter,
+    OpcacheState, OpenSslErrorState, PcntlState, ReadlineState, RuntimeSourceSpan, ShmopState,
+    SoapState, SocketState, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
+    SysvSemaphoreState, SysvSharedMemoryState,
 };
 pub use callable::{
     CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -249,10 +250,11 @@ pub use db::postgres::{
 pub use diagnostic::{
     JsonDiagnosticContext, PhpReferenceClassification, RuntimeBringupDiagnosticContext,
     RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeError, RuntimeEventKind, RuntimeSeverity,
-    RuntimeStackFrame, VmCompileDiagnostic, argument_count_error_mvp, array_to_string_warning,
-    division_by_zero_mvp, leading_numeric_string_warning, non_numeric_string_type_error,
-    type_error_mvp, undefined_function, undefined_variable_warning, unhandled_match_error_mvp,
-    unsupported_feature, value_error_mvp,
+    RuntimeStackFrame, TokenizerParseDiagnosticContext, VmCompileDiagnostic,
+    argument_count_error_mvp, array_to_string_warning, division_by_zero_mvp,
+    leading_numeric_string_warning, non_numeric_string_type_error, type_error_mvp,
+    undefined_function, undefined_global_variable_warning, undefined_variable_warning,
+    unhandled_match_error_mvp, unsupported_feature, value_error_mvp,
 };
 pub use error_output::{
     PHP_E_DEPRECATED, PHP_E_ERROR, PHP_E_NOTICE, PHP_E_USER_DEPRECATED, PHP_E_USER_ERROR,
@@ -298,7 +300,8 @@ pub use resource::{
     StreamWrapperRegistry,
 };
 pub use serialization::{
-    SerializationError, UnserializeOptions, serialize, serialize_object_properties, unserialize,
+    SerializationError, UnserializeOptions, serialize, serialize_object_properties,
+    serialize_with_precision, unserialize, unserialize_prefix,
 };
 pub use session::{PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState};
 pub use sqlite::{

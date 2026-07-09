@@ -280,7 +280,7 @@ mod tests {
             executor.options.vm_options.inline_caches,
             InlineCacheMode::On
         );
-        assert_eq!(executor.options.vm_options.jit, JitMode::Cranelift);
+        assert_eq!(executor.options.vm_options.jit, JitMode::Off);
     }
 
     #[test]
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(output.status, PhpExecutionStatus::Success);
         assert_eq!(output.stdout, b"123512351235");
         let counters = output.counters.expect("counters should be collected");
-        assert_eq!(counters.jit_mode, "cranelift");
+        assert_eq!(counters.jit_mode, "off");
         assert_eq!(counters.native_executions, counters.jit_executed);
         assert!(counters.bytecode_lower_attempts > 0, "{counters:?}");
         assert!(counters.quickening_attempts > 0, "{counters:?}");

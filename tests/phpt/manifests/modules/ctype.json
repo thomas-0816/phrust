@@ -5,8 +5,8 @@
   "selected_manifest": "tests/phpt/manifests/modules/ctype.selected.jsonl",
   "corpus_count": 51,
   "selected_count": 51,
-  "pass_count": 50,
-  "skip_count": 1,
+  "pass_count": 51,
+  "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
@@ -15,7 +15,7 @@
     "ASCII C-locale ctype predicates used by dependency probes",
     "PHP 8.5 legacy non-string fallback behavior for integers, object diagnostics, and false-returning non-strings"
   ],
-  "non_scope": ["Host locales unavailable to the local oracle/runtime environment"],
+  "non_scope": [],
   "target_gates": ["just phpt-dev-module MODULE=ctype"],
-  "next_step": "Keep ctype selected against the full upstream module target; re-run if local de_DE locale support changes the lc_ctype_inheritance skip."
+  "next_step": "Keep ctype selected against the full upstream module target."
 }

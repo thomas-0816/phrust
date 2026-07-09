@@ -3,6 +3,8 @@
 use crate::{ArrayKey, CallableValue, ObjectRef, OutputBuffer, PhpArray, Value, value::FloatValue};
 use std::collections::BTreeSet;
 
+const INTERNAL_THROWABLE_TRACE_STRING_PROPERTY: &str = "__phrust_trace_string";
+
 pub(in crate::builtins::modules) struct DebugFormatter {
     active_references: BTreeSet<usize>,
     active_arrays: BTreeSet<usize>,
@@ -81,7 +83,7 @@ impl DebugFormatter {
                     output.write_test_str("*RECURSION*\n");
                     return;
                 }
-                let properties = object.properties_snapshot();
+                let properties = php_visible_debug_properties(object);
                 output.write_test_str(&format!(
                     "object({})#{} ({}) {{\n",
                     object.display_name(),
@@ -139,7 +141,26 @@ impl DebugFormatter {
                     output.write_test_str("*RECURSION*\n");
                     return;
                 }
-                let properties = object.properties_snapshot();
+                if let Some(entries) = spl_fixed_array_export_entries(object) {
+                    output.write_test_str(&format!(
+                        "object({})#{} ({}) refcount({}){{\n",
+                        object.display_name(),
+                        object.id(),
+                        entries.len(),
+                        spl_fixed_array_debug_zval_refcount(object)
+                    ));
+                    for (key, property) in entries {
+                        write_indent(output, indent + 2);
+                        write_array_key_dump(output, &key);
+                        write_indent(output, indent + 2);
+                        self.write_debug_zval_dump_value(output, &property, indent + 2);
+                    }
+                    write_indent(output, indent);
+                    output.write_test_str("}\n");
+                    self.active_objects.remove(&object.id());
+                    return;
+                }
+                let properties = php_visible_debug_properties(object);
                 output.write_test_str(&format!(
                     "object({})#{} ({}) refcount({}){{\n",
                     object.display_name(),
@@ -384,7 +405,7 @@ impl DebugFormatter {
                 output.write_test_str(&format!("{} Object\n", object.display_name()));
                 write_indent(output, indent);
                 output.write_test_str("(\n");
-                for (name, property) in object.properties_snapshot() {
+                for (name, property) in php_visible_debug_properties(object) {
                     write_indent(output, indent + 4);
                     // print_r annotates visibility as `name`, `name:protected`,
                     // or `name:Class:private` — the var_dump label without quotes.
@@ -458,7 +479,7 @@ impl DebugFormatter {
                 }
                 if object.class_name().eq_ignore_ascii_case("stdClass") {
                     output.write_test_str("(object) array(\n");
-                    for (name, property) in object.properties_snapshot() {
+                    for (name, property) in php_visible_debug_properties(object) {
                         write_indent(output, indent + 3);
                         write_export_string(output, &name);
                         output.write_test_str(" => ");
@@ -499,7 +520,7 @@ impl DebugFormatter {
                     "\\{}::__set_state(array(\n",
                     object.display_name()
                 ));
-                for (name, property) in object.properties_snapshot() {
+                for (name, property) in php_visible_debug_properties(object) {
                     write_indent(output, indent + 3);
                     write_export_string(output, &name);
                     output.write_test_str(" => ");
@@ -581,6 +602,10 @@ fn object_is_spl_fixed_array(object: &ObjectRef) -> bool {
     )
 }
 
+fn spl_fixed_array_debug_zval_refcount(object: &ObjectRef) -> usize {
+    object.gc_refcount_estimate().min(1).saturating_add(3)
+}
+
 fn debug_deref_value(value: &Value) -> Value {
     match value {
         Value::Reference(cell) => cell.get(),
@@ -606,6 +631,14 @@ pub(in crate::builtins::modules) fn var_export_value_starts_multiline(value: &Va
         Value::Reference(cell) => var_export_value_starts_multiline(&cell.get()),
         _ => false,
     }
+}
+
+fn php_visible_debug_properties(object: &ObjectRef) -> Vec<(String, Value)> {
+    object
+        .properties_snapshot()
+        .into_iter()
+        .filter(|(name, _)| name != INTERNAL_THROWABLE_TRACE_STRING_PROPERTY)
+        .collect()
 }
 
 pub(in crate::builtins::modules) fn print_r_value_starts_multiline(value: &Value) -> bool {

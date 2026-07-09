@@ -659,6 +659,9 @@ fn ini_options(defines: &[(String, String)]) -> CliIniOptions {
             "filter.default" => {
                 options.default_input_filter = RuntimeInputFilter::from_ini_value(value);
             }
+            "filter.default_flags" => {
+                options.default_input_filter_flags = value.trim().parse::<i64>().ok();
+            }
             _ if name.starts_with("opcache.") => {}
             _ => {}
         }
@@ -671,6 +674,9 @@ fn emit_startup_ini_deprecations<W: Write>(
     options: &CliIniOptions,
 ) -> Result<(), String> {
     if !options.display_startup_errors.unwrap_or(false) {
+        return Ok(());
+    }
+    if !options.display_errors.unwrap_or(true) {
         return Ok(());
     }
     if let Some(mask) = options.error_reporting
@@ -968,12 +974,16 @@ mod tests {
 
     #[test]
     fn ini_options_parse_filter_default() {
-        let options = ini_options(&[("filter.default".to_string(), "special_chars".to_string())]);
+        let options = ini_options(&[
+            ("filter.default".to_string(), "special_chars".to_string()),
+            ("filter.default_flags".to_string(), "4".to_string()),
+        ]);
 
         assert_eq!(
             options.default_input_filter,
             Some(RuntimeInputFilter::SpecialChars)
         );
+        assert_eq!(options.default_input_filter_flags, Some(4));
     }
 
     #[test]
@@ -1292,6 +1302,38 @@ mod tests {
                 "display_startup_errors=1".to_string(),
                 "-d".to_string(),
                 "error_reporting=E_ALL&~E_DEPRECATED".to_string(),
+                "-d".to_string(),
+                "filter.default=special_chars".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+            &mut stdin,
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(String::from_utf8(stdout).expect("utf8"), "Done\n");
+        assert_eq!(stderr, b"");
+    }
+
+    #[test]
+    fn run_file_honors_display_errors_for_filter_default_startup_deprecation() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = temp_root("filter-default-startup-deprecation-display-off");
+        fs::create_dir_all(&root).expect("mkdir");
+        let script = root.join("fixture.php");
+        fs::write(&script, "<?php echo \"Done\\n\";").expect("write script");
+        let mut stdin = TestInput(Cursor::new(Vec::new()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = run(
+            [
+                "-n".to_string(),
+                "-d".to_string(),
+                "display_startup_errors=1".to_string(),
+                "-d".to_string(),
+                "display_errors=0".to_string(),
                 "-d".to_string(),
                 "filter.default=special_chars".to_string(),
                 script.to_string_lossy().into_owned(),

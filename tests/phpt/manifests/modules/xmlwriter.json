@@ -4,14 +4,14 @@
   "priority":"bounded XMLWriter MVP",
   "selected_manifest":"tests/phpt/manifests/modules/xmlwriter.selected.jsonl",
   "corpus_count":0,
-  "selected_count":2,
-  "pass_count":2,
+  "selected_count":3,
+  "pass_count":3,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":0,
-  "scope":["extension_loaded(\"xmlwriter\")","XMLWriter::openMemory","XMLWriter::toMemory","startDocument","startElement","writeAttribute","text","writeElement","endElement","endDocument","outputMemory","xmlwriter_open_memory","xmlwriter_start_document","xmlwriter_start_element","xmlwriter_write_attribute","xmlwriter_text","xmlwriter_write_element","xmlwriter_end_document","xmlwriter_output_memory"],
-  "non_scope":["full upstream ext/xmlwriter corpus","file/URI output","stream output","namespaces","indentation options","DTD/PI/comment nodes","libxml errors"],
+  "scope":["extension_loaded(\"xmlwriter\")","XMLWriter::openMemory","XMLWriter::toMemory","startDocument","startElement","writeAttribute","text","writeComment","writeCdata","writeElement","endElement","endDocument","outputMemory","xmlwriter_open_memory","xmlwriter_start_document","xmlwriter_start_element","xmlwriter_write_attribute","xmlwriter_text","xmlwriter_write_comment","xmlwriter_write_cdata","xmlwriter_write_element","xmlwriter_end_document","xmlwriter_output_memory"],
+  "non_scope":["full upstream ext/xmlwriter corpus","file/URI output","stream output","namespaces","indentation options","start/end comment and CDATA state machines","DTD/PI nodes","libxml errors"],
   "target_gates":["nix develop -c just phpt-module-target MODULE=xmlwriter","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=xmlwriter","nix develop -c just verify-phpt"],
-  "next_step":"Promote broader writer node kinds and output targets after the XML writer state model is broadened."
+  "next_step":"Promote start/end node state machines, namespaces, DTD/PI nodes, and output targets after the XML writer state model is broadened."
 }

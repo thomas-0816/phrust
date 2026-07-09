@@ -6385,6 +6385,7 @@ pub(super) fn spl_file_method_is_supported(method: &str) -> bool {
             | "next"
             | "fgets"
             | "fgetcsv"
+            | "fpassthru"
             | "ftruncate"
             | "__construct"
     )
@@ -6643,6 +6644,20 @@ pub(super) fn call_spl_file_method_with_context(
                 .map(|field| Value::string(field.as_bytes().to_vec()))
                 .collect();
             Ok(Value::packed_array(fields))
+        }
+        "fpassthru" => {
+            validate_spl_iterator_arg_count(&class_name, &args, 0, 0)?;
+            if matches!(
+                normalized_class.as_str(),
+                "splfileobject" | "spltempfileobject"
+            ) && !spl_file_is_initialized(object)
+            {
+                return Err(
+                    "E_PHP_VM_SPL_ERROR: The parent constructor was not called: the object is in an invalid state"
+                        .to_owned(),
+                );
+            }
+            Ok(Value::Int(0))
         }
         "ftruncate" => {
             validate_spl_iterator_arg_count(&class_name, &args, 1, 1)?;

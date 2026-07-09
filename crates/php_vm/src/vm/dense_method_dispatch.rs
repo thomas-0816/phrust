@@ -54,6 +54,30 @@ impl Vm {
         };
 
         let receiver_class = object.class_name();
+        if is_hash_context_runtime_class(&receiver_class)
+            && normalize_method_name(method) == "__debuginfo"
+        {
+            if !args.is_empty() {
+                return self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    format!(
+                        "E_PHP_VM_TOO_MANY_ARGS: HashContext::__debugInfo() expects exactly 0 arguments, {} given",
+                        args.len()
+                    ),
+                );
+            }
+            let Some(properties) = hash_context_debug_info_array(&object) else {
+                return self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    "E_PHP_VM_INVALID_HASH_CONTEXT: invalid HashContext state".to_owned(),
+                );
+            };
+            return VmResult::success_no_output(Some(Value::Array(properties)));
+        }
         if is_mysqli_runtime_class(&receiver_class) {
             // Same inline dispatch as the rich CallMethod arm; the generic
             // object-method callable helper does not cover mysqli.
@@ -73,8 +97,25 @@ impl Vm {
         }
         if is_spl_iterator_runtime_class(&receiver_class)
             || is_spl_container_runtime_class(&receiver_class)
+            || is_spl_heap_runtime_class(&receiver_class)
             || is_spl_file_runtime_class(&receiver_class)
+            || spl_runtime_marker(&object).is_some_and(|class| {
+                is_spl_iterator_runtime_class(&class)
+                    || is_spl_container_runtime_class(&class)
+                    || is_spl_heap_runtime_class(&class)
+                    || is_spl_file_runtime_class(&class)
+            })
+            || is_php_token_runtime_class(&receiver_class)
             || internal_throwable_instanceof(&receiver_class, "throwable").is_some()
+            || is_sqlite_runtime_class(&receiver_class)
+            || is_pdo_runtime_class(&receiver_class)
+            || is_redis_runtime_class(&receiver_class)
+            || is_memcached_runtime_class(&receiver_class)
+            || is_soap_runtime_class(&receiver_class)
+            || is_fileinfo_runtime_class(&receiver_class)
+            || is_imagick_runtime_class(&receiver_class)
+            || is_xsl_runtime_class(&receiver_class)
+            || is_phar_runtime_class(&receiver_class)
             || is_zip_runtime_class(&receiver_class)
             || is_xml_runtime_class(&receiver_class)
         {
@@ -330,6 +371,36 @@ impl Vm {
         let receiver_class = class.name.clone();
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
 
+        if class_extends_php_token(compiled, state, &class) && lowered_method == "tokenize" {
+            self.record_counter_dense_call_fallback("php_token_subclass_static_method");
+            let trace_values = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+            let result = match self
+                .php_token_static_method_value_for_class(compiled, state, &class, class_name, args)
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    return self
+                        .php_token_static_method_error_result(compiled, output, stack, error);
+                }
+            };
+            let trace_context = call_span.map(|call_span| TokenizerStaticCallTraceContext {
+                call: format!("{class_name}::{method}"),
+                values: trace_values,
+                call_span,
+            });
+            if let Err(result) = self.route_tokenizer_static_method_diagnostics(
+                compiled,
+                output,
+                stack,
+                state,
+                result.diagnostics,
+                trace_context.as_ref(),
+            ) {
+                return result;
+            }
+            return VmResult::success_no_output(Some(result.value));
+        }
+
         if class.flags.is_enum && matches!(lowered_method.as_str(), "cases" | "from" | "tryfrom") {
             self.record_counter_dense_call_fallback("enum_static_method");
             return match enum_static_method(compiled, state, &class, method, args, &|value| {
@@ -338,6 +409,162 @@ impl Vm {
                 Ok(value) => VmResult::success_no_output(Some(value)),
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
+        }
+
+        if lowered_method == "__construct" && is_supported_spl_runtime_class(&class.name) {
+            self.record_counter_dense_call_fallback("spl_runtime_constructor");
+            let Some(object) = current_this_object(compiled, stack) else {
+                return self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    format!(
+                        "E_PHP_VM_NON_STATIC_METHOD_CALL: Non-static method {}::__construct() cannot be called statically",
+                        class.display_name
+                    ),
+                );
+            };
+            let init_args = if is_spl_iterator_runtime_class(&class.name) {
+                match self.prepare_spl_iterator_constructor_args(
+                    compiled,
+                    &class.name,
+                    args,
+                    output,
+                    stack,
+                    state,
+                ) {
+                    Ok(args) => args,
+                    Err(result) => return result,
+                }
+            } else {
+                args
+            };
+            if let Err(message) = initialize_spl_runtime_subclass_storage(
+                &object,
+                &class.name,
+                init_args,
+                &self.options.runtime_context,
+                Some(&mut state.resources),
+            ) {
+                return self.runtime_error_at_optional_span(
+                    compiled, output, stack, state, call_span, message,
+                );
+            }
+            return VmResult::success_no_output(Some(Value::Null));
+        }
+
+        if is_supported_spl_runtime_class(&class.name) {
+            let Some(object) = current_this_object(compiled, stack) else {
+                return self.runtime_error(
+                    output,
+                    compiled,
+                    stack,
+                    format!(
+                        "E_PHP_VM_NON_STATIC_METHOD_CALL: Non-static method {}::{}() cannot be called statically",
+                        class.display_name, method
+                    ),
+                );
+            };
+            let spl_class = normalize_class_name(&class.name);
+            if is_spl_iterator_runtime_class(&spl_class) && spl_iterator_method_is_supported(method)
+            {
+                self.record_counter_dense_call_fallback("spl_runtime_parent_method");
+                if spl_class == "appenditerator"
+                    && matches!(lowered_method.as_str(), "append" | "rewind" | "next")
+                {
+                    return match self.call_spl_append_iterator_method(
+                        compiled, &object, method, args, output, stack, state, call_span,
+                    ) {
+                        Ok(value) => VmResult::success_no_output(Some(value)),
+                        Err(result) => result,
+                    };
+                }
+                if spl_class == "norewinditerator"
+                    && matches!(
+                        lowered_method.as_str(),
+                        "rewind" | "valid" | "current" | "key" | "next"
+                    )
+                {
+                    return match self.call_spl_no_rewind_iterator_method(
+                        compiled, &object, method, args, output, stack, state,
+                    ) {
+                        Ok(value) => VmResult::success_no_output(Some(value)),
+                        Err(result) => result,
+                    };
+                }
+                if matches!(
+                    spl_class.as_str(),
+                    "recursiveiteratoriterator" | "recursivetreeiterator"
+                ) && matches!(
+                    lowered_method.as_str(),
+                    "rewind"
+                        | "valid"
+                        | "current"
+                        | "next"
+                        | "callhaschildren"
+                        | "callgetchildren"
+                        | "beginchildren"
+                        | "endchildren"
+                ) {
+                    return match self.call_spl_recursive_iterator_iterator_method(
+                        compiled, object, method, args, call_span, output, stack, state,
+                    ) {
+                        Ok(value) => VmResult::success_no_output(Some(value)),
+                        Err(result) => result,
+                    };
+                }
+                return match call_spl_iterator_method(
+                    object,
+                    method,
+                    args,
+                    &self.options.runtime_context,
+                ) {
+                    Ok(value) => VmResult::success_no_output(Some(value)),
+                    Err(message) => self.runtime_error_at_optional_span(
+                        compiled, output, stack, state, call_span, message,
+                    ),
+                };
+            }
+            if is_spl_container_runtime_class(&spl_class)
+                && spl_container_method_is_supported(method)
+            {
+                self.record_counter_dense_call_fallback("spl_runtime_parent_method");
+                return match self.call_spl_container_method_with_magic(
+                    compiled, object, method, args, call_span, output, stack, state,
+                ) {
+                    Ok(value) => VmResult::success_no_output(Some(value)),
+                    Err(result) => result,
+                };
+            }
+            if is_spl_heap_runtime_class(&spl_class) && spl_heap_method_is_supported(method) {
+                self.record_counter_dense_call_fallback("spl_runtime_parent_method");
+                return match self
+                    .call_spl_heap_method(compiled, object, method, args, output, stack, state)
+                {
+                    Ok(value) => VmResult::success_no_output(Some(value)),
+                    Err(SplHeapMethodError::Message(message)) => self
+                        .runtime_error_at_optional_span(
+                            compiled, output, stack, state, call_span, message,
+                        ),
+                    Err(SplHeapMethodError::Runtime(result)) => *result,
+                };
+            }
+            if is_spl_file_runtime_class(&spl_class) && spl_file_method_is_supported(method) {
+                self.record_counter_dense_call_fallback("spl_runtime_parent_method");
+                return match call_spl_file_method_in_state(
+                    compiled,
+                    state,
+                    &object,
+                    method,
+                    args,
+                    &self.options.runtime_context,
+                ) {
+                    Ok(value) => VmResult::success_no_output(Some(value)),
+                    Err(message) => self.runtime_error_at_optional_span(
+                        compiled, output, stack, state, call_span, message,
+                    ),
+                };
+            }
         }
 
         self.observe_dense_call_inline_cache(

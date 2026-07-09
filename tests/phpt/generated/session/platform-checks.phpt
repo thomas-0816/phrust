@@ -49,5 +49,7 @@ array(1) {
 }
 bool(true)
 int(1)
-array(0) {
+array(1) {
+  ["alpha"]=>
+  string(4) "beta"
 }

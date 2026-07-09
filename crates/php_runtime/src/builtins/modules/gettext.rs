@@ -5,11 +5,15 @@ use crate::Value;
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
 };
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 
 const MAX_DOMAIN_LENGTH: usize = 1024;
 const MAX_MSGID_LENGTH: usize = 4096;
-const LC_ALL: i64 = 0;
+const LC_ALL: i64 = libc::LC_ALL as i64;
+const LC_CTYPE: i64 = libc::LC_CTYPE as i64;
+const LC_MESSAGES: i64 = libc::LC_MESSAGES as i64;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("_", builtin_gettext, BuiltinCompatibility::Php),
@@ -59,7 +63,7 @@ fn builtin_textdomain(
 }
 
 fn builtin_gettext(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -68,11 +72,19 @@ fn builtin_gettext(
     }
     let message = string_arg("gettext", &args[0])?;
     validate_message("gettext", "#1 ($message)", message.as_bytes().len())?;
-    Ok(Value::String(message))
+    let domain = context.gettext_state().current_domain().to_owned();
+    Ok(Value::string(translate(
+        context,
+        &domain,
+        message.as_bytes(),
+        None,
+        1,
+        LC_MESSAGES,
+    )))
 }
 
 fn builtin_dgettext(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -83,11 +95,18 @@ fn builtin_dgettext(
     let message = string_arg("dgettext", &args[1])?;
     validate_domain("dgettext", "#1 ($domain)", &domain.to_string_lossy())?;
     validate_message("dgettext", "#2 ($message)", message.as_bytes().len())?;
-    Ok(Value::String(message))
+    Ok(Value::string(translate(
+        context,
+        &domain.to_string_lossy(),
+        message.as_bytes(),
+        None,
+        1,
+        LC_MESSAGES,
+    )))
 }
 
 fn builtin_dcgettext(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -100,7 +119,14 @@ fn builtin_dcgettext(
     validate_domain("dcgettext", "#1 ($domain)", &domain.to_string_lossy())?;
     validate_message("dcgettext", "#2 ($message)", message.as_bytes().len())?;
     validate_category("dcgettext", "#3 ($category)", category)?;
-    Ok(Value::String(message))
+    Ok(Value::string(translate(
+        context,
+        &domain.to_string_lossy(),
+        message.as_bytes(),
+        None,
+        1,
+        category,
+    )))
 }
 
 fn builtin_bindtextdomain(
@@ -141,7 +167,7 @@ fn builtin_bindtextdomain(
 }
 
 fn builtin_ngettext(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -153,15 +179,19 @@ fn builtin_ngettext(
     let count = int_arg("ngettext", &args[2])?;
     validate_message("ngettext", "#1 ($singular)", singular.as_bytes().len())?;
     validate_message("ngettext", "#2 ($plural)", plural.as_bytes().len())?;
-    Ok(if count == 1 {
-        Value::String(singular)
-    } else {
-        Value::String(plural)
-    })
+    let domain = context.gettext_state().current_domain().to_owned();
+    Ok(Value::string(translate(
+        context,
+        &domain,
+        singular.as_bytes(),
+        Some(plural.as_bytes()),
+        count,
+        LC_MESSAGES,
+    )))
 }
 
 fn builtin_dngettext(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -175,15 +205,18 @@ fn builtin_dngettext(
     validate_domain("dngettext", "#1 ($domain)", &domain.to_string_lossy())?;
     validate_message("dngettext", "#2 ($singular)", singular.as_bytes().len())?;
     validate_message("dngettext", "#3 ($plural)", plural.as_bytes().len())?;
-    Ok(if count == 1 {
-        Value::String(singular)
-    } else {
-        Value::String(plural)
-    })
+    Ok(Value::string(translate(
+        context,
+        &domain.to_string_lossy(),
+        singular.as_bytes(),
+        Some(plural.as_bytes()),
+        count,
+        LC_MESSAGES,
+    )))
 }
 
 fn builtin_dcngettext(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -199,11 +232,14 @@ fn builtin_dcngettext(
     validate_message("dcngettext", "#2 ($singular)", singular.as_bytes().len())?;
     validate_message("dcngettext", "#3 ($plural)", plural.as_bytes().len())?;
     validate_category("dcngettext", "#5 ($category)", category)?;
-    Ok(if count == 1 {
-        Value::String(singular)
-    } else {
-        Value::String(plural)
-    })
+    Ok(Value::string(translate(
+        context,
+        &domain.to_string_lossy(),
+        singular.as_bytes(),
+        Some(plural.as_bytes()),
+        count,
+        category,
+    )))
 }
 
 fn builtin_bind_textdomain_codeset(
@@ -238,6 +274,13 @@ fn validate_domain(name: &str, argument: &str, domain: &str) -> Result<(), crate
     if domain.len() > MAX_DOMAIN_LENGTH {
         return Err(argument_value_error(name, argument, "is too long"));
     }
+    if domain.as_bytes().contains(&0) {
+        return Err(argument_value_error(
+            name,
+            argument,
+            "must not contain any null bytes",
+        ));
+    }
     if domain.is_empty() {
         return Err(argument_value_error(name, argument, "must not be empty"));
     }
@@ -256,6 +299,214 @@ fn validate_category(name: &str, argument: &str, category: i64) -> Result<(), cr
         return Err(argument_value_error(name, argument, "cannot be LC_ALL"));
     }
     Ok(())
+}
+
+fn translate(
+    context: &mut BuiltinContext<'_>,
+    domain: &str,
+    singular: &[u8],
+    plural: Option<&[u8]>,
+    count: i64,
+    category: i64,
+) -> Vec<u8> {
+    let Some(catalog) = load_catalog(context, domain, category) else {
+        return fallback_plural(singular, plural, count);
+    };
+    let key = plural.map_or_else(
+        || singular.to_vec(),
+        |plural| {
+            let mut key = singular.to_vec();
+            key.push(0);
+            key.extend_from_slice(plural);
+            key
+        },
+    );
+    let Some(translation) = catalog.messages.get(&key) else {
+        return fallback_plural(singular, plural, count);
+    };
+    if plural.is_none() {
+        return translation.clone();
+    }
+    let forms = translation.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let index = catalog
+        .plural_index(count)
+        .min(forms.len().saturating_sub(1));
+    forms
+        .get(index)
+        .filter(|form| !form.is_empty())
+        .map_or_else(
+            || fallback_plural(singular, plural, count),
+            |form| form.to_vec(),
+        )
+}
+
+fn fallback_plural(singular: &[u8], plural: Option<&[u8]>, count: i64) -> Vec<u8> {
+    if count == 1 {
+        singular.to_vec()
+    } else {
+        plural.unwrap_or(singular).to_vec()
+    }
+}
+
+fn load_catalog(
+    context: &BuiltinContext<'_>,
+    domain: &str,
+    category: i64,
+) -> Option<GettextCatalog> {
+    let root = PathBuf::from(context.gettext_state_ref().domain_path(domain)?);
+    let locale = gettext_locale(context, category)?;
+    for candidate in locale_candidates(&locale) {
+        let path = root
+            .join(candidate)
+            .join(category_name(category))
+            .join(format!("{domain}.mo"));
+        if let Ok(bytes) = fs::read(path)
+            && let Some(catalog) = GettextCatalog::parse(&bytes)
+        {
+            return Some(catalog);
+        }
+    }
+    None
+}
+
+fn gettext_locale(context: &BuiltinContext<'_>, category: i64) -> Option<String> {
+    context
+        .env_value("LC_ALL")
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            if category == LC_MESSAGES {
+                context
+                    .env_value("LC_MESSAGES")
+                    .filter(|value| !value.is_empty())
+            } else if category == LC_CTYPE {
+                context
+                    .env_value("LC_CTYPE")
+                    .filter(|value| !value.is_empty())
+            } else {
+                None
+            }
+        })
+        .or_else(|| context.env_value("LANG").filter(|value| !value.is_empty()))
+        .map(ToOwned::to_owned)
+}
+
+fn locale_candidates(locale: &str) -> Vec<&str> {
+    let trimmed = locale
+        .split_once('@')
+        .map_or(locale, |(locale, _)| locale)
+        .split_once('.')
+        .map_or(locale, |(locale, _)| locale);
+    if trimmed == locale {
+        vec![locale]
+    } else {
+        vec![locale, trimmed]
+    }
+}
+
+fn category_name(category: i64) -> &'static str {
+    if category == LC_CTYPE {
+        "LC_CTYPE"
+    } else {
+        "LC_MESSAGES"
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GettextCatalog {
+    messages: BTreeMap<Vec<u8>, Vec<u8>>,
+    plural_expression: PluralExpression,
+}
+
+impl GettextCatalog {
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let endian = match read_u32_le(bytes, 0)? {
+            0x9504_12de => Endian::Little,
+            0xde12_0495 => Endian::Big,
+            _ => return None,
+        };
+        let count = read_u32(bytes, 8, endian)? as usize;
+        let originals_offset = read_u32(bytes, 12, endian)? as usize;
+        let translations_offset = read_u32(bytes, 16, endian)? as usize;
+        let mut messages = BTreeMap::new();
+        for index in 0..count {
+            let original = read_mo_string(bytes, originals_offset + index * 8, endian)?;
+            let translation = read_mo_string(bytes, translations_offset + index * 8, endian)?;
+            messages.insert(original, translation);
+        }
+        let plural_expression = messages
+            .get(&Vec::new())
+            .and_then(|metadata| std::str::from_utf8(metadata).ok())
+            .map(PluralExpression::from_metadata)
+            .unwrap_or_default();
+        Some(Self {
+            messages,
+            plural_expression,
+        })
+    }
+
+    fn plural_index(&self, count: i64) -> usize {
+        self.plural_expression.index(count)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Endian {
+    Little,
+    Big,
+}
+
+fn read_mo_string(bytes: &[u8], table_offset: usize, endian: Endian) -> Option<Vec<u8>> {
+    let len = read_u32(bytes, table_offset, endian)? as usize;
+    let offset = read_u32(bytes, table_offset + 4, endian)? as usize;
+    bytes.get(offset..offset.checked_add(len)?).map(Vec::from)
+}
+
+fn read_u32(bytes: &[u8], offset: usize, endian: Endian) -> Option<u32> {
+    let raw = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
+    Some(match endian {
+        Endian::Little => u32::from_le_bytes(raw),
+        Endian::Big => u32::from_be_bytes(raw),
+    })
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PluralExpression {
+    English,
+    French,
+    One,
+}
+
+impl Default for PluralExpression {
+    fn default() -> Self {
+        Self::English
+    }
+}
+
+impl PluralExpression {
+    fn from_metadata(metadata: &str) -> Self {
+        let normalized = metadata.replace(' ', "");
+        if normalized.contains("nplurals=1") {
+            Self::One
+        } else if normalized.contains("plural=n>1") {
+            Self::French
+        } else {
+            Self::English
+        }
+    }
+
+    fn index(self, count: i64) -> usize {
+        match self {
+            Self::One => 0,
+            Self::French => usize::from(count > 1),
+            Self::English => usize::from(count != 1),
+        }
+    }
 }
 
 #[cfg(test)]

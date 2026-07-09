@@ -2,3 +2,4 @@
 {"path":"tests/phpt/generated/xmlreader/navigation-readxml.phpt"}
 {"path":"tests/phpt/generated/xmlreader/open-local-file.phpt"}
 {"path":"tests/phpt/generated/xmlreader/attributes-namespaces.phpt"}
+{"path":"tests/phpt/generated/xmlreader/expand-dom-interop.phpt"}

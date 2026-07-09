@@ -22,7 +22,7 @@ file_put_contents($png, "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x02\x
 file_put_contents($pdf, "%PDF-1.7\n");
 file_put_contents($txt, "plain text\n");
 $finfo = finfo_open(FILEINFO_MIME_TYPE);
-var_dump(is_resource($finfo));
+var_dump($finfo instanceof finfo);
 var_dump(finfo_file($finfo, $png));
 var_dump(finfo_file($finfo, $txt));
 var_dump(finfo_buffer($finfo, "PK\x03\x04fixture"));

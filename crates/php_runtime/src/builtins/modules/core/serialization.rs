@@ -1,12 +1,16 @@
 use super::*;
 
 pub(in crate::builtins::modules) fn builtin_serialize(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("serialize", &args, 1)?;
-    serialize_value(&args[0])
+    let serialize_precision = context
+        .ini_get("serialize_precision")
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .unwrap_or(-1);
+    serialize_with_precision(&args[0], serialize_precision)
         .map(Value::String)
         .map_err(|error| serialization_error("serialize", error.message()))
 }
@@ -105,8 +109,24 @@ pub(in crate::builtins::modules) fn builtin_var_export(
 }
 
 pub(in crate::builtins::modules) fn serialization_error(name: &str, message: &str) -> BuiltinError {
+    if name == "serialize" && is_xml_parser_serialization_error(message) {
+        return BuiltinError::new("E_PHP_VM_EXCEPTION", message.to_owned());
+    }
+    if name == "serialize" && is_hash_context_serialization_error(message) {
+        return BuiltinError::new("E_PHP_VM_SPL_RUNTIME_EXCEPTION", message.to_owned());
+    }
     BuiltinError::new(
         "E_PHP_RUNTIME_SERIALIZATION_ERROR",
         format!("builtin {name} failed: {message}"),
     )
+}
+
+fn is_xml_parser_serialization_error(message: &str) -> bool {
+    message == "Serialization of 'XMLParser' is not allowed"
+}
+
+fn is_hash_context_serialization_error(message: &str) -> bool {
+    message == "HashContext with HASH_HMAC option cannot be serialized"
+        || (message.starts_with("HashContext for algorithm \"")
+            && message.ends_with("\" cannot be serialized"))
 }

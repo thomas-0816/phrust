@@ -3,6 +3,7 @@
 use crate::{
     ArrayKey, FilesystemCapabilities, IniRegistry, PhpArray, PhpString, SessionState, Value,
 };
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,6 +20,8 @@ pub struct RuntimeIniOptions {
     pub display_errors: bool,
     /// Default input filter applied while materializing request superglobals.
     pub default_input_filter: RuntimeInputFilter,
+    /// Flags applied by PHP's deprecated `filter.default_flags` directive.
+    pub default_input_filter_flags: i64,
     /// Maximum decoded input variables materialized into each superglobal.
     pub max_input_vars: usize,
     /// Maximum PHP-style bracket nesting materialized for input names.
@@ -32,6 +35,7 @@ impl Default for RuntimeIniOptions {
             error_reporting: ErrorReporting::default(),
             display_errors: true,
             default_input_filter: RuntimeInputFilter::UnsafeRaw,
+            default_input_filter_flags: 0,
             max_input_vars: 1000,
             max_input_nesting_level: 64,
         }
@@ -472,7 +476,7 @@ pub struct RuntimeContext {
     /// PHP CLI argv vector. Element 0 is the script path when configured.
     pub argv: Vec<String>,
     /// Controlled environment entries. Host env is never imported implicitly.
-    pub env: Vec<(String, String)>,
+    pub env: Arc<Vec<(String, String)>>,
     /// Deterministic bytes exposed through CLI stdin resources.
     pub stdin: Arc<[u8]>,
     /// Minimal include path placeholder.
@@ -507,7 +511,7 @@ impl Default for RuntimeContext {
         Self {
             cwd: PathBuf::from("."),
             argv: Vec::new(),
-            env: Vec::new(),
+            env: Arc::new(Vec::new()),
             stdin: Arc::from([]),
             include_path: vec![PathBuf::from(".")],
             ini: RuntimeIniOptions::default(),
@@ -594,13 +598,17 @@ impl RuntimeContext {
                 RuntimeInputFilter::SpecialChars => "special_chars",
             },
         );
+        let _ = registry.set(
+            "filter.default_flags",
+            self.ini.default_input_filter_flags.to_string(),
+        );
         let _ = registry.set("max_input_vars", self.ini.max_input_vars.to_string());
         let _ = registry.set(
             "max_input_nesting_level",
             self.ini.max_input_nesting_level.to_string(),
         );
         for (name, value) in &self.ini_overrides {
-            let _ = registry.set(name, value.clone());
+            let _ = registry.set_startup(name, unquote_ini_override_value(value));
         }
         registry
     }
@@ -609,6 +617,13 @@ impl RuntimeContext {
     #[must_use]
     pub fn with_env(mut self, mut env: Vec<(String, String)>) -> Self {
         env.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        self.env = Arc::new(env);
+        self
+    }
+
+    /// Sets already sorted controlled environment entries.
+    #[must_use]
+    pub fn with_sorted_env_arc(mut self, env: Arc<Vec<(String, String)>>) -> Self {
         self.env = env;
         self
     }
@@ -708,7 +723,16 @@ impl RuntimeContext {
             "_COOKIE" => Some(Value::Array(self.cookie_array())),
             "_REQUEST" => Some(Value::Array(self.request_array())),
             "_FILES" => Some(Value::Array(self.files_array())),
-            "_SESSION" => Some(self.session.data_value()),
+            "_SESSION" => {
+                if self.session.status() == crate::PHP_SESSION_ACTIVE
+                    || self.session.started()
+                    || !self.session.id().is_empty()
+                {
+                    Some(self.session.data_value())
+                } else {
+                    None
+                }
+            }
             "GLOBALS" => Some(Value::Array(PhpArray::new())),
             _ => None,
         }
@@ -721,6 +745,7 @@ impl RuntimeContext {
             0 => Some(self.filter_post_array()),
             1 => Some(self.filter_get_array()),
             2 => Some(self.filter_cookie_array()),
+            4 => Some(self.env_array()),
             5 => Some(self.filter_server_array()),
             _ => None,
         }
@@ -740,6 +765,9 @@ impl RuntimeContext {
             return http_server_array(request);
         }
         let mut array = PhpArray::new();
+        for (key, value) in self.env.iter() {
+            insert_string(&mut array, key, value);
+        }
         array.insert(string_key("argc"), Value::Int(self.argc()));
         array.insert(string_key("argv"), self.argv_array());
         let script = self.argv.first().cloned().unwrap_or_default();
@@ -753,33 +781,43 @@ impl RuntimeContext {
 
     fn filter_get_array(&self) -> PhpArray {
         match &self.request_mode {
-            RuntimeRequestMode::Http(_) => self.get_array(),
+            RuntimeRequestMode::Http(request) => {
+                raw_input_pairs_array(&request.parsed_get, &self.ini)
+            }
             RuntimeRequestMode::Cli => self
                 .env_value("QUERY_STRING")
                 .map_or_else(PhpArray::new, |query| {
-                    input_pairs_array(&parse_query_string(query), &self.ini)
+                    raw_input_pairs_array(&parse_query_string(query), &self.ini)
                 }),
         }
     }
 
     fn filter_post_array(&self) -> PhpArray {
         match &self.request_mode {
-            RuntimeRequestMode::Http(_) => self.post_array(),
-            RuntimeRequestMode::Cli => self
-                .env_value("PHPT_REQUEST_BODY")
-                .map_or_else(PhpArray::new, |body| {
-                    input_pairs_array(&parse_form_urlencoded_body(body.as_bytes()), &self.ini)
-                }),
+            RuntimeRequestMode::Http(request) => {
+                raw_input_pairs_array(&request.parsed_post, &self.ini)
+            }
+            RuntimeRequestMode::Cli => {
+                self.env_value("PHPT_REQUEST_BODY")
+                    .map_or_else(PhpArray::new, |body| {
+                        raw_input_pairs_array(
+                            &parse_form_urlencoded_body(body.as_bytes()),
+                            &self.ini,
+                        )
+                    })
+            }
         }
     }
 
     fn filter_cookie_array(&self) -> PhpArray {
         match &self.request_mode {
-            RuntimeRequestMode::Http(_) => self.cookie_array(),
+            RuntimeRequestMode::Http(request) => {
+                raw_flat_pairs_array(&request.parsed_cookie, &self.ini)
+            }
             RuntimeRequestMode::Cli => self
                 .env_value("HTTP_COOKIE")
                 .map_or_else(PhpArray::new, |cookie| {
-                    flat_pairs_array(&parse_cookie_header(cookie), &self.ini)
+                    raw_flat_pairs_array(&parse_cookie_header(cookie), &self.ini)
                 }),
         }
     }
@@ -809,7 +847,7 @@ impl RuntimeContext {
 
     fn env_array(&self) -> PhpArray {
         let mut array = PhpArray::new();
-        for (key, value) in &self.env {
+        for (key, value) in self.env.iter() {
             array.insert(string_key(key), Value::string(value.as_bytes().to_vec()));
         }
         array
@@ -884,6 +922,18 @@ impl RuntimeContext {
             }
             RuntimeRequestMode::Cli => PhpArray::new(),
         }
+    }
+}
+
+fn unquote_ini_override_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
     }
 }
 
@@ -1007,9 +1057,21 @@ pub fn input_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) ->
     array
 }
 
+fn raw_input_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) -> PhpArray {
+    let mut array = PhpArray::new();
+    InputArrayBuilder::raw(ini).insert_pairs(&mut array, pairs);
+    array
+}
+
 fn flat_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) -> PhpArray {
     let mut array = PhpArray::new();
     InputArrayBuilder::new(ini).insert_flat_pairs(&mut array, pairs);
+    array
+}
+
+fn raw_flat_pairs_array(pairs: &[(String, String)], ini: &RuntimeIniOptions) -> PhpArray {
+    let mut array = PhpArray::new();
+    InputArrayBuilder::raw(ini).insert_flat_pairs(&mut array, pairs);
     array
 }
 
@@ -1023,6 +1085,7 @@ struct InputArrayBuilder {
     remaining_vars: usize,
     max_input_nesting_level: usize,
     default_filter: RuntimeInputFilter,
+    default_filter_flags: i64,
 }
 
 impl InputArrayBuilder {
@@ -1031,6 +1094,15 @@ impl InputArrayBuilder {
             remaining_vars: ini.max_input_vars,
             max_input_nesting_level: ini.max_input_nesting_level,
             default_filter: ini.default_input_filter,
+            default_filter_flags: ini.default_input_filter_flags,
+        }
+    }
+
+    fn raw(ini: &RuntimeIniOptions) -> Self {
+        Self {
+            default_filter: RuntimeInputFilter::UnsafeRaw,
+            default_filter_flags: 0,
+            ..Self::new(ini)
         }
     }
 
@@ -1047,11 +1119,14 @@ impl InputArrayBuilder {
     }
 
     fn insert_flat_pairs(&mut self, array: &mut PhpArray, pairs: &[(String, String)]) {
+        let mut seen = HashSet::new();
         for (key, value) in pairs {
             if !self.consume_var() {
                 break;
             }
-            array.insert(string_key(key), self.filter_value(value));
+            if seen.insert(key) {
+                array.insert(string_key(key), self.filter_value(value));
+            }
         }
     }
 
@@ -1065,11 +1140,56 @@ impl InputArrayBuilder {
 
     fn filter_value(&self, value: &str) -> Value {
         match self.default_filter {
-            RuntimeInputFilter::UnsafeRaw => Value::string(value.as_bytes().to_vec()),
-            RuntimeInputFilter::Stripped => Value::string(strip_input_tags(value)),
+            RuntimeInputFilter::UnsafeRaw => Value::string(filter_unsafe_raw_input(
+                value,
+                self.default_input_filter_flags(),
+            )),
+            RuntimeInputFilter::Stripped => Value::string(encode_input_stripped(value)),
             RuntimeInputFilter::SpecialChars => Value::string(encode_input_special_chars(value)),
         }
     }
+
+    fn default_input_filter_flags(&self) -> i64 {
+        self.default_filter_flags
+    }
+}
+
+const FILTER_FLAG_STRIP_LOW: i64 = 4;
+const FILTER_FLAG_STRIP_HIGH: i64 = 8;
+const FILTER_FLAG_ENCODE_LOW: i64 = 16;
+const FILTER_FLAG_ENCODE_HIGH: i64 = 32;
+const FILTER_FLAG_ENCODE_AMP: i64 = 64;
+const FILTER_FLAG_STRIP_BACKTICK: i64 = 512;
+
+fn filter_unsafe_raw_input(value: &str, flags: i64) -> Vec<u8> {
+    let relevant_flags = FILTER_FLAG_STRIP_LOW
+        | FILTER_FLAG_STRIP_HIGH
+        | FILTER_FLAG_ENCODE_LOW
+        | FILTER_FLAG_ENCODE_HIGH
+        | FILTER_FLAG_ENCODE_AMP
+        | FILTER_FLAG_STRIP_BACKTICK;
+    if flags & relevant_flags == 0 {
+        return value.as_bytes().to_vec();
+    }
+    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+    let strip_backtick = flags & FILTER_FLAG_STRIP_BACKTICK != 0;
+    let mut output = Vec::with_capacity(value.len());
+    for byte in value.bytes() {
+        if strip_low && byte < 0x20 || strip_high && byte >= 0x7f || strip_backtick && byte == b'`'
+        {
+            continue;
+        }
+        if flags & FILTER_FLAG_ENCODE_AMP != 0 && byte == b'&'
+            || flags & FILTER_FLAG_ENCODE_LOW != 0 && byte < 0x20
+            || flags & FILTER_FLAG_ENCODE_HIGH != 0 && byte >= 0x7f
+        {
+            output.extend_from_slice(format!("&#{};", byte).as_bytes());
+        } else {
+            output.push(byte);
+        }
+    }
+    output
 }
 
 fn insert_string(array: &mut PhpArray, key: &str, value: &str) {
@@ -1126,6 +1246,20 @@ fn strip_input_tags(value: &str) -> Vec<u8> {
             b'>' if in_tag => in_tag = false,
             _ if !in_tag => output.push(byte),
             _ => {}
+        }
+    }
+    output
+}
+
+fn encode_input_stripped(value: &str) -> Vec<u8> {
+    let stripped = strip_input_tags(value);
+    let mut output = Vec::with_capacity(stripped.len());
+    for byte in stripped {
+        match byte {
+            b'"' | b'\'' => {
+                output.extend_from_slice(format!("&#{};", byte).as_bytes());
+            }
+            _ => output.push(byte),
         }
     }
     output
@@ -1422,6 +1556,7 @@ mod tests {
         parse_query_string_with_separators,
     };
     use crate::{ArrayKey, PhpString, Value};
+    use std::sync::Arc;
 
     #[test]
     fn context_defaults_are_deterministic() {
@@ -1449,6 +1584,20 @@ mod tests {
         );
         assert_eq!(context.process, super::ProcessCapability::Disabled);
         assert!(context.strict_types.is_empty());
+    }
+
+    #[test]
+    fn context_ini_overrides_parse_quoted_phpt_values() {
+        let context = RuntimeContext::default().with_ini_overrides(vec![
+            ("session.cookie_path".to_string(), "\"/\"".to_string()),
+            ("session.cookie_domain".to_string(), "\"\"".to_string()),
+            ("session.cookie_samesite".to_string(), "'Lax'".to_string()),
+        ]);
+        let registry = context.ini_registry();
+
+        assert_eq!(registry.get("session.cookie_path"), Some("/"));
+        assert_eq!(registry.get("session.cookie_domain"), Some(""));
+        assert_eq!(registry.get("session.cookie_samesite"), Some("Lax"));
     }
 
     #[test]
@@ -1493,10 +1642,16 @@ mod tests {
         assert_eq!(context.env[0].0, "ALPHA");
         assert_eq!(context.env[1].0, "ZED");
         assert!(context.global_value("_ENV").is_some());
-        assert_eq!(
-            RuntimeContext::default().env,
-            Vec::<(String, String)>::new()
-        );
+        assert!(RuntimeContext::default().env.is_empty());
+    }
+
+    #[test]
+    fn context_accepts_shared_sorted_environment() {
+        let env = Arc::new(vec![("ALPHA".to_string(), "first".to_string())]);
+        let context = RuntimeContext::default().with_sorted_env_arc(Arc::clone(&env));
+
+        assert!(Arc::ptr_eq(&context.env, &env));
+        assert_eq!(context.env[0].0, "ALPHA");
     }
 
     #[test]
@@ -1688,6 +1843,17 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_cookie_names_keep_first_cookie_value() {
+        let mut request = http_request();
+        request.parsed_cookie = parse_cookie_header("abc=dir; def=true; abc=root");
+        let context = RuntimeContext::controlled_http(request);
+
+        let cookie = global_array(&context, "_COOKIE");
+        assert_string(&cookie, "abc", "dir");
+        assert_string(&cookie, "def", "true");
+    }
+
+    #[test]
     fn http_request_merge_order_is_get_post_cookie() {
         let mut request = http_request();
         request.parsed_get = vec![("same".to_string(), "get".to_string())];
@@ -1758,6 +1924,12 @@ mod tests {
         let cookie = global_array(&context, "_COOKIE");
         assert_string(&cookie, "sid", "abc");
 
+        let env = context
+            .filter_input_array(4)
+            .expect("INPUT_ENV source should be available");
+        assert_string(&env, "QUERY_STRING", "a=1&b=&c=3");
+        assert_string(&env, "HTTP_COOKIE", "sid=abc");
+
         let request = global_array(&context, "_REQUEST");
         assert_string(&request, "a", "1");
         assert_string(&request, "b", "");
@@ -1765,6 +1937,35 @@ mod tests {
         assert_string(&request, "d", "4");
         assert_string(&request, "e", "5");
         assert_string(&request, "sid", "abc");
+    }
+
+    #[test]
+    fn cli_filter_default_flags_apply_to_superglobals_not_raw_filter_input() {
+        let mut context = RuntimeContext::controlled_cli("script.php", Vec::new()).with_env(vec![
+            ("QUERY_STRING".to_string(), "a=1%00".to_string()),
+            (
+                "HTTP_X_FORWARDED_FOR".to_string(),
+                "example.com".to_string(),
+            ),
+        ]);
+        context.ini.default_input_filter = RuntimeInputFilter::UnsafeRaw;
+        context.ini.default_input_filter_flags = 4;
+
+        let get = global_array(&context, "_GET");
+        assert_string(&get, "a", "1");
+
+        let raw_get = context
+            .filter_input_array(1)
+            .expect("INPUT_GET source should be available");
+        assert_string(&raw_get, "a", "1\0");
+
+        let server = global_array(&context, "_SERVER");
+        assert_string(&server, "HTTP_X_FORWARDED_FOR", "example.com");
+
+        let raw_server = context
+            .filter_input_array(5)
+            .expect("INPUT_SERVER source should be available");
+        assert_string(&raw_server, "HTTP_X_FORWARDED_FOR", "example.com");
     }
 
     #[test]
@@ -1794,6 +1995,24 @@ mod tests {
         assert_string(&request, "c", "&#60;b&#62;Bold&#60;/b&#62;");
         assert_string(&request, "d", "&#34;quotes&#34;");
         assert_string(&request, "e", "\\slash");
+    }
+
+    #[test]
+    fn filter_input_cookie_array_uses_raw_request_snapshot() {
+        let mut context =
+            RuntimeContext::controlled_cli("script.php", Vec::new()).with_env(vec![(
+                "HTTP_COOKIE".to_string(),
+                "xyz=\"foo bar\"".to_string(),
+            )]);
+        context.ini.default_input_filter = RuntimeInputFilter::Stripped;
+
+        let cookie = global_array(&context, "_COOKIE");
+        assert_string(&cookie, "xyz", "&#34;foo bar&#34;");
+
+        let filter_cookie = context
+            .filter_input_array(2)
+            .expect("cookie filter input exists");
+        assert_string(&filter_cookie, "xyz", "\"foo bar\"");
     }
 
     #[test]

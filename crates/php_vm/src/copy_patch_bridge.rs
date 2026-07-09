@@ -1,5 +1,5 @@
-//! VM-side bridge for the copy-and-patch native tier (default-off, behind the
-//! `jit-copy-patch` feature).
+//! VM-side bridge for the copy-and-patch native tier (behind the default-on
+//! `jit-copy-patch` feature; runtime kill switch `PHRUST_JIT_COPY_PATCH=0`).
 //!
 //! It marshals a frame's locals into the flat `JitCValue` slot buffer a
 //! [`CompiledScalarRegion`](php_jit::copy_patch::CompiledScalarRegion) expects,
@@ -8,13 +8,12 @@
 //! marshaled as `Uninitialized` so the region's `Int` guards take the
 //! interpreter side exit rather than misreading a heap handle as an integer.
 //!
-//! This is the execution mechanism only. It is deliberately NOT yet triggered
-//! from the interpreter's function-entry fork: doing that needs an IR /
-//! dense-bytecode → `RegionGraph` builder (see
-//! `docs/research/copy-and-patch-stencil-tier.md`), which is the next step. The
-//! bridge is exercised by unit tests over a real [`LocalFile`](crate::frame::LocalFile)
-//! so the marshal-in / marshal-out ABI is proven end-to-end, and it stays inert
-//! unless both the `jit-copy-patch` feature and a caller opt in.
+//! The interpreter's function-entry fork (`try_execute_copy_patch_leaf` in
+//! `crate::vm`) consults [`cached_leaf`] before dense dispatch, so recognized
+//! leaves run natively on their first call under the default engine. The bridge
+//! is additionally exercised by unit tests over a real
+//! [`LocalFile`](crate::frame::LocalFile) so the marshal-in / marshal-out ABI is
+//! proven end-to-end.
 
 // This is php_vm's single sanctioned native-execution boundary: marshaling
 // raw `Value`/metadata pointers across the JIT ABI and calling emitted machine
@@ -41,8 +40,8 @@ use php_ir::instruction::{IrCallArg, TerminatorKind};
 use php_ir::module::{ClassEntry, ClassPropertyEntry, IrUnit, normalize_class_name};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_ir::{
-    FunctionId, InstrId, Instruction, InstructionKind, IrConstant, IrFunction, IrReturnType,
-    IrSpan, Operand, RegId,
+    FunctionId, InstrId, Instruction, InstructionKind, IrConstant, IrFunction, IrParam,
+    IrReturnType, IrSpan, Operand, RegId,
 };
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_jit::copy_patch::{CopyPatchRuntimeHelpers, TailCallPlan};
@@ -92,12 +91,17 @@ use crate::compiled_unit::CompiledUnit;
 /// backing `Vec<Option<Value>>` that outlives the call, and
 /// [`NativeLeaf::run_outcome`] marshals pointers into the caller's `&[Value]`
 /// params slice, which likewise outlives the call. The consumers of a borrowed
-/// handle payload are the `count`/`strlen`/property-load stencils, whose helpers
-/// ([`copy_patch_array_len_abi`] / [`copy_patch_strlen_abi`] /
-/// [`copy_patch_property_load_abi`]) perform a synchronous read-only query — a
-/// length, or one declared property-slot read — with no mutation, free, hook/
-/// `__get` invocation, or VM re-entry (the `is_*` stencils never deref the payload
-/// at all — they only read the tag word).
+/// handle payload are the `count`/`strlen`/property-load/property-store
+/// stencils, whose helpers ([`copy_patch_array_len_abi`] /
+/// [`copy_patch_strlen_abi`] / [`copy_patch_property_load_abi`] /
+/// [`copy_patch_property_store_abi`]) run one synchronous guarded query or
+/// commit — a length, one declared property-slot read, or one declared
+/// untyped-slot write through the runtime's own interior-mutability layer —
+/// with no free, hook/`__get`/`__set` invocation, or VM re-entry (the `is_*`
+/// stencils never deref the payload at all — they only read the tag word). The
+/// store helper is the single mutating consumer; it never mutates the borrowed
+/// `Value` itself, only the shared object storage behind its handle, exactly
+/// the cell the interpreter writes for the same statement.
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn marshal_local(value: &Value) -> JitCValue {
     match value {
@@ -264,9 +268,122 @@ extern "C" fn copy_patch_property_load_abi(
         Value::Float(float) => JitCValue::float(float.to_f64()),
         _ => return JIT_HELPER_STATUS_FALLBACK,
     };
+    // Return-type scoping: the native result bypasses the interpreter's
+    // return-site coercion, so the scalar must already have exactly the tag the
+    // declared return type requires (e.g. a `bool` in an untyped property
+    // returned through `: int` side-exits and the interpreter coerces it to
+    // `int(1)`). `0` means no expectation (`mixed`).
+    if metadata.expected_result_tag != 0 && marshaled.tag as u16 != metadata.expected_result_tag {
+        return JIT_HELPER_STATUS_FALLBACK;
+    }
     // SAFETY: `out` is non-null and a valid `JitCValue` for this synchronous call.
     unsafe {
         *out = marshaled;
+    }
+    JIT_HELPER_STATUS_OK
+}
+
+/// C-ABI wrapper the packed-array-fetch stencil `blr`s: read element `index`
+/// of the borrowed packed-int array `Value` at `value_ptr` and write it
+/// through `out`. Delegates to `php_runtime::php_jit_array_fetch_int_slow`,
+/// the same safe facade the Cranelift tier's packed fetch uses, so both
+/// native tiers share one bounds/layout-guarded element read.
+///
+/// Read-only and non-re-entrant: it reads one packed element and never
+/// mutates, frees, or re-enters the VM. It returns a non-OK status (so the
+/// stencil side-exits to the interpreter) for a null pointer, a negative or
+/// out-of-bounds index (PHP emits the undefined-key warning and yields
+/// `null` — exactly the interpreter's job), a non-packed or non-int-element
+/// array, or a non-array value.
+///
+/// SAFETY: `value_ptr` is the `payload` of an `OpaqueArray` slot the bridge
+/// marshaled as `&Value as *const Value` into the live params/backing buffer,
+/// so it is a valid `Value` pointer for this synchronous call (see
+/// `marshal_local`). `out` is the stencil's stack out-slot, non-null and valid
+/// for the call.
+#[cfg(all(unix, target_arch = "aarch64"))]
+extern "C" fn copy_patch_array_fetch_abi(value_ptr: usize, index: i64, out: *mut i64) -> i32 {
+    if value_ptr == 0 || out.is_null() {
+        return JIT_HELPER_STATUS_FALLBACK;
+    }
+    let Ok(index) = usize::try_from(index) else {
+        return JIT_HELPER_STATUS_FALLBACK;
+    };
+    // SAFETY: a live, borrowed `Value` valid for this call (see the doc above).
+    let value = unsafe { &*(value_ptr as *const Value) };
+    let mut element = 0_i64;
+    if php_runtime::php_jit_array_fetch_int_slow(value, index, &mut element)
+        != php_runtime::PHP_JIT_ARRAY_STATUS_OK
+    {
+        return JIT_HELPER_STATUS_FALLBACK;
+    }
+    // SAFETY: `out` is non-null and valid for this synchronous call (checked).
+    unsafe {
+        *out = element;
+    }
+    JIT_HELPER_STATUS_OK
+}
+
+/// C-ABI wrapper the property-*store* stencil `blr`s: read the borrowed object
+/// `Value` at `value_ptr` and the marshaled new value at `new_value_ptr`, apply
+/// the monomorphic layout guard described by the borrowed
+/// `JitPropertyStoreMetadata` at `metadata_ptr`, and commit exactly one declared
+/// untyped-slot write.
+///
+/// The store itself is not reimplemented here: it delegates to
+/// [`crate::vm::jit_property_store_commit`], the write-side mirror of the shared
+/// property-load fetch core, which does the class (layout) guard, the
+/// plain-initialized-slot guard (absent/`unset()`, reference-holding, and
+/// uninitialized slots all side-exit *before any write*), and the name-keyed
+/// storage write through the runtime's own interior-mutability layer.
+///
+/// Scalar-value scoping: only a marshaled `Int`/`Bool`/`Float` new value is
+/// reconstructed and written — those tags cross the C boundary faithfully by
+/// value. Every other tag (borrowed handles, null, uninitialized) returns
+/// [`JIT_HELPER_STATUS_FALLBACK`] so the stencil side-exits with no write and
+/// the interpreter performs the exact store. A single fallback code suffices
+/// because the stencil only distinguishes `OK` from non-`OK`.
+///
+/// One guarded mutation, non-re-entrant: the commit core writes one declared
+/// property slot the interpreter itself writes for this shape, and never frees,
+/// invokes a hook/`__set`, or re-enters the VM (typed/readonly/hooked/
+/// asymmetric-visibility slots are excluded at recognition time; `unset()`
+/// re-arming `__set` side-exits at the storage guard).
+///
+/// SAFETY: `value_ptr` is the `payload` of an `OpaqueObject` slot the bridge
+/// marshaled as `&Value as *const Value` into the live params/backing buffer, so
+/// it is a valid `Value` pointer for this synchronous call (see `marshal_local`).
+/// `metadata_ptr` is the borrowed, VM-owned `JitPropertyStoreMetadata` the
+/// [`NativeLeaf`] keeps alive for the whole life of the compiled leaf.
+/// `new_value_ptr` is the address of the value parameter's slot *inside* the
+/// live buffer the stencil runs over, valid for this synchronous call.
+#[cfg(all(unix, target_arch = "aarch64"))]
+extern "C" fn copy_patch_property_store_abi(
+    value_ptr: usize,
+    metadata_ptr: usize,
+    new_value_ptr: usize,
+) -> i32 {
+    if value_ptr == 0 || metadata_ptr == 0 || new_value_ptr == 0 {
+        return JIT_HELPER_STATUS_FALLBACK;
+    }
+    // SAFETY: a live, borrowed object `Value` valid for this call (see the doc).
+    let value = unsafe { &*(value_ptr as *const Value) };
+    // SAFETY: a live, borrowed metadata record valid for this call (see the doc).
+    let metadata = unsafe { &*(metadata_ptr as *const php_jit::JitPropertyStoreMetadata) };
+    // SAFETY: a live `JitCValue` slot inside the stencil's buffer (see the doc).
+    let marshaled = unsafe { &*(new_value_ptr as *const JitCValue) };
+    // Scalar-value scoping: only Int/Bool/Float reconstruct faithfully by value;
+    // every other tag side-exits to the interpreter before any write.
+    let new_value = match marshaled.tag {
+        JitCValueTag::Int => Value::Int(marshaled.payload as i64),
+        JitCValueTag::Bool => Value::Bool(marshaled.payload != 0),
+        JitCValueTag::FloatBits => Value::Float(php_runtime::FloatValue::from_f64(f64::from_bits(
+            marshaled.payload,
+        ))),
+        _ => return JIT_HELPER_STATUS_FALLBACK,
+    };
+    if crate::vm::jit_property_store_commit(value, metadata, new_value).is_err() {
+        return JIT_HELPER_STATUS_FALLBACK;
     }
     JIT_HELPER_STATUS_OK
 }
@@ -400,6 +517,88 @@ fn native_call_permits(unit: &CompiledUnit) -> php_jit::copy_patch::NativeCallPe
     }
 }
 
+/// The resolved receiver of a property leaf: which buffer slot holds the
+/// object and which class the monomorphic guard pins.
+#[cfg(all(unix, target_arch = "aarch64"))]
+struct LeafReceiver<'a> {
+    /// VM slot (`LocalId` index) the receiver object is marshaled into: the
+    /// class-typed first parameter's local for a free function, or local `0`
+    /// (`$this`, which the VM hook marshals ahead of the declared parameters)
+    /// for an instance method.
+    local: u32,
+    /// Class the monomorphic guard pins: the parameter's declared class for a
+    /// free function, the declaring class for a method.
+    class: &'a ClassEntry,
+    /// True when the leaf is an instance method accessing `$this` — private/
+    /// protected properties *declared on the receiver class itself* are then
+    /// legally accessible.
+    is_method: bool,
+}
+
+/// Resolve a property leaf's receiver and return it with the remaining
+/// declared "value" parameters (none for a load, the assigned value for a
+/// store).
+///
+/// A free function's receiver is its first parameter, which must be by-value,
+/// non-variadic, no-default, and class-typed. An instance method's receiver is
+/// `$this` (local `0`; the VM hook marshals the call's receiver into slot `0`
+/// ahead of the declared parameters), and its class is the *declaring* class
+/// resolved from the unit's class table via `function_id` — the class whose
+/// own method table row (`origin_class` == the class) carries the function.
+/// Trait-provided methods (`origin_class` names the trait) and static methods
+/// resolve to no declaring class and reject; a subclass instance reaching the
+/// compiled leaf fails the runtime class guard and side-exits, exactly like
+/// the free-function shape.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn resolve_leaf_receiver<'a, 'f>(
+    unit: &'a IrUnit,
+    function: &'f IrFunction,
+    function_id: u32,
+) -> Option<(LeafReceiver<'a>, &'f [IrParam])> {
+    if function.flags.is_method {
+        // Instance methods only: `$this` occupies local 0.
+        if function.locals.first().map(String::as_str) != Some("this") {
+            return None;
+        }
+        let normalized_id = function_id as usize;
+        let class = unit.classes.iter().find(|class| {
+            class.methods.iter().any(|method| {
+                method.function.index() == normalized_id
+                    && !method.flags.is_static
+                    && normalize_class_name(&method.origin_class)
+                        == normalize_class_name(&class.name)
+            })
+        })?;
+        return Some((
+            LeafReceiver {
+                local: 0,
+                class,
+                is_method: true,
+            },
+            function.params.as_slice(),
+        ));
+    }
+    let (object_param, value_params) = function.params.split_first()?;
+    if object_param.by_ref || object_param.variadic || object_param.default.is_some() {
+        return None;
+    }
+    let Some(IrReturnType::Class {
+        name: class_name, ..
+    }) = object_param.type_.as_ref()
+    else {
+        return None;
+    };
+    let class = lookup_ir_class(unit, class_name)?;
+    Some((
+        LeafReceiver {
+            local: object_param.local.raw(),
+            class,
+            is_method: false,
+        },
+        value_params,
+    ))
+}
+
 /// A recognized monomorphic scalar property-load leaf: the object parameter's
 /// slot, the result slot layout, and the layout-guard metadata the helper reads.
 #[cfg(all(unix, target_arch = "aarch64"))]
@@ -415,61 +614,66 @@ struct PropertyLoadLeaf {
     metadata: php_jit::JitPropertyLoadMetadata,
 }
 
-/// Recognize `function f(SomeClass $o): T { return $o->prop; }` — a single-block
-/// free-function leaf that loads a by-value object parameter and returns one of
-/// its declared, plain (backed, public, instance, non-hooked) properties named by
-/// a compile-time constant. Builds the [`JitPropertyLoadMetadata`] the layout
+/// Recognize `function f(SomeClass $o): T { return $o->prop; }` — or the
+/// instance-method getter `function getProp(): T { return $this->prop; }` — a
+/// single-block leaf that loads its receiver object and returns one of its
+/// declared, plain (backed, instance, non-hooked) properties named by a
+/// compile-time constant. Builds the [`JitPropertyLoadMetadata`] the layout
 /// guard needs from the unit's class table (the VM owns class resolution; the
-/// bare `php_jit` copy-patch layer cannot resolve classes).
+/// bare `php_jit` copy-patch layer cannot resolve classes). See
+/// [`resolve_leaf_receiver`] for the free-function vs `$this` receiver rules.
 ///
-/// Rejected (→ `None`, so the interpreter runs it, matching the Cranelift
-/// property-load recognizer): methods/closures/generators (a leaf *method* whose
-/// receiver is `$this` is a deliberate follow-up — this admits only a
-/// free-function object parameter), a by-ref/variadic/defaulted parameter, a
-/// parameter without a class type, a void/never return, a dynamic `->$var`
-/// (lowered as `FetchDynamicProperty`, not `FetchProperty`), a null-safe `?->` or
-/// chained `$a->b->c` (extra blocks/instructions), a static property, a property
-/// with a get/set hook or whose class hierarchy has a public `__get`, and a
-/// non-public/static property. The declared class or property being absent from
-/// the unit also rejects.
+/// Rejected (→ `None`, so the interpreter runs it): closures/generators/
+/// static or trait-provided methods, a by-ref/variadic/defaulted parameter, a
+/// free-function parameter without a class type, a non-scalar/non-`mixed`
+/// return type (the native result bypasses return-site coercion), a dynamic
+/// `->$var` (lowered as `FetchDynamicProperty`, not `FetchProperty`), a
+/// null-safe `?->` or chained `$a->b->c` (extra blocks/instructions), a static
+/// property, a property with a get/set hook or whose class hierarchy has a
+/// public `__get`, and a private/protected property — unless the leaf is a
+/// method and the property is declared on the receiver class itself, where the
+/// access is legal (the runtime guard pins that exact class). The declared
+/// class or property being absent from the unit also rejects.
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn recognize_property_load_leaf(
     unit: &CompiledUnit,
     function: &IrFunction,
+    function_id: u32,
 ) -> Option<PropertyLoadLeaf> {
     let flags = function.flags;
-    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+    if flags.is_top_level || flags.is_closure || flags.is_generator {
         return None;
     }
     if function.returns_by_ref || !function.captures.is_empty() {
         return None;
     }
-    // A value return type: a property load produces a value.
-    if matches!(
-        function.return_type,
-        None | Some(IrReturnType::Void | IrReturnType::Never)
-    ) {
-        return None;
-    }
-    // Exactly one by-value, non-variadic, no-default object parameter.
-    let [param] = function.params.as_slice() else {
-        return None;
+    // The native result bypasses the interpreter's return-site coercion, so
+    // only return types whose value can be committed *unchanged* are admitted:
+    // a scalar type (the helper then requires the property value to already
+    // have exactly that tag — a `bool` in an untyped property returned through
+    // `: int` must side-exit so the interpreter coerces it to `int(1)`), or
+    // `mixed` (never coerces; any scalar commits). Everything else — string/
+    // array/class returns always side-exit at the scalar gate anyway, and
+    // nullable/union/literal types have a coercion matrix — rejects.
+    let expected_result_tag = match function.return_type.as_ref() {
+        Some(IrReturnType::Int) => JitCValueTag::Int as u16,
+        Some(IrReturnType::Float) => JitCValueTag::FloatBits as u16,
+        Some(IrReturnType::Bool) => JitCValueTag::Bool as u16,
+        Some(IrReturnType::Mixed) => 0,
+        _ => return None,
     };
-    if param.by_ref || param.variadic || param.default.is_some() {
-        return None;
-    }
-    let Some(IrReturnType::Class {
-        name: class_name, ..
-    }) = param.type_.as_ref()
-    else {
-        return None;
-    };
+    // The receiver (free-function object parameter or `$this`), with no
+    // further declared parameters for a getter.
     let ir = unit.unit();
-    let class = lookup_ir_class(ir, class_name)?;
+    let (receiver, value_params) = resolve_leaf_receiver(ir, function, function_id)?;
+    if !value_params.is_empty() {
+        return None;
+    }
+    let class = receiver.class;
 
-    // Single-block leaf (ignoring `Discard` lifetime hints): load the object
-    // parameter, fetch a static-named property of that loaded register, and
-    // return exactly that value.
+    // Single-block leaf (ignoring `Discard` lifetime hints): load the receiver,
+    // fetch a static-named property of that loaded register, and return exactly
+    // that value.
     let [block] = function.blocks.as_slice() else {
         return None;
     };
@@ -493,7 +697,7 @@ fn recognize_property_load_leaf(
     else {
         return None;
     };
-    if *load_local != param.local {
+    if load_local.raw() != receiver.local {
         return None;
     }
     if object_reg != load_reg {
@@ -510,14 +714,17 @@ fn recognize_property_load_leaf(
         return None;
     }
 
-    // Resolve the declared property and guard it is a plain (backed, public,
-    // instance, non-hooked) property with no public `__get` anywhere in the
-    // hierarchy — so the load never invokes user code.
+    // Resolve the declared property and guard it is a plain (backed, instance,
+    // non-hooked) property with no public `__get` anywhere in the hierarchy —
+    // so the load never invokes user code. Non-public properties are only
+    // legal from a method of the class that declares them (the runtime guard
+    // pins that exact class, so the compile-time scope fact holds).
     let (declaring_class, property_entry) = lookup_property_in_unit(ir, class, property)?;
-    if property_entry.flags.is_static
-        || property_entry.flags.is_private
-        || property_entry.flags.is_protected
-    {
+    if property_entry.flags.is_static {
+        return None;
+    }
+    let own_scope = receiver.is_method && declaring_class.id == class.id;
+    if (property_entry.flags.is_private || property_entry.flags.is_protected) && !own_scope {
         return None;
     }
     if property_entry.hooks.get.is_some() || property_entry.hooks.set.is_some() {
@@ -532,8 +739,8 @@ fn recognize_property_load_leaf(
         .position(|entry| entry.name == property_entry.name)?;
 
     // Slot layout mirrors the single-arg builtin leaves: locals occupy their
-    // indices (so the object parameter is marshaled into `slot[param.local]`) and
-    // the result lands in a dedicated slot above locals + registers. The compiler
+    // indices (the receiver is marshaled into `slot[receiver.local]`) and the
+    // result lands in a dedicated slot above locals + registers. The compiler
     // rejects an out-of-range slot, so no bound check is needed here.
     let result_slot = function.local_count.checked_add(function.register_count)?;
     let buffer_slots = result_slot.checked_add(1)?;
@@ -545,10 +752,198 @@ fn recognize_property_load_leaf(
         storage_name: property_storage_name(declaring_class, property_entry),
         property_slot_index,
         layout_version: 0,
+        expected_result_tag,
     };
     Some(PropertyLoadLeaf {
-        object_slot: param.local.raw(),
+        object_slot: receiver.local,
         result_slot,
+        buffer_slots,
+        metadata,
+    })
+}
+
+/// A recognized monomorphic scalar property-store leaf: the two parameter
+/// slots and the layout-guard metadata the helper reads.
+#[cfg(all(unix, target_arch = "aarch64"))]
+struct PropertyStoreLeaf {
+    /// VM slot (its `LocalId` index) the object parameter is marshaled into.
+    object_slot: u32,
+    /// VM slot (its `LocalId` index) the new-value parameter is marshaled into.
+    value_slot: u32,
+    /// `JitCValue` slots the caller's buffer must provide.
+    buffer_slots: u32,
+    /// Layout-guard + storage metadata (receiver class, storage name), built
+    /// from the unit's class table — the write-side mirror of the load leaf's.
+    metadata: php_jit::JitPropertyStoreMetadata,
+}
+
+/// Recognize `function f(SomeClass $o, $v): void { $o->prop = $v; }` — or the
+/// instance-method setter `function setProp($v): void { $this->prop = $v; }` —
+/// a single-block void leaf that assigns its untyped by-value value parameter
+/// to a declared, plain, *untyped* property of its receiver, named by a
+/// compile-time constant. The write-side mirror of
+/// [`recognize_property_load_leaf`]; builds the
+/// [`php_jit::JitPropertyStoreMetadata`] the layout guard needs from the unit's
+/// class table (the VM owns class resolution; the bare `php_jit` copy-patch
+/// layer cannot resolve classes). See [`resolve_leaf_receiver`] for the
+/// free-function vs `$this` receiver rules.
+///
+/// Beyond the load recognizer's rejections (closures/generators/static or
+/// trait-provided methods, by-ref/variadic/defaulted parameters, a
+/// free-function receiver without a class type, dynamic `->$var`,
+/// null-safe/chained accesses, static properties, hooked properties, absent
+/// class/property), the store additionally rejects everything that would make
+/// an assignment run user code or enforce semantics beyond a raw slot write: a
+/// *typed* declared property (assignment coerces or throws `TypeError`), a
+/// `readonly` property, and a public `__set` anywhere in the hierarchy
+/// (defense in depth — the runtime storage guard already side-exits the
+/// `unset()` case that re-arms `__set`). Private/protected and
+/// `private(set)`/`protected(set)` properties are writable only from a method
+/// of the class that declares them (the runtime guard pins that exact class);
+/// from a free function they reject. The value parameter must be *untyped*: a
+/// typed parameter coerces (or throws `TypeError`) at bind time, and the
+/// native path marshals the raw argument, so admitting `int $v` would store
+/// `7.0` where the interpreter stores `7`. An untyped parameter passes the
+/// value through unchanged — exactly what the helper commits; it only commits
+/// marshaled `Int`/`Bool`/`Float` values and side-exits otherwise. The return
+/// type must be `void` (or undeclared with a bare `return`), so the leaf's
+/// result is exactly `null`.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn recognize_property_store_leaf(
+    unit: &CompiledUnit,
+    function: &IrFunction,
+    function_id: u32,
+) -> Option<PropertyStoreLeaf> {
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    // A bare-`return` leaf returning exactly `null`: `void`, or no declared
+    // return type (the terminator match below requires a valueless return).
+    if !matches!(function.return_type, None | Some(IrReturnType::Void)) {
+        return None;
+    }
+    // The receiver (free-function object parameter or `$this`) plus exactly
+    // one by-value, non-variadic, no-default, *untyped* value parameter (a
+    // typed parameter's bind-time coercion/`TypeError` would be skipped on the
+    // native path — see the doc).
+    let ir = unit.unit();
+    let (receiver, value_params) = resolve_leaf_receiver(ir, function, function_id)?;
+    let [value_param] = value_params else {
+        return None;
+    };
+    if value_param.by_ref || value_param.variadic || value_param.default.is_some() {
+        return None;
+    }
+    if value_param.type_.is_some() {
+        return None;
+    }
+    let class = receiver.class;
+
+    // Single-block leaf (ignoring `Discard` lifetime hints): load the receiver,
+    // load the value parameter, assign a static-named property of the loaded
+    // object from the loaded value, and return nothing.
+    let [block] = function.blocks.as_slice() else {
+        return None;
+    };
+    let kinds: Vec<&InstructionKind> = block
+        .instructions
+        .iter()
+        .map(|instruction| &instruction.kind)
+        .filter(|kind| !matches!(kind, InstructionKind::Discard { .. }))
+        .collect();
+    let [
+        InstructionKind::LoadLocal {
+            dst: object_reg,
+            local: object_local,
+        },
+        InstructionKind::LoadLocal {
+            dst: value_reg,
+            local: value_local,
+        },
+        InstructionKind::AssignProperty {
+            dst: _,
+            object: Operand::Register(assign_object),
+            property,
+            value: Operand::Register(assign_value),
+        },
+    ] = kinds.as_slice()
+    else {
+        return None;
+    };
+    if object_local.raw() != receiver.local || *value_local != value_param.local {
+        return None;
+    }
+    if assign_object != object_reg || assign_value != value_reg {
+        return None;
+    }
+    // The assignment-expression result register (`dst`) is dead here: the block
+    // holds no further non-`Discard` instructions and the terminator returns no
+    // value.
+    let TerminatorKind::Return {
+        value: None,
+        by_ref_local: None,
+    } = &block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+
+    // Resolve the declared property and guard that a raw slot write is exactly
+    // the interpreter's semantics: plain (backed, instance, non-hooked) like
+    // the load, plus untyped (no coercion/`TypeError`), non-readonly, and no
+    // public `__set` in the hierarchy. Non-public or asymmetric-visibility
+    // properties are writable only from a method of the class that declares
+    // them (the runtime guard pins that exact class, so the compile-time scope
+    // fact holds).
+    let (declaring_class, property_entry) = lookup_property_in_unit(ir, class, property)?;
+    if property_entry.flags.is_static {
+        return None;
+    }
+    let own_scope = receiver.is_method && declaring_class.id == class.id;
+    if (property_entry.flags.is_private || property_entry.flags.is_protected) && !own_scope {
+        return None;
+    }
+    if (property_entry.flags.set_is_private || property_entry.flags.set_is_protected) && !own_scope
+    {
+        return None;
+    }
+    if property_entry.flags.is_readonly {
+        return None;
+    }
+    if property_entry.flags.is_typed || property_entry.type_.is_some() {
+        return None;
+    }
+    if property_entry.hooks.get.is_some() || property_entry.hooks.set.is_some() {
+        return None;
+    }
+    if class_or_parent_has_public_magic_set(ir, class) {
+        return None;
+    }
+    let property_slot_index = declaring_class
+        .properties
+        .iter()
+        .position(|entry| entry.name == property_entry.name)?;
+
+    // Slot layout mirrors the load leaf: locals occupy their indices (the
+    // receiver is marshaled into `slot[receiver.local]`, the value into
+    // `slot[value_param.local]`); the leaf produces no result slot, so the
+    // buffer only spans the locals + registers.
+    let buffer_slots = function.local_count.checked_add(function.register_count)?;
+
+    let metadata = php_jit::JitPropertyStoreMetadata {
+        receiver_class: normalize_class_name(&class.name),
+        class_id: class.id.raw(),
+        property: property_entry.name.clone(),
+        storage_name: property_storage_name(declaring_class, property_entry),
+        property_slot_index,
+        layout_version: 0,
+    };
+    Some(PropertyStoreLeaf {
+        object_slot: receiver.local,
+        value_slot: value_param.local.raw(),
         buffer_slots,
         metadata,
     })
@@ -603,6 +998,28 @@ fn class_or_parent_has_public_magic_get(unit: &IrUnit, class: &ClassEntry) -> bo
         .is_some_and(|parent| class_or_parent_has_public_magic_get(unit, parent))
 }
 
+/// True when `class` or an ancestor declares a public instance `__set`, which
+/// would make a "missing" (`unset()`) property write call user code (the write
+/// mirror of [`class_or_parent_has_public_magic_get`]; the runtime storage
+/// guard also side-exits that case, so this is recognition-time defense in
+/// depth).
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn class_or_parent_has_public_magic_set(unit: &IrUnit, class: &ClassEntry) -> bool {
+    if class.methods.iter().any(|method| {
+        method.name.eq_ignore_ascii_case("__set")
+            && !method.flags.is_static
+            && !method.flags.is_private
+            && !method.flags.is_protected
+    }) {
+        return true;
+    }
+    class
+        .parent
+        .as_deref()
+        .and_then(|parent| lookup_ir_class(unit, parent))
+        .is_some_and(|parent| class_or_parent_has_public_magic_set(unit, parent))
+}
+
 /// Runtime storage name for a declared property (mirrors the Cranelift
 /// recognizer's `property_storage_name`), so the helper's `get_property` reads
 /// the same slot the VM stores under. A private property is name-mangled; the
@@ -643,6 +1060,65 @@ pub struct NativeLeaf {
     /// exists purely to pin the pointee's address and lifetime.
     #[allow(dead_code)]
     property_metadata: Option<Box<php_jit::JitPropertyLoadMetadata>>,
+    /// `Some` for a monomorphic property-*store* leaf: the store stencil's
+    /// layout-guard metadata, pinned for the life of `code` under exactly the
+    /// contract documented on `property_metadata` above.
+    #[allow(dead_code)]
+    property_store_metadata: Option<Box<php_jit::JitPropertyStoreMetadata>>,
+    /// True for a leaf whose recognized shape returns exactly `null` (the
+    /// void property-store setter): on an `OK` status [`Self::run_outcome`]
+    /// synthesizes `Value::Null` instead of unmarshaling a result slot (the
+    /// region writes none).
+    void_null_result: bool,
+    /// `Some` for a return-and-resume call-composition leaf: the region
+    /// suspends at each userland call site and the VM drives the
+    /// perform-call/write-slot/re-enter loop (see [`NativeLeaf::begin_resume`]).
+    resume: Option<ResumePlan>,
+}
+
+/// The VM-facing plan of a return-and-resume leaf: the region's suspension
+/// sites plus the same-unit function each site's callee resolved to when the
+/// leaf compiled. The VM re-validates the resolution before performing the
+/// *first* call (nothing has run yet, so a mismatch safely falls back to the
+/// interpreter); later sites cannot change resolution — a unit function's name
+/// can never be legally redeclared — so a mismatch there is an engine
+/// invariant violation, not a fallback.
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub struct ResumePlan {
+    /// Suspension sites in execution order (from the compiled region).
+    pub sites: Vec<php_jit::copy_patch::ResumeCallSite>,
+    /// Compile-time resolution of each site's callee.
+    pub targets: Vec<FunctionId>,
+    /// Normalized callee names, precomputed so the per-invocation driver loop
+    /// allocates nothing for resolution.
+    pub normalized_names: Vec<String>,
+    /// Call-site spans in site order (single-block leaf, calls in instruction
+    /// order) for the callee frames' backtrace lines.
+    pub call_spans: Vec<Option<IrSpan>>,
+}
+
+/// A running return-and-resume leaf: the persistent slot buffer the region
+/// suspends over. All parameters were guarded `Int` before the first
+/// suspension, so the buffer never holds a borrowed handle payload across a
+/// suspension (see `marshal_local`'s lifetime contract).
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub struct ResumeSession {
+    buffer: Vec<JitCValue>,
+}
+
+/// One step of driving a return-and-resume leaf.
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub enum ResumeStep {
+    /// The region completed; this is the leaf's (pre-return-coercion) result.
+    Value(Value),
+    /// A guard side exit or defensive mismatch. Only sound to act on before
+    /// the first performed call (interpret the whole leaf); afterwards the
+    /// driver must treat it as an engine invariant violation.
+    Fallback,
+    /// The region suspended requesting call site `site`: read the arguments
+    /// with [`NativeLeaf::resume_args`], perform the call, and continue with
+    /// [`NativeLeaf::resume`].
+    CallRequest { site: usize },
 }
 
 /// The result of running a [`NativeLeaf`] over its arguments.
@@ -679,11 +1155,14 @@ impl NativeLeaf {
     ) -> Option<Self> {
         // Monomorphic scalar property-load leaf, recognized in the VM (which owns
         // class/property resolution) and lowered to a guarded helper-call
-        // stencil. Tried first: its shape (a by-value object parameter returning
-        // one of its declared properties) is disjoint from every scalar-int/
-        // float/builtin subset, so it never steals another leaf, and on any
-        // mismatch it falls through to the existing recognizers unchanged.
-        if let Some(leaf) = recognize_property_load_leaf(unit, function) {
+        // stencil. Tried first: its shape (a receiver — by-value object
+        // parameter or `$this` — returning one of its declared properties) is
+        // disjoint from every scalar-int/float/builtin subset, so it never
+        // steals another leaf, and on any mismatch it falls through to the
+        // existing recognizers unchanged. `region_id` is the function's ID in
+        // the unit (see `cached_leaf`), which method recognition uses to
+        // resolve the declaring class.
+        if let Some(leaf) = recognize_property_load_leaf(unit, function, region_id) {
             // Box the metadata so its address is stable across the move into
             // `Self`; the stencil bakes in a borrowed pointer to it, and the
             // returned `NativeLeaf` owns the box, keeping the pointer valid for
@@ -705,9 +1184,46 @@ impl NativeLeaf {
                     buffer_slots: compiled.buffer_slots,
                     tail_call: None,
                     property_metadata: Some(metadata),
+                    property_store_metadata: None,
+                    void_null_result: false,
+                    resume: None,
                 });
             }
             // Recognized but could not lower/finalize: fall through. The shape
+            // matches no other recognizer, so `compile` returns `None` below.
+        }
+
+        // Monomorphic scalar property-*store* leaf — the void setter mirror of
+        // the load above, recognized in the VM for the same reason and equally
+        // disjoint from every other subset (no other recognizer admits a void
+        // function assigning a property).
+        if let Some(leaf) = recognize_property_store_leaf(unit, function, region_id) {
+            // Pin the metadata exactly like the load leaf's: the stencil bakes
+            // in a borrowed pointer, and the returned `NativeLeaf` owns the box
+            // for every native invocation.
+            let metadata = Box::new(leaf.metadata);
+            let metadata_ptr = metadata.as_ref() as *const php_jit::JitPropertyStoreMetadata as u64;
+            let helper = copy_patch_property_store_abi as *const () as usize as u64;
+            if let Some(compiled) = php_jit::copy_patch::compile_property_store_leaf(
+                leaf.object_slot,
+                leaf.value_slot,
+                leaf.buffer_slots,
+                metadata_ptr,
+                helper,
+            ) && let Ok(code) = php_jit::code_memory::CodeMemory::new(&compiled.code)
+            {
+                return Some(Self {
+                    code,
+                    result_slot: compiled.result_slot,
+                    buffer_slots: compiled.buffer_slots,
+                    tail_call: None,
+                    property_metadata: None,
+                    property_store_metadata: Some(metadata),
+                    void_null_result: true,
+                    resume: None,
+                });
+            }
+            // Recognized but could not lower/finalize: fall through; the shape
             // matches no other recognizer, so `compile` returns `None` below.
         }
 
@@ -721,17 +1237,80 @@ impl NativeLeaf {
         let helpers = CopyPatchRuntimeHelpers {
             array_len: copy_patch_array_len_abi as *const () as usize as u64,
             strlen: copy_patch_strlen_abi as *const () as usize as u64,
+            array_fetch: copy_patch_array_fetch_abi as *const () as usize as u64,
         };
-        let compiled = php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
-            target, constants, region_id, permits, helpers,
+        if let Some(compiled) =
+            php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
+                target, constants, region_id, permits, helpers,
+            )
+            && let Ok(code) = php_jit::code_memory::CodeMemory::new(&compiled.code)
+        {
+            return Some(Self {
+                code,
+                result_slot: compiled.result_slot,
+                buffer_slots: compiled.buffer_slots,
+                tail_call: compiled.tail_call,
+                property_metadata: None,
+                property_store_metadata: None,
+                void_null_result: false,
+                resume: None,
+            });
+        }
+
+        // Return-and-resume call composition — sequenced/nested userland calls
+        // with move-only glue (`$a = h($x); return g($a);`). Tried last: every
+        // tighter recognizer (tail call included) has already declined, and
+        // this one only admits shapes they reject (multiple calls, or work
+        // after a call). The callee predicate is the VM-owned resolution
+        // (`resume_callee_target`): same-unit plain userland functions whose
+        // declared `: int` return proves the result slot's tag.
+        let callee_allowed = |name: &str, arity: usize| -> bool {
+            resume_callee_target(unit, name, arity).is_some()
+        };
+        let compiled = php_jit::copy_patch::compile_scalar_int_resume_leaf(
+            target,
+            constants,
+            permits,
+            &callee_allowed,
         )?;
+        let targets: Option<Vec<FunctionId>> = compiled
+            .sites
+            .iter()
+            .map(|site| resume_callee_target(unit, &site.callee_name, site.arg_slots.len()))
+            .collect();
+        let targets = targets?;
+        let normalized_names: Vec<String> = compiled
+            .sites
+            .iter()
+            .map(|site| crate::vm::normalize_function_name(&site.callee_name))
+            .collect();
+        let call_spans: Vec<Option<IrSpan>> = target
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter_map(|instruction| match instruction.kind {
+                InstructionKind::CallFunction { .. } => Some(Some(instruction.span)),
+                _ => None,
+            })
+            .collect();
+        if call_spans.len() != compiled.sites.len() {
+            return None;
+        }
         let code = php_jit::code_memory::CodeMemory::new(&compiled.code).ok()?;
         Some(Self {
             code,
             result_slot: compiled.result_slot,
             buffer_slots: compiled.buffer_slots,
-            tail_call: compiled.tail_call,
+            tail_call: None,
             property_metadata: None,
+            property_store_metadata: None,
+            void_null_result: false,
+            resume: Some(ResumePlan {
+                sites: compiled.sites,
+                targets,
+                normalized_names,
+                call_spans,
+            }),
         })
     }
 
@@ -765,6 +1344,12 @@ impl NativeLeaf {
         };
         let status = run(buffer.as_mut_ptr());
         if status == JIT_HELPER_STATUS_OK {
+            // A void-null leaf (the property-store setter) commits its effect
+            // inside the region and returns exactly `null`; it writes no
+            // result slot to unmarshal.
+            if self.void_null_result {
+                return LeafOutcome::Value(Value::Null);
+            }
             return match buffer
                 .get(self.result_slot as usize)
                 .and_then(unmarshal_result)
@@ -806,6 +1391,158 @@ impl NativeLeaf {
             LeafOutcome::TailCall { .. } | LeafOutcome::Fallback => None,
         }
     }
+
+    /// The return-and-resume plan, when this leaf is a call-composition region.
+    #[must_use]
+    pub fn resume_plan(&self) -> Option<&ResumePlan> {
+        self.resume.as_ref()
+    }
+
+    /// Run the region code starting at byte `offset` over `buffer`.
+    ///
+    /// SAFETY (internal): `offset` is either `0` or a site's `resume_offset`,
+    /// both instruction boundaries `compile_scalar_int_resume_leaf` produced
+    /// for exactly this code (validated `< code.len()` at compile), and the
+    /// region ABI takes the slot base in `x0` at every such boundary (nothing
+    /// lives in registers across ops).
+    fn run_at(&self, offset: usize, buffer: &mut [JitCValue]) -> i32 {
+        // SAFETY: see above; `buffer` is a live, aligned `[JitCValue]` sized to
+        // `buffer_slots` that outlives the synchronous call.
+        let entry: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(
+                self.code.as_ptr().add(offset),
+            )
+        };
+        entry(buffer.as_mut_ptr())
+    }
+
+    /// Map a region status to a driver step.
+    fn resume_step(&self, status: i32, buffer: &[JitCValue]) -> ResumeStep {
+        if status == JIT_HELPER_STATUS_OK {
+            return match buffer
+                .get(self.result_slot as usize)
+                .and_then(unmarshal_result)
+            {
+                Some(value) => ResumeStep::Value(value),
+                None => ResumeStep::Fallback,
+            };
+        }
+        if status >= php_jit::JIT_HELPER_STATUS_RESUME_CALL_BASE
+            && let Some(plan) = self.resume.as_ref()
+        {
+            let site = (status - php_jit::JIT_HELPER_STATUS_RESUME_CALL_BASE) as usize;
+            if site < plan.sites.len() {
+                return ResumeStep::CallRequest { site };
+            }
+        }
+        ResumeStep::Fallback
+    }
+
+    /// Start a return-and-resume leaf over positional parameter values.
+    /// Returns `None` when this leaf has no resume plan.
+    ///
+    /// The first step is either `CallRequest { site: 0 }` (every parameter
+    /// guarded `Int`, the prefix ran, site 0's arguments are marshaled) or
+    /// `Fallback` (a pre-call side exit — nothing ran, interpreting the whole
+    /// leaf is sound). A `Value` first step is impossible (the plan has at
+    /// least one site) and maps to `Fallback` by the status dispatch.
+    #[must_use]
+    pub fn begin_resume(&self, params: &[Value]) -> Option<(ResumeSession, ResumeStep)> {
+        self.resume.as_ref()?;
+        let mut buffer: Vec<JitCValue> = (0..self.buffer_slots)
+            .map(|slot| {
+                params
+                    .get(slot as usize)
+                    .map_or_else(JitCValue::uninitialized, marshal_local)
+            })
+            .collect();
+        let status = self.run_at(0, &mut buffer);
+        let step = self.resume_step(status, &buffer);
+        Some((ResumeSession { buffer }, step))
+    }
+
+    /// Read call site `site`'s marshaled `Int` arguments out of the session.
+    /// `None` on a non-`Int` slot — impossible by construction (the region
+    /// guards or proves every argument source), so the driver treats it as an
+    /// invariant violation, never a fallback.
+    #[must_use]
+    pub fn resume_args(&self, session: &ResumeSession, site: usize) -> Option<Vec<Value>> {
+        let plan = self.resume.as_ref()?;
+        let slots = &plan.sites.get(site)?.arg_slots;
+        let mut args = Vec::with_capacity(slots.len());
+        for &slot in slots {
+            match session.buffer.get(slot as usize) {
+                Some(value) if value.tag == JitCValueTag::Int => {
+                    args.push(Value::Int(value.payload as i64));
+                }
+                _ => return None,
+            }
+        }
+        Some(args)
+    }
+
+    /// Write call site `site`'s result into its slot and re-enter the region at
+    /// the site's resume offset. `result` must be `Value::Int` (the callee's
+    /// declared `: int` return guarantees it; the driver validated it) —
+    /// anything else returns `Fallback` without re-entering.
+    #[must_use]
+    pub fn resume(&self, session: &mut ResumeSession, site: usize, result: &Value) -> ResumeStep {
+        let Some(plan) = self.resume.as_ref() else {
+            return ResumeStep::Fallback;
+        };
+        let Some(site_plan) = plan.sites.get(site) else {
+            return ResumeStep::Fallback;
+        };
+        let Value::Int(int) = result else {
+            return ResumeStep::Fallback;
+        };
+        let Some(slot) = session.buffer.get_mut(site_plan.result_slot as usize) else {
+            return ResumeStep::Fallback;
+        };
+        *slot = JitCValue::int(*int);
+        let status = self.run_at(site_plan.resume_offset, &mut session.buffer);
+        self.resume_step(status, &session.buffer)
+    }
+}
+
+/// Resolve `name` (as written at a call site) as a valid return-and-resume
+/// callee of arity `arity`: a same-unit plain userland function — not a
+/// method/closure/generator, no by-ref return or by-ref/variadic parameters —
+/// whose declared `: int` return type proves the call-result slot's tag
+/// without a runtime guard, and whose parameter list accepts `arity`
+/// positional arguments. Same-unit resolution is stable for the whole request:
+/// a unit function's name can never be legally redeclared, so a later dynamic
+/// unit cannot shadow it.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn resume_callee_target(unit: &CompiledUnit, name: &str, arity: usize) -> Option<FunctionId> {
+    let function_id = unit.lookup_function(&crate::vm::normalize_function_name(name))?;
+    let function = unit.unit().functions.get(function_id.index())?;
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if function.return_type != Some(IrReturnType::Int) {
+        return None;
+    }
+    if function
+        .params
+        .iter()
+        .any(|param| param.by_ref || param.variadic)
+    {
+        return None;
+    }
+    let required = function
+        .params
+        .iter()
+        .filter(|param| param.required)
+        .count();
+    if arity < required || arity > function.params.len() {
+        return None;
+    }
+    Some(function_id)
 }
 
 /// `(unit id, function id)` → compiled leaf, or `None` for a function proven
@@ -1368,6 +2105,7 @@ mod tests {
         let helpers = php_jit::copy_patch::CopyPatchRuntimeHelpers {
             array_len: super::copy_patch_array_len_abi as *const () as usize as u64,
             strlen: super::copy_patch_strlen_abi as *const () as usize as u64,
+            ..php_jit::copy_patch::CopyPatchRuntimeHelpers::default()
         };
         php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
             &function,
@@ -1512,6 +2250,7 @@ mod tests {
         let helpers = php_jit::copy_patch::CopyPatchRuntimeHelpers {
             array_len: super::copy_patch_array_len_abi as *const () as usize as u64,
             strlen: super::copy_patch_strlen_abi as *const () as usize as u64,
+            ..php_jit::copy_patch::CopyPatchRuntimeHelpers::default()
         };
         php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
             &function,

@@ -1,3 +1,5 @@
+use super::haval::haval_digest;
+use super::snefru::snefru_digest;
 use super::*;
 use gost94::{Digest as GostDigest, Gost94CryptoPro, Gost94Test};
 use md2::Md2;
@@ -9,7 +11,7 @@ use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use std::collections::HashSet;
-use tiger::{Digest as TigerDigest, Tiger};
+use tiger::{Digest as TigerDigest, Tiger, Tiger4};
 use whirlpool::Whirlpool;
 use xxhash_rust::{
     xxh3::{
@@ -165,7 +167,12 @@ pub(in crate::builtins::modules) fn hash_digest_bytes_with_options(
     input: &[u8],
     options: &HashOptions,
 ) -> Result<Vec<u8>, BuiltinError> {
-    match normalized_hash_algorithm(algorithm).as_deref() {
+    let normalized = normalized_hash_algorithm(algorithm);
+    if let Some((bits, passes)) = normalized.as_deref().and_then(haval_variant) {
+        return Ok(haval_digest(input, bits, passes));
+    }
+
+    match normalized.as_deref() {
         Some("md2") => Ok(Md2::digest(input).to_vec()),
         Some("md4") => Ok(Md4::digest(input).to_vec()),
         Some("md5") => Ok(Md5::digest(input).to_vec()),
@@ -188,6 +195,10 @@ pub(in crate::builtins::modules) fn hash_digest_bytes_with_options(
         Some("tiger128,3") => Ok(tiger_digest(input, 16)),
         Some("tiger160,3") => Ok(tiger_digest(input, 20)),
         Some("tiger192,3") => Ok(tiger_digest(input, 24)),
+        Some("tiger128,4") => Ok(tiger4_digest(input, 16)),
+        Some("tiger160,4") => Ok(tiger4_digest(input, 20)),
+        Some("tiger192,4") => Ok(tiger4_digest(input, 24)),
+        Some("snefru" | "snefru256") => Ok(snefru_digest(input)),
         Some("gost") => Ok(<Gost94Test as GostDigest>::digest(input).to_vec()),
         Some("gostcrypto") => Ok(<Gost94CryptoPro as GostDigest>::digest(input).to_vec()),
         Some("adler32") => Ok(adler32(input).to_be_bytes().to_vec()),
@@ -347,13 +358,33 @@ fn tiger_digest(input: &[u8], length: usize) -> Vec<u8> {
     digest
 }
 
+fn tiger4_digest(input: &[u8], length: usize) -> Vec<u8> {
+    let mut digest = <Tiger4 as TigerDigest>::digest(input).to_vec();
+    digest.truncate(length);
+    digest
+}
+
 pub(in crate::builtins::modules) fn hmac_digest_bytes(
     name: &str,
     algorithm: &str,
     key: &[u8],
     input: &[u8],
 ) -> Result<Vec<u8>, BuiltinError> {
-    match normalized_hash_algorithm(algorithm).as_deref() {
+    let normalized = normalized_hash_algorithm(algorithm);
+    if let Some((bits, passes)) = normalized.as_deref().and_then(haval_variant) {
+        return Ok(hmac_with_block(
+            if key.len() > 128 {
+                haval_digest(key, bits, passes)
+            } else {
+                key.to_vec()
+            },
+            input,
+            128,
+            |bytes| haval_digest(bytes, bits, passes),
+        ));
+    }
+
+    match normalized.as_deref() {
         Some("md2") => Ok(hmac_with_block(
             if key.len() > 16 {
                 Md2::digest(key).to_vec()
@@ -563,6 +594,43 @@ pub(in crate::builtins::modules) fn hmac_digest_bytes(
             input,
             |bytes| tiger_digest(bytes, 24),
         )),
+        Some("tiger128,4") => Ok(hmac_with_block_64(
+            if key.len() > 64 {
+                tiger4_digest(key, 16)
+            } else {
+                key.to_vec()
+            },
+            input,
+            |bytes| tiger4_digest(bytes, 16),
+        )),
+        Some("tiger160,4") => Ok(hmac_with_block_64(
+            if key.len() > 64 {
+                tiger4_digest(key, 20)
+            } else {
+                key.to_vec()
+            },
+            input,
+            |bytes| tiger4_digest(bytes, 20),
+        )),
+        Some("tiger192,4") => Ok(hmac_with_block_64(
+            if key.len() > 64 {
+                tiger4_digest(key, 24)
+            } else {
+                key.to_vec()
+            },
+            input,
+            |bytes| tiger4_digest(bytes, 24),
+        )),
+        Some("snefru" | "snefru256") => Ok(hmac_with_block(
+            if key.len() > 32 {
+                snefru_digest(key)
+            } else {
+                key.to_vec()
+            },
+            input,
+            32,
+            snefru_digest,
+        )),
         Some("gost") => Ok(hmac_with_block(
             if key.len() > 32 {
                 <Gost94Test as GostDigest>::digest(key).to_vec()
@@ -623,11 +691,37 @@ pub(in crate::builtins::modules) fn normalized_hash_algorithm(algorithm: &str) -
         "sha224" | "sha256" | "sha384" | "sha512" => Some(normalized),
         "sha3224" | "sha3256" | "sha3384" | "sha3512" => Some(normalized),
         "ripemd128" | "ripemd160" | "ripemd256" | "ripemd320" => Some(normalized),
-        "whirlpool" | "gost" | "gostcrypto" => Some(normalized),
-        "tiger128,3" | "tiger160,3" | "tiger192,3" => Some(normalized),
+        "whirlpool" | "gost" | "gostcrypto" | "snefru" | "snefru256" => Some(normalized),
+        "haval128,3" | "haval160,3" | "haval192,3" | "haval224,3" | "haval256,3" | "haval128,4"
+        | "haval160,4" | "haval192,4" | "haval224,4" | "haval256,4" | "haval128,5"
+        | "haval160,5" | "haval192,5" | "haval224,5" | "haval256,5" => Some(normalized),
+        "tiger128,3" | "tiger160,3" | "tiger192,3" | "tiger128,4" | "tiger160,4" | "tiger192,4" => {
+            Some(normalized)
+        }
         "sha512/224" => Some("sha512224".to_owned()),
         "sha512/256" => Some("sha512256".to_owned()),
         "sha512224" | "sha512256" => Some(normalized),
+        _ => None,
+    }
+}
+
+fn haval_variant(algorithm: &str) -> Option<(usize, usize)> {
+    match algorithm {
+        "haval128,3" => Some((128, 3)),
+        "haval160,3" => Some((160, 3)),
+        "haval192,3" => Some((192, 3)),
+        "haval224,3" => Some((224, 3)),
+        "haval256,3" => Some((256, 3)),
+        "haval128,4" => Some((128, 4)),
+        "haval160,4" => Some((160, 4)),
+        "haval192,4" => Some((192, 4)),
+        "haval224,4" => Some((224, 4)),
+        "haval256,4" => Some((256, 4)),
+        "haval128,5" => Some((128, 5)),
+        "haval160,5" => Some((160, 5)),
+        "haval192,5" => Some((192, 5)),
+        "haval224,5" => Some((224, 5)),
+        "haval256,5" => Some((256, 5)),
         _ => None,
     }
 }
@@ -690,6 +784,175 @@ pub(in crate::builtins::modules) fn html_escape_with_options(
         index += 1;
     }
     output
+}
+
+pub(in crate::builtins::modules) fn htmlentities_escape_with_options(
+    bytes: &[u8],
+    flags: i64,
+    double_encode: bool,
+) -> Vec<u8> {
+    let mut output = Vec::with_capacity(html_escaped_capacity(bytes, flags));
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match byte {
+            b'&' if !double_encode => {
+                if let Some(entity_len) = valid_html_entity_len(&bytes[index..]) {
+                    output.extend_from_slice(&bytes[index..index + entity_len]);
+                    index += entity_len;
+                    continue;
+                }
+                output.extend_from_slice(b"&amp;");
+                index += 1;
+                continue;
+            }
+            b'&' => {
+                output.extend_from_slice(b"&amp;");
+                index += 1;
+                continue;
+            }
+            b'<' => {
+                output.extend_from_slice(b"&lt;");
+                index += 1;
+                continue;
+            }
+            b'>' => {
+                output.extend_from_slice(b"&gt;");
+                index += 1;
+                continue;
+            }
+            b'"' if flags & 2 != 0 => {
+                output.extend_from_slice(b"&quot;");
+                index += 1;
+                continue;
+            }
+            b'\'' if flags & 1 != 0 => {
+                output.extend_from_slice(html_translation_single_quote_entity(html_document_type(
+                    flags,
+                )));
+                index += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if let Some(rest) = std::str::from_utf8(&bytes[index..]).ok()
+            && let Some(character) = rest.chars().next()
+            && character.len_utf8() > 1
+            && let Some(entity) = html4_named_entity(character)
+        {
+            output.extend_from_slice(entity);
+            index += character.len_utf8();
+            continue;
+        }
+
+        output.push(byte);
+        index += 1;
+    }
+    output
+}
+
+fn html4_named_entity(character: char) -> Option<&'static [u8]> {
+    match character {
+        '\u{00a0}' => Some(b"&nbsp;"),
+        '\u{00a1}' => Some(b"&iexcl;"),
+        '\u{00a2}' => Some(b"&cent;"),
+        '\u{00a3}' => Some(b"&pound;"),
+        '\u{00a4}' => Some(b"&curren;"),
+        '\u{00a5}' => Some(b"&yen;"),
+        '\u{00a6}' => Some(b"&brvbar;"),
+        '\u{00a7}' => Some(b"&sect;"),
+        '\u{00a8}' => Some(b"&uml;"),
+        '\u{00a9}' => Some(b"&copy;"),
+        '\u{00aa}' => Some(b"&ordf;"),
+        '\u{00ab}' => Some(b"&laquo;"),
+        '\u{00ac}' => Some(b"&not;"),
+        '\u{00ad}' => Some(b"&shy;"),
+        '\u{00ae}' => Some(b"&reg;"),
+        '\u{00af}' => Some(b"&macr;"),
+        '\u{00b0}' => Some(b"&deg;"),
+        '\u{00b1}' => Some(b"&plusmn;"),
+        '\u{00b2}' => Some(b"&sup2;"),
+        '\u{00b3}' => Some(b"&sup3;"),
+        '\u{00b4}' => Some(b"&acute;"),
+        '\u{00b5}' => Some(b"&micro;"),
+        '\u{00b6}' => Some(b"&para;"),
+        '\u{00b7}' => Some(b"&middot;"),
+        '\u{00b8}' => Some(b"&cedil;"),
+        '\u{00b9}' => Some(b"&sup1;"),
+        '\u{00ba}' => Some(b"&ordm;"),
+        '\u{00bb}' => Some(b"&raquo;"),
+        '\u{00bc}' => Some(b"&frac14;"),
+        '\u{00bd}' => Some(b"&frac12;"),
+        '\u{00be}' => Some(b"&frac34;"),
+        '\u{00bf}' => Some(b"&iquest;"),
+        '\u{00c0}' => Some(b"&Agrave;"),
+        '\u{00c1}' => Some(b"&Aacute;"),
+        '\u{00c2}' => Some(b"&Acirc;"),
+        '\u{00c3}' => Some(b"&Atilde;"),
+        '\u{00c4}' => Some(b"&Auml;"),
+        '\u{00c5}' => Some(b"&Aring;"),
+        '\u{00c6}' => Some(b"&AElig;"),
+        '\u{00c7}' => Some(b"&Ccedil;"),
+        '\u{00c8}' => Some(b"&Egrave;"),
+        '\u{00c9}' => Some(b"&Eacute;"),
+        '\u{00ca}' => Some(b"&Ecirc;"),
+        '\u{00cb}' => Some(b"&Euml;"),
+        '\u{00cc}' => Some(b"&Igrave;"),
+        '\u{00cd}' => Some(b"&Iacute;"),
+        '\u{00ce}' => Some(b"&Icirc;"),
+        '\u{00cf}' => Some(b"&Iuml;"),
+        '\u{00d0}' => Some(b"&ETH;"),
+        '\u{00d1}' => Some(b"&Ntilde;"),
+        '\u{00d2}' => Some(b"&Ograve;"),
+        '\u{00d3}' => Some(b"&Oacute;"),
+        '\u{00d4}' => Some(b"&Ocirc;"),
+        '\u{00d5}' => Some(b"&Otilde;"),
+        '\u{00d6}' => Some(b"&Ouml;"),
+        '\u{00d7}' => Some(b"&times;"),
+        '\u{00d8}' => Some(b"&Oslash;"),
+        '\u{00d9}' => Some(b"&Ugrave;"),
+        '\u{00da}' => Some(b"&Uacute;"),
+        '\u{00db}' => Some(b"&Ucirc;"),
+        '\u{00dc}' => Some(b"&Uuml;"),
+        '\u{00dd}' => Some(b"&Yacute;"),
+        '\u{00de}' => Some(b"&THORN;"),
+        '\u{00df}' => Some(b"&szlig;"),
+        '\u{00e0}' => Some(b"&agrave;"),
+        '\u{00e1}' => Some(b"&aacute;"),
+        '\u{00e2}' => Some(b"&acirc;"),
+        '\u{00e3}' => Some(b"&atilde;"),
+        '\u{00e4}' => Some(b"&auml;"),
+        '\u{00e5}' => Some(b"&aring;"),
+        '\u{00e6}' => Some(b"&aelig;"),
+        '\u{00e7}' => Some(b"&ccedil;"),
+        '\u{00e8}' => Some(b"&egrave;"),
+        '\u{00e9}' => Some(b"&eacute;"),
+        '\u{00ea}' => Some(b"&ecirc;"),
+        '\u{00eb}' => Some(b"&euml;"),
+        '\u{00ec}' => Some(b"&igrave;"),
+        '\u{00ed}' => Some(b"&iacute;"),
+        '\u{00ee}' => Some(b"&icirc;"),
+        '\u{00ef}' => Some(b"&iuml;"),
+        '\u{00f0}' => Some(b"&eth;"),
+        '\u{00f1}' => Some(b"&ntilde;"),
+        '\u{00f2}' => Some(b"&ograve;"),
+        '\u{00f3}' => Some(b"&oacute;"),
+        '\u{00f4}' => Some(b"&ocirc;"),
+        '\u{00f5}' => Some(b"&otilde;"),
+        '\u{00f6}' => Some(b"&ouml;"),
+        '\u{00f7}' => Some(b"&divide;"),
+        '\u{00f8}' => Some(b"&oslash;"),
+        '\u{00f9}' => Some(b"&ugrave;"),
+        '\u{00fa}' => Some(b"&uacute;"),
+        '\u{00fb}' => Some(b"&ucirc;"),
+        '\u{00fc}' => Some(b"&uuml;"),
+        '\u{00fd}' => Some(b"&yacute;"),
+        '\u{00fe}' => Some(b"&thorn;"),
+        '\u{00ff}' => Some(b"&yuml;"),
+        '\u{20ac}' => Some(b"&euro;"),
+        _ => None,
+    }
 }
 
 /// Exact escaped length for `double_encode` output; an upper bound when

@@ -59,6 +59,83 @@ pub(super) fn standard_library_core_extension() -> ExtensionDescriptor {
                 "core",
                 ClassKind::Class,
             ))
+            .with_function(FunctionDescriptor::php("class_alias", "core"))
+            .with_function(FunctionDescriptor::php("class_exists", "core"))
+            .with_function(FunctionDescriptor::php("clone", "core"))
+            .with_function(FunctionDescriptor::php("debug_backtrace", "core"))
+            .with_function(FunctionDescriptor::php("debug_print_backtrace", "core"))
+            .with_function(FunctionDescriptor::php("define", "core"))
+            .with_function(FunctionDescriptor::php("defined", "core"))
+            .with_function(FunctionDescriptor::php("die", "core"))
+            .with_function(FunctionDescriptor::php("enum_exists", "core"))
+            .with_function(FunctionDescriptor::php("error_reporting", "core"))
+            .with_function(FunctionDescriptor::php("exit", "core"))
+            .with_function(FunctionDescriptor::php("extension_loaded", "core"))
+            .with_function(FunctionDescriptor::php("func_get_arg", "core"))
+            .with_function(FunctionDescriptor::php("func_get_args", "core"))
+            .with_function(FunctionDescriptor::php("func_num_args", "core"))
+            .with_function(FunctionDescriptor::php("function_exists", "core"))
+            .with_function(FunctionDescriptor::php("gc_collect_cycles", "core"))
+            .with_function(FunctionDescriptor::php("gc_disable", "core"))
+            .with_function(FunctionDescriptor::php("gc_enable", "core"))
+            .with_function(FunctionDescriptor::php("gc_enabled", "core"))
+            .with_function(FunctionDescriptor::php("gc_mem_caches", "core"))
+            .with_function(FunctionDescriptor::php("gc_status", "core"))
+            .with_function(FunctionDescriptor::php("get_called_class", "core"))
+            .with_function(FunctionDescriptor::php("get_class", "core"))
+            .with_function(FunctionDescriptor::php("get_class_methods", "core"))
+            .with_function(FunctionDescriptor::php("get_class_vars", "core"))
+            .with_function(FunctionDescriptor::php("get_declared_classes", "core"))
+            .with_function(FunctionDescriptor::php("get_declared_interfaces", "core"))
+            .with_function(FunctionDescriptor::php("get_declared_traits", "core"))
+            .with_function(FunctionDescriptor::php("get_defined_constants", "core"))
+            .with_function(FunctionDescriptor::php("get_defined_functions", "core"))
+            .with_function(FunctionDescriptor::php("get_defined_vars", "core"))
+            .with_function(FunctionDescriptor::php("get_error_handler", "core"))
+            .with_function(FunctionDescriptor::php("get_exception_handler", "core"))
+            .with_function(FunctionDescriptor::php("get_extension_funcs", "core"))
+            .with_function(FunctionDescriptor::php("get_included_files", "core"))
+            .with_function(FunctionDescriptor::php("get_loaded_extensions", "core"))
+            .with_function(FunctionDescriptor::php("get_mangled_object_vars", "core"))
+            .with_function(FunctionDescriptor::php("get_object_vars", "core"))
+            .with_function(FunctionDescriptor::php("get_parent_class", "core"))
+            .with_function(FunctionDescriptor::php("get_required_files", "core"))
+            .with_function(FunctionDescriptor::php("get_resource_id", "core"))
+            .with_function(FunctionDescriptor::php("get_resource_type", "core"))
+            .with_function(FunctionDescriptor::php("get_resources", "core"))
+            .with_function(FunctionDescriptor::php("interface_exists", "core"))
+            .with_function(FunctionDescriptor::php("is_a", "core"))
+            .with_function(FunctionDescriptor::php("is_subclass_of", "core"))
+            .with_function(FunctionDescriptor::php("method_exists", "core"))
+            .with_function(FunctionDescriptor::php("property_exists", "core"))
+            .with_function(FunctionDescriptor::php("restore_error_handler", "core"))
+            .with_function(FunctionDescriptor::php("restore_exception_handler", "core"))
+            .with_function(FunctionDescriptor::php("set_error_handler", "core"))
+            .with_function(FunctionDescriptor::php("set_exception_handler", "core"))
+            .with_function(FunctionDescriptor::php("strcasecmp", "core"))
+            .with_function(FunctionDescriptor::php("strcmp", "core"))
+            .with_function(FunctionDescriptor::php("strlen", "core"))
+            .with_function(FunctionDescriptor::php("strncasecmp", "core"))
+            .with_function(FunctionDescriptor::php("strncmp", "core"))
+            .with_function(FunctionDescriptor::php("trait_exists", "core"))
+            .with_function(FunctionDescriptor::php("trigger_error", "core"))
+            .with_function(FunctionDescriptor::php("user_error", "core"))
+            .with_function(FunctionDescriptor::php("zend_version", "core"))
+            .with_constant(ConstantDescriptor::with_value(
+                "TRUE",
+                "core",
+                ConstantValue::Bool(true),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "FALSE",
+                "core",
+                ConstantValue::Bool(false),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "NULL",
+                "core",
+                ConstantValue::Null,
+            ))
             .with_constant(ConstantDescriptor::with_value(
                 "PHP_VERSION",
                 "core",
@@ -100,24 +177,24 @@ pub(super) fn standard_library_core_extension() -> ExtensionDescriptor {
                 ConstantValue::Int(constants::PHP_INT_SIZE),
             ))
             .with_constant(ConstantDescriptor::with_value(
-                "INF",
+                "PHP_FLOAT_DIG",
                 "core",
-                ConstantValue::Float(constants::INF),
+                ConstantValue::Int(constants::PHP_FLOAT_DIG),
             ))
             .with_constant(ConstantDescriptor::with_value(
-                "NAN",
+                "PHP_FLOAT_EPSILON",
                 "core",
-                ConstantValue::Float(constants::NAN),
+                ConstantValue::Float(constants::PHP_FLOAT_EPSILON),
             ))
             .with_constant(ConstantDescriptor::with_value(
-                "DIRECTORY_SEPARATOR",
+                "PHP_FLOAT_MAX",
                 "core",
-                ConstantValue::String(constants::DIRECTORY_SEPARATOR),
+                ConstantValue::Float(constants::PHP_FLOAT_MAX),
             ))
             .with_constant(ConstantDescriptor::with_value(
-                "PATH_SEPARATOR",
+                "PHP_FLOAT_MIN",
                 "core",
-                ConstantValue::String(constants::PATH_SEPARATOR),
+                ConstantValue::Float(constants::PHP_FLOAT_MIN),
             ))
             .with_constant(ConstantDescriptor::with_value(
                 "PHP_OS",
@@ -145,6 +222,121 @@ pub(super) fn standard_library_core_extension() -> ExtensionDescriptor {
                 ConstantValue::String(constants::PHP_BINARY),
             ))
             .with_constant(ConstantDescriptor::with_value(
+                "PHP_EXTENSION_DIR",
+                "core",
+                ConstantValue::String(constants::PHP_EXTENSION_DIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PEAR_EXTENSION_DIR",
+                "core",
+                ConstantValue::String(constants::PEAR_EXTENSION_DIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PEAR_INSTALL_DIR",
+                "core",
+                ConstantValue::String(constants::PEAR_INSTALL_DIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_BINDIR",
+                "core",
+                ConstantValue::String(constants::PHP_BINDIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_BUILD_DATE",
+                "core",
+                ConstantValue::String(constants::PHP_BUILD_DATE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_CLI_PROCESS_TITLE",
+                "core",
+                ConstantValue::Bool(constants::PHP_CLI_PROCESS_TITLE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_CONFIG_FILE_PATH",
+                "core",
+                ConstantValue::String(constants::PHP_CONFIG_FILE_PATH),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_CONFIG_FILE_SCAN_DIR",
+                "core",
+                ConstantValue::String(constants::PHP_CONFIG_FILE_SCAN_DIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_DATADIR",
+                "core",
+                ConstantValue::String(constants::PHP_DATADIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_DEBUG",
+                "core",
+                ConstantValue::Bool(constants::PHP_DEBUG),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_EXTRA_VERSION",
+                "core",
+                ConstantValue::String(constants::PHP_EXTRA_VERSION),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_FD_SETSIZE",
+                "core",
+                ConstantValue::Int(constants::PHP_FD_SETSIZE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_LIBDIR",
+                "core",
+                ConstantValue::String(constants::PHP_LIBDIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_LOCALSTATEDIR",
+                "core",
+                ConstantValue::String(constants::PHP_LOCALSTATEDIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_MANDIR",
+                "core",
+                ConstantValue::String(constants::PHP_MANDIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_PREFIX",
+                "core",
+                ConstantValue::String(constants::PHP_PREFIX),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_SBINDIR",
+                "core",
+                ConstantValue::String(constants::PHP_SBINDIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_SHLIB_SUFFIX",
+                "core",
+                ConstantValue::String(constants::PHP_SHLIB_SUFFIX),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_SYSCONFDIR",
+                "core",
+                ConstantValue::String(constants::PHP_SYSCONFDIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_ZTS",
+                "core",
+                ConstantValue::Bool(constants::PHP_ZTS),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "ZEND_DEBUG_BUILD",
+                "core",
+                ConstantValue::Bool(constants::ZEND_DEBUG_BUILD),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "ZEND_THREAD_SAFE",
+                "core",
+                ConstantValue::Bool(constants::ZEND_THREAD_SAFE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "ZEND_VM_KIND",
+                "core",
+                ConstantValue::String(constants::ZEND_VM_KIND),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
                 "DEFAULT_INCLUDE_PATH",
                 "core",
                 ConstantValue::String(constants::DEFAULT_INCLUDE_PATH),
@@ -153,6 +345,76 @@ pub(super) fn standard_library_core_extension() -> ExtensionDescriptor {
                 "PHP_MAXPATHLEN",
                 "core",
                 ConstantValue::Int(constants::PHP_MAXPATHLEN),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_CONT",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_CONT),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_WRITE",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_WRITE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_START",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_START),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_CLEAN",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_CLEAN),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_FLUSH",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_FLUSH),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_FINAL",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_FINAL),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_END",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_END),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_CLEANABLE",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_CLEANABLE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_FLUSHABLE",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_FLUSHABLE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_REMOVABLE",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_REMOVABLE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_STDFLAGS",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_STDFLAGS),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_STARTED",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_STARTED),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_DISABLED",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_DISABLED),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PHP_OUTPUT_HANDLER_PROCESSED",
+                "core",
+                ConstantValue::Int(constants::PHP_OUTPUT_HANDLER_PROCESSED),
             ))
             .with_constant(ConstantDescriptor::with_value(
                 "DEBUG_BACKTRACE_PROVIDE_OBJECT",
@@ -243,13 +505,76 @@ pub(super) fn standard_library_core_extension() -> ExtensionDescriptor {
                 "E_ALL",
                 "core",
                 ConstantValue::Int(constants::E_ALL),
-            )),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_OK",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_OK),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_INI_SIZE",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_INI_SIZE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_FORM_SIZE",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_FORM_SIZE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_PARTIAL",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_PARTIAL),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_NO_FILE",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_NO_FILE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_NO_TMP_DIR",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_NO_TMP_DIR),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_CANT_WRITE",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_CANT_WRITE),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "UPLOAD_ERR_EXTENSION",
+                "core",
+                ConstantValue::Int(constants::UPLOAD_ERR_EXTENSION),
+            ))
+            .with_constant(ConstantDescriptor::new("STDIN", "core"))
+            .with_constant(ConstantDescriptor::new("STDOUT", "core"))
+            .with_constant(ConstantDescriptor::new("STDERR", "core")),
         "core",
     )
 }
 
 pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("standard")
+        .with_constant(ConstantDescriptor::with_value(
+            "INF",
+            "standard",
+            ConstantValue::Float(constants::INF),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "NAN",
+            "standard",
+            ConstantValue::Float(constants::NAN),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "DIRECTORY_SEPARATOR",
+            "standard",
+            ConstantValue::String(constants::DIRECTORY_SEPARATOR),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "PATH_SEPARATOR",
+            "standard",
+            ConstantValue::String(constants::PATH_SEPARATOR),
+        ))
         .with_constant(ConstantDescriptor::with_value(
             "SORT_ASC",
             "standard",
@@ -773,9 +1098,10 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("boolval", "standard"))
         .with_function(FunctionDescriptor::php("ceil", "standard"))
         .with_function(FunctionDescriptor::php("chdir", "standard"))
+        .with_function(FunctionDescriptor::php("chgrp", "standard"))
         .with_function(FunctionDescriptor::php("chmod", "standard"))
+        .with_function(FunctionDescriptor::php("chown", "standard"))
         .with_function(FunctionDescriptor::php("chr", "standard"))
-        .with_function(FunctionDescriptor::php("class_exists", "standard"))
         .with_function(FunctionDescriptor::php("call_user_func", "standard"))
         .with_function(FunctionDescriptor::php("call_user_func_array", "standard"))
         .with_function(FunctionDescriptor::php("clearstatcache", "standard"))
@@ -786,27 +1112,20 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("cosh", "standard"))
         .with_function(FunctionDescriptor::php("count", "standard"))
         .with_function(FunctionDescriptor::php("crc32", "standard"))
-        .with_function(FunctionDescriptor::php("debug_backtrace", "standard"))
-        .with_function(FunctionDescriptor::php("debug_print_backtrace", "standard"))
         .with_function(FunctionDescriptor::php("debug_zval_dump", "standard"))
         .with_function(FunctionDescriptor::php("decbin", "standard"))
         .with_function(FunctionDescriptor::php("dechex", "standard"))
         .with_function(FunctionDescriptor::php("decoct", "standard"))
         .with_function(FunctionDescriptor::php("deg2rad", "standard"))
-        .with_function(FunctionDescriptor::php("define", "standard"))
-        .with_function(FunctionDescriptor::php("defined", "standard"))
         .with_function(FunctionDescriptor::php("dirname", "standard"))
         .with_function(FunctionDescriptor::php("dir", "standard"))
         .with_function(FunctionDescriptor::php("disk_free_space", "standard"))
         .with_function(FunctionDescriptor::php("disk_total_space", "standard"))
-        .with_function(FunctionDescriptor::php("enum_exists", "standard"))
         .with_function(FunctionDescriptor::php("error_log", "standard"))
-        .with_function(FunctionDescriptor::php("error_reporting", "standard"))
         .with_function(FunctionDescriptor::php("exec", "standard"))
         .with_function(FunctionDescriptor::php("exp", "standard"))
         .with_function(FunctionDescriptor::php("expm1", "standard"))
         .with_function(FunctionDescriptor::php("explode", "standard"))
-        .with_function(FunctionDescriptor::php("extension_loaded", "standard"))
         .with_function(FunctionDescriptor::php("fclose", "standard"))
         .with_function(FunctionDescriptor::php("feof", "standard"))
         .with_function(FunctionDescriptor::php("fflush", "standard"))
@@ -832,36 +1151,12 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("fread", "standard"))
         .with_function(FunctionDescriptor::php("fseek", "standard"))
         .with_function(FunctionDescriptor::php("ftell", "standard"))
-        .with_function(FunctionDescriptor::php("function_exists", "standard"))
         .with_function(FunctionDescriptor::php("forward_static_call", "standard"))
-        .with_function(FunctionDescriptor::php("func_get_arg", "standard"))
-        .with_function(FunctionDescriptor::php("func_get_args", "standard"))
-        .with_function(FunctionDescriptor::php("func_num_args", "standard"))
         .with_function(FunctionDescriptor::php("fwrite", "standard"))
         .with_function(FunctionDescriptor::php("get_current_user", "standard"))
         .with_function(FunctionDescriptor::php("get_cfg_var", "standard"))
-        .with_function(FunctionDescriptor::php("get_called_class", "standard"))
-        .with_function(FunctionDescriptor::php("get_class", "standard"))
-        .with_function(FunctionDescriptor::php("get_class_methods", "standard"))
-        .with_function(FunctionDescriptor::php("get_class_vars", "standard"))
         .with_function(FunctionDescriptor::php("get_debug_type", "standard"))
-        .with_function(FunctionDescriptor::php("get_declared_classes", "standard"))
-        .with_function(FunctionDescriptor::php(
-            "get_declared_interfaces",
-            "standard",
-        ))
-        .with_function(FunctionDescriptor::php("get_declared_traits", "standard"))
-        .with_function(FunctionDescriptor::php("get_loaded_extensions", "standard"))
-        .with_function(FunctionDescriptor::php(
-            "get_mangled_object_vars",
-            "standard",
-        ))
-        .with_function(FunctionDescriptor::php("get_object_vars", "standard"))
-        .with_function(FunctionDescriptor::php("get_parent_class", "standard"))
         .with_function(FunctionDescriptor::php("getrandmax", "standard"))
-        .with_function(FunctionDescriptor::php("get_resource_id", "standard"))
-        .with_function(FunctionDescriptor::php("get_resource_type", "standard"))
-        .with_function(FunctionDescriptor::php("get_resources", "standard"))
         .with_function(FunctionDescriptor::php("getimagesize", "standard"))
         .with_function(FunctionDescriptor::php(
             "getimagesizefromstring",
@@ -900,8 +1195,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("ini_get_all", "standard"))
         .with_function(FunctionDescriptor::php("ini_set", "standard"))
         .with_function(FunctionDescriptor::php("intdiv", "standard"))
-        .with_function(FunctionDescriptor::php("interface_exists", "standard"))
-        .with_function(FunctionDescriptor::php("is_a", "core"))
         .with_function(FunctionDescriptor::php("intval", "standard"))
         .with_function(FunctionDescriptor::php("is_array", "standard"))
         .with_function(FunctionDescriptor::php("is_bool", "standard"))
@@ -921,7 +1214,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("is_resource", "standard"))
         .with_function(FunctionDescriptor::php("is_scalar", "standard"))
         .with_function(FunctionDescriptor::php("is_string", "standard"))
-        .with_function(FunctionDescriptor::php("is_subclass_of", "standard"))
         .with_function(FunctionDescriptor::php("is_writable", "standard"))
         .with_function(FunctionDescriptor::php("krsort", "standard"))
         .with_function(FunctionDescriptor::php("ksort", "standard"))
@@ -935,7 +1227,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("md5", "standard"))
         .with_function(FunctionDescriptor::php("memory_get_peak_usage", "standard"))
         .with_function(FunctionDescriptor::php("memory_get_usage", "standard"))
-        .with_function(FunctionDescriptor::php("method_exists", "standard"))
         .with_function(FunctionDescriptor::php("min", "standard"))
         .with_function(FunctionDescriptor::php("mkdir", "standard"))
         .with_function(FunctionDescriptor::php("mime_content_type", "standard"))
@@ -969,7 +1260,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("print_r", "standard"))
         .with_function(FunctionDescriptor::php("printf", "standard"))
         .with_function(FunctionDescriptor::php("pow", "standard"))
-        .with_function(FunctionDescriptor::php("property_exists", "standard"))
         .with_function(FunctionDescriptor::php("proc_close", "standard"))
         .with_function(FunctionDescriptor::php("proc_get_status", "standard"))
         .with_function(FunctionDescriptor::php("proc_open", "standard"))
@@ -982,11 +1272,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("readfile", "standard"))
         .with_function(FunctionDescriptor::php("realpath", "standard"))
         .with_function(FunctionDescriptor::php("rename", "standard"))
-        .with_function(FunctionDescriptor::php("restore_error_handler", "standard"))
-        .with_function(FunctionDescriptor::php(
-            "restore_exception_handler",
-            "standard",
-        ))
         .with_function(FunctionDescriptor::php("rewind", "standard"))
         .with_function(FunctionDescriptor::php("rewinddir", "standard"))
         .with_function(FunctionDescriptor::php("rmdir", "standard"))
@@ -995,8 +1280,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("rtrim", "standard"))
         .with_function(FunctionDescriptor::php("scandir", "standard"))
         .with_function(FunctionDescriptor::php("serialize", "standard"))
-        .with_function(FunctionDescriptor::php("set_error_handler", "standard"))
-        .with_function(FunctionDescriptor::php("set_exception_handler", "standard"))
         .with_function(FunctionDescriptor::php("setcookie", "standard"))
         .with_function(FunctionDescriptor::php("setrawcookie", "standard"))
         .with_function(FunctionDescriptor::php("set_time_limit", "standard"))
@@ -1006,6 +1289,7 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("sin", "standard"))
         .with_function(FunctionDescriptor::php("sinh", "standard"))
         .with_function(FunctionDescriptor::php("sizeof", "standard"))
+        .with_function(FunctionDescriptor::php("sleep", "standard"))
         .with_function(FunctionDescriptor::php("sort", "standard"))
         .with_function(FunctionDescriptor::php("sprintf", "standard"))
         .with_function(FunctionDescriptor::php("sqrt", "standard"))
@@ -1028,6 +1312,10 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
             "stream_context_set_option",
             "standard",
         ))
+        .with_function(FunctionDescriptor::php(
+            "stream_context_set_options",
+            "standard",
+        ))
         .with_function(FunctionDescriptor::php("stream_copy_to_stream", "standard"))
         .with_function(FunctionDescriptor::php("stream_get_contents", "standard"))
         .with_function(FunctionDescriptor::php("stream_get_meta_data", "standard"))
@@ -1039,6 +1327,10 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
             "stream_resolve_include_path",
             "standard",
         ))
+        .with_function(FunctionDescriptor::php(
+            "stream_wrapper_register",
+            "standard",
+        ))
         .with_function(FunctionDescriptor::php("str_contains", "standard"))
         .with_function(FunctionDescriptor::php("str_ends_with", "standard"))
         .with_function(FunctionDescriptor::php("str_pad", "standard"))
@@ -1046,12 +1338,7 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("str_replace", "standard"))
         .with_function(FunctionDescriptor::php("str_split", "standard"))
         .with_function(FunctionDescriptor::php("str_starts_with", "standard"))
-        .with_function(FunctionDescriptor::php("strcasecmp", "standard"))
-        .with_function(FunctionDescriptor::php("strcmp", "standard"))
         .with_function(FunctionDescriptor::php("stripos", "standard"))
-        .with_function(FunctionDescriptor::php("strlen", "standard"))
-        .with_function(FunctionDescriptor::php("strncasecmp", "standard"))
-        .with_function(FunctionDescriptor::php("strncmp", "standard"))
         .with_function(FunctionDescriptor::php("strpos", "standard"))
         .with_function(FunctionDescriptor::php("strrev", "standard"))
         .with_function(FunctionDescriptor::php("strrpos", "standard"))
@@ -1068,8 +1355,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("tmpfile", "standard"))
         .with_function(FunctionDescriptor::php("touch", "standard"))
         .with_function(FunctionDescriptor::php("trim", "standard"))
-        .with_function(FunctionDescriptor::php("trigger_error", "standard"))
-        .with_function(FunctionDescriptor::php("trait_exists", "standard"))
         .with_function(FunctionDescriptor::php("uasort", "standard"))
         .with_function(FunctionDescriptor::php("uksort", "standard"))
         .with_function(FunctionDescriptor::php("umask", "standard"))
@@ -1080,7 +1365,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("usort", "standard"))
         .with_function(FunctionDescriptor::php("ucfirst", "standard"))
         .with_function(FunctionDescriptor::php("ucwords", "standard"))
-        .with_function(FunctionDescriptor::php("user_error", "standard"))
         .with_function(FunctionDescriptor::php("var_dump", "standard"))
         .with_function(FunctionDescriptor::php("var_export", "standard"))
         .with_function(FunctionDescriptor::php("version_compare", "standard"))
@@ -1271,46 +1555,6 @@ pub(super) fn standard_library_standard_extension() -> ExtensionDescriptor {
             "standard",
             ConstantValue::Int(constants::IMAGETYPE_COUNT),
         ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_OK",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_OK),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_INI_SIZE",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_INI_SIZE),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_FORM_SIZE",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_FORM_SIZE),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_PARTIAL",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_PARTIAL),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_NO_FILE",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_NO_FILE),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_NO_TMP_DIR",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_NO_TMP_DIR),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_CANT_WRITE",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_CANT_WRITE),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "UPLOAD_ERR_EXTENSION",
-            "standard",
-            ConstantValue::Int(constants::UPLOAD_ERR_EXTENSION),
-        ))
 }
 
 pub(super) fn standard_library_json_extension() -> ExtensionDescriptor {
@@ -1421,6 +1665,11 @@ pub(super) fn standard_library_json_extension() -> ExtensionDescriptor {
             ConstantValue::Int(10),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "JSON_ERROR_NON_BACKED_ENUM",
+            "json",
+            ConstantValue::Int(11),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "JSON_OBJECT_AS_ARRAY",
             "json",
             ConstantValue::Int(1),
@@ -1488,6 +1737,26 @@ pub(super) fn standard_library_pcre_extension() -> ExtensionDescriptor {
             "pcre",
         ))
         .with_function(FunctionDescriptor::php("preg_split", "pcre"))
+        .with_constant(ConstantDescriptor::with_value(
+            "PCRE_JIT_SUPPORT",
+            "pcre",
+            ConstantValue::Bool(true),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "PCRE_VERSION",
+            "pcre",
+            ConstantValue::String("10.44 2024-06-07"),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "PCRE_VERSION_MAJOR",
+            "pcre",
+            ConstantValue::Int(10),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "PCRE_VERSION_MINOR",
+            "pcre",
+            ConstantValue::Int(44),
+        ))
         .with_constant(ConstantDescriptor::with_value(
             "PREG_BAD_UTF8_ERROR",
             "pcre",
@@ -1587,9 +1856,17 @@ pub(super) fn standard_library_session_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("session_cache_limiter", "session"))
         .with_function(FunctionDescriptor::php("session_commit", "session"))
         .with_function(FunctionDescriptor::php("session_id", "session"))
+        .with_function(FunctionDescriptor::php(
+            "session_get_cookie_params",
+            "session",
+        ))
         .with_function(FunctionDescriptor::php("session_module_name", "session"))
         .with_function(FunctionDescriptor::php("session_name", "session"))
         .with_function(FunctionDescriptor::php("session_save_path", "session"))
+        .with_function(FunctionDescriptor::php(
+            "session_set_cookie_params",
+            "session",
+        ))
         .with_function(FunctionDescriptor::php("session_start", "session"))
         .with_function(FunctionDescriptor::php("session_status", "session"))
         .with_function(FunctionDescriptor::php("session_write_close", "session"))
@@ -1866,6 +2143,11 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             ConstantValue::Int(0),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "CURLE_UNSUPPORTED_PROTOCOL",
+            "curl",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "CURLE_WRITE_ERROR",
             "curl",
             ConstantValue::Int(23),
@@ -1874,6 +2156,16 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             "CURLE_BAD_CONTENT_ENCODING",
             "curl",
             ConstantValue::Int(61),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLSHE_OK",
+            "curl",
+            ConstantValue::Int(0),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLSHE_BAD_OPTION",
+            "curl",
+            ConstantValue::Int(1),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "CURL_VERSION_SSL",
@@ -2076,6 +2368,16 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             ConstantValue::Int(10036),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_PRIVATE",
+            "curl",
+            ConstantValue::Int(10103),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLOPT_SHARE",
+            "curl",
+            ConstantValue::Int(10100),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "CURLOPT_SSL_VERIFYPEER",
             "curl",
             ConstantValue::Int(64),
@@ -2110,6 +2412,31 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
             "curl",
             ConstantValue::Int(3145731),
         ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLINFO_PRIVATE",
+            "curl",
+            ConstantValue::Int(1048597),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLSHOPT_SHARE",
+            "curl",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURLSHOPT_UNSHARE",
+            "curl",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURL_LOCK_DATA_COOKIE",
+            "curl",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "CURL_LOCK_DATA_DNS",
+            "curl",
+            ConstantValue::Int(3),
+        ))
         .with_function(FunctionDescriptor::php("curl_close", "curl"))
         .with_function(FunctionDescriptor::php("curl_copy_handle", "curl"))
         .with_function(FunctionDescriptor::php("curl_errno", "curl"))
@@ -2123,6 +2450,12 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("curl_multi_exec", "curl"))
         .with_function(FunctionDescriptor::php("curl_multi_init", "curl"))
         .with_function(FunctionDescriptor::php("curl_multi_strerror", "curl"))
+        .with_function(FunctionDescriptor::php("curl_share_close", "curl"))
+        .with_function(FunctionDescriptor::php("curl_share_errno", "curl"))
+        .with_function(FunctionDescriptor::php("curl_share_init", "curl"))
+        .with_function(FunctionDescriptor::php("curl_share_setopt", "curl"))
+        .with_function(FunctionDescriptor::php("curl_share_strerror", "curl"))
+        .with_function(FunctionDescriptor::php("curl_strerror", "curl"))
         .with_function(FunctionDescriptor::php("curl_reset", "curl"))
         .with_function(FunctionDescriptor::php("curl_setopt", "curl"))
         .with_function(FunctionDescriptor::php("curl_setopt_array", "curl"))
@@ -2131,6 +2464,11 @@ pub(super) fn standard_library_curl_extension() -> ExtensionDescriptor {
         .with_class(ClassDescriptor::new("CurlHandle", "curl", ClassKind::Class))
         .with_class(ClassDescriptor::new(
             "CurlMultiHandle",
+            "curl",
+            ClassKind::Class,
+        ))
+        .with_class(ClassDescriptor::new(
+            "CurlShareHandle",
             "curl",
             ClassKind::Class,
         ))
@@ -2188,6 +2526,10 @@ pub(super) fn standard_library_openssl_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("openssl_encrypt", "openssl"))
         .with_function(FunctionDescriptor::php(
             "openssl_cipher_iv_length",
+            "openssl",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "openssl_cipher_key_length",
             "openssl",
         ))
         .with_function(FunctionDescriptor::php(
@@ -2305,12 +2647,19 @@ pub(super) fn standard_library_mbstring_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("mb_check_encoding", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_convert_encoding", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_detect_encoding", "mbstring"))
+        .with_function(FunctionDescriptor::php("mb_encoding_aliases", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_internal_encoding", "mbstring"))
+        .with_function(FunctionDescriptor::php("mb_list_encodings", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_strlen", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_strtolower", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_strtoupper", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_stripos", "mbstring"))
         .with_function(FunctionDescriptor::php("mb_strpos", "mbstring"))
+        .with_function(FunctionDescriptor::php("mb_substr_count", "mbstring"))
+        .with_function(FunctionDescriptor::php(
+            "mb_substitute_character",
+            "mbstring",
+        ))
         .with_function(FunctionDescriptor::php("mb_substr", "mbstring"))
 }
 
@@ -2378,11 +2727,31 @@ pub(super) fn standard_library_xml_extension() -> ExtensionDescriptor {
             "xml",
             ConstantValue::Int(4),
         ))
+        .with_constant(ConstantDescriptor::with_value(
+            "XML_OPTION_PARSE_HUGE",
+            "xml",
+            ConstantValue::Int(5),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "XML_SAX_IMPL",
+            "xml",
+            ConstantValue::String("libxml"),
+        ))
         .with_function(FunctionDescriptor::php("xml_parser_create", "xml"))
         .with_function(FunctionDescriptor::php("xml_parser_create_ns", "xml"))
         .with_function(FunctionDescriptor::php("xml_parser_get_option", "xml"))
         .with_function(FunctionDescriptor::php("xml_parser_set_option", "xml"))
+        .with_function(FunctionDescriptor::php("xml_parser_free", "xml"))
         .with_function(FunctionDescriptor::php("xml_parse", "xml"))
+        .with_function(FunctionDescriptor::php("xml_parse_into_struct", "xml"))
+        .with_function(FunctionDescriptor::php("xml_set_element_handler", "xml"))
+        .with_function(FunctionDescriptor::php(
+            "xml_set_character_data_handler",
+            "xml",
+        ))
+        .with_function(FunctionDescriptor::php("xml_set_default_handler", "xml"))
+        .with_function(FunctionDescriptor::php("xml_get_error_code", "xml"))
+        .with_function(FunctionDescriptor::php("xml_error_string", "xml"))
         .with_function(FunctionDescriptor::php("xml_get_current_byte_index", "xml"))
         .with_function(FunctionDescriptor::php(
             "xml_get_current_line_number",
@@ -2400,14 +2769,23 @@ pub(super) fn standard_library_dom_extension() -> ExtensionDescriptor {
         .enabled_by_default(true)
         .with_class(ClassDescriptor::new("DOMDocument", "dom", ClassKind::Class))
         .with_class(ClassDescriptor::new("DOMElement", "dom", ClassKind::Class))
+        .with_class(ClassDescriptor::new("DOMAttr", "dom", ClassKind::Class))
         .with_class(ClassDescriptor::new("DOMNode", "dom", ClassKind::Class))
         .with_class(ClassDescriptor::new("DOMText", "dom", ClassKind::Class))
+        .with_class(ClassDescriptor::new("DOMComment", "dom", ClassKind::Class))
+        .with_class(ClassDescriptor::new(
+            "DOMCdataSection",
+            "dom",
+            ClassKind::Class,
+        ))
         .with_class(ClassDescriptor::new("DOMNodeList", "dom", ClassKind::Class))
 }
 
 pub(super) fn standard_library_simplexml_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("simplexml")
         .enabled_by_default(true)
+        .with_function(FunctionDescriptor::php("dom_import_simplexml", "simplexml"))
+        .with_function(FunctionDescriptor::php("simplexml_import_dom", "simplexml"))
         .with_function(FunctionDescriptor::php("simplexml_load_file", "simplexml"))
         .with_function(FunctionDescriptor::php(
             "simplexml_load_string",
@@ -2433,6 +2811,43 @@ pub(super) fn standard_library_xmlreader_extension() -> ExtensionDescriptor {
 pub(super) fn standard_library_xmlwriter_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("xmlwriter")
         .enabled_by_default(true)
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_open_memory",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_start_document",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_start_element",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_write_attribute",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php("xmlwriter_text", "xmlwriter"))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_write_comment",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_write_cdata",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_write_element",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_end_document",
+            "xmlwriter",
+        ))
+        .with_function(FunctionDescriptor::php(
+            "xmlwriter_output_memory",
+            "xmlwriter",
+        ))
         .with_class(ClassDescriptor::new(
             "XMLWriter",
             "xmlwriter",
@@ -2499,6 +2914,130 @@ pub(super) fn standard_library_xsl_extension() -> ExtensionDescriptor {
         ))
 }
 
+fn mhash_constant(name: &'static str, value: i64) -> ConstantDescriptor {
+    let message = match name {
+        "MHASH_CRC32" => {
+            "Constant MHASH_CRC32 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_MD5" => {
+            "Constant MHASH_MD5 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_SHA1" => {
+            "Constant MHASH_SHA1 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_HAVAL256" => {
+            "Constant MHASH_HAVAL256 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_RIPEMD160" => {
+            "Constant MHASH_RIPEMD160 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_TIGER" => {
+            "Constant MHASH_TIGER is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_GOST" => {
+            "Constant MHASH_GOST is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_CRC32B" => {
+            "Constant MHASH_CRC32B is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_HAVAL224" => {
+            "Constant MHASH_HAVAL224 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_HAVAL192" => {
+            "Constant MHASH_HAVAL192 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_HAVAL160" => {
+            "Constant MHASH_HAVAL160 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_HAVAL128" => {
+            "Constant MHASH_HAVAL128 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_TIGER128" => {
+            "Constant MHASH_TIGER128 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_TIGER160" => {
+            "Constant MHASH_TIGER160 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_MD4" => {
+            "Constant MHASH_MD4 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_SHA256" => {
+            "Constant MHASH_SHA256 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_ADLER32" => {
+            "Constant MHASH_ADLER32 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_SHA224" => {
+            "Constant MHASH_SHA224 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_SHA512" => {
+            "Constant MHASH_SHA512 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_SHA384" => {
+            "Constant MHASH_SHA384 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_WHIRLPOOL" => {
+            "Constant MHASH_WHIRLPOOL is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_RIPEMD128" => {
+            "Constant MHASH_RIPEMD128 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_RIPEMD256" => {
+            "Constant MHASH_RIPEMD256 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_RIPEMD320" => {
+            "Constant MHASH_RIPEMD320 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_SNEFRU256" => {
+            "Constant MHASH_SNEFRU256 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_MD2" => {
+            "Constant MHASH_MD2 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_FNV132" => {
+            "Constant MHASH_FNV132 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_FNV1A32" => {
+            "Constant MHASH_FNV1A32 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_FNV164" => {
+            "Constant MHASH_FNV164 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_FNV1A64" => {
+            "Constant MHASH_FNV1A64 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_JOAAT" => {
+            "Constant MHASH_JOAAT is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_CRC32C" => {
+            "Constant MHASH_CRC32C is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_MURMUR3A" => {
+            "Constant MHASH_MURMUR3A is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_MURMUR3C" => {
+            "Constant MHASH_MURMUR3C is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_MURMUR3F" => {
+            "Constant MHASH_MURMUR3F is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_XXH32" => {
+            "Constant MHASH_XXH32 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_XXH64" => {
+            "Constant MHASH_XXH64 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_XXH3" => {
+            "Constant MHASH_XXH3 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        "MHASH_XXH128" => {
+            "Constant MHASH_XXH128 is deprecated since 8.5, as the mhash*() functions were deprecated"
+        }
+        unknown => panic!("unknown mhash constant {unknown}"),
+    };
+    ConstantDescriptor::with_value(name, "hash", ConstantValue::Int(value)).deprecated(message)
+}
+
 pub(super) fn standard_library_hash_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("hash")
         .with_class(ClassDescriptor::new(
@@ -2511,6 +3050,45 @@ pub(super) fn standard_library_hash_extension() -> ExtensionDescriptor {
             "hash",
             ConstantValue::Int(1),
         ))
+        .with_constant(mhash_constant("MHASH_CRC32", 0))
+        .with_constant(mhash_constant("MHASH_MD5", 1))
+        .with_constant(mhash_constant("MHASH_SHA1", 2))
+        .with_constant(mhash_constant("MHASH_HAVAL256", 3))
+        .with_constant(mhash_constant("MHASH_RIPEMD160", 5))
+        .with_constant(mhash_constant("MHASH_TIGER", 7))
+        .with_constant(mhash_constant("MHASH_GOST", 8))
+        .with_constant(mhash_constant("MHASH_CRC32B", 9))
+        .with_constant(mhash_constant("MHASH_HAVAL224", 10))
+        .with_constant(mhash_constant("MHASH_HAVAL192", 11))
+        .with_constant(mhash_constant("MHASH_HAVAL160", 12))
+        .with_constant(mhash_constant("MHASH_HAVAL128", 13))
+        .with_constant(mhash_constant("MHASH_TIGER128", 14))
+        .with_constant(mhash_constant("MHASH_TIGER160", 15))
+        .with_constant(mhash_constant("MHASH_MD4", 16))
+        .with_constant(mhash_constant("MHASH_SHA256", 17))
+        .with_constant(mhash_constant("MHASH_ADLER32", 18))
+        .with_constant(mhash_constant("MHASH_SHA224", 19))
+        .with_constant(mhash_constant("MHASH_SHA512", 20))
+        .with_constant(mhash_constant("MHASH_SHA384", 21))
+        .with_constant(mhash_constant("MHASH_WHIRLPOOL", 22))
+        .with_constant(mhash_constant("MHASH_RIPEMD128", 23))
+        .with_constant(mhash_constant("MHASH_RIPEMD256", 24))
+        .with_constant(mhash_constant("MHASH_RIPEMD320", 25))
+        .with_constant(mhash_constant("MHASH_SNEFRU256", 27))
+        .with_constant(mhash_constant("MHASH_MD2", 28))
+        .with_constant(mhash_constant("MHASH_FNV132", 29))
+        .with_constant(mhash_constant("MHASH_FNV1A32", 30))
+        .with_constant(mhash_constant("MHASH_FNV164", 31))
+        .with_constant(mhash_constant("MHASH_FNV1A64", 32))
+        .with_constant(mhash_constant("MHASH_JOAAT", 33))
+        .with_constant(mhash_constant("MHASH_CRC32C", 34))
+        .with_constant(mhash_constant("MHASH_MURMUR3A", 35))
+        .with_constant(mhash_constant("MHASH_MURMUR3C", 36))
+        .with_constant(mhash_constant("MHASH_MURMUR3F", 37))
+        .with_constant(mhash_constant("MHASH_XXH32", 38))
+        .with_constant(mhash_constant("MHASH_XXH64", 39))
+        .with_constant(mhash_constant("MHASH_XXH3", 40))
+        .with_constant(mhash_constant("MHASH_XXH128", 41))
         .with_function(FunctionDescriptor::php("hash", "hash"))
         .with_function(FunctionDescriptor::php("hash_algos", "hash"))
         .with_function(FunctionDescriptor::php("hash_copy", "hash"))
@@ -2526,6 +3104,11 @@ pub(super) fn standard_library_hash_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("hash_update", "hash"))
         .with_function(FunctionDescriptor::php("hash_update_file", "hash"))
         .with_function(FunctionDescriptor::php("hash_update_stream", "hash"))
+        .with_function(FunctionDescriptor::php("mhash", "hash"))
+        .with_function(FunctionDescriptor::php("mhash_count", "hash"))
+        .with_function(FunctionDescriptor::php("mhash_get_block_size", "hash"))
+        .with_function(FunctionDescriptor::php("mhash_get_hash_name", "hash"))
+        .with_function(FunctionDescriptor::php("mhash_keygen_s2k", "hash"))
 }
 
 pub(super) fn standard_library_gettext_extension() -> ExtensionDescriptor {
@@ -2981,10 +3564,27 @@ pub(super) fn standard_library_iconv_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("iconv")
         .with_function(FunctionDescriptor::php("iconv", "iconv"))
         .with_function(FunctionDescriptor::php("iconv_get_encoding", "iconv"))
+        .with_function(FunctionDescriptor::php("iconv_mime_decode", "iconv"))
+        .with_function(FunctionDescriptor::php(
+            "iconv_mime_decode_headers",
+            "iconv",
+        ))
+        .with_function(FunctionDescriptor::php("iconv_mime_encode", "iconv"))
         .with_function(FunctionDescriptor::php("iconv_set_encoding", "iconv"))
         .with_function(FunctionDescriptor::php("iconv_strlen", "iconv"))
         .with_function(FunctionDescriptor::php("iconv_strpos", "iconv"))
+        .with_function(FunctionDescriptor::php("iconv_strrpos", "iconv"))
         .with_function(FunctionDescriptor::php("iconv_substr", "iconv"))
+        .with_constant(ConstantDescriptor::with_value(
+            "ICONV_MIME_DECODE_STRICT",
+            "iconv",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ICONV_MIME_DECODE_CONTINUE_ON_ERROR",
+            "iconv",
+            ConstantValue::Int(2),
+        ))
         .with_constant(ConstantDescriptor::with_value(
             "ICONV_IMPL",
             "iconv",
@@ -2999,6 +3599,21 @@ pub(super) fn standard_library_iconv_extension() -> ExtensionDescriptor {
 
 pub(super) fn standard_library_sodium_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("sodium")
+        .with_constant(ConstantDescriptor::with_value(
+            "SODIUM_LIBRARY_VERSION",
+            "sodium",
+            ConstantValue::String("1.0.20"),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "SODIUM_LIBRARY_MAJOR_VERSION",
+            "sodium",
+            ConstantValue::Int(10),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "SODIUM_LIBRARY_MINOR_VERSION",
+            "sodium",
+            ConstantValue::Int(5),
+        ))
         .with_function(FunctionDescriptor::php("sodium_base642bin", "sodium"))
         .with_function(FunctionDescriptor::php("sodium_bin2base64", "sodium"))
         .with_function(FunctionDescriptor::php("sodium_bin2hex", "sodium"))
@@ -3079,7 +3694,9 @@ pub(super) fn standard_library_bcmath_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("bcmod", "bcmath"))
         .with_function(FunctionDescriptor::php("bcmul", "bcmath"))
         .with_function(FunctionDescriptor::php("bcpow", "bcmath"))
+        .with_function(FunctionDescriptor::php("bcpowmod", "bcmath"))
         .with_function(FunctionDescriptor::php("bcscale", "bcmath"))
+        .with_function(FunctionDescriptor::php("bcsqrt", "bcmath"))
         .with_function(FunctionDescriptor::php("bcsub", "bcmath"))
 }
 
@@ -3106,7 +3723,10 @@ pub(super) fn standard_library_gmp_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("gmp_init", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_intval", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_invert", "gmp"))
+        .with_function(FunctionDescriptor::php("gmp_jacobi", "gmp"))
+        .with_function(FunctionDescriptor::php("gmp_kronecker", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_lcm", "gmp"))
+        .with_function(FunctionDescriptor::php("gmp_legendre", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_mod", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_mul", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_neg", "gmp"))
@@ -3120,6 +3740,7 @@ pub(super) fn standard_library_gmp_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("gmp_prob_prime", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_random_bits", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_random_range", "gmp"))
+        .with_function(FunctionDescriptor::php("gmp_random_seed", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_root", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_rootrem", "gmp"))
         .with_function(FunctionDescriptor::php("gmp_scan0", "gmp"))
@@ -3157,9 +3778,24 @@ pub(super) fn standard_library_gmp_extension() -> ExtensionDescriptor {
             ConstantValue::Int(2),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "GMP_LITTLE_ENDIAN",
+            "gmp",
+            ConstantValue::Int(4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "GMP_BIG_ENDIAN",
+            "gmp",
+            ConstantValue::Int(8),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "GMP_NATIVE_ENDIAN",
             "gmp",
             ConstantValue::Int(16),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "GMP_VERSION",
+            "gmp",
+            ConstantValue::String("6.3.0"),
         ))
 }
 
@@ -3295,98 +3931,133 @@ pub(super) fn standard_library_shmop_extension() -> ExtensionDescriptor {
 }
 
 pub(super) fn standard_library_pcntl_extension() -> ExtensionDescriptor {
-    ExtensionDescriptor::new("pcntl")
-        .with_function(FunctionDescriptor::php("pcntl_alarm", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_async_signals", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_errno", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_exec", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_fork", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_get_last_error", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_getpriority", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_setpriority", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_signal", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_signal_dispatch", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_signal_get_handler", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_strerror", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wait", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_waitpid", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wexitstatus", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wifcontinued", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wifexited", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wifsignaled", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wifstopped", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wstopsig", "pcntl"))
-        .with_function(FunctionDescriptor::php("pcntl_wtermsig", "pcntl"))
-        .with_constant(ConstantDescriptor::with_value(
-            "PRIO_PROCESS",
-            "pcntl",
-            ConstantValue::Int(libc::PRIO_PROCESS as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "PRIO_PGRP",
-            "pcntl",
-            ConstantValue::Int(libc::PRIO_PGRP as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "PRIO_USER",
-            "pcntl",
-            ConstantValue::Int(libc::PRIO_USER as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIG_DFL",
-            "pcntl",
-            ConstantValue::Int(libc::SIG_DFL as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIG_IGN",
-            "pcntl",
-            ConstantValue::Int(libc::SIG_IGN as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIG_ERR",
-            "pcntl",
-            ConstantValue::Int(libc::SIG_ERR as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIGALRM",
-            "pcntl",
-            ConstantValue::Int(libc::SIGALRM as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIGCHLD",
-            "pcntl",
-            ConstantValue::Int(libc::SIGCHLD as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIGINT",
-            "pcntl",
-            ConstantValue::Int(libc::SIGINT as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIGTERM",
-            "pcntl",
-            ConstantValue::Int(libc::SIGTERM as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIGUSR1",
-            "pcntl",
-            ConstantValue::Int(libc::SIGUSR1 as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "SIGUSR2",
-            "pcntl",
-            ConstantValue::Int(libc::SIGUSR2 as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "WNOHANG",
-            "pcntl",
-            ConstantValue::Int(libc::WNOHANG as i64),
-        ))
-        .with_constant(ConstantDescriptor::with_value(
-            "WUNTRACED",
-            "pcntl",
-            ConstantValue::Int(libc::WUNTRACED as i64),
-        ))
+    with_pcntl_platform_constants(
+        ExtensionDescriptor::new("pcntl")
+            .with_function(FunctionDescriptor::php("pcntl_alarm", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_async_signals", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_errno", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_exec", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_fork", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_get_last_error", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_getpriority", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_setpriority", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_signal", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_signal_dispatch", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_signal_get_handler", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_strerror", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wait", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_waitpid", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wexitstatus", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wifcontinued", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wifexited", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wifsignaled", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wifstopped", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wstopsig", "pcntl"))
+            .with_function(FunctionDescriptor::php("pcntl_wtermsig", "pcntl"))
+            .with_constant(ConstantDescriptor::with_value(
+                "PRIO_PROCESS",
+                "pcntl",
+                ConstantValue::Int(libc::PRIO_PROCESS as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PRIO_PGRP",
+                "pcntl",
+                ConstantValue::Int(libc::PRIO_PGRP as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PRIO_USER",
+                "pcntl",
+                ConstantValue::Int(libc::PRIO_USER as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PCNTL_ECHILD",
+                "pcntl",
+                ConstantValue::Int(libc::ECHILD as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PCNTL_EINVAL",
+                "pcntl",
+                ConstantValue::Int(libc::EINVAL as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PCNTL_EINTR",
+                "pcntl",
+                ConstantValue::Int(libc::EINTR as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIG_DFL",
+                "pcntl",
+                ConstantValue::Int(libc::SIG_DFL as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIG_IGN",
+                "pcntl",
+                ConstantValue::Int(libc::SIG_IGN as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIG_ERR",
+                "pcntl",
+                ConstantValue::Int(libc::SIG_ERR as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIGALRM",
+                "pcntl",
+                ConstantValue::Int(libc::SIGALRM as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIGCHLD",
+                "pcntl",
+                ConstantValue::Int(libc::SIGCHLD as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIGINT",
+                "pcntl",
+                ConstantValue::Int(libc::SIGINT as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIGTERM",
+                "pcntl",
+                ConstantValue::Int(libc::SIGTERM as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIGUSR1",
+                "pcntl",
+                ConstantValue::Int(libc::SIGUSR1 as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "SIGUSR2",
+                "pcntl",
+                ConstantValue::Int(libc::SIGUSR2 as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "WNOHANG",
+                "pcntl",
+                ConstantValue::Int(libc::WNOHANG as i64),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "WUNTRACED",
+                "pcntl",
+                ConstantValue::Int(libc::WUNTRACED as i64),
+            )),
+    )
+}
+
+fn with_pcntl_platform_constants(mut extension: ExtensionDescriptor) -> ExtensionDescriptor {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        extension = extension
+            .with_constant(ConstantDescriptor::with_value(
+                "PRIO_DARWIN_BG",
+                "pcntl",
+                ConstantValue::Int(0x1000),
+            ))
+            .with_constant(ConstantDescriptor::with_value(
+                "PRIO_DARWIN_THREAD",
+                "pcntl",
+                ConstantValue::Int(3),
+            ));
+    }
+    extension
 }
 
 pub(super) fn standard_library_readline_extension() -> ExtensionDescriptor {
@@ -3571,6 +4242,21 @@ pub(super) fn standard_library_igbinary_extension() -> ExtensionDescriptor {
 
 pub(super) fn standard_library_msgpack_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("msgpack")
+        .with_constant(ConstantDescriptor::with_value(
+            "MESSAGEPACK_OPT_PHPONLY",
+            "msgpack",
+            ConstantValue::Int(-1001),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MESSAGEPACK_OPT_ASSOC",
+            "msgpack",
+            ConstantValue::Int(-1002),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MESSAGEPACK_OPT_FORCE_F32",
+            "msgpack",
+            ConstantValue::Int(-1003),
+        ))
         .with_function(FunctionDescriptor::php("msgpack_pack", "msgpack"))
         .with_function(FunctionDescriptor::php("msgpack_serialize", "msgpack"))
         .with_function(FunctionDescriptor::php("msgpack_unserialize", "msgpack"))
@@ -3609,47 +4295,151 @@ pub(super) fn standard_library_opcache_extension() -> ExtensionDescriptor {
 }
 
 pub(super) fn standard_library_soap_extension() -> ExtensionDescriptor {
-    ExtensionDescriptor::new("soap")
-        .with_function(FunctionDescriptor::php("is_soap_fault", "soap"))
-        .with_function(FunctionDescriptor::php("use_soap_error_handler", "soap"))
-        .with_class(ClassDescriptor::new("SoapClient", "soap", ClassKind::Class))
-        .with_class(ClassDescriptor::new("SoapServer", "soap", ClassKind::Class))
-        .with_class(ClassDescriptor::new("SoapFault", "soap", ClassKind::Class))
-        .with_class(ClassDescriptor::new("SoapHeader", "soap", ClassKind::Class))
-        .with_class(ClassDescriptor::new("SoapParam", "soap", ClassKind::Class))
-        .with_class(ClassDescriptor::new("SoapVar", "soap", ClassKind::Class))
-        .with_class(ClassDescriptor::new("Soap\\Sdl", "soap", ClassKind::Class))
-        .with_class(ClassDescriptor::new(
-            "Soap\\SoapClient",
+    with_soap_constants(
+        ExtensionDescriptor::new("soap")
+            .with_function(FunctionDescriptor::php("is_soap_fault", "soap"))
+            .with_function(FunctionDescriptor::php("use_soap_error_handler", "soap"))
+            .with_class(ClassDescriptor::new("SoapClient", "soap", ClassKind::Class))
+            .with_class(ClassDescriptor::new("SoapServer", "soap", ClassKind::Class))
+            .with_class(ClassDescriptor::new("SoapFault", "soap", ClassKind::Class))
+            .with_class(ClassDescriptor::new("SoapHeader", "soap", ClassKind::Class))
+            .with_class(ClassDescriptor::new("SoapParam", "soap", ClassKind::Class))
+            .with_class(ClassDescriptor::new("SoapVar", "soap", ClassKind::Class))
+            .with_class(ClassDescriptor::new("Soap\\Sdl", "soap", ClassKind::Class))
+            .with_class(ClassDescriptor::new(
+                "Soap\\SoapClient",
+                "soap",
+                ClassKind::Class,
+            ))
+            .with_class(ClassDescriptor::new(
+                "Soap\\SoapServer",
+                "soap",
+                ClassKind::Class,
+            ))
+            .with_class(ClassDescriptor::new(
+                "Soap\\SoapFault",
+                "soap",
+                ClassKind::Class,
+            ))
+            .with_class(ClassDescriptor::new(
+                "Soap\\SoapHeader",
+                "soap",
+                ClassKind::Class,
+            ))
+            .with_class(ClassDescriptor::new(
+                "Soap\\SoapParam",
+                "soap",
+                ClassKind::Class,
+            ))
+            .with_class(ClassDescriptor::new(
+                "Soap\\SoapVar",
+                "soap",
+                ClassKind::Class,
+            ))
+            .with_class(ClassDescriptor::new("Soap\\Url", "soap", ClassKind::Class)),
+    )
+}
+
+fn with_soap_constants(mut extension: ExtensionDescriptor) -> ExtensionDescriptor {
+    const INT_CONSTANTS: &[(&str, i64)] = &[
+        ("SOAP_1_1", 1),
+        ("SOAP_1_2", 2),
+        ("SOAP_PERSISTENCE_SESSION", 1),
+        ("SOAP_PERSISTENCE_REQUEST", 2),
+        ("SOAP_FUNCTIONS_ALL", 999),
+        ("SOAP_ENCODED", 1),
+        ("SOAP_LITERAL", 2),
+        ("SOAP_RPC", 1),
+        ("SOAP_DOCUMENT", 2),
+        ("SOAP_ACTOR_NEXT", 1),
+        ("SOAP_ACTOR_NONE", 2),
+        ("SOAP_ACTOR_UNLIMATERECEIVER", 3),
+        ("SOAP_COMPRESSION_ACCEPT", 32),
+        ("SOAP_COMPRESSION_GZIP", 0),
+        ("SOAP_COMPRESSION_DEFLATE", 16),
+        ("SOAP_AUTHENTICATION_BASIC", 0),
+        ("SOAP_AUTHENTICATION_DIGEST", 1),
+        ("UNKNOWN_TYPE", 999_998),
+        ("XSD_STRING", 101),
+        ("XSD_BOOLEAN", 102),
+        ("XSD_DECIMAL", 103),
+        ("XSD_FLOAT", 104),
+        ("XSD_DOUBLE", 105),
+        ("XSD_DURATION", 106),
+        ("XSD_DATETIME", 107),
+        ("XSD_TIME", 108),
+        ("XSD_DATE", 109),
+        ("XSD_GYEARMONTH", 110),
+        ("XSD_GYEAR", 111),
+        ("XSD_GMONTHDAY", 112),
+        ("XSD_GDAY", 113),
+        ("XSD_GMONTH", 114),
+        ("XSD_HEXBINARY", 115),
+        ("XSD_BASE64BINARY", 116),
+        ("XSD_ANYURI", 117),
+        ("XSD_QNAME", 118),
+        ("XSD_NOTATION", 119),
+        ("XSD_NORMALIZEDSTRING", 120),
+        ("XSD_TOKEN", 121),
+        ("XSD_LANGUAGE", 122),
+        ("XSD_NMTOKEN", 123),
+        ("XSD_NAME", 124),
+        ("XSD_NCNAME", 125),
+        ("XSD_ID", 126),
+        ("XSD_IDREF", 127),
+        ("XSD_IDREFS", 128),
+        ("XSD_ENTITY", 129),
+        ("XSD_ENTITIES", 130),
+        ("XSD_INTEGER", 131),
+        ("XSD_NONPOSITIVEINTEGER", 132),
+        ("XSD_NEGATIVEINTEGER", 133),
+        ("XSD_LONG", 134),
+        ("XSD_INT", 135),
+        ("XSD_SHORT", 136),
+        ("XSD_BYTE", 137),
+        ("XSD_NONNEGATIVEINTEGER", 138),
+        ("XSD_UNSIGNEDLONG", 139),
+        ("XSD_UNSIGNEDINT", 140),
+        ("XSD_UNSIGNEDSHORT", 141),
+        ("XSD_UNSIGNEDBYTE", 142),
+        ("XSD_POSITIVEINTEGER", 143),
+        ("XSD_NMTOKENS", 144),
+        ("XSD_ANYTYPE", 145),
+        ("XSD_ANYXML", 147),
+        ("APACHE_MAP", 200),
+        ("SOAP_ENC_OBJECT", 301),
+        ("SOAP_ENC_ARRAY", 300),
+        ("XSD_1999_TIMEINSTANT", 401),
+        ("SOAP_SINGLE_ELEMENT_ARRAYS", 1),
+        ("SOAP_WAIT_ONE_WAY_CALLS", 2),
+        ("SOAP_USE_XSI_ARRAY_TYPE", 4),
+        ("WSDL_CACHE_NONE", 0),
+        ("WSDL_CACHE_DISK", 1),
+        ("WSDL_CACHE_MEMORY", 2),
+        ("WSDL_CACHE_BOTH", 3),
+        ("SOAP_SSL_METHOD_TLS", 0),
+        ("SOAP_SSL_METHOD_SSLv2", 1),
+        ("SOAP_SSL_METHOD_SSLv3", 2),
+        ("SOAP_SSL_METHOD_SSLv23", 3),
+    ];
+    for (name, value) in INT_CONSTANTS {
+        extension = extension.with_constant(ConstantDescriptor::with_value(
+            name,
             "soap",
-            ClassKind::Class,
-        ))
-        .with_class(ClassDescriptor::new(
-            "Soap\\SoapServer",
+            ConstantValue::Int(*value),
+        ));
+    }
+    extension
+        .with_constant(ConstantDescriptor::with_value(
+            "XSD_NAMESPACE",
             "soap",
-            ClassKind::Class,
+            ConstantValue::String("http://www.w3.org/2001/XMLSchema"),
         ))
-        .with_class(ClassDescriptor::new(
-            "Soap\\SoapFault",
+        .with_constant(ConstantDescriptor::with_value(
+            "XSD_1999_NAMESPACE",
             "soap",
-            ClassKind::Class,
+            ConstantValue::String("http://www.w3.org/1999/XMLSchema"),
         ))
-        .with_class(ClassDescriptor::new(
-            "Soap\\SoapHeader",
-            "soap",
-            ClassKind::Class,
-        ))
-        .with_class(ClassDescriptor::new(
-            "Soap\\SoapParam",
-            "soap",
-            ClassKind::Class,
-        ))
-        .with_class(ClassDescriptor::new(
-            "Soap\\SoapVar",
-            "soap",
-            ClassKind::Class,
-        ))
-        .with_class(ClassDescriptor::new("Soap\\Url", "soap", ClassKind::Class))
 }
 
 pub(super) fn standard_library_ftp_extension() -> ExtensionDescriptor {
@@ -4216,16 +5006,22 @@ pub(super) fn standard_library_ssh2_extension() -> ExtensionDescriptor {
 
 pub(super) fn standard_library_sockets_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("sockets")
+        .with_function(FunctionDescriptor::php("inet_ntop", "sockets"))
+        .with_function(FunctionDescriptor::php("inet_pton", "sockets"))
         .with_function(FunctionDescriptor::php("socket_accept", "sockets"))
         .with_function(FunctionDescriptor::php("socket_bind", "sockets"))
         .with_function(FunctionDescriptor::php("socket_clear_error", "sockets"))
         .with_function(FunctionDescriptor::php("socket_close", "sockets"))
         .with_function(FunctionDescriptor::php("socket_connect", "sockets"))
         .with_function(FunctionDescriptor::php("socket_create", "sockets"))
+        .with_function(FunctionDescriptor::php("socket_getpeername", "sockets"))
         .with_function(FunctionDescriptor::php("socket_getsockname", "sockets"))
         .with_function(FunctionDescriptor::php("socket_last_error", "sockets"))
         .with_function(FunctionDescriptor::php("socket_listen", "sockets"))
         .with_function(FunctionDescriptor::php("socket_read", "sockets"))
+        .with_function(FunctionDescriptor::php("socket_recv", "sockets"))
+        .with_function(FunctionDescriptor::php("socket_send", "sockets"))
+        .with_function(FunctionDescriptor::php("socket_shutdown", "sockets"))
         .with_function(FunctionDescriptor::php("socket_strerror", "sockets"))
         .with_function(FunctionDescriptor::php("socket_write", "sockets"))
         .with_class(ClassDescriptor::new(
@@ -4255,6 +5051,16 @@ pub(super) fn standard_library_sockets_extension() -> ExtensionDescriptor {
             ConstantValue::Int(2),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "MSG_OOB",
+            "sockets",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "MSG_WAITALL",
+            "sockets",
+            ConstantValue::Int(64),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "SOL_SOCKET",
             "sockets",
             ConstantValue::Int(0xffff),
@@ -4264,10 +5070,37 @@ pub(super) fn standard_library_sockets_extension() -> ExtensionDescriptor {
             "sockets",
             ConstantValue::Int(6),
         ))
+        .with_constant(ConstantDescriptor::with_value(
+            "SHUT_RD",
+            "sockets",
+            ConstantValue::Int(0),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "SHUT_WR",
+            "sockets",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "SHUT_RDWR",
+            "sockets",
+            ConstantValue::Int(2),
+        ))
 }
 
 pub(super) fn standard_library_zlib_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("zlib")
+        .with_class(ClassDescriptor::new(
+            "DeflateContext",
+            "zlib",
+            ClassKind::Class,
+        ))
+        .with_class(ClassDescriptor::new(
+            "InflateContext",
+            "zlib",
+            ClassKind::Class,
+        ))
+        .with_function(FunctionDescriptor::php("deflate_add", "zlib"))
+        .with_function(FunctionDescriptor::php("deflate_init", "zlib"))
         .with_function(FunctionDescriptor::php("gzclose", "zlib"))
         .with_function(FunctionDescriptor::php("gzdeflate", "zlib"))
         .with_function(FunctionDescriptor::php("gzcompress", "zlib"))
@@ -4287,9 +5120,14 @@ pub(super) fn standard_library_zlib_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("gzwrite", "zlib"))
         .with_function(FunctionDescriptor::php("gzinflate", "zlib"))
         .with_function(FunctionDescriptor::php("gzuncompress", "zlib"))
+        .with_function(FunctionDescriptor::php("inflate_add", "zlib"))
+        .with_function(FunctionDescriptor::php("inflate_get_read_len", "zlib"))
+        .with_function(FunctionDescriptor::php("inflate_get_status", "zlib"))
+        .with_function(FunctionDescriptor::php("inflate_init", "zlib"))
         .with_function(FunctionDescriptor::php("readgzfile", "zlib"))
         .with_function(FunctionDescriptor::php("zlib_decode", "zlib"))
         .with_function(FunctionDescriptor::php("zlib_encode", "zlib"))
+        .with_function(FunctionDescriptor::php("zlib_get_coding_type", "zlib"))
         .with_constant(ConstantDescriptor::with_value(
             "FORCE_DEFLATE",
             "zlib",
@@ -4314,6 +5152,116 @@ pub(super) fn standard_library_zlib_extension() -> ExtensionDescriptor {
             "ZLIB_ENCODING_DEFLATE",
             "zlib",
             ConstantValue::Int(15),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_NO_FLUSH",
+            "zlib",
+            ConstantValue::Int(0),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_PARTIAL_FLUSH",
+            "zlib",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_SYNC_FLUSH",
+            "zlib",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_FULL_FLUSH",
+            "zlib",
+            ConstantValue::Int(3),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_BLOCK",
+            "zlib",
+            ConstantValue::Int(5),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_FINISH",
+            "zlib",
+            ConstantValue::Int(4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_FILTERED",
+            "zlib",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_HUFFMAN_ONLY",
+            "zlib",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_RLE",
+            "zlib",
+            ConstantValue::Int(3),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_FIXED",
+            "zlib",
+            ConstantValue::Int(4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_DEFAULT_STRATEGY",
+            "zlib",
+            ConstantValue::Int(0),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_VERSION",
+            "zlib",
+            ConstantValue::String("1.3.1"),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_VERNUM",
+            "zlib",
+            ConstantValue::Int(4880),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_OK",
+            "zlib",
+            ConstantValue::Int(0),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_STREAM_END",
+            "zlib",
+            ConstantValue::Int(1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_NEED_DICT",
+            "zlib",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_ERRNO",
+            "zlib",
+            ConstantValue::Int(-1),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_STREAM_ERROR",
+            "zlib",
+            ConstantValue::Int(-2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_DATA_ERROR",
+            "zlib",
+            ConstantValue::Int(-3),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_MEM_ERROR",
+            "zlib",
+            ConstantValue::Int(-4),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_BUF_ERROR",
+            "zlib",
+            ConstantValue::Int(-5),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "ZLIB_VERSION_ERROR",
+            "zlib",
+            ConstantValue::Int(-6),
         ))
 }
 
@@ -4341,15 +5289,41 @@ pub(super) fn standard_library_fileinfo_extension() -> ExtensionDescriptor {
         .with_function(FunctionDescriptor::php("finfo_close", "fileinfo"))
         .with_function(FunctionDescriptor::php("finfo_file", "fileinfo"))
         .with_function(FunctionDescriptor::php("finfo_open", "fileinfo"))
+        .with_function(FunctionDescriptor::php("finfo_set_flags", "fileinfo"))
         .with_constant(ConstantDescriptor::with_value(
             "FILEINFO_NONE",
             "fileinfo",
             ConstantValue::Int(0),
         ))
         .with_constant(ConstantDescriptor::with_value(
+            "FILEINFO_SYMLINK",
+            "fileinfo",
+            ConstantValue::Int(2),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILEINFO_DEVICES",
+            "fileinfo",
+            ConstantValue::Int(8),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
             "FILEINFO_MIME_TYPE",
             "fileinfo",
             ConstantValue::Int(16),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILEINFO_CONTINUE",
+            "fileinfo",
+            ConstantValue::Int(32),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILEINFO_PRESERVE_ATIME",
+            "fileinfo",
+            ConstantValue::Int(128),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILEINFO_RAW",
+            "fileinfo",
+            ConstantValue::Int(256),
         ))
         .with_constant(ConstantDescriptor::with_value(
             "FILEINFO_MIME_ENCODING",
@@ -4360,6 +5334,16 @@ pub(super) fn standard_library_fileinfo_extension() -> ExtensionDescriptor {
             "FILEINFO_MIME",
             "fileinfo",
             ConstantValue::Int(1040),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILEINFO_APPLE",
+            "fileinfo",
+            ConstantValue::Int(2048),
+        ))
+        .with_constant(ConstantDescriptor::with_value(
+            "FILEINFO_EXTENSION",
+            "fileinfo",
+            ConstantValue::Int(16777216),
         ))
 }
 
@@ -4382,8 +5366,15 @@ pub(super) fn standard_library_ffi_extension() -> ExtensionDescriptor {
 
 pub(super) fn standard_library_exif_extension() -> ExtensionDescriptor {
     ExtensionDescriptor::new("exif")
+        .with_constant(ConstantDescriptor::with_value(
+            "EXIF_USE_MBSTRING",
+            "exif",
+            ConstantValue::Bool(false),
+        ))
         .with_function(FunctionDescriptor::php("exif_imagetype", "exif"))
         .with_function(FunctionDescriptor::php("exif_read_data", "exif"))
+        .with_function(FunctionDescriptor::php("exif_tagname", "exif"))
+        .with_function(FunctionDescriptor::php("exif_thumbnail", "exif"))
 }
 
 pub(super) fn standard_library_gd_extension() -> ExtensionDescriptor {
@@ -4759,5 +5750,12 @@ pub(super) fn tokenizer_extension() -> ExtensionDescriptor {
             ConstantValue::Int(php_lexer::TOKENIZER_TOKEN_ID_BASE + index as i64),
         ));
     }
+    extension = extension.with_constant(ConstantDescriptor::with_value(
+        "T_PAAMAYIM_NEKUDOTAYIM",
+        "tokenizer",
+        ConstantValue::Int(php_runtime::api::tokenizer::token_name_id(
+            php_lexer::TokenName::DoubleColon,
+        )),
+    ));
     extension
 }

@@ -2,5 +2,10 @@
 {"path":"tests/phpt/generated/xml/parser-basic.phpt"}
 {"path":"tests/phpt/generated/xml/parser-error-state.phpt"}
 {"path":"tests/phpt/generated/xml/parser-current-position.phpt"}
+{"path":"tests/phpt/generated/xml/constants-options.phpt"}
+{"path":"tests/phpt/generated/xml/sax-handlers.phpt"}
+{"path":"tests/phpt/generated/xml/parse-into-struct.phpt"}
 {"path":"ext/xml/tests/xml_parser_get_option_variation3.phpt"}
 {"path":"ext/xml/tests/xml_parser_set_option_basic.phpt"}
+{"path":"ext/xml/tests/xml_parser_free_deprecated.phpt"}
+{"path":"ext/xml/tests/bug78563_serialize.phpt"}

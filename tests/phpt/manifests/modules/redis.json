@@ -3,9 +3,9 @@
   "module": "redis",
   "priority": "Deterministic fake Redis backend for CI-safe core command coverage",
   "selected_manifest": "tests/phpt/manifests/modules/redis.selected.jsonl",
-  "corpus_count": 1,
-  "selected_count": 1,
-  "pass_count": 1,
+  "corpus_count": 2,
+  "selected_count": 2,
+  "pass_count": 2,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
@@ -15,7 +15,8 @@
     "Redis object construction and method_exists probes",
     "Deterministic in-process connect/auth/select/close/ping behavior",
     "Core key/value, mget/mset, counters, ttl/expire/persist/delete/exists",
-    "Basic hash, list, set, sorted-set, scan, option, and transaction placeholders"
+    "Basic hash, list, set, sorted-set, scan, option, and transaction placeholders",
+    "phpredis option, serializer, compression, scan, and mode constants"
   ],
   "non_scope": [
     "External Redis TCP protocol and persistent sockets",

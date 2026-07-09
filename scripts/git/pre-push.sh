@@ -14,6 +14,8 @@ if ! command -v nix >/dev/null 2>&1; then
   exit 1
 fi
 
-printf '%s\n' '[pre-push] running local CI parity gate'
-nix develop -c just ci-local
+timeout_seconds="${PHRUST_PRE_PUSH_TIMEOUT_SECONDS:-1200}"
+
+printf '[pre-push] running bounded local push gate (timeout: %ss)\n' "$timeout_seconds"
+nix develop -c timeout "$timeout_seconds" just pre-push
 printf '%s\n' '[pre-push] ok'

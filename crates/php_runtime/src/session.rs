@@ -16,6 +16,7 @@ pub struct SessionState {
     name: String,
     id: String,
     data: PhpArray,
+    committed_data: PhpArray,
     cache_expire: i64,
     cache_limiter: String,
     module_name: String,
@@ -25,6 +26,9 @@ pub struct SessionState {
     lazy_load_enabled: bool,
     data_loaded: bool,
     started: bool,
+    started_file: Option<String>,
+    started_line: u32,
+    started_automatically: bool,
     destroyed: bool,
     newly_created: bool,
     destroyed_id: Option<String>,
@@ -37,6 +41,7 @@ impl Default for SessionState {
             name: "PHPSESSID".to_owned(),
             id: String::new(),
             data: PhpArray::new(),
+            committed_data: PhpArray::new(),
             cache_expire: 180,
             cache_limiter: "nocache".to_owned(),
             module_name: "files".to_owned(),
@@ -46,6 +51,9 @@ impl Default for SessionState {
             lazy_load_enabled: false,
             data_loaded: true,
             started: false,
+            started_file: None,
+            started_line: 0,
+            started_automatically: false,
             destroyed: false,
             newly_created: false,
             destroyed_id: None,
@@ -68,6 +76,7 @@ impl SessionState {
             name: String::new(),
             id: String::new(),
             data: PhpArray::new(),
+            committed_data: PhpArray::new(),
             cache_expire: 180,
             cache_limiter: String::new(),
             module_name: String::new(),
@@ -77,6 +86,9 @@ impl SessionState {
             lazy_load_enabled: false,
             data_loaded: true,
             started: false,
+            started_file: None,
+            started_line: 0,
+            started_automatically: false,
             destroyed: false,
             newly_created: false,
             destroyed_id: None,
@@ -172,6 +184,7 @@ impl SessionState {
         Self {
             name: name.into(),
             id: id.into(),
+            committed_data: data.clone(),
             data,
             pending_generated_id,
             ..Self::default()
@@ -205,6 +218,7 @@ impl SessionState {
 
     /// Installs session data loaded from the transport session store.
     pub fn load_data(&mut self, data: PhpArray) {
+        self.committed_data = data.clone();
         self.data = data;
         self.data_loaded = true;
     }
@@ -213,6 +227,33 @@ impl SessionState {
     #[must_use]
     pub const fn started(&self) -> bool {
         self.started
+    }
+
+    /// Returns the display location where session_start() activated the current
+    /// session, if it is known.
+    #[must_use]
+    pub fn started_location(&self) -> Option<(&str, u32)> {
+        self.started_file
+            .as_deref()
+            .map(|file| (file, self.started_line))
+    }
+
+    /// Records the display location where session_start() activated the current
+    /// session.
+    pub fn record_start_location(&mut self, file: impl Into<String>, line: u32) {
+        self.started_file = Some(file.into());
+        self.started_line = line;
+    }
+
+    /// Returns true when the active session was created by session.auto_start.
+    #[must_use]
+    pub const fn started_automatically(&self) -> bool {
+        self.started_automatically
+    }
+
+    /// Marks the active session as created by request startup.
+    pub fn mark_started_automatically(&mut self) {
+        self.started_automatically = true;
     }
 
     /// Returns true when session_destroy() destroyed an active session.
@@ -238,21 +279,66 @@ impl SessionState {
     /// Returns `true` when a new deterministic id was generated for this
     /// request, or `false` when an existing id was reused.
     pub fn start(&mut self) -> bool {
-        let generated = self.id.is_empty();
-        if self.id.is_empty() {
-            self.id = self.pending_generated_id.take().unwrap_or_else(|| {
-                let id = format!("phrustcli{:08}", self.next_id);
-                self.next_id = self.next_id.saturating_add(1);
-                id
-            });
+        self.start_with_id_length(32)
+    }
+
+    /// Starts a deterministic request-local session with a PHP session-id length.
+    ///
+    /// Returns `true` when a new deterministic id was generated for this
+    /// request, or `false` when an existing id was reused.
+    pub fn start_with_id_length(&mut self, id_length: usize) -> bool {
+        self.start_with_policy(id_length, false)
+    }
+
+    /// Starts a deterministic request-local session with PHP strict-ID policy.
+    pub fn start_with_policy(&mut self, id_length: usize, strict_mode: bool) -> bool {
+        let generated = self.id.is_empty() || strict_mode;
+        if generated {
+            self.id = self.next_session_id(id_length);
             self.newly_created = true;
             self.data_loaded = true;
+            self.committed_data = PhpArray::new();
+        } else {
+            self.data = self.committed_data.clone();
         }
         self.status = PHP_SESSION_ACTIVE;
         self.started = true;
+        self.started_automatically = false;
         self.destroyed = false;
         self.destroyed_id = None;
         generated
+    }
+
+    /// Replaces the active session id with a newly generated deterministic id.
+    pub fn regenerate_id_with_length(&mut self, id_length: usize) -> bool {
+        if self.status != PHP_SESSION_ACTIVE {
+            return false;
+        }
+        self.id = self.next_session_id(id_length);
+        self.destroyed = false;
+        self.destroyed_id = None;
+        self.started_automatically = false;
+        true
+    }
+
+    /// Creates a new deterministic session id without activating it.
+    pub fn create_id_with_prefix(&mut self, prefix: &str, id_length: usize) -> String {
+        let mut id = String::from(prefix);
+        id.push_str(&self.deterministic_session_id(id_length));
+        id
+    }
+
+    fn next_session_id(&mut self, id_length: usize) -> String {
+        if let Some(id) = self.pending_generated_id.take() {
+            return id;
+        }
+        self.deterministic_session_id(id_length)
+    }
+
+    fn deterministic_session_id(&mut self, id_length: usize) -> String {
+        let id = format!("phrustcli{:08}", self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        normalized_session_id_length(id, id_length)
     }
 
     /// Destroys the current deterministic CLI session.
@@ -264,16 +350,50 @@ impl SessionState {
         self.status = PHP_SESSION_NONE;
         self.id.clear();
         self.data = PhpArray::new();
+        self.committed_data = PhpArray::new();
         self.data_loaded = true;
         self.destroyed = true;
+        self.started_file = None;
+        self.started_line = 0;
+        self.started_automatically = false;
         true
     }
 
     /// Writes and closes the active deterministic CLI session.
     pub fn write_close(&mut self) -> bool {
-        if self.status == PHP_SESSION_ACTIVE {
-            self.status = PHP_SESSION_NONE;
+        if self.status != PHP_SESSION_ACTIVE {
+            return false;
         }
+        self.committed_data = self.data.clone();
+        self.status = PHP_SESSION_NONE;
+        true
+    }
+
+    /// Discards active in-request changes and closes the session.
+    pub fn abort(&mut self) -> bool {
+        if self.status != PHP_SESSION_ACTIVE {
+            return false;
+        }
+        self.data = self.committed_data.clone();
+        self.status = PHP_SESSION_NONE;
+        true
+    }
+
+    /// Reloads active data from the last committed session snapshot.
+    pub fn reset(&mut self) -> bool {
+        if self.status != PHP_SESSION_ACTIVE {
+            return false;
+        }
+        self.data = self.committed_data.clone();
+        true
+    }
+
+    /// Clears the active live session array.
+    pub fn unset(&mut self) -> bool {
+        if self.status != PHP_SESSION_ACTIVE {
+            return false;
+        }
+        self.data = PhpArray::new();
         true
     }
 
@@ -295,9 +415,21 @@ impl SessionState {
     }
 }
 
+fn normalized_session_id_length(mut id: String, id_length: usize) -> String {
+    if id.len() > id_length {
+        id.truncate(id_length);
+        return id;
+    }
+    while id.len() < id_length {
+        id.push('0');
+    }
+    id
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PHP_SESSION_ACTIVE, PHP_SESSION_NONE, SessionState};
+    use crate::{ArrayKey, PhpArray, PhpString, Value};
 
     #[test]
     fn session_state_tracks_cli_lifecycle() {
@@ -309,9 +441,12 @@ mod tests {
 
         state.start();
         assert_eq!(state.status(), PHP_SESSION_ACTIVE);
-        assert_eq!(state.id(), "phrustcli00000001");
+        assert_eq!(state.id(), "phrustcli00000001000000000000000");
         assert!(state.started());
         assert!(state.newly_created());
+
+        assert!(state.regenerate_id_with_length(22));
+        assert_eq!(state.id(), "phrustcli0000000200000");
 
         assert!(state.destroy());
         assert_eq!(state.status(), PHP_SESSION_NONE);
@@ -333,5 +468,75 @@ mod tests {
         state.start();
         assert_eq!(state.id(), "generated");
         assert!(state.newly_created());
+    }
+
+    #[test]
+    fn session_auto_start_marker_resets_on_later_lifecycle_changes() {
+        let mut state = SessionState::default();
+
+        state.start();
+        state.mark_started_automatically();
+        assert!(state.started_automatically());
+
+        assert!(state.write_close());
+        state.start();
+        assert!(!state.started_automatically());
+
+        state.mark_started_automatically();
+        assert!(state.destroy());
+        assert!(!state.started_automatically());
+    }
+
+    #[test]
+    fn session_state_keeps_committed_data_separate_from_live_data() {
+        let mut committed = PhpArray::new();
+        committed.insert(
+            ArrayKey::String(PhpString::from("name")),
+            Value::string("committed"),
+        );
+        let mut state = SessionState::seeded("PHPSESSID", "existing", committed, None);
+
+        state.start();
+        let mut live = state.data();
+        live.insert(
+            ArrayKey::String(PhpString::from("transient")),
+            Value::string("reset-me"),
+        );
+        state.set_data(live);
+
+        assert!(state.reset());
+        assert_eq!(
+            state.data().get(&ArrayKey::String(PhpString::from("name"))),
+            Some(&Value::string("committed"))
+        );
+        assert_eq!(
+            state
+                .data()
+                .get(&ArrayKey::String(PhpString::from("transient"))),
+            None
+        );
+
+        let mut live = state.data();
+        live.insert(
+            ArrayKey::String(PhpString::from("name")),
+            Value::string("written"),
+        );
+        state.set_data(live);
+        assert!(state.write_close());
+
+        state.start();
+        assert_eq!(
+            state.data().get(&ArrayKey::String(PhpString::from("name"))),
+            Some(&Value::string("written"))
+        );
+        assert!(state.unset());
+        assert!(state.data().is_empty());
+        assert!(state.abort());
+
+        state.start();
+        assert_eq!(
+            state.data().get(&ArrayKey::String(PhpString::from("name"))),
+            Some(&Value::string("written"))
+        );
     }
 }

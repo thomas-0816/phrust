@@ -190,7 +190,7 @@ mod imp {
         // SAFETY: flush the instruction cache for the newly written range so the
         // CPU fetches the stored bytes rather than stale i-cache contents.
         unsafe {
-            clear_cache(ptr.cast(), ptr.add(code.len()).cast());
+            __clear_cache(ptr.cast(), ptr.add(code.len()).cast());
         }
         Ok(CodeMemory {
             ptr,
@@ -206,7 +206,7 @@ mod imp {
 
     #[cfg(target_arch = "aarch64")]
     unsafe extern "C" {
-        fn clear_cache(start: *mut core::ffi::c_void, end: *mut core::ffi::c_void);
+        fn __clear_cache(start: *mut core::ffi::c_void, end: *mut core::ffi::c_void);
     }
 
     fn round_up_to_page(n: usize) -> usize {

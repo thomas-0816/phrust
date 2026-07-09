@@ -39,7 +39,18 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("gmp_init", builtin_gmp_init, BuiltinCompatibility::Php),
     BuiltinEntry::new("gmp_intval", builtin_gmp_intval, BuiltinCompatibility::Php),
     BuiltinEntry::new("gmp_invert", builtin_gmp_invert, BuiltinCompatibility::Php),
+    BuiltinEntry::new("gmp_jacobi", builtin_gmp_jacobi, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "gmp_kronecker",
+        builtin_gmp_kronecker,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("gmp_lcm", builtin_gmp_lcm, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "gmp_legendre",
+        builtin_gmp_legendre,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("gmp_mod", builtin_gmp_mod, BuiltinCompatibility::Php),
     BuiltinEntry::new("gmp_mul", builtin_gmp_mul, BuiltinCompatibility::Php),
     BuiltinEntry::new("gmp_neg", builtin_gmp_neg, BuiltinCompatibility::Php),
@@ -79,6 +90,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "gmp_random_range",
         builtin_gmp_random_range,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "gmp_random_seed",
+        builtin_gmp_random_seed,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("gmp_root", builtin_gmp_root, BuiltinCompatibility::Php),
@@ -469,6 +485,30 @@ fn builtin_gmp_lcm(
     Ok(gmp_value(((left / divisor) * right).abs()))
 }
 
+fn builtin_gmp_jacobi(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    binary_symbol("gmp_jacobi", args)
+}
+
+fn builtin_gmp_legendre(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    binary_symbol("gmp_legendre", args)
+}
+
+fn builtin_gmp_kronecker(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    binary_symbol("gmp_kronecker", args)
+}
+
 fn builtin_gmp_invert(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -769,6 +809,27 @@ fn builtin_gmp_random_range(
     Ok(gmp_value(min))
 }
 
+fn builtin_gmp_random_seed(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("gmp_random_seed", "one argument"));
+    }
+    parse_gmp("gmp_random_seed", &args[0], 10)?;
+    Ok(Value::Null)
+}
+
+fn binary_symbol(name: &'static str, args: Vec<Value>) -> BuiltinResult {
+    if args.len() != 2 {
+        return Err(arity_error(name, "two arguments"));
+    }
+    let left = parse_gmp(name, &args[0], 10)?;
+    let right = parse_gmp(name, &args[1], 10)?;
+    Ok(Value::Int(kronecker_symbol(left, right)))
+}
+
 fn optional_int(
     name: &str,
     args: &[Value],
@@ -1008,4 +1069,92 @@ fn scan_bit(name: &str, args: Vec<Value>, find_one: bool) -> BuiltinResult {
         }
     }
     Ok(Value::Int(-1))
+}
+
+fn kronecker_symbol(a: BigInt, mut n: BigInt) -> i64 {
+    if n.is_zero() {
+        return if a.abs() == BigInt::one() { 1 } else { 0 };
+    }
+    if n == BigInt::one() {
+        return 1;
+    }
+    let mut result = 1;
+    if n.is_negative() {
+        n = -n;
+        if a.is_negative() {
+            result = -result;
+        }
+    }
+    let twos = factor_twos(&n);
+    if twos > 0 {
+        let two_symbol = kronecker_two_symbol(&a);
+        if two_symbol == 0 {
+            return 0;
+        }
+        if twos % 2 == 1 {
+            result *= two_symbol;
+        }
+        n >>= twos;
+    }
+    if n == BigInt::one() {
+        return result;
+    }
+    result * jacobi_odd_positive(a, n)
+}
+
+fn jacobi_odd_positive(mut a: BigInt, mut n: BigInt) -> i64 {
+    debug_assert!(n > BigInt::zero());
+    debug_assert!((&n & BigInt::one()) == BigInt::one());
+    a = positive_mod(a, &n);
+    let mut result = 1;
+    while !a.is_zero() {
+        while (&a & BigInt::one()).is_zero() {
+            a >>= 1usize;
+            let n_mod_8 = positive_mod_i64(&n, 8);
+            if n_mod_8 == 3 || n_mod_8 == 5 {
+                result = -result;
+            }
+        }
+        std::mem::swap(&mut a, &mut n);
+        if positive_mod_i64(&a, 4) == 3 && positive_mod_i64(&n, 4) == 3 {
+            result = -result;
+        }
+        a = positive_mod(a, &n);
+    }
+    if n == BigInt::one() { result } else { 0 }
+}
+
+fn factor_twos(value: &BigInt) -> usize {
+    let mut value = value.clone();
+    let mut twos = 0;
+    while !value.is_zero() && (&value & BigInt::one()).is_zero() {
+        value >>= 1usize;
+        twos += 1;
+    }
+    twos
+}
+
+fn kronecker_two_symbol(value: &BigInt) -> i64 {
+    if (value & BigInt::one()).is_zero() {
+        return 0;
+    }
+    match positive_mod_i64(value, 8) {
+        1 | 7 => 1,
+        3 | 5 => -1,
+        _ => 0,
+    }
+}
+
+fn positive_mod(value: BigInt, modulus: &BigInt) -> BigInt {
+    let mut remainder = value % modulus;
+    if remainder.is_negative() {
+        remainder += modulus;
+    }
+    remainder
+}
+
+fn positive_mod_i64(value: &BigInt, modulus: i64) -> i64 {
+    positive_mod(value.clone(), &BigInt::from(modulus))
+        .to_i64()
+        .unwrap_or_default()
 }

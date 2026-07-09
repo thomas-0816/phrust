@@ -677,16 +677,61 @@ mod tests {
     const CONSTANTS_WITH_EXTERNAL_ARGINFO: &[&str] = &[
         "CL_EXPUNGE",
         "CP_UID",
+        "CURLSHE_BAD_OPTION",
+        "CURLSHE_OK",
         "FT_INTERNAL",
         "FT_PEEK",
         "FT_PREFETCHTEXT",
         "FT_UID",
+        "MESSAGEPACK_OPT_ASSOC",
+        "MESSAGEPACK_OPT_FORCE_F32",
+        "MESSAGEPACK_OPT_PHPONLY",
+        "MHASH_ADLER32",
+        "MHASH_CRC32",
+        "MHASH_CRC32B",
+        "MHASH_CRC32C",
+        "MHASH_FNV132",
+        "MHASH_FNV164",
+        "MHASH_FNV1A32",
+        "MHASH_FNV1A64",
+        "MHASH_GOST",
+        "MHASH_HAVAL128",
+        "MHASH_HAVAL160",
+        "MHASH_HAVAL192",
+        "MHASH_HAVAL224",
+        "MHASH_HAVAL256",
+        "MHASH_JOAAT",
+        "MHASH_MD2",
+        "MHASH_MD4",
+        "MHASH_MD5",
+        "MHASH_MURMUR3A",
+        "MHASH_MURMUR3C",
+        "MHASH_MURMUR3F",
+        "MHASH_RIPEMD128",
+        "MHASH_RIPEMD160",
+        "MHASH_RIPEMD256",
+        "MHASH_RIPEMD320",
+        "MHASH_SHA1",
+        "MHASH_SHA224",
+        "MHASH_SHA256",
+        "MHASH_SHA384",
+        "MHASH_SHA512",
+        "MHASH_SNEFRU256",
+        "MHASH_TIGER",
+        "MHASH_TIGER128",
+        "MHASH_TIGER160",
+        "MHASH_WHIRLPOOL",
+        "MHASH_XXH128",
+        "MHASH_XXH3",
+        "MHASH_XXH32",
+        "MHASH_XXH64",
         "NIL",
         "OP_ANONYMOUS",
         "OP_DEBUG",
         "OP_EXPUNGE",
         "OP_HALFOPEN",
         "OP_READONLY",
+        "PHP_CLI_PROCESS_TITLE",
         "SA_ALL",
         "SA_MESSAGES",
         "SA_RECENT",
@@ -711,6 +756,9 @@ mod tests {
         "SSH2_FINGERPRINT_SHA1",
         "SSH2_TERM_UNIT_CHARS",
         "SSH2_TERM_UNIT_PIXELS",
+        "STDERR",
+        "STDIN",
+        "STDOUT",
         "ST_UID",
     ];
 
@@ -769,10 +817,13 @@ mod tests {
             "mb_check_encoding",
             "mb_convert_encoding",
             "mb_detect_encoding",
+            "mb_encoding_aliases",
             "mb_internal_encoding",
+            "mb_list_encodings",
             "mb_strlen",
             "mb_strtolower",
             "mb_strtoupper",
+            "mb_substitute_character",
             "mb_substr",
         ] {
             assert!(
@@ -935,6 +986,20 @@ mod tests {
     }
 
     #[test]
+    fn tokenizer_registers_legacy_double_colon_alias() {
+        let registry = ExtensionRegistry::standard_library();
+        let double_colon = registry
+            .enabled_constant("T_DOUBLE_COLON")
+            .and_then(ConstantDescriptor::value);
+        assert_eq!(
+            registry
+                .enabled_constant("T_PAAMAYIM_NEKUDOTAYIM")
+                .and_then(ConstantDescriptor::value),
+            double_colon
+        );
+    }
+
+    #[test]
     fn optional_hash_and_random_extensions_track_stdlib_symbols() {
         let registry = ExtensionRegistry::standard_library();
 
@@ -954,6 +1019,11 @@ mod tests {
             "hash_update",
             "hash_update_file",
             "hash_update_stream",
+            "mhash",
+            "mhash_count",
+            "mhash_get_block_size",
+            "mhash_get_hash_name",
+            "mhash_keygen_s2k",
         ] {
             assert!(
                 registry.enabled_php_function(name).is_some(),
@@ -967,6 +1037,67 @@ mod tests {
                 .and_then(ConstantDescriptor::value),
             Some(ConstantValue::Int(1))
         );
+        for (name, expected) in [
+            ("MHASH_CRC32", 0),
+            ("MHASH_MD5", 1),
+            ("MHASH_SHA1", 2),
+            ("MHASH_HAVAL256", 3),
+            ("MHASH_RIPEMD160", 5),
+            ("MHASH_TIGER", 7),
+            ("MHASH_GOST", 8),
+            ("MHASH_CRC32B", 9),
+            ("MHASH_HAVAL224", 10),
+            ("MHASH_HAVAL192", 11),
+            ("MHASH_HAVAL160", 12),
+            ("MHASH_HAVAL128", 13),
+            ("MHASH_TIGER128", 14),
+            ("MHASH_TIGER160", 15),
+            ("MHASH_MD4", 16),
+            ("MHASH_SHA256", 17),
+            ("MHASH_ADLER32", 18),
+            ("MHASH_SHA224", 19),
+            ("MHASH_SHA512", 20),
+            ("MHASH_SHA384", 21),
+            ("MHASH_WHIRLPOOL", 22),
+            ("MHASH_RIPEMD128", 23),
+            ("MHASH_RIPEMD256", 24),
+            ("MHASH_RIPEMD320", 25),
+            ("MHASH_SNEFRU256", 27),
+            ("MHASH_MD2", 28),
+            ("MHASH_FNV132", 29),
+            ("MHASH_FNV1A32", 30),
+            ("MHASH_FNV164", 31),
+            ("MHASH_FNV1A64", 32),
+            ("MHASH_JOAAT", 33),
+            ("MHASH_CRC32C", 34),
+            ("MHASH_MURMUR3A", 35),
+            ("MHASH_MURMUR3C", 36),
+            ("MHASH_MURMUR3F", 37),
+            ("MHASH_XXH32", 38),
+            ("MHASH_XXH64", 39),
+            ("MHASH_XXH3", 40),
+            ("MHASH_XXH128", 41),
+        ] {
+            assert_eq!(
+                registry
+                    .enabled_constant(name)
+                    .and_then(ConstantDescriptor::value),
+                Some(ConstantValue::Int(expected)),
+                "{name} should be registered with its PHP mhash value"
+            );
+            let deprecation = registry
+                .enabled_constant(name)
+                .and_then(ConstantDescriptor::deprecation)
+                .unwrap_or_else(|| {
+                    panic!("{name} should carry mhash constant deprecation metadata")
+                });
+            assert_eq!(
+                deprecation.message(),
+                format!(
+                    "Constant {name} is deprecated since 8.5, as the mhash*() functions were deprecated"
+                )
+            );
+        }
         for name in ["random_bytes", "random_int"] {
             assert!(
                 registry.enabled_php_function(name).is_some(),
@@ -1244,14 +1375,13 @@ mod tests {
         let registry = ExtensionRegistry::standard_library();
 
         for name in [
-            "define",
-            "defined",
-            "constant",
             "function_exists",
             "class_exists",
-            "call_user_func",
-            "call_user_func_array",
-            "forward_static_call",
+            "clone",
+            "define",
+            "defined",
+            "die",
+            "exit",
             "debug_backtrace",
             "debug_print_backtrace",
             "func_get_arg",
@@ -1272,12 +1402,37 @@ mod tests {
             "get_declared_classes",
             "get_declared_interfaces",
             "get_declared_traits",
+            "get_defined_vars",
+            "get_error_handler",
+            "get_exception_handler",
+            "get_extension_funcs",
+            "get_included_files",
             "get_mangled_object_vars",
             "get_object_vars",
+            "get_required_files",
+            "zend_version",
         ] {
-            assert!(
-                registry.enabled_php_function(name).is_some(),
-                "{name} should be registered as a standard function"
+            assert_eq!(
+                registry
+                    .enabled_php_function(name)
+                    .map(FunctionDescriptor::extension),
+                Some("core"),
+                "{name} should be registered under the php-src core owner"
+            );
+        }
+
+        for name in [
+            "constant",
+            "call_user_func",
+            "call_user_func_array",
+            "forward_static_call",
+        ] {
+            assert_eq!(
+                registry
+                    .enabled_php_function(name)
+                    .map(FunctionDescriptor::extension),
+                Some("standard"),
+                "{name} should be registered under the php-src standard owner"
             );
         }
     }
@@ -1301,6 +1456,7 @@ mod tests {
         for name in [
             "extension_loaded",
             "get_loaded_extensions",
+            "get_extension_funcs",
             "ini_get",
             "defined",
             "constant",
@@ -1308,11 +1464,39 @@ mod tests {
             "function_exists",
             "hrtime",
             "phpversion",
+            "zend_version",
             "version_compare",
         ] {
             assert!(
                 registry.enabled_php_function(name).is_some(),
                 "{name} should be registered as a platform-check function"
+            );
+        }
+
+        for name in [
+            "extension_loaded",
+            "get_loaded_extensions",
+            "get_extension_funcs",
+            "defined",
+            "class_exists",
+            "function_exists",
+        ] {
+            assert_eq!(
+                registry
+                    .enabled_php_function(name)
+                    .map(FunctionDescriptor::extension),
+                Some("core"),
+                "{name} should use the php-src core owner"
+            );
+        }
+
+        for name in ["ini_get", "constant", "phpversion", "version_compare"] {
+            assert_eq!(
+                registry
+                    .enabled_php_function(name)
+                    .map(FunctionDescriptor::extension),
+                Some("standard"),
+                "{name} should use the php-src standard owner"
             );
         }
 
@@ -1452,6 +1636,8 @@ mod tests {
         for name in [
             "error_log",
             "error_reporting",
+            "get_error_handler",
+            "get_exception_handler",
             "set_error_handler",
             "restore_error_handler",
             "trigger_error",
@@ -1592,7 +1778,9 @@ mod tests {
             "filetype",
             "stat",
             "lstat",
+            "chgrp",
             "chmod",
+            "chown",
             "umask",
             "clearstatcache",
         ] {
@@ -1783,10 +1971,12 @@ mod tests {
             "stream_context_get_options",
             "stream_context_set_default",
             "stream_context_set_option",
+            "stream_context_set_options",
             "stream_resolve_include_path",
             "stream_is_local",
             "stream_isatty",
             "stream_set_timeout",
+            "stream_wrapper_register",
         ] {
             assert!(
                 registry.enabled_php_function(name).is_some(),
@@ -1839,6 +2029,7 @@ mod tests {
             "JSON_ERROR_UNSUPPORTED_TYPE",
             "JSON_ERROR_INVALID_PROPERTY_NAME",
             "JSON_ERROR_UTF16",
+            "JSON_ERROR_NON_BACKED_ENUM",
             "JSON_THROW_ON_ERROR",
         ] {
             assert!(
@@ -1883,6 +2074,10 @@ mod tests {
             );
         }
         for name in [
+            "PCRE_JIT_SUPPORT",
+            "PCRE_VERSION",
+            "PCRE_VERSION_MAJOR",
+            "PCRE_VERSION_MINOR",
             "PREG_NO_ERROR",
             "PREG_OFFSET_CAPTURE",
             "PREG_PATTERN_ORDER",
@@ -1904,6 +2099,30 @@ mod tests {
                 "{name} should be registered as a pcre constant"
             );
         }
+        assert_eq!(
+            registry
+                .enabled_constant("PCRE_JIT_SUPPORT")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Bool(true))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("PCRE_VERSION")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::String("10.44 2024-06-07"))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("PCRE_VERSION_MAJOR")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Int(10))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("PCRE_VERSION_MINOR")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Int(44))
+        );
     }
 
     #[test]
@@ -2049,11 +2268,19 @@ mod tests {
         let registry = ExtensionRegistry::standard_library();
 
         for name in [
+            "session_cache_expire",
+            "session_cache_limiter",
+            "session_commit",
             "session_destroy",
+            "session_get_cookie_params",
             "session_id",
+            "session_module_name",
             "session_name",
+            "session_save_path",
+            "session_set_cookie_params",
             "session_start",
             "session_status",
+            "session_write_close",
         ] {
             assert!(
                 registry.enabled_php_function(name).is_some(),

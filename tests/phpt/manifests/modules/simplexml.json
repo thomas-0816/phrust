@@ -4,14 +4,14 @@
   "priority":"bounded SimpleXML MVP",
   "selected_manifest":"tests/phpt/manifests/modules/simplexml.selected.jsonl",
   "corpus_count":157,
-  "selected_count":9,
-  "pass_count":9,
+  "selected_count":10,
+  "pass_count":10,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":148,
-  "scope":["extension_loaded(\"simplexml\")","SimpleXMLElement platform probe","simplexml_load_string","simplexml_load_file","text conversion","attributes()","children()","count()","getName()","array-style attribute offsets","numeric child selection offsets","direct isset()/empty() over properties and offsets","bounded xpath() over strict XML elements and attributes","registerXPathNamespace() prefix registration","child property access","foreach iteration","duplicate child-list iteration keys","asXML string and filename output","saveXML string and filename output","WordPress-style RSS, plugin metadata, and config XML snippets"],
-  "non_scope":["full upstream ext/simplexml corpus","SimpleXMLIterator","full libxml namespace semantics","full XPath grammar","DOM import"],
+  "known_failure_count":147,
+  "scope":["extension_loaded(\"simplexml\")","SimpleXMLElement platform probe","simplexml_load_string","simplexml_load_file","simplexml_import_dom over bounded DOMDocument/DOMElement storage","dom_import_simplexml over bounded SimpleXMLElement element/list storage","text conversion","attributes()","children()","count()","getName()","array-style attribute offsets","numeric child selection offsets","direct isset()/empty() over properties and offsets","bounded xpath() over strict XML elements and attributes","registerXPathNamespace() prefix registration","child property access","foreach iteration","duplicate child-list iteration keys","asXML string and filename output","saveXML string and filename output","WordPress-style RSS, plugin metadata, and config XML snippets"],
+  "non_scope":["full upstream ext/simplexml corpus","SimpleXMLIterator","full libxml namespace semantics","full XPath grammar","live DOM/SimpleXML node identity sharing"],
   "target_gates":["nix develop -c just phpt-module-target MODULE=simplexml","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=simplexml","nix develop -c just verify-phpt"],
-  "next_step":"Broaden SimpleXML to libxml namespace semantics, full XPath grammar, and DOM interop after the DOM/XML backend is widened."
+  "next_step":"Broaden SimpleXML to libxml namespace semantics, full XPath grammar, and live DOM/SimpleXML identity after the DOM/XML backend is widened."
 }

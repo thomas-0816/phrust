@@ -34,6 +34,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "xmlwriter_write_comment",
+        builtin_xmlwriter_write_comment,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "xmlwriter_write_cdata",
+        builtin_xmlwriter_write_cdata,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "xmlwriter_write_element",
         builtin_xmlwriter_write_element,
         BuiltinCompatibility::Php,
@@ -59,6 +69,26 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("xml_parse", builtin_xml_parse, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "xml_parse_into_struct",
+        builtin_xml_parse_into_struct,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "xml_set_element_handler",
+        builtin_xml_set_element_handler,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "xml_set_character_data_handler",
+        builtin_xml_set_character_data_handler,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "xml_set_default_handler",
+        builtin_xml_set_default_handler,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new(
         "xml_get_error_code",
         builtin_xml_get_error_code,
@@ -113,10 +143,12 @@ const XML_OPTION_CASE_FOLDING: i64 = 1;
 const XML_OPTION_TARGET_ENCODING: i64 = 2;
 const XML_OPTION_SKIP_TAGSTART: i64 = 3;
 const XML_OPTION_SKIP_WHITE: i64 = 4;
+const XML_OPTION_PARSE_HUGE: i64 = 5;
 const XML_PARSER_CASE_FOLDING: &str = "__phrust_xml_case_folding";
 const XML_PARSER_TARGET_ENCODING: &str = "__phrust_xml_target_encoding";
 const XML_PARSER_SKIP_TAGSTART: &str = "__phrust_xml_skip_tagstart";
 const XML_PARSER_SKIP_WHITE: &str = "__phrust_xml_skip_white";
+const XML_PARSER_PARSE_HUGE: &str = "__phrust_xml_parse_huge";
 const XML_PARSER_CURRENT_BYTE: &str = "__phrust_xml_current_byte";
 const XML_PARSER_CURRENT_LINE: &str = "__phrust_xml_current_line";
 const XML_PARSER_CURRENT_COLUMN: &str = "__phrust_xml_current_column";
@@ -194,6 +226,38 @@ fn builtin_xmlwriter_text(
     let writer = xml_writer_arg("xmlwriter_text", &args[0])?;
     let value = string_arg("xmlwriter_text", &args[1])?;
     Ok(xml::xml_writer_text(&writer, &value.to_string_lossy()))
+}
+
+fn builtin_xmlwriter_write_comment(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 2 {
+        return Err(arity_error("xmlwriter_write_comment", "two arguments"));
+    }
+    let writer = xml_writer_arg("xmlwriter_write_comment", &args[0])?;
+    let value = string_arg("xmlwriter_write_comment", &args[1])?;
+    Ok(xml::xml_writer_write_comment(
+        &writer,
+        &value.to_string_lossy(),
+    ))
+}
+
+fn builtin_xmlwriter_write_cdata(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 2 {
+        return Err(arity_error("xmlwriter_write_cdata", "two arguments"));
+    }
+    let writer = xml_writer_arg("xmlwriter_write_cdata", &args[0])?;
+    let value = string_arg("xmlwriter_write_cdata", &args[1])?;
+    Ok(xml::xml_writer_write_cdata(
+        &writer,
+        &value.to_string_lossy(),
+    ))
 }
 
 fn builtin_xmlwriter_write_element(
@@ -359,6 +423,148 @@ fn builtin_xml_parse(
     Ok(Value::Int(i64::from(ok)))
 }
 
+fn builtin_xml_parse_into_struct(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(3..=4).contains(&args.len()) {
+        return Err(arity_error(
+            "xml_parse_into_struct",
+            "three or four argument(s)",
+        ));
+    }
+    let parser = xml_parser_arg("xml_parse_into_struct", &args[0])?;
+    let input = string_arg("xml_parse_into_struct", &args[1])?;
+    let input = std::str::from_utf8(input.as_bytes()).map_err(|_| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_XML_UTF8",
+            "xml_parse_into_struct(): input must be valid UTF-8",
+        )
+    })?;
+    let values = reference_arg("xml_parse_into_struct", 3, "values", &args[2])?;
+    let index = args
+        .get(3)
+        .map(|arg| reference_arg("xml_parse_into_struct", 4, "index", arg))
+        .transpose()?;
+    set_current_position(&parser, input);
+    let document = match xml::parse_xml(input) {
+        Ok(document) => {
+            parser.set_property(XML_PARSER_ERROR_CODE, Value::Int(XML_ERROR_NONE));
+            document
+        }
+        Err(_) => {
+            parser.set_property(XML_PARSER_ERROR_CODE, Value::Int(XML_ERROR_MISMATCHED_TAG));
+            values.set(Value::Array(crate::PhpArray::new()));
+            if let Some(index) = index {
+                index.set(Value::Array(crate::PhpArray::new()));
+            }
+            return Ok(Value::Int(0));
+        }
+    };
+    let case_folding = match parser
+        .get_property(XML_PARSER_CASE_FOLDING)
+        .unwrap_or(Value::Bool(true))
+    {
+        Value::Bool(enabled) => enabled,
+        value => crate::convert::to_bool(&value)
+            .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_BUILTIN_TYPE", message))?,
+    };
+    let (struct_values, struct_index) = xml::parse_into_struct_arrays(&document, case_folding);
+    values.set(Value::Array(struct_values));
+    if let Some(index) = index {
+        index.set(Value::Array(struct_index));
+    }
+    Ok(Value::Int(1))
+}
+
+fn builtin_xml_set_element_handler(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 3 {
+        return Err(arity_error("xml_set_element_handler", "three arguments"));
+    }
+    let parser = xml_parser_arg("xml_set_element_handler", &args[0])?;
+    let start = xml_handler_arg("xml_set_element_handler", 2, "start_handler", &args[1])?;
+    let end = xml_handler_arg("xml_set_element_handler", 3, "end_handler", &args[2])?;
+    parser.set_property(xml::XML_PARSER_START_ELEMENT_HANDLER, start);
+    parser.set_property(xml::XML_PARSER_END_ELEMENT_HANDLER, end);
+    Ok(Value::Bool(true))
+}
+
+fn reference_arg(
+    function: &str,
+    position: usize,
+    param: &str,
+    value: &Value,
+) -> Result<crate::ReferenceCell, BuiltinError> {
+    match value {
+        Value::Reference(cell) => Ok(cell.clone()),
+        value => Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!(
+                "{function}(): Argument #{position} (${param}) must be passed by reference, {} given",
+                php_argument_type_name(value)
+            ),
+        )),
+    }
+}
+
+fn builtin_xml_set_character_data_handler(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 2 {
+        return Err(arity_error(
+            "xml_set_character_data_handler",
+            "two arguments",
+        ));
+    }
+    let parser = xml_parser_arg("xml_set_character_data_handler", &args[0])?;
+    let handler = xml_handler_arg("xml_set_character_data_handler", 2, "handler", &args[1])?;
+    parser.set_property(xml::XML_PARSER_CHARACTER_DATA_HANDLER, handler);
+    Ok(Value::Bool(true))
+}
+
+fn builtin_xml_set_default_handler(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 2 {
+        return Err(arity_error("xml_set_default_handler", "two arguments"));
+    }
+    let parser = xml_parser_arg("xml_set_default_handler", &args[0])?;
+    let handler = xml_handler_arg("xml_set_default_handler", 2, "handler", &args[1])?;
+    parser.set_property(xml::XML_PARSER_DEFAULT_HANDLER, handler);
+    Ok(Value::Bool(true))
+}
+
+fn xml_handler_arg(
+    function: &str,
+    position: usize,
+    param: &str,
+    value: &Value,
+) -> Result<Value, BuiltinError> {
+    match value {
+        Value::Null
+        | Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_)
+        | Value::Callable(_) => Ok(value.clone()),
+        value => Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!(
+                "{function}(): Argument #{position} (${param}) must be of type callable|string|null, {} given",
+                php_argument_type_name(value)
+            ),
+        )),
+    }
+}
+
 fn set_current_position(parser: &crate::ObjectRef, input: &str) {
     parser.set_property(XML_PARSER_CURRENT_BYTE, Value::Int(input.len() as i64));
     let line = input.bytes().filter(|byte| *byte == b'\n').count() as i64 + 1;
@@ -473,6 +679,9 @@ fn builtin_xml_parser_get_option(
         XML_OPTION_SKIP_WHITE => parser
             .get_property(XML_PARSER_SKIP_WHITE)
             .unwrap_or(Value::Bool(false)),
+        XML_OPTION_PARSE_HUGE => parser
+            .get_property(XML_PARSER_PARSE_HUGE)
+            .unwrap_or(Value::Bool(false)),
         _ => Value::Bool(false),
     })
 }
@@ -509,21 +718,31 @@ fn builtin_xml_parser_set_option(
                 .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_BUILTIN_TYPE", message))?;
             parser.set_property(XML_PARSER_SKIP_WHITE, Value::Bool(enabled));
         }
+        XML_OPTION_PARSE_HUGE => {
+            let enabled = crate::convert::to_bool(&args[2])
+                .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_BUILTIN_TYPE", message))?;
+            parser.set_property(XML_PARSER_PARSE_HUGE, Value::Bool(enabled));
+        }
         _ => return Ok(Value::Bool(false)),
     }
     Ok(Value::Bool(true))
 }
 
 fn builtin_xml_parser_free(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() != 1 {
         return Err(arity_error("xml_parser_free", "one argument"));
     }
     match &args[0] {
         Value::Object(object) if normalize_class_name(&object.class_name()) == "xmlparser" => {
+            context.php_deprecation(
+                "E_PHP_RUNTIME_XML_PARSER_FREE_DEPRECATED",
+                "Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0",
+                span,
+            );
             Ok(Value::Bool(true))
         }
         value => Err(BuiltinError::new(

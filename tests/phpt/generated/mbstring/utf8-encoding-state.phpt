@@ -5,6 +5,12 @@ Focused mbstring UTF-8 coverage for internal encoding,
 mb_detect_encoding, mb_check_encoding, and narrow UTF-8 mb_convert_encoding.
 Reference output captured from PHP 8.5.7 php-src with --enable-mbstring
 --disable-mbregex.
+--SKIPIF--
+<?php
+if (!extension_loaded("mbstring")) {
+    die("skip mbstring extension not loaded\n");
+}
+?>
 --FILE--
 <?php
 var_dump(mb_internal_encoding());

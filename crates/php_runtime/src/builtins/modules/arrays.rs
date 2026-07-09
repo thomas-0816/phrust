@@ -316,6 +316,12 @@ pub(in crate::builtins::modules) fn builtin_count(
                 ) {
                     (Some(Value::Array(entries)), _) => entries.len(),
                     (_, Some(Value::Array(entries))) => entries.len(),
+                    _ if object.class_name().eq_ignore_ascii_case("ziparchive") => {
+                        match object.get_property("numFiles") {
+                            Some(Value::Int(count)) => count.max(0) as usize,
+                            _ => 0,
+                        }
+                    }
                     _ => return Err(type_error("count", "array or Countable", &args[0])),
                 }
             }

@@ -763,6 +763,10 @@ pub(super) fn reflection_method_value(
         "reflectionextension" => match method.as_str() {
             "getname" => Ok(object.get_property("name").unwrap_or(Value::Null)),
             "getversion" => Ok(Value::Bool(false)),
+            "getconstants" => {
+                let extension = reflection_object_string_property(object, "name")?;
+                reflection_extension_constants_value(&extension)
+            }
             "getfunctions" => {
                 let extension = reflection_object_string_property(object, "name")?;
                 reflection_extension_functions_value(&extension)
@@ -808,7 +812,7 @@ pub(super) struct InternalReflectionSignature {
 }
 
 pub(super) fn internal_function_signature(name: &str) -> InternalReflectionSignature {
-    if let Some(metadata) = php_std::generated::arginfo::function_metadata(name) {
+    if let Some(metadata) = php_std::arginfo::function_metadata_indexed(name) {
         return signature_from_params(metadata.return_type, metadata.params);
     }
     InternalReflectionSignature {
@@ -1197,6 +1201,7 @@ pub(super) fn internal_class_interfaces(class_name: &str) -> Vec<String> {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+        "ziparchive" => ["Countable"].into_iter().map(str::to_owned).collect(),
         _ => Vec::new(),
     }
 }
@@ -1282,6 +1287,7 @@ pub(super) const REDIS_INSTANCE_METHODS: &[&str] = &[
     "select",
     "close",
     "ping",
+    "getMode",
     "isConnected",
     "set",
     "setex",
@@ -1496,6 +1502,27 @@ pub(super) fn reflection_extension_functions_value(extension: &str) -> Result<Va
             Value::Object(reflection_internal_function_listing_object(
                 function.name(),
             )?),
+        );
+    }
+    Ok(Value::Array(array))
+}
+
+pub(super) fn reflection_extension_constants_value(extension: &str) -> Result<Value, String> {
+    let registry = php_std::ExtensionRegistry::standard_library();
+    let descriptor = registry
+        .extension_case_insensitive(extension)
+        .ok_or_else(|| {
+            format!("E_PHP_VM_REFLECTION_UNKNOWN_EXTENSION: extension {extension} is not defined")
+        })?;
+    let mut array = PhpArray::new();
+    for constant in descriptor.constants() {
+        let Some(value) = constant.value() else {
+            continue;
+        };
+        reflection_assoc_insert(
+            &mut array,
+            constant.name(),
+            php_std::constants::constant_to_value(value),
         );
     }
     Ok(Value::Array(array))

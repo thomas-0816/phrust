@@ -1,1 +1,11 @@
 {"path":"tests/phpt/generated/sysvshm/basic.phpt","module":"sysvshm","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers extension visibility, SysvSharedMemory handles, variable key put/get/has/remove behavior, detach, and removal semantics"}
+{"path":"ext/sysvshm/tests/001.phpt","module":"sysvshm","kind":"upstream","reason":"covers ftok-backed attach, put, get, remove, and detach basics"}
+{"path":"ext/sysvshm/tests/002.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_attach argument validation and object display"}
+{"path":"ext/sysvshm/tests/003.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_detach destroyed-handle lifecycle with PHPT sibling path mirroring"}
+{"path":"ext/sysvshm/tests/004.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_put_var storage capacity warnings"}
+{"path":"ext/sysvshm/tests/005.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_get_var values and missing-key warnings"}
+{"path":"ext/sysvshm/tests/006.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_remove_var success and missing-key warnings"}
+{"path":"ext/sysvshm/tests/007.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_remove and detach lifecycle for destroyed handles"}
+{"path":"ext/sysvshm/tests/gh16591.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_put_var detecting a shared memory handle destroyed during __serialize"}
+{"path":"ext/sysvshm/tests/serialize_exception.phpt","module":"sysvshm","kind":"upstream","reason":"covers shm_put_var propagating userland __serialize exceptions"}
+{"path":"ext/sysvshm/tests/shutdown_crash_0.phpt","module":"sysvshm","kind":"upstream","reason":"covers remove and reattach object display stability"}

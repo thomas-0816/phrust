@@ -17,7 +17,9 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("bcmod", builtin_bcmod, BuiltinCompatibility::Php),
     BuiltinEntry::new("bcmul", builtin_bcmul, BuiltinCompatibility::Php),
     BuiltinEntry::new("bcpow", builtin_bcpow, BuiltinCompatibility::Php),
+    BuiltinEntry::new("bcpowmod", builtin_bcpowmod, BuiltinCompatibility::Php),
     BuiltinEntry::new("bcscale", builtin_bcscale, BuiltinCompatibility::Php),
+    BuiltinEntry::new("bcsqrt", builtin_bcsqrt, BuiltinCompatibility::Php),
     BuiltinEntry::new("bcsub", builtin_bcsub, BuiltinCompatibility::Php),
 ];
 
@@ -177,6 +179,77 @@ fn builtin_bcpow(
     ))
 }
 
+fn builtin_bcpowmod(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(3..=4).contains(&args.len()) {
+        return Err(arity_error("bcpowmod", "three or four arguments"));
+    }
+    let base = integer_decimal_arg("bcpowmod", "#1 ($num)", &args[0])?;
+    let mut exponent = integer_decimal_arg("bcpowmod", "#2 ($exponent)", &args[1])?;
+    if exponent.sign() == Sign::Minus {
+        return Err(argument_value_error(
+            "bcpowmod",
+            "#2 ($exponent)",
+            "must be greater than or equal to 0",
+        ));
+    }
+    let modulus = integer_decimal_arg("bcpowmod", "#3 ($modulus)", &args[2])?;
+    if modulus.is_zero() {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_VALUE",
+            "Modulo by zero",
+        ));
+    }
+    let scale = scale_arg("bcpowmod", args.get(3), context.bcmath_scale())?;
+    let modulus = modulus.abs();
+    let two = BigInt::from(2_u8);
+    let mut result = BigInt::one() % &modulus;
+    let mut factor = base % &modulus;
+    while !exponent.is_zero() {
+        if (&exponent % &two).is_one() {
+            result = (result * &factor) % &modulus;
+        }
+        exponent /= &two;
+        if !exponent.is_zero() {
+            factor = (&factor * &factor) % &modulus;
+        }
+    }
+    Ok(Value::string(
+        Decimal {
+            units: result,
+            scale: 0,
+        }
+        .rescaled(scale)
+        .format(),
+    ))
+}
+
+fn builtin_bcsqrt(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(1..=2).contains(&args.len()) {
+        return Err(arity_error("bcsqrt", "one or two arguments"));
+    }
+    let value = parse_decimal_arg("bcsqrt", &args[0])?;
+    if value.units.sign() == Sign::Minus {
+        return Err(argument_value_error(
+            "bcsqrt",
+            "#1 ($num)",
+            "must be greater than or equal to 0",
+        ));
+    }
+    let scale = scale_arg("bcsqrt", args.get(1), context.bcmath_scale())?;
+    let numerator = value.units * pow10(scale.saturating_mul(2));
+    let denominator = pow10(value.scale);
+    let units = integer_sqrt_rational_floor(&numerator, &denominator);
+    Ok(Value::string(Decimal { units, scale }.format()))
+}
+
 fn builtin_bccomp(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -235,6 +308,23 @@ fn binary_decimal(
 fn parse_decimal_arg(name: &str, value: &Value) -> Result<Decimal, BuiltinError> {
     let text = string_arg(name, value)?.to_string_lossy();
     parse_decimal(&text).ok_or_else(|| argument_value_error(name, "number", "must be decimal"))
+}
+
+fn integer_decimal_arg(name: &str, argument: &str, value: &Value) -> Result<BigInt, BuiltinError> {
+    let decimal = parse_decimal_arg(name, value)?;
+    if decimal.scale == 0 {
+        return Ok(decimal.units);
+    }
+    let divisor = pow10(decimal.scale);
+    if (&decimal.units % &divisor).is_zero() {
+        Ok(decimal.units / divisor)
+    } else {
+        Err(argument_value_error(
+            name,
+            argument,
+            "cannot have a fractional part",
+        ))
+    }
 }
 
 fn parse_decimal(text: &str) -> Option<Decimal> {
@@ -342,6 +432,42 @@ fn pow10(power: usize) -> BigInt {
     value
 }
 
+fn integer_sqrt_rational_floor(numerator: &BigInt, denominator: &BigInt) -> BigInt {
+    debug_assert!(!denominator.is_zero());
+    if numerator.is_zero() {
+        return BigInt::zero();
+    }
+    let mut low = BigInt::zero();
+    let mut high = integer_sqrt_floor(numerator) + BigInt::one();
+    while &low + BigInt::one() < high {
+        let mid = (&low + &high) / 2_u8;
+        if &mid * &mid * denominator <= *numerator {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+fn integer_sqrt_floor(value: &BigInt) -> BigInt {
+    debug_assert!(value.sign() != Sign::Minus);
+    if value.is_zero() {
+        return BigInt::zero();
+    }
+    let mut low = BigInt::zero();
+    let mut high = value + BigInt::one();
+    while &low + BigInt::one() < high {
+        let mid = (&low + &high) / 2_u8;
+        if &mid * &mid <= *value {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +518,64 @@ mod tests {
             Value::Int(3)
         );
         assert_eq!(call(&mut context, "bcscale", vec![]), Value::Int(0));
+    }
+
+    #[test]
+    fn bcsqrt_truncates_to_requested_scale() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+
+        assert_eq!(
+            call(&mut context, "bcsqrt", vec![string("2"), Value::Int(4)]),
+            string("1.4142")
+        );
+        assert_eq!(
+            call(
+                &mut context,
+                "bcsqrt",
+                vec![string("0.0004"), Value::Int(4)]
+            ),
+            string("0.0200")
+        );
+        assert_eq!(
+            call(&mut context, "bcsqrt", vec![string("-0.00"), Value::Int(2)]),
+            string("0.00")
+        );
+    }
+
+    #[test]
+    fn bcpowmod_accepts_decimal_integers_and_scales_result() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+
+        assert_eq!(
+            call(
+                &mut context,
+                "bcpowmod",
+                vec![
+                    string("2.0"),
+                    string("10.00"),
+                    string("1000"),
+                    Value::Int(2)
+                ]
+            ),
+            string("24.00")
+        );
+        assert_eq!(
+            call(
+                &mut context,
+                "bcpowmod",
+                vec![string("-2"), string("5"), string("7")]
+            ),
+            string("-4")
+        );
+        assert_eq!(
+            call(
+                &mut context,
+                "bcpowmod",
+                vec![string("5"), string("0"), string("-1"), Value::Int(3)]
+            ),
+            string("0.000")
+        );
     }
 }

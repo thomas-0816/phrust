@@ -6,7 +6,11 @@
 {"path":"ext/standard/tests/file/file_put_contents_variation1.phpt"}
 {"path":"ext/standard/tests/file/readfile_basic.phpt"}
 {"path":"ext/standard/tests/file/readfile_variation9.phpt"}
+{"path":"ext/standard/tests/file/chgrp.phpt"}
 {"path":"ext/standard/tests/file/chmod_variation1.phpt"}
+{"path":"ext/standard/tests/file/chown.phpt"}
+{"path":"ext/standard/tests/file/copy_basic.phpt"}
+{"path":"ext/standard/tests/file/copy_error.phpt"}
 {"path":"ext/standard/tests/file/glob_basic.phpt"}
 {"path":"ext/standard/tests/file/basename-win32.phpt"}
 {"path":"ext/standard/tests/file/basename.phpt"}
@@ -30,9 +34,13 @@
 {"path":"ext/standard/tests/file/pathinfo_variaton.phpt"}
 {"path":"ext/standard/tests/file/lstat_stat_variation1.phpt"}
 {"path":"ext/standard/tests/file/lstat_stat_variation2.phpt"}
+{"path":"ext/standard/tests/file/realpath_basic2.phpt"}
+{"path":"ext/standard/tests/file/realpath_basic3.phpt"}
 {"path":"ext/standard/tests/file/tempnam_variation5.phpt"}
 {"path":"ext/standard/tests/file/touch_variation2.phpt"}
+{"path":"ext/standard/tests/file/stream_copy_to_stream_empty.phpt"}
 {"path":"ext/standard/tests/streams/stream_get_contents_001.phpt"}
+{"path":"ext/standard/tests/streams/stream_context_set_options_basic.phpt"}
 {"path":"tests/phpt/generated/filesystem.streams/php-memory-stream.phpt","module":"filesystem.streams","kind":"generated","reason":"php memory stream and metadata baseline"}
 {"path":"tests/phpt/generated/filesystem.streams/include-path-scope.phpt","module":"filesystem.streams","kind":"generated","reason":"include_path and include return baseline"}
 {"path":"tests/phpt/generated/filesystem.streams/directory-cwd-roundtrip.phpt","module":"filesystem.streams","kind":"generated","reason":"directory and cwd state baseline"}

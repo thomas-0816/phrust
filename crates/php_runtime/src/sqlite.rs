@@ -87,7 +87,7 @@ impl SqliteState {
     /// Opens an in-memory or local filesystem SQLite database.
     pub fn open(&mut self, filename: &str, flags: i64) -> Result<i64, String> {
         let connection = if filename == ":memory:" {
-            Connection::open_in_memory_with_flags(open_flags(flags))
+            Connection::open_in_memory()
         } else {
             Connection::open_with_flags(Path::new(filename), open_flags(flags))
         }

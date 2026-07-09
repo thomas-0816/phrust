@@ -5,7 +5,7 @@ use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
-use crate::{Value, xml};
+use crate::{ObjectRef, Value, xml};
 use std::fs;
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
@@ -17,6 +17,16 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "simplexml_load_file",
         builtin_simplexml_load_file,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "simplexml_import_dom",
+        builtin_simplexml_import_dom,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "dom_import_simplexml",
+        builtin_dom_import_simplexml,
         BuiltinCompatibility::Php,
     ),
 ];
@@ -69,4 +79,35 @@ fn builtin_simplexml_load_file(
             format!("simplexml_load_file(): {message}"),
         )
     })
+}
+
+fn builtin_simplexml_import_dom(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("simplexml_import_dom", &args, 1)?;
+    let Some(object) = object_arg(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(xml::simplexml_import_dom(&object))
+}
+
+fn builtin_dom_import_simplexml(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("dom_import_simplexml", &args, 1)?;
+    let Some(object) = object_arg(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(xml::dom_import_simplexml(&object))
+}
+
+fn object_arg(value: &Value) -> Option<ObjectRef> {
+    match value {
+        Value::Object(object) => Some(object.clone()),
+        _ => None,
+    }
 }

@@ -43,10 +43,27 @@ pub struct Lexer<'src> {
     in_string_var_offset: bool,
     in_braced_interpolation: bool,
     last_encapsed_variable: bool,
+    last_significant_name: Option<TokenName>,
     halt_compiler_seen: bool,
+    halt_compiler_significant_tokens: u8,
     heredoc_label: Option<String>,
     heredoc_nowdoc: bool,
+    encapsed_stack: Vec<EncapsedSnapshot>,
     diagnostics: Vec<LexDiagnostic>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EncapsedSnapshot {
+    mode: LexerMode,
+    mode_start: usize,
+    mode_start_line: u32,
+    expecting_object_property: bool,
+    expecting_string_varname: bool,
+    in_string_var_offset: bool,
+    in_braced_interpolation: bool,
+    last_encapsed_variable: bool,
+    heredoc_label: Option<String>,
+    heredoc_nowdoc: bool,
 }
 
 impl<'src> Lexer<'src> {
@@ -68,9 +85,12 @@ impl<'src> Lexer<'src> {
             in_string_var_offset: false,
             in_braced_interpolation: false,
             last_encapsed_variable: false,
+            last_significant_name: None,
             halt_compiler_seen: false,
+            halt_compiler_significant_tokens: 0,
             heredoc_label: None,
             heredoc_nowdoc: false,
+            encapsed_stack: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -108,8 +128,9 @@ impl<'src> Lexer<'src> {
             _ => self.next_scripting_token(),
         };
 
-        if token.is_some() {
-            return token;
+        if let Some(token) = token {
+            self.remember_significant_token(token.kind);
+            return Some(token);
         }
 
         if self.config.emit_eof && !self.emitted_eof {
@@ -181,7 +202,12 @@ impl<'src> Lexer<'src> {
             let token = self.consume_fixed_token(TokenKind::Symbol(SymbolKind::Char(b';')), 1);
             self.mode = LexerMode::InlineHtml;
             self.halt_compiler_seen = false;
+            self.halt_compiler_significant_tokens = 0;
             return Some(token);
+        }
+
+        if self.halt_compiler_seen && self.halt_compiler_significant_tokens >= 3 {
+            return Some(self.consume_remaining_inline_html());
         }
 
         if self.cursor.starts_with(b"?>") {
@@ -286,6 +312,10 @@ impl<'src> Lexer<'src> {
             return Some(
                 self.consume_qualified_name(TokenKind::Named(TokenName::NameFullyQualified), true),
             );
+        }
+
+        if self.cursor.peek() == Some(b'\\') {
+            return Some(self.consume_fixed_token(TokenKind::Named(TokenName::NsSeparator), 1));
         }
 
         if self.cursor.peek().is_some_and(is_identifier_start) {
@@ -417,10 +447,24 @@ impl<'src> Lexer<'src> {
         }
 
         if let Some(len) = self.heredoc_end_len_at_cursor() {
-            self.mode = LexerMode::Scripting;
-            self.clear_heredoc_state();
-            self.clear_encapsed_state();
-            return Some(self.consume_fixed_token(TokenKind::Named(TokenName::EndHeredoc), len));
+            let token = self.consume_fixed_token(TokenKind::Named(TokenName::EndHeredoc), len);
+            if !self.restore_encapsed_snapshot() {
+                self.mode = LexerMode::Scripting;
+                self.clear_heredoc_state();
+                self.clear_encapsed_state();
+            }
+            return Some(token);
+        }
+
+        if !self.heredoc_nowdoc && self.in_braced_interpolation {
+            if self.cursor.peek() == Some(b'}') {
+                self.in_braced_interpolation = false;
+                self.last_encapsed_variable = false;
+                return Some(
+                    self.consume_fixed_token(TokenKind::Symbol(SymbolKind::Char(b'}')), 1),
+                );
+            }
+            return self.next_scripting_token();
         }
 
         if !self.heredoc_nowdoc
@@ -620,6 +664,9 @@ impl<'src> Lexer<'src> {
         let (len, label, nowdoc) = self.heredoc_start_at_cursor()?;
         let start = self.cursor.position();
         let line = self.line;
+        if matches!(self.mode, LexerMode::Heredoc | LexerMode::Nowdoc) {
+            self.save_encapsed_snapshot();
+        }
         self.heredoc_label = Some(label);
         self.heredoc_nowdoc = nowdoc;
         self.enter_encapsed_mode(
@@ -833,10 +880,58 @@ impl<'src> Lexer<'src> {
 
         let text = &self.source.as_bytes()[range.start().to_usize()..range.end().to_usize()];
         let name = keyword_or_magic_token(text).unwrap_or(TokenName::String);
-        if name == TokenName::HaltCompiler {
+        if name == TokenName::HaltCompiler && !self.previous_token_was_member_access() {
             self.halt_compiler_seen = true;
+            self.halt_compiler_significant_tokens = 0;
         }
         Token::new(TokenKind::Named(name), range, line)
+    }
+
+    fn previous_token_was_member_access(&self) -> bool {
+        matches!(
+            self.last_significant_name,
+            Some(
+                TokenName::DoubleColon
+                    | TokenName::ObjectOperator
+                    | TokenName::NullsafeObjectOperator
+            )
+        )
+    }
+
+    fn remember_significant_token(&mut self, kind: TokenKind) {
+        match kind {
+            TokenKind::Named(
+                TokenName::Whitespace | TokenName::Comment | TokenName::DocComment,
+            ) => {}
+            TokenKind::Named(name) => {
+                if self.halt_compiler_seen && name != TokenName::HaltCompiler {
+                    self.halt_compiler_significant_tokens =
+                        self.halt_compiler_significant_tokens.saturating_add(1);
+                }
+                self.last_significant_name = Some(name);
+            }
+            TokenKind::Symbol(_) => {
+                if self.halt_compiler_seen {
+                    self.halt_compiler_significant_tokens =
+                        self.halt_compiler_significant_tokens.saturating_add(1);
+                }
+                self.last_significant_name = None;
+            }
+            TokenKind::Eof => {}
+        }
+    }
+
+    fn consume_remaining_inline_html(&mut self) -> Token {
+        let start = self.cursor.position();
+        let line = self.line;
+        self.consume_len(self.source.len() - start);
+        self.halt_compiler_seen = false;
+        self.halt_compiler_significant_tokens = 0;
+        Token::new(
+            TokenKind::Named(TokenName::InlineHtml),
+            TextRange::new(start, self.cursor.position()),
+            line,
+        )
     }
 
     fn consume_qualified_name(&mut self, kind: TokenKind, leading_backslash: bool) -> Token {
@@ -1198,7 +1293,8 @@ impl<'src> Lexer<'src> {
         offset += label.len();
 
         match bytes.get(offset) {
-            None | Some(b';' | b'\n' | b'\r') => Some(offset - start),
+            None => Some(offset - start),
+            Some(byte) if !is_identifier_continue(*byte) => Some(offset - start),
             _ => None,
         }
     }
@@ -1221,6 +1317,38 @@ impl<'src> Lexer<'src> {
     fn clear_heredoc_state(&mut self) {
         self.heredoc_label = None;
         self.heredoc_nowdoc = false;
+    }
+
+    fn save_encapsed_snapshot(&mut self) {
+        self.encapsed_stack.push(EncapsedSnapshot {
+            mode: self.mode,
+            mode_start: self.mode_start,
+            mode_start_line: self.mode_start_line,
+            expecting_object_property: self.expecting_object_property,
+            expecting_string_varname: self.expecting_string_varname,
+            in_string_var_offset: self.in_string_var_offset,
+            in_braced_interpolation: self.in_braced_interpolation,
+            last_encapsed_variable: self.last_encapsed_variable,
+            heredoc_label: self.heredoc_label.clone(),
+            heredoc_nowdoc: self.heredoc_nowdoc,
+        });
+    }
+
+    fn restore_encapsed_snapshot(&mut self) -> bool {
+        let Some(snapshot) = self.encapsed_stack.pop() else {
+            return false;
+        };
+        self.mode = snapshot.mode;
+        self.mode_start = snapshot.mode_start;
+        self.mode_start_line = snapshot.mode_start_line;
+        self.expecting_object_property = snapshot.expecting_object_property;
+        self.expecting_string_varname = snapshot.expecting_string_varname;
+        self.in_string_var_offset = snapshot.in_string_var_offset;
+        self.in_braced_interpolation = snapshot.in_braced_interpolation;
+        self.last_encapsed_variable = snapshot.last_encapsed_variable;
+        self.heredoc_label = snapshot.heredoc_label;
+        self.heredoc_nowdoc = snapshot.heredoc_nowdoc;
+        true
     }
 
     fn open_tag_at_cursor(&self) -> Option<(TokenKind, usize)> {
@@ -1578,6 +1706,37 @@ mod tests {
     }
 
     #[test]
+    fn halt_compiler_member_name_does_not_switch_to_inline_html() {
+        let source = "<?php $x->__halt_compiler(); class X {}";
+        let result = lex_all(source, LexerConfig::default());
+        let kinds = result
+            .tokens
+            .iter()
+            .filter(|token| token.kind != TokenKind::Named(TokenName::Whitespace))
+            .map(|token| token.kind)
+            .collect::<Vec<_>>();
+
+        assert!(!kinds.contains(&TokenKind::Named(TokenName::InlineHtml)));
+        assert!(kinds.contains(&TokenKind::Named(TokenName::Class)));
+    }
+
+    #[test]
+    fn bare_halt_compiler_fallback_emits_remaining_bytes_as_inline_html() {
+        let source = "<?php __halt_compiler\nabc\ndef\nghi ABC";
+        let result = lex_all(source, LexerConfig::default());
+        let tokens = result
+            .tokens
+            .iter()
+            .map(|token| (token.kind, token.text(source).unwrap_or_default()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tokens.last(),
+            Some(&(TokenKind::Named(TokenName::InlineHtml), " ABC",))
+        );
+    }
+
+    #[test]
     fn line_comment_stops_before_close_tag() {
         let source = "<?php // comment ?>\nafter";
         let result = lex_all(source, LexerConfig::default());
@@ -1768,7 +1927,7 @@ mod tests {
 
     #[test]
     fn namespace_names_are_lexical_tokens() {
-        let source = "<?php \\A\\B Foo\\Bar namespace\\Thing";
+        let source = "<?php \\A\\B Foo\\Bar namespace\\Thing Foo \\ Bar";
         let result = lex_all(source, LexerConfig::default());
         assert_eq!(
             result.tokens[1].kind,
@@ -1781,6 +1940,10 @@ mod tests {
         assert_eq!(
             result.tokens[5].kind,
             TokenKind::Named(TokenName::NameRelative)
+        );
+        assert_eq!(
+            result.tokens[9].kind,
+            TokenKind::Named(TokenName::NsSeparator)
         );
     }
 
@@ -2119,6 +2282,27 @@ mod tests {
     }
 
     #[test]
+    fn heredoc_interpolation_can_tokenize_nested_heredoc_expression() {
+        let source = "<?php\n<<<DOC1\n{$s(<<<DOC2\nDOC2\n)}\nDOC1;\n";
+        let result = lex_all(source, LexerConfig::default());
+        let texts: Vec<(&str, String)> = result
+            .tokens
+            .iter()
+            .filter_map(|token| Some((token.text(source)?, token.reference_name())))
+            .collect();
+
+        assert!(texts.contains(&("<<<DOC1\n", "T_START_HEREDOC".to_owned())));
+        assert!(texts.contains(&("{", "T_CURLY_OPEN".to_owned())));
+        assert!(texts.contains(&("$s", "T_VARIABLE".to_owned())));
+        assert!(texts.contains(&("(", "(".to_owned())));
+        assert!(texts.contains(&("<<<DOC2\n", "T_START_HEREDOC".to_owned())));
+        assert!(texts.contains(&("DOC2", "T_END_HEREDOC".to_owned())));
+        assert!(texts.contains(&(")", ")".to_owned())));
+        assert!(texts.contains(&("}", "}".to_owned())));
+        assert!(texts.contains(&("DOC1", "T_END_HEREDOC".to_owned())));
+    }
+
+    #[test]
     fn nowdoc_does_not_interpolate_variables() {
         let source = "<?php\n$a = <<<'TXT'\nhello $name\nTXT;\n";
         let result = lex_all(source, LexerConfig::default());
@@ -2133,6 +2317,23 @@ mod tests {
         assert!(texts.contains(&("hello $name\n", "T_ENCAPSED_AND_WHITESPACE".to_owned())));
         assert!(!texts.contains(&("$name", "T_VARIABLE".to_owned())));
         assert!(texts.contains(&("TXT", "T_END_HEREDOC".to_owned())));
+    }
+
+    #[test]
+    fn heredoc_end_marker_can_precede_expression_punctuation() {
+        let source = "<?php\nvar_dump(<<<'TXT'\nhello\nTXT));\n";
+        let result = lex_all(source, LexerConfig::default());
+        let texts: Vec<(&str, String)> = result
+            .tokens
+            .iter()
+            .filter(|token| token.kind != TokenKind::Named(TokenName::Whitespace))
+            .filter_map(|token| Some((token.text(source)?, token.reference_name())))
+            .collect();
+
+        assert!(texts.contains(&("TXT", "T_END_HEREDOC".to_owned())));
+        assert!(texts.contains(&(")", ")".to_owned())));
+        assert!(texts.contains(&(";", ";".to_owned())));
+        assert!(result.diagnostics.is_empty());
     }
 
     #[test]

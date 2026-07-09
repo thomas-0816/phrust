@@ -5,6 +5,7 @@
 #![allow(clippy::result_large_err)]
 
 use super::prelude::*;
+use std::io::Seek;
 
 pub(super) fn is_std_class_runtime_class(class_name: &str) -> bool {
     class_name
@@ -40,35 +41,84 @@ pub(super) fn internal_php_token_instanceof(
     })
 }
 
-pub(super) fn php_token_static_method_value(
+pub(super) struct PhpTokenStaticMethodValue {
+    pub(super) value: Value,
+    pub(super) diagnostics: Vec<php_runtime::RuntimeDiagnostic>,
+}
+
+pub(super) fn php_token_static_method_value_with_diagnostics(
     class_name: &str,
     method: &str,
     args: Vec<CallArgument>,
-) -> Result<Value, String> {
+) -> Result<PhpTokenStaticMethodValue, String> {
     match normalize_method_name(method).as_str() {
         "tokenize" => {
-            let values = call_args_to_positional("PhpToken::tokenize", args)?;
-            if values.is_empty() || values.len() > 2 {
-                return Err(format!(
-                    "E_PHP_VM_TOKENIZER_ARITY: {class_name}::tokenize expects 1 or 2 argument(s), {} given",
-                    values.len()
-                ));
-            }
-            let source = to_string(&values[0])?.to_string_lossy();
-            let flags = values.get(1).map(to_int).transpose()?.unwrap_or(0);
-            let tokens = php_runtime::tokenizer::tokenize(&source, flags)
-                .map_err(|error| error.display_message())?;
-            Ok(Value::packed_array(
-                tokens
-                    .into_iter()
-                    .map(|token| Value::Object(php_token_object(token)))
-                    .collect(),
-            ))
+            let result = php_tokenize_static_call_with_diagnostics(class_name, args)?;
+            Ok(PhpTokenStaticMethodValue {
+                value: Value::packed_array(
+                    result
+                        .tokens
+                        .into_iter()
+                        .map(|token| Value::Object(php_token_object(token)))
+                        .collect(),
+                ),
+                diagnostics: result.diagnostics,
+            })
         }
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_METHOD: method {class_name}::{method} is not defined"
         )),
     }
+}
+
+pub(super) fn php_token_static_method_value_for_class_with_diagnostics(
+    class_name: &str,
+    method: &str,
+    args: Vec<CallArgument>,
+    runtime_class: &RuntimeClassEntry,
+    display_name: String,
+) -> Result<PhpTokenStaticMethodValue, String> {
+    match normalize_method_name(method).as_str() {
+        "tokenize" => {
+            let result = php_tokenize_static_call_with_diagnostics(class_name, args)?;
+            Ok(PhpTokenStaticMethodValue {
+                value: Value::packed_array(
+                    result
+                        .tokens
+                        .into_iter()
+                        .map(|token| {
+                            Value::Object(php_token_object_for_class(
+                                token,
+                                runtime_class,
+                                display_name.clone(),
+                            ))
+                        })
+                        .collect(),
+                ),
+                diagnostics: result.diagnostics,
+            })
+        }
+        _ => Err(format!(
+            "E_PHP_VM_UNKNOWN_METHOD: method {class_name}::{method} is not defined"
+        )),
+    }
+}
+
+pub(super) fn php_tokenize_static_call_with_diagnostics(
+    class_name: &str,
+    args: Vec<CallArgument>,
+) -> Result<php_runtime::tokenizer::TokenizeResult, String> {
+    let values = call_args_to_positional("PhpToken::tokenize", args)?;
+    if values.is_empty() || values.len() > 2 {
+        return Err(format!(
+            "E_PHP_VM_TOKENIZER_ARITY: {class_name}::tokenize expects 1 or 2 argument(s), {} given",
+            values.len()
+        ));
+    }
+    let source = to_string(&values[0])?.to_string_lossy();
+    let flags = values.get(1).map(to_int).transpose()?.unwrap_or(0);
+    php_runtime::tokenizer::tokenize_with_diagnostics(&source, flags)
+        .map_err(|error| error.display_message())
 }
 
 pub(super) fn php_token_method_value(
@@ -211,7 +261,16 @@ pub(super) fn php_token_name_value(object: &ObjectRef) -> Option<Value> {
 }
 
 pub(super) fn php_token_object(token: php_runtime::tokenizer::TokenizerToken) -> ObjectRef {
-    let object = ObjectRef::new_with_display_name(&php_token_class(), "PhpToken");
+    let class = php_token_class();
+    php_token_object_for_class(token, &class, "PhpToken")
+}
+
+pub(super) fn php_token_object_for_class(
+    token: php_runtime::tokenizer::TokenizerToken,
+    class: &RuntimeClassEntry,
+    display_name: impl Into<String>,
+) -> ObjectRef {
+    let object = ObjectRef::new_with_display_name(class, display_name);
     object.set_property("id", Value::Int(token.id));
     object.set_property("text", Value::string(token.text.into_bytes()));
     object.set_property("line", Value::Int(i64::from(token.line)));
@@ -452,6 +511,33 @@ pub(super) fn is_memcached_runtime_class(class_name: &str) -> bool {
     normalize_class_name(class_name) == "memcached"
 }
 
+pub(super) fn is_soap_runtime_class(class_name: &str) -> bool {
+    matches!(
+        normalize_class_name(class_name).as_str(),
+        "soapparam"
+            | "soapheader"
+            | "soapvar"
+            | "soapfault"
+            | "soapclient"
+            | "soapserver"
+            | "soap\\soapparam"
+            | "soap\\soapheader"
+            | "soap\\soapvar"
+            | "soap\\soapfault"
+            | "soap\\soapclient"
+            | "soap\\soapserver"
+            | "soap\\sdl"
+            | "soap\\url"
+    )
+}
+
+pub(super) fn internal_soap_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
+    if !is_soap_runtime_class(object_class) {
+        return None;
+    }
+    Some(normalize_class_name(object_class) == normalize_class_name(target_class))
+}
+
 pub(super) fn is_imagick_runtime_class(class_name: &str) -> bool {
     matches!(
         normalize_class_name(class_name).as_str(),
@@ -531,6 +617,464 @@ pub(super) const MEMCACHED_SERVERS_PROPERTY: &str = "__memcached_servers";
 pub(super) const MEMCACHED_OPTIONS_PROPERTY: &str = "__memcached_options";
 pub(super) const MEMCACHED_RESULT_CODE_PROPERTY: &str = "__memcached_result_code";
 
+pub(super) fn new_soap_object(
+    class_name: &str,
+    args: Vec<CallArgument>,
+) -> Result<ObjectRef, String> {
+    if !is_soap_runtime_class(class_name) {
+        return Err(format!(
+            "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
+        ));
+    }
+    let normalized = normalize_class_name(class_name);
+    let display_name = soap_display_name(&normalized);
+    let object = ObjectRef::new_with_display_name(&soap_runtime_class(&display_name), display_name);
+    call_soap_method(&object, "__construct", args)?;
+    Ok(object)
+}
+
+pub(super) fn soap_runtime_class(name: &str) -> RuntimeClassEntry {
+    RuntimeClassEntry {
+        name: normalize_class_name(name),
+        parent: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor_id: None,
+        flags: RuntimeClassFlags::default(),
+    }
+}
+
+pub(super) fn call_soap_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+) -> Result<Value, String> {
+    let method = normalize_method_name(method);
+    let class_name = normalize_class_name(&object.class_name());
+    match class_name.as_str() {
+        "soapparam" | "soap\\soapparam" => call_soap_param_method(object, &method, args),
+        "soapheader" | "soap\\soapheader" => call_soap_header_method(object, &method, args),
+        "soapvar" | "soap\\soapvar" => call_soap_var_method(object, &method, args),
+        "soapfault" | "soap\\soapfault" => call_soap_fault_method(object, &method, args),
+        "soapclient" | "soap\\soapclient" => call_soap_client_method(object, &method, args),
+        "soapserver" | "soap\\soapserver" => call_soap_server_method(object, &method, args),
+        "soap\\sdl" | "soap\\url" => Err(format!(
+            "E_PHP_VM_UNSUPPORTED_SOAP: class {} is an internal SOAP helper and cannot be constructed directly",
+            object.display_name()
+        )),
+        _ => Err(format!(
+            "E_PHP_VM_UNKNOWN_METHOD: method {}::{method} is not declared",
+            object.display_name()
+        )),
+    }
+}
+
+fn call_soap_param_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("{}::{method}", object.display_name()), args)?;
+    match method {
+        "__construct" => {
+            validate_arg_count(
+                &format!("{}::__construct", object.display_name()),
+                values.len(),
+                2,
+                2,
+            )?;
+            object.set_property("param_data", values[0].clone());
+            object.set_property("param_name", Value::String(to_string(&values[1])?));
+            Ok(Value::Null)
+        }
+        _ => unknown_soap_method(object, method),
+    }
+}
+
+fn call_soap_header_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("{}::{method}", object.display_name()), args)?;
+    match method {
+        "__construct" => {
+            validate_arg_count(
+                &format!("{}::__construct", object.display_name()),
+                values.len(),
+                2,
+                5,
+            )?;
+            object.set_property("namespace", Value::String(to_string(&values[0])?));
+            object.set_property("name", Value::String(to_string(&values[1])?));
+            object.set_property("data", values.get(2).cloned().unwrap_or(Value::Null));
+            object.set_property(
+                "mustUnderstand",
+                values
+                    .get(3)
+                    .map(to_bool)
+                    .transpose()?
+                    .map(Value::Bool)
+                    .unwrap_or(Value::Bool(false)),
+            );
+            object.set_property(
+                "actor",
+                values
+                    .get(4)
+                    .map(soap_string_int_or_null)
+                    .transpose()?
+                    .unwrap_or(Value::Null),
+            );
+            Ok(Value::Null)
+        }
+        _ => unknown_soap_method(object, method),
+    }
+}
+
+fn call_soap_var_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("{}::{method}", object.display_name()), args)?;
+    match method {
+        "__construct" => {
+            validate_arg_count(
+                &format!("{}::__construct", object.display_name()),
+                values.len(),
+                2,
+                6,
+            )?;
+            object.set_property("enc_value", values[0].clone());
+            object.set_property("enc_type", soap_nullable_int(&values[1])?);
+            object.set_property("enc_stype", soap_nullable_string(values.get(2))?);
+            object.set_property("enc_ns", soap_nullable_string(values.get(3))?);
+            object.set_property("enc_name", soap_nullable_string(values.get(4))?);
+            object.set_property("enc_namens", soap_nullable_string(values.get(5))?);
+            Ok(Value::Null)
+        }
+        _ => unknown_soap_method(object, method),
+    }
+}
+
+fn call_soap_fault_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("{}::{method}", object.display_name()), args)?;
+    match method {
+        "__construct" => {
+            validate_arg_count(
+                &format!("{}::__construct", object.display_name()),
+                values.len(),
+                2,
+                7,
+            )?;
+            let (faultcodens, faultcode) = soap_fault_code(&values[0])?;
+            let message = Value::String(to_string(&values[1])?);
+            object.set_property("message", message.clone());
+            object.set_property("code", Value::Int(0));
+            object.set_property("faultstring", message);
+            object.set_property("faultcode", faultcode);
+            object.set_property("faultcodens", faultcodens);
+            object.set_property("faultactor", soap_nullable_string(values.get(2))?);
+            object.set_property("detail", values.get(3).cloned().unwrap_or(Value::Null));
+            object.set_property("_name", soap_nullable_string(values.get(4))?);
+            object.set_property("headerfault", values.get(5).cloned().unwrap_or(Value::Null));
+            object.set_property(
+                "lang",
+                values
+                    .get(6)
+                    .map(to_string)
+                    .transpose()?
+                    .map(Value::String)
+                    .unwrap_or_else(|| Value::string("")),
+            );
+            Ok(Value::Null)
+        }
+        "__tostring" => {
+            validate_arg_count(
+                &format!("{}::__toString", object.display_name()),
+                values.len(),
+                0,
+                0,
+            )?;
+            Ok(Value::string(soap_fault_string(object).into_bytes()))
+        }
+        _ => unknown_soap_method(object, method),
+    }
+}
+
+fn call_soap_client_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("{}::{method}", object.display_name()), args)?;
+    match method {
+        "__construct" => {
+            validate_arg_count(
+                &format!("{}::__construct", object.display_name()),
+                values.len(),
+                1,
+                2,
+            )?;
+            object.set_property("__soap_wsdl", values[0].clone());
+            object.set_property(
+                "__soap_options",
+                values
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(PhpArray::new())),
+            );
+            object.set_property("__last_request", Value::Null);
+            object.set_property("__last_response", Value::Null);
+            object.set_property("__last_request_headers", Value::Null);
+            object.set_property("__last_response_headers", Value::Null);
+            object.set_property("__cookies", Value::Array(PhpArray::new()));
+            Ok(Value::Null)
+        }
+        "__getlastrequest" => Ok(object.get_property("__last_request").unwrap_or(Value::Null)),
+        "__getlastresponse" => Ok(object
+            .get_property("__last_response")
+            .unwrap_or(Value::Null)),
+        "__getlastrequestheaders" => Ok(object
+            .get_property("__last_request_headers")
+            .unwrap_or(Value::Null)),
+        "__getlastresponseheaders" => Ok(object
+            .get_property("__last_response_headers")
+            .unwrap_or(Value::Null)),
+        "__getcookies" => Ok(object
+            .get_property("__cookies")
+            .unwrap_or_else(|| Value::Array(PhpArray::new()))),
+        "__getfunctions" | "__gettypes" => Ok(Value::Null),
+        "__setcookie" => {
+            validate_arg_count(
+                &format!("{}::__setCookie", object.display_name()),
+                values.len(),
+                1,
+                2,
+            )?;
+            let name = to_string(&values[0])?.to_string_lossy();
+            let value = values
+                .get(1)
+                .map(to_string)
+                .transpose()?
+                .map(Value::String)
+                .unwrap_or(Value::Null);
+            let mut cookies = match object.get_property("__cookies") {
+                Some(Value::Array(array)) => array,
+                _ => PhpArray::new(),
+            };
+            cookies.insert(ArrayKey::String(PhpString::from(name.as_str())), value);
+            object.set_property("__cookies", Value::Array(cookies));
+            Ok(Value::Null)
+        }
+        "__setlocation" => {
+            validate_arg_count(
+                &format!("{}::__setLocation", object.display_name()),
+                values.len(),
+                0,
+                1,
+            )?;
+            let previous = object.get_property("location").unwrap_or(Value::Null);
+            object.set_property("location", soap_nullable_string(values.first())?);
+            Ok(previous)
+        }
+        "__setsoapheaders" => {
+            validate_arg_count(
+                &format!("{}::__setSoapHeaders", object.display_name()),
+                values.len(),
+                0,
+                1,
+            )?;
+            object.set_property(
+                "__default_headers",
+                values.first().cloned().unwrap_or(Value::Null),
+            );
+            Ok(Value::Bool(true))
+        }
+        "__call" | "__soapcall" | "__dorequest" => Err(format!(
+            "E_PHP_VM_UNSUPPORTED_SOAP: method {}::{method} requires WSDL, XML serialization, and HTTP transport support",
+            object.display_name()
+        )),
+        _ => unknown_soap_method(object, method),
+    }
+}
+
+fn call_soap_server_method(
+    object: &ObjectRef,
+    method: &str,
+    args: Vec<CallArgument>,
+) -> Result<Value, String> {
+    let values = call_args_to_positional(&format!("{}::{method}", object.display_name()), args)?;
+    match method {
+        "__construct" => {
+            validate_arg_count(
+                &format!("{}::__construct", object.display_name()),
+                values.len(),
+                1,
+                2,
+            )?;
+            object.set_property("__soap_wsdl", values[0].clone());
+            object.set_property(
+                "__soap_options",
+                values
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(PhpArray::new())),
+            );
+            object.set_property("__functions", Value::Array(PhpArray::new()));
+            object.set_property("__headers", Value::Array(PhpArray::new()));
+            object.set_property("__last_response", Value::Null);
+            Ok(Value::Null)
+        }
+        "getfunctions" => Ok(object
+            .get_property("__functions")
+            .unwrap_or_else(|| Value::Array(PhpArray::new()))),
+        "__getlastresponse" => Ok(object
+            .get_property("__last_response")
+            .unwrap_or(Value::Null)),
+        "addfunction" => {
+            validate_arg_count(
+                &format!("{}::addFunction", object.display_name()),
+                values.len(),
+                1,
+                1,
+            )?;
+            object.set_property("__functions", values[0].clone());
+            Ok(Value::Null)
+        }
+        "addsoapheader" => {
+            validate_arg_count(
+                &format!("{}::addSoapHeader", object.display_name()),
+                values.len(),
+                1,
+                1,
+            )?;
+            let mut headers = match object.get_property("__headers") {
+                Some(Value::Array(array)) => array,
+                _ => PhpArray::new(),
+            };
+            headers.append(values[0].clone());
+            object.set_property("__headers", Value::Array(headers));
+            Ok(Value::Null)
+        }
+        "setpersistence" | "setclass" | "setobject" => Ok(Value::Null),
+        "fault" | "handle" => Err(format!(
+            "E_PHP_VM_UNSUPPORTED_SOAP: method {}::{method} requires local SOAP server dispatch support",
+            object.display_name()
+        )),
+        _ => unknown_soap_method(object, method),
+    }
+}
+
+pub(super) fn soap_display_name(normalized: &str) -> &'static str {
+    match normalized {
+        "soapparam" | "soap\\soapparam" => "SoapParam",
+        "soapheader" | "soap\\soapheader" => "SoapHeader",
+        "soapvar" | "soap\\soapvar" => "SoapVar",
+        "soapfault" | "soap\\soapfault" => "SoapFault",
+        "soapclient" | "soap\\soapclient" => "SoapClient",
+        "soapserver" | "soap\\soapserver" => "SoapServer",
+        "soap\\sdl" => "Soap\\Sdl",
+        "soap\\url" => "Soap\\Url",
+        _ => "SoapFault",
+    }
+}
+
+fn soap_nullable_string(value: Option<&Value>) -> Result<Value, String> {
+    match value {
+        Some(Value::Null) | None => Ok(Value::Null),
+        Some(value) => Ok(Value::String(to_string(value)?)),
+    }
+}
+
+fn soap_nullable_int(value: &Value) -> Result<Value, String> {
+    match value {
+        Value::Null => Ok(Value::Null),
+        value => Ok(Value::Int(to_int(value)?)),
+    }
+}
+
+fn soap_string_int_or_null(value: &Value) -> Result<Value, String> {
+    match value {
+        Value::Null => Ok(Value::Null),
+        Value::Int(_) => Ok(value.clone()),
+        value => Ok(Value::String(to_string(value)?)),
+    }
+}
+
+fn soap_fault_code(value: &Value) -> Result<(Value, Value), String> {
+    match value {
+        Value::Null => Ok((Value::Null, Value::Null)),
+        Value::Array(array) => {
+            let ns = array
+                .get(&ArrayKey::Int(0))
+                .map(to_string)
+                .transpose()?
+                .map(Value::String)
+                .unwrap_or(Value::Null);
+            let code = array
+                .get(&ArrayKey::Int(1))
+                .map(to_string)
+                .transpose()?
+                .map(Value::String)
+                .unwrap_or(Value::Null);
+            Ok((ns, code))
+        }
+        value => Ok((
+            Value::string("http://schemas.xmlsoap.org/soap/envelope/"),
+            Value::String(to_string(value)?),
+        )),
+    }
+}
+
+fn soap_fault_string(object: &ObjectRef) -> String {
+    let code = object
+        .get_property("faultcode")
+        .and_then(|value| to_string(&value).ok())
+        .map(|value| value.to_string_lossy())
+        .unwrap_or_default();
+    let message = object
+        .get_property("faultstring")
+        .and_then(|value| to_string(&value).ok())
+        .map(|value| value.to_string_lossy())
+        .unwrap_or_default();
+    if code.is_empty() {
+        format!("SoapFault exception: {message}")
+    } else {
+        format!("SoapFault exception: [{code}] {message}")
+    }
+}
+
+fn unknown_soap_method(object: &ObjectRef, method: &str) -> Result<Value, String> {
+    Err(format!(
+        "E_PHP_VM_UNKNOWN_METHOD: method {}::{method} is not declared",
+        object.display_name()
+    ))
+}
+
+fn validate_arg_count(function: &str, actual: usize, min: usize, max: usize) -> Result<(), String> {
+    if actual < min || actual > max {
+        let expected = if min == max {
+            min.to_string()
+        } else {
+            format!("{min} to {max}")
+        };
+        return Err(format!(
+            "E_PHP_VM_ARGUMENT_COUNT: {function} expects {expected} argument(s), {actual} given"
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn new_memcached_object(
     class_name: &str,
     args: Vec<CallArgument>,
@@ -575,6 +1119,8 @@ pub(super) fn memcached_class_constant_value(class_name: &str, constant: &str) -
         "SERIALIZER_PHP" => 1,
         "SERIALIZER_IGBINARY" => 2,
         "SERIALIZER_JSON" => 3,
+        "SERIALIZER_JSON_ARRAY" => 4,
+        "SERIALIZER_MSGPACK" => 5,
         "OPT_COMPRESSION" => -1001,
         "OPT_PREFIX_KEY" => -1002,
         "OPT_LIBKETAMA_COMPATIBLE" => 16,
@@ -903,6 +1449,10 @@ pub(super) fn memcached_set_options(object: &ObjectRef, values: &[Value]) -> Res
         _ => PhpArray::new(),
     };
     for (key, value) in redis_array_value_entries(&values[0], "Memcached::setOptions")? {
+        let key = match key {
+            ArrayKey::Int(index) => ArrayKey::String(PhpString::from(index.to_string().as_str())),
+            ArrayKey::String(name) => ArrayKey::String(name),
+        };
         options.insert(key, value);
     }
     object.set_property(MEMCACHED_OPTIONS_PROPERTY, Value::Array(options));
@@ -1134,11 +1684,22 @@ pub(super) fn internal_zip_instanceof(object_class: &str, target_class: &str) ->
     if !is_zip_runtime_class(object_class) {
         return None;
     }
-    Some(normalize_class_name(target_class) == "ziparchive")
+    Some(matches!(
+        normalize_class_name(target_class).as_str(),
+        "ziparchive" | "countable"
+    ))
 }
 
 pub(super) fn is_gd_runtime_class(class_name: &str) -> bool {
     normalize_class_name(class_name) == "gdimage"
+}
+
+pub(super) fn is_fileinfo_runtime_class(class_name: &str) -> bool {
+    normalize_class_name(class_name) == "finfo"
+}
+
+pub(super) fn internal_fileinfo_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
+    is_fileinfo_runtime_class(object_class).then(|| is_fileinfo_runtime_class(target_class))
 }
 
 pub(super) fn internal_gd_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
@@ -1192,11 +1753,57 @@ pub(super) fn new_zip_object(
     Ok(object)
 }
 
+pub(super) fn new_fileinfo_object(
+    class_name: &str,
+    args: Vec<CallArgument>,
+) -> Result<ObjectRef, String> {
+    if !is_fileinfo_runtime_class(class_name) {
+        return Err(format!(
+            "E_PHP_VM_UNKNOWN_CLASS: class {class_name} is not defined"
+        ));
+    }
+    let values = call_args_to_positional("finfo::__construct", args)?;
+    if values.len() > 2 {
+        return Err(format!(
+            "E_PHP_VM_FILEINFO_ARG_COUNT: finfo::__construct expects 0 to 2 argument(s), {} given",
+            values.len()
+        ));
+    }
+    let flags = values.first().map(to_int).transpose()?.unwrap_or(0);
+    let magic_file = match values.get(1) {
+        Some(Value::Null | Value::Uninitialized) | None => None,
+        Some(value) => Some(to_string(value)?.to_string_lossy()),
+    };
+    let object = ObjectRef::new_with_display_name(&fileinfo_runtime_class(), "finfo");
+    object.set_property("__fileinfo_flags", Value::Int(flags));
+    object.set_property(
+        "__fileinfo_magic_file",
+        magic_file.map(Value::string).unwrap_or(Value::Null),
+    );
+    Ok(object)
+}
+
+pub(super) fn fileinfo_runtime_class() -> RuntimeClassEntry {
+    RuntimeClassEntry {
+        name: "finfo".to_owned(),
+        parent: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor_id: None,
+        flags: RuntimeClassFlags::default(),
+    }
+}
+
 pub(super) fn zip_runtime_class() -> RuntimeClassEntry {
     RuntimeClassEntry {
         name: "ziparchive".to_owned(),
         parent: None,
-        interfaces: Vec::new(),
+        interfaces: vec!["Countable".to_owned()],
         methods: Vec::new(),
         properties: Vec::new(),
         constants: Vec::new(),
@@ -1217,9 +1824,29 @@ pub(super) fn zip_class_constant_value(class_name: &str, constant: &str) -> Opti
         "EXCL" => ZIP_EXCL,
         "CHECKCONS" => ZIP_CHECKCONS,
         "OVERWRITE" => ZIP_OVERWRITE,
+        "RDONLY" => ZIP_RDONLY,
+        "FL_NOCASE" => ZIP_FL_NOCASE,
+        "FL_NODIR" => ZIP_FL_NODIR,
+        "FL_UNCHANGED" => ZIP_FL_UNCHANGED,
         "FL_OVERWRITE" => ZIP_FL_OVERWRITE,
+        "FL_OPEN_FILE_NOW" => ZIP_FL_OPEN_FILE_NOW,
         "LENGTH_TO_END" => ZIP_LENGTH_TO_END,
+        "CM_STORE" => ZIP_CM_STORE,
+        "CM_DEFLATE" => ZIP_CM_DEFLATE,
+        "CM_BZIP2" => ZIP_CM_BZIP2,
+        "CM_XZ" => ZIP_CM_XZ,
+        "EM_NONE" => ZIP_EM_NONE,
+        "EM_TRAD_PKWARE" => ZIP_EM_TRAD_PKWARE,
+        "EM_AES_128" => ZIP_EM_AES_128,
+        "EM_AES_192" => ZIP_EM_AES_192,
+        "EM_AES_256" => ZIP_EM_AES_256,
         "ER_OK" => 0,
+        "ER_EXISTS" => ZIP_ER_EXISTS,
+        "ER_RDONLY" => ZIP_ER_RDONLY,
+        "AFL_RDONLY" => ZIP_AFL_RDONLY,
+        "AFL_CREATE_OR_KEEP_FILE_FOR_EMPTY_ARCHIVE" => {
+            ZIP_AFL_CREATE_OR_KEEP_FILE_FOR_EMPTY_ARCHIVE
+        }
         _ => return None,
     };
     Some(Value::Int(value))
@@ -1866,8 +2493,19 @@ pub(super) fn call_zip_method(
         "open" => {
             validate_zip_arg_count("ZipArchive::open", values.len(), 1, 2)?;
             let filename = to_string(&values[0])?.to_string_lossy();
+            if filename.is_empty() {
+                return Err(
+                    "E_PHP_VM_SPL_VALUE_ERROR: ZipArchive::open(): Argument #1 ($filename) must not be empty"
+                        .to_owned(),
+                );
+            }
             let flags = values.get(1).map(to_int).transpose()?.unwrap_or(0);
             let path = zip_resolve_path(&filename, runtime_context)?;
+            let archive_flags = if flags & ZIP_RDONLY != 0 {
+                ZIP_AFL_RDONLY
+            } else {
+                0
+            };
             if flags & (ZIP_CREATE | ZIP_OVERWRITE) != 0 {
                 if flags & ZIP_EXCL != 0 && path.exists() {
                     zip_reset_object(object);
@@ -1890,18 +2528,30 @@ pub(super) fn call_zip_method(
                     Value::string(path.to_string_lossy().as_bytes().to_vec()),
                 );
                 object.set_property("__zip_write_mode", Value::Bool(true));
-                object.set_property("__zip_write_entries", Value::Array(PhpArray::new()));
-                object.set_property("numFiles", Value::Int(0));
+                object.set_property("__zip_archive_flags", Value::Int(archive_flags));
+                let (entries, comment) = if path.exists() && flags & ZIP_OVERWRITE == 0 {
+                    zip_load_write_state(&path).unwrap_or_else(|_| (PhpArray::new(), Vec::new()))
+                } else {
+                    (PhpArray::new(), Vec::new())
+                };
+                let entry_count = entries.iter().len();
+                object.set_property("__zip_write_entries", Value::Array(entries));
+                object.set_property("__zip_comment", Value::string(comment));
+                object.set_property("comment", zip_object_comment_value(object));
+                object.set_property("numFiles", Value::Int(entry_count as i64));
                 object.set_property("status", Value::Int(0));
+                object.set_property("statusSys", Value::Int(0));
+                object.set_property("lastId", Value::Int(-1));
                 return Ok(Value::Bool(true));
             }
-            let entry_count = match zip_entry_count(&path) {
-                Ok(count) => count,
+            let (entries, comment) = match zip_load_write_state(&path) {
+                Ok(state) => state,
                 Err(_) => {
                     zip_reset_object(object);
                     return Ok(Value::Bool(false));
                 }
             };
+            let entry_count = entries.iter().len();
             object.set_property(
                 "__zip_path",
                 Value::string(path.to_string_lossy().as_bytes().to_vec()),
@@ -1910,18 +2560,50 @@ pub(super) fn call_zip_method(
                 "filename",
                 Value::string(path.to_string_lossy().as_bytes().to_vec()),
             );
+            object.set_property("__zip_write_mode", Value::Bool(true));
+            object.set_property("__zip_archive_flags", Value::Int(archive_flags));
+            object.set_property("__zip_write_entries", Value::Array(entries));
+            object.set_property("__zip_comment", Value::string(comment));
+            object.set_property("comment", zip_object_comment_value(object));
             object.set_property("numFiles", Value::Int(entry_count as i64));
             object.set_property("status", Value::Int(0));
+            object.set_property("statusSys", Value::Int(0));
+            object.set_property("lastId", Value::Int(-1));
             Ok(Value::Bool(true))
         }
         "close" => {
             validate_zip_arg_count("ZipArchive::close", values.len(), 0, 0)?;
+            if !zip_object_write_mode(object) && zip_object_path(object).is_none() {
+                return Err(
+                    "E_PHP_VM_SPL_VALUE_ERROR: Invalid or uninitialized Zip object".to_owned(),
+                );
+            }
             if zip_object_write_mode(object) {
                 let Some(path) = zip_object_path(object) else {
                     zip_reset_object(object);
                     return Ok(Value::Bool(false));
                 };
-                zip_write_archive(object, &path)?;
+                if !zip_object_readonly(object) {
+                    if zip_pending_entries(object).iter().len() == 0
+                        && !zip_archive_flag_enabled(
+                            object,
+                            ZIP_AFL_CREATE_OR_KEEP_FILE_FOR_EMPTY_ARCHIVE,
+                        )
+                    {
+                        match fs::remove_file(&path) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => {
+                                return Err(format!(
+                                    "E_PHP_VM_ZIP_WRITE: failed to remove empty zip archive `{}`: {error}",
+                                    path.display()
+                                ));
+                            }
+                        }
+                    } else {
+                        zip_write_archive(object, &path)?;
+                    }
+                }
             }
             zip_reset_object(object);
             Ok(Value::Bool(true))
@@ -1934,6 +2616,12 @@ pub(super) fn call_zip_method(
             validate_zip_arg_count("ZipArchive::getFromName", values.len(), 1, 3)?;
             let name = to_string(&values[0])?.to_string_lossy();
             let max_len = zip_optional_length(values.get(1))?;
+            if zip_object_write_mode(object) {
+                return match zip_pending_read_name(object, &name, max_len)? {
+                    Some(bytes) => Ok(Value::string(bytes)),
+                    None => Ok(Value::Bool(false)),
+                };
+            }
             let Some(path) = zip_object_path(object) else {
                 return Ok(Value::Bool(false));
             };
@@ -1946,6 +2634,12 @@ pub(super) fn call_zip_method(
             validate_zip_arg_count("ZipArchive::getFromIndex", values.len(), 1, 3)?;
             let index = to_int(&values[0])?;
             let max_len = zip_optional_length(values.get(1))?;
+            if zip_object_write_mode(object) {
+                return match zip_pending_read_index(object, index, max_len)? {
+                    Some(bytes) => Ok(Value::string(bytes)),
+                    None => Ok(Value::Bool(false)),
+                };
+            }
             let Some(path) = zip_object_path(object) else {
                 return Ok(Value::Bool(false));
             };
@@ -1957,10 +2651,17 @@ pub(super) fn call_zip_method(
         "locatename" => {
             validate_zip_arg_count("ZipArchive::locateName", values.len(), 1, 2)?;
             let name = to_string(&values[0])?.to_string_lossy();
+            let flags = values.get(1).map(to_int).transpose()?.unwrap_or(0);
+            if zip_object_write_mode(object) {
+                return match zip_pending_locate_name(object, &name, flags)? {
+                    Some(index) => Ok(Value::Int(index as i64)),
+                    None => Ok(Value::Bool(false)),
+                };
+            }
             let Some(path) = zip_object_path(object) else {
                 return Ok(Value::Bool(false));
             };
-            match zip_locate_name(&path, &name)? {
+            match zip_locate_name(&path, &name, flags)? {
                 Some(index) => Ok(Value::Int(index as i64)),
                 None => Ok(Value::Bool(false)),
             }
@@ -1968,6 +2669,12 @@ pub(super) fn call_zip_method(
         "statindex" => {
             validate_zip_arg_count("ZipArchive::statIndex", values.len(), 1, 2)?;
             let index = to_int(&values[0])?;
+            if zip_object_write_mode(object) {
+                return match zip_pending_stat_index(object, index)? {
+                    Some(stat) => Ok(Value::Array(stat)),
+                    None => Ok(Value::Bool(false)),
+                };
+            }
             let Some(path) = zip_object_path(object) else {
                 return Ok(Value::Bool(false));
             };
@@ -1979,6 +2686,12 @@ pub(super) fn call_zip_method(
         "statname" => {
             validate_zip_arg_count("ZipArchive::statName", values.len(), 1, 2)?;
             let name = to_string(&values[0])?.to_string_lossy();
+            if zip_object_write_mode(object) {
+                return match zip_pending_stat_name(object, &name)? {
+                    Some(stat) => Ok(Value::Array(stat)),
+                    None => Ok(Value::Bool(false)),
+                };
+            }
             let Some(path) = zip_object_path(object) else {
                 return Ok(Value::Bool(false));
             };
@@ -1990,6 +2703,12 @@ pub(super) fn call_zip_method(
         "getnameindex" => {
             validate_zip_arg_count("ZipArchive::getNameIndex", values.len(), 1, 2)?;
             let index = to_int(&values[0])?;
+            if zip_object_write_mode(object) {
+                return match zip_pending_name_index(object, index)? {
+                    Some(name) => Ok(Value::string(name.into_bytes())),
+                    None => Ok(Value::Bool(false)),
+                };
+            }
             let Some(path) = zip_object_path(object) else {
                 return Ok(Value::Bool(false));
             };
@@ -2012,8 +2731,14 @@ pub(super) fn call_zip_method(
             if !zip_object_write_mode(object) {
                 return Ok(Value::Bool(false));
             }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
             let name = zip_normalize_entry_name(&to_string(&values[0])?.to_string_lossy(), true)?;
-            zip_append_write_entry(object, "dir", name, Vec::new())?;
+            let flags = values.get(1).map(to_int).transpose()?.unwrap_or(0);
+            if !zip_append_write_entry(object, "dir", name, Vec::new(), flags)? {
+                return Ok(Value::Bool(false));
+            }
             Ok(Value::Bool(true))
         }
         "addfromstring" => {
@@ -2021,15 +2746,28 @@ pub(super) fn call_zip_method(
             if !zip_object_write_mode(object) {
                 return Ok(Value::Bool(false));
             }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
             let name = zip_normalize_entry_name(&to_string(&values[0])?.to_string_lossy(), false)?;
             let contents = to_string(&values[1])?.as_bytes().to_vec();
-            zip_append_write_entry(object, "file", name, contents)?;
+            let flags = values
+                .get(2)
+                .map(to_int)
+                .transpose()?
+                .unwrap_or(ZIP_FL_OVERWRITE);
+            if !zip_append_write_entry(object, "file", name, contents, flags)? {
+                return Ok(Value::Bool(false));
+            }
             Ok(Value::Bool(true))
         }
         "addfile" => {
             validate_zip_arg_count("ZipArchive::addFile", values.len(), 1, 5)?;
             if !zip_object_write_mode(object) {
                 return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
             }
             let file_name = to_string(&values[0])?.to_string_lossy();
             let file_path = zip_resolve_path(&file_name, runtime_context)?;
@@ -2057,6 +2795,11 @@ pub(super) fn call_zip_method(
                 .map(to_int)
                 .transpose()?
                 .unwrap_or(ZIP_LENGTH_TO_END);
+            let flags = values
+                .get(4)
+                .map(to_int)
+                .transpose()?
+                .unwrap_or(ZIP_FL_OVERWRITE);
             if start >= contents.len() {
                 contents.clear();
             } else {
@@ -2066,7 +2809,172 @@ pub(super) fn call_zip_method(
                 }
             }
             let name = zip_normalize_entry_name(&entry_name, false)?;
-            zip_append_write_entry(object, "file", name, contents)?;
+            if !zip_append_write_entry(object, "file", name, contents, flags)? {
+                return Ok(Value::Bool(false));
+            }
+            Ok(Value::Bool(true))
+        }
+        "deleteindex" => {
+            validate_zip_arg_count("ZipArchive::deleteIndex", values.len(), 1, 1)?;
+            if !zip_object_write_mode(object) {
+                return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
+            Ok(Value::Bool(zip_delete_pending_index(
+                object,
+                to_int(&values[0])?,
+            )?))
+        }
+        "deletename" => {
+            validate_zip_arg_count("ZipArchive::deleteName", values.len(), 1, 1)?;
+            if !zip_object_write_mode(object) {
+                return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
+            let name = zip_normalize_entry_name(&to_string(&values[0])?.to_string_lossy(), false)?;
+            Ok(Value::Bool(zip_delete_pending_name(object, &name)?))
+        }
+        "renameindex" => {
+            validate_zip_arg_count("ZipArchive::renameIndex", values.len(), 2, 2)?;
+            if !zip_object_write_mode(object) {
+                return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
+            let name = zip_normalize_entry_name(&to_string(&values[1])?.to_string_lossy(), false)?;
+            Ok(Value::Bool(zip_rename_pending_index(
+                object,
+                to_int(&values[0])?,
+                name,
+            )?))
+        }
+        "renamename" => {
+            validate_zip_arg_count("ZipArchive::renameName", values.len(), 2, 2)?;
+            if !zip_object_write_mode(object) {
+                return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
+            let source =
+                zip_normalize_entry_name(&to_string(&values[0])?.to_string_lossy(), false)?;
+            let target =
+                zip_normalize_entry_name(&to_string(&values[1])?.to_string_lossy(), false)?;
+            Ok(Value::Bool(zip_rename_pending_name(
+                object, &source, target,
+            )?))
+        }
+        "getarchivecomment" => {
+            validate_zip_arg_count("ZipArchive::getArchiveComment", values.len(), 0, 1)?;
+            Ok(zip_object_comment_value(object))
+        }
+        "setarchivecomment" => {
+            validate_zip_arg_count("ZipArchive::setArchiveComment", values.len(), 1, 1)?;
+            if !zip_object_write_mode(object) {
+                return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
+            let comment = to_string(&values[0])?.as_bytes().to_vec();
+            if comment.len() >= u16::MAX as usize {
+                return Err(zip_comment_too_long_value_error(
+                    "ZipArchive::setArchiveComment",
+                    "#1 ($comment)",
+                ));
+            }
+            object.set_property("__zip_comment", Value::string(comment));
+            object.set_property("comment", zip_object_comment_value(object));
+            object.set_property("status", Value::Int(0));
+            Ok(Value::Bool(true))
+        }
+        "getcommentindex" => {
+            validate_zip_arg_count("ZipArchive::getCommentIndex", values.len(), 1, 2)?;
+            match zip_pending_comment_index(object, to_int(&values[0])?)? {
+                Some(comment) => Ok(Value::string(comment)),
+                None => Ok(Value::Bool(false)),
+            }
+        }
+        "getcommentname" => {
+            validate_zip_arg_count("ZipArchive::getCommentName", values.len(), 1, 2)?;
+            let name = to_string(&values[0])?.to_string_lossy();
+            if name.is_empty() {
+                return Err(
+                    "E_PHP_VM_SPL_VALUE_ERROR: ZipArchive::getCommentName(): Argument #1 ($name) must not be empty"
+                        .to_owned(),
+                );
+            }
+            match zip_pending_comment_name(object, &name)? {
+                Some(comment) => Ok(Value::string(comment)),
+                None => Ok(Value::Bool(false)),
+            }
+        }
+        "setcommentindex" => {
+            validate_zip_arg_count("ZipArchive::setCommentIndex", values.len(), 2, 2)?;
+            if !zip_object_write_mode(object) {
+                return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
+            let comment = to_string(&values[1])?.as_bytes().to_vec();
+            if comment.len() >= u16::MAX as usize {
+                return Err(zip_comment_too_long_value_error(
+                    "ZipArchive::setCommentIndex",
+                    "#2 ($comment)",
+                ));
+            }
+            Ok(Value::Bool(zip_set_pending_comment_index(
+                object,
+                to_int(&values[0])?,
+                comment,
+            )?))
+        }
+        "setcommentname" => {
+            validate_zip_arg_count("ZipArchive::setCommentName", values.len(), 2, 2)?;
+            if !zip_object_write_mode(object) {
+                return Ok(Value::Bool(false));
+            }
+            if let Some(value) = zip_readonly_mutation_value(object) {
+                return Ok(value);
+            }
+            let name = zip_normalize_entry_name(&to_string(&values[0])?.to_string_lossy(), false)?;
+            let comment = to_string(&values[1])?.as_bytes().to_vec();
+            if comment.len() >= u16::MAX as usize {
+                return Err(zip_comment_too_long_value_error(
+                    "ZipArchive::setCommentName",
+                    "#2 ($comment)",
+                ));
+            }
+            Ok(Value::Bool(zip_set_pending_comment_name(
+                object, &name, comment,
+            )?))
+        }
+        "getarchiveflag" => {
+            validate_zip_arg_count("ZipArchive::getArchiveFlag", values.len(), 1, 2)?;
+            Ok(Value::Int(
+                if zip_archive_flag_enabled(object, to_int(&values[0])?) {
+                    1
+                } else {
+                    0
+                },
+            ))
+        }
+        "setarchiveflag" => {
+            validate_zip_arg_count("ZipArchive::setArchiveFlag", values.len(), 2, 3)?;
+            let flag = to_int(&values[0])?;
+            let enabled = to_bool(&values[1])?;
+            if zip_object_readonly(object) && flag == ZIP_AFL_RDONLY && !enabled {
+                object.set_property("status", Value::Int(ZIP_ER_RDONLY));
+                return Ok(Value::Bool(false));
+            }
+            zip_set_archive_flag(object, flag, enabled);
+            object.set_property("status", Value::Int(0));
             Ok(Value::Bool(true))
         }
         _ => Err(format!(
@@ -2075,13 +2983,58 @@ pub(super) fn call_zip_method(
     }
 }
 
+pub(super) fn zip_open_uses_empty_file(
+    method: &str,
+    args: &[CallArgument],
+    runtime_context: &RuntimeContext,
+) -> bool {
+    if normalize_method_name(method) != "open"
+        || args.is_empty()
+        || args.len() > 2
+        || args.iter().any(|arg| arg.name.is_some())
+    {
+        return false;
+    }
+    let Ok(filename) = to_string(&args[0].value) else {
+        return false;
+    };
+    let filename = filename.to_string_lossy();
+    if filename.is_empty() {
+        return false;
+    }
+    let flags = match args.get(1).map(|arg| to_int(&arg.value)).transpose() {
+        Ok(flags) => flags.unwrap_or(0),
+        Err(_) => return false,
+    };
+    if flags & (ZIP_CREATE | ZIP_OVERWRITE) != 0 {
+        return false;
+    }
+    let Ok(path) = zip_resolve_path(&filename, runtime_context) else {
+        return false;
+    };
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() == 0)
+        .unwrap_or(false)
+}
+
 pub(super) fn zip_reset_object(object: &ObjectRef) {
     object.set_property("__zip_path", Value::Null);
     object.set_property("__zip_write_mode", Value::Bool(false));
     object.set_property("__zip_write_entries", Value::Null);
+    object.set_property("__zip_comment", Value::string(Vec::new()));
+    object.set_property("__zip_archive_flags", Value::Int(0));
     object.set_property("filename", Value::string(Vec::new()));
     object.set_property("numFiles", Value::Int(0));
     object.set_property("status", Value::Int(0));
+    object.set_property("statusSys", Value::Int(0));
+    object.set_property("lastId", Value::Int(-1));
+    object.set_property("comment", Value::string(Vec::new()));
+}
+
+fn zip_comment_too_long_value_error(method: &str, argument: &str) -> String {
+    format!(
+        "E_PHP_VM_SPL_VALUE_ERROR: {method}(): Argument {argument} must be less than 65535 bytes"
+    )
 }
 
 pub(super) fn zip_object_write_mode(object: &ObjectRef) -> bool {
@@ -2089,6 +3042,40 @@ pub(super) fn zip_object_write_mode(object: &ObjectRef) -> bool {
         object.get_property("__zip_write_mode"),
         Some(Value::Bool(true))
     )
+}
+
+pub(super) fn zip_archive_flags(object: &ObjectRef) -> i64 {
+    match object.get_property("__zip_archive_flags") {
+        Some(Value::Int(flags)) => flags,
+        _ => 0,
+    }
+}
+
+pub(super) fn zip_archive_flag_enabled(object: &ObjectRef, flag: i64) -> bool {
+    zip_archive_flags(object) & flag != 0
+}
+
+pub(super) fn zip_set_archive_flag(object: &ObjectRef, flag: i64, enabled: bool) {
+    let mut flags = zip_archive_flags(object);
+    if enabled {
+        flags |= flag;
+    } else {
+        flags &= !flag;
+    }
+    object.set_property("__zip_archive_flags", Value::Int(flags));
+}
+
+pub(super) fn zip_object_readonly(object: &ObjectRef) -> bool {
+    zip_archive_flag_enabled(object, ZIP_AFL_RDONLY)
+}
+
+pub(super) fn zip_readonly_mutation_value(object: &ObjectRef) -> Option<Value> {
+    if zip_object_readonly(object) {
+        object.set_property("status", Value::Int(ZIP_ER_RDONLY));
+        Some(Value::Bool(false))
+    } else {
+        None
+    }
 }
 
 pub(super) fn zip_object_path(object: &ObjectRef) -> Option<PathBuf> {
@@ -2120,6 +3107,9 @@ pub(super) fn zip_resolve_path(
 }
 
 pub(super) fn zip_entry_count_for_object(object: &ObjectRef) -> Result<usize, String> {
+    if zip_object_write_mode(object) {
+        return Ok(zip_pending_entries(object).iter().len());
+    }
     let Some(path) = zip_object_path(object) else {
         return Ok(0);
     };
@@ -2188,15 +3178,32 @@ pub(super) fn zip_read_index(
     zip_read_file(&mut file, max_len).map(Some)
 }
 
-pub(super) fn zip_locate_name(path: &Path, name: &str) -> Result<Option<usize>, String> {
+pub(super) fn zip_locate_name(
+    path: &Path,
+    name: &str,
+    flags: i64,
+) -> Result<Option<usize>, String> {
     let mut archive = zip_open_archive(path)?;
     for index in 0..archive.len() {
         let file = zip_file_by_index(&mut archive, index, path)?;
-        if file.name() == name {
+        if zip_entry_name_matches(file.name(), name, flags) {
             return Ok(Some(index));
         }
     }
     Ok(None)
+}
+
+pub(super) fn zip_entry_name_matches(entry_name: &str, requested: &str, flags: i64) -> bool {
+    let candidate = if flags & ZIP_FL_NODIR != 0 {
+        entry_name.rsplit('/').next().unwrap_or(entry_name)
+    } else {
+        entry_name
+    };
+    if flags & ZIP_FL_NOCASE != 0 {
+        candidate.eq_ignore_ascii_case(requested)
+    } else {
+        candidate == requested
+    }
 }
 
 pub(super) fn zip_stat_name(path: &Path, name: &str) -> Result<Option<PhpArray>, String> {
@@ -2293,25 +3300,409 @@ pub(super) fn zip_normalize_entry_name(name: &str, directory: bool) -> Result<St
     Ok(name)
 }
 
+pub(super) fn zip_load_write_state(path: &Path) -> Result<(PhpArray, Vec<u8>), String> {
+    let mut archive = zip_open_archive(path)?;
+    let comment = archive.comment().to_vec();
+    let mut entries = PhpArray::new();
+    for index in 0..archive.len() {
+        let mut file = zip_file_by_index(&mut archive, index, path)?;
+        let name = file.name().to_owned();
+        let kind = if name.ends_with('/') { "dir" } else { "file" };
+        let size = file.size() as i64;
+        let compressed_size = file.compressed_size() as i64;
+        let crc = file.crc32() as i64;
+        let comment = file.comment().as_bytes().to_vec();
+        let contents = zip_read_file(&mut file, None)?;
+        let key = ArrayKey::String(PhpString::from_bytes(name.as_bytes().to_vec()));
+        entries.insert(
+            key,
+            Value::Array(zip_write_entry(
+                kind,
+                name,
+                contents,
+                size,
+                compressed_size,
+                crc,
+                comment,
+            )),
+        );
+    }
+    Ok((entries, comment))
+}
+
+pub(super) fn zip_write_entry(
+    kind: &str,
+    name: String,
+    contents: Vec<u8>,
+    size: i64,
+    compressed_size: i64,
+    crc: i64,
+    comment: Vec<u8>,
+) -> PhpArray {
+    let mut entry = PhpArray::new();
+    zip_array_insert(&mut entry, "kind", Value::string(kind));
+    zip_array_insert(&mut entry, "name", Value::string(name.into_bytes()));
+    zip_array_insert(&mut entry, "contents", Value::string(contents));
+    zip_array_insert(&mut entry, "size", Value::Int(size));
+    zip_array_insert(&mut entry, "comp_size", Value::Int(compressed_size));
+    zip_array_insert(&mut entry, "crc", Value::Int(crc));
+    zip_array_insert(&mut entry, "comment", Value::string(comment));
+    entry
+}
+
+pub(super) fn zip_pending_entries(object: &ObjectRef) -> PhpArray {
+    match object.get_property("__zip_write_entries") {
+        Some(Value::Array(entries)) => entries,
+        _ => PhpArray::new(),
+    }
+}
+
+pub(super) fn zip_pending_entry_by_index(
+    object: &ObjectRef,
+    index: i64,
+) -> Result<Option<(usize, PhpArray)>, String> {
+    if index < 0 {
+        return Ok(None);
+    }
+    let index = index as usize;
+    let entries = zip_pending_entries(object);
+    for (position, (_, value)) in entries.iter().enumerate() {
+        if position != index {
+            continue;
+        }
+        return match value {
+            Value::Array(entry) => Ok(Some((position, entry.clone()))),
+            _ => Err(format!(
+                "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
+                value_type_name(&value)
+            )),
+        };
+    }
+    Ok(None)
+}
+
+pub(super) fn zip_pending_entry_by_name(
+    object: &ObjectRef,
+    name: &str,
+) -> Result<Option<(usize, PhpArray)>, String> {
+    let entries = zip_pending_entries(object);
+    for (position, (_, value)) in entries.iter().enumerate() {
+        let Value::Array(entry) = value else {
+            return Err(format!(
+                "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
+                value_type_name(&value)
+            ));
+        };
+        if zip_entry_string(&entry, "name")? == name {
+            return Ok(Some((position, entry.clone())));
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn zip_pending_name_index(
+    object: &ObjectRef,
+    index: i64,
+) -> Result<Option<String>, String> {
+    match zip_pending_entry_by_index(object, index)? {
+        Some((_, entry)) => zip_entry_string(&entry, "name").map(Some),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn zip_pending_locate_name(
+    object: &ObjectRef,
+    name: &str,
+    flags: i64,
+) -> Result<Option<usize>, String> {
+    let entries = zip_pending_entries(object);
+    for (position, (_, value)) in entries.iter().enumerate() {
+        let Value::Array(entry) = value else {
+            return Err(format!(
+                "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
+                value_type_name(&value)
+            ));
+        };
+        if zip_entry_name_matches(&zip_entry_string(&entry, "name")?, name, flags) {
+            return Ok(Some(position));
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn zip_pending_read_name(
+    object: &ObjectRef,
+    name: &str,
+    max_len: Option<usize>,
+) -> Result<Option<Vec<u8>>, String> {
+    match zip_pending_entry_by_name(object, name)? {
+        Some((_, entry)) => Ok(Some(zip_truncate_bytes(
+            zip_entry_bytes(&entry, "contents")?,
+            max_len,
+        ))),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn zip_pending_read_index(
+    object: &ObjectRef,
+    index: i64,
+    max_len: Option<usize>,
+) -> Result<Option<Vec<u8>>, String> {
+    match zip_pending_entry_by_index(object, index)? {
+        Some((_, entry)) => Ok(Some(zip_truncate_bytes(
+            zip_entry_bytes(&entry, "contents")?,
+            max_len,
+        ))),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn zip_object_comment_value(object: &ObjectRef) -> Value {
+    match object.get_property("__zip_comment") {
+        Some(Value::String(comment)) => Value::String(comment),
+        _ => Value::string(Vec::new()),
+    }
+}
+
+pub(super) fn zip_pending_comment_index(
+    object: &ObjectRef,
+    index: i64,
+) -> Result<Option<Vec<u8>>, String> {
+    match zip_pending_entry_by_index(object, index)? {
+        Some((_, entry)) => zip_entry_bytes(&entry, "comment").map(Some),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn zip_pending_comment_name(
+    object: &ObjectRef,
+    name: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    match zip_pending_entry_by_name(object, name)? {
+        Some((_, entry)) => zip_entry_bytes(&entry, "comment").map(Some),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn zip_set_pending_comment_index(
+    object: &ObjectRef,
+    index: i64,
+    comment: Vec<u8>,
+) -> Result<bool, String> {
+    if index < 0 {
+        return Ok(false);
+    }
+    let index = index as usize;
+    let mut entries = zip_pending_entry_pairs(object)?;
+    if index >= entries.len() {
+        return Ok(false);
+    }
+    zip_array_insert(&mut entries[index].1, "comment", Value::string(comment));
+    zip_store_pending_entry_pairs(object, entries, index as i64);
+    Ok(true)
+}
+
+pub(super) fn zip_set_pending_comment_name(
+    object: &ObjectRef,
+    name: &str,
+    comment: Vec<u8>,
+) -> Result<bool, String> {
+    let mut entries = zip_pending_entry_pairs(object)?;
+    let Some(index) = entries.iter().position(|(_, entry)| {
+        zip_entry_string(entry, "name").is_ok_and(|entry_name| entry_name == name)
+    }) else {
+        return Ok(false);
+    };
+    zip_array_insert(&mut entries[index].1, "comment", Value::string(comment));
+    zip_store_pending_entry_pairs(object, entries, index as i64);
+    Ok(true)
+}
+
+pub(super) fn zip_truncate_bytes(mut bytes: Vec<u8>, max_len: Option<usize>) -> Vec<u8> {
+    if let Some(max_len) = max_len {
+        bytes.truncate(max_len);
+    }
+    bytes
+}
+
+pub(super) fn zip_pending_stat_index(
+    object: &ObjectRef,
+    index: i64,
+) -> Result<Option<PhpArray>, String> {
+    match zip_pending_entry_by_index(object, index)? {
+        Some((position, entry)) => zip_pending_entry_stat(position, &entry).map(Some),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn zip_pending_stat_name(
+    object: &ObjectRef,
+    name: &str,
+) -> Result<Option<PhpArray>, String> {
+    match zip_pending_entry_by_name(object, name)? {
+        Some((position, entry)) => zip_pending_entry_stat(position, &entry).map(Some),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn zip_pending_entry_stat(index: usize, entry: &PhpArray) -> Result<PhpArray, String> {
+    let name = zip_entry_string(entry, "name")?;
+    let contents = zip_entry_bytes(entry, "contents")?;
+    let size = zip_entry_int(entry, "size").unwrap_or(contents.len() as i64);
+    let compressed_size = zip_entry_int(entry, "comp_size").unwrap_or(size);
+    let crc = zip_entry_int(entry, "crc").unwrap_or(0);
+    let mut array = PhpArray::new();
+    zip_array_insert(&mut array, "name", Value::string(name.into_bytes()));
+    zip_array_insert(&mut array, "index", Value::Int(index as i64));
+    zip_array_insert(&mut array, "size", Value::Int(size));
+    zip_array_insert(&mut array, "comp_size", Value::Int(compressed_size));
+    zip_array_insert(&mut array, "crc", Value::Int(crc));
+    Ok(array)
+}
+
 pub(super) fn zip_append_write_entry(
     object: &ObjectRef,
     kind: &str,
     name: String,
     contents: Vec<u8>,
-) -> Result<(), String> {
-    let mut entries = match object.get_property("__zip_write_entries") {
-        Some(Value::Array(entries)) => entries,
-        _ => PhpArray::new(),
-    };
+    flags: i64,
+) -> Result<bool, String> {
+    let mut entries = zip_pending_entries(object);
     let key = ArrayKey::String(PhpString::from_bytes(name.as_bytes().to_vec()));
-    let mut entry = PhpArray::new();
-    zip_array_insert(&mut entry, "kind", Value::string(kind));
-    zip_array_insert(&mut entry, "name", Value::string(name.into_bytes()));
-    zip_array_insert(&mut entry, "contents", Value::string(contents));
+    let existing_index = entries
+        .iter()
+        .enumerate()
+        .find_map(|(index, (entry_key, _))| (entry_key == key.clone()).then_some(index));
+    if existing_index.is_some() && flags & ZIP_FL_OVERWRITE == 0 {
+        object.set_property("status", Value::Int(ZIP_ER_EXISTS));
+        object.set_property("lastId", Value::Int(-1));
+        return Ok(false);
+    }
+    let size = contents.len() as i64;
+    let entry = zip_write_entry(kind, name, contents, size, size, 0, Vec::new());
     entries.insert(key, Value::Array(entry));
+    let last_id = existing_index.unwrap_or_else(|| entries.iter().len().saturating_sub(1));
     object.set_property("numFiles", Value::Int(entries.iter().len() as i64));
     object.set_property("__zip_write_entries", Value::Array(entries));
-    Ok(())
+    object.set_property("status", Value::Int(0));
+    object.set_property("lastId", Value::Int(last_id as i64));
+    Ok(true)
+}
+
+pub(super) fn zip_delete_pending_index(object: &ObjectRef, index: i64) -> Result<bool, String> {
+    if index < 0 {
+        return Ok(false);
+    }
+    let index = index as usize;
+    let mut entries = zip_pending_entry_pairs(object)?;
+    if index >= entries.len() {
+        return Ok(false);
+    }
+    entries.remove(index);
+    zip_store_pending_entry_pairs(object, entries, -1);
+    Ok(true)
+}
+
+pub(super) fn zip_delete_pending_name(object: &ObjectRef, name: &str) -> Result<bool, String> {
+    let mut entries = zip_pending_entry_pairs(object)?;
+    let Some(index) = entries.iter().position(|(_, entry)| {
+        zip_entry_string(entry, "name").is_ok_and(|entry_name| entry_name == name)
+    }) else {
+        return Ok(false);
+    };
+    entries.remove(index);
+    zip_store_pending_entry_pairs(object, entries, -1);
+    Ok(true)
+}
+
+pub(super) fn zip_rename_pending_index(
+    object: &ObjectRef,
+    index: i64,
+    new_name: String,
+) -> Result<bool, String> {
+    if index < 0 {
+        return Ok(false);
+    }
+    let index = index as usize;
+    zip_rename_pending_at(object, index, new_name)
+}
+
+pub(super) fn zip_rename_pending_name(
+    object: &ObjectRef,
+    old_name: &str,
+    new_name: String,
+) -> Result<bool, String> {
+    let entries = zip_pending_entry_pairs(object)?;
+    let Some(index) = entries.iter().position(|(_, entry)| {
+        zip_entry_string(entry, "name").is_ok_and(|entry_name| entry_name == old_name)
+    }) else {
+        return Ok(false);
+    };
+    zip_rename_pending_at(object, index, new_name)
+}
+
+pub(super) fn zip_rename_pending_at(
+    object: &ObjectRef,
+    index: usize,
+    new_name: String,
+) -> Result<bool, String> {
+    let mut entries = zip_pending_entry_pairs(object)?;
+    if index >= entries.len() {
+        return Ok(false);
+    }
+    if entries
+        .iter()
+        .enumerate()
+        .any(|(position, (name, _))| position != index && name == &new_name)
+    {
+        object.set_property("status", Value::Int(ZIP_ER_EXISTS));
+        object.set_property("lastId", Value::Int(-1));
+        return Ok(false);
+    }
+    let entry = &mut entries[index].1;
+    zip_array_insert(entry, "name", Value::string(new_name.as_bytes().to_vec()));
+    entries[index].0 = new_name;
+    zip_store_pending_entry_pairs(object, entries, index as i64);
+    Ok(true)
+}
+
+pub(super) fn zip_pending_entry_pairs(
+    object: &ObjectRef,
+) -> Result<Vec<(String, PhpArray)>, String> {
+    zip_pending_entries(object)
+        .iter()
+        .enumerate()
+        .map(|(position, (_, value))| {
+            let Value::Array(entry) = value else {
+                return Err(format!(
+                    "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
+                    value_type_name(&value)
+                ));
+            };
+            let name = zip_entry_string(&entry, "name")?;
+            Ok((name, entry.clone()))
+        })
+        .collect()
+}
+
+pub(super) fn zip_store_pending_entry_pairs(
+    object: &ObjectRef,
+    entries: Vec<(String, PhpArray)>,
+    last_id: i64,
+) {
+    let mut array = PhpArray::new();
+    for (name, entry) in entries {
+        array.insert(zip_entry_key(&name), Value::Array(entry));
+    }
+    object.set_property("numFiles", Value::Int(array.iter().len() as i64));
+    object.set_property("__zip_write_entries", Value::Array(array));
+    object.set_property("status", Value::Int(0));
+    object.set_property("lastId", Value::Int(last_id));
+}
+
+pub(super) fn zip_entry_key(name: &str) -> ArrayKey {
+    ArrayKey::String(PhpString::from_bytes(name.as_bytes().to_vec()))
 }
 
 pub(super) fn zip_write_archive(object: &ObjectRef, path: &Path) -> Result<(), String> {
@@ -2319,15 +3710,25 @@ pub(super) fn zip_write_archive(object: &ObjectRef, path: &Path) -> Result<(), S
         Some(Value::Array(entries)) => entries,
         _ => PhpArray::new(),
     };
-    let file = fs::File::create(path).map_err(|error| {
+    let mut file = fs::File::create(path).map_err(|error| {
         format!(
             "E_PHP_VM_ZIP_WRITE: failed to create zip archive `{}`: {error}",
             path.display()
         )
     })?;
-    let mut writer = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let archive_comment = match object.get_property("__zip_comment") {
+        Some(Value::String(comment)) => comment.as_bytes().to_vec(),
+        _ => Vec::new(),
+    };
+    if archive_comment.len() > u16::MAX as usize {
+        return Err(format!(
+            "E_PHP_VM_ZIP_WRITE: archive comment for `{}` is too long",
+            path.display()
+        ));
+    }
+
+    let mut central_directory = Vec::new();
+    let mut entry_count = 0usize;
     for (_, value) in entries.iter() {
         let Value::Array(entry) = value else {
             continue;
@@ -2335,26 +3736,169 @@ pub(super) fn zip_write_archive(object: &ObjectRef, path: &Path) -> Result<(), S
         let kind = zip_entry_string(entry, "kind")?;
         let name = zip_entry_string(entry, "name")?;
         let contents = zip_entry_bytes(entry, "contents")?;
-        if kind == "dir" {
-            writer.add_directory(&name, options).map_err(|error| {
-                format!("E_PHP_VM_ZIP_WRITE: failed to add zip directory `{name}`: {error}")
-            })?;
-        } else {
-            writer.start_file(&name, options).map_err(|error| {
-                format!("E_PHP_VM_ZIP_WRITE: failed to add zip file `{name}`: {error}")
-            })?;
-            writer.write_all(&contents).map_err(|error| {
-                format!("E_PHP_VM_ZIP_WRITE: failed to write zip file `{name}`: {error}")
-            })?;
+        let comment = zip_entry_bytes(entry, "comment").unwrap_or_default();
+        zip_write_stored_entry(
+            &mut file,
+            &mut central_directory,
+            &kind,
+            &name,
+            &contents,
+            &comment,
+        )
+        .map_err(|error| {
+            format!("E_PHP_VM_ZIP_WRITE: failed to write zip entry `{name}`: {error}")
+        })?;
+        entry_count += 1;
+    }
+    zip_write_central_directory(&mut file, &central_directory, entry_count, &archive_comment)
+        .map_err(|error| {
+            format!(
+                "E_PHP_VM_ZIP_WRITE: failed to finish zip archive `{}`: {error}",
+                path.display()
+            )
+        })?;
+    Ok(())
+}
+
+pub(super) fn zip_write_stored_entry(
+    writer: &mut fs::File,
+    central_directory: &mut Vec<u8>,
+    kind: &str,
+    name: &str,
+    contents: &[u8],
+    comment: &[u8],
+) -> Result<(), String> {
+    let local_offset = writer
+        .stream_position()
+        .map_err(|error| format!("failed to read local header offset: {error}"))?;
+    let name_bytes = name.as_bytes();
+    zip_validate_u16_len(name_bytes.len(), "entry name")?;
+    zip_validate_u16_len(comment.len(), "entry comment")?;
+    zip_validate_u32_len(contents.len(), "entry contents")?;
+    zip_validate_u32_len(local_offset as usize, "local header offset")?;
+    let crc = zip_crc32(contents);
+    let size = contents.len() as u32;
+    let flags = if name.is_ascii() && comment.is_ascii() {
+        0u16
+    } else {
+        0x0800u16
+    };
+    let external_attrs = if kind == "dir" { 0x10u32 } else { 0u32 };
+
+    zip_write_u32(writer, 0x0403_4b50)?;
+    zip_write_u16(writer, 20)?;
+    zip_write_u16(writer, flags)?;
+    zip_write_u16(writer, 0)?;
+    zip_write_u16(writer, 0)?;
+    zip_write_u16(writer, 33)?;
+    zip_write_u32(writer, crc)?;
+    zip_write_u32(writer, size)?;
+    zip_write_u32(writer, size)?;
+    zip_write_u16(writer, name_bytes.len() as u16)?;
+    zip_write_u16(writer, 0)?;
+    writer
+        .write_all(name_bytes)
+        .map_err(|error| format!("failed to write local entry name: {error}"))?;
+    writer
+        .write_all(contents)
+        .map_err(|error| format!("failed to write local entry contents: {error}"))?;
+
+    zip_write_u32(central_directory, 0x0201_4b50)?;
+    zip_write_u16(central_directory, 20)?;
+    zip_write_u16(central_directory, 20)?;
+    zip_write_u16(central_directory, flags)?;
+    zip_write_u16(central_directory, 0)?;
+    zip_write_u16(central_directory, 0)?;
+    zip_write_u16(central_directory, 33)?;
+    zip_write_u32(central_directory, crc)?;
+    zip_write_u32(central_directory, size)?;
+    zip_write_u32(central_directory, size)?;
+    zip_write_u16(central_directory, name_bytes.len() as u16)?;
+    zip_write_u16(central_directory, 0)?;
+    zip_write_u16(central_directory, comment.len() as u16)?;
+    zip_write_u16(central_directory, 0)?;
+    zip_write_u16(central_directory, 0)?;
+    zip_write_u32(central_directory, external_attrs)?;
+    zip_write_u32(central_directory, local_offset as u32)?;
+    central_directory
+        .write_all(name_bytes)
+        .map_err(|error| format!("failed to write central entry name: {error}"))?;
+    central_directory
+        .write_all(comment)
+        .map_err(|error| format!("failed to write central entry comment: {error}"))?;
+    Ok(())
+}
+
+pub(super) fn zip_write_central_directory(
+    writer: &mut fs::File,
+    central_directory: &[u8],
+    entry_count: usize,
+    archive_comment: &[u8],
+) -> Result<(), String> {
+    zip_validate_u16_len(entry_count, "entry count")?;
+    zip_validate_u32_len(central_directory.len(), "central directory")?;
+    let central_offset = writer
+        .stream_position()
+        .map_err(|error| format!("failed to read central directory offset: {error}"))?;
+    zip_validate_u32_len(central_offset as usize, "central directory offset")?;
+    writer
+        .write_all(central_directory)
+        .map_err(|error| format!("failed to write central directory: {error}"))?;
+    zip_write_u32(writer, 0x0605_4b50)?;
+    zip_write_u16(writer, 0)?;
+    zip_write_u16(writer, 0)?;
+    zip_write_u16(writer, entry_count as u16)?;
+    zip_write_u16(writer, entry_count as u16)?;
+    zip_write_u32(writer, central_directory.len() as u32)?;
+    zip_write_u32(writer, central_offset as u32)?;
+    zip_write_u16(writer, archive_comment.len() as u16)?;
+    writer
+        .write_all(archive_comment)
+        .map_err(|error| format!("failed to write archive comment: {error}"))?;
+    Ok(())
+}
+
+pub(super) fn zip_validate_u16_len(value: usize, field: &str) -> Result<(), String> {
+    if value > u16::MAX as usize {
+        Err(format!("{field} exceeds ZIP16 limit"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn zip_validate_u32_len(value: usize, field: &str) -> Result<(), String> {
+    if value > u32::MAX as usize {
+        Err(format!("{field} exceeds ZIP32 limit"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn zip_write_u16<W: Write>(writer: &mut W, value: u16) -> Result<(), String> {
+    writer
+        .write_all(&value.to_le_bytes())
+        .map_err(|error| format!("failed to write u16: {error}"))
+}
+
+pub(super) fn zip_write_u32<W: Write>(writer: &mut W, value: u32) -> Result<(), String> {
+    writer
+        .write_all(&value.to_le_bytes())
+        .map_err(|error| format!("failed to write u32: {error}"))
+}
+
+pub(super) fn zip_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
-    writer.finish().map_err(|error| {
-        format!(
-            "E_PHP_VM_ZIP_WRITE: failed to finish zip archive `{}`: {error}",
-            path.display()
-        )
-    })?;
-    Ok(())
+    !crc
 }
 
 pub(super) fn zip_entry_string(entry: &PhpArray, key: &str) -> Result<String, String> {
@@ -2384,6 +3928,15 @@ pub(super) fn zip_entry_bytes(entry: &PhpArray, key: &str) -> Result<Vec<u8>, St
         None => Err(format!(
             "E_PHP_VM_ZIP_WRITE_STATE: zip write entry field `{key}` is missing"
         )),
+    }
+}
+
+pub(super) fn zip_entry_int(entry: &PhpArray, key: &str) -> Option<i64> {
+    match entry.get(&ArrayKey::String(PhpString::from_bytes(
+        key.as_bytes().to_vec(),
+    ))) {
+        Some(Value::Int(value)) => Some(*value),
+        _ => None,
     }
 }
 
@@ -4122,7 +5675,10 @@ pub(super) fn is_xml_runtime_class(class_name: &str) -> bool {
         "domdocument"
             | "domnode"
             | "domelement"
+            | "domattr"
             | "domtext"
+            | "domcomment"
+            | "domcdatasection"
             | "domnodelist"
             | "simplexmlelement"
             | "xmlparser"
@@ -4153,6 +5709,34 @@ pub(super) fn new_xml_runtime_object(
                 .transpose()?
                 .unwrap_or_default();
             Ok(php_runtime::xml::new_dom_text(&value))
+        }
+        "domcomment" => {
+            validate_xml_arg_count("DOMComment::__construct", &args, 0, 1)?;
+            let value = args
+                .first()
+                .map(|arg| xml_string_arg("DOMComment::__construct", arg.value.clone()))
+                .transpose()?
+                .unwrap_or_default();
+            Ok(php_runtime::xml::new_dom_comment(&value))
+        }
+        "domcdatasection" => {
+            validate_xml_arg_count("DOMCdataSection::__construct", &args, 0, 1)?;
+            let value = args
+                .first()
+                .map(|arg| xml_string_arg("DOMCdataSection::__construct", arg.value.clone()))
+                .transpose()?
+                .unwrap_or_default();
+            Ok(php_runtime::xml::new_dom_cdata_section(&value))
+        }
+        "domattr" => {
+            validate_xml_arg_count("DOMAttr::__construct", &args, 1, 2)?;
+            let name = xml_string_arg("DOMAttr::__construct", args[0].value.clone())?;
+            let value = args
+                .get(1)
+                .map(|arg| xml_string_arg("DOMAttr::__construct", arg.value.clone()))
+                .transpose()?
+                .unwrap_or_default();
+            Ok(php_runtime::xml::new_dom_attr(&name, &value))
         }
         "domelement" => {
             validate_xml_arg_count("DOMElement::__construct", &args, 1, 1)?;
@@ -4233,6 +5817,21 @@ pub(super) fn call_xml_runtime_method(
             let value = xml_string_arg("DOMDocument::createTextNode", args[0].clone())?;
             Ok(php_runtime::xml::dom_document_create_text_node(&value))
         }
+        ("domdocument", "createcomment") => {
+            validate_xml_value_count("DOMDocument::createComment", &args, 1, 1)?;
+            let value = xml_string_arg("DOMDocument::createComment", args[0].clone())?;
+            Ok(php_runtime::xml::dom_document_create_comment(&value))
+        }
+        ("domdocument", "createcdatasection") => {
+            validate_xml_value_count("DOMDocument::createCDATASection", &args, 1, 1)?;
+            let value = xml_string_arg("DOMDocument::createCDATASection", args[0].clone())?;
+            Ok(php_runtime::xml::dom_document_create_cdata_section(&value))
+        }
+        ("domdocument", "createattribute") => {
+            validate_xml_value_count("DOMDocument::createAttribute", &args, 1, 1)?;
+            let name = xml_string_arg("DOMDocument::createAttribute", args[0].clone())?;
+            Ok(php_runtime::xml::dom_document_create_attribute(&name))
+        }
         ("domdocument", "appendchild") => {
             validate_xml_value_count("DOMDocument::appendChild", &args, 1, 1)?;
             let Value::Object(child) = args[0].clone() else {
@@ -4271,6 +5870,18 @@ pub(super) fn call_xml_runtime_method(
             let value = xml_string_arg("DOMElement::setAttribute", args[1].clone())?;
             Ok(php_runtime::xml::dom_element_set_attribute(
                 object, &name, &value,
+            ))
+        }
+        ("domelement", "setattributenode") => {
+            validate_xml_value_count("DOMElement::setAttributeNode", &args, 1, 1)?;
+            let Value::Object(attribute) = args[0].clone() else {
+                return Err(
+                    "E_PHP_VM_XML_TYPE_ERROR: DOMElement::setAttributeNode expects DOMAttr"
+                        .to_owned(),
+                );
+            };
+            Ok(php_runtime::xml::dom_element_set_attribute_node(
+                object, &attribute,
             ))
         }
         ("domelement", "appendchild") => {
@@ -4420,6 +6031,10 @@ pub(super) fn call_xml_runtime_method(
             validate_xml_value_count("XMLReader::readOuterXml", &args, 0, 0)?;
             Ok(php_runtime::xml::xml_reader_read_outer_xml(object))
         }
+        ("xmlreader", "expand") => {
+            validate_xml_value_count("XMLReader::expand", &args, 0, 0)?;
+            Ok(php_runtime::xml::xml_reader_expand(object))
+        }
         ("xmlreader", "close") => {
             validate_xml_value_count("XMLReader::close", &args, 0, 0)?;
             Ok(php_runtime::xml::xml_reader_close(object))
@@ -4449,6 +6064,16 @@ pub(super) fn call_xml_runtime_method(
             validate_xml_value_count("XMLWriter::text", &args, 1, 1)?;
             let value = xml_string_arg("XMLWriter::text", args[0].clone())?;
             Ok(php_runtime::xml::xml_writer_text(object, &value))
+        }
+        ("xmlwriter", "writecomment") => {
+            validate_xml_value_count("XMLWriter::writeComment", &args, 1, 1)?;
+            let value = xml_string_arg("XMLWriter::writeComment", args[0].clone())?;
+            Ok(php_runtime::xml::xml_writer_write_comment(object, &value))
+        }
+        ("xmlwriter", "writecdata") => {
+            validate_xml_value_count("XMLWriter::writeCdata", &args, 1, 1)?;
+            let value = xml_string_arg("XMLWriter::writeCdata", args[0].clone())?;
+            Ok(php_runtime::xml::xml_writer_write_cdata(object, &value))
         }
         ("xmlwriter", "writeelement") => {
             validate_xml_value_count("XMLWriter::writeElement", &args, 1, 2)?;
@@ -4529,7 +6154,7 @@ pub(super) fn call_normalizer_static_method(
 pub(super) fn internal_extension_static_class(class_name: &str) -> bool {
     matches!(
         normalize_class_name(class_name).as_str(),
-        "normalizer" | "locale" | "xmlwriter" | "pdo" | "phar" | "ffi"
+        "normalizer" | "locale" | "xmlwriter" | "pdo" | "phar" | "ffi" | "ziparchive"
     )
 }
 
@@ -4545,8 +6170,30 @@ pub(super) fn call_internal_extension_static_method(
         "pdo" => call_pdo_static_method(method, args),
         "phar" => call_phar_static_method(method, args),
         "ffi" => call_ffi_static_method(method, args),
+        "ziparchive" => call_zip_static_method(method, args),
         _ => Err(format!(
             "E_PHP_VM_UNKNOWN_METHOD: method {class_name}::{method} is not defined"
+        )),
+    }
+}
+
+pub(super) fn call_zip_static_method(method: &str, args: Vec<Value>) -> Result<Value, String> {
+    let method = normalize_method_name(method);
+    match method.as_str() {
+        "iscompressionmethodsupported" => {
+            validate_zip_arg_count("ZipArchive::isCompressionMethodSupported", args.len(), 1, 2)?;
+            let method = to_int(&args[0])?;
+            let supported = matches!(method, ZIP_CM_STORE | ZIP_CM_DEFLATE);
+            Ok(Value::Bool(supported))
+        }
+        "isencryptionmethodsupported" => {
+            validate_zip_arg_count("ZipArchive::isEncryptionMethodSupported", args.len(), 1, 2)?;
+            let method = to_int(&args[0])?;
+            let supported = matches!(method, ZIP_EM_NONE | ZIP_EM_TRAD_PKWARE);
+            Ok(Value::Bool(supported))
+        }
+        _ => Err(format!(
+            "E_PHP_VM_UNKNOWN_METHOD: method ZipArchive::{method} is not implemented"
         )),
     }
 }

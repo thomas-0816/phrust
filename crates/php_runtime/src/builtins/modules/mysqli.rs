@@ -7,10 +7,10 @@ use crate::builtins::{
 };
 use crate::{
     ArrayKey, MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_REPORT_ERROR,
-    MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV, MYSQLND_CLIENT_INFO, MYSQLND_CLIENT_VERSION,
-    MysqlConnectOptions, MysqlError, ObjectRef, PhpArray, PhpString, ReferenceCell,
-    RuntimeBringupDiagnosticContext, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity,
-    Value,
+    MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV, MYSQLND_CLIENT_INFO,
+    MYSQLND_CLIENT_VERSION, MysqlConnectOptions, MysqlError, ObjectRef, PhpArray, PhpString,
+    ReferenceCell, RuntimeBringupDiagnosticContext, RuntimeDiagnostic, RuntimeDiagnosticPayload,
+    RuntimeSeverity, Value,
 };
 use std::env;
 
@@ -1495,6 +1495,9 @@ fn record_mysqli_diagnostic(
     let report_flags = context
         .mysql_state()
         .map_or(0, |state| state.report_flags());
+    if report_flags == MYSQLI_REPORT_OFF && capability_state == "enabled" {
+        return;
+    }
     let severity = if report_flags & (MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT) != 0 {
         RuntimeSeverity::RecoverableError
     } else {
@@ -1968,6 +1971,35 @@ mod tests {
                 .get("mysqli_report_flags")
                 .map(String::as_str),
             Some("1")
+        );
+    }
+
+    #[test]
+    fn mysqli_report_off_query_failure_updates_error_state_without_diagnostic() {
+        let mut output = OutputBuffer::default();
+        let mut mysql = crate::MysqlState::default();
+        let id = mysql
+            .connect_sqlite_compat()
+            .expect("SQLite compatibility connection should open");
+        let object = mysqli_object(Some(id));
+        let mut context = BuiltinContext::new(&mut output);
+        context.set_mysql_state(&mut mysql);
+
+        let result = builtin_mysqli_query(
+            &mut context,
+            vec![
+                Value::Object(object.clone()),
+                Value::string("SELECT missing"),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("query failure remains a PHP false return");
+
+        assert_eq!(result, Value::Bool(false));
+        assert!(context.take_diagnostics().is_empty());
+        assert!(matches!(object.get_property("errno"), Some(Value::Int(errno)) if errno > 0));
+        assert!(
+            matches!(object.get_property("error"), Some(Value::String(error)) if !error.is_empty())
         );
     }
 

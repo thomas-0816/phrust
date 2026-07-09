@@ -1,6 +1,9 @@
 //! Bounded filter extension MVP for common validation and sanitization.
 
-use super::core::{arity_error, conversion_error, deref_value, float_arg, int_arg, string_arg};
+use super::core::{
+    argument_type_error, argument_value_error, arity_error, conversion_error, deref_value,
+    float_arg, int_arg, string_arg,
+};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinRegistry,
     BuiltinResult, RuntimeSourceSpan,
@@ -72,15 +75,25 @@ const FILTER_FLAG_ENCODE_LOW: i64 = 16;
 const FILTER_FLAG_ENCODE_HIGH: i64 = 32;
 const FILTER_FLAG_ENCODE_AMP: i64 = 64;
 const FILTER_FLAG_NO_ENCODE_QUOTES: i64 = 128;
+const FILTER_FLAG_EMPTY_STRING_NULL: i64 = 256;
 const FILTER_FLAG_STRIP_BACKTICK: i64 = 512;
 const FILTER_FLAG_ALLOW_FRACTION: i64 = 4_096;
 const FILTER_FLAG_ALLOW_THOUSAND: i64 = 8_192;
 const FILTER_FLAG_ALLOW_SCIENTIFIC: i64 = 16_384;
 const FILTER_FLAG_IPV4: i64 = 1_048_576;
 const FILTER_FLAG_IPV6: i64 = 2_097_152;
+const FILTER_FLAG_NO_RES_RANGE: i64 = 4_194_304;
+const FILTER_FLAG_NO_PRIV_RANGE: i64 = 8_388_608;
+const FILTER_FLAG_GLOBAL_RANGE: i64 = 536_870_912;
 const FILTER_FLAG_HOSTNAME: i64 = 1_048_576;
+const FILTER_FLAG_EMAIL_UNICODE: i64 = 1_048_576;
 const FILTER_FLAG_PATH_REQUIRED: i64 = 262_144;
 const FILTER_FLAG_QUERY_REQUIRED: i64 = 524_288;
+const INPUT_POST: i64 = 0;
+const INPUT_GET: i64 = 1;
+const INPUT_COOKIE: i64 = 2;
+const INPUT_ENV: i64 = 4;
+const INPUT_SERVER: i64 = 5;
 
 const FILTER_NAMES: &[(&str, i64)] = &[
     ("int", FILTER_VALIDATE_INT),
@@ -114,8 +127,10 @@ struct FilterOptions {
     min_range_float: Option<f64>,
     max_range_float: Option<f64>,
     callback: Option<String>,
+    default_value: Option<Value>,
     decimal: Option<String>,
     separator: Option<String>,
+    thousand: Option<String>,
     regexp: Option<PhpString>,
 }
 
@@ -128,8 +143,10 @@ impl Default for FilterOptions {
             min_range_float: None,
             max_range_float: None,
             callback: None,
+            default_value: None,
             decimal: None,
             separator: None,
+            thousand: None,
             regexp: None,
         }
     }
@@ -168,7 +185,7 @@ fn apply_filter(
         if options.flags & FILTER_REQUIRE_SCALAR != 0
             || options.flags & (FILTER_REQUIRE_ARRAY | FILTER_FORCE_ARRAY) == 0
         {
-            return Ok(filter_failure(options.flags));
+            return Ok(filter_failure(options));
         }
         let mut output = PhpArray::new();
         for (key, value) in array.iter() {
@@ -181,7 +198,7 @@ fn apply_filter(
     }
 
     if options.flags & FILTER_REQUIRE_ARRAY != 0 {
-        return Ok(filter_failure(options.flags));
+        return Ok(filter_failure(options));
     }
 
     let filtered = apply_filter_scalar(context, name, value, filter, options, span)?;
@@ -221,14 +238,10 @@ fn apply_filter_scalar(
     options: &FilterOptions,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    let failure = if options.flags & FILTER_NULL_ON_FAILURE != 0 {
-        Value::Null
-    } else {
-        Value::Bool(false)
-    };
+    let failure = filter_failure(options);
     match filter {
         FILTER_DEFAULT => unsafe_raw(name, value, options.flags),
-        FILTER_VALIDATE_EMAIL => validate_email(name, value, failure),
+        FILTER_VALIDATE_EMAIL => validate_email(name, value, options.flags, failure),
         FILTER_VALIDATE_INT => validate_int(name, value, options, failure),
         FILTER_VALIDATE_FLOAT => validate_float(name, value, options, failure),
         FILTER_VALIDATE_REGEXP => validate_regexp(context, name, value, options, failure),
@@ -241,8 +254,9 @@ fn apply_filter_scalar(
         FILTER_SANITIZE_ENCODED => sanitize_encoded(name, value, options.flags),
         FILTER_SANITIZE_EMAIL => sanitize(name, value, is_email_sanitize_byte),
         FILTER_SANITIZE_URL => sanitize(name, value, is_url_sanitize_byte),
-        FILTER_SANITIZE_SPECIAL_CHARS | FILTER_SANITIZE_FULL_SPECIAL_CHARS => {
-            sanitize_special_chars(name, value, options.flags)
+        FILTER_SANITIZE_SPECIAL_CHARS => sanitize_special_chars(name, value, options.flags),
+        FILTER_SANITIZE_FULL_SPECIAL_CHARS => {
+            sanitize_full_special_chars(name, value, options.flags)
         }
         FILTER_SANITIZE_NUMBER_INT => sanitize(name, value, |byte| {
             byte.is_ascii_digit() || byte == b'+' || byte == b'-'
@@ -266,12 +280,29 @@ fn is_known_filter_id(filter: i64) -> bool {
     FILTER_NAMES.iter().any(|(_, id)| *id == filter)
 }
 
-fn filter_failure(flags: i64) -> Value {
-    if flags & FILTER_NULL_ON_FAILURE != 0 {
+fn filter_failure(options: &FilterOptions) -> Value {
+    if let Some(default_value) = options.default_value.clone() {
+        default_value
+    } else if options.flags & FILTER_NULL_ON_FAILURE != 0 {
         Value::Null
     } else {
         Value::Bool(false)
     }
+}
+
+fn validation_string_arg(name: &str, value: &Value) -> Result<Option<PhpString>, BuiltinError> {
+    match string_arg(name, value) {
+        Ok(input) => Ok(Some(input)),
+        Err(_) if is_non_stringable_object(value) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_non_stringable_object(value: &Value) -> bool {
+    matches!(
+        deref_value(value),
+        Value::Object(_) | Value::Fiber(_) | Value::Generator(_)
+    )
 }
 
 fn validate_int(
@@ -280,7 +311,9 @@ fn validate_int(
     options: &FilterOptions,
     failure: Value,
 ) -> BuiltinResult {
-    let input = string_arg(name, value)?;
+    let Some(input) = validation_string_arg(name, value)? else {
+        return Ok(failure);
+    };
     let text = input.to_string_lossy();
     let trimmed = text.trim();
     let Some(number) = parse_filter_int(trimmed, options.flags) else {
@@ -361,13 +394,16 @@ fn validate_float(
     options: &FilterOptions,
     failure: Value,
 ) -> BuiltinResult {
-    let input = string_arg(name, value)?;
+    let Some(input) = validation_string_arg(name, value)? else {
+        return Ok(failure);
+    };
     let text = input.to_string_lossy();
     let trimmed = text.trim();
-    let normalized = normalize_filter_float_decimal(name, trimmed, options.decimal.as_deref())?;
+    let normalized = normalize_filter_float(name, trimmed, options)?;
     match normalized.parse::<f64>() {
         Ok(number)
             if number.is_finite()
+                && !float_underflowed_to_zero(number, &normalized)
                 && !options
                     .min_range_float
                     .is_some_and(|minimum| number < minimum)
@@ -379,6 +415,83 @@ fn validate_float(
         }
         _ => Ok(failure),
     }
+}
+
+fn normalize_filter_float(
+    name: &str,
+    trimmed: &str,
+    options: &FilterOptions,
+) -> Result<String, BuiltinError> {
+    let without_thousands = normalize_filter_float_thousand(name, trimmed, options)?;
+    normalize_filter_float_decimal(name, &without_thousands, options.decimal.as_deref())
+}
+
+fn normalize_filter_float_thousand(
+    name: &str,
+    trimmed: &str,
+    options: &FilterOptions,
+) -> Result<String, BuiltinError> {
+    if options.flags & FILTER_FLAG_ALLOW_THOUSAND == 0 {
+        return Ok(trimmed.to_owned());
+    }
+    let thousand = options.thousand.as_deref().unwrap_or(",");
+    if thousand.is_empty() {
+        return Err(filter_value_error(format!(
+            "{name}(): \"thousand\" option must not be empty"
+        )));
+    }
+    if !has_valid_float_thousand_groups(trimmed, thousand, options.decimal.as_deref()) {
+        return Ok(trimmed.to_owned());
+    }
+    Ok(trimmed.replace(thousand, ""))
+}
+
+fn has_valid_float_thousand_groups(input: &str, thousand: &str, decimal: Option<&str>) -> bool {
+    if !input.contains(thousand) {
+        return true;
+    }
+
+    let mantissa = input
+        .split_once(['e', 'E'])
+        .map(|(mantissa, _)| mantissa)
+        .unwrap_or(input);
+    let decimal = decimal.unwrap_or(".");
+    let integer = mantissa
+        .split_once(decimal)
+        .map(|(integer, fractional)| {
+            if fractional.contains(thousand) {
+                ""
+            } else {
+                integer
+            }
+        })
+        .unwrap_or(mantissa);
+    if integer.is_empty() {
+        return false;
+    }
+
+    let unsigned = integer.strip_prefix(['+', '-']).unwrap_or(integer);
+    let groups: Vec<&str> = unsigned.split(thousand).collect();
+    if groups.len() < 2 || groups[0].is_empty() || groups[0].len() > 3 {
+        return false;
+    }
+    groups[0].bytes().all(|byte| byte.is_ascii_digit())
+        && groups[1..]
+            .iter()
+            .all(|group| group.len() == 3 && group.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn float_underflowed_to_zero(number: f64, input: &str) -> bool {
+    number == 0.0 && normalized_has_non_zero_digit(input)
+}
+
+fn normalized_has_non_zero_digit(input: &str) -> bool {
+    input
+        .split_once(['e', 'E'])
+        .map(|(mantissa, _)| mantissa)
+        .unwrap_or(input)
+        .bytes()
+        .any(|byte| matches!(byte, b'1'..=b'9'))
 }
 
 fn normalize_filter_float_decimal(
@@ -418,6 +531,7 @@ fn builtin_filter_input(
         return Err(arity_error("filter_input", "two to five argument(s)"));
     }
     let source = int_arg("filter_input", &args[0])?;
+    validate_input_source("filter_input", source)?;
     let name = string_arg("filter_input", &args[1])?.to_string_lossy();
     let filter = args
         .get(2)
@@ -430,13 +544,19 @@ fn builtin_filter_input(
         .transpose()?
         .unwrap_or_default();
     let Some(value) = context.filter_input_value(source, &name) else {
-        return Ok(if options.flags & FILTER_NULL_ON_FAILURE != 0 {
-            Value::Bool(false)
-        } else {
-            Value::Null
-        });
+        return Ok(filter_input_missing_value(&options));
     };
     apply_filter(context, "filter_input", &value, filter, &options, span)
+}
+
+fn filter_input_missing_value(options: &FilterOptions) -> Value {
+    if let Some(default_value) = options.default_value.clone() {
+        default_value
+    } else if options.flags & FILTER_NULL_ON_FAILURE != 0 {
+        Value::Bool(false)
+    } else {
+        Value::Null
+    }
 }
 
 fn builtin_filter_has_var(
@@ -448,6 +568,7 @@ fn builtin_filter_has_var(
         return Err(arity_error("filter_has_var", "two argument(s)"));
     }
     let source = int_arg("filter_has_var", &args[0])?;
+    validate_input_source("filter_has_var", source)?;
     let name = string_arg("filter_has_var", &args[1])?.to_string_lossy();
     Ok(Value::Bool(
         context.filter_input_value(source, &name).is_some(),
@@ -466,9 +587,13 @@ fn builtin_filter_input_array(
         ));
     }
     let source = int_arg("filter_input_array", &args[0])?;
+    validate_input_source("filter_input_array", source)?;
     let Some(array) = context.filter_input_array(source) else {
         return Ok(Value::Null);
     };
+    if array.is_empty() {
+        return Ok(Value::Null);
+    }
     let options = args.get(1);
     let add_empty = args
         .get(2)
@@ -568,9 +693,12 @@ fn filter_array(
         Some(Value::Array(specs)) => {
             filter_array_with_specs(context, name, input, &specs, add_empty, span)
         }
-        Some(other) => {
-            filter_array_with_single_filter(context, name, input, int_arg(name, &other)?, span)
-        }
+        Some(other) => Err(argument_type_error(
+            name,
+            "#2 ($options)",
+            "array|int",
+            &other,
+        )),
     }
 }
 
@@ -581,15 +709,35 @@ fn filter_array_with_single_filter(
     filter: i64,
     span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    if !is_known_filter_id(filter) {
+        warn_unknown_filter(context, name, filter, span);
+        return Ok(Value::Bool(false));
+    }
     let options = FilterOptions::default();
     let mut output = PhpArray::new();
     for (key, value) in input.iter() {
         output.insert(
             key.clone(),
-            apply_filter(context, name, value, filter, &options, span.clone())?,
+            apply_filter_array_entry(context, name, value, filter, &options, span.clone())?,
         );
     }
     Ok(Value::Array(output))
+}
+
+fn apply_filter_array_entry(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    value: &Value,
+    filter: i64,
+    options: &FilterOptions,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if let Value::Reference(cell) = value {
+        let filtered = apply_filter_array_value(context, name, &cell.get(), filter, options, span)?;
+        cell.set(filtered);
+        return Ok(Value::Reference(cell.clone()));
+    }
+    apply_filter_array_value(context, name, value, filter, options, span)
 }
 
 fn filter_array_with_specs(
@@ -602,9 +750,21 @@ fn filter_array_with_specs(
 ) -> BuiltinResult {
     let mut output = PhpArray::new();
     for (key, spec) in specs.iter() {
+        if is_empty_spec_key(&key) {
+            return Err(argument_value_error(
+                name,
+                "#2 ($options)",
+                "cannot contain empty keys",
+            ));
+        }
         match input.get(&key) {
             Some(value) => {
                 let filter = filter_spec_filter(name, spec)?;
+                if !is_known_filter_id(filter) {
+                    warn_unknown_filter(context, name, filter, span.clone());
+                    output.insert(key.clone(), value.clone());
+                    continue;
+                }
                 let options = filter_options(name, spec)?;
                 output.insert(
                     key.clone(),
@@ -618,6 +778,23 @@ fn filter_array_with_specs(
         }
     }
     Ok(Value::Array(output))
+}
+
+fn is_empty_spec_key(key: &ArrayKey) -> bool {
+    matches!(key, ArrayKey::String(value) if value.as_bytes().is_empty())
+}
+
+fn warn_unknown_filter(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    filter: i64,
+    span: RuntimeSourceSpan,
+) {
+    context.php_warning(
+        "E_PHP_RUNTIME_FILTER_UNKNOWN_ID",
+        format!("{name}(): Unknown filter with ID {filter}"),
+        span,
+    );
 }
 
 fn filter_spec_filter(name: &str, value: &Value) -> Result<i64, BuiltinError> {
@@ -685,6 +862,14 @@ fn parse_filter_option_payload(
             if let Some(value) = array.get(&separator_key) {
                 options.separator = Some(string_arg(name, value)?.to_string_lossy());
             }
+            let thousand_key = ArrayKey::String(PhpString::from_test_str("thousand"));
+            if let Some(value) = array.get(&thousand_key) {
+                options.thousand = Some(string_arg(name, value)?.to_string_lossy());
+            }
+            let default_key = ArrayKey::String(PhpString::from_test_str("default"));
+            if let Some(value) = array.get(&default_key) {
+                options.default_value = Some(value.clone());
+            }
         }
         Value::String(value) => {
             options.callback = Some(value.to_string_lossy());
@@ -727,6 +912,15 @@ fn filter_value_error(message: impl Into<String>) -> BuiltinError {
     BuiltinError::new("E_PHP_RUNTIME_BUILTIN_VALUE", message.into())
 }
 
+fn validate_input_source(function: &str, source: i64) -> Result<(), BuiltinError> {
+    match source {
+        INPUT_POST | INPUT_GET | INPUT_COOKIE | INPUT_ENV | INPUT_SERVER => Ok(()),
+        _ => Err(filter_value_error(format!(
+            "{function}(): Argument #1 ($input_type) must be an INPUT_* constant"
+        ))),
+    }
+}
+
 fn validate_regexp(
     context: &mut BuiltinContext<'_>,
     name: &str,
@@ -757,26 +951,177 @@ fn validate_regexp(
     }
 }
 
-fn validate_email(name: &str, value: &Value, failure: Value) -> BuiltinResult {
-    let input = string_arg(name, value)?;
+fn validate_email(name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
+    let Some(input) = validation_string_arg(name, value)? else {
+        return Ok(failure);
+    };
     if input.as_bytes().len() > 320 {
         return Ok(failure);
     }
     let string = input.to_string_lossy();
-    let mut parts = string.split('@');
-    let Some(local) = parts.next() else {
+    let Some((local, domain)) = split_email_address(&string) else {
         return Ok(failure);
     };
-    let Some(domain) = parts.next() else {
-        return Ok(failure);
-    };
-    if parts.next().is_none()
-        && !local.is_empty()
+    let allow_unicode = flags & FILTER_FLAG_EMAIL_UNICODE != 0;
+    if !local.is_empty()
         && local.len() <= 64
-        && domain.contains('.')
-        && domain
-            .split('.')
-            .all(|label| !label.is_empty() && label.len() <= 63)
+        && is_valid_email_local(local, allow_unicode)
+        && is_valid_email_domain(domain)
+    {
+        Ok(Value::String(input))
+    } else {
+        Ok(failure)
+    }
+}
+
+fn split_email_address(input: &str) -> Option<(&str, &str)> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut at_index = None;
+    for (index, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '@' if !quoted => {
+                if at_index.is_some() {
+                    return None;
+                }
+                at_index = Some(index);
+            }
+            _ => {}
+        }
+    }
+    if quoted || escaped {
+        return None;
+    }
+    let index = at_index?;
+    Some((&input[..index], &input[index + 1..]))
+}
+
+fn is_valid_email_local(local: &str, allow_unicode: bool) -> bool {
+    if let Some(quoted) = local.strip_prefix('"') {
+        let Some(inner) = quoted.strip_suffix('"') else {
+            return false;
+        };
+        return is_valid_email_quoted_local(inner, allow_unicode);
+    }
+    is_valid_email_dot_atom(local, allow_unicode)
+}
+
+fn is_valid_email_dot_atom(local: &str, allow_unicode: bool) -> bool {
+    if local.starts_with('.') || local.ends_with('.') || local.contains("..") {
+        return false;
+    }
+    local.split('.').all(|atom| {
+        !atom.is_empty()
+            && atom
+                .chars()
+                .all(|ch| is_valid_email_atom_char(ch, allow_unicode))
+    })
+}
+
+fn is_valid_email_atom_char(ch: char, allow_unicode: bool) -> bool {
+    matches!(
+        ch,
+        'A'..='Z'
+            | 'a'..='z'
+            | '0'..='9'
+            | '!'
+            | '#'
+            | '$'
+            | '%'
+            | '&'
+            | '\''
+            | '*'
+            | '+'
+            | '-'
+            | '/'
+            | '='
+            | '?'
+            | '^'
+            | '_'
+            | '`'
+            | '{'
+            | '|'
+            | '}'
+            | '~'
+    ) || (allow_unicode && !ch.is_ascii() && !ch.is_control() && !ch.is_whitespace())
+}
+
+fn is_valid_email_quoted_local(inner: &str, allow_unicode: bool) -> bool {
+    let mut escaped = false;
+    for ch in inner.chars() {
+        if escaped {
+            if ch == '\r' || ch == '\n' {
+                return false;
+            }
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' | '\r' | '\n' => return false,
+            ch if ch.is_ascii_control() => return false,
+            ch if !allow_unicode && !ch.is_ascii() => return false,
+            _ => {}
+        }
+    }
+    !escaped
+}
+
+fn is_valid_email_domain(domain: &str) -> bool {
+    if let Some(literal) = domain
+        .strip_prefix('[')
+        .and_then(|domain| domain.strip_suffix(']'))
+    {
+        return is_valid_email_address_literal(literal);
+    }
+    if !domain.contains('.') {
+        return false;
+    }
+    let Some(tld) = domain.rsplit('.').next() else {
+        return false;
+    };
+    if tld.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+fn is_valid_email_address_literal(literal: &str) -> bool {
+    if let Some(ipv6) = literal.strip_prefix("IPv6:") {
+        return ipv6.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    literal.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+fn validate_url(name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
+    let Some(input) = validation_string_arg(name, value)? else {
+        return Ok(failure);
+    };
+    let string = input.to_string_lossy();
+    let Some((scheme, rest)) = string.split_once(':') else {
+        return Ok(failure);
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    let path_ok = flags & FILTER_FLAG_PATH_REQUIRED == 0 || url_rest_has_path(rest);
+    let query_ok = flags & FILTER_FLAG_QUERY_REQUIRED == 0 || rest.contains('?');
+    if is_valid_url_scheme(&scheme)
+        && is_valid_url_rest(&scheme, rest)
+        && path_ok
+        && query_ok
         && !php_source::byte_kernel::contains_ascii_whitespace(input.as_bytes())
     {
         Ok(Value::String(input))
@@ -785,32 +1130,210 @@ fn validate_email(name: &str, value: &Value, failure: Value) -> BuiltinResult {
     }
 }
 
-fn validate_url(name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
-    let input = string_arg(name, value)?;
-    let string = input.to_string_lossy();
-    let has_scheme = string.starts_with("http://") || string.starts_with("https://");
-    let after_scheme = string.split_once("://").map(|(_, tail)| tail).unwrap_or("");
-    let has_host = !after_scheme.is_empty()
-        && !after_scheme.starts_with('/')
-        && !php_source::byte_kernel::contains_ascii_whitespace(after_scheme.as_bytes());
-    let path_ok = flags & FILTER_FLAG_PATH_REQUIRED == 0 || after_scheme.contains('/');
-    let query_ok = flags & FILTER_FLAG_QUERY_REQUIRED == 0 || after_scheme.contains('?');
-    if has_scheme && has_host && path_ok && query_ok {
-        Ok(Value::String(input))
-    } else {
-        Ok(failure)
+fn is_valid_url_scheme(scheme: &str) -> bool {
+    !scheme.is_empty()
+        && scheme
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'.' | b'-'))
+}
+
+fn is_valid_url_rest(scheme: &str, rest: &str) -> bool {
+    if let Some(after_slashes) = rest.strip_prefix("//") {
+        let authority = after_slashes
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default();
+        if scheme == "file" && authority.is_empty() {
+            return after_slashes.len() > authority.len();
+        }
+        return !authority.is_empty() && is_valid_url_authority(authority);
     }
+    matches!(scheme, "mailto" | "news") && !rest.is_empty()
+}
+
+fn url_rest_has_path(rest: &str) -> bool {
+    let Some(after_slashes) = rest.strip_prefix("//") else {
+        return rest.contains('/');
+    };
+    let path_start = after_slashes
+        .find(['/', '?', '#'])
+        .map(|index| &after_slashes[index..])
+        .unwrap_or_default();
+    path_start.starts_with('/')
+}
+
+fn is_valid_url_authority(authority: &str) -> bool {
+    if authority.is_empty() {
+        return false;
+    }
+    let host_port = if let Some((userinfo, host)) = authority.rsplit_once('@') {
+        if userinfo
+            .bytes()
+            .any(|byte| matches!(byte, b'\\' | b'[' | b']'))
+        {
+            return false;
+        }
+        host
+    } else {
+        authority
+    };
+    if let Some(rest) = host_port.strip_prefix('[') {
+        let Some((host, port)) = rest.split_once(']') else {
+            return false;
+        };
+        return port_is_valid(port) && host.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    if host_port
+        .bytes()
+        .any(|byte| matches!(byte, b'[' | b']' | b'\\'))
+    {
+        return false;
+    }
+    let Some(host) = url_host_without_port(host_port) else {
+        return false;
+    };
+    is_valid_domain(host.as_bytes(), true)
+}
+
+fn url_host_without_port(host_port: &str) -> Option<&str> {
+    let Some((host, port)) = host_port.rsplit_once(':') else {
+        return Some(host_port);
+    };
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some(host_port);
+    }
+    port_is_valid(&format!(":{port}")).then_some(host)
+}
+
+fn port_is_valid(port: &str) -> bool {
+    port.is_empty()
+        || port
+            .strip_prefix(':')
+            .is_some_and(|port| port.parse::<u16>().is_ok())
 }
 
 fn validate_ip(name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
-    let input = string_arg(name, value)?;
+    let Some(input) = validation_string_arg(name, value)? else {
+        return Ok(failure);
+    };
     let string = input.to_string_lossy();
     match string.parse::<IpAddr>() {
-        Ok(IpAddr::V4(_)) if flags & FILTER_FLAG_IPV6 == 0 => Ok(Value::String(input)),
-        Ok(IpAddr::V6(_)) if flags & FILTER_FLAG_IPV4 == 0 => Ok(Value::String(input)),
+        Ok(IpAddr::V4(address))
+            if flags & FILTER_FLAG_IPV6 == 0 && ipv4_allowed_by_filter_flags(address, flags) =>
+        {
+            Ok(Value::String(input))
+        }
+        Ok(IpAddr::V6(address))
+            if flags & FILTER_FLAG_IPV4 == 0 && ipv6_allowed_by_filter_flags(address, flags) =>
+        {
+            Ok(Value::String(input))
+        }
         Ok(_) => Ok(failure),
         Err(_) => Ok(failure),
     }
+}
+
+fn ipv4_allowed_by_filter_flags(address: std::net::Ipv4Addr, flags: i64) -> bool {
+    let number = u32::from(address);
+    if flags & FILTER_FLAG_GLOBAL_RANGE != 0 && is_ipv4_non_global(number) {
+        return false;
+    }
+    if flags & FILTER_FLAG_NO_PRIV_RANGE != 0 && is_ipv4_private(number) {
+        return false;
+    }
+    if flags & FILTER_FLAG_NO_RES_RANGE != 0 && is_ipv4_reserved_for_no_res_range(number) {
+        return false;
+    }
+    true
+}
+
+fn ipv6_allowed_by_filter_flags(address: std::net::Ipv6Addr, flags: i64) -> bool {
+    let number = u128::from_be_bytes(address.octets());
+    if flags & FILTER_FLAG_GLOBAL_RANGE != 0 && is_ipv6_non_global(number) {
+        return false;
+    }
+    if flags & FILTER_FLAG_NO_PRIV_RANGE != 0 && ipv6_in_cidr(number, 0xfc00_u128 << 112, 7) {
+        return false;
+    }
+    if flags & FILTER_FLAG_NO_RES_RANGE != 0 && is_ipv6_reserved_for_no_res_range(number) {
+        return false;
+    }
+    true
+}
+
+fn is_ipv4_private(number: u32) -> bool {
+    ipv4_in_cidr(number, [10, 0, 0, 0], 8)
+        || ipv4_in_cidr(number, [172, 16, 0, 0], 12)
+        || ipv4_in_cidr(number, [192, 168, 0, 0], 16)
+}
+
+fn is_ipv4_reserved_for_no_res_range(number: u32) -> bool {
+    ipv4_in_cidr(number, [0, 0, 0, 0], 8)
+        || ipv4_in_cidr(number, [127, 0, 0, 0], 8)
+        || ipv4_in_cidr(number, [169, 254, 0, 0], 16)
+        || ipv4_in_cidr(number, [240, 0, 0, 0], 4)
+}
+
+fn is_ipv4_non_global(number: u32) -> bool {
+    ipv4_in_cidr(number, [0, 0, 0, 0], 8)
+        || ipv4_in_cidr(number, [10, 0, 0, 0], 8)
+        || ipv4_in_cidr(number, [100, 64, 0, 0], 10)
+        || ipv4_in_cidr(number, [127, 0, 0, 0], 8)
+        || ipv4_in_cidr(number, [169, 254, 0, 0], 16)
+        || ipv4_in_cidr(number, [172, 16, 0, 0], 12)
+        || ipv4_in_cidr(number, [192, 0, 0, 0], 24)
+        || ipv4_in_cidr(number, [192, 0, 2, 0], 24)
+        || ipv4_in_cidr(number, [192, 168, 0, 0], 16)
+        || ipv4_in_cidr(number, [198, 18, 0, 0], 15)
+        || ipv4_in_cidr(number, [198, 51, 100, 0], 24)
+        || ipv4_in_cidr(number, [203, 0, 113, 0], 24)
+        || ipv4_in_cidr(number, [240, 0, 0, 0], 4)
+}
+
+fn is_ipv6_reserved_for_no_res_range(number: u128) -> bool {
+    number == 0
+        || number == 1
+        || ipv6_in_cidr(number, ipv6_base([0, 0, 0, 0, 0, 0xffff, 0, 0]), 96)
+        || ipv6_in_cidr(number, 0xfe80_u128 << 112, 10)
+}
+
+fn is_ipv6_non_global(number: u128) -> bool {
+    number == 0
+        || number == 1
+        || ipv6_in_cidr(number, ipv6_base([0, 0, 0, 0, 0, 0xffff, 0, 0]), 96)
+        || ipv6_in_cidr(number, 0x0100_u128 << 112, 64)
+        || ipv6_in_cidr(number, 0x2001_u128 << 112, 23)
+        || ipv6_in_cidr(number, ipv6_base([0x2001, 0x0002, 0, 0, 0, 0, 0, 0]), 48)
+        || ipv6_in_cidr(number, ipv6_base([0x2001, 0x0db8, 0, 0, 0, 0, 0, 0]), 32)
+        || ipv6_in_cidr(number, ipv6_base([0x2001, 0x0010, 0, 0, 0, 0, 0, 0]), 28)
+        || ipv6_in_cidr(number, 0xfc00_u128 << 112, 7)
+        || ipv6_in_cidr(number, 0xfe80_u128 << 112, 10)
+}
+
+fn ipv4_in_cidr(number: u32, base: [u8; 4], prefix: u32) -> bool {
+    let base = u32::from_be_bytes(base);
+    let mask = u32::MAX << (32 - prefix);
+    number & mask == base & mask
+}
+
+fn ipv6_in_cidr(number: u128, base: u128, prefix: u32) -> bool {
+    let mask = u128::MAX << (128 - prefix);
+    number & mask == base & mask
+}
+
+fn ipv6_base([a, b, c, d, e, f, g, h]: [u16; 8]) -> u128 {
+    u128::from(a) << 112
+        | u128::from(b) << 96
+        | u128::from(c) << 80
+        | u128::from(d) << 64
+        | u128::from(e) << 48
+        | u128::from(f) << 32
+        | u128::from(g) << 16
+        | u128::from(h)
 }
 
 fn validate_mac(
@@ -819,7 +1342,9 @@ fn validate_mac(
     options: &FilterOptions,
     failure: Value,
 ) -> BuiltinResult {
-    let input = string_arg(name, value)?;
+    let Some(input) = validation_string_arg(name, value)? else {
+        return Ok(failure);
+    };
     let bytes = input.as_bytes();
     let Some((tokens, token_len, separator)) = mac_shape(bytes) else {
         return Ok(failure);
@@ -865,7 +1390,9 @@ fn mac_shape(bytes: &[u8]) -> Option<(usize, usize, u8)> {
 }
 
 fn validate_domain(name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
-    let input = string_arg(name, value)?;
+    let Some(input) = validation_string_arg(name, value)? else {
+        return Ok(failure);
+    };
     if is_valid_domain(input.as_bytes(), flags & FILTER_FLAG_HOSTNAME != 0) {
         Ok(Value::String(input))
     } else {
@@ -913,6 +1440,13 @@ fn is_valid_domain(bytes: &[u8], hostname: bool) -> bool {
 }
 
 fn validate_bool(_name: &str, value: &Value, flags: i64, failure: Value) -> BuiltinResult {
+    if matches!(deref_value(value), Value::Null) {
+        return Ok(if flags & FILTER_NULL_ON_FAILURE != 0 {
+            Value::Null
+        } else {
+            failure
+        });
+    }
     let Ok(string_value) = to_string(value) else {
         return Ok(failure);
     };
@@ -949,6 +1483,9 @@ fn sanitize_number_float(name: &str, value: &Value, flags: i64) -> BuiltinResult
 
 fn unsafe_raw(name: &str, value: &Value, flags: i64) -> BuiltinResult {
     let input = string_arg(name, value)?;
+    if input.as_bytes().is_empty() && flags & FILTER_FLAG_EMPTY_STRING_NULL != 0 {
+        return Ok(Value::Null);
+    }
     let relevant_flags = FILTER_FLAG_STRIP_LOW
         | FILTER_FLAG_STRIP_HIGH
         | FILTER_FLAG_ENCODE_LOW
@@ -966,16 +1503,19 @@ fn unsafe_raw(name: &str, value: &Value, flags: i64) -> BuiltinResult {
             || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte))
             || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
     });
-    Ok(Value::string(
-        encoded
-            .into_iter()
-            .filter(|byte| {
-                !(strip_low && is_filter_low(*byte)
-                    || strip_high && is_filter_high(*byte)
-                    || strip_backtick && *byte == b'`')
-            })
-            .collect::<Vec<_>>(),
-    ))
+    let output = encoded
+        .into_iter()
+        .filter(|byte| {
+            !(strip_low && is_filter_low(*byte)
+                || strip_high && is_filter_high(*byte)
+                || strip_backtick && *byte == b'`')
+        })
+        .collect::<Vec<_>>();
+    if output.is_empty() && flags & FILTER_FLAG_EMPTY_STRING_NULL != 0 {
+        Ok(Value::Null)
+    } else {
+        Ok(Value::string(output))
+    }
 }
 
 fn sanitize_encoded(name: &str, value: &Value, flags: i64) -> BuiltinResult {
@@ -1007,7 +1547,11 @@ fn sanitize_string(name: &str, value: &Value, flags: i64) -> BuiltinResult {
             || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte))
     });
     let output = strip_filter_tags(&encoded);
-    Ok(Value::string(output))
+    if output.is_empty() && flags & FILTER_FLAG_EMPTY_STRING_NULL != 0 {
+        Ok(Value::Null)
+    } else {
+        Ok(Value::string(output))
+    }
 }
 
 fn sanitize_add_slashes(name: &str, value: &Value) -> BuiltinResult {
@@ -1092,13 +1636,41 @@ fn sanitize_special_chars(name: &str, value: &Value, flags: i64) -> BuiltinResul
         if (strip_low && is_filter_low(*byte)) || (strip_high && is_filter_high(*byte)) {
             continue;
         }
-        if matches!(*byte, b'<' | b'>' | b'&')
+        if matches!(*byte, b'<' | b'>' | b'&' | b'\'' | b'"')
             || (flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(*byte))
             || (flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(*byte))
         {
             output.extend_from_slice(format!("&#{};", byte).as_bytes());
         } else {
             output.push(*byte);
+        }
+    }
+    Ok(Value::string(output))
+}
+
+fn sanitize_full_special_chars(name: &str, value: &Value, flags: i64) -> BuiltinResult {
+    let input = string_arg(name, value)?;
+    let mut output = Vec::new();
+    let strip_low = flags & FILTER_FLAG_STRIP_LOW != 0;
+    let strip_high = flags & FILTER_FLAG_STRIP_HIGH != 0;
+    let no_encode_quotes = flags & FILTER_FLAG_NO_ENCODE_QUOTES != 0;
+    for byte in input.as_bytes() {
+        if (strip_low && is_filter_low(*byte)) || (strip_high && is_filter_high(*byte)) {
+            continue;
+        }
+        match *byte {
+            b'<' => output.extend_from_slice(b"&lt;"),
+            b'>' => output.extend_from_slice(b"&gt;"),
+            b'&' => output.extend_from_slice(b"&amp;"),
+            b'\'' if !no_encode_quotes => output.extend_from_slice(b"&#039;"),
+            b'"' if !no_encode_quotes => output.extend_from_slice(b"&quot;"),
+            byte if flags & FILTER_FLAG_ENCODE_LOW != 0 && is_filter_low(byte) => {
+                output.extend_from_slice(format!("&#{};", byte).as_bytes());
+            }
+            byte if flags & FILTER_FLAG_ENCODE_HIGH != 0 && is_filter_high(byte) => {
+                output.extend_from_slice(format!("&#{};", byte).as_bytes());
+            }
+            byte => output.push(byte),
         }
     }
     Ok(Value::string(output))
@@ -1147,7 +1719,7 @@ fn is_url_sanitize_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OutputBuffer;
+    use crate::{ClassEntry, ClassFlags, ObjectRef, OutputBuffer};
 
     fn call(name: &str, args: Vec<Value>) -> Value {
         let mut output = OutputBuffer::default();
@@ -1177,6 +1749,23 @@ mod tests {
 
     fn bytes(value: &[u8]) -> Value {
         Value::String(PhpString::from_bytes(value.to_vec()))
+    }
+
+    fn object(display_name: &str) -> Value {
+        let class = ClassEntry {
+            name: display_name.to_ascii_lowercase(),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        };
+        Value::Object(ObjectRef::new_with_display_name(&class, display_name))
     }
 
     fn string_key(value: &str) -> ArrayKey {
@@ -1310,6 +1899,67 @@ mod tests {
     }
 
     #[test]
+    fn filter_var_uses_default_option_on_validation_failure() {
+        let mut payload = PhpArray::new();
+        payload.insert(string_key("default"), Value::Int(321));
+        let mut options = PhpArray::new();
+        options.insert(string_key("options"), Value::Array(payload));
+
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("123asd"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Array(options),
+                ],
+            ),
+            Value::Int(321)
+        );
+    }
+
+    #[test]
+    fn filter_validation_objects_use_failure_and_default_paths() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![object("stdClass"), Value::Int(FILTER_VALIDATE_EMAIL)],
+            ),
+            Value::Bool(false)
+        );
+
+        let mut payload = PhpArray::new();
+        payload.insert(string_key("default"), Value::Int(2));
+        let mut options = PhpArray::new();
+        options.insert(string_key("options"), Value::Array(payload));
+
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    object("stdClass"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Array(options.clone()),
+                ],
+            ),
+            Value::Int(2)
+        );
+
+        options.insert(string_key("flags"), Value::Int(FILTER_NULL_ON_FAILURE));
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    object("stdClass"),
+                    Value::Int(FILTER_VALIDATE_INT),
+                    Value::Array(options),
+                ],
+            ),
+            Value::Int(2)
+        );
+    }
+
+    #[test]
     fn filter_validate_float_respects_decimal_option() {
         let mut comma_payload = PhpArray::new();
         comma_payload.insert(string_key("decimal"), string(","));
@@ -1355,6 +2005,108 @@ mod tests {
         assert_eq!(
             error.message(),
             "filter_var(): \"decimal\" option must be one character long"
+        );
+    }
+
+    #[test]
+    fn filter_validate_float_respects_thousand_option() {
+        let mut payload = PhpArray::new();
+        payload.insert(string_key("thousand"), string(" "));
+        let mut options = PhpArray::new();
+        options.insert(string_key("flags"), Value::Int(FILTER_FLAG_ALLOW_THOUSAND));
+        options.insert(string_key("options"), Value::Array(payload));
+
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("1 234.567"),
+                    Value::Int(FILTER_VALIDATE_FLOAT),
+                    Value::Array(options),
+                ],
+            ),
+            Value::float(1234.567)
+        );
+
+        let mut invalid_payload = PhpArray::new();
+        invalid_payload.insert(string_key("thousand"), string(""));
+        let mut invalid_options = PhpArray::new();
+        invalid_options.insert(string_key("flags"), Value::Int(FILTER_FLAG_ALLOW_THOUSAND));
+        invalid_options.insert(string_key("options"), Value::Array(invalid_payload));
+        let error = call_error(
+            "filter_var",
+            vec![
+                string("12345"),
+                Value::Int(FILTER_VALIDATE_FLOAT),
+                Value::Array(invalid_options),
+            ],
+        );
+        assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_VALUE");
+        assert_eq!(
+            error.message(),
+            "filter_var(): \"thousand\" option must not be empty"
+        );
+    }
+
+    #[test]
+    fn filter_validate_float_rejects_malformed_thousand_groups() {
+        let mut options = PhpArray::new();
+        options.insert(string_key("flags"), Value::Int(FILTER_FLAG_ALLOW_THOUSAND));
+
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("1,234,567,890.1234567165"),
+                    Value::Int(FILTER_VALIDATE_FLOAT),
+                    Value::Array(options.clone()),
+                ],
+            ),
+            Value::float(1_234_567_890.123_456_7)
+        );
+        for input in [
+            "1234,567,890.1234567165",
+            "1,234,567,89.1234567165",
+            "1,234,567,8900.1234567165",
+            "1,234,567,8900.123,456",
+        ] {
+            assert_eq!(
+                call(
+                    "filter_var",
+                    vec![
+                        string(input),
+                        Value::Int(FILTER_VALIDATE_FLOAT),
+                        Value::Array(options.clone()),
+                    ],
+                ),
+                Value::Bool(false),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_validate_float_rejects_underflow_to_zero() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("1e-323"), Value::Int(FILTER_VALIDATE_FLOAT)],
+            ),
+            Value::float(1e-323)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("1e-324"), Value::Int(FILTER_VALIDATE_FLOAT)],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("0e-324"), Value::Int(FILTER_VALIDATE_FLOAT)],
+            ),
+            Value::float(0.0)
         );
     }
 
@@ -1709,6 +2461,280 @@ mod tests {
     }
 
     #[test]
+    fn filter_validate_email_rejects_hyphen_edge_domain_labels() {
+        for input in ["foo@-foo.com", "foo@foo-.com"] {
+            assert_eq!(
+                call(
+                    "filter_var",
+                    vec![string(input), Value::Int(FILTER_VALIDATE_EMAIL)],
+                ),
+                Value::Bool(false),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_validate_email_matches_php_local_part_edges() {
+        for input in [
+            "[]()/@example.com",
+            "e.x.a.m.p.l.e.@example.com",
+            "foo@bar.123",
+        ] {
+            assert_eq!(
+                call(
+                    "filter_var",
+                    vec![string(input), Value::Int(FILTER_VALIDATE_EMAIL)],
+                ),
+                Value::Bool(false),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("-@foo.com"), Value::Int(FILTER_VALIDATE_EMAIL)],
+            ),
+            string("-@foo.com")
+        );
+    }
+
+    #[test]
+    fn filter_validate_email_honors_unicode_flag_and_literals() {
+        for input in [
+            "niceändsimple@example.com",
+            "üser@[IPv6:2001:db8:1ff::a0b:dbd0]",
+            "\"verî.uñusual.@.uñusual.com\"@example.com",
+            "\"verî.(),:;<>[]\\\".VERÎ.\\\"verî@\\ \\\"verî\\\".unüsual\"@strange.example.com",
+            "tést@[255.255.255.255]",
+        ] {
+            assert_eq!(
+                call(
+                    "filter_var",
+                    vec![
+                        string(input),
+                        Value::Int(FILTER_VALIDATE_EMAIL),
+                        Value::Int(FILTER_FLAG_EMAIL_UNICODE),
+                    ],
+                ),
+                string(input),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_validate_url_rejects_underscore_hostname_labels() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("http://exa-mple.com/path"),
+                    Value::Int(FILTER_VALIDATE_URL),
+                ],
+            ),
+            string("http://exa-mple.com/path")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("http://exa_mple.com/path"),
+                    Value::Int(FILTER_VALIDATE_URL),
+                ],
+            ),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn filter_validate_url_rejects_confusing_userinfo_authority() {
+        for input in [
+            "http://php.net\\@aliyun.com/aaa.do",
+            "https://example.com:\\@test.com/",
+            "https://user:\\epass@test.com",
+            "http://t[est@127.0.0.1",
+            "http://test[@2001:db8:3333:4444:5555:6666:1.2.3.4]",
+        ] {
+            assert_eq!(
+                call(
+                    "filter_var",
+                    vec![string(input), Value::Int(FILTER_VALIDATE_URL)],
+                ),
+                Value::Bool(false),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("http://test@[2001:db8:3333:4444:5555:6666:1.2.3.4]"),
+                    Value::Int(FILTER_VALIDATE_URL),
+                ],
+            ),
+            string("http://test@[2001:db8:3333:4444:5555:6666:1.2.3.4]")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![string("http://test@[::1]"), Value::Int(FILTER_VALIDATE_URL)],
+            ),
+            string("http://test@[::1]")
+        );
+    }
+
+    #[test]
+    fn filter_validate_url_accepts_promoted_scheme_matrix() {
+        for input in [
+            "file:///tmp/test.c",
+            "ftp://ftp.example.com/tmp/",
+            "mailto:foo@bar.com",
+            "news:news.php.net",
+            "file://foo/bar",
+        ] {
+            assert_eq!(
+                call(
+                    "filter_var",
+                    vec![string(input), Value::Int(FILTER_VALIDATE_URL)],
+                ),
+                string(input),
+                "{input}"
+            );
+        }
+        for input in [
+            "http://example.com:qq",
+            "http://example.com:-2",
+            "http://example.com:65536",
+            "http://example.com:65537",
+            "aa:bb:cc:dd:ee:ff",
+        ] {
+            assert_eq!(
+                call(
+                    "filter_var",
+                    vec![string(input), Value::Int(FILTER_VALIDATE_URL)],
+                ),
+                Value::Bool(false),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("http://www.example.com"),
+                    Value::Int(FILTER_VALIDATE_URL),
+                    Value::Int(FILTER_FLAG_PATH_REQUIRED),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("http://www.example.com/path/at/the/server/"),
+                    Value::Int(FILTER_VALIDATE_URL),
+                    Value::Int(FILTER_FLAG_PATH_REQUIRED),
+                ],
+            ),
+            string("http://www.example.com/path/at/the/server/")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("http://www.example.com/index.php?a=b&c=d"),
+                    Value::Int(FILTER_VALIDATE_URL),
+                    Value::Int(FILTER_FLAG_QUERY_REQUIRED),
+                ],
+            ),
+            string("http://www.example.com/index.php?a=b&c=d")
+        );
+    }
+
+    #[test]
+    fn filter_validate_ip_honors_range_flags() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("192.168.0.1"),
+                    Value::Int(FILTER_VALIDATE_IP),
+                    Value::Int(FILTER_FLAG_NO_PRIV_RANGE),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("100.64.0.0"),
+                    Value::Int(FILTER_VALIDATE_IP),
+                    Value::Int(FILTER_FLAG_NO_RES_RANGE),
+                ],
+            ),
+            string("100.64.0.0")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("100.64.0.0"),
+                    Value::Int(FILTER_VALIDATE_IP),
+                    Value::Int(FILTER_FLAG_GLOBAL_RANGE),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("185.85.0.29"),
+                    Value::Int(FILTER_VALIDATE_IP),
+                    Value::Int(FILTER_FLAG_GLOBAL_RANGE),
+                ],
+            ),
+            string("185.85.0.29")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("FC00::1"),
+                    Value::Int(FILTER_VALIDATE_IP),
+                    Value::Int(FILTER_FLAG_IPV6 | FILTER_FLAG_NO_PRIV_RANGE),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("::ffff:0:1"),
+                    Value::Int(FILTER_VALIDATE_IP),
+                    Value::Int(FILTER_FLAG_NO_RES_RANGE),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("64:ff9b::"),
+                    Value::Int(FILTER_VALIDATE_IP),
+                    Value::Int(FILTER_FLAG_GLOBAL_RANGE),
+                ],
+            ),
+            string("64:ff9b::")
+        );
+    }
+
+    #[test]
     fn filter_callback_invokes_registered_builtin_string_callbacks() {
         let mut options = PhpArray::new();
         options.insert(string_key("options"), string("strtoupper"));
@@ -1751,6 +2777,74 @@ mod tests {
         assert_eq!(result.get(&string_key("a")), Some(&Value::Int(42)));
         assert_eq!(result.get(&string_key("b")), Some(&Value::Null));
         assert_eq!(result.get(&string_key("c")), Some(&Value::float(1.25)));
+    }
+
+    #[test]
+    fn filter_var_array_unknown_filter_modes_match_php_shapes() {
+        let mut input = PhpArray::new();
+        input.insert(string_key("test"), string("42"));
+
+        assert_eq!(
+            call(
+                "filter_var_array",
+                vec![Value::Array(input.clone()), Value::Int(-1)],
+            ),
+            Value::Bool(false)
+        );
+
+        let mut specs = PhpArray::new();
+        specs.insert(string_key("test"), Value::Int(-1));
+        let Value::Array(result) = call(
+            "filter_var_array",
+            vec![Value::Array(input), Value::Array(specs)],
+        ) else {
+            panic!("filter_var_array should return an array");
+        };
+        assert_eq!(result.get(&string_key("test")), Some(&string("42")));
+    }
+
+    #[test]
+    fn filter_var_array_single_filter_recurses_and_writes_references() {
+        let referenced = crate::ReferenceCell::new(Value::packed_array(vec![string("123foo")]));
+        let input = PhpArray::from_packed(vec![Value::Reference(referenced.clone())]);
+
+        let Value::Array(result) = call(
+            "filter_var_array",
+            vec![Value::Array(input), Value::Int(FILTER_VALIDATE_INT)],
+        ) else {
+            panic!("filter_var_array should return an array");
+        };
+        let Some(Value::Reference(result_ref)) = result.get(&ArrayKey::Int(0)) else {
+            panic!("referenced array element should stay a reference");
+        };
+        assert!(result_ref.ptr_eq(&referenced));
+        let Value::Array(filtered) = referenced.get() else {
+            panic!("referenced array should be replaced with filtered array");
+        };
+        assert_eq!(filtered.get(&ArrayKey::Int(0)), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn filter_var_array_rejects_invalid_options_shape_and_empty_spec_keys() {
+        let error = call_error(
+            "filter_var_array",
+            vec![Value::Array(PhpArray::new()), string("")],
+        );
+        assert_eq!(
+            error.message(),
+            "filter_var_array(): Argument #2 ($options) must be of type array|int, string given"
+        );
+
+        let mut specs = PhpArray::new();
+        specs.insert(string_key(""), Value::Int(FILTER_DEFAULT));
+        let error = call_error(
+            "filter_var_array",
+            vec![Value::Array(PhpArray::new()), Value::Array(specs)],
+        );
+        assert_eq!(
+            error.message(),
+            "filter_var_array(): Argument #2 ($options) cannot contain empty keys"
+        );
     }
 
     #[test]
@@ -1812,11 +2906,21 @@ mod tests {
             call(
                 "filter_var",
                 vec![
-                    string("<data&sons>"),
+                    string("<data&sons>'\""),
                     Value::Int(FILTER_SANITIZE_SPECIAL_CHARS),
                 ],
             ),
-            string("&#60;data&#38;sons&#62;")
+            string("&#60;data&#38;sons&#62;&#39;&#34;")
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("<data&sons>'\""),
+                    Value::Int(FILTER_SANITIZE_FULL_SPECIAL_CHARS),
+                ],
+            ),
+            string("&lt;data&amp;sons&gt;&#039;&quot;")
         );
         assert_eq!(
             call(
@@ -1877,6 +2981,32 @@ mod tests {
                 ],
             ),
             string("a&#38;b&#38;c")
+        );
+    }
+
+    #[test]
+    fn unsafe_raw_can_convert_empty_string_to_null() {
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string(""),
+                    Value::Int(FILTER_DEFAULT),
+                    Value::Int(FILTER_FLAG_EMPTY_STRING_NULL),
+                ],
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            call(
+                "filter_var",
+                vec![
+                    string("`"),
+                    Value::Int(FILTER_UNSAFE_RAW),
+                    Value::Int(FILTER_FLAG_STRIP_BACKTICK | FILTER_FLAG_EMPTY_STRING_NULL),
+                ],
+            ),
+            Value::Null
         );
     }
 
@@ -2038,6 +3168,30 @@ mod tests {
     }
 
     #[test]
+    fn filter_input_array_returns_null_for_empty_request_source() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        context.set_filter_input_array(1, PhpArray::new());
+
+        let mut specs = PhpArray::new();
+        let mut spec = PhpArray::new();
+        spec.insert(string_key("flags"), Value::Int(FILTER_NULL_ON_FAILURE));
+        specs.insert(string_key("c"), Value::Array(spec));
+
+        let result = ENTRIES
+            .iter()
+            .find(|entry| entry.name() == "filter_input_array")
+            .expect("filter_input_array entry")
+            .function()(
+            &mut context,
+            vec![Value::Int(1), Value::Array(specs), Value::Bool(true)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("filter_input_array succeeds");
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
     fn filter_input_missing_value_respects_null_on_failure() {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
@@ -2060,6 +3214,55 @@ mod tests {
     }
 
     #[test]
+    fn filter_input_missing_value_uses_default_option() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let mut payload = PhpArray::new();
+        payload.insert(string_key("default"), Value::Int(23));
+        let mut options = PhpArray::new();
+        options.insert(string_key("flags"), Value::Int(FILTER_REQUIRE_SCALAR));
+        options.insert(string_key("options"), Value::Array(payload));
+
+        let result = ENTRIES
+            .iter()
+            .find(|entry| entry.name() == "filter_input")
+            .expect("filter_input entry")
+            .function()(
+            &mut context,
+            vec![
+                Value::Int(INPUT_GET),
+                string("foo"),
+                Value::Int(FILTER_VALIDATE_INT),
+                Value::Array(options),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("filter_input succeeds");
+        assert_eq!(result, Value::Int(23));
+    }
+
+    #[test]
+    fn filter_has_var_rejects_invalid_input_source() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let error = ENTRIES
+            .iter()
+            .find(|entry| entry.name() == "filter_has_var")
+            .expect("filter_has_var entry")
+            .function()(
+            &mut context,
+            vec![Value::Int(-1), string("missing")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("filter_has_var should reject invalid input source");
+        assert_eq!(error.diagnostic_id(), "E_PHP_RUNTIME_BUILTIN_VALUE");
+        assert_eq!(
+            error.message(),
+            "filter_has_var(): Argument #1 ($input_type) must be an INPUT_* constant"
+        );
+    }
+
+    #[test]
     fn filter_validate_domain_does_not_emit_unknown_filter_warning() {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
@@ -2079,5 +3282,26 @@ mod tests {
         .expect("filter_var succeeds");
         assert_eq!(result, string("example.com"));
         assert!(context.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn filter_validate_boolean_null_respects_null_on_failure() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let result = ENTRIES
+            .iter()
+            .find(|entry| entry.name() == "filter_var")
+            .expect("filter_var entry")
+            .function()(
+            &mut context,
+            vec![
+                Value::Null,
+                Value::Int(FILTER_VALIDATE_BOOL),
+                Value::Int(FILTER_NULL_ON_FAILURE),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("filter_var succeeds");
+        assert_eq!(result, Value::Null);
     }
 }

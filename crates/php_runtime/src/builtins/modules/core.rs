@@ -1,12 +1,13 @@
 //! Core builtin implementations and cross-module helpers.
 
 use super::super::context::{
-    JSON_ERROR_DEPTH, JSON_ERROR_INF_OR_NAN, JSON_ERROR_RECURSION, JSON_ERROR_SYNTAX,
-    JSON_ERROR_UNSUPPORTED_TYPE, JSON_ERROR_UTF8, JSON_FORCE_OBJECT, JSON_HEX_AMP, JSON_HEX_APOS,
-    JSON_HEX_QUOT, JSON_HEX_TAG, JSON_INVALID_UTF8_IGNORE, JSON_INVALID_UTF8_SUBSTITUTE,
-    JSON_NUMERIC_CHECK, JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_PRESERVE_ZERO_FRACTION,
-    JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR, JSON_UNESCAPED_LINE_TERMINATORS,
-    JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE, json_error_message,
+    JSON_ERROR_DEPTH, JSON_ERROR_INF_OR_NAN, JSON_ERROR_NON_BACKED_ENUM, JSON_ERROR_RECURSION,
+    JSON_ERROR_SYNTAX, JSON_ERROR_UNSUPPORTED_TYPE, JSON_ERROR_UTF8, JSON_FORCE_OBJECT,
+    JSON_HEX_AMP, JSON_HEX_APOS, JSON_HEX_QUOT, JSON_HEX_TAG, JSON_INVALID_UTF8_IGNORE,
+    JSON_INVALID_UTF8_SUBSTITUTE, JSON_NUMERIC_CHECK, JSON_PARTIAL_OUTPUT_ON_ERROR,
+    JSON_PRESERVE_ZERO_FRACTION, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
+    JSON_UNESCAPED_LINE_TERMINATORS, JSON_UNESCAPED_SLASHES, JSON_UNESCAPED_UNICODE,
+    json_error_message,
 };
 use super::super::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
@@ -15,25 +16,28 @@ use super::super::{
 use super::debug_output::DebugFormatter;
 pub(in crate::builtins::modules) use super::debug_output::php_float_debug_string;
 mod encoding;
+mod haval;
 mod http;
 mod password;
 mod serialization;
+mod snefru;
+mod snefru_tables;
 
 use crate::convert::float_to_php_string;
 use crate::layout_stats;
 use crate::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 use crate::{
-    ArrayKey, ClassEntry, ClassFlags, NumericValue, ObjectRef, OutputBuffer, PhpArray, PhpString,
-    ResourceKind, StreamWrapperRegistry, UnserializeOptions, Value, compare, equal, identical,
-    normalize_class_name, pcre, serialize as serialize_value, to_bool, to_float, to_int, to_number,
-    to_string, unserialize as unserialize_value,
+    ArrayKey, ClassEntry, ClassFlags, FloatValue, NumericValue, ObjectRef, OutputBuffer, PhpArray,
+    PhpString, ResourceKind, StreamWrapperRegistry, UnserializeOptions, Value, compare, equal,
+    identical, normalize_class_name, pcre, serialize_with_precision, to_bool, to_float, to_int,
+    to_number, to_string, unserialize as unserialize_value,
 };
 pub(in crate::builtins::modules) use encoding::{
     HTML_ESCAPE_DEFAULT_FLAGS, HashOptions, PHP_QUERY_RFC3986, build_query_pairs,
     format_array_values, hash_digest_bytes, hash_digest_bytes_with_options, hex_decode, hex_encode,
     hex_nibble, hmac_digest_bytes, hmac_hash_algorithm_value_error, html_entity_decode_with_flags,
-    html_escape_with_options, html_translation_table, htmlspecialchars_decode_with_flags,
-    parse_hash_options, url_decode, url_encode,
+    html_escape_with_options, html_translation_table, htmlentities_escape_with_options,
+    htmlspecialchars_decode_with_flags, parse_hash_options, url_decode, url_encode,
 };
 use http::{
     builtin_header, builtin_header_remove, builtin_headers_list, builtin_headers_sent,
@@ -62,6 +66,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("assert", builtin_assert, BuiltinCompatibility::Php),
     BuiltinEntry::new("boolval", builtin_boolval, BuiltinCompatibility::Php),
     BuiltinEntry::new("uniqid", builtin_uniqid, BuiltinCompatibility::Php),
+    BuiltinEntry::new("sleep", builtin_sleep, BuiltinCompatibility::Php),
     BuiltinEntry::new("usleep", builtin_usleep, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "set_time_limit",
@@ -104,6 +109,8 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_environment_requires_vm,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("getmygid", builtin_getmygid, BuiltinCompatibility::Php),
+    BuiltinEntry::new("getmyuid", builtin_getmyuid, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "get_debug_type",
         builtin_get_debug_type,
@@ -166,7 +173,15 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_gc_collect_cycles,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("gc_disable", builtin_gc_disable, BuiltinCompatibility::Php),
+    BuiltinEntry::new("gc_enable", builtin_gc_enable, BuiltinCompatibility::Php),
     BuiltinEntry::new("gc_enabled", builtin_gc_enabled, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "gc_mem_caches",
+        builtin_gc_mem_caches,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new("gc_status", builtin_gc_status, BuiltinCompatibility::Php),
     BuiltinEntry::new("gettype", builtin_gettype, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "ini_get",
@@ -277,6 +292,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_environment_requires_vm,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("phpinfo", builtin_phpinfo, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "php_uname",
         builtin_environment_requires_vm,
@@ -476,6 +492,44 @@ pub(in crate::builtins::modules) fn builtin_process_requires_vm(
     ))
 }
 
+fn builtin_getmygid(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("getmygid", &args, 0)?;
+    Ok(Value::Int(current_process_gid()))
+}
+
+fn builtin_getmyuid(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("getmyuid", &args, 0)?;
+    Ok(Value::Int(current_process_uid()))
+}
+
+#[cfg(unix)]
+pub(in crate::builtins::modules) fn current_process_uid() -> i64 {
+    unsafe { libc::getuid() as i64 }
+}
+
+#[cfg(not(unix))]
+pub(in crate::builtins::modules) fn current_process_uid() -> i64 {
+    0
+}
+
+#[cfg(unix)]
+pub(in crate::builtins::modules) fn current_process_gid() -> i64 {
+    unsafe { libc::getgid() as i64 }
+}
+
+#[cfg(not(unix))]
+pub(in crate::builtins::modules) fn current_process_gid() -> i64 {
+    0
+}
+
 pub(in crate::builtins::modules) fn builtin_random_bytes(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -604,6 +658,68 @@ pub(in crate::builtins::modules) fn builtin_gc_enabled(
     Ok(Value::Bool(true))
 }
 
+pub(in crate::builtins::modules) fn builtin_gc_disable(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("gc_disable", &args, 0)?;
+    Ok(Value::Null)
+}
+
+pub(in crate::builtins::modules) fn builtin_gc_enable(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("gc_enable", &args, 0)?;
+    Ok(Value::Null)
+}
+
+pub(in crate::builtins::modules) fn builtin_gc_mem_caches(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("gc_mem_caches", &args, 0)?;
+    Ok(Value::Int(0))
+}
+
+pub(in crate::builtins::modules) fn builtin_gc_status(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("gc_status", &args, 0)?;
+
+    let mut status = PhpArray::new();
+    status.insert(string_key("running"), Value::Bool(false));
+    status.insert(string_key("protected"), Value::Bool(false));
+    status.insert(string_key("full"), Value::Bool(false));
+    status.insert(string_key("runs"), Value::Int(0));
+    status.insert(string_key("collected"), Value::Int(0));
+    status.insert(string_key("threshold"), Value::Int(10001));
+    status.insert(string_key("buffer_size"), Value::Int(16384));
+    status.insert(string_key("roots"), Value::Int(0));
+    status.insert(
+        string_key("application_time"),
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    status.insert(
+        string_key("collector_time"),
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    status.insert(
+        string_key("destructor_time"),
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    status.insert(
+        string_key("free_time"),
+        Value::Float(FloatValue::from_f64(0.0)),
+    );
+    Ok(Value::Array(status))
+}
+
 pub(in crate::builtins::modules) fn builtin_usleep(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -619,6 +735,23 @@ pub(in crate::builtins::modules) fn builtin_usleep(
     }
     std::thread::sleep(std::time::Duration::from_micros(micros as u64));
     Ok(Value::Null)
+}
+
+pub(in crate::builtins::modules) fn builtin_sleep(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("sleep", &args, 1)?;
+    let seconds = int_arg("sleep", &args[0])?;
+    if seconds < 0 {
+        return Err(value_error(
+            "sleep",
+            "Argument #1 ($seconds) must be greater than or equal to 0",
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_secs(seconds as u64));
+    Ok(Value::Int(0))
 }
 
 pub(in crate::builtins::modules) fn builtin_set_time_limit(
@@ -760,8 +893,31 @@ pub(in crate::builtins::modules) fn builtin_print(
     Ok(Value::Int(1))
 }
 
+pub(in crate::builtins::modules) fn builtin_phpinfo(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 1 {
+        return Err(arity_error("phpinfo", "zero or one argument"));
+    }
+    if let Some(flags) = args.first() {
+        let _ = int_arg("phpinfo", flags)?;
+    }
+    let jit = if pcre::is_jit_available() {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    context.output().write_bytes(b"pcre\n");
+    context
+        .output()
+        .write_bytes(format!("PCRE JIT Support => {jit}\n").as_bytes());
+    Ok(Value::Bool(true))
+}
+
 pub(in crate::builtins::modules) fn builtin_token_get_all(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -775,7 +931,11 @@ pub(in crate::builtins::modules) fn builtin_token_get_all(
         .get(1)
         .map_or(Ok(0), to_int)
         .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TOKENIZER_TYPE", message))?;
-    crate::tokenizer::tokenize(&source, flags).map(crate::tokenizer::token_get_all_value)
+    let result = crate::tokenizer::tokenize_with_diagnostics(&source, flags)?;
+    for diagnostic in result.diagnostics {
+        context.record_diagnostic(diagnostic);
+    }
+    Ok(crate::tokenizer::token_get_all_value(result.tokens))
 }
 
 pub(in crate::builtins::modules) fn builtin_token_name(
@@ -1253,6 +1413,7 @@ pub(in crate::builtins::modules) fn builtin_print_r(
 pub(in crate::builtins::modules) struct PackFormatSpec {
     pub(in crate::builtins::modules) code: u8,
     pub(in crate::builtins::modules) count: Option<usize>,
+    pub(in crate::builtins::modules) count_all: bool,
     pub(in crate::builtins::modules) label: Option<Vec<u8>>,
 }
 
@@ -1270,19 +1431,26 @@ pub(in crate::builtins::modules) fn parse_pack_format(
 
         let code = format[index];
         index += 1;
-        let count_start = index;
-        while index < format.len() && format[index].is_ascii_digit() {
+        let (count, count_all) = if index < format.len() && format[index] == b'*' {
             index += 1;
-        }
-        let count = if count_start == index {
-            None
+            (None, true)
         } else {
-            Some(parse_ascii_usize(
-                if allow_labels { "unpack" } else { "pack" },
-                &format[count_start..index],
-                "count",
-            )?)
+            let count_start = index;
+            while index < format.len() && format[index].is_ascii_digit() {
+                index += 1;
+            }
+            let count = if count_start == index {
+                None
+            } else {
+                Some(parse_ascii_usize(
+                    if allow_labels { "unpack" } else { "pack" },
+                    &format[count_start..index],
+                    "count",
+                )?)
+            };
+            (count, false)
         };
+        let count = if count_all { None } else { count };
 
         let label = if allow_labels {
             let label_start = index;
@@ -1294,7 +1462,12 @@ pub(in crate::builtins::modules) fn parse_pack_format(
             None
         };
 
-        specs.push(PackFormatSpec { code, count, label });
+        specs.push(PackFormatSpec {
+            code,
+            count,
+            count_all,
+            label,
+        });
     }
     Ok(specs)
 }
@@ -2215,7 +2388,9 @@ impl JsonEncodeState {
         if self.partial {
             self.first_error.get_or_insert(code);
             Ok(match code {
-                JSON_ERROR_INF_OR_NAN => JsonValue::Number(JsonNumber::from(0)),
+                JSON_ERROR_INF_OR_NAN | JSON_ERROR_NON_BACKED_ENUM => {
+                    JsonValue::Number(JsonNumber::from(0))
+                }
                 _ => JsonValue::Null,
             })
         } else {
@@ -2370,6 +2545,21 @@ fn php_deref_value_to_json_inner(
             }
             state.active_objects.push(id);
             if let Some(json) = spl_fixed_array_to_json(&object, flags, state) {
+                state.active_objects.pop();
+                state.leave_nested();
+                return json;
+            }
+            if object.is_enum() {
+                let json = match object.enum_backing_type() {
+                    Some(_) => {
+                        if let Some(value) = object.get_property("value") {
+                            php_value_to_json_inner(&value, flags, state)
+                        } else {
+                            state.error_json(JSON_ERROR_NON_BACKED_ENUM)
+                        }
+                    }
+                    None => state.error_json(JSON_ERROR_NON_BACKED_ENUM),
+                };
                 state.active_objects.pop();
                 state.leave_nested();
                 return json;
@@ -2644,15 +2834,41 @@ fn json_pretty_indent_for_php(encoded: &str) -> String {
 
 pub(in crate::builtins::modules) fn compile_preg_pattern(
     context: &mut BuiltinContext<'_>,
+    function_name: &str,
     pattern: PhpString,
+    span: RuntimeSourceSpan,
 ) -> Option<std::sync::Arc<pcre::CompiledPattern>> {
-    match context.pcre_cache().compile(&pattern) {
+    let limits = pcre_match_limits_from_ini(context);
+    match context.pcre_cache().compile_with_limits(&pattern, limits) {
         Ok(compiled) => Some(compiled),
         Err(error) => {
+            if error.code() == pcre::PREG_INTERNAL_ERROR {
+                context.php_warning(
+                    "E_PHP_RUNTIME_PCRE_WARNING",
+                    format!("{function_name}(): {}", error.message()),
+                    span,
+                );
+            }
             context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
             None
         }
     }
+}
+
+fn pcre_match_limits_from_ini(context: &BuiltinContext<'_>) -> pcre::PcreMatchLimits {
+    pcre::PcreMatchLimits {
+        backtrack_limit: pcre_ini_u32(context, "pcre.backtrack_limit"),
+        recursion_limit: pcre_ini_u32(context, "pcre.recursion_limit"),
+        jit: context
+            .ini_get("pcre.jit")
+            .is_none_or(|value| !matches!(value.trim(), "" | "0" | "Off" | "off" | "false")),
+    }
+}
+
+fn pcre_ini_u32(context: &BuiltinContext<'_>, name: &str) -> Option<u32> {
+    context
+        .ini_get(name)
+        .and_then(|value| value.trim().parse::<u32>().ok())
 }
 
 pub(in crate::builtins::modules) fn preg_failure(
@@ -2671,27 +2887,51 @@ pub(in crate::builtins::modules) fn assign_reference_arg(argument: Option<&Value
 
 pub(in crate::builtins::modules) fn pattern_order_matches(
     matches: Vec<Value>,
-    capture_count: usize,
+    capture_names: &[Option<String>],
 ) -> Value {
+    let capture_count = capture_names.len();
     let mut grouped: Vec<PhpArray> = std::iter::repeat_with(PhpArray::new)
         .take(capture_count)
         .collect();
-    for match_value in matches {
+    let mut mark_group = PhpArray::new();
+    for (match_index, match_value) in matches.into_iter().enumerate() {
         let Value::Array(captures) = match_value else {
             continue;
         };
         for (key, value) in captures.iter() {
-            let ArrayKey::Int(index) = key else {
-                continue;
-            };
-            let index = index as usize;
-            while grouped.len() <= index {
-                grouped.push(PhpArray::new());
+            match key {
+                ArrayKey::Int(index) => {
+                    let index = index as usize;
+                    while grouped.len() <= index {
+                        grouped.push(PhpArray::new());
+                    }
+                    grouped[index].append(value.clone());
+                }
+                ArrayKey::String(name) if name.as_bytes() == b"MARK" => {
+                    mark_group.insert(ArrayKey::Int(match_index as i64), value.clone());
+                }
+                ArrayKey::String(_) => {}
             }
-            grouped[index].append(value.clone());
         }
     }
-    Value::packed_array(grouped.into_iter().map(Value::Array).collect())
+    let mut output = PhpArray::new();
+    for (index, group) in grouped.into_iter().enumerate() {
+        let value = Value::Array(group);
+        if let Some(Some(name)) = capture_names.get(index) {
+            output.insert(
+                ArrayKey::String(name.as_bytes().to_vec().into()),
+                value.clone(),
+            );
+        }
+        output.append(value);
+    }
+    if !mark_group.is_empty() {
+        output.insert(
+            ArrayKey::String(PhpString::from("MARK")),
+            Value::Array(mark_group),
+        );
+    }
+    Value::Array(output)
 }
 
 pub(in crate::builtins::modules) fn preg_replace_subject_with_specs(
@@ -2775,23 +3015,29 @@ pub(in crate::builtins::modules) fn preg_replace_bytes(
     limit: i64,
     count: &mut i64,
 ) -> Result<Vec<u8>, pcre::PcreFailure> {
+    pcre::validate_utf8_subject_for_pattern(compiled, subject)?;
     let mut output = Vec::new();
     let mut last_end = 0usize;
     let mut local_count = 0i64;
-    for captures in compiled.captures_iter(subject) {
-        let captures = captures.map_err(pcre::PcreFailure::from)?;
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        if limit >= 0 && local_count >= limit {
-            break;
-        }
-        output.extend_from_slice(&subject[last_end..full.start()]);
-        output.extend_from_slice(&expand_preg_replacement(replacement, &captures));
-        last_end = full.end();
-        local_count += 1;
-        *count += 1;
-    }
+    compiled.for_each_php_match(
+        subject,
+        0,
+        |captures| {
+            let Some(full) = captures.get(0) else {
+                return Ok(true);
+            };
+            if limit >= 0 && local_count >= limit {
+                return Ok(false);
+            }
+            output.extend_from_slice(&subject[last_end..full.start()]);
+            output.extend_from_slice(&expand_preg_replacement(replacement, &captures));
+            last_end = full.end();
+            local_count += 1;
+            *count += 1;
+            Ok(true)
+        },
+        std::convert::identity,
+    )?;
     output.extend_from_slice(&subject[last_end..]);
     Ok(output)
 }
@@ -2813,6 +3059,13 @@ pub(in crate::builtins::modules) fn preg_replace_callback_subject(
             for (key, value) in array.iter() {
                 let text = to_string(value)
                     .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
+                if let Err(error) =
+                    pcre::validate_utf8_subject_for_pattern(compiled, text.as_bytes())
+                {
+                    context
+                        .set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
+                    return Ok(Value::Null);
+                }
                 let replaced = preg_replace_callback_bytes(
                     context,
                     compiled,
@@ -2830,6 +3083,10 @@ pub(in crate::builtins::modules) fn preg_replace_callback_subject(
         value => {
             let text = to_string(&value)
                 .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
+            if let Err(error) = pcre::validate_utf8_subject_for_pattern(compiled, text.as_bytes()) {
+                context.set_preg_last_error(error.code(), pcre::preg_error_message(error.code()));
+                return Ok(Value::Null);
+            }
             preg_replace_callback_bytes(
                 context,
                 compiled,
@@ -2859,35 +3116,37 @@ pub(in crate::builtins::modules) fn preg_replace_callback_bytes(
     let mut output = Vec::new();
     let mut last_end = 0usize;
     let mut local_count = 0i64;
-    for captures in compiled.captures_iter(subject) {
-        let captures = captures.map_err(|error| {
-            let error = pcre::PcreFailure::from(error);
-            BuiltinError::new("E_PHP_RUNTIME_PCRE_ERROR", error.message().to_string())
-        })?;
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        if limit >= 0 && local_count >= limit {
-            break;
-        }
-        output.extend_from_slice(&subject[last_end..full.start()]);
-        let callback_result = (callback.function())(
-            context,
-            vec![pcre::captures_to_array_with_names(
-                &captures,
-                compiled.capture_names(),
-                flags,
-                0,
-            )],
-            span.clone(),
-        )?;
-        let callback_text = to_string(&callback_result)
-            .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
-        output.extend_from_slice(callback_text.as_bytes());
-        last_end = full.end();
-        local_count += 1;
-        *count += 1;
-    }
+    compiled.for_each_php_match(
+        subject,
+        0,
+        |captures| {
+            let Some(full) = captures.get(0) else {
+                return Ok(true);
+            };
+            if limit >= 0 && local_count >= limit {
+                return Ok(false);
+            }
+            output.extend_from_slice(&subject[last_end..full.start()]);
+            let callback_result = (callback.function())(
+                context,
+                vec![pcre::captures_to_array_with_names(
+                    &captures,
+                    compiled.capture_names(),
+                    flags,
+                    0,
+                )],
+                span.clone(),
+            )?;
+            let callback_text = to_string(&callback_result)
+                .map_err(|message| BuiltinError::new("E_PHP_RUNTIME_TYPE_ERROR", message))?;
+            output.extend_from_slice(callback_text.as_bytes());
+            last_end = full.end();
+            local_count += 1;
+            *count += 1;
+            Ok(true)
+        },
+        |error| BuiltinError::new("E_PHP_RUNTIME_PCRE_ERROR", error.message().to_string()),
+    )?;
     output.extend_from_slice(&subject[last_end..]);
     Ok(output)
 }
@@ -6237,6 +6496,10 @@ pub(in crate::builtins::modules) fn runtime_type_name(value: &Value) -> &'static
     }
 }
 
+fn string_key(value: &str) -> ArrayKey {
+    ArrayKey::String(PhpString::from(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::debug_output::{php_float_debug_string, php_float_export_string};
@@ -6246,16 +6509,17 @@ mod tests {
         RuntimeSourceSpan, SORT_FLAG_CASE, SORT_NUMERIC, SORT_REGULAR, SORT_STRING,
     };
     use crate::builtins::context::{
-        JSON_BIGINT_AS_STRING, JSON_ERROR_CTRL_CHAR, JSON_ERROR_DEPTH, JSON_ERROR_NONE,
-        JSON_ERROR_STATE_MISMATCH, JSON_FORCE_OBJECT, JSON_HEX_AMP, JSON_HEX_APOS, JSON_HEX_QUOT,
-        JSON_HEX_TAG, JSON_NUMERIC_CHECK, JSON_OBJECT_AS_ARRAY, JSON_PRETTY_PRINT,
-        JSON_THROW_ON_ERROR,
+        JSON_BIGINT_AS_STRING, JSON_ERROR_CTRL_CHAR, JSON_ERROR_DEPTH, JSON_ERROR_NON_BACKED_ENUM,
+        JSON_ERROR_NONE, JSON_ERROR_STATE_MISMATCH, JSON_FORCE_OBJECT, JSON_HEX_AMP, JSON_HEX_APOS,
+        JSON_HEX_QUOT, JSON_HEX_TAG, JSON_NUMERIC_CHECK, JSON_OBJECT_AS_ARRAY,
+        JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_PRETTY_PRINT, JSON_THROW_ON_ERROR,
     };
     use crate::{
-        ArrayKey, BuiltinRegistry, ClassEntry, ClassFlags, ClosurePayload, FilesystemCapabilities,
-        ObjectRef, OutputBuffer, PhpArray, PhpString, ReferenceCell, ResourceTable,
-        RuntimeHttpResponseState, StreamFlags, StreamMetadata, StrtokState, Value, datetime,
-        layout_stats, normalize_class_name, pcre,
+        ArrayKey, BuiltinRegistry, ClassEntry, ClassEnumBackingType, ClassFlags,
+        ClassPropertyEntry, ClassPropertyFlags, ClassPropertyHooks, ClosurePayload,
+        FilesystemCapabilities, ObjectRef, OutputBuffer, PhpArray, PhpString, ReferenceCell,
+        ResourceTable, RuntimeHttpResponseState, RuntimeType, StreamFlags, StreamMetadata,
+        StrtokState, Value, datetime, layout_stats, normalize_class_name, pcre,
     };
     use std::path::PathBuf;
 
@@ -6315,6 +6579,37 @@ mod tests {
                 .get(layout_stats::SOURCE_ARRAY_BUILTIN_OUTPUT_MATERIALIZATION.name()),
             Some(&1),
             "{source_stats:?}"
+        );
+    }
+
+    #[test]
+    fn gc_builtins_report_deterministic_noop_state() {
+        let mut output = OutputBuffer::new();
+
+        assert_eq!(
+            call("gc_collect_cycles", vec![], &mut output),
+            Value::Int(0)
+        );
+        assert_eq!(call("gc_enabled", vec![], &mut output), Value::Bool(true));
+        assert_eq!(call("gc_disable", vec![], &mut output), Value::Null);
+        assert_eq!(call("gc_enable", vec![], &mut output), Value::Null);
+        assert_eq!(call("gc_mem_caches", vec![], &mut output), Value::Int(0));
+
+        let status = call("gc_status", vec![], &mut output);
+        let Value::Array(status) = status else {
+            panic!("gc_status should return an array");
+        };
+        assert_eq!(
+            status.get(&ArrayKey::String(PhpString::from("running"))),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            status.get(&ArrayKey::String(PhpString::from("collected"))),
+            Some(&Value::Int(0))
+        );
+        assert_eq!(
+            status.get(&ArrayKey::String(PhpString::from("threshold"))),
+            Some(&Value::Int(10001))
         );
     }
 
@@ -6889,6 +7184,37 @@ mod tests {
                 .iter()
                 .any(|(_, value)| matches!(value, Value::String(text) if text.as_bytes() == b"+"))
         );
+    }
+
+    #[test]
+    fn tokenizer_builtins_return_bad_character_tokens() {
+        let mut output = OutputBuffer::new();
+        let tokens = call(
+            "token_get_all",
+            vec![Value::string("<?php \u{0001} foo")],
+            &mut output,
+        );
+        let Value::Array(tokens) = tokens else {
+            panic!("expected token array");
+        };
+        let bad_character = tokens
+            .iter()
+            .filter_map(|(_, value)| match value {
+                Value::Array(entry) => Some(entry),
+                _ => None,
+            })
+            .find(|entry| {
+                let Some(id) = entry.get(&ArrayKey::Int(0)).cloned() else {
+                    return false;
+                };
+                call("token_name", vec![id], &mut output) == Value::string("T_BAD_CHARACTER")
+            })
+            .expect("expected T_BAD_CHARACTER entry");
+        assert_eq!(
+            bad_character.get(&ArrayKey::Int(1)),
+            Some(&Value::string("\u{0001}"))
+        );
+        assert_eq!(bad_character.get(&ArrayKey::Int(2)), Some(&Value::Int(1)));
     }
 
     #[test]
@@ -8634,6 +8960,171 @@ mod tests {
             call_in_context(&mut context, "preg_last_error", Vec::new()),
             Value::Int(pcre::PREG_INTERNAL_ERROR)
         );
+        let mut min_offset_error_output = OutputBuffer::new();
+        assert_eq!(
+            call_error(
+                "preg_match",
+                vec![
+                    Value::string(r#"/\d/"#),
+                    Value::string("abc123"),
+                    Value::Reference(ReferenceCell::new(Value::Null)),
+                    Value::Int(0),
+                    Value::Int(i64::MIN),
+                ],
+                &mut min_offset_error_output,
+            ),
+            "preg_match(): Argument #5 ($offset) must be greater than -9223372036854775808"
+        );
+        let mut min_offset_all_error_output = OutputBuffer::new();
+        assert_eq!(
+            call_error(
+                "preg_match_all",
+                vec![
+                    Value::string(r#"/\d/"#),
+                    Value::string("abc123"),
+                    Value::Reference(ReferenceCell::new(Value::Null)),
+                    Value::Int(0),
+                    Value::Int(i64::MIN),
+                ],
+                &mut min_offset_all_error_output,
+            ),
+            "preg_match_all(): Argument #5 ($offset) must be greater than -9223372036854775808"
+        );
+        let mut flag_error_output = OutputBuffer::new();
+        assert_eq!(
+            call_error(
+                "preg_match_all",
+                vec![
+                    Value::string("//"),
+                    Value::string(""),
+                    Value::Reference(ReferenceCell::new(Value::Null)),
+                    Value::Int(0xdead),
+                ],
+                &mut flag_error_output,
+            ),
+            "preg_match_all(): Argument #4 ($flags) must be a PREG_* constant"
+        );
+
+        let utf8_offset_matches = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match",
+                vec![
+                    Value::string(r#"/a/u"#),
+                    Value::string(vec![0xE3, 0x82, 0xA2]),
+                    Value::Reference(utf8_offset_matches.clone()),
+                    Value::Int(0),
+                    Value::Int(1),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(utf8_offset_matches.get(), Value::packed_array(Vec::new()));
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error", Vec::new()),
+            Value::Int(pcre::PREG_BAD_UTF8_OFFSET_ERROR)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error_msg", Vec::new()),
+            Value::string(pcre::preg_error_message(pcre::PREG_BAD_UTF8_OFFSET_ERROR))
+        );
+
+        let invalid_utf8_matches = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match",
+                vec![
+                    Value::string(r#"/./u"#),
+                    Value::string(vec![0xff]),
+                    Value::Reference(invalid_utf8_matches.clone()),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(invalid_utf8_matches.get(), Value::packed_array(Vec::new()));
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error", Vec::new()),
+            Value::Int(pcre::PREG_BAD_UTF8_ERROR)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error_msg", Vec::new()),
+            Value::string("Malformed UTF-8 characters, possibly incorrectly encoded")
+        );
+
+        let invalid_prefix = Value::string(vec![b'V', b'A', 0xff, b'L', b'I', b'D']);
+        let invalid_prefix_matches = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match",
+                vec![
+                    Value::string(r#"/\b/u"#),
+                    invalid_prefix.clone(),
+                    Value::Reference(invalid_prefix_matches.clone()),
+                    Value::Int(pcre::PREG_OFFSET_CAPTURE),
+                    Value::Int(4),
+                ],
+            ),
+            Value::Int(1)
+        );
+        let Value::Array(invalid_prefix_captures) = invalid_prefix_matches.get() else {
+            panic!("expected invalid-prefix captures array");
+        };
+        assert_eq!(
+            invalid_prefix_captures.get(&ArrayKey::Int(0)),
+            Some(&Value::packed_array(vec![Value::string(""), Value::Int(6)]))
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error", Vec::new()),
+            Value::Int(pcre::PREG_NO_ERROR)
+        );
+
+        let invalid_prefix_all = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match_all",
+                vec![
+                    Value::string(r#"/\b/u"#),
+                    invalid_prefix.clone(),
+                    Value::Reference(invalid_prefix_all.clone()),
+                    Value::Int(pcre::PREG_PATTERN_ORDER | pcre::PREG_OFFSET_CAPTURE),
+                    Value::Int(4),
+                ],
+            ),
+            Value::Int(1)
+        );
+        let Value::Array(invalid_prefix_rows) = invalid_prefix_all.get() else {
+            panic!("expected invalid-prefix match-all rows");
+        };
+        let Some(Value::Array(invalid_prefix_full)) = invalid_prefix_rows.get(&ArrayKey::Int(0))
+        else {
+            panic!("expected invalid-prefix full-match row");
+        };
+        assert_eq!(
+            invalid_prefix_full.get(&ArrayKey::Int(0)),
+            Some(&Value::packed_array(vec![Value::string(""), Value::Int(6)]))
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match",
+                vec![
+                    Value::string(r#"/\b/u"#),
+                    invalid_prefix,
+                    Value::Reference(ReferenceCell::new(Value::Null)),
+                    Value::Int(0),
+                    Value::Int(0),
+                ],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error", Vec::new()),
+            Value::Int(pcre::PREG_BAD_UTF8_ERROR)
+        );
 
         let all = ReferenceCell::new(Value::Null);
         assert_eq!(
@@ -8678,6 +9169,85 @@ mod tests {
             call_in_context(&mut context, "preg_last_error", Vec::new()),
             Value::Int(pcre::PREG_NO_ERROR)
         );
+
+        let duplicate_name_match = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match",
+                vec![
+                    Value::string(r#"/(?J)(?:(?<g>foo)|(?<g>bar))/"#),
+                    Value::string("foo"),
+                    Value::Reference(duplicate_name_match.clone()),
+                ],
+            ),
+            Value::Int(1)
+        );
+        let Value::Array(duplicate_name_match) = duplicate_name_match.get() else {
+            panic!("expected duplicate-name match array");
+        };
+        assert_eq!(
+            duplicate_name_match.get(&ArrayKey::String(PhpString::from_test_str("g"))),
+            Some(&Value::string("foo"))
+        );
+        assert_eq!(
+            duplicate_name_match.get(&ArrayKey::Int(1)),
+            Some(&Value::string("foo"))
+        );
+        assert_eq!(duplicate_name_match.get(&ArrayKey::Int(2)), None);
+
+        let duplicate_name_set_order = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match_all",
+                vec![
+                    Value::string(r#"/(?J)(?<chr>[ac])(?<num>\d)|(?<chr>[b])/"#),
+                    Value::string("a1bc3"),
+                    Value::Reference(duplicate_name_set_order.clone()),
+                    Value::Int(pcre::PREG_SET_ORDER),
+                ],
+            ),
+            Value::Int(3)
+        );
+        let Value::Array(rows) = duplicate_name_set_order.get() else {
+            panic!("expected set-order duplicate-name rows");
+        };
+        let Some(Value::Array(second_row)) = rows.get(&ArrayKey::Int(1)) else {
+            panic!("expected second duplicate-name row");
+        };
+        assert_eq!(
+            second_row.get(&ArrayKey::String(PhpString::from_test_str("chr"))),
+            Some(&Value::string("b"))
+        );
+        assert_eq!(second_row.get(&ArrayKey::Int(1)), Some(&Value::string("")));
+        assert_eq!(second_row.get(&ArrayKey::Int(3)), Some(&Value::string("b")));
+
+        let named_pattern_order = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_match_all",
+                vec![
+                    Value::string(r#"/(?<a>4)?(?<b>2)?\d/"#),
+                    Value::string("123456"),
+                    Value::Reference(named_pattern_order.clone()),
+                    Value::Int(pcre::PREG_UNMATCHED_AS_NULL),
+                ],
+            ),
+            Value::Int(4)
+        );
+        let Value::Array(named_pattern_order) = named_pattern_order.get() else {
+            panic!("expected named pattern-order rows");
+        };
+        assert!(matches!(
+            named_pattern_order.get(&ArrayKey::String(PhpString::from_test_str("a"))),
+            Some(Value::Array(_))
+        ));
+        assert!(matches!(
+            named_pattern_order.get(&ArrayKey::String(PhpString::from_test_str("b"))),
+            Some(Value::Array(_))
+        ));
     }
 
     #[test]
@@ -8725,6 +9295,68 @@ mod tests {
                 ],
             ),
             Value::string("a-a-a----ab1-${001}")
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_replace",
+                vec![
+                    Value::string("/[/"),
+                    Value::string("x"),
+                    Value::string("subject"),
+                ],
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error", Vec::new()),
+            Value::Int(pcre::PREG_INTERNAL_ERROR)
+        );
+        let mut malformed_class_output = OutputBuffer::new();
+        let mut malformed_class_context = BuiltinContext::new(&mut malformed_class_output);
+        assert_eq!(
+            call_in_context(
+                &mut malformed_class_context,
+                "preg_replace",
+                vec![
+                    Value::string(r#"/.++\d*+[/"#),
+                    Value::string("for ($"),
+                    Value::string("abc"),
+                ],
+            ),
+            Value::Null
+        );
+        assert!(String::from_utf8_lossy(malformed_class_output.as_bytes()).contains(
+            "preg_replace(): Compilation failed: missing terminating ] for character class at offset 8"
+        ));
+        let mut error_output = OutputBuffer::new();
+        assert_eq!(
+            call_error(
+                "preg_replace",
+                vec![
+                    Value::string("/[a-z]/"),
+                    Value::packed_array(vec![Value::string("x")]),
+                    Value::string("subject"),
+                ],
+                &mut error_output,
+            ),
+            "preg_replace(): Argument #1 ($pattern) must be of type array when argument #2 ($replacement) is an array, string given"
+        );
+        let replacement_object = Value::Object(ObjectRef::new_with_display_name(
+            &empty_class("stdClass"),
+            "stdClass",
+        ));
+        assert_eq!(
+            call_error(
+                "preg_replace",
+                vec![
+                    Value::string("/[a-z]/"),
+                    replacement_object,
+                    Value::string("subject"),
+                ],
+                &mut error_output,
+            ),
+            "preg_replace(): Argument #2 ($replacement) must be of type array|string, stdClass given"
         );
 
         let array_pattern_count = ReferenceCell::new(Value::Null);
@@ -8856,6 +9488,23 @@ mod tests {
         );
 
         assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_replace",
+                vec![
+                    Value::string(r#"#(&\#x*)([0-9A-F]+);*#iu"#),
+                    Value::string(r#"$1$2;"#),
+                    Value::string(vec![b's', b'e', b'a', b'r', b'c', b'h', 0xe4]),
+                ],
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error", Vec::new()),
+            Value::Int(pcre::PREG_BAD_UTF8_ERROR)
+        );
+
+        assert_eq!(
             array_strings(call_in_context(
                 &mut context,
                 "preg_split",
@@ -8867,6 +9516,19 @@ mod tests {
                 ],
             )),
             ["a", "b", "c"]
+        );
+
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_split",
+                vec![Value::string(r#"/a/u"#), Value::string(vec![b'a', 0xff])],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error_msg", Vec::new()),
+            Value::string("Malformed UTF-8 characters, possibly incorrectly encoded")
         );
 
         let input = Value::packed_array(vec![
@@ -8881,6 +9543,42 @@ mod tests {
                 vec![Value::string(r#"/\.php$/"#), input],
             )),
             ["src/Foo.php", "tests/FooTest.php"]
+        );
+
+        let mut grep_cast_output = OutputBuffer::new();
+        let grep_array = Value::packed_array(vec![
+            Value::string("abc"),
+            Value::Array(PhpArray::new()),
+            Value::Bool(false),
+        ]);
+        let Value::Array(grep_result) = call(
+            "preg_grep",
+            vec![Value::string(r#"/^A/"#), grep_array],
+            &mut grep_cast_output,
+        ) else {
+            panic!("expected preg_grep to return array");
+        };
+        assert_eq!(grep_result.len(), 1);
+        assert_eq!(
+            grep_result.get(&ArrayKey::Int(1)),
+            Some(&Value::Array(PhpArray::new()))
+        );
+        let grep_warning = std::str::from_utf8(grep_cast_output.as_bytes()).unwrap();
+        assert!(grep_warning.contains("Warning: Array to string conversion"));
+
+        let invalid_grep_input =
+            Value::packed_array(vec![Value::string("a"), Value::string(vec![b'1', 0xff])]);
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "preg_grep",
+                vec![Value::string(r#"#\d#u"#), invalid_grep_input],
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "preg_last_error", Vec::new()),
+            Value::Int(pcre::PREG_BAD_UTF8_ERROR)
         );
 
         assert_eq!(
@@ -9385,6 +10083,61 @@ mod tests {
     }
 
     #[test]
+    fn json_encode_enum_cases_match_php_error_and_backing_value() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        let unit = ObjectRef::new(&enum_class("unitenumcase", None));
+        unit.set_property("name", Value::string("A"));
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_encode",
+                vec![Value::Object(unit.clone())]
+            ),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_last_error", Vec::new()),
+            Value::Int(JSON_ERROR_NON_BACKED_ENUM)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_last_error_msg", Vec::new()),
+            Value::string("Non-backed enums have no default serialization")
+        );
+        assert_eq!(
+            call_in_context(
+                &mut context,
+                "json_encode",
+                vec![
+                    Value::Object(unit),
+                    Value::Int(JSON_PARTIAL_OUTPUT_ON_ERROR)
+                ]
+            ),
+            Value::string("0")
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_last_error", Vec::new()),
+            Value::Int(JSON_ERROR_NON_BACKED_ENUM)
+        );
+
+        let backed = ObjectRef::new(&enum_class(
+            "backedenumcase",
+            Some(ClassEnumBackingType::String),
+        ));
+        backed.set_property("name", Value::string("A"));
+        backed.set_property("value", Value::string("x"));
+        assert_eq!(
+            call_in_context(&mut context, "json_encode", vec![Value::Object(backed)]),
+            Value::string(r#""x""#)
+        );
+        assert_eq!(
+            call_in_context(&mut context, "json_last_error", Vec::new()),
+            Value::Int(JSON_ERROR_NONE)
+        );
+    }
+
+    #[test]
     fn symlink_stat_is_conditional_on_platform_support() {
         let root = std::env::temp_dir().join(format!("phrust-stdlib-lstat-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temp root");
@@ -9444,6 +10197,51 @@ mod tests {
             enum_backing_type: None,
             constructor_id: None,
             flags: ClassFlags::default(),
+        }
+    }
+
+    fn enum_class(name: &str, backing: Option<ClassEnumBackingType>) -> ClassEntry {
+        let mut properties = vec![ClassPropertyEntry {
+            name: "name".to_owned(),
+            default: Value::Uninitialized,
+            type_: Some(RuntimeType::String),
+            flags: ClassPropertyFlags {
+                is_readonly: true,
+                is_typed: true,
+                ..ClassPropertyFlags::default()
+            },
+            hooks: ClassPropertyHooks::default(),
+            attributes: Vec::new(),
+        }];
+        if backing.is_some() {
+            properties.push(ClassPropertyEntry {
+                name: "value".to_owned(),
+                default: Value::Uninitialized,
+                type_: Some(RuntimeType::String),
+                flags: ClassPropertyFlags {
+                    is_readonly: true,
+                    is_typed: true,
+                    ..ClassPropertyFlags::default()
+                },
+                hooks: ClassPropertyHooks::default(),
+                attributes: Vec::new(),
+            });
+        }
+        ClassEntry {
+            name: normalize_class_name(name),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties,
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: backing,
+            constructor_id: None,
+            flags: ClassFlags {
+                is_enum: true,
+                ..ClassFlags::default()
+            },
         }
     }
 
@@ -9779,7 +10577,7 @@ mod tests {
         assert_eq!(
             call(
                 "var_export",
-                vec![Value::Object(fixed_array), Value::Bool(true)],
+                vec![Value::Object(fixed_array.clone()), Value::Bool(true)],
                 &mut output
             ),
             Value::string("\\MySplFixedArray::__set_state(array(\n   0 => NULL,\n))")
@@ -9789,6 +10587,20 @@ mod tests {
                 .to_string_lossy()
                 .contains("var_export does not handle circular references")
         );
+        let debug_start = output.as_bytes().len();
+        assert_eq!(
+            call(
+                "debug_zval_dump",
+                vec![Value::Object(fixed_array)],
+                &mut output
+            ),
+            Value::Null
+        );
+        let output_text = output.to_string_lossy();
+        let debug_output = &output_text[debug_start..];
+        assert!(debug_output.contains("object(MySplFixedArray)#"));
+        assert!(debug_output.contains("  [0]=>\n  *RECURSION*\n"));
+        assert!(!debug_output.contains("__entries"));
 
         let cell = ReferenceCell::new(Value::Null);
         let mut array = PhpArray::new();
@@ -11135,6 +11947,18 @@ mod tests {
             Value::string("&lt;a&amp;&gt;")
         );
         assert_eq!(
+            call(
+                "htmlentities",
+                vec![
+                    Value::string("€ © é"),
+                    Value::Int(0),
+                    Value::string("UTF-8")
+                ],
+                &mut output
+            ),
+            Value::string("&euro; &copy; &eacute;")
+        );
+        assert_eq!(
             call("urlencode", vec![Value::string("a b~")], &mut output),
             Value::string("a+b%7E")
         );
@@ -11577,6 +12401,52 @@ mod tests {
                 &mut output,
             ),
             Value::Array(expected_named)
+        );
+
+        assert_eq!(
+            call(
+                "pack",
+                vec![Value::string("H*"), Value::string("0061f")],
+                &mut output,
+            ),
+            Value::string(vec![0x00, 0x61, 0xf0])
+        );
+        assert_eq!(
+            call(
+                "pack",
+                vec![Value::string("h*"), Value::string("0061f")],
+                &mut output,
+            ),
+            Value::string(vec![0x00, 0x16, 0x0f])
+        );
+        assert_eq!(
+            call(
+                "pack",
+                vec![Value::string("H3"), Value::string("0061f")],
+                &mut output,
+            ),
+            Value::string(vec![0x00, 0x60])
+        );
+
+        let mut expected_hex = PhpArray::new();
+        expected_hex.insert(
+            ArrayKey::String(PhpString::from_test_str("a")),
+            Value::string("012"),
+        );
+        expected_hex.insert(
+            ArrayKey::String(PhpString::from_test_str("b")),
+            Value::string("45"),
+        );
+        assert_eq!(
+            call(
+                "unpack",
+                vec![
+                    Value::string("H3a/H2b"),
+                    Value::string(vec![0x01, 0x23, 0x45]),
+                ],
+                &mut output,
+            ),
+            Value::Array(expected_hex)
         );
     }
 

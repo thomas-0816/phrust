@@ -34,7 +34,7 @@ var_dump(openssl_encrypt($data, "aes-128-cbc", $key, OPENSSL_DONT_ZERO_PAD_KEY, 
 var_dump(is_string(openssl_error_string()));
 var_dump(openssl_error_string());
 ?>
---EXPECT--
+--EXPECTF--
 string(24) "/romcUbbPYFPXuTCiUloyQ=="
 string(6) "secret"
 int(16)
@@ -42,9 +42,13 @@ string(6) "secret"
 int(16)
 string(16) "xxxxxxxxxxxxxxxx"
 bool(true)
+
+Warning: openssl_encrypt(): Unknown cipher algorithm in %s on line %d
 bool(false)
 bool(true)
 bool(false)
+
+Warning: openssl_encrypt(): Key length cannot be set for the cipher algorithm in %s on line %d
 bool(false)
 bool(true)
 bool(false)

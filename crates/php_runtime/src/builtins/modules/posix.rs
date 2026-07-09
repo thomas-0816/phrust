@@ -2,7 +2,7 @@
 
 #![allow(unsafe_code)]
 
-use super::core::{arity_error, int_arg, string_arg};
+use super::core::{argument_value_error, arity_error, int_arg, string_arg};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
 };
@@ -23,7 +23,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new(
         "posix_eaccess",
-        builtin_posix_access,
+        builtin_posix_eaccess,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -184,7 +184,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new(
         "posix_setuid",
-        builtin_posix_false_gap,
+        builtin_posix_permission_gap,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -299,6 +299,13 @@ fn builtin_posix_getsid(
         return Err(arity_error("posix_getsid", "one argument"));
     }
     let pid = int_arg("posix_getsid", &args[0])?;
+    if pid < 0 {
+        return Err(argument_value_error(
+            "posix_getsid",
+            "#1 ($process_id)",
+            &format!("must be between 0 and {}", i64::MAX),
+        ));
+    }
     let result = unsafe { libc::getsid(pid as libc::pid_t) };
     syscall_int_result(context, result)
 }
@@ -386,13 +393,37 @@ fn builtin_posix_access(
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    posix_access_impl(context, "posix_access", args, false)
+}
+
+fn builtin_posix_eaccess(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    posix_access_impl(context, "posix_eaccess", args, true)
+}
+
+fn posix_access_impl(
+    context: &mut BuiltinContext<'_>,
+    name: &'static str,
+    args: Vec<Value>,
+    reject_invalid_filename: bool,
+) -> BuiltinResult {
     if args.is_empty() || args.len() > 2 {
-        return Err(arity_error("posix_access", "one or two arguments"));
+        return Err(arity_error(name, "one or two arguments"));
     }
-    let path = string_arg("posix_access", &args[0])?;
+    let path = string_arg(name, &args[0])?;
+    if reject_invalid_filename && (path.is_empty() || path.len() > posix_path_max()) {
+        return Err(argument_value_error(
+            name,
+            "#1 ($filename)",
+            "must not be empty",
+        ));
+    }
     let mode = args
         .get(1)
-        .map(|value| int_arg("posix_access", value))
+        .map(|value| int_arg(name, value))
         .transpose()?
         .unwrap_or(libc::F_OK as i64) as libc::c_int;
     let Ok(c_path) = CString::new(path.as_bytes()) else {
@@ -406,6 +437,17 @@ fn builtin_posix_access(
     } else {
         context.set_posix_last_error(last_os_error());
         Ok(Value::Bool(false))
+    }
+}
+
+fn posix_path_max() -> usize {
+    #[cfg(unix)]
+    {
+        libc::PATH_MAX as usize
+    }
+    #[cfg(not(unix))]
+    {
+        4096
     }
 }
 
@@ -485,17 +527,29 @@ fn builtin_posix_pathconf(
         return Err(arity_error("posix_pathconf", "two arguments"));
     }
     let path = string_arg("posix_pathconf", &args[0])?;
+    if path.as_bytes().is_empty() {
+        return Err(argument_value_error(
+            "posix_pathconf",
+            "#1 ($path)",
+            "must not be empty",
+        ));
+    }
     let name = int_arg("posix_pathconf", &args[1])? as libc::c_int;
     let Ok(c_path) = CString::new(path.as_bytes()) else {
         context.set_posix_last_error(libc::EINVAL);
         return Ok(Value::Bool(false));
     };
+    clear_errno();
     let result = unsafe { libc::pathconf(c_path.as_ptr(), name) };
+    let error = last_os_error();
     if result >= 0 {
         context.set_posix_last_error(0);
         Ok(Value::Int(result as i64))
+    } else if error == 0 {
+        context.set_posix_last_error(0);
+        Ok(Value::Int(-1))
     } else {
-        context.set_posix_last_error(last_os_error());
+        context.set_posix_last_error(error);
         Ok(Value::Bool(false))
     }
 }
@@ -509,12 +563,21 @@ fn builtin_posix_sysconf(
         return Err(arity_error("posix_sysconf", "one argument"));
     }
     let name = int_arg("posix_sysconf", &args[0])? as libc::c_int;
+    if name == -1 {
+        context.set_posix_last_error(0);
+        return Ok(Value::Int(-1));
+    }
+    clear_errno();
     let result = unsafe { libc::sysconf(name) };
+    let error = last_os_error();
     if result >= 0 {
         context.set_posix_last_error(0);
         Ok(Value::Int(result as i64))
+    } else if error == 0 {
+        context.set_posix_last_error(0);
+        Ok(Value::Int(-1))
     } else {
-        context.set_posix_last_error(last_os_error());
+        context.set_posix_last_error(error);
         Ok(Value::Bool(false))
     }
 }
@@ -651,6 +714,15 @@ fn builtin_posix_getgrgid(
     }
     let gid = int_arg("posix_getgrgid", &args[0])?;
     if gid < 0 {
+        #[cfg(target_os = "macos")]
+        if gid == -1 {
+            let name = CString::new("nogroup").expect("static group name has no nul bytes");
+            let group = unsafe { libc::getgrnam(name.as_ptr()) };
+            if !group.is_null() {
+                context.set_posix_last_error(0);
+                return Ok(group_value_without_members(unsafe { &*group }));
+            }
+        }
         context.set_posix_last_error(libc::EINVAL);
         return Ok(Value::Bool(false));
     }
@@ -768,6 +840,15 @@ fn builtin_posix_false_gap(
     Ok(Value::Bool(false))
 }
 
+fn builtin_posix_permission_gap(
+    context: &mut BuiltinContext<'_>,
+    _args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    context.set_posix_last_error(libc::EPERM);
+    Ok(Value::Bool(false))
+}
+
 fn group_value(group: &libc::group) -> Value {
     let mut array = PhpArray::new();
     array.insert(string_key("name"), Value::string(c_string(group.gr_name)));
@@ -788,6 +869,19 @@ fn group_value(group: &libc::group) -> Value {
         }
     }
     array.insert(string_key("members"), Value::Array(members));
+    array.insert(string_key("gid"), Value::Int(group.gr_gid as i64));
+    Value::Array(array)
+}
+
+#[cfg(target_os = "macos")]
+fn group_value_without_members(group: &libc::group) -> Value {
+    let mut array = PhpArray::new();
+    array.insert(string_key("name"), Value::string(c_string(group.gr_name)));
+    array.insert(
+        string_key("passwd"),
+        nullable_c_string_value(group.gr_passwd),
+    );
+    array.insert(string_key("members"), Value::Array(PhpArray::new()));
     array.insert(string_key("gid"), Value::Int(group.gr_gid as i64));
     Value::Array(array)
 }
@@ -899,6 +993,17 @@ fn last_os_error() -> i32 {
         .unwrap_or(libc::EIO)
 }
 
+fn clear_errno() {
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    unsafe {
+        *libc::__error() = 0;
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    unsafe {
+        *libc::__errno_location() = 0;
+    }
+}
+
 fn uts_field(field: &[libc::c_char]) -> String {
     unsafe { CStr::from_ptr(field.as_ptr()) }
         .to_string_lossy()
@@ -921,6 +1026,21 @@ mod tests {
             .unwrap()
             .function()(context, args, RuntimeSourceSpan::default())
         .unwrap()
+    }
+
+    fn call_error_with_context(
+        context: &mut BuiltinContext<'_>,
+        name: &str,
+        args: Vec<Value>,
+    ) -> String {
+        ENTRIES
+            .iter()
+            .find(|entry| entry.name() == name)
+            .unwrap()
+            .function()(context, args, RuntimeSourceSpan::default())
+        .unwrap_err()
+        .message()
+        .to_string()
     }
 
     #[test]
@@ -992,5 +1112,68 @@ mod tests {
             call_with_context(&mut context, "posix_getrlimit", vec![]),
             Value::Array(_)
         ));
+    }
+
+    #[test]
+    fn eaccess_and_getsid_validate_upstream_value_errors() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+        let long_path = "bogus path".repeat(1042);
+
+        assert_eq!(
+            call_error_with_context(
+                &mut context,
+                "posix_eaccess",
+                vec![Value::string(long_path)]
+            ),
+            "posix_eaccess(): Argument #1 ($filename) must not be empty"
+        );
+
+        assert_eq!(
+            call_error_with_context(&mut context, "posix_getsid", vec![Value::Int(-1)]),
+            format!(
+                "posix_getsid(): Argument #1 ($process_id) must be between 0 and {}",
+                i64::MAX
+            )
+        );
+    }
+
+    #[test]
+    fn pathconf_and_sysconf_follow_posix_errno_disambiguation() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+
+        assert_eq!(
+            call_error_with_context(
+                &mut context,
+                "posix_pathconf",
+                vec![Value::string(""), Value::Int(libc::_PC_PATH_MAX as i64)]
+            ),
+            "posix_pathconf(): Argument #1 ($path) must not be empty"
+        );
+
+        assert_eq!(
+            call_with_context(&mut context, "posix_sysconf", vec![Value::Int(-1)]),
+            Value::Int(-1)
+        );
+        assert_eq!(
+            call_with_context(&mut context, "posix_errno", vec![]),
+            Value::Int(0)
+        );
+    }
+
+    #[test]
+    fn unsupported_setuid_reports_permission_errno() {
+        let mut output = OutputBuffer::default();
+        let mut context = BuiltinContext::new(&mut output);
+
+        assert_eq!(
+            call_with_context(&mut context, "posix_setuid", vec![Value::Int(0)]),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call_with_context(&mut context, "posix_errno", vec![]),
+            Value::Int(libc::EPERM as i64)
+        );
     }
 }

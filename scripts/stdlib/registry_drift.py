@@ -21,6 +21,58 @@ REPORT_MD = REPORT_DIR / "report.md"
 RUNTIME_RE = re.compile(r'BuiltinEntry::new\(\s*"([^"]+)"', re.MULTILINE)
 STD_RE = re.compile(r'FunctionDescriptor::php\(\s*"([^"]+)"', re.MULTILINE)
 GENERATED_RE = re.compile(r'GeneratedFunctionMetadata\s*\{\s*name:\s*"([^"]+)"', re.MULTILINE)
+VM_BUILTIN_NAMES = {
+    "call_user_func",
+    "call_user_func_array",
+    "class_alias",
+    "class_exists",
+    "class_implements",
+    "class_parents",
+    "clone",
+    "compact",
+    "constant",
+    "debug_backtrace",
+    "debug_print_backtrace",
+    "define",
+    "defined",
+    "die",
+    "enum_exists",
+    "exit",
+    "extension_loaded",
+    "forward_static_call",
+    "func_get_arg",
+    "func_get_args",
+    "func_num_args",
+    "function_exists",
+    "get_called_class",
+    "get_class",
+    "get_class_methods",
+    "get_class_vars",
+    "get_declared_classes",
+    "get_declared_interfaces",
+    "get_declared_traits",
+    "get_defined_constants",
+    "get_defined_functions",
+    "get_defined_vars",
+    "get_error_handler",
+    "get_exception_handler",
+    "get_extension_funcs",
+    "get_included_files",
+    "get_loaded_extensions",
+    "get_mangled_object_vars",
+    "get_object_vars",
+    "get_parent_class",
+    "get_required_files",
+    "interface_exists",
+    "is_a",
+    "is_callable",
+    "is_subclass_of",
+    "method_exists",
+    "phpversion",
+    "property_exists",
+    "trait_exists",
+    "zend_version",
+}
 
 
 class DriftError(Exception):
@@ -41,6 +93,7 @@ def read_runtime_names() -> set[str]:
         names.update(read_names_from_text(path.read_text(encoding="utf-8"), RUNTIME_RE))
     if not names:
         raise DriftError(f"no runtime builtin names found under {RUNTIME_MODULES.relative_to(ROOT)}")
+    names.update(VM_BUILTIN_NAMES)
     return names
 
 

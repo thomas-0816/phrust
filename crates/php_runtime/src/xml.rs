@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 const XML_STORAGE: &str = "__phrust_xml_document";
 const XML_NODE_PATH: &str = "__phrust_xml_path";
+const XML_NODE_KIND: &str = "__phrust_xml_node_kind";
 const XML_TEXT_STORAGE: &str = "__phrust_xml_text";
 const XML_READER_EVENTS: &str = "__phrust_xml_reader_events";
 const XML_READER_INDEX: &str = "__phrust_xml_reader_index";
@@ -18,6 +19,10 @@ const XML_READER_ATTRIBUTE_INDEX: &str = "__phrust_xml_reader_attribute_index";
 const XML_WRITER_BUFFER: &str = "__phrust_xml_writer_buffer";
 const XML_WRITER_STACK: &str = "__phrust_xml_writer_stack";
 const XML_WRITER_OPEN_TAG: &str = "__phrust_xml_writer_open_tag";
+pub const XML_PARSER_START_ELEMENT_HANDLER: &str = "__phrust_xml_start_element_handler";
+pub const XML_PARSER_END_ELEMENT_HANDLER: &str = "__phrust_xml_end_element_handler";
+pub const XML_PARSER_CHARACTER_DATA_HANDLER: &str = "__phrust_xml_character_data_handler";
+pub const XML_PARSER_DEFAULT_HANDLER: &str = "__phrust_xml_default_handler";
 const SIMPLEXML_ENTRIES: &str = "__entries";
 const SIMPLEXML_ENTRY_NAMES: &str = "__entry_names";
 const SIMPLEXML_COUNT: &str = "__phrust_simplexml_count";
@@ -50,6 +55,8 @@ pub struct XmlElement {
 pub enum XmlNode {
     Element(XmlElement),
     Text(String),
+    Comment(String),
+    Cdata(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,6 +102,16 @@ pub fn serialize_element(element: &XmlElement) -> String {
         match child {
             XmlNode::Element(child) => out.push_str(&serialize_element(child)),
             XmlNode::Text(text) => out.push_str(&escape_text(text, false)),
+            XmlNode::Comment(text) => {
+                out.push_str("<!--");
+                out.push_str(text);
+                out.push_str("-->");
+            }
+            XmlNode::Cdata(text) => {
+                out.push_str("<![CDATA[");
+                out.push_str(text);
+                out.push_str("]]>");
+            }
         }
     }
     out.push_str("</");
@@ -109,6 +126,16 @@ fn serialize_children(element: &XmlElement) -> String {
         match child {
             XmlNode::Element(child) => out.push_str(&serialize_element(child)),
             XmlNode::Text(text) => out.push_str(&escape_text(text, false)),
+            XmlNode::Comment(text) => {
+                out.push_str("<!--");
+                out.push_str(text);
+                out.push_str("-->");
+            }
+            XmlNode::Cdata(text) => {
+                out.push_str("<![CDATA[");
+                out.push_str(text);
+                out.push_str("]]>");
+            }
         }
     }
     out
@@ -136,15 +163,160 @@ pub fn reader_events(document: &XmlDocument) -> Vec<XmlReaderEvent> {
     events
 }
 
+pub fn parse_into_struct_arrays(
+    document: &XmlDocument,
+    case_folding: bool,
+) -> (PhpArray, PhpArray) {
+    let mut values = PhpArray::new();
+    let mut index = PhpArray::new();
+    push_struct_element(&document.root, 1, case_folding, &mut values, &mut index);
+    (values, index)
+}
+
 fn element_element_children(element: &XmlElement) -> Vec<&XmlElement> {
     element
         .children
         .iter()
         .filter_map(|child| match child {
             XmlNode::Element(element) => Some(element),
-            XmlNode::Text(_) => None,
+            XmlNode::Text(_) | XmlNode::Comment(_) | XmlNode::Cdata(_) => None,
         })
         .collect()
+}
+
+fn push_struct_element(
+    element: &XmlElement,
+    level: i64,
+    case_folding: bool,
+    values: &mut PhpArray,
+    index: &mut PhpArray,
+) {
+    let tag = struct_tag_name(&element.name, case_folding);
+    let has_element_children = element
+        .children
+        .iter()
+        .any(|child| matches!(child, XmlNode::Element(_)));
+    if !has_element_children {
+        let mut row = struct_base_row(&tag, "complete", level);
+        insert_struct_attributes(&mut row, element, case_folding);
+        let text = element_text(element);
+        if !text.is_empty() {
+            row.insert(
+                ArrayKey::String(PhpString::from("value")),
+                Value::string(text.into_bytes()),
+            );
+        }
+        append_struct_row(values, index, &tag, row);
+        return;
+    }
+
+    let mut row = struct_base_row(&tag, "open", level);
+    insert_struct_attributes(&mut row, element, case_folding);
+    let mut leading_text = String::new();
+    for child in &element.children {
+        match child {
+            XmlNode::Element(_) => break,
+            XmlNode::Text(text) | XmlNode::Cdata(text) => leading_text.push_str(text),
+            XmlNode::Comment(_) => {}
+        }
+    }
+    if !leading_text.is_empty() {
+        row.insert(
+            ArrayKey::String(PhpString::from("value")),
+            Value::string(leading_text.into_bytes()),
+        );
+    }
+    append_struct_row(values, index, &tag, row);
+
+    let mut emitted_element_child = false;
+    for child in &element.children {
+        match child {
+            XmlNode::Element(child) => {
+                emitted_element_child = true;
+                push_struct_element(child, level + 1, case_folding, values, index);
+            }
+            XmlNode::Text(text) | XmlNode::Cdata(text)
+                if emitted_element_child && !text.is_empty() =>
+            {
+                let mut row = PhpArray::new();
+                row.insert(
+                    ArrayKey::String(PhpString::from("tag")),
+                    Value::string(tag.as_bytes().to_vec()),
+                );
+                row.insert(
+                    ArrayKey::String(PhpString::from("value")),
+                    Value::string(text.as_bytes().to_vec()),
+                );
+                row.insert(
+                    ArrayKey::String(PhpString::from("type")),
+                    Value::string(b"cdata".to_vec()),
+                );
+                row.insert(
+                    ArrayKey::String(PhpString::from("level")),
+                    Value::Int(level),
+                );
+                append_struct_row(values, index, &tag, row);
+            }
+            XmlNode::Text(_) | XmlNode::Cdata(_) | XmlNode::Comment(_) => {}
+        }
+    }
+
+    append_struct_row(values, index, &tag, struct_base_row(&tag, "close", level));
+}
+
+fn struct_base_row(tag: &str, row_type: &str, level: i64) -> PhpArray {
+    let mut row = PhpArray::new();
+    row.insert(
+        ArrayKey::String(PhpString::from("tag")),
+        Value::string(tag.as_bytes().to_vec()),
+    );
+    row.insert(
+        ArrayKey::String(PhpString::from("type")),
+        Value::string(row_type.as_bytes().to_vec()),
+    );
+    row.insert(
+        ArrayKey::String(PhpString::from("level")),
+        Value::Int(level),
+    );
+    row
+}
+
+fn insert_struct_attributes(row: &mut PhpArray, element: &XmlElement, case_folding: bool) {
+    if element.attributes.is_empty() {
+        return;
+    }
+    let mut attributes = PhpArray::new();
+    for (name, value) in &element.attributes {
+        let name = struct_tag_name(name, case_folding);
+        attributes.insert(
+            ArrayKey::String(PhpString::from(name.as_str())),
+            Value::string(value.as_bytes().to_vec()),
+        );
+    }
+    row.insert(
+        ArrayKey::String(PhpString::from("attributes")),
+        Value::Array(attributes),
+    );
+}
+
+fn append_struct_row(values: &mut PhpArray, index: &mut PhpArray, tag: &str, row: PhpArray) {
+    let position = values.len() as i64;
+    values.append(Value::Array(row));
+    let key = ArrayKey::String(PhpString::from(tag));
+    let mut bucket = match index.get(&key) {
+        Some(Value::Array(array)) => array.clone(),
+        _ => PhpArray::new(),
+    };
+    bucket.append(Value::Int(position));
+    index.insert(key, Value::Array(bucket));
+}
+
+fn struct_tag_name(name: &str, case_folding: bool) -> String {
+    if case_folding {
+        name.to_ascii_uppercase()
+    } else {
+        name.to_owned()
+    }
 }
 
 pub fn empty_internal_class(name: &str) -> ClassEntry {
@@ -177,7 +349,44 @@ pub fn new_dom_text(text: &str) -> ObjectRef {
     object.set_property("nodeValue", Value::string(text.as_bytes().to_vec()));
     object.set_property("textContent", Value::string(text.as_bytes().to_vec()));
     object.set_property("data", Value::string(text.as_bytes().to_vec()));
+    object.set_property(XML_NODE_KIND, Value::string(b"text".to_vec()));
     object.set_property(XML_TEXT_STORAGE, Value::string(text.as_bytes().to_vec()));
+    object
+}
+
+pub fn new_dom_comment(text: &str) -> ObjectRef {
+    let object =
+        ObjectRef::new_with_display_name(&empty_internal_class("DOMComment"), "DOMComment");
+    object.set_property("nodeName", Value::string("#comment"));
+    object.set_property("nodeValue", Value::string(text.as_bytes().to_vec()));
+    object.set_property("textContent", Value::string(text.as_bytes().to_vec()));
+    object.set_property("data", Value::string(text.as_bytes().to_vec()));
+    object.set_property(XML_NODE_KIND, Value::string(b"comment".to_vec()));
+    object.set_property(XML_TEXT_STORAGE, Value::string(text.as_bytes().to_vec()));
+    object
+}
+
+pub fn new_dom_cdata_section(text: &str) -> ObjectRef {
+    let object = ObjectRef::new_with_display_name(
+        &empty_internal_class("DOMCdataSection"),
+        "DOMCdataSection",
+    );
+    object.set_property("nodeName", Value::string("#cdata-section"));
+    object.set_property("nodeValue", Value::string(text.as_bytes().to_vec()));
+    object.set_property("textContent", Value::string(text.as_bytes().to_vec()));
+    object.set_property("data", Value::string(text.as_bytes().to_vec()));
+    object.set_property(XML_NODE_KIND, Value::string(b"cdata".to_vec()));
+    object.set_property(XML_TEXT_STORAGE, Value::string(text.as_bytes().to_vec()));
+    object
+}
+
+pub fn new_dom_attr(name: &str, value: &str) -> ObjectRef {
+    let object = ObjectRef::new_with_display_name(&empty_internal_class("DOMAttr"), "DOMAttr");
+    object.set_property("name", Value::string(name.as_bytes().to_vec()));
+    object.set_property("value", Value::string(value.as_bytes().to_vec()));
+    object.set_property("nodeName", Value::string(name.as_bytes().to_vec()));
+    object.set_property("nodeValue", Value::string(value.as_bytes().to_vec()));
+    object.set_property("textContent", Value::string(value.as_bytes().to_vec()));
     object
 }
 
@@ -249,7 +458,7 @@ pub fn new_simplexml_element(element: &XmlElement) -> ObjectRef {
     let mut children_by_name: BTreeMap<String, Vec<ObjectRef>> = BTreeMap::new();
     for child in element.children.iter().filter_map(|child| match child {
         XmlNode::Element(element) => Some(element),
-        XmlNode::Text(_) => None,
+        XmlNode::Text(_) | XmlNode::Comment(_) | XmlNode::Cdata(_) => None,
     }) {
         children_by_name
             .entry(child.name.clone())
@@ -315,7 +524,7 @@ fn new_simplexml_children_list(children: &[XmlNode]) -> ObjectRef {
         .iter()
         .filter_map(|child| match child {
             XmlNode::Element(element) => Some(element),
-            XmlNode::Text(_) => None,
+            XmlNode::Text(_) | XmlNode::Comment(_) | XmlNode::Cdata(_) => None,
         })
         .enumerate()
     {
@@ -456,6 +665,18 @@ pub fn dom_document_create_text_node(value: &str) -> Value {
     Value::Object(new_dom_text(value))
 }
 
+pub fn dom_document_create_comment(value: &str) -> Value {
+    Value::Object(new_dom_comment(value))
+}
+
+pub fn dom_document_create_cdata_section(value: &str) -> Value {
+    Value::Object(new_dom_cdata_section(value))
+}
+
+pub fn dom_document_create_attribute(name: &str) -> Value {
+    Value::Object(new_dom_attr(name, ""))
+}
+
 pub fn dom_document_append_child(object: &ObjectRef, child: &ObjectRef) -> Value {
     let Some(child_element) = element_from_object(child) else {
         return Value::Null;
@@ -523,6 +744,19 @@ pub fn dom_element_set_attribute(object: &ObjectRef, name: &str, value: &str) ->
     Value::Null
 }
 
+pub fn dom_element_set_attribute_node(object: &ObjectRef, attribute: &ObjectRef) -> Value {
+    let name = match attribute.get_property("name") {
+        Some(Value::String(name)) => name.to_string_lossy(),
+        _ => return Value::Null,
+    };
+    let value = match attribute.get_property("value") {
+        Some(Value::String(value)) => value.to_string_lossy(),
+        _ => String::new(),
+    };
+    dom_element_set_attribute(object, &name, &value);
+    Value::Object(attribute.clone())
+}
+
 pub fn dom_element_append_child(object: &ObjectRef, child: &ObjectRef) -> Value {
     let Some(mut element) = element_from_object(object) else {
         return Value::Null;
@@ -537,9 +771,14 @@ pub fn dom_element_append_child(object: &ObjectRef, child: &ObjectRef) -> Value 
     let Some(text) = text_from_object(child) else {
         return Value::Null;
     };
-    element.children.push(XmlNode::Text(text.clone()));
+    let node = match node_kind_from_object(child).as_deref() {
+        Some("comment") => XmlNode::Comment(text.clone()),
+        Some("cdata") => XmlNode::Cdata(text.clone()),
+        _ => XmlNode::Text(text.clone()),
+    };
+    element.children.push(node);
     set_dom_element_object(object, &element);
-    Value::Object(new_dom_text(&text))
+    Value::Object(child.clone())
 }
 
 pub fn dom_node_list_item(object: &ObjectRef, index: i64) -> Value {
@@ -555,6 +794,18 @@ pub fn dom_node_list_item(object: &ObjectRef, index: i64) -> Value {
 pub fn simplexml_load_string(xml: &str) -> Result<Value, String> {
     let document = parse_xml(xml)?;
     Ok(Value::Object(new_simplexml_element(&document.root)))
+}
+
+pub fn simplexml_import_dom(object: &ObjectRef) -> Value {
+    element_from_object(object)
+        .map(|element| Value::Object(new_simplexml_element(&element)))
+        .unwrap_or(Value::Bool(false))
+}
+
+pub fn dom_import_simplexml(object: &ObjectRef) -> Value {
+    simplexml_context_element(object)
+        .map(|element| Value::Object(new_dom_element(&element)))
+        .unwrap_or(Value::Bool(false))
 }
 
 pub fn simplexml_as_xml(object: &ObjectRef) -> Value {
@@ -1080,6 +1331,24 @@ pub fn xml_reader_read_outer_xml(object: &ObjectRef) -> Value {
         .unwrap_or_else(|| Value::string(Vec::<u8>::new()))
 }
 
+pub fn xml_reader_expand(object: &ObjectRef) -> Value {
+    if matches!(
+        object.get_property(XML_READER_ATTRIBUTE_INDEX),
+        Some(Value::Int(index)) if index >= 0
+    ) {
+        return Value::Bool(false);
+    }
+    let Some(event) = current_reader_event(object) else {
+        return Value::Bool(false);
+    };
+    if event.node_type != XML_READER_ELEMENT {
+        return Value::Bool(false);
+    }
+    parse_xml(&event.outer_xml)
+        .map(|document| Value::Object(new_dom_element(&document.root)))
+        .unwrap_or(Value::Bool(false))
+}
+
 pub fn xml_reader_close(object: &ObjectRef) -> Value {
     object.set_property(XML_READER_EVENTS, Value::Array(PhpArray::new()));
     object.set_property(XML_READER_INDEX, Value::Int(-1));
@@ -1141,6 +1410,26 @@ pub fn xml_writer_text(object: &ObjectRef, value: &str) -> Value {
     Value::Bool(true)
 }
 
+pub fn xml_writer_write_comment(object: &ObjectRef, value: &str) -> Value {
+    close_writer_open_tag(object);
+    let mut buffer = writer_buffer(object);
+    buffer.push_str("<!--");
+    buffer.push_str(value);
+    buffer.push_str("-->");
+    object.set_property(XML_WRITER_BUFFER, Value::string(buffer.into_bytes()));
+    Value::Bool(true)
+}
+
+pub fn xml_writer_write_cdata(object: &ObjectRef, value: &str) -> Value {
+    close_writer_open_tag(object);
+    let mut buffer = writer_buffer(object);
+    buffer.push_str("<![CDATA[");
+    buffer.push_str(value);
+    buffer.push_str("]]>");
+    object.set_property(XML_WRITER_BUFFER, Value::string(buffer.into_bytes()));
+    Value::Bool(true)
+}
+
 pub fn xml_writer_write_element(object: &ObjectRef, name: &str, value: Option<&str>) -> Value {
     if !matches!(xml_writer_start_element(object, name), Value::Bool(true)) {
         return Value::Bool(false);
@@ -1197,6 +1486,8 @@ fn collect_text(element: &XmlElement, out: &mut String) {
         match child {
             XmlNode::Element(child) => collect_text(child, out),
             XmlNode::Text(text) => out.push_str(text),
+            XmlNode::Cdata(text) => out.push_str(text),
+            XmlNode::Comment(_) => {}
         }
     }
 }
@@ -1277,7 +1568,7 @@ fn push_reader_events_with_depth(
                 outer_xml: escape_text(text, false),
                 string_value: text.clone(),
             }),
-            XmlNode::Text(_) => {}
+            XmlNode::Text(_) | XmlNode::Comment(_) | XmlNode::Cdata(_) => {}
         }
     }
     events.push(XmlReaderEvent {
@@ -1324,13 +1615,25 @@ fn element_from_object(object: &ObjectRef) -> Option<XmlElement> {
 }
 
 fn text_from_object(object: &ObjectRef) -> Option<String> {
-    if normalize_class_name(&object.class_name()) != "domtext" {
+    if !matches!(
+        normalize_class_name(&object.class_name()).as_str(),
+        "domtext" | "domcomment" | "domcdatasection"
+    ) {
         return None;
     }
     object
         .get_property(XML_TEXT_STORAGE)
         .and_then(|value| match value {
             Value::String(text) => Some(text.to_string_lossy()),
+            _ => None,
+        })
+}
+
+fn node_kind_from_object(object: &ObjectRef) -> Option<String> {
+    object
+        .get_property(XML_NODE_KIND)
+        .and_then(|value| match value {
+            Value::String(kind) => Some(kind.to_string_lossy()),
             _ => None,
         })
 }
@@ -1363,6 +1666,22 @@ fn element_value(element: &XmlElement) -> Value {
                     Value::string(text.as_bytes().to_vec()),
                 );
                 Value::Array(text_node)
+            }
+            XmlNode::Comment(text) => {
+                let mut comment_node = PhpArray::new();
+                comment_node.insert(
+                    ArrayKey::String(PhpString::from("comment")),
+                    Value::string(text.as_bytes().to_vec()),
+                );
+                Value::Array(comment_node)
+            }
+            XmlNode::Cdata(text) => {
+                let mut cdata_node = PhpArray::new();
+                cdata_node.insert(
+                    ArrayKey::String(PhpString::from("cdata")),
+                    Value::string(text.as_bytes().to_vec()),
+                );
+                Value::Array(cdata_node)
             }
         });
     }
@@ -1400,6 +1719,10 @@ fn element_from_value(value: &Value) -> Option<XmlElement> {
         for (_, child) in child_array.iter() {
             if let Some(Value::String(text)) = as_text_node(child) {
                 children.push(XmlNode::Text(text.to_string_lossy()));
+            } else if let Some(Value::String(text)) = as_comment_node(child) {
+                children.push(XmlNode::Comment(text.to_string_lossy()));
+            } else if let Some(Value::String(text)) = as_cdata_node(child) {
+                children.push(XmlNode::Cdata(text.to_string_lossy()));
             } else if let Some(element) = element_from_value(child) {
                 children.push(XmlNode::Element(element));
             }
@@ -1417,6 +1740,20 @@ fn as_text_node(value: &Value) -> Option<&Value> {
         return None;
     };
     array.get(&ArrayKey::String(PhpString::from("text")))
+}
+
+fn as_comment_node(value: &Value) -> Option<&Value> {
+    let Value::Array(array) = value else {
+        return None;
+    };
+    array.get(&ArrayKey::String(PhpString::from("comment")))
+}
+
+fn as_cdata_node(value: &Value) -> Option<&Value> {
+    let Value::Array(array) = value else {
+        return None;
+    };
+    array.get(&ArrayKey::String(PhpString::from("cdata")))
 }
 
 fn reader_events_value(events: &[XmlReaderEvent]) -> Value {

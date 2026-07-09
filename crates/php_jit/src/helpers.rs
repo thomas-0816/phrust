@@ -21,6 +21,17 @@ pub const JIT_HELPER_STATUS_OVERFLOW: i32 = 2;
 /// exit); the value `3` is chosen so it never aliases the Cranelift ABI's
 /// [`JIT_HELPER_STATUS_OVERFLOW`] (`2`).
 pub const JIT_HELPER_STATUS_TAILCALL: i32 = 3;
+/// Base of the return-and-resume call-request region statuses: a region
+/// returning `RESUME_CALL_BASE + i` has marshaled the positional `Int`
+/// arguments of its `i`-th call site (see `copy_patch::ResumeCallSite`) into
+/// their buffer slots and suspended itself. The VM performs the userland call
+/// through the normal interpreter path, writes the callee's result into the
+/// site's `result_slot`, and re-enters the region at the site's
+/// `resume_offset` with the same buffer — every live value sits in the flat
+/// slot buffer, so re-entry needs no register state. The base is `16` so the
+/// range never aliases `OK`/`FALLBACK`/`OVERFLOW`/`TAILCALL` and leaves room
+/// for future scalar statuses below it.
+pub const JIT_HELPER_STATUS_RESUME_CALL_BASE: i32 = 16;
 
 /// Stable helper id.
 #[repr(transparent)]

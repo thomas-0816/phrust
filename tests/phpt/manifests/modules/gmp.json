@@ -3,9 +3,9 @@
   "module": "gmp",
   "priority": "Expanded BigInt-backed GMP facade",
   "selected_manifest": "tests/phpt/manifests/modules/gmp.selected.jsonl",
-  "corpus_count": 1,
-  "selected_count": 1,
-  "pass_count": 1,
+  "corpus_count": 2,
+  "selected_count": 2,
+  "pass_count": 2,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
@@ -15,14 +15,15 @@
     "Base parsing and string conversion",
     "Arithmetic, quotient/remainder, gcd/lcm/invert, roots, and powm",
     "Bitwise operations, testbit, scans, popcount, and hamdist",
-    "Factorial, binomial, import/export, and deterministic primality helpers"
+    "Factorial, binomial, import/export, and deterministic primality helpers",
+    "GMP constants and Jacobi/Legendre/Kronecker symbol helpers"
   ],
   "non_scope": [
     "Native GMP object identity and mutable GMP object behavior",
     "Full GMP class serialization",
     "Limb-order import/export flags",
     "Secure randomness",
-    "Jacobi, Legendre, and Kronecker symbols"
+    "Mutable gmp_setbit and gmp_clrbit object APIs"
   ],
   "target_gates": ["just phpt-dev-module MODULE=gmp"],
   "next_step": "Introduce a real GMP value object before enabling mutable object-only APIs."

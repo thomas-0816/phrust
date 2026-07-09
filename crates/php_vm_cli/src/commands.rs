@@ -4411,6 +4411,27 @@ mod tests {
         }
     }
 
+    struct EnvVarRestore {
+        name: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarRestore {
+        fn remove(name: &'static str) -> Self {
+            let previous = env::var(name).ok();
+            unsafe {
+                env::remove_var(name);
+            }
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            restore_env(self.name, self.previous.take());
+        }
+    }
+
     #[test]
     fn help_is_available() {
         let mut stdout = Vec::new();
@@ -4575,6 +4596,8 @@ mod tests {
 
     #[test]
     fn compile_json_reports_ir_metadata() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _timings_json_env = EnvVarRestore::remove("PHRUST_TIMINGS_JSON");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let code = run(
@@ -4600,6 +4623,8 @@ mod tests {
 
     #[test]
     fn compile_json_reports_optimizer_stats_when_requested() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _timings_json_env = EnvVarRestore::remove("PHRUST_TIMINGS_JSON");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let code = run(
@@ -5294,7 +5319,7 @@ mod tests {
         assert_eq!(options.bytecode_layout_profile, None);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Cranelift);
+        assert_eq!(options.jit, JitMode::Off);
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
         assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
@@ -5318,7 +5343,7 @@ mod tests {
         assert_eq!(options.execution_format, ExecutionFormat::Auto);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Cranelift);
+        assert_eq!(options.jit, JitMode::Off);
         assert!(options.tiering.enabled);
         assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
     }
@@ -5360,7 +5385,7 @@ mod tests {
         assert_eq!(options.bytecode_layout_profile, None);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Cranelift);
+        assert_eq!(options.jit, JitMode::Off);
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
         assert_eq!(options.adaptive_tiny_unit_setup_threshold, Some(8));
@@ -5564,7 +5589,7 @@ mod tests {
         let json = std::fs::read_to_string(&path).expect("counter JSON should be written");
         let _ = std::fs::remove_file(&path);
         assert!(json.contains("\"instructions_executed\""));
-        assert!(json.contains("\"jit_mode\": \"cranelift\""));
+        assert!(json.contains("\"jit_mode\": \"off\""));
         assert!(json.contains("\"jit_threshold\": 8"));
         assert!(json.contains("\"output_bytes\": 14"));
         assert!(json.contains("\"guard_failures\": 0"));
@@ -5603,7 +5628,7 @@ mod tests {
         let json = fs::read_to_string(&counters_path).expect("counter JSON should be written");
         let _ = fs::remove_dir_all(&root);
         let counters = parse_json_text(&json);
-        assert_eq!(counters["jit_mode"], "cranelift");
+        assert_eq!(counters["jit_mode"], "off");
         assert_eq!(counters["native_executions"], counters["jit_executed"]);
         assert!(
             counters["bytecode_lower_attempts"].as_u64().unwrap() > 0,
@@ -5859,7 +5884,7 @@ mod tests {
         assert_eq!(options.bytecode_layout_profile, None);
         assert_eq!(options.quickening, QuickeningMode::On);
         assert_eq!(options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.jit, JitMode::Cranelift);
+        assert_eq!(options.jit, JitMode::Off);
         assert_eq!(options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.tiering.enabled);
         assert!(!options.tiering.collect_stats);

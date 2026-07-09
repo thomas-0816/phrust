@@ -367,7 +367,10 @@ enum StreamData {
     Context {
         options: PhpArray,
     },
-    FileInfo,
+    FileInfo {
+        flags: i64,
+        magic_file: Option<String>,
+    },
 }
 
 /// Reference-counted runtime resource handle.
@@ -430,6 +433,31 @@ impl ResourceRef {
         }
     }
 
+    /// Returns the stored fileinfo flags and optional magic database path.
+    #[must_use]
+    pub fn fileinfo_options(&self) -> Option<(i64, Option<String>)> {
+        let state = self.0.borrow();
+        match &state.data {
+            StreamData::FileInfo { flags, magic_file } => Some((*flags, magic_file.clone())),
+            _ => None,
+        }
+    }
+
+    /// Updates the stored fileinfo flags for a fileinfo resource.
+    pub fn set_fileinfo_flags(&self, flags: i64) -> bool {
+        let mut state = self.0.borrow_mut();
+        match &mut state.data {
+            StreamData::FileInfo {
+                flags: stored_flags,
+                ..
+            } => {
+                *stored_flags = flags;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Returns whether userland close functions may close this resource.
     #[must_use]
     pub fn is_user_closable(&self) -> bool {
@@ -466,7 +494,9 @@ impl ResourceRef {
                 buffer[*cursor..end].copy_from_slice(bytes);
                 *cursor = end;
             }
-            StreamData::Directory { .. } | StreamData::Context { .. } | StreamData::FileInfo => {
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_WRITABLE",
                     "directory resource is not writable",
@@ -502,12 +532,12 @@ impl ResourceRef {
                 *cursor = end;
                 Ok(bytes)
             }
-            StreamData::Directory { .. } | StreamData::Context { .. } | StreamData::FileInfo => {
-                Err(StreamOpenError::new(
-                    "E_PHP_RUNTIME_STREAM_NOT_READABLE",
-                    "directory resource is not byte-readable",
-                ))
-            }
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. } => Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_NOT_READABLE",
+                "directory resource is not byte-readable",
+            )),
         }
     }
 
@@ -539,12 +569,12 @@ impl ResourceRef {
                 *cursor = end;
                 Ok(bytes)
             }
-            StreamData::Directory { .. } | StreamData::Context { .. } | StreamData::FileInfo => {
-                Err(StreamOpenError::new(
-                    "E_PHP_RUNTIME_STREAM_NOT_READABLE",
-                    "directory resource is not line-readable",
-                ))
-            }
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. } => Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_NOT_READABLE",
+                "directory resource is not line-readable",
+            )),
         }
     }
 
@@ -572,12 +602,12 @@ impl ResourceRef {
                 *cursor = buffer.len();
                 Ok(bytes)
             }
-            StreamData::Directory { .. } | StreamData::Context { .. } | StreamData::FileInfo => {
-                Err(StreamOpenError::new(
-                    "E_PHP_RUNTIME_STREAM_NOT_READABLE",
-                    "directory resource is not byte-readable",
-                ))
-            }
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. } => Err(StreamOpenError::new(
+                "E_PHP_RUNTIME_STREAM_NOT_READABLE",
+                "directory resource is not byte-readable",
+            )),
         }
     }
 
@@ -640,7 +670,9 @@ impl ResourceRef {
                 }
                 *cursor = target as usize;
             }
-            StreamData::Directory { .. } | StreamData::Context { .. } | StreamData::FileInfo => {
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_SEEKABLE",
                     "directory resource is not byte-seekable",
@@ -675,7 +707,9 @@ impl ResourceRef {
                     *cursor = length;
                 }
             }
-            StreamData::Directory { .. } | StreamData::Context { .. } | StreamData::FileInfo => {
+            StreamData::Directory { .. }
+            | StreamData::Context { .. }
+            | StreamData::FileInfo { .. } => {
                 return Err(StreamOpenError::new(
                     "E_PHP_RUNTIME_STREAM_NOT_WRITABLE",
                     "resource is not a writable byte stream",
@@ -700,8 +734,7 @@ impl ResourceRef {
             | StreamData::File { cursor, .. }
             | StreamData::GzipFile { cursor, .. }
             | StreamData::Directory { cursor, .. } => *cursor,
-            StreamData::Context { .. } => 0,
-            StreamData::FileInfo => 0,
+            StreamData::Context { .. } | StreamData::FileInfo { .. } => 0,
         })
     }
 
@@ -722,8 +755,7 @@ impl ResourceRef {
             StreamData::Directory {
                 entries, cursor, ..
             } => *cursor >= entries.len(),
-            StreamData::Context { .. } => true,
-            StreamData::FileInfo => true,
+            StreamData::Context { .. } | StreamData::FileInfo { .. } => true,
         })
     }
 
@@ -979,7 +1011,7 @@ impl ResourceTable {
     }
 
     /// Registers a fileinfo detector resource.
-    pub fn register_fileinfo(&mut self) -> ResourceRef {
+    pub fn register_fileinfo(&mut self, flags: i64, magic_file: Option<String>) -> ResourceRef {
         let id = ResourceId::new(self.next_id);
         self.next_id += 1;
         let resource = ResourceRef(Rc::new(RefCell::new(ResourceState {
@@ -988,7 +1020,7 @@ impl ResourceTable {
             flags: StreamFlags::new(false, false, false),
             metadata: StreamMetadata::new("fileinfo", "file_info", "", "fileinfo"),
             user_closable: true,
-            data: StreamData::FileInfo,
+            data: StreamData::FileInfo { flags, magic_file },
         })));
         self.resources.insert(id, resource.clone());
         resource

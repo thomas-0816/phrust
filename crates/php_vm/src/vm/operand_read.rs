@@ -173,21 +173,21 @@ pub(super) fn read_operand_at_frame(
     }
 }
 
-pub(super) fn take_consumed_operand_at_frame(
+pub(super) fn take_discard_operand_at_frame(
     unit: &IrUnit,
     stack: &mut CallStack,
     frame_index: usize,
     operand: Operand,
-) -> Result<Value, String> {
+) -> Result<Option<Value>, String> {
     let Operand::Register(id) = operand else {
-        return read_operand_at_frame(unit, stack, frame_index, operand);
+        return read_operand_at_frame(unit, stack, frame_index, operand).map(Some);
     };
     let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
     let value = frame.registers.take(id)?;
     if value.is_uninitialized() {
-        return Err(format!("read uninitialized register r{}", id.raw()));
+        return Ok(None);
     }
-    Ok(value)
+    Ok(Some(value))
 }
 
 pub(super) fn read_operand_ref_at_frame<'a>(

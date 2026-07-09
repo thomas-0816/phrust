@@ -4,14 +4,14 @@
   "priority":"bounded XMLReader attribute navigation MVP",
   "selected_manifest":"tests/phpt/manifests/modules/xmlreader.selected.jsonl",
   "corpus_count":0,
-  "selected_count":4,
-  "pass_count":4,
+  "selected_count":5,
+  "pass_count":5,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":0,
-  "scope":["extension_loaded(\"xmlreader\")","XMLReader::open","XMLReader::XML","XMLReader::read","XMLReader::next","XMLReader::ATTRIBUTE","nodeType","name","localName","prefix","namespaceURI","depth","value","attributeCount","hasAttributes","getAttribute","getAttributeNo","lookupNamespace","moveToAttribute","moveToAttributeNo","moveToFirstAttribute","moveToNextAttribute","moveToElement","readString","readInnerXml","readOuterXml","close"],
-  "non_scope":["full upstream ext/xmlreader corpus","URI/stream wrappers","validation flags","expand/DOM interop","libxml errors"],
+  "scope":["extension_loaded(\"xmlreader\")","XMLReader::open","XMLReader::XML","XMLReader::read","XMLReader::next","XMLReader::ATTRIBUTE","nodeType","name","localName","prefix","namespaceURI","depth","value","attributeCount","hasAttributes","getAttribute","getAttributeNo","lookupNamespace","moveToAttribute","moveToAttributeNo","moveToFirstAttribute","moveToNextAttribute","moveToElement","readString","readInnerXml","readOuterXml","expand bounded DOMElement interop","close"],
+  "non_scope":["full upstream ext/xmlreader corpus","URI/stream wrappers","validation flags","live DOM ownership/lifetime interop","libxml errors"],
   "target_gates":["nix develop -c just phpt-module-target MODULE=xmlreader","PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=xmlreader","nix develop -c just verify-phpt"],
-  "next_step":"Promote URI/stream wrappers, validation flags, and DOM expand behavior after the XML tree model is broadened."
+  "next_step":"Promote URI/stream wrappers, validation flags, and live DOM ownership behavior after the XML tree model is broadened."
 }

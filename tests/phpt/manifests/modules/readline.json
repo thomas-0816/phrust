@@ -3,15 +3,15 @@
   "module":"readline",
   "priority":"noninteractive CLI-safe readline compatibility MVP",
   "selected_manifest":"tests/phpt/manifests/modules/readline.selected.jsonl",
-  "corpus_count":23,
-  "selected_count":1,
-  "pass_count":1,
+  "corpus_count":25,
+  "selected_count":17,
+  "pass_count":17,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":23,
-  "scope":["extension visibility","READLINE_LIB constant","nonblocking readline false result","request-local history","history file read/write","readline_info get/set","completion callback registration","callback handler install/remove lifecycle","callback read/redisplay/new-line no-op safety"],
-  "non_scope":["interactive terminal input","system readline/libedit binding","real completion invocation","callback dispatch on input","global readline process state","open_basedir history checks"],
-  "target_gates":["nix develop -c cargo test -p php_runtime readline","nix develop -c cargo test -p php_std readline","nix develop -c just phpt-dev-module MODULE=readline"],
-  "next_step":"Promote upstream readline and libedit PHPTs after a real terminal-backed readline/libedit adapter is available behind nonblocking CLI guards."
+  "known_failure_count":1,
+  "scope":["extension visibility","READLINE_LIB constant","nonblocking readline false result","request-local history","history file read/write","readline_info defaults, ordering, get/set, and normalization","completion callback registration and invalid callback diagnostics","callback handler install/remove lifecycle","callback read/redisplay/new-line no-op safety","open_basedir history checks"],
+  "non_scope":["interactive terminal input","system readline/libedit binding","real completion invocation","callback dispatch on input","global readline process state","libedit-specific behavior"],
+  "target_gates":["nix develop -c cargo test -p php_runtime readline -- --nocapture","nix develop -c cargo test -p php_std readline -- --nocapture","nix develop -c just phpt-dev-module MODULE=readline"],
+  "next_step":"A terminal-backed, nonblocking readline adapter is needed before promoting ext/readline/tests/readline_basic.phpt."
 }

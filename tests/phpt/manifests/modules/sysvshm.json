@@ -4,14 +4,14 @@
   "priority":"System V shared variable compatibility MVP",
   "selected_manifest":"tests/phpt/manifests/modules/sysvshm.selected.jsonl",
   "corpus_count":12,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":11,
+  "pass_count":11,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":12,
-  "scope":["extension visibility","SysvSharedMemory class visibility","request-local shared variable storage","variable key has/put/get/remove","detach","segment removal"],
-  "non_scope":["cross-process System V shared memory","host segment IDs","serialized storage byte limits","permission enforcement","platform errno-specific warning text"],
-  "target_gates":["nix develop -c cargo test -p php_runtime sysvshm","nix develop -c cargo test -p php_std sysv","nix develop -c just phpt-dev-module MODULE=sysvshm"],
-  "next_step":"Promote upstream sysvshm PHPTs after host-backed shared-memory variable storage is available behind platform-gated cleanup."
+  "known_failure_count":0,
+  "scope":["extension visibility","SysvSharedMemory class visibility","request-local shared variable storage","variable key has/put/get/remove","attach argument validation","PHPT sibling path mirroring","storage capacity warnings","serialization callback side effects","serialization exception propagation","detach","segment removal","destroyed handle Error mapping"],
+  "non_scope":["cross-process System V shared memory","host segment IDs","permission enforcement","platform errno-specific warning text"],
+  "target_gates":["nix develop -c cargo test -p php_runtime sysvshm","nix develop -c cargo test -p php_vm sysvshm","nix develop -c just phpt-dev-module MODULE=sysvshm"],
+  "next_step":"Keep host-local skip coverage documented for bug72858.phpt and shm_get_var_leak.phpt."
 }

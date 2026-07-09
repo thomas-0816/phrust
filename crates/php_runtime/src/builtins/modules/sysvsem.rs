@@ -3,7 +3,7 @@
 use super::core::{argument_type_error, arity_error, int_arg};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
-    RuntimeSourceSpan,
+    RuntimeSourceSpan, SysvSemaphoreError,
 };
 use crate::{ClassEntry, ClassFlags, ObjectRef, Value, normalize_class_name};
 
@@ -28,49 +28,117 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 fn builtin_sem_get(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("sem_get", &args, 1, 4)?;
     let key = int_arg("sem_get", &args[0])?;
     let max_acquire = optional_int("sem_get", &args, 1, 1)?;
-    let _permissions = optional_int("sem_get", &args, 2, 0o666)?;
+    let permissions = optional_int("sem_get", &args, 2, 0o666)?;
     let auto_release = optional_bool("sem_get", &args, 3, true)?;
     if max_acquire <= 0 {
         return Ok(Value::Bool(false));
     }
-    let id = context.sysvsem_state().get(key, max_acquire, auto_release);
-    Ok(Value::Object(semaphore_object(id)))
+    match context
+        .sysvsem_state()
+        .get(key, max_acquire, permissions, auto_release)
+    {
+        Ok(id) => Ok(Value::Object(semaphore_object(id))),
+        Err(error) => {
+            emit_sysvsem_warning(context, "sem_get", error, span);
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 fn builtin_sem_acquire(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("sem_acquire", &args, 1, 2)?;
     let semaphore_id = semaphore_id("sem_acquire", &args[0])?;
-    let _non_blocking = optional_bool("sem_acquire", &args, 1, false)?;
-    Ok(Value::Bool(context.sysvsem_state().acquire(semaphore_id)))
+    let non_blocking = optional_bool("sem_acquire", &args, 1, false)?;
+    match context.sysvsem_state().acquire(semaphore_id, non_blocking) {
+        Ok(acquired) => Ok(Value::Bool(acquired)),
+        Err(SysvSemaphoreError::WouldBlock) => Ok(Value::Bool(false)),
+        Err(error) => {
+            emit_sysvsem_warning(context, "sem_acquire", error, span);
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 fn builtin_sem_release(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("sem_release", &args, 1)?;
     let semaphore_id = semaphore_id("sem_release", &args[0])?;
-    Ok(Value::Bool(context.sysvsem_state().release(semaphore_id)))
+    if context.pcntl_state().has_forked() {
+        flush_root_output_to_stdout(context.output());
+    }
+    match context.sysvsem_state().release(semaphore_id) {
+        Ok(released) => Ok(Value::Bool(released)),
+        Err(error) => {
+            emit_sysvsem_warning(context, "sem_release", error, span);
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 fn builtin_sem_remove(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("sem_remove", &args, 1)?;
     let semaphore_id = semaphore_id("sem_remove", &args[0])?;
-    Ok(Value::Bool(context.sysvsem_state().remove(semaphore_id)))
+    match context.sysvsem_state().remove(semaphore_id) {
+        Ok(removed) => Ok(Value::Bool(removed)),
+        Err(error) => {
+            emit_sysvsem_warning(context, "sem_remove", error, span);
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn emit_sysvsem_warning(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    error: SysvSemaphoreError,
+    span: RuntimeSourceSpan,
+) {
+    let SysvSemaphoreError::Warning(message) = error else {
+        return;
+    };
+    context.php_warning(
+        "E_PHP_RUNTIME_SYSVSEM",
+        format!("{function}(): {message}"),
+        span,
+    );
+}
+
+fn flush_root_output_to_stdout(output: &mut crate::OutputBuffer) {
+    if output.as_bytes().is_empty() {
+        return;
+    }
+    let mut written = 0;
+    let bytes = output.as_bytes();
+    while written < bytes.len() {
+        let result = unsafe {
+            libc::write(
+                libc::STDOUT_FILENO,
+                bytes[written..].as_ptr().cast(),
+                bytes.len() - written,
+            )
+        };
+        if result <= 0 {
+            break;
+        }
+        written += result as usize;
+    }
+    output.clear();
 }
 
 fn expect_exact(name: &str, args: &[Value], expected: usize) -> Result<(), BuiltinError> {
@@ -168,9 +236,10 @@ mod tests {
     fn semaphore_tracks_acquire_release_and_remove() {
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
+        let key = 0x7072_0000_i64 | (i64::from(std::process::id()) & 0xffff);
         let semaphore = builtin_sem_get(
             &mut context,
-            vec![Value::Int(123), Value::Int(1)],
+            vec![Value::Int(key), Value::Int(1), Value::Int(0o600)],
             RuntimeSourceSpan::default(),
         )
         .expect("semaphore");

@@ -1,5 +1,5 @@
 --TEST--
-pdo: SQLite-backed core MVP surface
+pdo: core surface with enabled PDO drivers
 --DESCRIPTION--
 Generated coverage for PDO extension visibility, core constants,
 driver listing, metadata, and error state.
@@ -29,8 +29,12 @@ var_dump($db->quote("a'b"));
 --EXPECT--
 bool(true)
 bool(true)
-array(1) {
+array(3) {
   [0]=>
+  string(5) "mysql"
+  [1]=>
+  string(5) "pgsql"
+  [2]=>
   string(6) "sqlite"
 }
 bool(true)

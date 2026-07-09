@@ -6,5 +6,6 @@
 {"path":"tests/phpt/generated/date/strtotime-mvp.phpt"}
 {"path":"tests/phpt/generated/date/dateinterval-mvp.phpt"}
 {"path":"ext/date/tests/DateInterval_format.phpt"}
+{"path":"ext/date/tests/DateInterval_format_a.phpt"}
 {"path":"ext/date/tests/DateTimeZone_getName_basic1.phpt"}
 {"path":"ext/date/tests/006.phpt"}

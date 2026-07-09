@@ -57,6 +57,7 @@ FALLBACK_KEYWORDS = (
     "guard_failure",
     "unsupported",
 )
+DEFAULT_JIT_MODE = "off"
 
 
 @dataclass(frozen=True)
@@ -203,18 +204,16 @@ def collect_fallback_deopt_counters(counters: dict[str, Any]) -> dict[str, int]:
 
 def default_counter_sanity(counters: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    if counters.get("jit_mode") != "cranelift":
-        failures.append(f"jit_mode={counters.get('jit_mode')!r}; expected cranelift")
+    if counters.get("jit_mode") != DEFAULT_JIT_MODE:
+        failures.append(
+            f"jit_mode={counters.get('jit_mode')!r}; expected {DEFAULT_JIT_MODE}"
+        )
     native_compiled = counters.get("native_compiled_regions", 0)
     native_executions = counters.get("native_executions", 0)
-    native_unavailable = counters.get("native_platform_unavailable", 0)
     if isinstance(native_compiled, int) and native_compiled > 0:
-        if not isinstance(native_executions, int) or native_executions <= 0:
-            failures.append(
-                "native_compiled_regions is nonzero but native_executions did not increase"
-            )
-    elif not isinstance(native_unavailable, int):
-        failures.append("native_platform_unavailable counter is missing or not numeric")
+        failures.append("native_compiled_regions is nonzero while default JIT is off")
+    if isinstance(native_executions, int) and native_executions > 0:
+        failures.append("native_executions is nonzero while default JIT is off")
     return failures
 
 
@@ -244,7 +243,7 @@ def verdict(rows: list[dict[str, Any]], failures: list[str]) -> tuple[str, list[
             "gate-backed",
             [
                 "baseline and default profiles matched for selected CLI fixtures",
-                "default profile requests the guarded native tier automatically",
+                "default profile uses the managed fast runtime without implicit Cranelift JIT",
                 "dense bytecode auto mode may fall back to IR without failing correctness",
             ],
         )
@@ -325,8 +324,21 @@ def run_self_test() -> int:
     rendered = render_markdown(summary)
     if default_verdict != "gate-backed" or "Default Engine Profile Smoke" not in rendered:
         raise SystemExit("default-profile-smoke self-test failed")
+    if default_counter_sanity({"jit_mode": DEFAULT_JIT_MODE}) != []:
+        raise SystemExit("default-profile-smoke self-test rejected the default JIT mode")
     if default_counter_sanity({"jit_mode": "cranelift"}) == []:
-        raise SystemExit("default-profile-smoke self-test failed to catch JIT mode")
+        raise SystemExit("default-profile-smoke self-test failed to catch unexpected JIT mode")
+    if (
+        default_counter_sanity(
+            {
+                "jit_mode": DEFAULT_JIT_MODE,
+                "native_compiled_regions": 1,
+                "native_executions": 0,
+            }
+        )
+        == []
+    ):
+        raise SystemExit("default-profile-smoke self-test failed to catch native compile")
     print("[pass] default_profile_smoke self-test")
     return 0
 

@@ -1,0 +1,28 @@
+[package]
+name = "tiger"
+version = "0.3.0"
+authors = ["RustCrypto Developers"]
+edition = "2024"
+rust-version = "1.85"
+documentation = "https://docs.rs/tiger"
+readme = "README.md"
+repository = "https://github.com/RustCrypto/hashes"
+license = "MIT OR Apache-2.0"
+keywords = ["hash", "tiger", "digest"]
+categories = ["cryptography", "no-std"]
+description = "Tiger hash function"
+
+[dependencies]
+digest = "0.11"
+
+[dev-dependencies]
+digest = { version = "0.11", features = ["dev"] }
+hex-literal = "1"
+
+[features]
+default = ["alloc"]
+alloc = ["digest/alloc"]
+zeroize = ["digest/zeroize"]
+
+[package.metadata.docs.rs]
+all-features = true

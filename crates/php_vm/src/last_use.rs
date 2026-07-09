@@ -108,6 +108,13 @@ pub struct LastUseMovePlan {
     array_release_reads: u64,
     /// Candidate registers rejected, grouped by stable reason.
     ineligible_by_reason: BTreeMap<&'static str, u64>,
+    /// Registers that are written but never read anywhere in the function
+    /// (per the same exhaustive def/use classifier the move proof rests on).
+    /// A value-producing opcode whose destination is such a register may skip
+    /// the register store entirely and move its value into its other consumer
+    /// — e.g. `$a[$k] = $v;` as a statement moves `$v` into the array slot
+    /// instead of cloning it for a result register nothing ever reads.
+    dead_writes: HashSet<u32>,
 }
 
 impl LastUseMovePlan {
@@ -144,6 +151,19 @@ impl LastUseMovePlan {
     #[must_use]
     pub fn array_release_reads(&self) -> u64 {
         self.array_release_reads
+    }
+
+    /// Returns whether `register` is written but never read in this function,
+    /// so a value-producing opcode may skip its result-register store.
+    #[must_use]
+    pub fn is_dead_write(&self, register: u32) -> bool {
+        self.dead_writes.contains(&register)
+    }
+
+    /// Number of never-read written registers.
+    #[must_use]
+    pub fn dead_write_registers(&self) -> u64 {
+        self.dead_writes.len() as u64
     }
 
     /// Candidate registers left cloning, grouped by stable reason.
@@ -198,7 +218,12 @@ impl LastUseMovePlan {
         // Marking pass: only registers that clear every guard are eligible.
         for (&register, facts) in &facts {
             let Some(last_use) = facts.last_use else {
-                // Never read: nothing to move, and not a rejected candidate.
+                // Never read anywhere: nothing to move, and any store into the
+                // register is dead — its producer may keep the value for the
+                // other consumer instead of cloning.
+                if facts.first_def.is_some() {
+                    plan.dead_writes.insert(register);
+                }
                 continue;
             };
             let Some(first_use) = facts.first_use else {
@@ -230,6 +255,10 @@ impl LastUseMovePlan {
             let is_array_release = releasable_array_operand(instruction) == Some(register);
             if !is_value_move && !is_array_release {
                 plan.record_ineligible(reason::UNMOVABLE_LAST_USE_SITE);
+                #[cfg(debug_assertions)]
+                if std::env::var_os("PHRUST_LAST_USE_DEBUG").is_some() {
+                    eprintln!("[last-use-unmovable] {:?}", instruction.opcode);
+                }
                 continue;
             }
             let Ok(instruction_index) = u32::try_from(last_use) else {
@@ -306,6 +335,19 @@ impl LastUseMovePlan {
                 "moved register r{register} is not defined before its first use"
             );
         }
+        // Dead-write registers must have no read anywhere in the function —
+        // re-derive with the same classifier.
+        for &register in &self.dead_writes {
+            for instruction in &function.instructions {
+                defs.clear();
+                uses.clear();
+                collect_defs_uses(&instruction.operands, &mut defs, &mut uses);
+                debug_assert!(
+                    !uses.contains(&register),
+                    "dead-write register r{register} is read somewhere"
+                );
+            }
+        }
     }
 }
 
@@ -345,6 +387,11 @@ fn note_block(facts: &mut RegisterFacts, block: u32) {
 fn movable_operand(instruction: &DenseInstruction) -> Option<u32> {
     match (instruction.opcode, &instruction.operands) {
         (DenseOpcode::Move, DenseOperands::RegOperand { src, .. }) => register_index(*src),
+        // Plain register-to-local store: the value is written into the local,
+        // so a provably-dead source register moves instead of cloning. The
+        // discard variant is not planned here — its executor arm always takes
+        // (it unsets the register immediately after the store anyway).
+        (DenseOpcode::StoreLocal, DenseOperands::LocalOperand { src, .. }) => register_index(*src),
         (DenseOpcode::Cast, DenseOperands::Cast { src, .. }) => register_index(*src),
         (
             DenseOpcode::AssignDim | DenseOpcode::AppendDim,

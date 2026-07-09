@@ -27,7 +27,7 @@ fn main() {
             print!(
                 "        {{\"name\": \"{}\", \"runtime_builtin\": {}, \"arginfo_source\": {}, \"required_parameters\": {}, \"total_parameters\": {}, \"variadic\": {}}}",
                 json_escape(function.name()),
-                builtins.get(function.name()).is_some(),
+                builtins.get(function.name()).is_some() || is_vm_builtin(function.name()),
                 arginfo
                     .map(|metadata| format!("\"{}\"", json_escape(metadata.source)))
                     .unwrap_or_else(|| "null".to_owned()),
@@ -86,6 +86,62 @@ const fn class_kind_name(kind: ClassKind) -> &'static str {
 
 fn comma(index: usize, len: usize) -> &'static str {
     if index + 1 == len { "" } else { "," }
+}
+
+fn is_vm_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "define"
+            | "defined"
+            | "constant"
+            | "extension_loaded"
+            | "function_exists"
+            | "clone"
+            | "die"
+            | "exit"
+            | "compact"
+            | "class_exists"
+            | "class_alias"
+            | "call_user_func"
+            | "call_user_func_array"
+            | "forward_static_call"
+            | "debug_backtrace"
+            | "debug_print_backtrace"
+            | "func_get_arg"
+            | "func_get_args"
+            | "func_num_args"
+            | "get_called_class"
+            | "interface_exists"
+            | "trait_exists"
+            | "enum_exists"
+            | "method_exists"
+            | "property_exists"
+            | "is_callable"
+            | "is_a"
+            | "is_subclass_of"
+            | "get_class"
+            | "get_class_methods"
+            | "get_class_vars"
+            | "get_parent_class"
+            | "class_parents"
+            | "class_implements"
+            | "get_declared_classes"
+            | "get_declared_interfaces"
+            | "get_declared_traits"
+            | "get_defined_functions"
+            | "get_defined_constants"
+            | "get_defined_vars"
+            | "get_error_handler"
+            | "get_exception_handler"
+            | "get_extension_funcs"
+            | "get_included_files"
+            | "get_loaded_extensions"
+            | "get_required_files"
+            | "zend_version"
+            | "phpversion"
+            | "get_mangled_object_vars"
+            | "get_object_vars"
+    )
 }
 
 fn json_escape(value: &str) -> String {

@@ -7,6 +7,7 @@ runtime builtin boundaries. It is not a general Rust lint replacement.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -160,14 +161,17 @@ def main() -> int:
                 f"{key[0]}: {key[1]}: legacy baseline reduced {allowed}->{count}; update audit baseline"
             )
 
-    for suppression in suppressions:
-        print(f"[allow] {suppression}")
+    quiet = os.environ.get("PHRUST_DIAGNOSTICS_AUDIT_QUIET") == "1"
+    if not quiet:
+        for suppression in suppressions:
+            print(f"[allow] {suppression}")
     if findings:
         print("[fail] diagnostics audit found unsuppressed boundary patterns:", file=sys.stderr)
         for finding in findings:
             print(finding, file=sys.stderr)
         return 1
-    print(f"[ok] diagnostics audit passed ({len(suppressions)} suppressions visible).")
+    visibility = "hidden" if quiet else "visible"
+    print(f"[ok] diagnostics audit passed ({len(suppressions)} suppressions {visibility}).")
     return 0
 
 

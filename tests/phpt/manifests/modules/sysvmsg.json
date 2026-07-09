@@ -4,14 +4,14 @@
   "priority":"System V message queue compatibility MVP",
   "selected_manifest":"tests/phpt/manifests/modules/sysvmsg.selected.jsonl",
   "corpus_count":7,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":8,
+  "pass_count":8,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":7,
+  "known_failure_count":0,
   "scope":["extension visibility","SysvMessageQueue class visibility","request-local queue lookup","serialized and raw message send/receive","by-reference receive outputs","queue metadata","queue settings","queue removal"],
   "non_scope":["cross-process System V message queues","host kernel queue IDs","permission enforcement","platform errno-specific warning text","blocking wait behavior"],
-  "target_gates":["nix develop -c cargo test -p php_runtime sysvmsg","nix develop -c cargo test -p php_std sysv","nix develop -c just phpt-dev-module MODULE=sysvmsg"],
-  "next_step":"Promote upstream sysvmsg PHPTs after host-backed System V queues are available behind platform-gated cleanup."
+  "target_gates":["nix develop -c cargo test -p php_runtime sysvmsg","nix develop -c cargo test -p php_vm environment_builtins_use_controlled_request_context","nix develop -c just phpt-dev-module MODULE=sysvmsg"],
+  "next_step":"Move to the next extension prompt row; focused sysvmsg upstream PHPT coverage is green."
 }

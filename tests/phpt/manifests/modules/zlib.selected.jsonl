@@ -5,3 +5,51 @@
 {"path":"ext/zlib/tests/gzdeflate_variation1.phpt"}
 {"path":"ext/zlib/tests/gzencode_basic1.phpt"}
 {"path":"ext/zlib/tests/gzuncompress_basic1.phpt"}
+{"path":"ext/zlib/tests/gzclose_basic.phpt"}
+{"path":"ext/zlib/tests/gzgetc_basic.phpt"}
+{"path":"ext/zlib/tests/gzgets_basic.phpt"}
+{"path":"ext/zlib/tests/gzread_basic.phpt"}
+{"path":"ext/zlib/tests/gzrewind_basic.phpt"}
+{"path":"ext/zlib/tests/gzseek_basic.phpt"}
+{"path":"ext/zlib/tests/gztell_basic.phpt"}
+{"path":"ext/zlib/tests/gzfile_basic.phpt"}
+{"path":"ext/zlib/tests/readgzfile_basic.phpt"}
+{"path":"ext/zlib/tests/zlib_get_coding_type_basic.phpt"}
+{"path":"ext/zlib/tests/deflate_add_basic.phpt"}
+{"path":"ext/zlib/tests/deflate_init_reuse.phpt"}
+{"path":"ext/zlib/tests/inflate_get_status.phpt"}
+{"path":"ext/zlib/tests/inflate_get_read_len.phpt"}
+{"path":"ext/zlib/tests/inflate_init_reuse.phpt"}
+{"path":"ext/zlib/tests/008.phpt","module":"zlib","kind":"upstream","reason":"covers zlib.output_compression no-compress client fallback"}
+{"path":"ext/zlib/tests/bug51269.phpt","module":"zlib","kind":"upstream","reason":"covers zlib.output_compression header preservation with gzip accept encoding"}
+{"path":"ext/zlib/tests/bug61287.phpt","module":"zlib","kind":"upstream","reason":"covers binary-safe gzdeflate/gzinflate roundtrip"}
+{"path":"ext/zlib/tests/bug61443.phpt","module":"zlib","kind":"upstream","reason":"covers zlib stream/resource regression that is target-green"}
+{"path":"ext/zlib/tests/bug74240.phpt","module":"zlib","kind":"upstream","reason":"covers zlib regression that is target-green in the full originals sweep"}
+{"path":"ext/zlib/tests/bug75299.phpt","module":"zlib","kind":"upstream","reason":"covers zlib regression that is target-green in the full originals sweep"}
+{"path":"ext/zlib/tests/gzcompress_variation1.phpt","module":"zlib","kind":"upstream","reason":"covers gzcompress level variation behavior"}
+{"path":"ext/zlib/tests/gzeof_basic.phpt","module":"zlib","kind":"upstream","reason":"covers basic gzeof stream behavior"}
+{"path":"ext/zlib/tests/gzfile-mb.phpt","module":"zlib","kind":"upstream","reason":"covers gzfile multibyte variant"}
+{"path":"ext/zlib/tests/gzfilegzreadfile.phpt","module":"zlib","kind":"upstream","reason":"covers gzfile and gzreadfile-style gzip reading"}
+{"path":"ext/zlib/tests/gzgetc_basic_1.phpt","module":"zlib","kind":"upstream","reason":"covers gzgetc EOF and cursor behavior variant"}
+{"path":"ext/zlib/tests/gzopen_basic.phpt","module":"zlib","kind":"upstream","reason":"covers basic gzopen modes"}
+{"path":"ext/zlib/tests/gzopen_variation6.phpt","module":"zlib","kind":"upstream","reason":"covers gzopen mode variation that is target-green"}
+{"path":"ext/zlib/tests/gzopen_variation7.phpt","module":"zlib","kind":"upstream","reason":"covers gzopen mode variation that is target-green"}
+{"path":"ext/zlib/tests/gzpassthru_basic.phpt","module":"zlib","kind":"upstream","reason":"covers gzpassthru output and byte count"}
+{"path":"ext/zlib/tests/gzputs_basic.phpt","module":"zlib","kind":"upstream","reason":"covers gzputs alias write length behavior"}
+{"path":"ext/zlib/tests/gzread_variation1.phpt","module":"zlib","kind":"upstream","reason":"covers gzread variation over gzip streams"}
+{"path":"ext/zlib/tests/gzreadgzwrite.phpt","module":"zlib","kind":"upstream","reason":"covers gzread/gzwrite roundtrip"}
+{"path":"ext/zlib/tests/gzrewind_basic2.phpt","module":"zlib","kind":"upstream","reason":"covers gzrewind variant"}
+{"path":"ext/zlib/tests/gzseek_basic2.phpt","module":"zlib","kind":"upstream","reason":"covers gzseek variant"}
+{"path":"ext/zlib/tests/gzseek_seek_oob.phpt","module":"zlib","kind":"upstream","reason":"covers out-of-bounds gzseek behavior"}
+{"path":"ext/zlib/tests/gzseek_variation1.phpt","module":"zlib","kind":"upstream","reason":"covers gzseek SEEK_SET behavior"}
+{"path":"ext/zlib/tests/gzseek_variation2.phpt","module":"zlib","kind":"upstream","reason":"covers gzseek forward movement behavior"}
+{"path":"ext/zlib/tests/gzseek_variation3.phpt","module":"zlib","kind":"upstream","reason":"covers gzseek repeated movement behavior"}
+{"path":"ext/zlib/tests/gzseek_variation4.phpt","module":"zlib","kind":"upstream","reason":"covers gzseek variation that is target-green"}
+{"path":"ext/zlib/tests/gzseek_variation5.phpt","module":"zlib","kind":"upstream","reason":"covers gzseek variation that is target-green"}
+{"path":"ext/zlib/tests/gztell_basic2.phpt","module":"zlib","kind":"upstream","reason":"covers gztell variant"}
+{"path":"ext/zlib/tests/gzwrite_basic.phpt","module":"zlib","kind":"upstream","reason":"covers gzwrite basic length behavior"}
+{"path":"ext/zlib/tests/gzwrite_error2.phpt","module":"zlib","kind":"upstream","reason":"covers selected gzwrite invalid-length behavior"}
+{"path":"ext/zlib/tests/ob_002.phpt","module":"zlib","kind":"upstream","reason":"covers zlib.output_compression INI off transition"}
+{"path":"ext/zlib/tests/zlib_get_coding_type_br.phpt","module":"zlib","kind":"upstream","reason":"covers unsupported br encoding coding-type behavior"}
+{"path":"ext/zlib/tests/zlib_wrapper_fflush_basic.phpt","module":"zlib","kind":"upstream","reason":"covers target-green zlib wrapper fflush behavior"}
+{"path":"tests/basic/req44164.phpt","module":"zlib","kind":"upstream","reason":"covers Content-Length output with zlib.output_compression enabled"}

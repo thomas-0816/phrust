@@ -6,3 +6,7 @@
 {"path":"ext/phar/tests/phar_get_supportedcomp4.phpt"}
 {"path":"ext/phar/tests/phar_get_supported_signatures_002.phpt"}
 {"path":"ext/phar/tests/phar_get_supported_signatures_002a.phpt"}
+{"path":"ext/phar/tests/bug66960.phpt"}
+{"path":"ext/phar/tests/bug74383.phpt"}
+{"path":"ext/phar/tests/bug74386.phpt"}
+{"path":"ext/phar/tests/bug79797.phpt"}

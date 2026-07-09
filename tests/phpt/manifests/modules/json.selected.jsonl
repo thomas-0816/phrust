@@ -1,6 +1,7 @@
 {"path":"tests/phpt/generated/json/json-encode-basics.phpt"}
 {"path":"tests/phpt/generated/json/json-encode-common-flags.phpt"}
 {"path":"tests/phpt/generated/json/json-decode-basics.phpt"}
+{"path":"tests/phpt/generated/json/json-encode-enums.phpt"}
 {"path":"tests/phpt/generated/json/json-last-error-state.phpt"}
 {"path":"tests/phpt/generated/json/json-throw-on-error.phpt"}
 {"path":"ext/json/tests/001.phpt"}

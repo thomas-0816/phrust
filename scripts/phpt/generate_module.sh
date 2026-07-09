@@ -69,7 +69,7 @@ fi
   --php-src "$php_src" \
   --reference "$reference_php" \
   --timestamp "$timestamp" \
-  "${args[@]}"
+  ${args[@]+"${args[@]}"}
 
 "$phpt_tool" run \
   --target "$reference_php" \

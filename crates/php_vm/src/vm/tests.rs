@@ -21,6 +21,26 @@ fn pdo_mysql_dsn_parser_accepts_common_tcp_options() {
 }
 
 #[test]
+fn fileinfo_object_facade_routes_to_runtime_state() {
+    let result = execute_source(
+        "<?php $f = new finfo(); var_dump(class_exists('finfo'), $f instanceof finfo, $f->set_flags(FILEINFO_MIME_TYPE), finfo_set_flags($f, FILEINFO_MIME_ENCODING), finfo_close($f));",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "bool(true)\nbool(true)\nbool(true)\nbool(true)\nbool(true)\n"
+    );
+}
+
+#[test]
+fn trace_argument_string_preview_truncates_on_char_boundary() {
+    let value = Value::string("12345678901234éXYZ");
+
+    assert_eq!(format_trace_arg(&value), "'12345678901234é...'");
+}
+
+#[test]
 fn pdo_mysql_dsn_parser_rejects_invalid_port_and_socket_gap() {
     assert!(
         pdo_mysql_connect_options_from_dsn("mysql:host=db;port=abc", "", "")
@@ -81,6 +101,326 @@ fn pdo_pgsql_rewrites_positional_placeholders_outside_strings() {
             .expect("placeholders should rewrite"),
         "SELECT '?' AS literal, $1 AS value, $2 AS second"
     );
+}
+
+#[test]
+fn by_ref_builtin_direct_temporary_fatal_separates_prior_output() {
+    let result = execute_source("<?php echo \"before\\n\"; var_dump(prev(array(1, 2)));");
+
+    assert_eq!(result.status.exit_status(), ExitStatus::RuntimeError);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.starts_with(
+            "before\n\nFatal error: Uncaught Error: prev(): Argument #1 ($array) could not be passed by reference"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn error_suppression_wraps_function_call_warnings_and_restores_reporting() {
+    let result = execute_source(
+        "<?php @preg_match('invalid regex', 'subject'); echo 'suppressed|'; preg_match('invalid regex', 'subject');",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output
+            .starts_with("suppressed|\nWarning: preg_match(): Delimiter must not be alphanumeric"),
+        "{output}"
+    );
+}
+
+#[test]
+fn nested_pcre_callback_redeclaration_uses_php_fatal_output() {
+    let result = execute_source(
+        "<?php
+        function pcre_nested_duplicate() {}
+        preg_replace_callback('/a/', function($matches) {
+            preg_replace_callback('/x/', function($matches) {
+                function pcre_nested_duplicate() {}
+                return 'y';
+            }, 'x');
+            return 'b';
+        }, 'a');
+        ",
+    );
+
+    assert!(!result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.starts_with("Fatal error: Cannot redeclare function pcre_nested_duplicate() "),
+        "{output}"
+    );
+    assert!(
+        output.contains("(previously declared in /tmp/phrust-test.php:"),
+        "{output}"
+    );
+    assert!(
+        output.contains(") in /tmp/phrust-test.php on line "),
+        "{output}"
+    );
+}
+
+#[test]
+fn preg_match_pattern_type_errors_are_catchable() {
+    let result = execute_source(
+        "<?php
+        try { preg_match([], 'subject'); } catch (TypeError $e) { echo $e->getMessage(), \"\\n\"; }
+        try { preg_match(new stdClass(), 'subject'); } catch (TypeError $e) { echo $e->getMessage(), \"\\n\"; }
+        try { preg_match_all([], 'subject', $matches); } catch (TypeError $e) { echo $e->getMessage(), \"\\n\"; }
+        try { preg_match_all(new stdClass(), 'subject', $matches); } catch (TypeError $e) { echo $e->getMessage(), \"\\n\"; }
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "preg_match(): Argument #1 ($pattern) must be of type string, array given\n\
+preg_match(): Argument #1 ($pattern) must be of type string, stdClass given\n\
+preg_match_all(): Argument #1 ($pattern) must be of type string, array given\n\
+preg_match_all(): Argument #1 ($pattern) must be of type string, stdClass given\n"
+    );
+}
+
+#[test]
+fn preg_replace_callback_accepts_pattern_arrays() {
+    let result = execute_source(
+        "<?php
+        function wrap_match($matches) {
+            return '[' . $matches[0] . ']';
+        }
+        echo preg_replace_callback(['/x/', '/[0-9]/'], 'wrap_match', 'x1y');
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"[x][1]y");
+}
+
+#[test]
+fn preg_replace_callback_array_applies_patterns_across_array_subjects() {
+    let result = execute_source(
+        "<?php
+        class PcreTrampoline {
+            public function __call($name, $arguments) {
+                echo \"callback\\n\";
+                return \"'\" . $arguments[0][0] . \"'\";
+            }
+        }
+        $object = new PcreTrampoline();
+        var_dump(preg_replace_callback_array([
+            '@\\b\\w{1,2}\\b@' => [$object, 'missing'],
+            '~\\A.~' => [$object, 'missing'],
+        ], ['a b3 bcd', 'v' => 'aksfjk', 12 => 'aa bb', ['xyz']]));
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    let warning = output
+        .find("Warning: Array to string conversion")
+        .expect("nested array subject should warn");
+    assert_eq!(
+        output[..warning].matches("callback\n").count(),
+        4,
+        "{output}"
+    );
+    assert_eq!(
+        output[warning..].matches("callback\n").count(),
+        4,
+        "{output}"
+    );
+    assert!(output.contains("string(14) \"'''a' 'b3' bcd\""), "{output}");
+    assert!(output.contains("string(7) \"'A'rray\""), "{output}");
+}
+
+#[test]
+fn preg_replace_callback_array_type_error_uncaught_uses_php_fatal_output() {
+    let result = execute_source("<?php preg_replace_callback_array([0 => 'strlen'], 'a');");
+
+    assert!(!result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains(
+            "\nFatal error: Uncaught TypeError: preg_replace_callback_array(): Argument #1 ($pattern) must contain only string patterns as keys in "
+        ),
+        "{output}"
+    );
+    assert!(
+        output.contains(": preg_replace_callback_array(Array, 'a')"),
+        "{output}"
+    );
+    assert!(
+        output.contains("  thrown in /tmp/phrust-test.php on line "),
+        "{output}"
+    );
+}
+
+#[test]
+fn preg_replace_callback_array_type_errors_are_catchable() {
+    let result = execute_source(
+        "<?php
+        try {
+            preg_replace_callback_array([0 => 'strlen'], 'a');
+        } catch (TypeError $e) {
+            echo $e->getMessage(), \"\\n\";
+        }
+        try {
+            preg_replace_callback_array(['/a/' => 'missing_callback'], 'a');
+        } catch (TypeError $e) {
+            echo $e->getMessage(), \"\\n\";
+        }
+        $count = '';
+        try {
+            preg_replace_callback_array(['xx' => 'missing_callback'], [], -1, $count);
+        } catch (TypeError $e) {
+            echo $e->getMessage(), \"\\n\";
+        }
+        var_dump($count);
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "preg_replace_callback_array(): Argument #1 ($pattern) must contain only string patterns as keys\n\
+preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks\n\
+preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks\n\
+string(0) \"\"\n"
+    );
+}
+
+#[test]
+fn preg_replace_callback_casts_nested_array_subjects_with_warning() {
+    let result = execute_source(
+        "<?php
+        function quote_match($matches) {
+            return \"'\" . $matches[0] . \"'\";
+        }
+        var_dump(preg_replace_callback('~\\A.~', 'quote_match', array(array('xyz'))));
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("Warning: Array to string conversion in "),
+        "{output}"
+    );
+    assert!(output.contains("string(7) \"'A'rray\""), "{output}");
+}
+
+#[test]
+fn preg_replace_callback_warns_for_remaining_array_subject_before_interrupting() {
+    let result = execute_source(
+        "<?php
+        class PcreThrower {
+            public function __call($name, $arguments) {
+                echo \"callback\\n\";
+                throw new Exception('boom');
+            }
+        }
+        $thrower = new PcreThrower();
+        try {
+            preg_replace_callback('/a/', [$thrower, 'missing'], ['a', ['nested']]);
+        } catch (Throwable $e) {
+            echo $e::class, ': ', $e->getMessage(), \"\\n\";
+        }
+        try {
+            preg_replace_callback([new stdClass()], 'strlen', ['a', ['nested']]);
+        } catch (Throwable $e) {
+            echo $e::class, ': ', $e->getMessage(), \"\\n\";
+        }
+        try {
+            preg_replace_callback([new stdClass()], 'strlen', new stdClass());
+        } catch (Throwable $e) {
+            echo $e::class, ': ', $e->getMessage(), \"\\n\";
+        }
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    let first_warning = output
+        .find("Warning: Array to string conversion")
+        .expect("callback exception should emit remaining array warning");
+    let exception = output
+        .find("Exception: boom")
+        .expect("callback exception should be caught");
+    assert!(first_warning < exception, "{output}");
+    let second_warning = output[first_warning + 1..]
+        .find("Warning: Array to string conversion")
+        .map(|index| first_warning + 1 + index)
+        .expect("pattern conversion error should emit array warning");
+    let pattern_error = output
+        .find("Error: Object of class stdClass could not be converted to string")
+        .expect("pattern object conversion should be caught");
+    assert!(second_warning < pattern_error, "{output}");
+    assert!(
+        output.ends_with(
+            "TypeError: preg_replace_callback(): Argument #3 ($subject) must be of type array|string, stdClass given\n"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn runtime_function_redeclaration_uses_php_fatal_output() {
+    let result = execute_source(
+        "<?php
+        function pcre_runtime_duplicate() {}
+        preg_replace_callback('/a/', function($matches) {
+            function pcre_runtime_duplicate() {}
+            return 'b';
+        }, 'a');
+        ",
+    );
+
+    assert!(!result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains(
+            "Fatal error: Cannot redeclare function pcre_runtime_duplicate() (previously declared in /tmp/phrust-test.php:"
+        ),
+        "{output}"
+    );
+    assert!(
+        output.contains(") in /tmp/phrust-test.php on line "),
+        "{output}"
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.id() == "E_PHP_VM_FUNCTION_REDECLARATION"),
+        "{:#?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn user_stream_wrapper_close_runs_at_shutdown_and_can_use_pcre() {
+    let result = execute_source(
+        r#"<?php
+        class wrapper {
+            public function stream_open($path, $mode, $options, &$opened_path) { return true; }
+            public function stream_close() {
+                echo "Close\n";
+                preg_replace('/pattern/', 'replace', 'subject');
+                preg_match('/(4)?(2)?\d/', '23456', $matches, PREG_OFFSET_CAPTURE | PREG_UNMATCHED_AS_NULL);
+                preg_match('/(4)?(2)?\d/', '23456', $matches, PREG_OFFSET_CAPTURE);
+            }
+        }
+
+        echo stream_wrapper_register('wrapper', 'wrapper') ? "registered\n" : "failed\n";
+        $handle = fopen('wrapper://', 'rb');
+        "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"registered\nClose\n");
 }
 
 fn property_fetch_profile<'a>(
@@ -238,6 +578,25 @@ fn expressions_object_casts_create_std_class_values() {
     assert_eq!(
         result.output.to_string_lossy(),
         "(object) array(\n   '0' => 1,\n   '1' => 3,\n   'foo' => 'bar',\n)\n---\n(object) array(\n   'scalar' => 42,\n)\n---\n(object) array(\n)"
+    );
+}
+
+#[test]
+fn expressions_object_cast_preserves_nested_object_identity() {
+    let result = execute_source(
+        "<?php
+            $array = ['x' => 1, 'child' => new stdClass()];
+            $object = (object) $array;
+            var_dump($object);
+            echo json_encode($object), '|', json_last_error();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = normalize_object_debug_ids(&result.output.to_string_lossy());
+    assert_eq!(
+        output,
+        "object(stdClass)#%d (2) {\n  [\"x\"]=>\n  int(1)\n  [\"child\"]=>\n  object(stdClass)#%d (0) {\n  }\n}\n{\"x\":1,\"child\":{}}|0"
     );
 }
 
@@ -686,7 +1045,10 @@ fn symbol_introspection_exposes_bounded_mbstring_mvp() {
                 'mb_strtolower',
                 'mb_strtoupper',
                 'mb_detect_encoding',
+                'mb_encoding_aliases',
                 'mb_strpos',
+                'mb_list_encodings',
+                'mb_substitute_character',
             ] as $name) {
                 echo '|', $name, ':', function_exists($name) ? 'yes' : 'no';
             }
@@ -696,8 +1058,24 @@ fn symbol_introspection_exposes_bounded_mbstring_mvp() {
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.to_string_lossy(),
-        "loaded|mb_check_encoding:yes|mb_convert_encoding:yes|mb_strlen:yes|mb_substr:yes|mb_strtolower:yes|mb_strtoupper:yes|mb_detect_encoding:yes|mb_strpos:yes"
+        "loaded|mb_check_encoding:yes|mb_convert_encoding:yes|mb_strlen:yes|mb_substr:yes|mb_strtolower:yes|mb_strtoupper:yes|mb_detect_encoding:yes|mb_encoding_aliases:yes|mb_strpos:yes|mb_list_encodings:yes|mb_substitute_character:yes"
     );
+}
+
+#[test]
+fn mbstring_substitute_character_state_persists_across_vm_builtin_calls() {
+    let result = execute_source(
+        "<?php
+            echo mb_substitute_character();
+            echo '|', mb_substitute_character('none') ? 'set' : 'fail';
+            echo '|', mb_substitute_character();
+            echo '|', mb_substitute_character(63) ? 'set' : 'fail';
+            echo '|', mb_substitute_character();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.to_string_lossy(), "63|set|none|set|63");
 }
 
 #[test]
@@ -2282,6 +2660,9 @@ fn ini_config_builtins_use_request_local_registry() {
             echo $details['memory_limit']['global_value'], '|',
                  $details['memory_limit']['local_value'], '|',
                  $details['memory_limit']['access'], \"\\n\";
+            $session = ini_get_all('session', false);
+            echo $session['session.cookie_path'], '|',
+                 isset($session['memory_limit']) ? 'bad' : 'filtered', \"\\n\";
             echo ignore_user_abort(), \"\\n\";
             echo ignore_user_abort(true), \"\\n\";
             echo ignore_user_abort(), \"\\n\";
@@ -2292,7 +2673,396 @@ fn ini_config_builtins_use_request_local_registry() {
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.to_string_lossy(),
-        "UTF-8\nmissing\n128M\n64M\n128M\n1.75\n14\n2\n64M\n128M|64M|7\n0\n0\n1\n1\n"
+        "UTF-8\nmissing\n128M\n64M\n128M\n1.75\n14\n2\n64M\n128M|64M|7\n/|filtered\n0\n0\n1\n1\n"
+    );
+}
+
+#[test]
+fn session_set_cookie_params_updates_request_ini() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            var_dump(ini_get('session.cookie_path'));
+            var_dump(session_set_cookie_params(3600, '/foo'));
+            var_dump(ini_get('session.cookie_lifetime'));
+            var_dump(ini_get('session.cookie_path'));
+            var_dump(session_start());
+            var_dump(session_set_cookie_params(1800, '/bar'));
+            var_dump(ini_get('session.cookie_lifetime'));
+            var_dump(ini_get('session.cookie_path'));
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(output.contains("string(1) \"/\""), "{output}");
+    assert!(output.contains("bool(true)"), "{output}");
+    assert!(output.contains("string(4) \"/foo\""), "{output}");
+    assert!(output.contains("bool(false)"), "{output}");
+    assert!(output.contains("string(4) \"3600\""), "{output}");
+    assert!(!output.contains("string(4) \"/bar\""), "{output}");
+    assert_eq!(
+        output
+            .matches("Session cookie parameters cannot be changed")
+            .count(),
+        1,
+        "{output}"
+    );
+}
+
+#[test]
+fn session_auto_start_uses_startup_ini_before_user_code() {
+    let result = execute_source_with_options(
+        "<?php
+            ob_start();
+            var_dump(ini_get('session.auto_start'));
+            var_dump(session_status());
+            var_dump($_SESSION);
+            var_dump(session_commit());
+            var_dump(session_status());
+            ob_end_flush();
+            ",
+        VmOptions {
+            runtime_context: RuntimeContext::default()
+                .with_ini_overrides(vec![("session.auto_start".to_owned(), "1".to_owned())]),
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "string(1) \"1\"\nint(2)\narray(0) {\n}\nbool(true)\nint(1)\n"
+    );
+}
+
+#[test]
+fn session_start_discards_pre_start_session_global() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            $_SESSION['blah'] = 'foo';
+            var_dump($_SESSION);
+            var_dump(session_start());
+            var_dump($_SESSION);
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "array(1) {\n  [\"blah\"]=>\n  string(3) \"foo\"\n}\nbool(true)\narray(0) {\n}\n"
+    );
+}
+
+#[test]
+fn session_destroy_preserves_live_global_until_next_start() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            session_start();
+            $_SESSION['blah'] = 'foo';
+            var_dump(session_destroy());
+            var_dump($_SESSION);
+            var_dump(session_start());
+            var_dump($_SESSION);
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "bool(true)\narray(1) {\n  [\"blah\"]=>\n  string(3) \"foo\"\n}\nbool(true)\narray(0) {\n}\n"
+    );
+}
+
+#[test]
+fn session_start_notice_mentions_auto_start_without_source_location() {
+    let result = execute_source_with_options(
+        "<?php
+            ob_start();
+            var_dump(session_start());
+            ob_end_flush();
+            ",
+        VmOptions {
+            runtime_context: RuntimeContext::default()
+                .with_ini_overrides(vec![("session.auto_start".to_owned(), "1".to_owned())]),
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains(
+            "session_start(): Ignoring session_start() because a session is already active (session started automatically)"
+        ),
+        "{output}"
+    );
+    assert!(!output.contains("started from"), "{output}");
+}
+
+#[test]
+fn session_encode_decode_supports_selected_serializers() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            var_dump(session_start());
+            $_SESSION['foo'] = 123;
+            $_SESSION['bar'] = 'baz';
+            var_dump(session_encode());
+            var_dump(session_decode('qux|a:1:{i:0;i:7;}'));
+            var_dump($_SESSION['qux'][0]);
+            session_write_close();
+
+            ini_set('session.serialize_handler', 'php_serialize');
+            var_dump(session_start());
+            $_SESSION[-3] = 'foo';
+            $_SESSION[3] = 'bar';
+            $_SESSION['var'] = 123;
+            var_dump(session_encode());
+            session_write_close();
+
+            ini_set('session.serialize_handler', 'php_binary');
+            var_dump(session_start());
+            var_dump(session_decode(\"\\x03binb:1;\"));
+            var_dump($_SESSION['bin']);
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("string(24) \"foo|i:123;bar|s:3:\"baz\";\""),
+        "{output}"
+    );
+    assert!(output.contains("bool(true)\nint(7)"), "{output}");
+    assert!(
+        output.contains("s:3:\"var\";i:123;"),
+        "php_serialize handler should encode string keys: {output}"
+    );
+    assert!(
+        output.contains("bool(true)\nbool(true)"),
+        "php_binary decode should restore boolean value: {output}"
+    );
+}
+
+#[test]
+fn ini_set_rejects_unknown_session_serializer_handler() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            var_dump(ini_get('session.serialize_handler'));
+            var_dump(ini_set('session.serialize_handler', 'wrong_handler'));
+            var_dump(ini_get('session.serialize_handler'));
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("string(3) \"php\""),
+        "default serializer should be visible before ini_set: {output}"
+    );
+    assert!(
+        output.contains("ini_set(): Serialization handler \"wrong_handler\" cannot be found"),
+        "{output}"
+    );
+    assert!(
+        output.contains("bool(false)\nstring(3) \"php\""),
+        "failed ini_set should return false and preserve the previous serializer: {output}"
+    );
+}
+
+#[test]
+fn session_decode_php_serializer_supports_top_level_reference_records() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            session_start();
+            var_dump(session_decode('foo|a:1:{i:0;i:7;}guff|R:1;blah|R:1;'));
+            var_dump($_SESSION);
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "bool(true)\narray(3) {\n  [\"foo\"]=>\n  &array(1) {\n    [0]=>\n    int(7)\n  }\n  [\"guff\"]=>\n  &array(1) {\n    [0]=>\n    int(7)\n  }\n  [\"blah\"]=>\n  &array(1) {\n    [0]=>\n    int(7)\n  }\n}\n"
+    );
+}
+
+#[test]
+fn session_encode_php_serializer_supports_shared_top_level_references() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            session_start();
+            $array = array(1, 2, 3);
+            $_SESSION['foo'] = &$array;
+            $_SESSION['guff'] = &$array;
+            $_SESSION['blah'] = &$array;
+            var_dump(session_encode());
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "string(52) \"foo|a:3:{i:0;i:1;i:1;i:2;i:2;i:3;}guff|R:1;blah|R:1;\"\n"
+    );
+}
+
+#[test]
+fn session_encode_php_serializer_supports_recursive_references() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            session_start();
+            $array = array(1, 2, 3);
+            $array['foo'] = &$array;
+            $array['blah'] = &$array;
+            $_SESSION['data'] = &$array;
+            var_dump(session_encode());
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "string(64) \"data|a:5:{i:0;i:1;i:1;i:2;i:2;i:3;s:3:\"foo\";R:1;s:4:\"blah\";R:1;}\"\n"
+    );
+}
+
+#[test]
+fn session_module_name_rejects_unknown_user_and_active_changes() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            var_dump(session_module_name('blah'));
+            var_dump(session_module_name());
+            session_start();
+            var_dump(session_module_name('files'));
+            session_destroy();
+            try {
+                session_module_name('user');
+            } catch (ValueError $e) {
+                echo $e->getMessage(), \"\\n\";
+            }
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("session_module_name(): Session handler module \"blah\" cannot be found"),
+        "{output}"
+    );
+    assert!(
+        output.contains("bool(false)\nstring(5) \"files\""),
+        "{output}"
+    );
+    assert!(
+        output.contains("Session save handler module cannot be changed when a session is active"),
+        "{output}"
+    );
+    assert!(
+        output.contains("session_module_name(): Argument #1 ($module) cannot be \"user\""),
+        "{output}"
+    );
+}
+
+#[test]
+fn session_start_files_handler_rejects_missing_save_path() {
+    let result = execute_source(
+        "<?php
+            ob_start();
+            ini_set('session.save_handler', 'files');
+            ini_set('session.save_path', '/phrust-missing-session-dir');
+            var_dump(session_start());
+            var_dump(session_status());
+            var_dump(session_destroy());
+            ob_end_flush();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("session_start(): open(/phrust-missing-session-dir/"),
+        "{output}"
+    );
+    assert!(
+        output.contains("session_start(): Failed to read session data: files (path: /phrust-missing-session-dir)"),
+        "{output}"
+    );
+    assert!(
+        output.contains("bool(false)\nint(1)"),
+        "failed start should leave session inactive: {output}"
+    );
+    assert!(
+        output.contains("session_destroy(): Trying to destroy uninitialized session"),
+        "{output}"
+    );
+}
+
+#[test]
+fn ini_set_session_save_path_respects_open_basedir() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-session-open-basedir-{}",
+        std::process::id()
+    ));
+    let allowed = root.join("allowed");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&allowed).expect("allowed directory should be created");
+    std::fs::create_dir_all(&outside).expect("outside directory should be created");
+    let outside_literal = outside
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'");
+    let source = format!(
+        "<?php
+            ob_start();
+            ini_set('session.save_handler', 'files');
+            ini_set('open_basedir', '.');
+            var_dump(ini_set('session.save_path', '{outside_literal}'));
+            var_dump(session_save_path());
+            var_dump(session_start());
+            ob_end_flush();
+            "
+    );
+    let result = execute_source_with_options(
+        &source,
+        VmOptions {
+            runtime_context: RuntimeContext::default().with_cwd(allowed),
+            ..VmOptions::default()
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("ini_set(): open_basedir restriction in effect."),
+        "{output}"
+    );
+    assert!(output.contains("bool(false)\nstring(0) \"\""), "{output}");
+    assert!(
+        output.contains("session_start(): open_basedir restriction in effect."),
+        "{output}"
+    );
+    assert!(
+        output.contains("session_start(): Failed to initialize storage module: files (path: )"),
+        "{output}"
     );
 }
 
@@ -2451,6 +3221,25 @@ fn trigger_error_respects_handler_return_reporting_and_display() {
     );
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].id(), "E_PHP_VM_USER_WARNING");
+}
+
+#[test]
+fn internal_builtin_diagnostics_respect_error_handler() {
+    let result = execute_source(
+        "<?php
+            function capture_warning($errno, $errstr) { echo $errno, ':', $errstr, \"\\n\"; }
+            set_error_handler('capture_warning');
+            $result = iconv_mime_decode('Subject: =?ISO-8859-1?Q?Pr=FCfung??', 0, 'UTF-8');
+            echo strlen($result);
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "2:iconv_mime_decode(): Malformed string\n0"
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
 }
 
 #[test]
@@ -2828,6 +3617,30 @@ fn print_r_uses_debug_info_for_jsonserializable_callbacks() {
     assert_eq!(
         normalize_object_debug_ids(&result.output.to_string_lossy()),
         "SerializingTest Object\n(\n    [result] => 1\n)\nstring(7) \"{\"a\":1}\"\n---------\nobject(SerializingTest)#%d (1) {\n  [\"result\"]=>\n  int(1)\n}\n"
+    );
+}
+
+#[test]
+fn hash_context_var_dump_uses_php_debug_info_shape() {
+    let result = execute_source(
+        "<?php
+            var_dump(hash_init('sha256'));
+            var_dump(hash_init('sha3-512'));
+            $ctx = hash_init('sha256');
+            var_dump(method_exists($ctx, '__debugInfo'));
+            var_dump($ctx->__debugInfo());
+            try {
+                $ctx->__debugInfo(1);
+            } catch (ArgumentCountError $e) {
+                echo $e->getMessage(), \"\\n\";
+            }
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        normalize_object_debug_ids(&result.output.to_string_lossy()),
+        "object(HashContext)#%d (1) {\n  [\"algo\"]=>\n  string(6) \"sha256\"\n}\nobject(HashContext)#%d (1) {\n  [\"algo\"]=>\n  string(8) \"sha3-512\"\n}\nbool(true)\narray(1) {\n  [\"algo\"]=>\n  string(6) \"sha256\"\n}\nHashContext::__debugInfo() expects exactly 0 arguments, 1 given\n"
     );
 }
 
@@ -3430,6 +4243,11 @@ fn custom_validated_builtins_bypass_generated_arginfo_coercions() {
             try {
                 vprintf('%s', true);
             } catch (TypeError $e) {
+                echo $e->getMessage(), '|';
+            }
+            try {
+                filter_var_array([], '');
+            } catch (TypeError $e) {
                 echo $e->getMessage();
             }
             ",
@@ -3438,7 +4256,7 @@ fn custom_validated_builtins_bypass_generated_arginfo_coercions() {
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.to_string_lossy(),
-        "x|strrpos(): Argument #3 ($offset) must be of type int, float given|hash_equals(): Argument #1 ($known_string) must be of type string, int given|vprintf(): Argument #2 ($values) must be of type array, true given"
+        "x|strrpos(): Argument #3 ($offset) must be of type int, float given|hash_equals(): Argument #1 ($known_string) must be of type string, int given|vprintf(): Argument #2 ($values) must be of type array, true given|filter_var_array(): Argument #2 ($options) must be of type array|int, string given"
     );
 }
 
@@ -5046,9 +5864,22 @@ fn builtin_context_persists_preg_last_error_across_vm_builtin_calls() {
     );
 
     assert!(result.status.is_success(), "{:?}", result.status);
-    assert_eq!(
-        result.output.to_string_lossy(),
-        "int(0)\nstring(8) \"No error\"\nbool(false)\nint(1)\nstring(14) \"Internal error\"\nint(1)\nint(0)\nstring(8) \"No error\"\n"
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.starts_with("int(0)\nstring(8) \"No error\"\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains(
+            "\nWarning: preg_match(): Compilation failed: missing terminating ] for character class at offset 1 in /tmp/phrust-test.php on line "
+        ),
+        "{output}"
+    );
+    assert!(
+        output.ends_with(
+            "bool(false)\nint(1)\nstring(14) \"Internal error\"\nint(1)\nint(0)\nstring(8) \"No error\"\n"
+        ),
+        "{output}"
     );
 }
 
@@ -5086,6 +5917,63 @@ fn pcre_no_match_initializes_undefined_matches_with_later_flags() {
     assert!(result.status.is_success(), "{:?}", result.status);
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.output.to_string_lossy(), "int(0)\narray(0) {\n}\n");
+}
+
+#[test]
+fn pcre_start_offset_ascii_word_fast_path_preserves_matches() {
+    let result = execute_source(
+        "<?php
+            $str = str_repeat('a', 1024);
+            $pos = 0;
+            while (preg_match('/\\G\\w/u', $str, $matches, 0, $pos)) {
+                ++$pos;
+            }
+            var_dump($pos);
+            var_dump($matches);
+            var_dump(preg_last_error());
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "int(1024)\narray(0) {\n}\nint(0)\n"
+    );
+}
+
+#[test]
+fn dense_pcre_start_offset_fast_path_skips_post_call_discards() {
+    let result = execute_source_with_options(
+        "<?php
+            $str = str_repeat('a', 2048);
+            $pos = 0;
+            while (preg_match('/\\G\\w/u', $str, $matches, 0, $pos)) {
+                ++$pos;
+            }
+            var_dump($pos);
+            var_dump($matches);
+            ",
+        VmOptions {
+            execution_format: ExecutionFormat::Bytecode,
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "int(2048)\narray(0) {\n}\n"
+    );
+    let counters = result.counters.expect("counters");
+    assert!(
+        counters.opcodes.get("call_function").copied().unwrap_or(0) < 16,
+        "{counters:?}"
+    );
 }
 
 #[test]
@@ -5130,6 +6018,55 @@ fn phar_supported_compression_follows_loaded_capabilities() {
     assert_eq!(
         result.output.to_string_lossy(),
         "bool(true)\nbool(false)\narray(1) {\n  [0]=>\n  string(2) \"GZ\"\n}\n"
+    );
+}
+
+#[test]
+fn phar_read_only_methods_dispatch_from_dense_runtime_path() {
+    let root = std::env::temp_dir().join(format!(
+        "phrust-phar-methods-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("temp phar root should be created");
+    let archive = root.join("fixture-methods.phar");
+    let archive_path = archive.to_string_lossy().replace('\\', "\\\\");
+    let source = format!(
+        r#"<?php
+$hex = '3c3f706870205f5f48414c545f434f4d50494c455228293b203f3e0a6b000000020000001101000000000c000000666978747572652e70686172000000000d0000006c69622f68656c6c6f2e7068702e000000800092652e00000000000000000000000000000008000000646174612e7478740700000080009265070000000000000000000000000000003c3f706870206563686f202766726f6d2d706861727c273b0a72657475726e2027696e636c7564652d6f6b273b0a7061796c6f6164';
+file_put_contents('{archive_path}', hex2bin($hex));
+$archive = new Phar('{archive_path}');
+var_dump($archive->count());
+var_dump($archive->offsetExists('data.txt'));
+var_dump($archive->offsetExists('./lib/hello.php'));
+var_dump($archive->offsetExists('missing.txt'));
+var_dump(basename($archive->getPath()));
+var_dump($archive->getAlias() !== '');
+var_dump(str_contains($archive->getStub(), '__HALT_COMPILER'));
+"#
+    );
+    let result = execute_source_with_options(
+        &source,
+        VmOptions {
+            execution_format: ExecutionFormat::Auto,
+            runtime_context: RuntimeContext::default()
+                .with_cwd(root.clone())
+                .with_filesystem_capabilities(
+                    php_runtime::FilesystemCapabilities::none()
+                        .with_allowed_roots(vec![root.clone()]),
+                ),
+            ..VmOptions::default()
+        },
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "int(2)\nbool(true)\nbool(true)\nbool(false)\nstring(20) \"fixture-methods.phar\"\nbool(true)\nbool(true)\n"
     );
 }
 
@@ -5860,7 +6797,7 @@ fn objects_execute_constructor_and_public_properties() {
         null_after_unset.status
     );
     let output = null_after_unset.output.to_string_lossy();
-    assert!(output.contains("Warning: Undefined property: box::$value in "));
+    assert!(output.contains("Warning: Undefined property: Box::$value in "));
     assert!(output.trim_end().ends_with("null"), "{output}");
     assert_eq!(
         null_after_unset.diagnostics[0].id(),
@@ -5877,7 +6814,7 @@ fn foreach_over_null_warns_and_iterates_zero_times() {
     assert!(result.status.is_success(), "{:?}", result.status);
     let output = result.output.to_string_lossy();
     assert!(
-        output.contains("Warning: Undefined property: foo::$x in "),
+        output.contains("Warning: Undefined property: Foo::$x in "),
         "{output}"
     );
     assert!(
@@ -7935,11 +8872,15 @@ fn dense_bytecode_executes_closures_and_callable_calls() {
 #[test]
 fn direct_frames_elide_argument_vectors_unless_observed() {
     // Plain calls elide the per-call argument snapshot; func_get_args
-    // bodies keep it and read the full vector including extras.
+    // bodies keep it and read the full vector including extras. The Dto
+    // property is *typed* so the constructor's assignment stays off the
+    // copy-patch property-store leaf (which executes the whole body natively
+    // with no frame at all) and keeps exercising the direct-constructor-frame
+    // path this test asserts.
     let source = "<?php \
             function plain($a, $b) { return $a + $b; } \
             function observer() { return implode(\",\", func_get_args()); } \
-            class Dto { public $v = 0; public function __construct($v) { $this->v = $v; } \
+            class Dto { public int $v = 0; public function __construct($v) { $this->v = $v; } \
                         public function get() { return $this->v; } } \
             $sum = 0; \
             for ($i = 0; $i < 5; $i++) { $sum += plain($i, 1); } \
@@ -8905,6 +9846,10 @@ fn cranelift_packed_array_fetch_executes_native_and_counts_fast_hit() {
                 function_entry_threshold: 1,
                 ..TieringOptions::default()
             },
+            // The default-on copy-patch tier now compiles this packed-fetch
+            // shape too and would serve the call before Cranelift tiering
+            // fires; this test pins the *Cranelift* packed fetch.
+            copy_patch_leaf_override: Some(false),
             ..VmOptions::default()
         },
     );
@@ -14758,16 +15703,84 @@ fn tokenizer_php_token_constructor_sets_public_shape_and_stringable() {
 }
 
 #[test]
-fn tokenizer_php_token_casts_to_string_in_runtime_builtins() {
+fn tokenizer_php_token_constructor_reuses_unrooted_call_argument_handles() {
     let result = execute_source(
-        "<?php $tokens = PhpToken::tokenize('<?php echo \"Hello \". $what;'); var_dump(implode($tokens)); var_dump((string) $tokens[0]);",
+        "<?php $token = new PhpToken(300, 'function'); var_dump($token); $token = new PhpToken(300, 'function', 10); var_dump($token); $token = new PhpToken(300, 'function', 10, 100); var_dump($token);",
     );
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.as_bytes(),
-        b"string(27) \"<?php echo \"Hello \". $what;\"\nstring(6) \"<?php \"\n"
+        b"object(PhpToken)#1 (4) {\n  [\"id\"]=>\n  int(300)\n  [\"text\"]=>\n  string(8) \"function\"\n  [\"line\"]=>\n  int(-1)\n  [\"pos\"]=>\n  int(-1)\n}\nobject(PhpToken)#2 (4) {\n  [\"id\"]=>\n  int(300)\n  [\"text\"]=>\n  string(8) \"function\"\n  [\"line\"]=>\n  int(10)\n  [\"pos\"]=>\n  int(-1)\n}\nobject(PhpToken)#1 (4) {\n  [\"id\"]=>\n  int(300)\n  [\"text\"]=>\n  string(8) \"function\"\n  [\"line\"]=>\n  int(10)\n  [\"pos\"]=>\n  int(100)\n}\n"
     );
+}
+
+#[test]
+fn tokenizer_php_token_casts_to_string_in_runtime_builtins() {
+    let result = execute_source(
+        "<?php $tokens = PhpToken::tokenize('<?php echo \"Hello \". $what;'); var_dump(implode($tokens)); var_dump((string) $tokens[0]); var_dump($tokens[0]->__toString());",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"string(27) \"<?php echo \"Hello \". $what;\"\nstring(6) \"<?php \"\nstring(6) \"<?php \"\n"
+    );
+}
+
+#[test]
+fn tokenizer_php_token_subclass_tokenize_uses_called_class() {
+    let result = execute_source(
+        "<?php class MyPhpToken extends PhpToken { public int $extra = 123; public function lowered(): string { return strtolower($this->text); } } $tokens = MyPhpToken::tokenize('<?PHP ECHO 1;'); echo get_class($tokens[0]), '|', $tokens[0] instanceof PhpToken ? 'parent|' : 'no-parent|', $tokens[0]->extra, '|'; foreach ($tokens as $token) { if ($token->text === 'ECHO') { echo $token->lowered(); } }",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"MyPhpToken|parent|123|echo");
+}
+
+#[test]
+fn tokenizer_php_token_subclass_construction_errors_are_catchable() {
+    let result = execute_source(
+        r#"<?php
+        class MyPhpToken1 extends PhpToken {
+            public $extra = UNKNOWN;
+        }
+        try {
+            var_dump(MyPhpToken1::tokenize("<?php foo"));
+        } catch (Error $e) {
+            echo $e->getMessage(), "\n";
+        }
+        abstract class MyPhpToken2 extends PhpToken {
+        }
+        try {
+            var_dump(MyPhpToken2::tokenize("<?php foo"));
+        } catch (Error $e) {
+            echo $e->getMessage(), "\n";
+        }
+        "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"Undefined constant \"UNKNOWN\"\nCannot instantiate abstract class MyPhpToken2\n"
+    );
+}
+
+#[test]
+fn tokenizer_php_token_constructor_is_final() {
+    let result = execute_source(
+        "<?php class MyPhpToken extends PhpToken { public function __construct() {} }",
+    );
+
+    assert!(matches!(
+        first_vm_compile_payload(&result),
+        VmCompileDiagnostic::FinalMethodOverride {
+            method_name,
+            parent_class_name,
+            ..
+        } if method_name == "__construct" && parent_class_name == "PhpToken"
+    ));
 }
 
 #[test]
@@ -15737,6 +16750,41 @@ fn spl_caching_iterator_to_string_modes_and_flag_errors() {
 }
 
 #[test]
+fn spl_caching_iterator_string_cast_fatal_trace_matches_php_shape() {
+    let result = execute_source(
+        r#"<?php
+            function test($it) {
+                foreach ($it as $value) {
+                    var_dump((string) $it);
+                }
+            }
+            test(new CachingIterator(new ArrayIterator([1, 2, 3]), 0));
+            "#,
+    );
+
+    assert!(!result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains(
+            "Fatal error: Uncaught BadMethodCallException: CachingIterator does not fetch string value (see CachingIterator::__construct) in "
+        ),
+        "{output}"
+    );
+    assert!(
+        output.contains(": CachingIterator->__toString()"),
+        "{output}"
+    );
+    assert!(
+        output.contains(": test(Object(CachingIterator))"),
+        "{output}"
+    );
+    assert!(
+        output.contains("  thrown in /tmp/phrust-test.php on line "),
+        "{output}"
+    );
+}
+
+#[test]
 fn spl_recursive_tree_iterator_rejects_non_recursive_iterator_source() {
     let result = execute_source(
         r#"<?php
@@ -15856,6 +16904,172 @@ fn spl_iterator_apply_honors_subclass_rewind_exception() {
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.as_bytes(), b"Make the iterator break");
+}
+
+#[test]
+fn spl_iterator_to_array_preserved_keys_match_php_key_diagnostics() {
+    let result = execute_source(
+        r#"<?php
+            function nonscalar_key_generator() {
+                yield "foo" => 1;
+                yield 1 => 2;
+                yield 2.5 => 3;
+                yield null => 4;
+                yield [] => 5;
+            }
+            try {
+                iterator_to_array(nonscalar_key_generator());
+            } catch (Error $e) {
+                echo "caught:", $e->getMessage();
+            }
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(output.contains("Implicit conversion from float 2.5 to int loses precision"));
+    assert!(
+        output.contains("Using null as an array offset is deprecated, use an empty string instead")
+    );
+    assert!(output.contains("caught:Cannot access offset of type array on array"));
+}
+
+#[test]
+fn constructor_indirect_temporaries_do_not_reserve_visible_object_ids() {
+    let result = execute_source(
+        r#"<?php
+            class MyFoo {}
+            class MyCachingIterator extends CachingIterator {
+                function __construct(Iterator $it, $flags = 0) {
+                    parent::__construct($it, $flags);
+                }
+            }
+            $it = new MyCachingIterator(new ArrayIterator([0, "foo" => 1, 2, "bar" => 3, 4]));
+            try {
+                $it->offsetGet(0);
+            } catch (Exception $e) {
+            }
+            $it = new MyCachingIterator(
+                new ArrayIterator([0, "foo" => 1, 2, "bar" => 3, 4]),
+                CachingIterator::FULL_CACHE
+            );
+            $checks = [0, new stdClass, new MyFoo, null, 2, "foo", 3];
+            echo spl_object_id($checks[1]), "|", spl_object_id($checks[2]);
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert_eq!(output, "1|2");
+}
+
+#[test]
+fn dynamic_iterator_function_releases_temporary_before_return_observed() {
+    let result = execute_source(
+        r#"<?php
+            class DestructingArrayIterator extends ArrayIterator {
+                public function __construct() {
+                    parent::__construct([1, 2]);
+                }
+                public function __destruct() {
+                    echo "destruct\n";
+                }
+            }
+            $func = 'iterator_to_array';
+            var_dump($func(new DestructingArrayIterator()));
+            $func = 'iterator_count';
+            var_dump($func(new DestructingArrayIterator()));
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "destruct\narray(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  int(2)\n}\ndestruct\nint(2)\n"
+    );
+}
+
+#[test]
+fn spl_iterator_function_temporary_destructor_exception_is_catchable() {
+    let result = execute_source(
+        r#"<?php
+            class MyArrayIterator extends ArrayIterator {
+                static protected $fail = 0;
+
+                static function fail($state, $method) {
+                    if (self::$fail == $state) {
+                        throw new Exception("State $state: $method()");
+                    }
+                }
+
+                function __construct() {
+                    self::fail(0, __FUNCTION__);
+                    parent::__construct([1, 2]);
+                    self::fail(1, __FUNCTION__);
+                }
+
+                function rewind(): void {
+                    self::fail(2, __FUNCTION__);
+                    parent::rewind();
+                }
+
+                function valid(): bool {
+                    self::fail(3, __FUNCTION__);
+                    return parent::valid();
+                }
+
+                function current(): mixed {
+                    self::fail(4, __FUNCTION__);
+                    return parent::current();
+                }
+
+                function key(): string|int|null {
+                    self::fail(5, __FUNCTION__);
+                    return parent::key();
+                }
+
+                function next(): void {
+                    self::fail(6, __FUNCTION__);
+                    parent::next();
+                }
+
+                function __destruct() {
+                    self::fail(7, __FUNCTION__);
+                }
+
+                static function test($func, $skip = null) {
+                    echo "===$func===\n";
+                    self::$fail = 0;
+                    while (self::$fail < 10) {
+                        try {
+                            var_dump($func(new MyArrayIterator()));
+                            break;
+                        } catch (Exception $e) {
+                            echo $e->getMessage(), "\n";
+                        }
+                        if (isset($skip[self::$fail])) {
+                            self::$fail = $skip[self::$fail];
+                        } else {
+                            self::$fail++;
+                        }
+                        try {
+                            $e = null;
+                        } catch (Exception $e) {
+                        }
+                    }
+                }
+            }
+
+            MyArrayIterator::test('iterator_to_array');
+            MyArrayIterator::test('iterator_count', [3 => 6]);
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "===iterator_to_array===\nState 0: __construct()\nState 1: __construct()\nState 2: rewind()\nState 3: valid()\nState 4: current()\nState 5: key()\nState 6: next()\nState 7: __destruct()\narray(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  int(2)\n}\n===iterator_count===\nState 0: __construct()\nState 1: __construct()\nState 2: rewind()\nState 3: valid()\nState 6: next()\nState 7: __destruct()\nint(2)\n"
+    );
 }
 
 #[test]
@@ -16176,6 +17390,46 @@ fn spl_internal_subclass_parent_constructor_initializes_storage() {
 }
 
 #[test]
+fn spl_internal_subclass_parent_runtime_methods_use_spl_storage() {
+    let result = execute_source(
+        r#"<?php
+            class ParentCallingIterator extends ArrayIterator {
+                public function rewind(): void {
+                    echo "rewind|";
+                    parent::rewind();
+                }
+                public function valid(): bool {
+                    return parent::valid();
+                }
+            }
+            class ParentCallingObject extends ArrayObject {
+                public function __construct(array $items) {
+                    parent::__construct($items, ArrayObject::ARRAY_AS_PROPS);
+                }
+            }
+            class ParentCallingHeap extends SplMaxHeap {
+                public function compare($a, $b): int {
+                    return parent::compare($a, $b);
+                }
+            }
+            $it = new ParentCallingIterator([7]);
+            foreach ($it as $value) {
+                echo $value, "|";
+            }
+            $object = new ParentCallingObject(["x" => 8]);
+            echo $object->x, "|", $object->getFlags(), "|";
+            $heap = new ParentCallingHeap();
+            $heap->insert(1);
+            $heap->insert(2);
+            echo $heap->count(), "|", $heap->extract();
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"rewind|7|8|2|2|2");
+}
+
+#[test]
 fn spl_userland_countable_uses_internal_interface_metadata() {
     let result = execute_source(
         r#"<?php
@@ -16420,6 +17674,33 @@ fn spl_object_storage_serialize_snapshots_entries_during_magic_mutation() {
 }
 
 #[test]
+fn spl_object_storage_setinfo_observes_info_destructor_mutation() {
+    let result = execute_source(
+        r#"<?php
+            class C {
+                function __destruct() {
+                    global $store;
+                    $store->removeAll($store);
+                }
+            }
+
+            $o = new stdClass;
+            $store = new SplObjectStorage;
+            $store[$o] = new C;
+            $store->setInfo(1);
+            var_dump($store);
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("[\"storage\":\"SplObjectStorage\":private]=>\n  array(0)"),
+        "{output}"
+    );
+}
+
+#[test]
 fn spl_doubly_linked_list_serialize_observes_live_mutation() {
     let result = execute_source(
         r#"<?php
@@ -16519,6 +17800,77 @@ fn spl_file_info_and_file_object_use_allowed_local_files() {
     assert_eq!(
         result.output.to_string_lossy(),
         "items.csv|items|size|real|name,qty\nname,qty\n0:name,qty\n1:apple,2\n|name:qty|info|temp|SplFileObject::ftruncate(): Argument #1 ($size) must be greater than or equal to 0"
+    );
+}
+
+#[test]
+fn spl_file_object_unconstructed_subclass_method_reports_invalid_state() {
+    let result = execute_source(
+        r#"<?php
+            class bug8318 extends SplFileObject {
+                public function __construct() {
+                }
+
+                public function fpassthru(): int {
+                    return 0;
+                }
+            }
+
+            $file = new bug8318;
+            try {
+                $file->fpassthru();
+            } catch (Error $e) {
+                echo get_class($e), "|", $e->getMessage();
+            }
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "Error|The parent constructor was not called: the object is in an invalid state"
+    );
+}
+
+#[test]
+fn spl_file_object_unconstructed_subclass_error_uses_error_private_labels() {
+    let result = execute_source(
+        r#"<?php
+            class bug8318 extends SplFileObject {
+                public function __construct() {
+                }
+
+                public function fpassthru(): int {
+                    return 0;
+                }
+            }
+
+            $file = new bug8318;
+            try {
+                $file->fpassthru();
+            } catch (Error $e) {
+                var_dump($e);
+            }
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("[\"string\":\"Error\":private]=>"),
+        "{output}"
+    );
+    assert!(
+        output.contains("[\"trace\":\"Error\":private]=>"),
+        "{output}"
+    );
+    assert!(
+        output.contains("[\"previous\":\"Error\":private]=>"),
+        "{output}"
+    );
+    assert!(
+        !output.contains("[\"string\":\"Exception\":private]=>"),
+        "{output}"
     );
 }
 
@@ -16648,7 +18000,8 @@ fn zip_archive_create_overwrite_writes_local_entries() {
             echo $zip->close() ? "close|" : "bad-close|";
             $read = new ZipArchive();
             echo $read->open("{archive_path}") ? "read|" : "bad-read|";
-            echo $read->count(), "|", $read->getFromName("templates/index.html"), "|", $read->getFromName("theme/source.txt");
+            echo ($read instanceof Countable) ? "countable|" : "not-countable|";
+            echo $read->count(), ":", count($read), "|", $read->getFromName("templates/index.html"), "|", $read->getFromName("theme/source.txt");
             "#
     );
     let result = execute_source_with_options(
@@ -16668,7 +18021,7 @@ fn zip_archive_create_overwrite_writes_local_entries() {
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.to_string_lossy(),
-        "1:8:8192:0|open|dir|file|string|replace|close|read|3|beta|payload"
+        "1:8:8192:0|open|dir|file|string|replace|close|read|countable|3:3|beta|payload"
     );
     let _ = std::fs::remove_file(archive_file);
     let _ = std::fs::remove_file(source_file);
@@ -17190,6 +18543,42 @@ fn spl_append_iterator_parent_constructor_state_is_enforced() {
             result.output.as_bytes(),
             b"The object is in an invalid state as the parent constructor was not called|AppendIterator::getIterator() must be called exactly once per instance|2"
         );
+}
+
+#[test]
+fn spl_append_iterator_parent_append_rewinds_attached_iterator_once() {
+    let result = execute_source(
+        r#"<?php
+            class MyArrayIterator extends ArrayIterator {
+                public function rewind(): void {
+                    echo "inner-rewind|";
+                    parent::rewind();
+                }
+            }
+            class MyAppendIterator extends AppendIterator {
+                public function __construct() {}
+                public function append(Iterator $iterator): void {
+                    echo "append|";
+                    parent::append($iterator);
+                }
+                public function parentConstruct(): void {
+                    parent::__construct();
+                }
+            }
+            $inner = new MyArrayIterator([1, 2]);
+            foreach ($inner as $_) {}
+            $append = new MyAppendIterator();
+            $append->parentConstruct();
+            $append->append($inner);
+            $append->append($inner);
+            "#,
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"inner-rewind|append|inner-rewind|append|"
+    );
 }
 
 #[test]
@@ -18218,6 +19607,32 @@ fn builtins_execute_direct_calls_print_var_dump_and_callable_resolution() {
     assert!(exit.status.is_success(), "{:?}", exit.status);
     assert_eq!(exit.output.as_bytes(), b"before\n");
 
+    let short_circuit_or_die = execute_source("<?php false or die(\"failed\"); echo \"bad\";");
+    assert!(
+        short_circuit_or_die.status.is_success(),
+        "{:?}",
+        short_circuit_or_die.status
+    );
+    assert_eq!(short_circuit_or_die.output.as_bytes(), b"failed");
+    assert_eq!(short_circuit_or_die.process_exit_code, Some(0));
+
+    let short_circuit_or_skips_die = execute_source("<?php true or die(\"bad\"); echo \"after\";");
+    assert!(
+        short_circuit_or_skips_die.status.is_success(),
+        "{:?}",
+        short_circuit_or_skips_die.status
+    );
+    assert_eq!(short_circuit_or_skips_die.output.as_bytes(), b"after");
+
+    let assignment_or_skips_die =
+        execute_source("<?php $queue = \"queue\" or die(\"bad\"); echo $queue;");
+    assert!(
+        assignment_or_skips_die.status.is_success(),
+        "{:?}",
+        assignment_or_skips_die.status
+    );
+    assert_eq!(assignment_or_skips_die.output.as_bytes(), b"queue");
+
     let dump = execute_source(
         "<?php function dump_args(...$args) { var_dump($args); } var_dump(null, true, 7, \"hi\"); dump_args(1, \"x\");",
     );
@@ -18254,6 +19669,72 @@ fn compact_builtin_reads_current_scope_locals() {
         result.output.as_bytes(),
         b"utf8mb4|utf8mb4_unicode_ci|missing"
     );
+}
+
+#[test]
+fn core_introspection_builtins_read_vm_request_state() {
+    let result = execute_source(
+        "<?php
+            function handler() {}
+            function inspect($param) {
+                $local = 'value';
+                $vars = get_defined_vars();
+                echo $vars['param'], '|', $vars['local'], '|',
+                    array_key_exists('missing', $vars) ? 'bad' : 'missing', \"\\n\";
+            }
+            inspect('arg');
+            echo get_error_handler() === null ? 'no-error' : 'bad';
+            set_error_handler('handler');
+            echo '|', is_callable(get_error_handler()) ? 'error-handler' : 'bad';
+            echo '|', get_exception_handler() === null ? 'no-exception' : 'bad';
+            set_exception_handler('handler');
+            echo '|', is_callable(get_exception_handler()) ? 'exception-handler' : 'bad';
+            echo \"\\n\";
+            $core = get_extension_funcs('core');
+            echo in_array('zend_version', $core, true) ? 'core-func' : 'missing';
+            echo '|', get_extension_funcs('missing') === false ? 'missing-ext' : 'bad';
+            echo '|', function_exists('clone') && function_exists('die') && function_exists('exit')
+                ? 'constructs' : 'missing-construct';
+            echo '|', zend_version();
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"arg|value|missing\nno-error|error-handler|no-exception|exception-handler\ncore-func|missing-ext|constructs|4.5.7"
+    );
+}
+
+#[test]
+fn included_files_builtins_expose_request_include_list() {
+    let root =
+        std::env::temp_dir().join(format!("phrust-vm-included-files-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("temp include root should be created");
+    let main_path = root.join("main.php");
+    let child_path = root.join("child.php");
+    std::fs::write(&child_path, "<?php $child = 'ok';\n").expect("child should be writable");
+    let source = "<?php
+            require __DIR__ . '/child.php';
+            $included = get_included_files();
+            $required = get_required_files();
+            echo basename($included[0]), '|', basename($included[1]), '|',
+                count($included), '|', count($required), '|', $child;
+        ";
+    std::fs::write(&main_path, source).expect("main should be writable");
+
+    let result = execute_source_with_options_and_path(
+        source,
+        VmOptions {
+            include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+            ..VmOptions::default()
+        },
+        main_path.to_string_lossy().into_owned(),
+    );
+    let _ = std::fs::remove_dir_all(root);
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"main.php|child.php|2|2|ok");
 }
 
 #[test]
@@ -18879,6 +20360,140 @@ fn call_by_ref_argument_mismatch_is_catchable_error() {
     );
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.as_bytes(), b"by-ref");
+}
+
+#[test]
+fn sysvshm_destroyed_handle_is_catchable_error() {
+    let result = execute_source(
+        "<?php
+            $shm = shm_attach(42, 1024);
+            shm_remove($shm);
+            shm_detach($shm);
+            try {
+                shm_remove($shm);
+            } catch (Error $e) {
+                echo $e->getMessage();
+            }
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"Shared memory block has already been destroyed"
+    );
+}
+
+#[test]
+fn sysvshm_put_var_propagates_serialize_exception() {
+    let result = execute_source(
+        "<?php
+            $shm = shm_attach(43, 1024);
+            class SysvshmSerializeThrows {
+                public function __serialize(): array {
+                    throw new Error('no');
+                }
+            }
+            try {
+                shm_put_var($shm, 1, new SysvshmSerializeThrows);
+            } catch (Error $e) {
+                echo $e->getMessage();
+            }
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.as_bytes(), b"no");
+}
+
+#[test]
+fn sysvshm_put_var_detects_detach_during_serialize() {
+    let result = execute_source(
+        "<?php
+            class SysvshmSerializeDetaches {
+                public function __serialize(): array {
+                    global $shm;
+                    shm_detach($shm);
+                    return ['a' => 'b'];
+                }
+            }
+            $shm = shm_attach(44, 1024);
+            try {
+                shm_put_var($shm, 1, new SysvshmSerializeDetaches);
+            } catch (Error $e) {
+                echo $e->getMessage();
+            }
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"Shared memory block has been destroyed by the serialization function"
+    );
+}
+
+#[test]
+fn sysvmsg_send_propagates_serialize_return_type_error() {
+    let result = execute_source(
+        "<?php
+            class SysvmsgSerializeInvalid {
+                public function __serialize() {}
+            }
+            $queue = msg_get_queue(45);
+            try {
+                msg_send($queue, 1, new SysvmsgSerializeInvalid, true);
+            } catch (TypeError $e) {
+                echo $e->getMessage();
+            }
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"SysvmsgSerializeInvalid::__serialize() must return an array"
+    );
+}
+
+#[test]
+fn sysvmsg_receive_size_value_error_is_catchable() {
+    let result = execute_source(
+        "<?php
+            $queue = msg_get_queue(46);
+            try {
+                msg_receive($queue, 0, $type, 0, $message);
+            } catch (ValueError $exception) {
+                echo $exception->getMessage();
+            }
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.as_bytes(),
+        b"msg_receive(): Argument #4 ($max_message_size) must be greater than 0"
+    );
+}
+
+#[test]
+fn sysvmsg_send_removed_queue_emits_warning_and_sets_errno() {
+    let result = execute_source(
+        "<?php
+            $queue = msg_get_queue(47);
+            msg_remove_queue($queue);
+            var_dump(msg_send($queue, 1, 'payload', true, true, $errno));
+            var_dump($errno !== 0);
+            ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let output = result.output.to_string_lossy();
+    assert!(
+        output.contains("Warning: msg_send(): msgsnd failed: Invalid argument in "),
+        "{output}"
+    );
+    assert!(output.contains("bool(false)\nbool(true)\n"), "{output}");
 }
 
 #[test]
@@ -20255,6 +21870,35 @@ echo dense_call_magic($magic);
 }
 
 #[test]
+fn dense_bytecode_routes_pdo_runtime_methods() {
+    let result = execute_source_with_options(
+        r#"<?php
+$db = new PDO("sqlite::memory:");
+var_dump($db->exec("CREATE TABLE demo (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"));
+var_dump($db->prepare("INSERT INTO demo (name) VALUES (?)") instanceof PDOStatement);
+for ($i = 0; $i < 3; $i++) {
+    echo $db->getAttribute(PDO::ATTR_DRIVER_NAME), ':';
+    var_dump($db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION));
+}
+"#,
+        VmOptions {
+            execution_format: ExecutionFormat::Auto,
+            collect_counters: true,
+            collect_profile_spans: false,
+            collect_layout_source_attribution: true,
+            inline_caches: InlineCacheMode::On,
+            ..VmOptions::default()
+        },
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "int(0)\nbool(true)\nsqlite:bool(true)\nsqlite:bool(true)\nsqlite:bool(true)\n"
+    );
+}
+
+#[test]
 fn dense_static_scoped_non_static_method_keeps_active_this() {
     let result = execute_source_with_options(
         r#"<?php
@@ -20431,6 +22075,7 @@ fn first_vm_compile_payload(result: &VmResult) -> &VmCompileDiagnostic {
         .find_map(|diagnostic| match diagnostic.payload()? {
             RuntimeDiagnosticPayload::VmCompile(payload) => Some(payload),
             RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
+            RuntimeDiagnosticPayload::TokenizerParse(_) => None,
             RuntimeDiagnosticPayload::Bringup(_) => None,
         })
         .expect("compile error should carry VM compile payload")
@@ -20445,6 +22090,7 @@ fn first_runtime_bringup_payload(
         .find_map(|diagnostic| match diagnostic.payload()? {
             RuntimeDiagnosticPayload::Bringup(payload) => Some(payload),
             RuntimeDiagnosticPayload::JsonBuiltin(_) => None,
+            RuntimeDiagnosticPayload::TokenizerParse(_) => None,
             RuntimeDiagnosticPayload::VmCompile(_) => None,
         })
         .unwrap_or_else(|| {

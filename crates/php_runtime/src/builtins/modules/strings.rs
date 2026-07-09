@@ -949,7 +949,11 @@ pub(in crate::builtins::modules) fn builtin_pack(
     for spec in specs {
         match spec.code {
             b'l' | b'I' | b'V' => {
-                let count = spec.count.unwrap_or(1);
+                let count = if spec.count_all {
+                    values.len()
+                } else {
+                    spec.count.unwrap_or(1)
+                };
                 for _ in 0..count {
                     let value = values
                         .next()
@@ -957,6 +961,18 @@ pub(in crate::builtins::modules) fn builtin_pack(
                     let number = int_arg("pack", value)?;
                     output.extend_from_slice(&pack_u32_bytes(spec.code, number));
                 }
+            }
+            b'h' | b'H' => {
+                let value = values
+                    .next()
+                    .ok_or_else(|| value_error("pack", "not enough arguments"))?;
+                let input = string_arg("pack", value)?;
+                let count = if spec.count_all {
+                    input.as_bytes().len()
+                } else {
+                    spec.count.unwrap_or(1)
+                };
+                output.extend_from_slice(&pack_hex_nibbles(spec.code, input.as_bytes(), count));
             }
             code => return Err(invalid_pack_format("pack", code)),
         }
@@ -993,7 +1009,11 @@ pub(in crate::builtins::modules) fn builtin_unpack(
     for spec in specs {
         match spec.code {
             b'l' | b'I' | b'V' => {
-                let count = spec.count.unwrap_or(1);
+                let count = if spec.count_all {
+                    (data.len().saturating_sub(cursor)) / 4
+                } else {
+                    spec.count.unwrap_or(1)
+                };
                 for index in 0..count {
                     let end = cursor.checked_add(4).ok_or_else(|| {
                         value_error("unpack", "Type value overflows internal cursor")
@@ -1009,6 +1029,27 @@ pub(in crate::builtins::modules) fn builtin_unpack(
                     let key = unpack_result_key(&spec, index, &mut next_numeric_key);
                     output.insert(key, Value::Int(value));
                 }
+            }
+            b'h' | b'H' => {
+                let count = if spec.count_all {
+                    (data.len().saturating_sub(cursor)) * 2
+                } else {
+                    spec.count.unwrap_or(1)
+                };
+                let width = count.div_ceil(2);
+                let end = cursor
+                    .checked_add(width)
+                    .ok_or_else(|| value_error("unpack", "cursor is out of range"))?;
+                if end > data.len() {
+                    return Err(BuiltinError::new(
+                        "E_PHP_RUNTIME_BUILTIN_VALUE",
+                        "Type value overflows input data string",
+                    ));
+                }
+                let value = unpack_hex_nibbles(spec.code, &data.as_bytes()[cursor..end], count);
+                cursor = end;
+                let key = unpack_hex_result_key(&spec, &mut next_numeric_key);
+                output.insert(key, Value::string(value));
             }
             b'@' => {
                 cursor = base
@@ -1029,6 +1070,72 @@ pub(in crate::builtins::modules) fn builtin_unpack(
     }
 
     Ok(Value::Array(output))
+}
+
+fn pack_hex_nibbles(code: u8, input: &[u8], count: usize) -> Vec<u8> {
+    let mut output = Vec::with_capacity(count.div_ceil(2));
+    for index in (0..count).step_by(2) {
+        let first = input.get(index).map_or(0, |byte| hex_pack_nibble(*byte));
+        let second = if index + 1 < count {
+            input
+                .get(index + 1)
+                .map_or(0, |byte| hex_pack_nibble(*byte))
+        } else {
+            0
+        };
+        let byte = if code == b'H' {
+            (first << 4) | second
+        } else {
+            (second << 4) | first
+        };
+        output.push(byte);
+    }
+    output
+}
+
+fn hex_pack_nibble(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => 0,
+    }
+}
+
+fn unpack_hex_nibbles(code: u8, input: &[u8], count: usize) -> Vec<u8> {
+    let mut output = Vec::with_capacity(count);
+    for byte in input {
+        let high = byte >> 4;
+        let low = byte & 0x0f;
+        if code == b'H' {
+            output.push(hex_digit(high));
+            output.push(hex_digit(low));
+        } else {
+            output.push(hex_digit(low));
+            output.push(hex_digit(high));
+        }
+    }
+    output.truncate(count);
+    output
+}
+
+fn hex_digit(nibble: u8) -> u8 {
+    match nibble {
+        0..=9 => b'0' + nibble,
+        10..=15 => b'a' + (nibble - 10),
+        _ => unreachable!("nibble is masked"),
+    }
+}
+
+fn unpack_hex_result_key(spec: &PackFormatSpec, next_numeric_key: &mut i64) -> ArrayKey {
+    match &spec.label {
+        Some(label) if !label.is_empty() => ArrayKey::String(PhpString::from_bytes(label.clone())),
+        _ => {
+            let key = *next_numeric_key;
+            *next_numeric_key += 1;
+            ArrayKey::Int(key)
+        }
+    }
 }
 
 pub(in crate::builtins::modules) fn builtin_md5(
@@ -1224,11 +1331,31 @@ pub(in crate::builtins::modules) fn builtin_htmlspecialchars(
 }
 
 pub(in crate::builtins::modules) fn builtin_htmlentities(
-    context: &mut BuiltinContext<'_>,
+    _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    span: RuntimeSourceSpan,
+    _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
-    builtin_htmlspecialchars(context, args, span)
+    if !(1..=4).contains(&args.len()) {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            "builtin htmlentities expects one to four argument(s)",
+        ));
+    }
+    let flags = args.get(1).map_or(Ok(HTML_ESCAPE_DEFAULT_FLAGS), |value| {
+        int_arg("htmlentities", value)
+    })?;
+    let double_encode = args.get(3).map_or(Ok(true), to_bool).map_err(|message| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!("builtin htmlentities expects bool-compatible double_encode: {message}"),
+        )
+    })?;
+    let input = string_arg("htmlentities", &args[0])?;
+    Ok(Value::string(htmlentities_escape_with_options(
+        input.as_bytes(),
+        flags,
+        double_encode,
+    )))
 }
 
 pub(in crate::builtins::modules) fn builtin_html_entity_decode(
@@ -1417,6 +1544,11 @@ fn input_ini_options(context: &BuiltinContext<'_>) -> RuntimeIniOptions {
         && let Some(filter) = crate::RuntimeInputFilter::from_ini_value(value)
     {
         ini.default_input_filter = filter;
+    }
+    if let Some(value) = context.ini_get("filter.default_flags")
+        && let Ok(flags) = value.parse::<i64>()
+    {
+        ini.default_input_filter_flags = flags;
     }
     ini
 }

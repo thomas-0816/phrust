@@ -24,6 +24,7 @@ pub struct CliIniOptions {
     pub display_startup_errors: Option<bool>,
     pub error_reporting: Option<i64>,
     pub default_input_filter: Option<php_runtime::api::RuntimeInputFilter>,
+    pub default_input_filter_flags: Option<i64>,
     /// Raw `-d name=value` ini overrides forwarded to the runtime registry.
     pub overrides: Vec<(String, String)>,
 }
@@ -282,6 +283,7 @@ fn php_output_contains_rendered_error(output: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn rendered_php_runtime_fatal_does_not_emit_structured_stderr() {
@@ -348,6 +350,49 @@ mod tests {
         assert_eq!(stderr, b"");
     }
 
+    #[test]
+    fn compatibility_entrypoint_allows_script_dir_sibling_files() {
+        let root = unique_temp_dir("phrust-engine-sibling-file");
+        let case_dir = root.join("case-123");
+        fs::create_dir_all(&case_dir).expect("create case dir");
+        let script = case_dir.join("hash_file_basic1.php");
+        let source = "<?php\n\
+            $file = __DIR__ . \"hash_file.txt\";\n\
+            $fp = fopen($file, 'w+');\n\
+            if ($fp === false) { echo 'open failed'; exit(1); }\n\
+            fwrite($fp, 'ok');\n\
+            fclose($fp);\n\
+            echo file_get_contents($file);\n\
+            unlink($file);\n\
+        ";
+        fs::write(&script, source).expect("write script");
+        let real_path = fs::canonicalize(&script).expect("canonical script");
+        let input = EngineInput {
+            source: source.to_string(),
+            source_path: real_path.to_string_lossy().into_owned(),
+            real_path: Some(real_path.clone()),
+            script_name: real_path.to_string_lossy().into_owned(),
+            script_args: Vec::new(),
+            cwd: case_dir,
+            env: Vec::new(),
+            ini: CliIniOptions::default(),
+            stdin: Vec::new(),
+            php_binary: "phrust-php".to_string(),
+            debug: false,
+            debug_log: None,
+            debug_format: DiagnosticOutputFormat::Text,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let status = execute_php(input, &mut stdout, &mut stderr).expect("execute");
+
+        assert_eq!(status, EXIT_SUCCESS);
+        assert_eq!(stdout, b"ok");
+        assert_eq!(stderr, b"");
+        fs::remove_dir_all(root).expect("remove temp root");
+    }
+
     fn test_input(source: &str) -> EngineInput {
         EngineInput {
             source: source.to_string(),
@@ -364,5 +409,13 @@ mod tests {
             debug_log: None,
             debug_format: DiagnosticOutputFormat::Text,
         }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }

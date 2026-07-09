@@ -3,27 +3,36 @@
   "module": "iconv",
   "priority": "Encoding conversion MVP",
   "selected_manifest": "tests/phpt/manifests/modules/iconv.selected.jsonl",
-  "corpus_count": 76,
-  "selected_count": 24,
-  "pass_count": 9,
+  "corpus_count": 78,
+  "selected_count": 49,
+  "pass_count": 34,
   "skip_count": 15,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 55,
+  "known_failure_count": 27,
   "scope": [
     "UTF-8, ASCII, and ISO-8859-1 conversion plus encoding state",
     "Common ASCII and ISO-8859-1 charset aliases",
-    "Target-green upstream iconv PHPT smoke rows plus generated bounds coverage"
+    "Target-green upstream iconv PHPT smoke rows plus generated bounds coverage",
+    "ISO-8859-2 conversion and MIME encoded-word decode behavior",
+    "iconv selected //IGNORE and //TRANSLIT conversion option behavior",
+    "iconv_strrpos selected UTF-8/ASCII/EUC-JP behavior",
+    "iconv MIME basic B/Q encode and decode behavior",
+    "iconv_mime_decode_headers selected encoded-word and duplicate-header behavior",
+    "Promoted upstream iconv_mime_decode and iconv_mime_decode_headers PHPT coverage",
+    "Promoted upstream overlong and unsupported charset warning/false behavior",
+    "Promoted upstream iconv INI/default encoding rows"
   ],
   "non_scope": [
-    "Full iconv charset catalog and transliteration",
-    "Remaining 55 upstream iconv failures",
-    "iconv_strrpos and MIME header helpers",
-    "Stream filters and exact warning text parity"
+    "Full iconv charset catalog and broad transliteration/ignore-mode parity",
+    "Remaining 27 upstream iconv failures",
+    "Remaining MIME header edge cases and full ISO-2022-JP position parity",
+    "Stream filters, output-buffer callbacks, XML/DOM dependencies, and exact illegal-input notice parity"
   ],
   "target_gates": [
     "nix develop -c cargo test -p php_runtime iconv --no-fail-fast",
-    "REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_DISABLE_REFERENCE_REUSE=1 nix develop -c just phpt-dev-module MODULE=iconv"
+    "REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_DISABLE_REFERENCE_REUSE=1 PHPT_TIMEOUT_SECONDS=20 PHPT_WORK_DIR=/private/tmp/phrust-phpt-iconv-selected-ini-promoted nix develop -c just phpt-dev-module MODULE=iconv",
+    "PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_MANIFEST=/private/tmp/phrust-iconv-full-manifest.jsonl PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 PHPT_TIMEOUT_SECONDS=20 PHPT_WORK_DIR=/private/tmp/phrust-phpt-iconv-full-target-ini-promoted nix develop -c just phpt-module-target MODULE=iconv"
   ],
-  "next_step": "Add iconv_strrpos, MIME header helpers, transliteration, and ignore-mode parity after a dedicated compatibility pass."
+  "next_step": "Add broader charset coverage, illegal-input notice parity, remaining MIME header edge cases, and full ISO-2022-JP position semantics after a dedicated compatibility pass."
 }

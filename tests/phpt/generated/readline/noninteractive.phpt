@@ -62,5 +62,5 @@ array(2) {
 }
 bool(true)
 bool(false)
-bool(true)
+> bool(true)
 bool(true)

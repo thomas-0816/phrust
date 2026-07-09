@@ -14,11 +14,14 @@
     "Socket class visibility",
     "IPv4 TCP loopback create/bind/listen/connect/accept",
     "Bidirectional socket_read/socket_write smoke",
-    "Socket local address reporting and last-error helpers"
+    "Bidirectional socket_send/socket_recv smoke",
+    "Socket local and peer address reporting",
+    "inet_pton/inet_ntop IPv4 roundtrip",
+    "Socket shutdown and last-error helpers"
   ],
   "non_scope": [
     "External network access",
-    "IPv6, UDP, Unix sockets, socket_select, options, nonblocking, timeouts, ancillary data, addrinfo helpers, stream import/export, and Windows helpers"
+    "UDP, Unix sockets, socket_select, options, nonblocking, timeouts, ancillary data, addrinfo helpers, stream import/export, and Windows helpers"
   ],
   "target_gates": ["just phpt-dev-module MODULE=sockets"],
   "next_step": "Expand remaining socket_* functions behind deterministic loopback or host-capability gates."

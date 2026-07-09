@@ -398,6 +398,49 @@ fn record_value_clone_source() {
     LAYOUT_SOURCE_COUNTS.with(|counts| {
         counts.borrow_mut().value_clones[family as usize] += 1;
     });
+    #[cfg(debug_assertions)]
+    if family == LayoutSourceFamily::Unattributed {
+        sample_unattributed_backtrace();
+    }
+}
+
+/// Debug-only diagnosis for the `unattributed` clone bucket: when
+/// `PHRUST_LAYOUT_UNATTRIBUTED_BACKTRACE=<n>` is set, every `n`-th
+/// unattributed value clone prints a short backtrace to stderr, so a
+/// histogram over a fixture run names the un-scoped clone sites. Debug
+/// builds only; release builds compile this out entirely.
+#[cfg(debug_assertions)]
+#[cold]
+fn sample_unattributed_backtrace() {
+    use std::cell::Cell;
+    thread_local! {
+        static EVERY: Cell<u64> = const { Cell::new(u64::MAX) };
+        static SEEN: Cell<u64> = const { Cell::new(0) };
+    }
+    let every = EVERY.with(|every| {
+        if every.get() == u64::MAX {
+            let parsed = std::env::var("PHRUST_LAYOUT_UNATTRIBUTED_BACKTRACE")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(0);
+            every.set(parsed);
+        }
+        every.get()
+    });
+    if every == 0 {
+        return;
+    }
+    let seen = SEEN.with(|seen| {
+        let next = seen.get() + 1;
+        seen.set(next);
+        next
+    });
+    if !seen.is_multiple_of(every) {
+        return;
+    }
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    eprintln!("[unattributed-clone]\n{backtrace}");
 }
 
 fn record_array_handle_clone_source() {

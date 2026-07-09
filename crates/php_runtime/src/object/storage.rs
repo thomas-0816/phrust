@@ -1,4 +1,6 @@
-use super::{ClassEntry, ObjectIdGuard, debug::property_debug_label, next_object_id};
+use super::{
+    ClassEntry, ClassEnumBackingType, ObjectIdGuard, debug::property_debug_label, next_object_id,
+};
 use crate::Value;
 use std::cell::{BorrowError, BorrowMutError, Cell, RefCell};
 use std::collections::HashMap;
@@ -113,6 +115,8 @@ fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
 struct ObjectStorage {
     class_name: String,
     display_name: String,
+    is_enum: bool,
+    enum_backing_type: Option<ClassEnumBackingType>,
     id_guard: Option<ObjectIdGuard>,
     layout: Rc<PropertyLayout>,
     /// Declared property slots; `None` means unset (absent), which is
@@ -308,6 +312,8 @@ impl ObjectRef {
             storage: Rc::new(RefCell::new(ObjectStorage {
                 class_name: class.name.clone(),
                 display_name,
+                is_enum: class.flags.is_enum,
+                enum_backing_type: class.enum_backing_type,
                 id_guard: Some(ObjectIdGuard::new(id)),
                 layout,
                 declared_slots,
@@ -350,6 +356,8 @@ impl ObjectRef {
             storage: Rc::new(RefCell::new(ObjectStorage {
                 class_name: source.class_name(),
                 display_name: source.display_name(),
+                is_enum: false,
+                enum_backing_type: None,
                 id_guard: None,
                 layout: empty_layout,
                 declared_slots: Vec::new(),
@@ -393,6 +401,18 @@ impl ObjectRef {
         self.storage.borrow().display_name.clone()
     }
 
+    /// Returns whether this object represents an enum case.
+    #[must_use]
+    pub fn is_enum(&self) -> bool {
+        self.storage.borrow().is_enum
+    }
+
+    /// Returns this object's enum backing type, when it is a backed enum case.
+    #[must_use]
+    pub fn enum_backing_type(&self) -> Option<ClassEnumBackingType> {
+        self.storage.borrow().enum_backing_type
+    }
+
     /// Creates a new object identity with a shallow copy of the property map.
     #[must_use]
     pub fn clone_shallow(&self) -> Self {
@@ -404,6 +424,8 @@ impl ObjectRef {
             storage: Rc::new(RefCell::new(ObjectStorage {
                 class_name: storage.class_name.clone(),
                 display_name: storage.display_name.clone(),
+                is_enum: storage.is_enum,
+                enum_backing_type: storage.enum_backing_type,
                 id_guard: Some(ObjectIdGuard::new(id)),
                 layout: Rc::clone(&storage.layout),
                 declared_slots: storage.declared_slots.clone(),

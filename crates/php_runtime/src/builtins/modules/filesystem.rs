@@ -5,7 +5,13 @@ use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
 };
 use crate::{StreamWrapperRegistry, Value};
+#[cfg(unix)]
+use nix::unistd::{Gid, Group, Uid, User, chown};
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 const FILE_APPEND_FLAG: i64 = 8;
@@ -13,7 +19,9 @@ const FILE_APPEND_FLAG: i64 = 8;
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("basename", builtin_basename, BuiltinCompatibility::Php),
     BuiltinEntry::new("chdir", builtin_chdir, BuiltinCompatibility::Php),
+    BuiltinEntry::new("chgrp", builtin_chgrp, BuiltinCompatibility::Php),
     BuiltinEntry::new("chmod", builtin_chmod, BuiltinCompatibility::Php),
+    BuiltinEntry::new("chown", builtin_chown, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "clearstatcache",
         builtin_clearstatcache,
@@ -52,6 +60,7 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("fileperms", builtin_fileperms, BuiltinCompatibility::Php),
     BuiltinEntry::new("filesize", builtin_filesize, BuiltinCompatibility::Php),
     BuiltinEntry::new("filetype", builtin_filetype, BuiltinCompatibility::Php),
+    BuiltinEntry::new("ftok", builtin_ftok, BuiltinCompatibility::Php),
     BuiltinEntry::new("getcwd", builtin_getcwd, BuiltinCompatibility::Php),
     BuiltinEntry::new("glob", builtin_glob, BuiltinCompatibility::Php),
     BuiltinEntry::new("is_dir", builtin_is_dir, BuiltinCompatibility::Php),
@@ -396,6 +405,135 @@ pub(in crate::builtins::modules) fn builtin_chmod(
     ))
 }
 
+pub(in crate::builtins::modules) fn builtin_chown(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    change_owner_or_group(context, args, span, "chown", OwnershipTarget::User)
+}
+
+pub(in crate::builtins::modules) fn builtin_chgrp(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    change_owner_or_group(context, args, span, "chgrp", OwnershipTarget::Group)
+}
+
+#[derive(Clone, Copy)]
+enum OwnershipTarget {
+    User,
+    Group,
+}
+
+fn change_owner_or_group(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+    function: &str,
+    target: OwnershipTarget,
+) -> BuiltinResult {
+    expect_arity(function, &args, 2)?;
+    let path = resolve_runtime_path(context, &string_arg(function, &args[0])?.to_string_lossy());
+    if !context.filesystem_capabilities().allows_path(&path) {
+        return Ok(Value::Bool(false));
+    }
+    change_owner_or_group_path(context, &path, &args[1], span, function, target)
+}
+
+#[cfg(unix)]
+fn change_owner_or_group_path(
+    context: &mut BuiltinContext<'_>,
+    path: &Path,
+    value: &Value,
+    span: RuntimeSourceSpan,
+    function: &str,
+    target: OwnershipTarget,
+) -> BuiltinResult {
+    let Some(id) = ownership_id(context, value, span.clone(), function, target)? else {
+        return Ok(Value::Bool(false));
+    };
+    let result = match target {
+        OwnershipTarget::User => chown(path, Some(Uid::from_raw(id)), None),
+        OwnershipTarget::Group => chown(path, None, Some(Gid::from_raw(id))),
+    };
+    if result.is_ok() {
+        return Ok(Value::Bool(true));
+    }
+    context.php_warning(
+        "E_PHP_RUNTIME_CHOWN_FAILED",
+        format!(
+            "{function}(): {}",
+            result
+                .err()
+                .map_or_else(|| "Operation failed".to_owned(), errno_message)
+        ),
+        span,
+    );
+    Ok(Value::Bool(false))
+}
+
+#[cfg(not(unix))]
+fn change_owner_or_group_path(
+    _context: &mut BuiltinContext<'_>,
+    _path: &Path,
+    _value: &Value,
+    _span: RuntimeSourceSpan,
+    _function: &str,
+    _target: OwnershipTarget,
+) -> BuiltinResult {
+    Ok(Value::Bool(false))
+}
+
+#[cfg(unix)]
+fn ownership_id(
+    context: &mut BuiltinContext<'_>,
+    value: &Value,
+    span: RuntimeSourceSpan,
+    function: &str,
+    target: OwnershipTarget,
+) -> Result<Option<u32>, crate::builtins::BuiltinError> {
+    match deref_value(value) {
+        Value::String(name) => {
+            let name = name.to_string_lossy();
+            let Some(id) = lookup_owner_or_group_id(&name, target) else {
+                let (kind, label) = match target {
+                    OwnershipTarget::User => ("uid", "user"),
+                    OwnershipTarget::Group => ("gid", "group"),
+                };
+                context.php_warning(
+                    "E_PHP_RUNTIME_CHOWN_LOOKUP_FAILED",
+                    format!("{function}(): Unable to find {kind} for {label} {name}"),
+                    span,
+                );
+                return Ok(None);
+            };
+            Ok(Some(id))
+        }
+        _ => Ok(Some(int_arg(function, value)? as u32)),
+    }
+}
+
+#[cfg(unix)]
+fn lookup_owner_or_group_id(name: &str, target: OwnershipTarget) -> Option<u32> {
+    match target {
+        OwnershipTarget::User => User::from_name(name)
+            .ok()
+            .flatten()
+            .map(|user| user.uid.as_raw()),
+        OwnershipTarget::Group => Group::from_name(name)
+            .ok()
+            .flatten()
+            .map(|group| group.gid.as_raw()),
+    }
+}
+
+#[cfg(unix)]
+fn errno_message(errno: nix::errno::Errno) -> String {
+    errno.desc().to_owned()
+}
+
 pub(in crate::builtins::modules) fn builtin_umask(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -527,6 +665,84 @@ fn file_get_contents_slice(bytes: &[u8], offset: i64, length: Option<i64>) -> Ve
     bytes[start as usize..end as usize].to_vec()
 }
 
+pub(in crate::builtins::modules) fn builtin_ftok(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("ftok", &args, 2)?;
+    let filename = string_arg("ftok", &args[0])?;
+    if filename.as_bytes().is_empty() {
+        return Err(argument_value_error(
+            "ftok",
+            "#1 ($filename)",
+            "must not be empty",
+        ));
+    }
+    if filename.as_bytes().contains(&0) {
+        return Err(argument_value_error(
+            "ftok",
+            "#1 ($filename)",
+            "must not contain any null bytes",
+        ));
+    }
+
+    let project_id = string_arg("ftok", &args[1])?;
+    if project_id.as_bytes().len() != 1 {
+        return Err(argument_value_error(
+            "ftok",
+            "#2 ($project_id)",
+            "must be a single character",
+        ));
+    }
+
+    let resolved = resolve_runtime_path(context, &filename.to_string_lossy());
+    if !context.filesystem_capabilities().allows_path(&resolved) {
+        return Ok(Value::Int(-1));
+    }
+
+    ftok_key(context, &resolved, project_id.as_bytes()[0], span)
+}
+
+#[cfg(unix)]
+fn ftok_key(
+    context: &mut BuiltinContext<'_>,
+    path: &Path,
+    project_id: u8,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        argument_value_error("ftok", "#1 ($filename)", "must not contain any null bytes")
+    })?;
+    let key = unsafe { libc::ftok(c_path.as_ptr(), i32::from(project_id)) };
+    if key == -1 {
+        context.php_warning(
+            "E_PHP_RUNTIME_FTOK_FAILED",
+            format!(
+                "ftok(): ftok() failed - {}",
+                php_io_error_message(&std::io::Error::last_os_error())
+            ),
+            span,
+        );
+    }
+    Ok(Value::Int(i64::from(key)))
+}
+
+#[cfg(not(unix))]
+fn ftok_key(
+    context: &mut BuiltinContext<'_>,
+    _path: &Path,
+    _project_id: u8,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    context.php_warning(
+        "E_PHP_RUNTIME_FTOK_UNSUPPORTED",
+        "ftok(): ftok() failed - Function not implemented",
+        span,
+    );
+    Ok(Value::Int(-1))
+}
+
 pub(in crate::builtins::modules) fn builtin_file_put_contents(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -582,20 +798,44 @@ pub(in crate::builtins::modules) fn builtin_readfile(
 pub(in crate::builtins::modules) fn builtin_copy(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("copy", &args, 2)?;
-    let from = resolve_runtime_path(context, &string_arg("copy", &args[0])?.to_string_lossy());
+    let from_arg = string_arg("copy", &args[0])?.to_string_lossy();
+    let from = resolve_runtime_path(context, &from_arg);
     let to = resolve_runtime_path(context, &string_arg("copy", &args[1])?.to_string_lossy());
-    if !context.filesystem_capabilities().allows_path(&from)
-        || !context.filesystem_capabilities().allows_path(&to)
-    {
+    if !context.filesystem_capabilities().allows_path(&from) {
+        let message = match from.try_exists() {
+            Ok(false) => "No such file or directory".to_string(),
+            Ok(true) | Err(_) => "Operation not permitted".to_string(),
+        };
+        context.php_warning(
+            "E_PHP_RUNTIME_STREAM_OPEN",
+            format!("copy({from_arg}): Failed to open stream: {message}"),
+            span,
+        );
+        return Ok(Value::Bool(false));
+    }
+    if !context.filesystem_capabilities().allows_path(&to) {
         return Ok(Value::Bool(false));
     }
     if same_filesystem_path(&from, &to) {
         return Ok(Value::Bool(false));
     }
-    Ok(Value::Bool(fs::copy(from, to).is_ok()))
+    match fs::copy(from, to) {
+        Ok(_) => Ok(Value::Bool(true)),
+        Err(error) => {
+            context.php_warning(
+                "E_PHP_RUNTIME_STREAM_OPEN",
+                format!(
+                    "copy({from_arg}): Failed to open stream: {}",
+                    php_io_error_message(&error)
+                ),
+                span,
+            );
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 pub(in crate::builtins::modules) fn builtin_rename(
@@ -801,11 +1041,19 @@ pub(in crate::builtins::modules) fn builtin_tempnam(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("tempnam", &args, 2)?;
-    let dir = resolve_runtime_path(context, &string_arg("tempnam", &args[0])?.to_string_lossy());
+    let requested_dir =
+        resolve_runtime_path(context, &string_arg("tempnam", &args[0])?.to_string_lossy());
     let prefix = string_arg("tempnam", &args[1])?.to_string_lossy();
-    if !context.filesystem_capabilities().allows_path(&dir) {
+    let dir = if context
+        .filesystem_capabilities()
+        .allows_path(&requested_dir)
+    {
+        requested_dir
+    } else if let Some(root) = context.filesystem_capabilities().first_allowed_root() {
+        root.to_path_buf()
+    } else {
         return Ok(Value::Bool(false));
-    }
+    };
     for index in 0..1000 {
         let path = dir.join(format!("{prefix}{}-{index}", std::process::id()));
         if fs::OpenOptions::new()
@@ -914,6 +1162,83 @@ fn disk_space_value(context: &mut BuiltinContext<'_>, name: &str, value: &Value)
 mod tests {
     use super::*;
     use crate::{FilesystemCapabilities, OutputBuffer, RuntimeUploadedFile, UploadRegistry};
+
+    #[cfg(unix)]
+    #[test]
+    fn ftok_matches_host_key_for_allowed_path() {
+        let root = unique_temp_dir("ftok-key");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let file = root.join("source.php");
+        std::fs::write(&file, b"<?php").expect("write ftok source");
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+        let mut output = OutputBuffer::new();
+        let mut context =
+            BuiltinContext::with_runtime(&mut output, root.clone(), capabilities, None);
+        let c_path = CString::new(file.as_os_str().as_bytes()).expect("path has no null bytes");
+        let expected = unsafe { libc::ftok(c_path.as_ptr(), i32::from(b'P')) };
+
+        assert_eq!(
+            builtin_ftok(
+                &mut context,
+                vec![Value::string("source.php"), Value::string("P")],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("builtin should return"),
+            Value::Int(i64::from(expected))
+        );
+
+        let _ = std::fs::remove_file(file);
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn ftok_requires_single_character_project_id() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let error = builtin_ftok(
+            &mut context,
+            vec![Value::string("source.php"), Value::string("PQ")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("project id should be rejected");
+
+        assert_eq!(
+            error.message(),
+            "ftok(): Argument #2 ($project_id) must be a single character"
+        );
+    }
+
+    #[test]
+    fn ftok_returns_minus_one_for_denied_path() {
+        let root = unique_temp_dir("ftok-denied-root");
+        let outside = unique_temp_dir("ftok-denied-outside");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        std::fs::create_dir_all(&outside).expect("create outside root");
+        let source = outside.join("source.php");
+        std::fs::write(&source, b"<?php").expect("write outside source");
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+        let mut output = OutputBuffer::new();
+        let mut context =
+            BuiltinContext::with_runtime(&mut output, root.clone(), capabilities, None);
+
+        assert_eq!(
+            builtin_ftok(
+                &mut context,
+                vec![
+                    Value::string(source.to_string_lossy().to_string()),
+                    Value::string("P"),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("builtin should return"),
+            Value::Int(-1)
+        );
+        assert!(context.take_diagnostics().is_empty());
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_dir(outside);
+        let _ = std::fs::remove_dir(root);
+    }
 
     #[test]
     fn is_uploaded_file_checks_request_local_registry() {
@@ -1091,6 +1416,123 @@ mod tests {
 
         let _ = std::fs::remove_file(link);
         let _ = std::fs::remove_file(target);
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chown_and_chgrp_warn_for_missing_paths() {
+        let root = unique_temp_dir("chown-missing");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+        let mut output = OutputBuffer::new();
+        let mut context =
+            BuiltinContext::with_runtime(&mut output, root.clone(), capabilities, None);
+
+        assert_eq!(
+            builtin_chown(
+                &mut context,
+                vec![Value::string("missing.txt"), Value::Int(0)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("builtin should return"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            builtin_chgrp(
+                &mut context,
+                vec![Value::string("missing.txt"), Value::Int(0)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("builtin should return"),
+            Value::Bool(false)
+        );
+
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 2);
+        assert!(
+            diagnostics[0]
+                .message()
+                .contains("chown(): No such file or directory")
+        );
+        assert!(
+            diagnostics[1]
+                .message()
+                .contains("chgrp(): No such file or directory")
+        );
+
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn copy_warns_for_missing_source_path() {
+        let root = unique_temp_dir("copy-missing-source");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+        let mut output = OutputBuffer::new();
+        let mut context =
+            BuiltinContext::with_runtime(&mut output, root.clone(), capabilities, None);
+
+        assert_eq!(
+            builtin_copy(
+                &mut context,
+                vec![Value::string("missing.txt"), Value::string("dest.txt")],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("builtin should return"),
+            Value::Bool(false)
+        );
+
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].message(),
+            "copy(missing.txt): Failed to open stream: No such file or directory"
+        );
+        assert!(output.to_string_lossy().contains(
+            "Warning: copy(missing.txt): Failed to open stream: No such file or directory"
+        ));
+
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn copy_preserves_capability_denial_for_existing_source_path() {
+        let root = unique_temp_dir("copy-denied-root");
+        let outside = unique_temp_dir("copy-denied-outside");
+        std::fs::create_dir_all(&root).expect("create temp root");
+        std::fs::create_dir_all(&outside).expect("create outside root");
+        let source = outside.join("source.txt");
+        std::fs::write(&source, b"payload").expect("write outside source");
+        let capabilities = FilesystemCapabilities::none().with_allowed_roots(vec![root.clone()]);
+        let mut output = OutputBuffer::new();
+        let mut context =
+            BuiltinContext::with_runtime(&mut output, root.clone(), capabilities, None);
+
+        assert_eq!(
+            builtin_copy(
+                &mut context,
+                vec![
+                    Value::string(source.to_string_lossy().to_string()),
+                    Value::string("dest.txt"),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("builtin should return"),
+            Value::Bool(false)
+        );
+        assert!(!root.join("dest.txt").exists());
+
+        let diagnostics = context.take_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0]
+                .message()
+                .contains("Failed to open stream: Operation not permitted")
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_dir(outside);
         let _ = std::fs::remove_dir(root);
     }
 

@@ -29,10 +29,14 @@ functions:
       instr:1 span=file:0@16..19 load_const r1 const:1
       instr:2 span=file:0@23..24 load_const r2 const:2
       instr:3 span=file:0@15..35 array_insert r0 r1 r2
-      instr:4 span=file:0@26..29 load_const r3 const:3
-      instr:5 span=file:0@33..34 load_const r4 const:4
-      instr:6 span=file:0@15..35 array_insert r0 r3 r4
-      instr:7 span=file:0@6..81 foreach_init iter:r5 source=r0
+      instr:4 span=file:0@15..35 discard r1
+      instr:5 span=file:0@15..35 discard r2
+      instr:6 span=file:0@26..29 load_const r3 const:3
+      instr:7 span=file:0@33..34 load_const r4 const:4
+      instr:8 span=file:0@15..35 array_insert r0 r3 r4
+      instr:9 span=file:0@15..35 discard r3
+      instr:10 span=file:0@15..35 discard r4
+      instr:11 span=file:0@6..81 foreach_init iter:r5 source=r0
       term span=file:0@6..81 jump block:2
     block:2
       instr:0 span=file:0@6..81 foreach_next has=r6 iter:r5 key=r7 value=r8
@@ -56,9 +60,13 @@ source_map:
   instr function:0 block:1 instr:1 <= hir:expr:0 span=file:0@16..19
   instr function:0 block:1 instr:2 <= hir:expr:1 span=file:0@23..24
   instr function:0 block:1 instr:3 <= hir:expr:2 span=file:0@15..35
-  instr function:0 block:1 instr:4 <= hir:expr:3 span=file:0@26..29
-  instr function:0 block:1 instr:5 <= hir:expr:4 span=file:0@33..34
-  instr function:0 block:1 instr:6 <= hir:expr:5 span=file:0@15..35
+  instr function:0 block:1 instr:4 <= hir:expr:2 span=file:0@15..35
+  instr function:0 block:1 instr:5 <= hir:expr:2 span=file:0@15..35
+  instr function:0 block:1 instr:6 <= hir:expr:3 span=file:0@26..29
+  instr function:0 block:1 instr:7 <= hir:expr:4 span=file:0@33..34
+  instr function:0 block:1 instr:8 <= hir:expr:5 span=file:0@15..35
+  instr function:0 block:1 instr:9 <= hir:expr:5 span=file:0@15..35
+  instr function:0 block:1 instr:10 <= hir:expr:5 span=file:0@15..35
   instr function:0 block:3 instr:2 <= hir:expr:9 span=file:0@66..70
   instr function:0 block:3 instr:3 <= hir:expr:9 span=file:0@66..70
   instr function:0 block:3 instr:4 <= hir:expr:10 span=file:0@72..78

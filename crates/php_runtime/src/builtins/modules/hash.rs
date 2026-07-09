@@ -60,6 +60,27 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_hash_update_stream,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new("mhash", builtin_mhash, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "mhash_count",
+        builtin_mhash_count,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mhash_get_block_size",
+        builtin_mhash_get_block_size,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mhash_get_hash_name",
+        builtin_mhash_get_hash_name,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mhash_keygen_s2k",
+        builtin_mhash_keygen_s2k,
+        BuiltinCompatibility::Php,
+    ),
 ];
 
 const HASH_ALGOS: &[&str] = &[
@@ -85,6 +106,11 @@ const HASH_ALGOS: &[&str] = &[
     "tiger128,3",
     "tiger160,3",
     "tiger192,3",
+    "tiger128,4",
+    "tiger160,4",
+    "tiger192,4",
+    "snefru",
+    "snefru256",
     "gost",
     "gost-crypto",
     "adler32",
@@ -103,6 +129,21 @@ const HASH_ALGOS: &[&str] = &[
     "xxh64",
     "xxh3",
     "xxh128",
+    "haval128,3",
+    "haval160,3",
+    "haval192,3",
+    "haval224,3",
+    "haval256,3",
+    "haval128,4",
+    "haval160,4",
+    "haval192,4",
+    "haval224,4",
+    "haval256,4",
+    "haval128,5",
+    "haval160,5",
+    "haval192,5",
+    "haval224,5",
+    "haval256,5",
 ];
 
 const HASH_HMAC_ALGOS: &[&str] = &[
@@ -128,9 +169,35 @@ const HASH_HMAC_ALGOS: &[&str] = &[
     "tiger128,3",
     "tiger160,3",
     "tiger192,3",
+    "tiger128,4",
+    "tiger160,4",
+    "tiger192,4",
+    "snefru",
+    "snefru256",
     "gost",
     "gost-crypto",
+    "haval128,3",
+    "haval160,3",
+    "haval192,3",
+    "haval224,3",
+    "haval256,3",
+    "haval128,4",
+    "haval160,4",
+    "haval192,4",
+    "haval224,4",
+    "haval256,4",
+    "haval128,5",
+    "haval160,5",
+    "haval192,5",
+    "haval224,5",
+    "haval256,5",
 ];
+
+pub(in crate::builtins) fn hash_algorithm_exists(algorithm: &str) -> bool {
+    HASH_ALGOS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(algorithm))
+}
 const HASH_HMAC_FLAG: i64 = 1;
 const HASH_CONTEXT_CLASS: &str = "HashContext";
 const HASH_CONTEXT_ALGORITHM: &str = "__phrust_hash_algorithm";
@@ -140,6 +207,226 @@ const HASH_CONTEXT_DATA: &str = "__phrust_hash_data";
 const HASH_CONTEXT_FINALIZED: &str = "__phrust_hash_finalized";
 const HASH_CONTEXT_SEED: &str = "__phrust_hash_seed";
 const HASH_CONTEXT_SECRET: &str = "__phrust_hash_secret";
+
+#[derive(Clone, Copy, Debug)]
+struct MhashAlgorithm {
+    mhash_name: Option<&'static str>,
+    hash_name: Option<&'static str>,
+    value: i64,
+}
+
+const MHASH_ALGOS: &[MhashAlgorithm] = &[
+    MhashAlgorithm {
+        mhash_name: Some("CRC32"),
+        hash_name: Some("crc32"),
+        value: 0,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("MD5"),
+        hash_name: Some("md5"),
+        value: 1,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("SHA1"),
+        hash_name: Some("sha1"),
+        value: 2,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("HAVAL256"),
+        hash_name: Some("haval256,3"),
+        value: 3,
+    },
+    MhashAlgorithm {
+        mhash_name: None,
+        hash_name: None,
+        value: 4,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("RIPEMD160"),
+        hash_name: Some("ripemd160"),
+        value: 5,
+    },
+    MhashAlgorithm {
+        mhash_name: None,
+        hash_name: None,
+        value: 6,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("TIGER"),
+        hash_name: Some("tiger192,3"),
+        value: 7,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("GOST"),
+        hash_name: Some("gost"),
+        value: 8,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("CRC32B"),
+        hash_name: Some("crc32b"),
+        value: 9,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("HAVAL224"),
+        hash_name: Some("haval224,3"),
+        value: 10,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("HAVAL192"),
+        hash_name: Some("haval192,3"),
+        value: 11,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("HAVAL160"),
+        hash_name: Some("haval160,3"),
+        value: 12,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("HAVAL128"),
+        hash_name: Some("haval128,3"),
+        value: 13,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("TIGER128"),
+        hash_name: Some("tiger128,3"),
+        value: 14,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("TIGER160"),
+        hash_name: Some("tiger160,3"),
+        value: 15,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("MD4"),
+        hash_name: Some("md4"),
+        value: 16,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("SHA256"),
+        hash_name: Some("sha256"),
+        value: 17,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("ADLER32"),
+        hash_name: Some("adler32"),
+        value: 18,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("SHA224"),
+        hash_name: Some("sha224"),
+        value: 19,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("SHA512"),
+        hash_name: Some("sha512"),
+        value: 20,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("SHA384"),
+        hash_name: Some("sha384"),
+        value: 21,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("WHIRLPOOL"),
+        hash_name: Some("whirlpool"),
+        value: 22,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("RIPEMD128"),
+        hash_name: Some("ripemd128"),
+        value: 23,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("RIPEMD256"),
+        hash_name: Some("ripemd256"),
+        value: 24,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("RIPEMD320"),
+        hash_name: Some("ripemd320"),
+        value: 25,
+    },
+    MhashAlgorithm {
+        mhash_name: None,
+        hash_name: None,
+        value: 26,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("SNEFRU256"),
+        hash_name: Some("snefru256"),
+        value: 27,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("MD2"),
+        hash_name: Some("md2"),
+        value: 28,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("FNV132"),
+        hash_name: Some("fnv132"),
+        value: 29,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("FNV1A32"),
+        hash_name: Some("fnv1a32"),
+        value: 30,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("FNV164"),
+        hash_name: Some("fnv164"),
+        value: 31,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("FNV1A64"),
+        hash_name: Some("fnv1a64"),
+        value: 32,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("JOAAT"),
+        hash_name: Some("joaat"),
+        value: 33,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("CRC32C"),
+        hash_name: Some("crc32c"),
+        value: 34,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("MURMUR3A"),
+        hash_name: Some("murmur3a"),
+        value: 35,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("MURMUR3C"),
+        hash_name: Some("murmur3c"),
+        value: 36,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("MURMUR3F"),
+        hash_name: Some("murmur3f"),
+        value: 37,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("XXH32"),
+        hash_name: Some("xxh32"),
+        value: 38,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("XXH64"),
+        hash_name: Some("xxh64"),
+        value: 39,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("XXH3"),
+        hash_name: Some("xxh3"),
+        value: 40,
+    },
+    MhashAlgorithm {
+        mhash_name: Some("XXH128"),
+        hash_name: Some("xxh128"),
+        value: 41,
+    },
+];
 
 fn builtin_hash_init(
     context: &mut BuiltinContext<'_>,
@@ -368,6 +655,139 @@ fn hash_equals_string_arg(argument: &str, value: &Value) -> Result<crate::PhpStr
             &other,
         )),
     }
+}
+
+fn builtin_mhash(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(2..=3).contains(&args.len()) {
+        return Err(arity_error("mhash", "two or three argument(s)"));
+    }
+    emit_mhash_deprecation(context, "mhash", span);
+    let Some(algorithm) = mhash_algorithm_from_value(int_arg("mhash", &args[0])?) else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(hash_name) = algorithm.hash_name else {
+        return Ok(Value::Bool(false));
+    };
+    let data = string_arg("mhash", &args[1])?;
+    let digest = match args.get(2) {
+        Some(Value::Null) | None => hash_digest_bytes("mhash", hash_name, data.as_bytes())?,
+        Some(key) => {
+            let key = string_arg("mhash", key)?;
+            hmac_digest_bytes("mhash", hash_name, key.as_bytes(), data.as_bytes())?
+        }
+    };
+    Ok(Value::string(digest))
+}
+
+fn builtin_mhash_get_hash_name(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mhash_get_hash_name", &args, 1)?;
+    emit_mhash_deprecation(context, "mhash_get_hash_name", span);
+    let Some(algorithm) = mhash_algorithm_from_value(int_arg("mhash_get_hash_name", &args[0])?)
+    else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(algorithm
+        .mhash_name
+        .map(Value::string)
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn builtin_mhash_count(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mhash_count", &args, 0)?;
+    emit_mhash_deprecation(context, "mhash_count", span);
+    Ok(Value::Int((MHASH_ALGOS.len() - 1) as i64))
+}
+
+fn builtin_mhash_get_block_size(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mhash_get_block_size", &args, 1)?;
+    emit_mhash_deprecation(context, "mhash_get_block_size", span);
+    let Some(algorithm) = mhash_algorithm_from_value(int_arg("mhash_get_block_size", &args[0])?)
+    else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(hash_name) = algorithm.hash_name else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Int(hash_digest_len(hash_name)? as i64))
+}
+
+fn builtin_mhash_keygen_s2k(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("mhash_keygen_s2k", &args, 4)?;
+    emit_mhash_deprecation(context, "mhash_keygen_s2k", span);
+    let Some(algorithm) = mhash_algorithm_from_value(int_arg("mhash_keygen_s2k", &args[0])?) else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(hash_name) = algorithm.hash_name else {
+        return Ok(Value::Bool(false));
+    };
+    let password = string_arg("mhash_keygen_s2k", &args[1])?;
+    let salt = string_arg("mhash_keygen_s2k", &args[2])?;
+    let bytes = int_arg("mhash_keygen_s2k", &args[3])?;
+    if bytes <= 0 {
+        return Err(argument_value_error(
+            "mhash_keygen_s2k",
+            "#4 ($length)",
+            "must be a greater than 0",
+        ));
+    }
+    let mut padded_salt = [0_u8; 8];
+    let salt_bytes = salt.as_bytes();
+    let copy_len = salt_bytes.len().min(padded_salt.len());
+    padded_salt[..copy_len].copy_from_slice(&salt_bytes[..copy_len]);
+
+    let digest_len = hash_digest_len(hash_name)?;
+    let blocks = (bytes as usize).div_ceil(digest_len);
+    let mut key = Vec::with_capacity(blocks * digest_len);
+    for block_index in 0..blocks {
+        let mut data =
+            Vec::with_capacity(block_index + padded_salt.len() + password.as_bytes().len());
+        data.extend(std::iter::repeat_n(0_u8, block_index));
+        data.extend_from_slice(&padded_salt);
+        data.extend_from_slice(password.as_bytes());
+        key.extend_from_slice(&hash_digest_bytes("mhash_keygen_s2k", hash_name, &data)?);
+    }
+    key.truncate(bytes as usize);
+    Ok(Value::string(key))
+}
+
+fn emit_mhash_deprecation(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    span: RuntimeSourceSpan,
+) {
+    context.php_deprecation(
+        "E_PHP_MHASH_FUNCTION_DEPRECATED",
+        format!("Function {function}() is deprecated since 8.1"),
+        span,
+    );
+}
+
+fn mhash_algorithm_from_value(value: i64) -> Option<MhashAlgorithm> {
+    let index = usize::try_from(value).ok()?;
+    MHASH_ALGOS
+        .get(index)
+        .copied()
+        .filter(|algorithm| algorithm.value == value)
 }
 
 fn builtin_hash_file(
@@ -830,6 +1250,11 @@ mod tests {
         assert!(values.iter().any(|value| value.contains("tiger128,3")));
         assert!(values.iter().any(|value| value.contains("tiger160,3")));
         assert!(values.iter().any(|value| value.contains("tiger192,3")));
+        assert!(values.iter().any(|value| value.contains("tiger128,4")));
+        assert!(values.iter().any(|value| value.contains("tiger160,4")));
+        assert!(values.iter().any(|value| value.contains("tiger192,4")));
+        assert!(values.iter().any(|value| value.contains("snefru")));
+        assert!(values.iter().any(|value| value.contains("snefru256")));
         assert!(values.iter().any(|value| value.contains("gost")));
         assert!(values.iter().any(|value| value.contains("gost-crypto")));
         assert!(values.iter().any(|value| value.contains("xxh32")));
@@ -867,6 +1292,11 @@ mod tests {
             "tiger128,3",
             "tiger160,3",
             "tiger192,3",
+            "tiger128,4",
+            "tiger160,4",
+            "tiger192,4",
+            "snefru",
+            "snefru256",
             "gost",
             "gost-crypto",
         ] {
@@ -894,6 +1324,66 @@ mod tests {
                 ]
             ),
             Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn mhash_compatibility_maps_legacy_ids_and_keygen() {
+        assert_eq!(call("mhash_count", vec![]), Value::Int(41));
+        assert_eq!(
+            call("mhash_get_hash_name", vec![Value::Int(1)]),
+            Value::string("MD5")
+        );
+        assert_eq!(
+            call("mhash_get_hash_name", vec![Value::Int(4)]),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            call("mhash_get_block_size", vec![Value::Int(3)]),
+            Value::Int(32)
+        );
+        assert_eq!(
+            call("mhash_get_block_size", vec![Value::Int(4)]),
+            Value::Bool(false)
+        );
+
+        let Value::String(md5) = call("mhash", vec![Value::Int(1), Value::string("test")]) else {
+            panic!("expected raw md5 digest");
+        };
+        assert_eq!(
+            hex_encode(md5.as_bytes()),
+            b"098f6bcd4621d373cade4e832627b4f6"
+        );
+
+        let Value::String(hmac) = call(
+            "mhash",
+            vec![
+                Value::Int(1),
+                Value::string("test"),
+                Value::string("secret"),
+            ],
+        ) else {
+            panic!("expected raw md5 hmac digest");
+        };
+        assert_eq!(
+            hex_encode(hmac.as_bytes()),
+            b"63d6baf65df6bdee8f32b332e0930669"
+        );
+
+        let Value::String(key) = call(
+            "mhash_keygen_s2k",
+            vec![
+                Value::Int(1),
+                Value::string("password"),
+                Value::string("salt"),
+                Value::Int(24),
+            ],
+        ) else {
+            panic!("expected generated key bytes");
+        };
+        assert_eq!(
+            hex_encode(key.as_bytes()),
+            b"626cab462d0ec4eacc809ffc36d716cedab253a24d387745"
         );
     }
 
@@ -1602,6 +2092,133 @@ mod tests {
                 Value::string(hmac)
             );
         }
+    }
+
+    #[test]
+    fn hash_supports_tiger4_vectors_and_hmac() {
+        for (algorithm, digest, hmac) in [
+            (
+                "tiger128,4",
+                "538883c8fc5f28250299018e66bdf4fd",
+                "8a398c914ecc1837438befc56ce98f7c",
+            ),
+            (
+                "tiger160,4",
+                "538883c8fc5f28250299018e66bdf4fdb5ef7b65",
+                "04939206562668d7e2ba5414d63327cd609c13ed",
+            ),
+            (
+                "tiger192,4",
+                "538883c8fc5f28250299018e66bdf4fdb5ef7b65f2e91753",
+                "5980cb8fc54fd79616ba13298e56846210013fb0d11a45e5",
+            ),
+        ] {
+            assert_eq!(
+                call("hash", vec![Value::string(algorithm), Value::string("abc")]),
+                Value::string(digest)
+            );
+            assert_eq!(
+                call(
+                    "hash_hmac",
+                    vec![
+                        Value::string(algorithm),
+                        Value::string("payload"),
+                        Value::string("key"),
+                    ],
+                ),
+                Value::string(hmac)
+            );
+        }
+    }
+
+    #[test]
+    fn hash_supports_snefru_vectors_and_hmac() {
+        for algorithm in ["snefru", "snefru256"] {
+            assert_eq!(
+                call("hash", vec![Value::string(algorithm), Value::string("")]),
+                Value::string("8617f366566a011837f4fb4ba5bedea2b892f3ed8b894023d16ae344b2be5881")
+            );
+            assert_eq!(
+                call("hash", vec![Value::string(algorithm), Value::string("abc")]),
+                Value::string("7d033205647a2af3dc8339f6cb25643c33ebc622d32979c4b612b02c4903031b")
+            );
+            assert_eq!(
+                call(
+                    "hash_hmac",
+                    vec![
+                        Value::string(algorithm),
+                        Value::string("payload"),
+                        Value::string("key"),
+                    ],
+                ),
+                Value::string("4069aae0bfcf515ae3dcf53c79ebf2f7742ea2298a4339c328634fc381c3914f")
+            );
+        }
+    }
+
+    #[test]
+    fn hash_supports_haval_vectors_context_and_hmac() {
+        for (algorithm, digest, hmac, binary_len) in [
+            (
+                "haval128,3",
+                "9e40ed883fb63e985d299b40cda2b8f2",
+                "bbd14162d2cd743c07848aa132c3bac0",
+                16,
+            ),
+            (
+                "haval160,4",
+                "77aca22f5b12cc09010afc9c0797308638b1cb9b",
+                "a494b4743b2419732652d44c3aa08b389c6114a3",
+                20,
+            ),
+            (
+                "haval256,5",
+                "976cd6254c337969e5913b158392a2921af16fca51f5601d486e0a9de01156e7",
+                "390c347d78b2c2a9467915e168eae0816121bd10ef56b97d69cc57f876435a84",
+                32,
+            ),
+        ] {
+            assert_eq!(
+                call("hash", vec![Value::string(algorithm), Value::string("abc")]),
+                Value::string(digest)
+            );
+            assert_eq!(
+                call(
+                    "hash_hmac",
+                    vec![
+                        Value::string(algorithm),
+                        Value::string("payload"),
+                        Value::string("key"),
+                    ],
+                ),
+                Value::string(hmac)
+            );
+            let Value::String(binary) = call(
+                "hash",
+                vec![
+                    Value::string(algorithm),
+                    Value::string("abc"),
+                    Value::Bool(true),
+                ],
+            ) else {
+                panic!("expected binary hash string");
+            };
+            assert_eq!(binary.as_bytes().len(), binary_len);
+        }
+
+        let context = call("hash_init", vec![Value::string("haval224,5")]);
+        assert_eq!(
+            call("hash_update", vec![context.clone(), Value::string("ab")]),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call("hash_update", vec![context.clone(), Value::string("c")]),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            call("hash_final", vec![context]),
+            Value::string("8081027a500147c512e5f1055986674d746d92af4841abeb89da64ad")
+        );
     }
 
     #[test]

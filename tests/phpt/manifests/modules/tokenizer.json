@@ -4,33 +4,44 @@
   "priority": "PHP tokenizer extension over phrust lexer",
   "selected_manifest": "tests/phpt/manifests/modules/tokenizer.selected.jsonl",
   "corpus_count": 58,
-  "selected_count": 38,
-  "pass_count": 38,
+  "selected_count": 58,
+  "pass_count": 58,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 20,
+  "known_failure_count": 0,
   "scope": [
     "Selected upstream ext/tokenizer token_get_all variation rows",
     "token_get_all and token_name function visibility",
     "TOKEN_PARSE constant visibility and accepted flag handling",
+    "TOKEN_PARSE syntax validation through the parser with catchable ParseError reporting",
+    "TOKEN_PARSE invalid legacy octal and unicode codepoint escape ParseError reporting",
+    "TOKEN_PARSE heredoc/nowdoc parse errors, indentation diagnostics, and catchable ParseError line reporting",
     "PHP 8.5 token-name constants from php_lexer",
+    "Legacy T_PAAMAYIM_NEKUDOTAYIM alias to T_DOUBLE_COLON",
+    "Standalone T_NS_SEPARATOR and grouped namespace-name token output",
+    "T_BAD_CHARACTER output for unexpected control characters",
+    "TOKEN_PARSE semi-reserved keyword reclassification for member access, class const names, and trait namespace aliases",
+    "Nowdoc/heredoc end-marker recognition before expression punctuation in tokenizer fixture execution",
+    "Nowdoc/heredoc flexible indentation stripping for fixture literal bodies",
     "Open tag, whitespace, scalar, variable, punctuation, and inline HTML token output",
     "Token array shape with id, text, and line number",
     "Selected PHP 8.5 syntax tokens and invalid-octal overflow classification",
-    "PhpToken constructor public shape, getTokenName nullability, Stringable instance checks, ignorable token classification, string casting, method matching, and method error handling"
+    "PhpToken constructor public shape, final constructor override diagnostics, getTokenName nullability, Stringable instance checks, ignorable token classification, string casting, direct runtime method dispatch, method matching, subclass tokenize allocation, catchable subclass construction errors, and method error handling",
+    "PhpToken::tokenize TOKEN_PARSE non-canonical cast deprecations through eval and throwing user error handlers",
+    "PhpToken::tokenize object dump EXPECTF coverage and PHP-compatible object handle reuse order",
+    "Nested heredoc tokenization inside braced interpolation expressions",
+    "Bare __halt_compiler fallback tokenization and inline HTML remainder handling"
   ],
   "non_scope": [
     "Parser-internal token names",
     "Full ext/tokenizer upstream PHPT corpus",
-    "Token IDs matching raw Zend numeric values",
-    "Remaining PhpToken subclass/finality/extension behavior and tokenize EXPECTF coverage beyond the promoted constructor and method helpers",
-    "Heredoc recovery, bad-character token emission, and TOKEN_PARSE context-sensitive keyword reclassification"
+    "Token IDs matching raw Zend numeric values"
   ],
   "target_gates": [
     "nix develop -c cargo test -p php_runtime tokenizer --no-fail-fast",
     "nix develop -c cargo test -p php_std tokenizer --no-fail-fast",
     "nix develop -c just phpt-dev-module MODULE=tokenizer"
   ],
-  "next_step": "Close remaining PhpToken subclass/finality/extension behavior, tokenize EXPECTF coverage, and heredoc/bad-character/TOKEN_PARSE lexer gaps before promoting the remaining upstream rows."
+  "next_step": "Tokenizer selected upstream PHPT corpus is fully promoted; continue the extension prompt pack with the next module slice."
 }

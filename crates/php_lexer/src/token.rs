@@ -160,6 +160,8 @@ pub enum TokenName {
     HaltCompiler,
     /// PHP `T_VARIABLE`.
     Variable,
+    /// PHP `T_NS_SEPARATOR`.
+    NsSeparator,
     /// PHP `T_NAME_FULLY_QUALIFIED`.
     NameFullyQualified,
     /// PHP `T_NAME_QUALIFIED`.
@@ -391,6 +393,7 @@ impl TokenName {
             Self::Exit => "T_EXIT",
             Self::HaltCompiler => "T_HALT_COMPILER",
             Self::Variable => "T_VARIABLE",
+            Self::NsSeparator => "T_NS_SEPARATOR",
             Self::NameFullyQualified => "T_NAME_FULLY_QUALIFIED",
             Self::NameQualified => "T_NAME_QUALIFIED",
             Self::NameRelative => "T_NAME_RELATIVE",
@@ -585,6 +588,7 @@ pub const TOKENIZER_TOKEN_NAMES: &[TokenName] = &[
     TokenName::Exit,
     TokenName::HaltCompiler,
     TokenName::Variable,
+    TokenName::NsSeparator,
     TokenName::NameFullyQualified,
     TokenName::NameQualified,
     TokenName::NameRelative,

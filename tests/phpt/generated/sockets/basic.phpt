@@ -21,8 +21,16 @@ echo get_class($accepted), "\n";
 
 var_dump(socket_write($client, "ping"));
 echo socket_read($accepted, 4, PHP_BINARY_READ), "\n";
-var_dump(socket_write($accepted, "pong"));
-echo socket_read($client, 4, PHP_BINARY_READ), "\n";
+var_dump(socket_getpeername($client, $peerAddr, $peerPort));
+echo $peerAddr, "\n";
+echo is_int($peerPort) && $peerPort > 0 ? "peer-port\n" : "no-peer-port\n";
+var_dump(socket_send($accepted, "pong", 4, 0));
+$buffer = "";
+var_dump(socket_recv($client, $buffer, 4, 0));
+echo $buffer, "\n";
+var_dump(bin2hex(inet_pton("127.0.0.1")));
+var_dump(inet_ntop(inet_pton("127.0.0.1")));
+var_dump(socket_shutdown($client, SHUT_RDWR));
 
 socket_close($accepted);
 socket_close($client);
@@ -43,8 +51,15 @@ bool(true)
 Socket
 int(4)
 ping
+bool(true)
+127.0.0.1
+peer-port
+int(4)
 int(4)
 pong
+string(8) "7f000001"
+string(9) "127.0.0.1"
+bool(true)
 bool(false)
 error-string
 int(0)

@@ -14,7 +14,7 @@
 //! flow, non-int values) is rejected by the region compiler and left to the
 //! interpreter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use php_ir::instruction::{IrCallArgValueKind, TerminatorKind};
 use php_ir::{
@@ -28,7 +28,10 @@ use crate::aarch64::{
     Aarch64Assembler, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
 };
 use crate::abi::JitCValueTag;
-use crate::helpers::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, phrust_jit_abs_i64};
+use crate::helpers::{
+    JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_RESUME_CALL_BASE, JIT_HELPER_STATUS_TAILCALL,
+    phrust_jit_abs_i64,
+};
 use crate::region_ir::{
     NodeId, RegionBuilder, RegionCompareOp, RegionConst, RegionGraph, RegionId, RegionNode,
     RegionNodeKind, RegionValueType, VmSlotId,
@@ -297,6 +300,52 @@ pub enum ScalarIntOp {
         metadata_ptr: u64,
         helper: u64,
     },
+    /// Guarded native call committing a monomorphic declared *untyped* property
+    /// store: `<object at slot[object]>-><declared property> = slot[value]`.
+    /// Guards `slot[object]` is an `OpaqueObject`, then `blr`s the
+    /// property-store ABI wrapper at `helper` over the C ABI, passing the
+    /// object slot's borrowed `*const Value` payload, the borrowed
+    /// `*const JitPropertyStoreMetadata` at `metadata_ptr` (VM-owned, alive for
+    /// the whole life of the compiled leaf), and the *address of*
+    /// `slot[value]` so the helper reads the marshaled `JitCValue` itself.
+    ///
+    /// The helper performs the layout guard (runtime class must equal the
+    /// expected receiver class) and commits the write to the declared untyped
+    /// slot only when the marshaled value is a scalar `Int`/`Bool`/`Float` and
+    /// the slot currently holds a plain initialized value; a reference-holding
+    /// slot, an absent/unset property, a class mismatch, a non-object, or a
+    /// non-scalar value returns a non-`OK` status and side-exits *before any
+    /// write*, so the interpreter performs the exact store (through the
+    /// reference cell, via `__set`, with the type/readonly error, …).
+    /// Typed/readonly/hooked/asymmetric-visibility slots are excluded at
+    /// recognition time. `php_jit` cannot name the runtime symbol or build the
+    /// class metadata, so both addresses are carried in the op (the VM bridge
+    /// recognizes the leaf and supplies them; see the bridge's
+    /// `recognize_property_store_leaf`).
+    CallPropertyStoreScalar {
+        object: u32,
+        value: u32,
+        metadata_ptr: u64,
+        helper: u64,
+    },
+    /// Guarded native packed-array element read: `slot[dst] =
+    /// <array at slot[array]>[slot[index]]`. Guards `slot[array]` is an
+    /// `OpaqueArray` and `slot[index]` is an `Int`, then `blr`s the
+    /// array-fetch ABI wrapper at `fetch_helper` over the C ABI (fp/lr saved;
+    /// a 16-byte scratch frame holding the out value and the saved slot
+    /// base). The array slot's payload is a borrowed `*const Value` the VM
+    /// marshaled for the call's duration; the helper performs a *read-only*
+    /// packed-int-layout fetch (`php_jit_array_fetch_int_slow`) with no
+    /// mutation, free, or VM re-entry. Any non-OK status — negative or
+    /// out-of-bounds index (PHP warns and yields `null`), a non-packed or
+    /// non-int-element array — side-exits so the interpreter reproduces the
+    /// exact value/diagnostic.
+    CallArrayFetchI64 {
+        dst: u32,
+        array: u32,
+        index: u32,
+        fetch_helper: u64,
+    },
 }
 
 /// Which builtin function calls the copy-and-patch compiler may lower to a
@@ -376,6 +425,14 @@ pub struct CopyPatchRuntimeHelpers {
     /// status for any non-string value. `0` = unavailable → `strlen` is not
     /// lowered. Same ABI shape as `array_len`.
     pub strlen: u64,
+    /// Address of an `extern "C" fn(value_ptr: usize, index: i64, out: *mut
+    /// i64) -> i32` wrapping `php_jit_array_fetch_int_slow`: it reads element
+    /// `index` of the borrowed packed-int array `Value` at `value_ptr` and
+    /// writes it through `out`, returning a non-OK status for a negative or
+    /// out-of-bounds index (PHP emits the undefined-key warning and yields
+    /// `null` — interpreter territory), a non-packed/non-int-element array, or
+    /// a non-array value. `0` = unavailable → `$a[$i]` is not lowered.
+    pub array_fetch: u64,
 }
 
 /// A binary PHP float operation over IEEE-754 doubles. Add/Sub/Mul never fault
@@ -626,6 +683,71 @@ fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32,
     asm.bind(done);
 }
 
+/// Emit a guarded native call `slot[dst] = <packed array>[slot[index]]`
+/// through the array-fetch ABI wrapper at `helper` (an `extern "C"
+/// fn(value_ptr: usize, index: i64, out: *mut i64) -> i32`).
+///
+/// The call stencil, in order:
+///
+/// 1. Guard `slot[array]`'s tag is `OpaqueArray` and `slot[index]`'s is `Int`
+///    (side exit otherwise).
+/// 2. Read the array slot's borrowed-pointer payload and the index payload
+///    while `X0` is still the slot base.
+/// 3. Build a non-leaf frame with a 16-byte scratch ([sp+0]=out value,
+///    [sp+8]=slot base).
+/// 4. C-ABI args — `x0` = value_ptr, `x1` = index, `x2` = `&out`.
+/// 5. `blr` the helper; status in `w0`.
+/// 6. A non-OK status — negative/out-of-bounds index, non-packed layout, or a
+///    non-int element — tears the frame down and takes the shared side exit
+///    (the interpreter reproduces PHP's exact value or undefined-key warning).
+/// 7. On OK: reload the out value and slot base, free the frame, store `Int`.
+///
+/// The helper is a read-only packed-element fetch (no mutation, free, or VM
+/// re-entry); the borrowed array pointer is valid for the synchronous call per
+/// `marshal_local`'s contract.
+fn emit_array_fetch(
+    asm: &mut Aarch64Assembler,
+    deopt: Label,
+    dst: u32,
+    array: u32,
+    index: u32,
+    helper: u64,
+) {
+    // 1–2: guards + payloads while X0 is the slot base.
+    emit_array_guard(asm, deopt, array);
+    emit_int_guard(asm, deopt, index);
+    asm.ldr_x(X4, X0, payload_off(array));
+    asm.ldr_x(X5, X0, payload_off(index));
+    // 3: non-leaf frame + 16-byte scratch ([sp+0]=out, [sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value_ptr, x1 = index, x2 = &out.
+    asm.mov(X0, X4);
+    asm.mov(X1, X5);
+    asm.add_imm(X2, SP, 0);
+    // 5: call helper(value_ptr, index, &out) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — reload the element and slot base, free the frame, store the Int.
+    asm.ldr_x(X6, SP, 0);
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    emit_store_int(asm, dst, X6);
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
 /// Guard that `slot`'s tag is `OpaqueString`, taking the side exit otherwise.
 /// Only a genuine string slot reaches the length helper — a scalar, an array,
 /// an object, `null`, or any other value (all of which PHP's `strlen` would
@@ -767,6 +889,77 @@ fn emit_property_load(
     asm.b(done);
     asm.bind(call_deopt);
     asm.add_imm(SP, SP, 32);
+    asm.pop_fp_lr();
+    asm.b(deopt);
+    asm.bind(done);
+}
+
+/// Emit a guarded native call committing `<object at slot[object]>->prop =
+/// slot[value]` through the monomorphic property-store ABI wrapper at `helper`
+/// (an `extern "C" fn(value_ptr: usize, metadata_ptr: usize, new_value: *const
+/// JitCValue) -> i32`).
+///
+/// The call stencil, in order:
+///
+/// 1. Guard `slot[object]`'s tag is `OpaqueObject` (side exit otherwise).
+/// 2. Read the object slot's borrowed-pointer payload into `X4` and compute the
+///    *address of* `slot[value]` into `X5` (register-form `add`, so the byte
+///    offset is not bound by the `imm12` encoding) while `X0` is still the slot
+///    base.
+/// 3. Build a non-leaf frame (`push_fp_lr`) with a 16-byte scratch holding the
+///    saved slot base — the helper writes no out-value, so no out scratch.
+/// 4. C-ABI args — `x0` = object value ptr, `x1` = `metadata_ptr`, `x2` =
+///    `&slot[value]` (the helper reads the marshaled `JitCValue` itself, so
+///    `Int`/`Bool`/`Float` all cross the boundary faithfully).
+/// 5. `blr` the helper; status in `w0`.
+/// 6. A non-`OK` status — layout mismatch, absent/reference-holding slot, or a
+///    non-scalar value — tears the frame down and takes the shared side exit
+///    *with no write performed*, so the interpreter executes the exact store.
+/// 7. On `OK` the write is committed; reload the slot base and tear the frame
+///    down. The op writes no result slot (the recognized leaf returns `null`).
+///
+/// Nothing is assumed to survive the `blr` except through the stack; the helper
+/// commits exactly one declared untyped slot write through the runtime's own
+/// interior-mutability layer and never frees, invokes a hook/`__set`, or
+/// re-enters the VM (those shapes are excluded at recognition time or side-exit
+/// at the storage guard).
+fn emit_property_store(
+    asm: &mut Aarch64Assembler,
+    deopt: Label,
+    object: u32,
+    value: u32,
+    metadata_ptr: u64,
+    helper: u64,
+) {
+    // 1–2: guard the object slot + read its borrowed pointer and the value
+    // slot's address while X0 is still the slot base.
+    emit_object_guard(asm, deopt, object);
+    asm.ldr_x(X4, X0, payload_off(object));
+    asm.mov_imm64(X5, u64::from(tag_off(value)));
+    asm.add(X5, X0, X5);
+    // 3: non-leaf frame + 16-byte scratch ([sp+8]=slot base).
+    asm.push_fp_lr();
+    asm.sub_imm(SP, SP, 16);
+    asm.str_x(X0, SP, 8);
+    // 4: C-ABI args — x0 = value_ptr, x1 = metadata_ptr, x2 = &slot[value].
+    asm.mov(X0, X4);
+    asm.mov_imm64(X1, metadata_ptr);
+    asm.mov(X2, X5);
+    // 5: call helper(value_ptr, metadata_ptr, new_value) -> status in w0.
+    asm.mov_imm64(X9, helper);
+    asm.blr(X9);
+    // 6: on a non-OK status, tear the frame down and take the shared side exit.
+    let call_deopt = asm.new_label();
+    let done = asm.new_label();
+    asm.cmp_imm_w(X0, JIT_HELPER_STATUS_OK as u16);
+    asm.b_cond(Cond::NotEqual, call_deopt);
+    // 7: OK — the store is committed; reload the slot base, free the frame.
+    asm.ldr_x(X0, SP, 8);
+    asm.add_imm(SP, SP, 16);
+    asm.pop_fp_lr();
+    asm.b(done);
+    asm.bind(call_deopt);
+    asm.add_imm(SP, SP, 16);
     asm.pop_fp_lr();
     asm.b(deopt);
     asm.bind(done);
@@ -1102,6 +1295,14 @@ mod x86_emit {
                 asm.setcc(x::R10, self::cond(cond));
                 store_bool(asm, dst, x::R10);
             }
+            // Not stenciled on x86 yet: an unconditional side exit keeps the
+            // enum exhaustive with identical behavior (the interpreter runs
+            // the shape — both ops side-exit before any effect, and neither
+            // appears after a performed resume call). Real x86 stencils are
+            // the documented follow-up.
+            ScalarIntOp::CallPropertyStoreScalar { .. } | ScalarIntOp::CallArrayFetchI64 { .. } => {
+                asm.jmp(deopt);
+            }
         }
     }
 
@@ -1350,6 +1551,17 @@ fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
             check_slot(lhs)?;
             check_slot(rhs)
         }
+        ScalarIntOp::CallPropertyStoreScalar { object, value, .. } => {
+            check_slot(object)?;
+            check_slot(value)
+        }
+        ScalarIntOp::CallArrayFetchI64 {
+            dst, array, index, ..
+        } => {
+            check_slot(dst)?;
+            check_slot(array)?;
+            check_slot(index)
+        }
     }
 }
 
@@ -1386,6 +1598,18 @@ fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
             metadata_ptr,
             helper,
         } => emit_property_load(asm, deopt, dst, arg, metadata_ptr, helper),
+        ScalarIntOp::CallPropertyStoreScalar {
+            object,
+            value,
+            metadata_ptr,
+            helper,
+        } => emit_property_store(asm, deopt, object, value, metadata_ptr, helper),
+        ScalarIntOp::CallArrayFetchI64 {
+            dst,
+            array,
+            index,
+            fetch_helper,
+        } => emit_array_fetch(asm, deopt, dst, array, index, fetch_helper),
         ScalarIntOp::Binary { op, dst, lhs, rhs } => {
             emit_int_guard(asm, deopt, lhs);
             emit_int_guard(asm, deopt, rhs);
@@ -1962,7 +2186,12 @@ pub fn compile_scalar_int_function_with_permits(
     if let Some(compiled) = compile_counted_loop_function(function, constants) {
         return Some(compiled);
     }
-    if let Some(compiled) = compile_scalar_int_cfg(function, constants, permits) {
+    if let Some(compiled) = compile_scalar_int_cfg(
+        function,
+        constants,
+        permits,
+        CopyPatchRuntimeHelpers::default(),
+    ) {
         return Some(compiled);
     }
     if let Some(compiled) = compile_scalar_float_leaf(function, constants) {
@@ -1998,7 +2227,21 @@ pub fn compile_scalar_int_function_with_permits_and_helpers(
     if let Some(compiled) = compile_scalar_int_is_type_leaf(function, permits) {
         return Some(compiled);
     }
-    compile_scalar_int_function_with_permits(function, constants, region_id, permits)
+    if let Some((graph, result)) = build_scalar_int_region(function, constants, region_id)
+        && let Ok(compiled) = compile_scalar_int_region(&graph, result)
+    {
+        return Some(compiled);
+    }
+    if let Some(compiled) = compile_counted_loop_function(function, constants) {
+        return Some(compiled);
+    }
+    if let Some(compiled) = compile_scalar_int_cfg(function, constants, permits, helpers) {
+        return Some(compiled);
+    }
+    if let Some(compiled) = compile_scalar_float_leaf(function, constants) {
+        return Some(compiled);
+    }
+    compile_scalar_int_tailcall_leaf(function, constants, permits)
 }
 
 /// The structural match shared by the single-argument builtin-leaf recognizers
@@ -2294,6 +2537,50 @@ pub fn compile_property_load_leaf(
     Some(CompiledScalarRegion {
         code,
         result_slot,
+        buffer_slots,
+        tail_call: None,
+    })
+}
+
+/// Lower a VM-recognized monomorphic scalar property-*store* leaf to a native
+/// region: a single [`ScalarIntOp::CallPropertyStoreScalar`] over the flat slot
+/// buffer.
+///
+/// The VM bridge (which owns class/property resolution) recognizes the
+/// `$o->prop = $v;` void-setter leaf shape and builds the
+/// `JitPropertyStoreMetadata` the layout guard needs, passing its (borrowed,
+/// VM-owned, outlives-the-leaf) pointer as `metadata_ptr` and the
+/// property-store ABI wrapper address as `helper`. `object_slot` and
+/// `value_slot` are the two parameters' VM slots (their `LocalId` indices);
+/// `buffer_slots` sizes the caller's marshaled buffer. The region produces no
+/// result slot — the recognized leaf returns `null`, which the bridge
+/// synthesizes on an `OK` status — so `result_slot` is `0` and unread. Returns
+/// `None` if either address is unavailable (`0`) or a slot is outside the
+/// addressable range.
+///
+/// `php_jit` never recognizes this shape itself (it cannot resolve classes), so
+/// with no bridge caller this is dead-inert; it only lowers the exact `(slots,
+/// metadata, helper)` tuple the bridge hands it.
+pub fn compile_property_store_leaf(
+    object_slot: u32,
+    value_slot: u32,
+    buffer_slots: u32,
+    metadata_ptr: u64,
+    helper: u64,
+) -> Option<CompiledScalarRegion> {
+    if helper == 0 || metadata_ptr == 0 {
+        return None;
+    }
+    let code = emit_scalar_int_ops(&[ScalarIntOp::CallPropertyStoreScalar {
+        object: object_slot,
+        value: value_slot,
+        metadata_ptr,
+        helper,
+    }])
+    .ok()?;
+    Some(CompiledScalarRegion {
+        code,
+        result_slot: 0,
         buffer_slots,
         tail_call: None,
     })
@@ -2674,6 +2961,7 @@ fn compile_scalar_int_cfg(
     function: &IrFunction,
     constants: &[IrConstant],
     permits: NativeCallPermits,
+    helpers: CopyPatchRuntimeHelpers,
 ) -> Option<CompiledScalarRegion> {
     let flags = function.flags;
     if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
@@ -2689,11 +2977,14 @@ fn compile_scalar_int_cfg(
         return None;
     }
     for param in &function.params {
-        if param.by_ref
-            || param.variadic
-            || param.default.is_some()
-            || param.type_ != Some(IrReturnType::Int)
-        {
+        if param.by_ref || param.variadic || param.default.is_some() {
+            return None;
+        }
+        // `array` parameters are admitted for the guarded packed-fetch op;
+        // they are only readable through it (any scalar use fails the `Int`
+        // operand guard and side-exits), and `array` declared types never
+        // coerce at bind, so the marshaled handle equals the bound value.
+        if !matches!(param.type_, Some(IrReturnType::Int | IrReturnType::Array)) {
             return None;
         }
     }
@@ -2710,6 +3001,9 @@ fn compile_scalar_int_cfg(
 
     #[cfg(target_arch = "x86_64")]
     {
+        // The packed-fetch helper is aarch64-only so far; the x86 emitter
+        // rejects `FetchDim` shapes (interpreter runs them).
+        let _ = helpers;
         let code = x86_emit::emit_cfg(function, constants, permits, result_slot)?;
         Some(CompiledScalarRegion {
             code,
@@ -2727,6 +3021,26 @@ fn compile_scalar_int_cfg(
         // non-call subset is shared with the tail-call recognizer via
         // `scalar_int_prefix_op`; only the `abs` helper call is CFG-specific.
         let to_op = |kind: &InstructionKind| -> Option<ScalarIntOp> {
+            // A register-indexed dimension read lowers to the guarded
+            // packed-int fetch helper when the VM wired its address in.
+            // `quiet` reads (null-coalescing) suppress the undefined-key
+            // warning, which the helper cannot distinguish from the loud case
+            // — rejected.
+            if let InstructionKind::FetchDim {
+                dst,
+                array: Operand::Register(array_reg),
+                key: Operand::Register(key_reg),
+                quiet: false,
+            } = kind
+                && helpers.array_fetch != 0
+            {
+                return Some(ScalarIntOp::CallArrayFetchI64 {
+                    dst: reg_slot(*dst),
+                    array: reg_slot(*array_reg),
+                    index: reg_slot(*key_reg),
+                    fetch_helper: helpers.array_fetch,
+                });
+            }
             // A call to the real builtin `abs` (confirmed by the VM bridge via
             // `permits`) on a single by-value register argument lowers to the
             // guarded native helper call. Any other name, arity, argument form,
@@ -3065,6 +3379,382 @@ fn compile_scalar_int_tailcall_leaf(
             callee_name: name.clone(),
             arg_slots,
         }),
+    })
+}
+
+/// One suspension point of a return-and-resume call region: when the region
+/// returns [`JIT_HELPER_STATUS_RESUME_CALL_BASE`]` + index`, it has marshaled
+/// this site's positional `Int` arguments into `arg_slots` and suspended
+/// itself. The VM performs the call to `callee_name` through the normal
+/// interpreter path, writes the callee's result — guaranteed `Int` by the
+/// callee's own declared-`: int` return coercion — into `result_slot`, and
+/// re-enters the finished code at byte `resume_offset` with the same buffer.
+/// Every live value sits in the flat slot buffer (nothing is kept in registers
+/// across ops), so re-entry at an op boundary is exactly like the region entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeCallSite {
+    /// Callee name exactly as written at the call site; the VM resolved it to a
+    /// same-unit plain userland `: int` function at compile time and
+    /// re-validates the resolution before performing the first call.
+    pub callee_name: String,
+    /// Buffer slots holding the marshaled positional `Int` arguments, in order.
+    pub arg_slots: Vec<u32>,
+    /// Slot the VM writes the callee's `Int` result into before resuming.
+    pub result_slot: u32,
+    /// Byte offset into the finished code where execution resumes.
+    pub resume_offset: usize,
+}
+
+/// A region lowered with return-and-resume call sites (the non-tail
+/// generalization of [`TailCallPlan`]): native segments interleaved with
+/// suspensions, one per userland call, over one persistent slot buffer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledResumeRegion {
+    /// Emitted `extern "C" fn(slot_base: *mut JitCValue) -> i32`, re-enterable
+    /// at each site's `resume_offset`.
+    pub code: Vec<u8>,
+    /// Slot holding the region result after the final `0` (OK) return.
+    pub result_slot: u32,
+    /// Number of `JitCValue` slots the caller's buffer must provide.
+    pub buffer_slots: u32,
+    /// Suspension points in execution order; the region returns
+    /// [`JIT_HELPER_STATUS_RESUME_CALL_BASE`]` + i` to request site `i`.
+    pub sites: Vec<ResumeCallSite>,
+}
+
+/// Track which slots provably hold `Int`-tagged values at the current program
+/// point of a resume region. Parameters are proven by the entry guards; a
+/// call's result slot by the callee's declared `: int` return type; `Const` and
+/// `Binary` results by construction (a binary either produces an `Int` or takes
+/// the pre-call side exit); a `Compare` result is `Bool`, so it *un*-proves its
+/// destination; a `Copy` propagates its source's status.
+fn update_proven_int(proven: &mut HashSet<u32>, op: &ScalarIntOp) {
+    match op {
+        ScalarIntOp::Const { dst, .. }
+        | ScalarIntOp::Binary { dst, .. }
+        | ScalarIntOp::BinaryConst { dst, .. } => {
+            proven.insert(*dst);
+        }
+        ScalarIntOp::Copy { dst, src } => {
+            if proven.contains(src) {
+                proven.insert(*dst);
+            } else {
+                proven.remove(dst);
+            }
+        }
+        ScalarIntOp::Compare { dst, .. }
+        | ScalarIntOp::CallAbsI64 { dst, .. }
+        | ScalarIntOp::CallCountI64 { dst, .. }
+        | ScalarIntOp::CallStrlenI64 { dst, .. }
+        | ScalarIntOp::IsType { dst, .. }
+        | ScalarIntOp::CallPropertyLoadScalar { dst, .. }
+        | ScalarIntOp::CallArrayFetchI64 { dst, .. } => {
+            // Bool results and helper-call results are not proven `Int` for the
+            // post-call subset (helpers are conservative even though abs/count/
+            // strlen do produce ints — they never appear post-call anyway).
+            proven.remove(dst);
+        }
+        ScalarIntOp::CallPropertyStoreScalar { .. } => {}
+    }
+}
+
+/// Recognize a return-and-resume *call-composition* leaf and lower it, gated by
+/// `permits.allow_userland_tailcall` and per-callee by `callee_allowed` (the VM
+/// owns function resolution; `php_jit` has no registry).
+///
+/// The matched shape is a single-block `int`-returning free function (`int`,
+/// by-value, non-variadic, no-default parameters) whose meaningful
+/// instructions form: a scalar-int prefix, then one or more
+/// `CallFunction { dst, name, args }` steps separated by *move-only* segments
+/// (`LoadLocal`/`StoreLocal`/`Move`/`LoadConst` — no arithmetic, no compares),
+/// ending in `Return(%r)` of a proven-`Int` register. Sequenced calls
+/// (`$a = h($x); return g($a);`) and nested compositions (`return g(h($x));`)
+/// both lower.
+///
+/// Soundness rules (why the shape is this narrow):
+///
+/// - **Side exits are only legal before the first call.** Re-running the whole
+///   leaf through the interpreter is the only fallback, and it is only correct
+///   while no side effect has happened. So the full guarded subset is allowed
+///   only in the prefix; every post-call op must be *guard-free* and every
+///   post-call operand must be *proven* `Int` (a parameter guarded at entry, a
+///   call result whose callee declares `: int`, or a constant), so no
+///   post-call guard or overflow exit can ever be needed.
+/// - **Callees must be statically resolved, plain userland `: int` functions**
+///   (`callee_allowed` — the VM validates against the unit's function table).
+///   The declared return type is what proves the result slot `Int` without a
+///   runtime guard: the callee's own return coercion either produced an `int`
+///   or threw, and a throw propagates instead of resuming.
+/// - Named/spread/by-ref-placeholder arguments, non-register/non-int-constant
+///   argument values, and any out-of-subset instruction reject the whole leaf
+///   (the interpreter runs it, exactly as before).
+///
+/// Argument slots are fresh (above locals + registers, cumulatively per site),
+/// so marshaling never clobbers a live value. The first site's arguments are
+/// marshaled with `Int` guards (still pre-call); later sites' arguments are
+/// unguarded copies of proven slots.
+pub fn compile_scalar_int_resume_leaf(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    permits: NativeCallPermits,
+    callee_allowed: &dyn Fn(&str, usize) -> bool,
+) -> Option<CompiledResumeRegion> {
+    if !permits.allow_userland_tailcall {
+        return None;
+    }
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if function.return_type != Some(IrReturnType::Int) {
+        return None;
+    }
+    for param in &function.params {
+        if param.by_ref
+            || param.variadic
+            || param.default.is_some()
+            || param.type_ != Some(IrReturnType::Int)
+        {
+            return None;
+        }
+    }
+    let [block] = function.blocks.as_slice() else {
+        return None;
+    };
+
+    // Partition the meaningful instructions into segments split by the calls.
+    let kinds = meaningful_kinds(block);
+    let mut segments: Vec<Vec<InstructionKind>> = vec![Vec::new()];
+    let mut calls: Vec<(String, Vec<php_ir::instruction::IrCallArg>, RegId)> = Vec::new();
+    for kind in kinds {
+        if let InstructionKind::CallFunction { dst, name, args } = kind {
+            calls.push((name, args, dst));
+            segments.push(Vec::new());
+        } else {
+            segments.last_mut()?.push(kind);
+        }
+    }
+    // At least one call, otherwise the ordinary leaf paths own the shape. A
+    // single trailing call is the tail-call recognizer's territory; it runs
+    // first in the compile order, so reaching here with such a shape only
+    // happens when that path rejected it — compiling it as a resume region is
+    // correct, just less direct.
+    if calls.is_empty() {
+        return None;
+    }
+    // Engagement heuristic: driving the suspend/perform-call/re-enter loop
+    // costs a buffer allocation, a materialized frame, and marshaling per
+    // invocation. When the region contains no real computation (pure
+    // move-only call glue like `$a = h($x); return g($a);`), the interpreter
+    // is measurably faster, so only compile when enough arithmetic/compare
+    // work moves into native code to pay for the loop. Move/const glue does
+    // not count; only compute ops do.
+    const RESUME_MIN_COMPUTE_OPS: usize = 4;
+    let compute_ops = segments
+        .iter()
+        .flatten()
+        .filter(|kind| {
+            matches!(
+                kind,
+                InstructionKind::Binary { .. } | InstructionKind::Compare { .. }
+            )
+        })
+        .count();
+    if compute_ops < RESUME_MIN_COMPUTE_OPS {
+        return None;
+    }
+
+    let local_count = function.local_count;
+    let reg_slot = |r: RegId| local_count + r.raw();
+    let first_arg_slot = local_count.checked_add(function.register_count)?;
+
+    // Entry-guarded parameters are the initial proven-`Int` set.
+    let mut proven: HashSet<u32> = function
+        .params
+        .iter()
+        .map(|param| param.local.raw())
+        .collect();
+
+    // Prefix (segment 0): the full guarded scalar-int subset.
+    let mut prefix = Vec::with_capacity(segments[0].len());
+    for kind in &segments[0] {
+        let op = scalar_int_prefix_op(kind, constants, local_count, reg_slot)?;
+        update_proven_int(&mut proven, &op);
+        prefix.push(op);
+    }
+
+    // Temporal walk over the call sites and their following segments.
+    struct SiteSpec {
+        name: String,
+        args: Vec<TailArgSource>,
+        result_slot: u32,
+    }
+    let mut site_specs: Vec<SiteSpec> = Vec::with_capacity(calls.len());
+    let mut post_segments: Vec<Vec<ScalarIntOp>> = Vec::with_capacity(calls.len());
+    let mut next_arg_slot = first_arg_slot;
+    for (index, (name, args, dst)) in calls.iter().enumerate() {
+        if !callee_allowed(name, args.len()) {
+            return None;
+        }
+        let mut sources = Vec::with_capacity(args.len());
+        for arg in args {
+            if arg.name.is_some()
+                || arg.unpack
+                || arg.value_kind == IrCallArgValueKind::ByRefLocationPlaceholder
+            {
+                return None;
+            }
+            let source = match arg.value {
+                Operand::Register(reg) => {
+                    let slot = reg_slot(reg);
+                    // Post-call argument marshaling is unguarded, so its
+                    // sources must be proven `Int`.
+                    if index > 0 && !proven.contains(&slot) {
+                        return None;
+                    }
+                    TailArgSource::GuardedCopy { src: slot }
+                }
+                Operand::Constant(constant) => TailArgSource::Const {
+                    value: int_constant(constants, constant)?,
+                },
+                Operand::Local(_) => return None,
+            };
+            sources.push(source);
+        }
+        let result_slot = reg_slot(*dst);
+        proven.insert(result_slot);
+        next_arg_slot = next_arg_slot.checked_add(u32::try_from(args.len()).ok()?)?;
+        site_specs.push(SiteSpec {
+            name: name.clone(),
+            args: sources,
+            result_slot,
+        });
+
+        // The segment after this call: move-only ops over proven slots.
+        let mut ops = Vec::new();
+        for kind in &segments[index + 1] {
+            let op = scalar_int_prefix_op(kind, constants, local_count, reg_slot)?;
+            match op {
+                ScalarIntOp::Const { dst, .. } => {
+                    proven.insert(dst);
+                }
+                ScalarIntOp::Copy { dst, src } => {
+                    if !proven.contains(&src) {
+                        return None;
+                    }
+                    proven.insert(dst);
+                }
+                _ => return None,
+            }
+            ops.push(op);
+        }
+        post_segments.push(ops);
+    }
+
+    // The return value must be a proven-`Int` register.
+    let TerminatorKind::Return {
+        value: Some(Operand::Register(ret_reg)),
+        by_ref_local: None,
+    } = &block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+    let result_slot = reg_slot(*ret_reg);
+    if !proven.contains(&result_slot) {
+        return None;
+    }
+
+    let buffer_slots = next_arg_slot;
+    let param_slots: Vec<u32> = function
+        .params
+        .iter()
+        .map(|param| param.local.raw())
+        .collect();
+
+    // Slot-range validation before emission.
+    for op in prefix.iter().chain(post_segments.iter().flatten()) {
+        check_op_slots(*op).ok()?;
+    }
+    for &slot in &param_slots {
+        check_slot(slot).ok()?;
+    }
+    check_slot(result_slot).ok()?;
+    if buffer_slots > 0 {
+        check_slot(buffer_slots - 1).ok()?;
+    }
+
+    // Emission: prefix + per-site (marshal, suspend, resume label, segment).
+    let mut asm = Aarch64Assembler::new();
+    let deopt = asm.new_label();
+    for &slot in &param_slots {
+        emit_int_guard(&mut asm, deopt, slot);
+    }
+    for op in &prefix {
+        emit_op(&mut asm, deopt, *op);
+    }
+    let mut sites = Vec::with_capacity(site_specs.len());
+    let mut arg_cursor = first_arg_slot;
+    for (index, spec) in site_specs.iter().enumerate() {
+        let mut arg_slots = Vec::with_capacity(spec.args.len());
+        for arg in &spec.args {
+            let slot = arg_cursor;
+            arg_cursor = arg_cursor.checked_add(1)?;
+            match arg {
+                TailArgSource::GuardedCopy { src } => {
+                    if index == 0 {
+                        // Pre-call: a non-int argument side-exits (status 1) and
+                        // the interpreter runs the whole leaf.
+                        emit_int_guard(&mut asm, deopt, *src);
+                    }
+                    // Post-call sources are proven `Int`; no guard is emitted,
+                    // and none may be (the side exit would re-run a performed
+                    // call).
+                    emit_value_copy(&mut asm, slot, *src);
+                }
+                TailArgSource::Const { value } => {
+                    asm.mov_imm64(X6, *value as u64);
+                    emit_store_int(&mut asm, slot, X6);
+                }
+            }
+            arg_slots.push(slot);
+        }
+        // Suspend: request this call site. The status fits u16 for any
+        // realistic site count (checked above via slot bounds long before).
+        let status = JIT_HELPER_STATUS_RESUME_CALL_BASE + i32::try_from(index).ok()?;
+        asm.movz(X0, u16::try_from(status).ok()?);
+        asm.ret();
+        let resume_offset = asm.current_offset();
+        for op in &post_segments[index] {
+            // Move-only ops (validated above): guard-free by construction.
+            emit_op(&mut asm, deopt, *op);
+        }
+        sites.push(ResumeCallSite {
+            callee_name: spec.name.clone(),
+            arg_slots,
+            result_slot: spec.result_slot,
+            resume_offset,
+        });
+    }
+    asm.movz(X0, 0);
+    asm.ret();
+    asm.bind(deopt);
+    asm.movz(X0, 1);
+    asm.ret();
+    let code = asm.finish();
+    // Resume offsets must land inside the finished code (they do by
+    // construction; this is the cheap invariant the bridge's re-entry
+    // transmute relies on).
+    if sites.iter().any(|site| site.resume_offset >= code.len()) {
+        return None;
+    }
+    Some(CompiledResumeRegion {
+        code,
+        result_slot,
+        buffer_slots,
+        sites,
     })
 }
 
@@ -3694,7 +4384,7 @@ mod tests {
         // emitted `blr` is exercised end-to-end in code_memory.rs).
         let helpers = CopyPatchRuntimeHelpers {
             array_len: 0x1000,
-            strlen: 0,
+            ..CopyPatchRuntimeHelpers::default()
         };
         let permits = NativeCallPermits {
             builtin_count: true,
@@ -3745,7 +4435,7 @@ mod tests {
         let function = count_leaf_function("count", Some(IrReturnType::Array));
         let helpers = CopyPatchRuntimeHelpers {
             array_len: 0x1000,
-            strlen: 0,
+            ..CopyPatchRuntimeHelpers::default()
         };
         let permits = NativeCallPermits {
             builtin_count: true,
@@ -3770,7 +4460,7 @@ mod tests {
         let function = count_leaf_function("app\\count", None);
         let helpers = CopyPatchRuntimeHelpers {
             array_len: 0x1000,
-            strlen: 0,
+            ..CopyPatchRuntimeHelpers::default()
         };
         let permits = NativeCallPermits {
             builtin_count: true,
@@ -3792,8 +4482,8 @@ mod tests {
     /// placeholder; the emitted `blr` is exercised end-to-end in code_memory.rs).
     fn strlen_helpers() -> CopyPatchRuntimeHelpers {
         CopyPatchRuntimeHelpers {
-            array_len: 0,
             strlen: 0x2000,
+            ..CopyPatchRuntimeHelpers::default()
         }
     }
 

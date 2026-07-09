@@ -1,6 +1,8 @@
 //! cURL-compatible HTTP client builtin slice.
 
-use super::core::{argument_type_error, expect_arity, int_arg, string_arg, string_array_key};
+use super::core::{
+    argument_type_error, argument_value_error, expect_arity, int_arg, string_arg, string_array_key,
+};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
@@ -10,6 +12,7 @@ use crate::{
     RuntimeBringupDiagnosticContext, RuntimeDiagnostic, RuntimeDiagnosticPayload, RuntimeSeverity,
     Value, normalize_class_name,
 };
+use curl::Version;
 use openssl::ssl::{HandshakeError, SslConnector, SslMethod, SslStream};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -53,6 +56,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "curl_strerror",
+        builtin_curl_strerror,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "curl_multi_init",
         builtin_curl_multi_init,
         BuiltinCompatibility::Php,
@@ -80,6 +88,31 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "curl_multi_close",
         builtin_curl_multi_close,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_share_init",
+        builtin_curl_share_init,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_share_setopt",
+        builtin_curl_share_setopt,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_share_errno",
+        builtin_curl_share_errno,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_share_strerror",
+        builtin_curl_share_strerror,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "curl_share_close",
+        builtin_curl_share_close,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new("curl_reset", builtin_curl_reset, BuiltinCompatibility::Php),
@@ -153,16 +186,43 @@ const CURLOPT_USERPWD: i64 = 10005;
 const CURLOPT_POST: i64 = 47;
 const CURLOPT_POSTFIELDS: i64 = 10015;
 const CURLOPT_CUSTOMREQUEST: i64 = 10036;
+const CURLOPT_PRIVATE: i64 = 10103;
 const CURLOPT_SSL_VERIFYPEER: i64 = 64;
 const CURLOPT_SSL_VERIFYHOST: i64 = 81;
 const CURLINFO_EFFECTIVE_URL: i64 = 1048577;
 const CURLINFO_RESPONSE_CODE: i64 = 2097154;
 const CURLINFO_HEADER_SIZE: i64 = 2097163;
 const CURLINFO_TOTAL_TIME: i64 = 3145731;
+const CURLINFO_PRIVATE: i64 = 1048597;
 const CURLM_OK: i64 = 0;
 const CURLM_BAD_HANDLE: i64 = 1;
 const CURLMSG_DONE: i64 = 1;
+const CURLSHE_OK: i64 = 0;
+const CURLSHE_BAD_OPTION: i64 = 1;
+const CURLSHOPT_SHARE: i64 = 1;
+const CURLSHOPT_UNSHARE: i64 = 2;
 const CURL_VERSION_SSL: i64 = 4;
+const CURL_VERSION_LIBZ: i64 = 8;
+const CURL_VERSION_IPV6: i64 = 1;
+const CURL_VERSION_NTLM: i64 = 16;
+const CURL_VERSION_LARGEFILE: i64 = 512;
+const CURL_VERSION_ASYNCHDNS: i64 = 128;
+const CURL_VERSION_SPNEGO: i64 = 256;
+const CURL_VERSION_IDN: i64 = 1024;
+const CURL_VERSION_SSPI: i64 = 2048;
+const CURL_VERSION_CONV: i64 = 4096;
+const CURL_VERSION_TLSAUTH_SRP: i64 = 16384;
+const CURL_VERSION_NTLM_WB: i64 = 32768;
+const CURL_VERSION_HTTP2: i64 = 65536;
+const CURL_VERSION_UNIX_SOCKETS: i64 = 524288;
+const CURL_VERSION_HTTPS_PROXY: i64 = 2097152;
+const CURL_VERSION_BROTLI: i64 = 8388608;
+const CURL_VERSION_ALTSVC: i64 = 16777216;
+const CURL_VERSION_HTTP3: i64 = 33554432;
+const CURL_VERSION_ZSTD: i64 = 67108864;
+const CURL_VERSION_UNICODE: i64 = 134217728;
+const CURL_VERSION_HSTS: i64 = 268435456;
+const CURL_VERSION_GSASL: i64 = 536870912;
 
 type CurlTransportError = (i64, String);
 type CurlPostBody = (Vec<u8>, Option<&'static str>);
@@ -177,15 +237,16 @@ pub(in crate::builtins::modules) fn builtin_curl_version(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_arity("curl_version", &args, 0)?;
+    let version = Version::get();
     let mut out = PhpArray::new();
     out.insert(
         ArrayKey::String(PhpString::from("version_number")),
-        Value::Int(0x080507),
+        Value::Int(version.version_num() as i64),
     );
     out.insert(ArrayKey::String(PhpString::from("age")), Value::Int(0));
     out.insert(
         ArrayKey::String(PhpString::from("features")),
-        Value::Int(CURL_VERSION_SSL),
+        Value::Int(curl_version_feature_bits(&version)),
     );
     out.insert(
         ArrayKey::String(PhpString::from("ssl_version_number")),
@@ -193,28 +254,101 @@ pub(in crate::builtins::modules) fn builtin_curl_version(
     );
     out.insert(
         ArrayKey::String(PhpString::from("version")),
-        Value::String(PhpString::from("phrust-curl-mvp")),
+        Value::String(PhpString::from(version.version())),
     );
     out.insert(
         ArrayKey::String(PhpString::from("host")),
-        Value::String(PhpString::from("phrust")),
+        Value::String(PhpString::from(version.host())),
     );
     out.insert(
         ArrayKey::String(PhpString::from("ssl_version")),
-        Value::String(PhpString::from("OpenSSL/phrust")),
+        Value::String(PhpString::from(version.ssl_version().unwrap_or(""))),
     );
     out.insert(
         ArrayKey::String(PhpString::from("libz_version")),
-        Value::String(PhpString::from("none")),
+        Value::String(PhpString::from(version.libz_version().unwrap_or(""))),
     );
     out.insert(
         ArrayKey::String(PhpString::from("protocols")),
-        Value::packed_array(vec![
-            Value::String(PhpString::from("http")),
-            Value::String(PhpString::from("https")),
-        ]),
+        Value::packed_array(
+            version
+                .protocols()
+                .map(|protocol| Value::String(PhpString::from(protocol)))
+                .collect(),
+        ),
     );
     Ok(Value::Array(out))
+}
+
+fn curl_version_feature_bits(version: &Version) -> i64 {
+    let mut bits = 0;
+    if version.feature_ipv6() {
+        bits |= CURL_VERSION_IPV6;
+    }
+    if version.feature_ssl() {
+        bits |= CURL_VERSION_SSL;
+    }
+    if version.feature_libz() {
+        bits |= CURL_VERSION_LIBZ;
+    }
+    if version.feature_ntlm() {
+        bits |= CURL_VERSION_NTLM;
+    }
+    if version.feature_spnego() {
+        bits |= CURL_VERSION_SPNEGO;
+    }
+    if version.feature_largefile() {
+        bits |= CURL_VERSION_LARGEFILE;
+    }
+    if version.feature_idn() {
+        bits |= CURL_VERSION_IDN;
+    }
+    if version.feature_sspi() {
+        bits |= CURL_VERSION_SSPI;
+    }
+    if version.feature_async_dns() {
+        bits |= CURL_VERSION_ASYNCHDNS;
+    }
+    if version.feature_conv() {
+        bits |= CURL_VERSION_CONV;
+    }
+    if version.feature_tlsauth_srp() {
+        bits |= CURL_VERSION_TLSAUTH_SRP;
+    }
+    if version.feature_ntlm_wb() {
+        bits |= CURL_VERSION_NTLM_WB;
+    }
+    if version.feature_unix_domain_socket() {
+        bits |= CURL_VERSION_UNIX_SOCKETS;
+    }
+    if version.feature_https_proxy() {
+        bits |= CURL_VERSION_HTTPS_PROXY;
+    }
+    if version.feature_http2() {
+        bits |= CURL_VERSION_HTTP2;
+    }
+    if version.feature_http3() {
+        bits |= CURL_VERSION_HTTP3;
+    }
+    if version.feature_brotli() {
+        bits |= CURL_VERSION_BROTLI;
+    }
+    if version.feature_altsvc() {
+        bits |= CURL_VERSION_ALTSVC;
+    }
+    if version.feature_zstd() {
+        bits |= CURL_VERSION_ZSTD;
+    }
+    if version.feature_unicode() {
+        bits |= CURL_VERSION_UNICODE;
+    }
+    if version.feature_hsts() {
+        bits |= CURL_VERSION_HSTS;
+    }
+    if version.feature_gsasl() {
+        bits |= CURL_VERSION_GSASL;
+    }
+    bits
 }
 
 pub(in crate::builtins::modules) fn builtin_curl_escape(
@@ -253,6 +387,32 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_strerror(
     let message = match code {
         CURLM_OK => "No error",
         CURLM_BAD_HANDLE => "Invalid multi handle",
+        _ => "Unknown error",
+    };
+    Ok(Value::string(message))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_strerror(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_strerror", &args, 1)?;
+    let code = int_arg("curl_strerror", &args[0])?;
+    let message = match code {
+        0 => "No error",
+        1 => "Unsupported protocol",
+        3 => "URL using bad/illegal format or missing URL",
+        7 => "Could not connect to server",
+        22 => "HTTP response code said error",
+        23 => "Failed writing received data to disk/application",
+        28 => "Timeout was reached",
+        35 => "SSL connect error",
+        47 => "Number of redirects hit maximum amount",
+        48 => "An unknown option was passed in to libcurl",
+        55 => "Failed sending data to the peer",
+        56 => "Failure when receiving data from the peer",
+        61 => "Unrecognized or bad HTTP Content or Transfer-Encoding",
         _ => "Unknown error",
     };
     Ok(Value::string(message))
@@ -371,6 +531,82 @@ pub(in crate::builtins::modules) fn builtin_curl_multi_close(
     Ok(Value::Null)
 }
 
+pub(in crate::builtins::modules) fn builtin_curl_share_init(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_share_init", &args, 0)?;
+    let object =
+        ObjectRef::new_with_display_name(&curl_runtime_class("CurlShareHandle"), "CurlShareHandle");
+    reset_curl_share_handle(&object);
+    Ok(Value::Object(object))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_share_setopt(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_share_setopt", &args, 3)?;
+    let share = curl_share_handle_arg("curl_share_setopt", args.first())?;
+    let option = int_arg("curl_share_setopt", &args[1])?;
+    match option {
+        CURLSHOPT_SHARE | CURLSHOPT_UNSHARE => {
+            share.set_property("__curl_share_errno", Value::Int(CURLSHE_OK));
+            Ok(Value::Bool(true))
+        }
+        _ => {
+            share.set_property("__curl_share_errno", Value::Int(CURLSHE_BAD_OPTION));
+            Err(argument_value_error(
+                "curl_share_setopt",
+                "#2 ($option)",
+                "is not a valid cURL share option",
+            ))
+        }
+    }
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_share_errno(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_share_errno", &args, 1)?;
+    let share = curl_share_handle_arg("curl_share_errno", args.first())?;
+    Ok(curl_int_property(&share, "__curl_share_errno"))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_share_strerror(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_share_strerror", &args, 1)?;
+    let code = int_arg("curl_share_strerror", &args[0])?;
+    let message = match code {
+        CURLSHE_OK => "No error",
+        CURLSHE_BAD_OPTION => "Unknown share option",
+        2 => "Share currently in use",
+        3 => "Invalid share handle",
+        4 => "Out of memory",
+        5 => "Feature not enabled",
+        _ => "Unknown error",
+    };
+    Ok(Value::string(message))
+}
+
+pub(in crate::builtins::modules) fn builtin_curl_share_close(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("curl_share_close", &args, 1)?;
+    let share = curl_share_handle_arg("curl_share_close", args.first())?;
+    share.set_property("__curl_share_closed", Value::Bool(true));
+    Ok(Value::Null)
+}
+
 pub(in crate::builtins::modules) fn builtin_curl_init(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -436,6 +672,7 @@ pub(in crate::builtins::modules) fn builtin_curl_setopt(
         CURLOPT_POST => "__curl_post",
         CURLOPT_POSTFIELDS => "__curl_postfields",
         CURLOPT_CUSTOMREQUEST => "__curl_customrequest",
+        CURLOPT_PRIVATE => "__curl_private",
         CURLOPT_SSL_VERIFYPEER => "__curl_ssl_verifypeer",
         CURLOPT_SSL_VERIFYHOST => "__curl_ssl_verifyhost",
         _ => {
@@ -658,6 +895,7 @@ pub(in crate::builtins::modules) fn builtin_curl_getinfo(
             CURLINFO_EFFECTIVE_URL => curl_string_property(&handle, "__curl_effective_url"),
             CURLINFO_HEADER_SIZE => curl_int_property(&handle, "__curl_header_size"),
             CURLINFO_TOTAL_TIME => curl_float_property(&handle, "__curl_total_time"),
+            CURLINFO_PRIVATE => handle.get_property("__curl_private").unwrap_or(Value::Null),
             _ => Value::Bool(false),
         });
     }
@@ -764,6 +1002,7 @@ pub(in crate::builtins::modules) fn builtin_curl_copy_handle(
         "__curl_post",
         "__curl_postfields",
         "__curl_customrequest",
+        "__curl_private",
         "__curl_ssl_verifypeer",
         "__curl_ssl_verifyhost",
     ] {
@@ -1355,6 +1594,11 @@ fn reset_curl_multi_handle(object: &ObjectRef) {
     set_curl_multi_pending(object, Vec::new());
 }
 
+fn reset_curl_share_handle(object: &ObjectRef) {
+    object.set_property("__curl_share_errno", Value::Int(CURLSHE_OK));
+    object.set_property("__curl_share_closed", Value::Bool(false));
+}
+
 fn curl_multi_handles(multi: &ObjectRef) -> Vec<ObjectRef> {
     let Some(Value::Array(array)) = multi.get_property("__curl_multi_handles") else {
         return Vec::new();
@@ -1437,6 +1681,19 @@ fn curl_multi_handle_arg(name: &str, value: Option<&Value>) -> Result<ObjectRef,
     }
 }
 
+fn curl_share_handle_arg(name: &str, value: Option<&Value>) -> Result<ObjectRef, BuiltinError> {
+    match value {
+        Some(Value::Object(object)) if object.class_name() == "curlsharehandle" => {
+            Ok(object.clone())
+        }
+        Some(value) => Err(argument_type_error(name, "1", "CurlShareHandle", value)),
+        None => Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_ARITY",
+            format!("builtin {name} expects CurlShareHandle argument"),
+        )),
+    }
+}
+
 fn set_curl_option(handle: &ObjectRef, option: i64, value: Value) -> BuiltinResult {
     let property = match option {
         CURLOPT_URL => {
@@ -1475,6 +1732,7 @@ fn set_curl_option(handle: &ObjectRef, option: i64, value: Value) -> BuiltinResu
         CURLOPT_POST => "__curl_post",
         CURLOPT_POSTFIELDS => "__curl_postfields",
         CURLOPT_CUSTOMREQUEST => "__curl_customrequest",
+        CURLOPT_PRIVATE => "__curl_private",
         CURLOPT_SSL_VERIFYPEER => "__curl_ssl_verifypeer",
         CURLOPT_SSL_VERIFYHOST => "__curl_ssl_verifyhost",
         _ => {
@@ -1700,6 +1958,7 @@ mod tests {
     fn curl_version_advertises_ssl_transport_capability() {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
+        let libcurl = Version::get();
         let Value::Array(version) =
             builtin_curl_version(&mut context, vec![], RuntimeSourceSpan::default())
                 .expect("curl_version")
@@ -1708,8 +1967,28 @@ mod tests {
         };
 
         assert_eq!(
+            version.get(&ArrayKey::String(PhpString::from("version_number"))),
+            Some(&Value::Int(libcurl.version_num() as i64))
+        );
+        assert_eq!(
+            version.get(&ArrayKey::String(PhpString::from("version"))),
+            Some(&Value::String(PhpString::from(libcurl.version())))
+        );
+        assert_ne!(
+            version.get(&ArrayKey::String(PhpString::from("version"))),
+            Some(&Value::String(PhpString::from("phrust-curl-mvp")))
+        );
+        assert_eq!(
+            version.get(&ArrayKey::String(PhpString::from("host"))),
+            Some(&Value::String(PhpString::from(libcurl.host())))
+        );
+        assert_ne!(
+            version.get(&ArrayKey::String(PhpString::from("host"))),
+            Some(&Value::String(PhpString::from("phrust")))
+        );
+        assert_eq!(
             version.get(&ArrayKey::String(PhpString::from("features"))),
-            Some(&Value::Int(CURL_VERSION_SSL))
+            Some(&Value::Int(curl_version_feature_bits(&libcurl)))
         );
         let Some(Value::Array(protocols)) =
             version.get(&ArrayKey::String(PhpString::from("protocols")))

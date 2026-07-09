@@ -71,7 +71,14 @@ pub(crate) fn generate_module_tests<W: Write>(
         {
             break;
         }
-        if run::run_one_phpt(&reference_context, &entry.path, generated.len())?.outcome != "PASS" {
+        if run::run_one_phpt(
+            &reference_context,
+            &run::PhptManifestEntry::path(entry.path.clone()),
+            generated.len(),
+        )?
+        .outcome
+            != "PASS"
+        {
             continue;
         }
         if let Some(case) = build_generated_case(

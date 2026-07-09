@@ -1,1 +1,8 @@
 {"path":"tests/phpt/generated/sysvmsg/basic.phpt","module":"sysvmsg","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers extension visibility, SysvMessageQueue handles, queue existence, serialized and raw payload send/receive, metadata, settings, and removal semantics"}
+{"path":"ext/sysvmsg/tests/001.phpt","module":"sysvmsg","kind":"upstream","reason":"covers basic queue creation, serialized send/receive, stat metadata, and removal through a php-src sibling ftok path"}
+{"path":"ext/sysvmsg/tests/002.phpt","module":"sysvmsg","kind":"upstream","reason":"covers corrupted raw message receive when PHP unserialization is requested"}
+{"path":"ext/sysvmsg/tests/003.phpt","module":"sysvmsg","kind":"upstream","reason":"covers SysvMessageQueue object display without PHP-visible internal properties"}
+{"path":"ext/sysvmsg/tests/004.phpt","module":"sysvmsg","kind":"upstream","reason":"covers msg_set_queue() and msg_stat_queue() permission, uid, gid, and byte-limit metadata"}
+{"path":"ext/sysvmsg/tests/005.phpt","module":"sysvmsg","kind":"upstream","reason":"covers sysvmsg false, errno, and warning behavior after queue removal"}
+{"path":"ext/sysvmsg/tests/006.phpt","module":"sysvmsg","kind":"upstream","reason":"covers raw non-serialized string, int, float, bool, null, and array message payload behavior"}
+{"path":"ext/sysvmsg/tests/gh16592.phpt","module":"sysvmsg","kind":"upstream","reason":"covers msg_send() serialization failure propagation when __serialize() returns a non-array value"}

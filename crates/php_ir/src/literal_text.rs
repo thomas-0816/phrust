@@ -25,19 +25,19 @@ pub(crate) fn quoted_literal_body(text: &str) -> Option<Vec<u8>> {
 pub(crate) fn heredoc_literal_body(text: &str) -> Option<Vec<u8>> {
     let info = heredoc_body_info(text)?;
     if info.nowdoc {
-        Some(info.body.to_vec())
+        Some(info.body)
     } else {
-        Some(unescape_heredoc_php_string(info.body))
+        Some(unescape_heredoc_php_string(&info.body))
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct HeredocBodyInfo<'a> {
-    body: &'a [u8],
+#[derive(Clone, Debug)]
+struct HeredocBodyInfo {
+    body: Vec<u8>,
     nowdoc: bool,
 }
 
-fn heredoc_body_info(text: &str) -> Option<HeredocBodyInfo<'_>> {
+fn heredoc_body_info(text: &str) -> Option<HeredocBodyInfo> {
     let bytes = text.as_bytes();
     if !bytes.starts_with(b"<<<") {
         return None;
@@ -62,10 +62,38 @@ fn heredoc_body_info(text: &str) -> Option<HeredocBodyInfo<'_>> {
     if body_end > body_start && bytes.get(body_end - 1).copied() == Some(b'\r') {
         body_end -= 1;
     }
+    let indent_len = bytes[end_line_start..]
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    let indent = &bytes[end_line_start..end_line_start + indent_len];
     Some(HeredocBodyInfo {
-        body: &bytes[body_start..body_end],
+        body: strip_heredoc_body_indentation(&bytes[body_start..body_end], indent),
         nowdoc,
     })
+}
+
+fn strip_heredoc_body_indentation(body: &[u8], indent: &[u8]) -> Vec<u8> {
+    if indent.is_empty() || body.is_empty() {
+        return body.to_vec();
+    }
+
+    let mut stripped = Vec::with_capacity(body.len());
+    let mut line_start = 0;
+    while line_start < body.len() {
+        let line_end = body[line_start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(body.len(), |offset| line_start + offset + 1);
+        let line = &body[line_start..line_end];
+        if line.starts_with(indent) {
+            stripped.extend_from_slice(&line[indent.len()..]);
+        } else {
+            stripped.extend_from_slice(line);
+        }
+        line_start = line_end;
+    }
+    stripped
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,9 +152,9 @@ struct ParsedInterpolatedProperty {
 pub(crate) fn interpolated_literal_parts(text: &str) -> Option<Vec<InterpolatedPart>> {
     let trimmed = text.trim();
     let bytes = trimmed.as_bytes();
-    let (body, decode_escaped_quote) =
+    let (body, decode_escaped_quote): (Vec<u8>, bool) =
         if bytes.first().copied() == Some(b'"') && bytes.last().copied() == Some(b'"') {
-            (&bytes[1..bytes.len() - 1], true)
+            (bytes[1..bytes.len() - 1].to_vec(), true)
         } else {
             let heredoc = heredoc_body_info(trimmed)?;
             if heredoc.nowdoc {
@@ -134,7 +162,7 @@ pub(crate) fn interpolated_literal_parts(text: &str) -> Option<Vec<InterpolatedP
             }
             (heredoc.body, false)
         };
-    parse_interpolated_double_quoted_body(body, decode_escaped_quote)
+    parse_interpolated_double_quoted_body(&body, decode_escaped_quote)
 }
 
 fn parse_interpolated_double_quoted_body(

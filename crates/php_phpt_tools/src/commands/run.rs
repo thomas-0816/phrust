@@ -8,8 +8,8 @@ pub(crate) fn run_phpt_manifest<W: Write>(args: &[String], stdout: &mut W) -> Re
             options.target.display()
         ));
     }
-    let paths = read_manifest_paths(&options.manifest)?;
-    if paths.is_empty() {
+    let entries = read_manifest_entries(&options.manifest)?;
+    if entries.is_empty() {
         return Err(format!(
             "{}: manifest contains no paths",
             options.manifest.display()
@@ -24,12 +24,12 @@ pub(crate) fn run_phpt_manifest<W: Write>(args: &[String], stdout: &mut W) -> Re
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     let context = RunContext::new(options)?;
-    let jobs = context.options.jobs.min(paths.len()).max(1);
+    let jobs = context.options.jobs.min(entries.len()).max(1);
     let cached_count = context.cached_results.len();
     writeln!(
         stdout,
         "[info] running {} PHPT tests with {} job(s)",
-        paths.len(),
+        entries.len(),
         jobs
     )
     .map_err(|error| error.to_string())?;
@@ -41,9 +41,9 @@ pub(crate) fn run_phpt_manifest<W: Write>(args: &[String], stdout: &mut W) -> Re
         .map_err(|error| error.to_string())?;
     }
     let results = if jobs == 1 {
-        run_phpt_paths_serial(&context, &paths)
+        run_phpt_paths_serial(&context, &entries)
     } else {
-        run_phpt_paths_parallel(&context, &paths, jobs)
+        run_phpt_paths_parallel(&context, &entries, jobs)
     };
     let reused = results
         .iter()
@@ -121,21 +121,39 @@ pub(crate) fn rerun_manifest<W: Write>(args: &[String], stdout: &mut W) -> Resul
     Ok(0)
 }
 
-fn run_phpt_paths_serial(context: &RunContext, paths: &[String]) -> Vec<PhptRunResult> {
-    paths
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PhptManifestEntry {
+    path: String,
+    allow_xpass: bool,
+}
+
+impl PhptManifestEntry {
+    pub(super) fn path(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            allow_xpass: false,
+        }
+    }
+}
+
+fn run_phpt_paths_serial(
+    context: &RunContext,
+    entries: &[PhptManifestEntry],
+) -> Vec<PhptRunResult> {
+    entries
         .iter()
         .enumerate()
-        .map(|(index, path)| run_one_phpt_result(context, path, index))
+        .map(|(index, entry)| run_one_phpt_result(context, entry, index))
         .collect()
 }
 
 fn run_phpt_paths_parallel(
     context: &RunContext,
-    paths: &[String],
+    entries: &[PhptManifestEntry],
     jobs: usize,
 ) -> Vec<PhptRunResult> {
     let next_index = Mutex::new(0usize);
-    let results = Mutex::new(vec![None; paths.len()]);
+    let results = Mutex::new(vec![None; entries.len()]);
 
     std::thread::scope(|scope| {
         for _ in 0..jobs {
@@ -143,14 +161,14 @@ fn run_phpt_paths_parallel(
                 loop {
                     let index = {
                         let mut next = next_index.lock().expect("PHPT work queue lock poisoned");
-                        if *next >= paths.len() {
+                        if *next >= entries.len() {
                             return;
                         }
                         let index = *next;
                         *next += 1;
                         index
                     };
-                    let result = run_one_phpt_result(context, &paths[index], index);
+                    let result = run_one_phpt_result(context, &entries[index], index);
                     results.lock().expect("PHPT result lock poisoned")[index] = Some(result);
                 }
             });
@@ -165,43 +183,66 @@ fn run_phpt_paths_parallel(
         .collect()
 }
 
-fn run_one_phpt_result(context: &RunContext, manifest_path: &str, index: usize) -> PhptRunResult {
-    match run_one_phpt(context, manifest_path, index) {
+fn run_one_phpt_result(
+    context: &RunContext,
+    manifest_entry: &PhptManifestEntry,
+    index: usize,
+) -> PhptRunResult {
+    match run_one_phpt(context, manifest_entry, index) {
         Ok(result) => result,
-        Err(error) => PhptRunResult::new(manifest_path, "BORK", error),
+        Err(error) => PhptRunResult::new(manifest_entry.path.clone(), "BORK", error),
     }
 }
 
 pub(crate) fn read_manifest_paths(path: &Path) -> Result<Vec<String>, String> {
+    Ok(read_manifest_entries(path)?
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect())
+}
+
+fn read_manifest_entries(path: &Path) -> Result<Vec<PhptManifestEntry>, String> {
     let manifest =
         fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut paths = Vec::new();
+    let mut entries = Vec::new();
     for (index, line) in manifest.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         if trimmed.starts_with('{') {
-            paths.push(extract_json_string(trimmed, "path").map_err(|error| {
+            let path = extract_json_string(trimmed, "path").map_err(|error| {
                 format!(
                     "{}:{}: manifest entry missing path: {error}",
                     path.display(),
                     index + 1
                 )
-            })?);
+            })?;
+            entries.push(PhptManifestEntry {
+                path,
+                allow_xpass: manifest_bool(trimmed, "allow_xpass"),
+            });
         } else {
-            paths.push(trimmed.to_string());
+            entries.push(PhptManifestEntry {
+                path: trimmed.to_string(),
+                allow_xpass: false,
+            });
         }
     }
-    Ok(paths)
+    Ok(entries)
+}
+
+fn manifest_bool(line: &str, key: &str) -> bool {
+    line.contains(&format!("\"{key}\"")) && extract_json_bool(line, key).unwrap_or(false)
 }
 
 pub(super) fn run_one_phpt(
     context: &RunContext,
-    manifest_path: &str,
+    manifest_entry: &PhptManifestEntry,
     index: usize,
 ) -> Result<PhptRunResult, String> {
     let options = &context.options;
+    let manifest_path = &manifest_entry.path;
     let phpt_path = resolve_phpt_path(&options.php_src, manifest_path);
     let (source, source_has_invalid_utf8) = read_phpt_source_lossy_with_invalid_utf8(&phpt_path)?;
     let document = parse_phpt(&source);
@@ -313,7 +354,9 @@ pub(super) fn run_one_phpt(
         &normalize_actual_output(&captured_output(&output, capture_stdio)),
     );
     if matched.matched {
-        if let Some(reason) = xfail {
+        if let Some(reason) = xfail
+            && !manifest_entry.allow_xpass
+        {
             return Ok(PhptRunResult::new(
                 manifest_path,
                 "FAIL",

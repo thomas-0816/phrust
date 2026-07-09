@@ -1,1 +1,17 @@
 {"path":"tests/phpt/generated/readline/noninteractive.phpt","module":"readline","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers extension visibility, READLINE_LIB, nonblocking readline false result, history mutation, history file roundtrip, info mutation, completion callback registration, and callback handler lifecycle"}
+{"path":"ext/readline/tests/bug69054.phpt","module":"readline","kind":"upstream","reason":"covers readline without input stream diagnostics"}
+{"path":"ext/readline/tests/gh16812.phpt","module":"readline","kind":"upstream","reason":"covers readline callback handler install/remove lifecycle regression coverage"}
+{"path":"ext/readline/tests/gh18139.phpt","module":"readline","kind":"upstream","reason":"covers readline noninteractive stdin handling regression coverage"}
+{"path":"ext/readline/tests/readline_add_history_001.phpt","module":"readline","kind":"upstream","reason":"covers readline_add_history() append semantics"}
+{"path":"ext/readline/tests/readline_callback_handler_install_001.phpt","module":"readline","kind":"upstream","reason":"covers callback handler prompt output and valid callback validation"}
+{"path":"ext/readline/tests/readline_callback_handler_remove_001.phpt","module":"readline","kind":"upstream","reason":"covers callback handler removal return values and prompt output"}
+{"path":"ext/readline/tests/readline_clear_history_001.phpt","module":"readline","kind":"upstream","reason":"covers readline_clear_history() request-local history reset"}
+{"path":"ext/readline/tests/readline_completion_function_001.phpt","module":"readline","kind":"upstream","reason":"covers completion callback registration and readline-specific invalid callback TypeError wording"}
+{"path":"ext/readline/tests/readline_info_001.phpt","module":"readline","kind":"upstream","reason":"covers readline_info() default keys, ordering, and value normalization"}
+{"path":"ext/readline/tests/readline_info_002.phpt","module":"readline","kind":"upstream","reason":"covers readline_info() mutation and history file interaction"}
+{"path":"ext/readline/tests/readline_list_history_001.phpt","module":"readline","kind":"upstream","reason":"covers readline_list_history() packed output"}
+{"path":"ext/readline/tests/readline_read_history_001.phpt","module":"readline","kind":"upstream","reason":"covers history file loading"}
+{"path":"ext/readline/tests/readline_read_history_open_basedir_001.phpt","module":"readline","kind":"upstream","reason":"covers readline_read_history() open_basedir restriction warnings"}
+{"path":"ext/readline/tests/readline_without_input.phpt","module":"readline","kind":"upstream","reason":"covers readline() false result without interactive input"}
+{"path":"ext/readline/tests/readline_write_history_001.phpt","module":"readline","kind":"upstream","reason":"covers history file writing"}
+{"path":"ext/readline/tests/readline_write_history_open_basedir_001.phpt","module":"readline","kind":"upstream","reason":"covers readline_write_history() open_basedir restriction warnings"}

@@ -44,12 +44,16 @@
                 cargo-fuzz
                 cargo-semver-checks
                 sonar-scanner-cli
+                file
+                pkg-config
                 python3
               ];
               PHP_REF_SERIES = "8.5";
               PHP_REF_VERSION = "8.5.7";
               PHP_REF_TAG = "php-8.5.7";
               PHP_REF_REPO = "https://github.com/php/php-src.git";
+              PHPRUST_LIBMAGIC_LIB_DIR = "${pkgs.file}/lib";
+              PHPRUST_LIBMAGIC_INCLUDE_DIR = "${pkgs.file.dev}/include";
               RUST_BACKTRACE = "1";
               CARGO_REGISTRIES_CRATES_IO_PROTOCOL = "sparse";
               SCCACHE_CACHE_SIZE = "20G";
@@ -128,6 +132,7 @@
             bzip2
             xz
             libzip
+            file
             pcre2
           ];
 
@@ -147,6 +152,8 @@
             PHP_REF_VERSION = "8.5.7";
             PHP_REF_TAG = "php-8.5.7";
             PHP_REF_REPO = "https://github.com/php/php-src.git";
+            PHPRUST_LIBMAGIC_LIB_DIR = "${pkgs.file}/lib";
+            PHPRUST_LIBMAGIC_INCLUDE_DIR = "${pkgs.file.dev}/include";
             RUST_BACKTRACE = "1";
             RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
             CARGO_INCREMENTAL = "0";

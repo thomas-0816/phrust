@@ -68,6 +68,9 @@ pub(crate) fn emit_request_diagnostic(
     request_id: Option<&str>,
     diagnostic: RequestDiagnostic<'_>,
 ) {
+    if !state.debug {
+        return;
+    }
     let uri = parts.uri.path_and_query().map_or_else(
         || parts.uri.path().to_string(),
         |value| value.as_str().to_string(),
@@ -153,6 +156,22 @@ pub(crate) fn emit_server_debug(
     } else {
         eprint!("{rendered}");
     }
+}
+
+pub(crate) fn emit_server_debug_lazy<F>(
+    state: &AppState,
+    request_id: Option<&str>,
+    code: &str,
+    phase: &str,
+    message: &str,
+    context: F,
+) where
+    F: FnOnce() -> BTreeMap<String, String>,
+{
+    if !state.debug {
+        return;
+    }
+    emit_server_debug(state, request_id, code, phase, message, context());
 }
 
 fn include_roots_for_docroot(docroot: &Path) -> Vec<PathBuf> {

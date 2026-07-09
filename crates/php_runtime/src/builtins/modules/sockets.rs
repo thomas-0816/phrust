@@ -12,6 +12,8 @@ const SOCKET_CLASS: &str = "Socket";
 const SOCKET_ID_PROPERTY: &str = "__phrust_socket_id";
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
+    BuiltinEntry::new("inet_ntop", builtin_inet_ntop, BuiltinCompatibility::Php),
+    BuiltinEntry::new("inet_pton", builtin_inet_pton, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "socket_accept",
         builtin_socket_accept,
@@ -45,6 +47,26 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "socket_getsockname",
         builtin_socket_getsockname,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "socket_getpeername",
+        builtin_socket_getpeername,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "socket_recv",
+        builtin_socket_recv,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "socket_send",
+        builtin_socket_send,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "socket_shutdown",
+        builtin_socket_shutdown,
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
@@ -247,6 +269,65 @@ fn builtin_socket_read(
     }
 }
 
+fn builtin_socket_send(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 4 {
+        return Err(arity_error("socket_send", "four arguments"));
+    }
+    let socket_id = socket_id_arg("socket_send", &args[0])?;
+    let bytes = string_arg("socket_send", &args[1])?.as_bytes().to_vec();
+    let length = usize::try_from(int_arg("socket_send", &args[2])?).map_err(|_| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_VALUE",
+            "socket_send(): length must be non-negative",
+        )
+    })?;
+    let _flags = int_arg("socket_send", &args[3])?;
+    match context
+        .socket_state()
+        .write(socket_id, &bytes[..length.min(bytes.len())])
+    {
+        Ok(written) => Ok(Value::Int(written as i64)),
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn builtin_socket_recv(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 4 {
+        return Err(arity_error("socket_recv", "four arguments"));
+    }
+    let socket_id = socket_id_arg("socket_recv", &args[0])?;
+    let length = usize::try_from(int_arg("socket_recv", &args[2])?).map_err(|_| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_VALUE",
+            "socket_recv(): length must be non-negative",
+        )
+    })?;
+    let _flags = int_arg("socket_recv", &args[3])?;
+    match context.socket_state().read(socket_id, length) {
+        Ok(bytes) => {
+            if let Value::Reference(cell) = &args[1] {
+                cell.set(Value::string(bytes.clone()));
+            }
+            Ok(Value::Int(bytes.len() as i64))
+        }
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
 fn builtin_socket_getsockname(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -267,6 +348,51 @@ fn builtin_socket_getsockname(
         cell.set(Value::Int(i64::from(addr.port())));
     }
     Ok(Value::Bool(true))
+}
+
+fn builtin_socket_getpeername(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(2..=3).contains(&args.len()) {
+        return Err(arity_error("socket_getpeername", "two or three arguments"));
+    }
+    let socket_id = socket_id_arg("socket_getpeername", &args[0])?;
+    let Some(addr) = context.socket_state().peer_addr(socket_id) else {
+        context.socket_state().set_last_error(libc::EINVAL);
+        return Ok(Value::Bool(false));
+    };
+    if let Value::Reference(cell) = &args[1] {
+        cell.set(Value::string(addr.ip().to_string()));
+    }
+    if let Some(Value::Reference(cell)) = args.get(2) {
+        cell.set(Value::Int(i64::from(addr.port())));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn builtin_socket_shutdown(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 2 || args.is_empty() {
+        return Err(arity_error("socket_shutdown", "one or two arguments"));
+    }
+    let socket_id = socket_id_arg("socket_shutdown", &args[0])?;
+    let mode = if let Some(value) = args.get(1) {
+        int_arg("socket_shutdown", value)?
+    } else {
+        2
+    };
+    match context.socket_state().shutdown(socket_id, mode) {
+        Ok(()) => Ok(Value::Bool(true)),
+        Err(errno) => {
+            context.socket_state().set_last_error(errno);
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 fn builtin_socket_close(
@@ -331,6 +457,50 @@ fn builtin_socket_strerror(
     Ok(Value::string(
         io::Error::from_raw_os_error(code).to_string(),
     ))
+}
+
+fn builtin_inet_pton(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("inet_pton", "one argument"));
+    }
+    let address = string_arg("inet_pton", &args[0])?;
+    let Ok(address) = std::str::from_utf8(address.as_bytes()) else {
+        return Ok(Value::Bool(false));
+    };
+    match address.parse::<std::net::IpAddr>() {
+        Ok(addr) => Ok(Value::string(match addr {
+            std::net::IpAddr::V4(addr) => addr.octets().to_vec(),
+            std::net::IpAddr::V6(addr) => addr.octets().to_vec(),
+        })),
+        Err(_) => Ok(Value::Bool(false)),
+    }
+}
+
+fn builtin_inet_ntop(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("inet_ntop", "one argument"));
+    }
+    let packed = string_arg("inet_ntop", &args[0])?;
+    let packed = packed.as_bytes();
+    match packed.len() {
+        4 => Ok(Value::string(
+            std::net::Ipv4Addr::new(packed[0], packed[1], packed[2], packed[3]).to_string(),
+        )),
+        16 => {
+            let mut octets = [0; 16];
+            octets.copy_from_slice(packed);
+            Ok(Value::string(std::net::Ipv6Addr::from(octets).to_string()))
+        }
+        _ => Ok(Value::Bool(false)),
+    }
 }
 
 fn socket_id_arg(name: &str, value: &Value) -> Result<i64, BuiltinError> {

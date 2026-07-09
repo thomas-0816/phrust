@@ -3,6 +3,12 @@ mbstring: bounded UTF-8 MVP platform checks
 --DESCRIPTION--
 Focused mbstring platform coverage. Reference output captured from
 PHP 8.5.7 php-src with --enable-mbstring --disable-mbregex.
+--SKIPIF--
+<?php
+if (!extension_loaded("mbstring")) {
+    die("skip mbstring extension not loaded\n");
+}
+?>
 --FILE--
 <?php
 var_dump(extension_loaded("mbstring"));

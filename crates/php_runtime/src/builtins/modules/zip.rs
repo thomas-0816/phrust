@@ -1,8 +1,11 @@
 //! Legacy zip resource helpers over the Rust zip reader.
 
-use super::core::{arity_error, int_arg, resolve_runtime_path, resource_arg, string_arg};
+use super::core::{
+    argument_value_error, arity_error, int_arg, resolve_runtime_path, resource_arg, string_arg,
+};
 use crate::builtins::{
-    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
+    RuntimeSourceSpan,
 };
 use crate::{ResourceRef, StreamFlags, StreamMetadata, Value};
 use std::fs;
@@ -53,10 +56,18 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
 fn builtin_zip_open(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(context, "zip_open", Some("ZipArchive::open"), span);
     expect_zip_arity("zip_open", args.len(), 1, 1)?;
     let path_arg = string_arg("zip_open", &args[0])?.to_string_lossy();
+    if path_arg.is_empty() {
+        return Err(argument_value_error(
+            "zip_open",
+            "#1 ($filename)",
+            "must not be empty",
+        ));
+    }
     let path = resolve_runtime_path(context, &path_arg);
     if !context.filesystem_capabilities().allows_path(&path) || zip_open_archive(&path).is_err() {
         return Ok(Value::Bool(false));
@@ -71,24 +82,28 @@ fn builtin_zip_open(
 }
 
 fn builtin_zip_close(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(context, "zip_close", Some("ZipArchive::close"), span);
     expect_zip_arity("zip_close", args.len(), 1, 1)?;
-    if let Some(resource) = resource_arg(&args[0])
-        && is_zip_archive_resource(&resource)
-    {
-        resource.close();
+    let Some(resource) = resource_arg(&args[0]) else {
+        return Err(zip_directory_resource_type_error("zip_close"));
+    };
+    if !is_open_zip_archive_resource(&resource) {
+        return Err(zip_directory_resource_type_error("zip_close"));
     }
+    resource.close();
     Ok(Value::Null)
 }
 
 fn builtin_zip_read(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(context, "zip_read", Some("ZipArchive::statIndex"), span);
     expect_zip_arity("zip_read", args.len(), 1, 1)?;
     let Some(resource) = resource_arg(&args[0]) else {
         return Ok(Value::Bool(false));
@@ -129,10 +144,11 @@ fn builtin_zip_read(
 }
 
 fn builtin_zip_entry_open(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(context, "zip_entry_open", None, span);
     if args.len() < 2 || args.len() > 3 {
         return Err(arity_error("zip_entry_open", "two or three argument(s)"));
     }
@@ -142,25 +158,32 @@ fn builtin_zip_entry_open(
 }
 
 fn builtin_zip_entry_close(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(context, "zip_entry_close", None, span);
     expect_zip_arity("zip_entry_close", args.len(), 1, 1)?;
     let Some(resource) = resource_arg(&args[0]) else {
-        return Ok(Value::Bool(false));
+        return Err(zip_entry_resource_type_error("zip_entry_close"));
     };
-    if zip_entry_meta(&resource).is_none() {
-        return Ok(Value::Bool(false));
+    if !resource.is_open() || zip_entry_meta(&resource).is_none() {
+        return Err(zip_entry_resource_type_error("zip_entry_close"));
     }
     Ok(Value::Bool(resource.close()))
 }
 
 fn builtin_zip_entry_read(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(
+        context,
+        "zip_entry_read",
+        Some("ZipArchive::getFromIndex"),
+        span,
+    );
     if args.is_empty() || args.len() > 2 {
         return Err(arity_error("zip_entry_read", "one or two argument(s)"));
     }
@@ -182,10 +205,16 @@ fn builtin_zip_entry_read(
 }
 
 fn builtin_zip_entry_name(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(
+        context,
+        "zip_entry_name",
+        Some("ZipArchive::statIndex"),
+        span,
+    );
     expect_zip_arity("zip_entry_name", args.len(), 1, 1)?;
     Ok(zip_entry_meta_value(&args[0], |entry| {
         Value::string(entry.name.into_bytes())
@@ -193,10 +222,16 @@ fn builtin_zip_entry_name(
 }
 
 fn builtin_zip_entry_filesize(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(
+        context,
+        "zip_entry_filesize",
+        Some("ZipArchive::statIndex"),
+        span,
+    );
     expect_zip_arity("zip_entry_filesize", args.len(), 1, 1)?;
     Ok(zip_entry_snapshot_value(&args[0], |entry| {
         Value::Int(entry.size as i64)
@@ -204,10 +239,16 @@ fn builtin_zip_entry_filesize(
 }
 
 fn builtin_zip_entry_compressedsize(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(
+        context,
+        "zip_entry_compressedsize",
+        Some("ZipArchive::statIndex"),
+        span,
+    );
     expect_zip_arity("zip_entry_compressedsize", args.len(), 1, 1)?;
     Ok(zip_entry_snapshot_value(&args[0], |entry| {
         Value::Int(entry.compressed_size as i64)
@@ -215,10 +256,16 @@ fn builtin_zip_entry_compressedsize(
 }
 
 fn builtin_zip_entry_compressionmethod(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
+    emit_zip_deprecation(
+        context,
+        "zip_entry_compressionmethod",
+        Some("ZipArchive::statIndex"),
+        span,
+    );
     expect_zip_arity("zip_entry_compressionmethod", args.len(), 1, 1)?;
     Ok(zip_entry_snapshot_value(&args[0], |entry| {
         Value::string(entry.compression_method)
@@ -248,6 +295,39 @@ fn zip_entry_snapshot_value(value: &Value, f: impl FnOnce(ZipEntrySnapshot) -> V
 
 fn is_zip_archive_resource(resource: &ResourceRef) -> bool {
     zip_archive_path(resource).is_some()
+}
+
+fn is_open_zip_archive_resource(resource: &ResourceRef) -> bool {
+    resource.is_open() && is_zip_archive_resource(resource)
+}
+
+fn zip_directory_resource_type_error(function: &str) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_BUILTIN_TYPE",
+        format!("{function}(): supplied resource is not a valid Zip Directory resource"),
+    )
+}
+
+fn zip_entry_resource_type_error(function: &str) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_BUILTIN_TYPE",
+        format!("{function}(): supplied resource is not a valid Zip Entry resource"),
+    )
+}
+
+fn emit_zip_deprecation(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    replacement: Option<&str>,
+    span: RuntimeSourceSpan,
+) {
+    let message = match replacement {
+        Some(replacement) => {
+            format!("Function {function}() is deprecated since 8.0, use {replacement}() instead")
+        }
+        None => format!("Function {function}() is deprecated since 8.0"),
+    };
+    context.php_deprecation("E_PHP_RUNTIME_ZIP_FUNCTION_DEPRECATED", message, span);
 }
 
 fn zip_archive_path(resource: &ResourceRef) -> Option<String> {

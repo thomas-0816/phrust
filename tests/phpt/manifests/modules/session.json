@@ -4,14 +4,14 @@
   "priority":"data-platform classification",
   "selected_manifest":"tests/phpt/manifests/modules/session.selected.jsonl",
   "corpus_count":260,
-  "selected_count":7,
-  "pass_count":7,
-  "skip_count":0,
+  "selected_count":93,
+  "pass_count":92,
+  "skip_count":1,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":253,
-  "scope":["extension_loaded(\"session\")","session function platform probes","session cache/module/name/save-path basics","request-local PHPSESSID reuse in the in-process web runtime"],
-  "non_scope":["full web SAPI lifecycle","session handler classes/interfaces","custom session handlers","persistent storage"],
+  "known_failure_count":167,
+  "scope":["extension_loaded(\"session\")","session function platform probes","session cache/module/name/save-path basics","files handler missing-save-path startup/read failure warnings with inactive-session preservation","session save-path open_basedir warning behavior","session module-name handler validation, reserved user-handler rejection, and active-session mutation warnings","session.auto_start startup INI request activation and active-session notice text","session status active/none transitions","session destroy inactive-session warnings and post-destroy live $_SESSION behavior","session write-close/session-commit active/inactive return values","session_abort and session_reset committed-data snapshot behavior","session_unset active/inactive live $_SESSION behavior","session_gc active/inactive return and warning behavior","session.gc_probability option validation during session_start","session_start option shape/type validation, unsupported-option warnings, active-session notices, pre-start $_SESSION reset, restart lifecycle, and read_and_close lifecycle behavior","session name INI validation and mutation","session_create_id prefix validation, null-byte errors, generated IDs, and strict-mode start interaction","session id get/set, active-session warnings, null-byte handling, generation, regeneration, and sid length INI mutation","session runtime INI defaults, ini_set readback, boolean normalization, active-session mutation warnings, and invalid serializer handler rejection","session cache expire/limiter INI mutation and active-session warnings","session cookie parameter INI readback, including basic upstream cookie parameter shape","scalar and array session_set_cookie_params INI mutation","session cookie boolean INI normalization","active-session and invalid cookie parameter warnings","session_encode/session_decode php, php_binary, and php_serialize selected serializer behavior, including upstream basic encode/decode coverage, decode error handling, serialize_precision-aware float payloads, and shared top-level plus recursive session R:n reference records","unknown session serializer startup failure warnings","inactive and closed session_encode/session_decode warning behavior","request-local PHPSESSID reuse in the in-process web runtime"],
+  "non_scope":["full web SAPI lifecycle","session handler classes/interfaces","custom session handlers","persistent storage and file cleanup","broader serialized references and complete object serialization in session payloads"],
   "target_gates":["nix develop -c just phpt-dev-module MODULE=session","nix develop -c just verify-phpt"],
-  "next_step":"Keep deterministic request-local sessions green while adding persistent handlers and INI policy in a later session module slice."
+  "next_step":"Keep deterministic request-local sessions green while adding persistent handlers, complete reference/object serializer semantics, secure server-mode generated ID policy, and broader cookie/header side effects in later session module slices."
 }

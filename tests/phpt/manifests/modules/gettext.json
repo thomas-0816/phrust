@@ -1,27 +1,30 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "gettext",
-  "priority": "gettext fallback and binding MVP",
+  "priority": "gettext fallback, binding, and deterministic MO catalogs",
   "selected_manifest": "tests/phpt/manifests/modules/gettext.selected.jsonl",
   "corpus_count": 19,
-  "selected_count": 1,
-  "pass_count": 1,
+  "selected_count": 9,
+  "pass_count": 9,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
-  "known_failure_count": 0,
+  "known_failure_count": 10,
   "scope": [
     "ext/gettext function and reflection surface",
     "Untranslated fallback behavior",
     "Request-local textdomain, bindtextdomain, and codeset state",
-    "Plural fallback selection and LC_ALL category guard"
+    "Plural fallback selection and LC_ALL category guard",
+    "Deterministic MO catalog lookup for LC_MESSAGES and LC_CTYPE",
+    "Bounded GNU MO parsing with English-style plural metadata",
+    "Upstream path, empty-domain, codeset return-value, dcngettext, LC_ALL, overlong-string, and null-byte domain diagnostics"
   ],
   "non_scope": [
-    "MO catalog parsing",
-    "Locale search paths",
-    "Plural-form expression evaluation",
+    "Host locale activation through setlocale() beyond C/POSIX",
+    "Full GNU plural-form expression evaluation",
+    "Codeset conversion",
     "Native libintl binding"
   ],
   "target_gates": ["just phpt-dev-module MODULE=gettext"],
-  "next_step": "Add an MO parser or libintl-backed implementation with catalog fixtures and promote upstream ext/gettext PHPTs that exercise real locale data."
+  "next_step": "Broaden setlocale()/locale state support before promoting the remaining host-locale upstream gettext PHPTs."
 }

@@ -1,16 +1,21 @@
 //! Runtime services passed to internal builtins.
 
 use crate::{
-    FilesystemCapabilities, IniRegistry, MysqlState, OutputBuffer, PHP_E_DEPRECATED, PHP_E_WARNING,
-    PcreCache, PhpArray, PhpDiagnosticChannel, PhpDiagnosticDisplayOptions, PostgresState,
-    ReferenceCell, ResourceTable, RuntimeDiagnostic, RuntimeHttpResponseState, RuntimeSeverity,
-    SessionLoadCallback, SessionState, UploadRegistry, Value, datetime, emit_php_diagnostic, pcre,
+    FilesystemCapabilities, IniRegistry, MysqlState, OutputBuffer, PHP_E_DEPRECATED, PHP_E_NOTICE,
+    PHP_E_WARNING, PcreCache, PhpArray, PhpDiagnosticChannel, PhpDiagnosticDisplayOptions,
+    PostgresState, ReferenceCell, ResourceTable, RuntimeDiagnostic, RuntimeHttpResponseState,
+    RuntimeSeverity, SessionLoadCallback, SessionState, UploadRegistry, Value, datetime,
+    emit_php_diagnostic, pcre,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+
+/// SysV message queue would-block errno used by the deterministic backend.
+pub const SYSVMSG_EAGAIN: i64 = libc::EAGAIN as i64;
+pub const SYSVMSG_EINVAL: i64 = libc::EINVAL as i64;
 
 /// Request-local state for the CLI-only `pcntl` extension.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -19,6 +24,7 @@ pub struct PcntlState {
     async_signals: bool,
     signal_handlers: BTreeMap<i64, Value>,
     fork_child: bool,
+    fork_observed: bool,
 }
 
 impl PcntlState {
@@ -60,12 +66,19 @@ impl PcntlState {
     /// Marks whether this request is executing in the child side of `pcntl_fork`.
     pub fn set_fork_child(&mut self, fork_child: bool) {
         self.fork_child = fork_child;
+        self.fork_observed = true;
     }
 
     /// Returns whether this request is executing in the child side of `pcntl_fork`.
     #[must_use]
     pub const fn is_fork_child(&self) -> bool {
         self.fork_child
+    }
+
+    /// Returns whether this request has passed through `pcntl_fork`.
+    #[must_use]
+    pub const fn has_forked(&self) -> bool {
+        self.fork_observed
     }
 }
 
@@ -1174,6 +1187,36 @@ impl SocketState {
         }
     }
 
+    /// Returns the peer address for a connected stream socket.
+    #[must_use]
+    pub fn peer_addr(&self, id: i64) -> Option<SocketAddr> {
+        match self.sockets.get(&id)? {
+            SocketEntry::Stream(stream) => stream.peer_addr().ok(),
+            SocketEntry::Created { .. } | SocketEntry::Listener(_) | SocketEntry::Closed => None,
+        }
+    }
+
+    /// Shuts down one or both halves of a stream socket.
+    pub fn shutdown(&mut self, id: i64, mode: i64) -> Result<(), i32> {
+        let shutdown = match mode {
+            0 => Shutdown::Read,
+            1 => Shutdown::Write,
+            2 => Shutdown::Both,
+            _ => return Err(libc::EINVAL),
+        };
+        match self.sockets.get_mut(&id) {
+            Some(SocketEntry::Stream(stream)) => match stream.shutdown(shutdown) {
+                Ok(()) => {
+                    self.last_error = 0;
+                    Ok(())
+                }
+                Err(error) => Err(raw_errno(error)),
+            },
+            Some(_) => Err(libc::EINVAL),
+            None => Err(libc::EBADF),
+        }
+    }
+
     /// Closes a socket ID.
     pub fn close(&mut self, id: i64) -> Result<(), i32> {
         match self.sockets.get_mut(&id) {
@@ -1353,6 +1396,7 @@ pub(in crate::builtins) const JSON_ERROR_INF_OR_NAN: i64 = 7;
 pub(in crate::builtins) const JSON_ERROR_UNSUPPORTED_TYPE: i64 = 8;
 pub(in crate::builtins) const JSON_ERROR_INVALID_PROPERTY_NAME: i64 = 9;
 pub(in crate::builtins) const JSON_ERROR_UTF16: i64 = 10;
+pub(in crate::builtins) const JSON_ERROR_NON_BACKED_ENUM: i64 = 11;
 pub(in crate::builtins) const JSON_OBJECT_AS_ARRAY: i64 = 1;
 pub(in crate::builtins) const JSON_BIGINT_AS_STRING: i64 = 2;
 pub(in crate::builtins) const JSON_HEX_TAG: i64 = 1;
@@ -1438,7 +1482,7 @@ pub struct SoapState {
 impl Default for SoapState {
     fn default() -> Self {
         Self {
-            error_handler_enabled: true,
+            error_handler_enabled: false,
         }
     }
 }
@@ -1671,7 +1715,16 @@ impl Default for ReadlineState {
         info.insert("line_buffer".to_owned(), Value::string(""));
         info.insert("point".to_owned(), Value::Int(0));
         info.insert("end".to_owned(), Value::Int(0));
-        info.insert("readline_name".to_owned(), Value::string("phrust"));
+        info.insert("mark".to_owned(), Value::Int(0));
+        info.insert("done".to_owned(), Value::Int(0));
+        info.insert("pending_input".to_owned(), Value::Int(0));
+        info.insert("prompt".to_owned(), Value::string(""));
+        info.insert("terminal_name".to_owned(), Value::string(""));
+        info.insert("completion_append_character".to_owned(), Value::string(" "));
+        info.insert("completion_suppress_append".to_owned(), Value::Bool(false));
+        info.insert("library_version".to_owned(), Value::string("8.2"));
+        info.insert("readline_name".to_owned(), Value::string("other"));
+        info.insert("attempted_completion_over".to_owned(), Value::Int(0));
         Self {
             history: Vec::new(),
             info,
@@ -1749,6 +1802,7 @@ pub struct SysvMessageQueueState {
     next_id: i64,
     queues: BTreeMap<i64, SysvMessageQueue>,
     keyed_queues: BTreeMap<i64, i64>,
+    object_queues: BTreeMap<u64, i64>,
 }
 
 impl Default for SysvMessageQueueState {
@@ -1757,6 +1811,7 @@ impl Default for SysvMessageQueueState {
             next_id: 1,
             queues: BTreeMap::new(),
             keyed_queues: BTreeMap::new(),
+            object_queues: BTreeMap::new(),
         }
     }
 }
@@ -1766,6 +1821,8 @@ impl Default for SysvMessageQueueState {
 pub struct SysvMessageQueue {
     key: i64,
     permissions: i64,
+    owner_uid: i64,
+    owner_gid: i64,
     messages: Vec<SysvMessage>,
     removed: bool,
     max_bytes: i64,
@@ -1776,6 +1833,8 @@ impl SysvMessageQueue {
         Self {
             key,
             permissions,
+            owner_uid: current_uid(),
+            owner_gid: current_gid(),
             messages: Vec::new(),
             removed: false,
             max_bytes: 16_384,
@@ -1797,6 +1856,28 @@ impl SysvMessageQueue {
     /// Updates queue permissions.
     pub fn set_permissions(&mut self, permissions: i64) {
         self.permissions = permissions;
+    }
+
+    /// Owner UID metadata.
+    #[must_use]
+    pub const fn owner_uid(&self) -> i64 {
+        self.owner_uid
+    }
+
+    /// Updates owner UID metadata.
+    pub fn set_owner_uid(&mut self, owner_uid: i64) {
+        self.owner_uid = owner_uid;
+    }
+
+    /// Owner GID metadata.
+    #[must_use]
+    pub const fn owner_gid(&self) -> i64 {
+        self.owner_gid
+    }
+
+    /// Updates owner GID metadata.
+    pub fn set_owner_gid(&mut self, owner_gid: i64) {
+        self.owner_gid = owner_gid;
     }
 
     /// Current pending message count.
@@ -1881,6 +1962,17 @@ impl SysvMessageQueueState {
         id
     }
 
+    /// Binds a PHP-visible queue object handle to its request-local queue id.
+    pub fn bind_object(&mut self, object_id: u64, queue_id: i64) {
+        self.object_queues.insert(object_id, queue_id);
+    }
+
+    /// Looks up the request-local queue id for a PHP-visible queue object.
+    #[must_use]
+    pub fn queue_id_for_object(&self, object_id: u64) -> Option<i64> {
+        self.object_queues.get(&object_id).copied()
+    }
+
     /// Returns whether a live queue exists for the key.
     #[must_use]
     pub fn queue_exists(&self, key: i64) -> bool {
@@ -1923,6 +2015,17 @@ impl SysvMessageQueueState {
         true
     }
 
+    /// Enqueues serialized payload bytes while keeping queue internals private.
+    pub fn send_payload(
+        &mut self,
+        id: i64,
+        message_type: i64,
+        payload: Vec<u8>,
+        serialized: bool,
+    ) -> bool {
+        self.send(id, SysvMessage::new(message_type, payload, serialized))
+    }
+
     /// Receives and removes one matching message.
     pub fn receive(&mut self, id: i64, desired_type: i64, except: bool) -> Option<SysvMessage> {
         let queue = self.queue_mut(id)?;
@@ -1942,8 +2045,28 @@ impl SysvMessageQueueState {
     }
 }
 
-/// Request-local deterministic backend for System V semaphores.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(unix)]
+fn current_uid() -> i64 {
+    unsafe { libc::getuid() as i64 }
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> i64 {
+    0
+}
+
+#[cfg(unix)]
+fn current_gid() -> i64 {
+    unsafe { libc::getgid() as i64 }
+}
+
+#[cfg(not(unix))]
+fn current_gid() -> i64 {
+    0
+}
+
+/// System V semaphore backend with a deterministic fallback on non-Unix hosts.
+#[derive(Debug, Eq, PartialEq)]
 pub struct SysvSemaphoreState {
     next_id: i64,
     semaphores: BTreeMap<i64, SysvSemaphore>,
@@ -1960,10 +2083,12 @@ impl Default for SysvSemaphoreState {
     }
 }
 
-/// Request-local semaphore metadata.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// System V semaphore metadata.
+#[derive(Debug, Eq, PartialEq)]
 pub struct SysvSemaphore {
     key: i64,
+    #[cfg(unix)]
+    semid: libc::c_int,
     max_acquire: i64,
     acquired: i64,
     removed: bool,
@@ -1971,6 +2096,19 @@ pub struct SysvSemaphore {
 }
 
 impl SysvSemaphore {
+    #[cfg(unix)]
+    fn new(key: i64, semid: libc::c_int, max_acquire: i64, auto_release: bool) -> Self {
+        Self {
+            key,
+            semid,
+            max_acquire: max_acquire.max(1),
+            acquired: 0,
+            removed: false,
+            auto_release,
+        }
+    }
+
+    #[cfg(not(unix))]
     fn new(key: i64, max_acquire: i64, auto_release: bool) -> Self {
         Self {
             key,
@@ -1982,20 +2120,37 @@ impl SysvSemaphore {
     }
 }
 
+/// SysV semaphore operation result that maps to PHP warnings/false returns.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SysvSemaphoreError {
+    Warning(String),
+    WouldBlock,
+}
+
 impl SysvSemaphoreState {
-    /// Opens or creates a request-local semaphore for a key.
-    pub fn get(&mut self, key: i64, max_acquire: i64, auto_release: bool) -> i64 {
+    /// Opens or creates a semaphore for a key.
+    pub fn get(
+        &mut self,
+        key: i64,
+        max_acquire: i64,
+        permissions: i64,
+        auto_release: bool,
+    ) -> Result<i64, SysvSemaphoreError> {
         if let Some(id) = self.keyed_semaphores.get(&key).copied()
-            && self.semaphore(id).is_some()
+            && self.semaphore(id).is_some_and(SysvSemaphore::exists)
         {
-            return id;
+            return Ok(id);
         }
+        #[cfg(unix)]
+        let semaphore = SysvSemaphore::open(key, max_acquire, permissions, auto_release)?;
+        #[cfg(not(unix))]
+        let semaphore = SysvSemaphore::new(key, max_acquire, auto_release);
+
         let id = self.next_id;
         self.next_id += 1;
-        self.semaphores
-            .insert(id, SysvSemaphore::new(key, max_acquire, auto_release));
+        self.semaphores.insert(id, semaphore);
         self.keyed_semaphores.insert(key, id);
-        id
+        Ok(id)
     }
 
     /// Returns a live semaphore.
@@ -2007,49 +2162,286 @@ impl SysvSemaphoreState {
     }
 
     /// Attempts to acquire a semaphore.
-    pub fn acquire(&mut self, id: i64) -> bool {
+    pub fn acquire(&mut self, id: i64, non_blocking: bool) -> Result<bool, SysvSemaphoreError> {
         let Some(semaphore) = self
             .semaphores
             .get_mut(&id)
             .filter(|semaphore| !semaphore.removed)
         else {
-            return false;
+            return Ok(false);
         };
-        if semaphore.acquired >= semaphore.max_acquire {
-            return false;
+        #[cfg(unix)]
+        {
+            return semaphore.acquire(non_blocking);
         }
-        semaphore.acquired += 1;
-        true
+        #[cfg(not(unix))]
+        {
+            let _ = non_blocking;
+            if semaphore.acquired >= semaphore.max_acquire {
+                return Ok(false);
+            }
+            semaphore.acquired += 1;
+            Ok(true)
+        }
     }
 
     /// Releases one semaphore acquisition.
-    pub fn release(&mut self, id: i64) -> bool {
+    pub fn release(&mut self, id: i64) -> Result<bool, SysvSemaphoreError> {
         let Some(semaphore) = self
             .semaphores
             .get_mut(&id)
             .filter(|semaphore| !semaphore.removed)
         else {
-            return false;
+            return Ok(false);
         };
-        if semaphore.acquired <= 0 {
-            return false;
+        #[cfg(unix)]
+        {
+            return semaphore.release();
         }
-        semaphore.acquired -= 1;
-        true
+        #[cfg(not(unix))]
+        {
+            if semaphore.acquired <= 0 {
+                return Err(SysvSemaphoreError::Warning(format!(
+                    "SysV semaphore for key 0x{:x} is not currently acquired",
+                    semaphore.key
+                )));
+            }
+            semaphore.acquired -= 1;
+            Ok(true)
+        }
     }
 
     /// Removes a semaphore.
-    pub fn remove(&mut self, id: i64) -> bool {
+    pub fn remove(&mut self, id: i64) -> Result<bool, SysvSemaphoreError> {
         let Some(semaphore) = self.semaphores.get_mut(&id) else {
-            return false;
+            return Ok(false);
         };
         if semaphore.removed {
-            return false;
+            return Ok(false);
         }
+        #[cfg(unix)]
+        semaphore.remove()?;
         semaphore.removed = true;
         self.keyed_semaphores.remove(&semaphore.key);
-        true
+        Ok(true)
     }
+}
+
+impl SysvSemaphore {
+    #[must_use]
+    fn exists(&self) -> bool {
+        #[cfg(unix)]
+        {
+            if self.removed {
+                return false;
+            }
+            return sysvsem_ipc_stat(self.semid).is_ok();
+        }
+        #[cfg(not(unix))]
+        {
+            !self.removed
+        }
+    }
+
+    #[cfg(unix)]
+    fn open(
+        key: i64,
+        max_acquire: i64,
+        permissions: i64,
+        auto_release: bool,
+    ) -> Result<Self, SysvSemaphoreError> {
+        const SYSVSEM_SEM: libc::c_ushort = 0;
+        const SYSVSEM_USAGE: libc::c_ushort = 1;
+        const SYSVSEM_SETVAL: libc::c_ushort = 2;
+
+        let flags = (permissions as libc::c_int) | libc::IPC_CREAT;
+        let semid = unsafe { libc::semget(key as libc::key_t, 3, flags) };
+        if semid == -1 {
+            return Err(SysvSemaphoreError::Warning(format!(
+                "Failed for key 0x{key:x}: {}",
+                sysvsem_errno_message(sysvsem_errno())
+            )));
+        }
+
+        let mut lock_ops = [
+            sysvsem_op(SYSVSEM_SETVAL, 0, 0),
+            sysvsem_op(SYSVSEM_SETVAL, 1, libc::SEM_UNDO),
+            sysvsem_op(SYSVSEM_USAGE, 1, libc::SEM_UNDO),
+        ];
+        if let Err(error) = sysvsem_semop_retry(semid, &mut lock_ops) {
+            return Err(SysvSemaphoreError::Warning(format!(
+                "Failed acquiring SYSVSEM_SETVAL for key 0x{key:x}: {}",
+                sysvsem_errno_message(error)
+            )));
+        }
+
+        let usage = sysvsem_semctl_getval(semid, SYSVSEM_USAGE).map_err(|error| {
+            SysvSemaphoreError::Warning(format!(
+                "Failed for key 0x{key:x}: {}",
+                sysvsem_errno_message(error)
+            ))
+        })?;
+
+        if usage == 1 {
+            sysvsem_semctl_setval(semid, SYSVSEM_SEM, max_acquire.max(1) as libc::c_int).map_err(
+                |error| {
+                    SysvSemaphoreError::Warning(format!(
+                        "Failed for key 0x{key:x}: {}",
+                        sysvsem_errno_message(error)
+                    ))
+                },
+            )?;
+        }
+
+        let mut unlock_ops = [sysvsem_op(SYSVSEM_SETVAL, -1, libc::SEM_UNDO)];
+        if let Err(error) = sysvsem_semop_retry(semid, &mut unlock_ops) {
+            return Err(SysvSemaphoreError::Warning(format!(
+                "Failed releasing SYSVSEM_SETVAL for key 0x{key:x}: {}",
+                sysvsem_errno_message(error)
+            )));
+        }
+
+        Ok(Self::new(key, semid, max_acquire, auto_release))
+    }
+
+    #[cfg(unix)]
+    fn acquire(&mut self, non_blocking: bool) -> Result<bool, SysvSemaphoreError> {
+        const SYSVSEM_SEM: libc::c_ushort = 0;
+        let flags = libc::SEM_UNDO | if non_blocking { libc::IPC_NOWAIT } else { 0 };
+        let mut ops = [sysvsem_op(SYSVSEM_SEM, -1, flags)];
+        match sysvsem_semop_retry(self.semid, &mut ops) {
+            Ok(()) => {
+                self.acquired += 1;
+                Ok(true)
+            }
+            Err(error) if error == libc::EAGAIN => Err(SysvSemaphoreError::WouldBlock),
+            Err(error) => Err(SysvSemaphoreError::Warning(format!(
+                "Failed to acquire key 0x{:x}: {}",
+                self.key,
+                sysvsem_errno_message(error)
+            ))),
+        }
+    }
+
+    #[cfg(unix)]
+    fn release(&mut self) -> Result<bool, SysvSemaphoreError> {
+        const SYSVSEM_SEM: libc::c_ushort = 0;
+        if self.acquired <= 0 {
+            return Err(SysvSemaphoreError::Warning(format!(
+                "SysV semaphore for key 0x{:x} is not currently acquired",
+                self.key
+            )));
+        }
+        let mut ops = [sysvsem_op(SYSVSEM_SEM, 1, libc::SEM_UNDO)];
+        match sysvsem_semop_retry(self.semid, &mut ops) {
+            Ok(()) => {
+                self.acquired -= 1;
+                Ok(true)
+            }
+            Err(error) => Err(SysvSemaphoreError::Warning(format!(
+                "Failed to release key 0x{:x}: {}",
+                self.key,
+                sysvsem_errno_message(error)
+            ))),
+        }
+    }
+
+    #[cfg(unix)]
+    fn remove(&mut self) -> Result<(), SysvSemaphoreError> {
+        if let Err(error) = sysvsem_ipc_stat(self.semid) {
+            return Err(SysvSemaphoreError::Warning(format!(
+                "SysV semaphore for key 0x{:x} does not (any longer) exist: {}",
+                self.key,
+                sysvsem_errno_message(error)
+            )));
+        }
+        if unsafe { libc::semctl(self.semid, 0, libc::IPC_RMID, 0) } == -1 {
+            return Err(SysvSemaphoreError::Warning(format!(
+                "Failed for SysV semaphore for key 0x{:x}: {}",
+                self.key,
+                sysvsem_errno_message(sysvsem_errno())
+            )));
+        }
+        self.acquired = -1;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn sysvsem_op(
+    sem_num: libc::c_ushort,
+    sem_op: libc::c_short,
+    sem_flg: libc::c_int,
+) -> libc::sembuf {
+    libc::sembuf {
+        sem_num,
+        sem_op,
+        sem_flg: sem_flg as libc::c_short,
+    }
+}
+
+#[cfg(unix)]
+fn sysvsem_semop_retry(semid: libc::c_int, ops: &mut [libc::sembuf]) -> Result<(), libc::c_int> {
+    loop {
+        let result = unsafe { libc::semop(semid, ops.as_mut_ptr(), ops.len()) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = sysvsem_errno();
+        if error != libc::EINTR {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn sysvsem_semctl_getval(
+    semid: libc::c_int,
+    sem_num: libc::c_ushort,
+) -> Result<libc::c_int, libc::c_int> {
+    let value = unsafe { libc::semctl(semid, sem_num as libc::c_int, libc::GETVAL) };
+    if value == -1 {
+        Err(sysvsem_errno())
+    } else {
+        Ok(value)
+    }
+}
+
+#[cfg(unix)]
+fn sysvsem_semctl_setval(
+    semid: libc::c_int,
+    sem_num: libc::c_ushort,
+    value: libc::c_int,
+) -> Result<(), libc::c_int> {
+    let result = unsafe { libc::semctl(semid, sem_num as libc::c_int, libc::SETVAL, value) };
+    if result == -1 {
+        Err(sysvsem_errno())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn sysvsem_ipc_stat(semid: libc::c_int) -> Result<(), libc::c_int> {
+    let mut stat = std::mem::MaybeUninit::<libc::semid_ds>::zeroed();
+    let result = unsafe { libc::semctl(semid, 0, libc::IPC_STAT, stat.as_mut_ptr()) };
+    if result == -1 {
+        Err(sysvsem_errno())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn sysvsem_errno() -> libc::c_int {
+    std::io::Error::last_os_error()
+        .raw_os_error()
+        .unwrap_or(libc::EINVAL)
+}
+
+#[cfg(unix)]
+fn sysvsem_errno_message(error: libc::c_int) -> String {
+    std::io::Error::from_raw_os_error(error).to_string()
 }
 
 /// Request-local deterministic backend for System V shared variables.
@@ -2058,6 +2450,8 @@ pub struct SysvSharedMemoryState {
     next_id: i64,
     segments: BTreeMap<i64, SysvSharedMemorySegment>,
     keyed_segments: BTreeMap<i64, i64>,
+    object_segments: BTreeMap<u64, i64>,
+    destroyed_objects: BTreeSet<u64>,
 }
 
 impl Default for SysvSharedMemoryState {
@@ -2066,6 +2460,8 @@ impl Default for SysvSharedMemoryState {
             next_id: 1,
             segments: BTreeMap::new(),
             keyed_segments: BTreeMap::new(),
+            object_segments: BTreeMap::new(),
+            destroyed_objects: BTreeSet::new(),
         }
     }
 }
@@ -2077,6 +2473,7 @@ pub struct SysvSharedMemorySegment {
     size: i64,
     permissions: i64,
     values: BTreeMap<i64, Value>,
+    value_sizes: BTreeMap<i64, usize>,
     removed: bool,
 }
 
@@ -2087,12 +2484,42 @@ impl SysvSharedMemorySegment {
             size: size.max(0),
             permissions,
             values: BTreeMap::new(),
+            value_sizes: BTreeMap::new(),
             removed: false,
         }
     }
 
+    /// Segment byte capacity.
+    #[must_use]
+    pub const fn size(&self) -> i64 {
+        self.size
+    }
+
+    /// Segment permissions.
+    #[must_use]
+    pub const fn permissions(&self) -> i64 {
+        self.permissions
+    }
+
+    /// Current stored serialized byte usage.
+    #[must_use]
+    pub fn byte_count(&self) -> usize {
+        self.value_sizes.values().copied().sum()
+    }
+
+    /// Returns whether replacing one key with `size` bytes fits in the segment.
+    #[must_use]
+    pub fn can_store(&self, key: i64, size: usize) -> bool {
+        let previous = self.value_sizes.get(&key).copied().unwrap_or(0);
+        self.byte_count()
+            .saturating_sub(previous)
+            .saturating_add(size)
+            <= self.size as usize
+    }
+
     /// Stores one shared variable value.
-    pub fn put(&mut self, key: i64, value: Value) {
+    pub fn put(&mut self, key: i64, value: Value, size: usize) {
+        self.value_sizes.insert(key, size);
         self.values.insert(key, value);
     }
 
@@ -2110,6 +2537,7 @@ impl SysvSharedMemorySegment {
 
     /// Removes one variable key.
     pub fn remove_var(&mut self, key: i64) -> bool {
+        self.value_sizes.remove(&key);
         self.values.remove(&key).is_some()
     }
 }
@@ -2128,6 +2556,39 @@ impl SysvSharedMemoryState {
             .insert(id, SysvSharedMemorySegment::new(key, size, permissions));
         self.keyed_segments.insert(key, id);
         id
+    }
+
+    /// Binds a PHP-visible shared-memory object handle to a request-local segment.
+    pub fn bind_object(&mut self, object_id: u64, segment_id: i64) {
+        self.destroyed_objects.remove(&object_id);
+        self.object_segments.insert(object_id, segment_id);
+    }
+
+    /// Marks a PHP-visible shared-memory object handle as destroyed.
+    pub fn destroy_object(&mut self, object_id: u64) {
+        self.object_segments.remove(&object_id);
+        self.destroyed_objects.insert(object_id);
+    }
+
+    /// Returns whether a PHP-visible shared-memory object handle was destroyed.
+    #[must_use]
+    pub fn object_destroyed(&self, object_id: u64) -> bool {
+        self.destroyed_objects.contains(&object_id)
+    }
+
+    /// Looks up the request-local segment id for a PHP-visible object handle.
+    #[must_use]
+    pub fn segment_id_for_object(&self, object_id: u64) -> Option<i64> {
+        self.object_segments
+            .get(&object_id)
+            .copied()
+            .filter(|id| self.segment(*id).is_some())
+    }
+
+    /// Looks up the request-local segment id for a bound object handle.
+    #[must_use]
+    pub fn bound_segment_id_for_object(&self, object_id: u64) -> Option<i64> {
+        self.object_segments.get(&object_id).copied()
     }
 
     /// Returns a live segment.
@@ -2153,6 +2614,7 @@ impl SysvSharedMemoryState {
         }
         segment.removed = true;
         segment.values.clear();
+        segment.value_sizes.clear();
         self.keyed_segments.remove(&segment.key);
         true
     }
@@ -2554,6 +3016,7 @@ pub(in crate::builtins) struct BuiltinHttpContext<'a> {
 
 pub(in crate::builtins) struct BuiltinExtensionState<'a> {
     pcre_cache: PcreCache,
+    pcre_cache_state: Option<&'a mut PcreCache>,
     preg_last_error: pcre::PcreLastErrorState,
     preg_last_error_state: Option<&'a mut pcre::PcreLastErrorState>,
     json_last_error: i64,
@@ -2596,14 +3059,28 @@ pub(in crate::builtins) struct BuiltinExtensionState<'a> {
     socket_state_slot: Option<&'a mut SocketState>,
     posix_last_error: i32,
     mb_internal_encoding: String,
+    mb_substitute_character: MbSubstituteCharacter,
     mysql_state: Option<&'a mut MysqlState>,
     postgres_state: Option<&'a mut PostgresState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MbSubstituteCharacter {
+    Codepoint(i64),
+    Mode(&'static str),
+}
+
+impl Default for MbSubstituteCharacter {
+    fn default() -> Self {
+        Self::Codepoint(63)
+    }
 }
 
 impl<'a> Default for BuiltinExtensionState<'a> {
     fn default() -> Self {
         Self {
             pcre_cache: PcreCache::default(),
+            pcre_cache_state: None,
             preg_last_error: pcre::PcreLastErrorState::default(),
             preg_last_error_state: None,
             json_last_error: JSON_ERROR_NONE,
@@ -2646,6 +3123,7 @@ impl<'a> Default for BuiltinExtensionState<'a> {
             socket_state_slot: None,
             posix_last_error: 0,
             mb_internal_encoding: "UTF-8".to_owned(),
+            mb_substitute_character: MbSubstituteCharacter::Codepoint(63),
             mysql_state: None,
             postgres_state: None,
         }
@@ -2668,6 +3146,7 @@ pub struct BuiltinContext<'a> {
     sessions: BuiltinSessionContext<'a>,
     ini: IniRegistry,
     default_timezone: String,
+    env: Vec<(String, String)>,
     network_requests_enabled: bool,
 }
 
@@ -2687,6 +3166,7 @@ impl<'a> BuiltinContext<'a> {
             sessions: BuiltinSessionContext::default(),
             ini: IniRegistry::default(),
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
+            env: Vec::new(),
             network_requests_enabled: false,
         }
     }
@@ -2707,8 +3187,24 @@ impl<'a> BuiltinContext<'a> {
             sessions: BuiltinSessionContext::default(),
             ini: IniRegistry::default(),
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
+            env: Vec::new(),
             network_requests_enabled: false,
         }
+    }
+
+    /// Sets deterministic request-local environment entries.
+    pub fn set_env_entries(&mut self, mut env: Vec<(String, String)>) {
+        env.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        self.env = env;
+    }
+
+    /// Reads a deterministic request-local environment value.
+    #[must_use]
+    pub fn env_value(&self, name: &str) -> Option<&str> {
+        self.env
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
     }
 
     /// Allows request-local network builtins without reading process-global env.
@@ -2754,6 +3250,33 @@ impl<'a> BuiltinContext<'a> {
             &diagnostic,
             PhpDiagnosticChannel::Warning,
             PHP_E_WARNING,
+            self.io.diagnostic_display,
+        );
+        self.io.diagnostics.push(diagnostic);
+    }
+
+    /// Emits a PHP display_errors-style notice into stdout and records a
+    /// structured diagnostic for VM/report consumers.
+    pub fn php_notice(
+        &mut self,
+        id: impl Into<String>,
+        message: impl Into<String>,
+        source_span: RuntimeSourceSpan,
+    ) {
+        let message = message.into();
+        let diagnostic = RuntimeDiagnostic::new(
+            id,
+            RuntimeSeverity::Notice,
+            message,
+            source_span,
+            Vec::new(),
+            Some(crate::PhpReferenceClassification::Notice),
+        );
+        emit_php_diagnostic(
+            self.io.output,
+            &diagnostic,
+            PhpDiagnosticChannel::Notice,
+            PHP_E_NOTICE,
             self.io.diagnostic_display,
         );
         self.io.diagnostics.push(diagnostic);
@@ -2827,6 +3350,17 @@ impl<'a> BuiltinContext<'a> {
     /// Sets request-local INI options visible to standard-library builtins.
     pub fn set_ini_registry(&mut self, ini: IniRegistry) {
         self.ini = ini;
+    }
+
+    /// Returns request-local INI options visible to standard-library builtins.
+    #[must_use]
+    pub const fn ini_registry(&self) -> &IniRegistry {
+        &self.ini
+    }
+
+    /// Updates a request-local INI option visible to standard-library builtins.
+    pub fn ini_set(&mut self, name: &str, value: impl Into<String>) -> Option<String> {
+        self.ini.set(name, value)
     }
 
     /// Current request-local default timezone.
@@ -3016,6 +3550,15 @@ impl<'a> BuiltinContext<'a> {
             Some(state) => state,
             None => &mut self.extensions.gettext_state,
         }
+    }
+
+    /// Returns immutable request-local gettext state.
+    #[must_use]
+    pub fn gettext_state_ref(&self) -> &GettextState {
+        self.extensions
+            .gettext_state_slot
+            .as_deref()
+            .unwrap_or(&self.extensions.gettext_state)
     }
 
     /// Uses VM-owned shmop state for request-local shmop builtins.
@@ -3222,6 +3765,17 @@ impl<'a> BuiltinContext<'a> {
         self.extensions.mb_internal_encoding = encoding.into();
     }
 
+    /// Current request-local mbstring substitute-character mode.
+    #[must_use]
+    pub fn mb_substitute_character(&self) -> &MbSubstituteCharacter {
+        &self.extensions.mb_substitute_character
+    }
+
+    /// Updates the request-local mbstring substitute-character mode.
+    pub fn set_mb_substitute_character(&mut self, substitute: MbSubstituteCharacter) {
+        self.extensions.mb_substitute_character = substitute;
+    }
+
     /// Sets request-local session state and the live `$_SESSION` global slot.
     pub fn set_session_state(
         &mut self,
@@ -3309,7 +3863,15 @@ impl<'a> BuiltinContext<'a> {
 
     /// Request-local PCRE pattern cache.
     pub fn pcre_cache(&mut self) -> &mut PcreCache {
-        &mut self.extensions.pcre_cache
+        match self.extensions.pcre_cache_state.as_deref_mut() {
+            Some(state) => state,
+            None => &mut self.extensions.pcre_cache,
+        }
+    }
+
+    /// Sets request-local PCRE pattern cache storage.
+    pub fn set_pcre_cache_state(&mut self, state: &'a mut PcreCache) {
+        self.extensions.pcre_cache_state = Some(state);
     }
 
     /// Sets request-local `preg_last_error` state storage.
@@ -3373,6 +3935,7 @@ pub(in crate::builtins) const fn json_error_message(code: i64) -> &'static str {
         JSON_ERROR_UNSUPPORTED_TYPE => "Type is not supported",
         JSON_ERROR_INVALID_PROPERTY_NAME => "The decoded property name is invalid",
         JSON_ERROR_UTF16 => "Single unpaired UTF-16 surrogate in unicode escape",
+        JSON_ERROR_NON_BACKED_ENUM => "Non-backed enums have no default serialization",
         _ => "Unknown error",
     }
 }

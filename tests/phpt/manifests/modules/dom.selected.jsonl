@@ -2,3 +2,4 @@
 {"path":"tests/phpt/generated/dom/domdocument-basic.phpt"}
 {"path":"tests/phpt/generated/dom/domdocument-node-apis.phpt"}
 {"path":"tests/phpt/generated/dom/domtext-node-apis.phpt"}
+{"path":"tests/phpt/generated/dom/domdocument-secondary-nodes.phpt"}

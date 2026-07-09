@@ -16,26 +16,22 @@ pub use member::{
 pub use storage::{ObjectRef, WeakObjectHandle};
 pub use types::RuntimeType;
 
-use std::sync::{
-    Mutex, OnceLock,
-    atomic::{AtomicU64, Ordering},
-};
+use std::cell::{Cell, RefCell};
 
-static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
-static FREE_OBJECT_IDS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
+thread_local! {
+    static NEXT_OBJECT_ID: Cell<u64> = const { Cell::new(1) };
+    static FREE_OBJECT_IDS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
 
 pub(crate) fn next_object_id() -> u64 {
-    let free_ids = FREE_OBJECT_IDS.get_or_init(|| Mutex::new(Vec::new()));
-    if let Ok(mut free_ids) = free_ids.lock()
-        && let Some(index) = free_ids
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, id)| **id)
-            .map(|(index, _)| index)
-    {
-        return free_ids.swap_remove(index);
+    if let Some(id) = FREE_OBJECT_IDS.with_borrow_mut(Vec::pop) {
+        return id;
     }
-    NEXT_OBJECT_ID.fetch_add(1, Ordering::Relaxed)
+    NEXT_OBJECT_ID.with(|next_id| {
+        let id = next_id.get();
+        next_id.set(id + 1);
+        id
+    })
 }
 
 #[derive(Debug)]
@@ -52,10 +48,7 @@ impl ObjectIdGuard {
 
 impl Drop for ObjectIdGuard {
     fn drop(&mut self) {
-        let free_ids = FREE_OBJECT_IDS.get_or_init(|| Mutex::new(Vec::new()));
-        if let Ok(mut free_ids) = free_ids.lock() {
-            free_ids.push(self.id);
-        }
+        FREE_OBJECT_IDS.with_borrow_mut(|free_ids| free_ids.push(self.id));
     }
 }
 

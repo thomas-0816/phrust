@@ -4,8 +4,8 @@
   "priority": "MessagePack extension primitive value compatibility slice",
   "selected_manifest": "tests/phpt/manifests/modules/msgpack.selected.jsonl",
   "corpus_count": 0,
-  "selected_count": 1,
-  "pass_count": 1,
+  "selected_count": 2,
+  "pass_count": 2,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
@@ -16,15 +16,16 @@
     "msgpack_pack and msgpack_serialize aliases",
     "msgpack_unpack and msgpack_unserialize aliases",
     "Null, boolean, integer, float, byte string, packed array, and mixed array encoding",
-    "Primitive MessagePack string, binary, list, and map decoding with PHP int/string array keys"
+    "Primitive MessagePack string, binary, list, and map decoding with PHP int/string array keys",
+    "MESSAGEPACK_OPT_* constants and Redis/Memcached SERIALIZER_MSGPACK option smoke"
   ],
   "non_scope": [
     "igbinary compatibility",
     "Object serialization hooks and incomplete object restoration",
     "Reference identity and cyclic structure preservation",
-    "MessagePack class constants and object API methods",
+    "MessagePack object API methods",
     "Extension types and timestamp records",
-    "Redis and Memcached serializer option integration"
+    "Redis and Memcached serializer wire-format integration"
   ],
   "target_gates": [
     "nix develop -c cargo test -p php_runtime msgpack --no-fail-fast",

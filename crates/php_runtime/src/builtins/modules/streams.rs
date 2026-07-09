@@ -56,6 +56,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
     BuiltinEntry::new(
+        "stream_context_set_options",
+        builtin_stream_context_set_options,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
         "stream_copy_to_stream",
         builtin_stream_copy_to_stream,
         BuiltinCompatibility::Php,
@@ -93,6 +98,11 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "stream_resolve_include_path",
         builtin_stream_resolve_include_path,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "stream_wrapper_register",
+        builtin_stream_wrapper_register,
         BuiltinCompatibility::Php,
     ),
 ];
@@ -464,6 +474,21 @@ pub(in crate::builtins::modules) fn builtin_stream_get_wrappers(
         Value::string("php"),
     ]))
 }
+
+pub(in crate::builtins::modules) fn builtin_stream_wrapper_register(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(arity_error(
+            "stream_wrapper_register",
+            "two or three argument(s)",
+        ));
+    }
+    Ok(Value::Bool(false))
+}
+
 pub(in crate::builtins::modules) fn builtin_stream_get_meta_data(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -679,28 +704,7 @@ pub(in crate::builtins::modules) fn builtin_stream_context_set_option(
         let Value::Array(options) = deref_value(&args[1]) else {
             return Ok(Value::Bool(false));
         };
-        for (wrapper_key, wrapper_value) in options.iter() {
-            let wrapper = match wrapper_key {
-                ArrayKey::String(wrapper) => wrapper.to_string_lossy(),
-                ArrayKey::Int(_) => continue,
-            };
-            let Value::Array(wrapper_options) = deref_value(wrapper_value) else {
-                continue;
-            };
-            for (option_key, option_value) in wrapper_options.iter() {
-                let option = match option_key {
-                    ArrayKey::String(option) => option.to_string_lossy(),
-                    ArrayKey::Int(_) => continue,
-                };
-                if resource
-                    .set_context_option(wrapper.clone(), option, option_value.clone())
-                    .is_err()
-                {
-                    return Ok(Value::Bool(false));
-                }
-            }
-        }
-        return Ok(Value::Bool(true));
+        return Ok(Value::Bool(set_context_options(&resource, &options)));
     }
     let wrapper = string_arg("stream_context_set_option", &args[1])?.to_string_lossy();
     let option = string_arg("stream_context_set_option", &args[2])?.to_string_lossy();
@@ -709,6 +713,46 @@ pub(in crate::builtins::modules) fn builtin_stream_context_set_option(
             .set_context_option(wrapper, option, args[3].clone())
             .is_ok(),
     ))
+}
+
+pub(in crate::builtins::modules) fn builtin_stream_context_set_options(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    expect_arity("stream_context_set_options", &args, 2)?;
+    let Some(resource) = resource_arg(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
+    let Value::Array(options) = deref_value(&args[1]) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(set_context_options(&resource, &options)))
+}
+
+fn set_context_options(resource: &ResourceRef, options: &crate::PhpArray) -> bool {
+    for (wrapper_key, wrapper_value) in options.iter() {
+        let wrapper = match wrapper_key {
+            ArrayKey::String(wrapper) => wrapper.to_string_lossy(),
+            ArrayKey::Int(_) => continue,
+        };
+        let Value::Array(wrapper_options) = deref_value(wrapper_value) else {
+            continue;
+        };
+        for (option_key, option_value) in wrapper_options.iter() {
+            let option = match option_key {
+                ArrayKey::String(option) => option.to_string_lossy(),
+                ArrayKey::Int(_) => continue,
+            };
+            if resource
+                .set_context_option(wrapper.clone(), option, option_value.clone())
+                .is_err()
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 pub(in crate::builtins::modules) fn builtin_stream_resolve_include_path(
     context: &mut BuiltinContext<'_>,
@@ -833,4 +877,59 @@ pub(in crate::builtins::modules) fn builtin_scandir(
     Ok(Value::packed_array(
         entries.into_iter().map(Value::string).collect(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FilesystemCapabilities, OutputBuffer, PhpArray, ResourceTable, RuntimeSourceSpan};
+
+    fn context<'a>(
+        output: &'a mut OutputBuffer,
+        resources: &'a mut ResourceTable,
+    ) -> BuiltinContext<'a> {
+        BuiltinContext::with_runtime(output, ".", FilesystemCapabilities::none(), Some(resources))
+    }
+
+    #[test]
+    fn stream_context_set_options_mutates_nested_options() {
+        let mut output = OutputBuffer::new();
+        let mut resources = ResourceTable::new();
+        let mut context = context(&mut output, &mut resources);
+        let context_resource =
+            match builtin_stream_context_create(&mut context, vec![], RuntimeSourceSpan::default())
+                .unwrap()
+            {
+                Value::Resource(resource) => resource,
+                value => panic!("expected stream context resource, got {value:?}"),
+            };
+
+        let mut http_options = PhpArray::new();
+        http_options.insert(
+            string_array_key("protocol_version"),
+            Value::Float(1.1.into()),
+        );
+        http_options.insert(string_array_key("user_agent"), Value::string("PHPT Agent"));
+        let mut options = PhpArray::new();
+        options.insert(string_array_key("http"), Value::Array(http_options));
+
+        let result = builtin_stream_context_set_options(
+            &mut context,
+            vec![
+                Value::Resource(context_resource.clone()),
+                Value::Array(options.clone()),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .unwrap();
+        assert_eq!(result, Value::Bool(true));
+
+        let stored = builtin_stream_context_get_options(
+            &mut context,
+            vec![Value::Resource(context_resource)],
+            RuntimeSourceSpan::default(),
+        )
+        .unwrap();
+        assert_eq!(stored, Value::Array(options));
+    }
 }

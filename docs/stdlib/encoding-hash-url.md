@@ -2,14 +2,14 @@
 
 Reference target: PHP 8.5.7 (`php-8.5.7`).
 
-Work item adds pragmatic standard-library helpers for binary/hex,
-base64, MD5/SHA1/CRC32, common HTML escaping, URL encoding, and a simple
+Work item adds pragmatic standard-library helpers for binary/hex, base64,
+selected PHP hash algorithms, common HTML escaping, URL encoding, and a simple
 `http_build_query` MVP.
 
 Dependency review:
 
-- `md-5` and `sha1` are RustCrypto digest crates used only for deterministic
-  PHP-compatible digest bytes.
+- RustCrypto digest crates and small specialized hash crates are used only for
+  deterministic PHP-compatible digest bytes.
 - `base64` is used for RFC 4648-compatible standard base64 encode/decode.
 - `crc32fast` is used for the standard CRC32 checksum.
 - `getrandom` is used only by `random_bytes` and `random_int` for OS-backed
@@ -17,13 +17,15 @@ Dependency review:
 
 No dependency performs network, filesystem, process, or locale access. HTML
 handling is an MVP for common default flags; full entity tables, charset
-handling, and the full PHP hash algorithm registry remain known gaps in
-`docs/stdlib/known-gaps.md`.
+handling, HashContext serialization parity, and selected hash diagnostic edge
+cases remain known gaps in `docs/stdlib/known-gaps.md`.
 
 Implemented surface:
 
 - Binary and digest helpers: `bin2hex`, `hex2bin`, `ord`, `chr`, `md5`,
-  `sha1`, `crc32`, `hash`, `hash_hmac`, `base64_encode`, and
+  `sha1`, `crc32`, `hash`, `hash_hmac`, `hash_file`, `hash_hmac_file`,
+  `hash_init`, `hash_update`, `hash_copy`, `hash_final`, `hash_equals`,
+  legacy `mhash*` compatibility helpers, `base64_encode`, and
   `base64_decode`. Malformed `hex2bin` inputs return `false` and emit
   PHP-style warnings for odd length and non-hex payloads.
 - Random helpers: `random_bytes` and `random_int` use OS randomness and are

@@ -74,11 +74,11 @@ Install the versioned git hooks once per checkout:
 nix develop -c just install-hooks
 ```
 
-The pre-commit hook runs formatting, clippy, and the PHPT consistency gate. The
-pre-push hook runs `just ci-local`, which mirrors the default GitHub Actions
-checks without the manual full-PHPT regression job. `PHRUST_SKIP_GIT_HOOKS=1`
-is available only for exceptional cases where the equivalent checks have been
-run manually.
+The pre-commit hook runs a lightweight formatting and source-integrity gate in
+one Nix shell. The pre-push hook runs a bounded local push gate with a default
+20 minute timeout; full local CI parity remains available as `just ci-local`.
+`PHRUST_SKIP_GIT_HOOKS=1` is available only for exceptional cases where the
+equivalent checks have been run manually.
 
 ## Running PHP Code
 

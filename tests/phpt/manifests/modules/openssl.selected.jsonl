@@ -3,3 +3,10 @@
 {"path":"tests/phpt/generated/wp.db-network/openssl-encrypt-decrypt-mvp.phpt","module":"openssl","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers deterministic AES-CBC encrypt/decrypt behavior and selected option constants"}
 {"path":"ext/openssl/tests/openssl_get_cipher_methods.phpt"}
 {"path":"ext/openssl/tests/gh19994.phpt"}
+{"path":"ext/openssl/tests/openssl_digest_basic.phpt"}
+{"path":"ext/openssl/tests/openssl_cipher_iv_length_basic.phpt"}
+{"path":"ext/openssl/tests/openssl_cipher_key_length_basic.phpt"}
+{"path":"ext/openssl/tests/openssl_random_pseudo_bytes_basic.phpt"}
+{"path":"ext/openssl/tests/openssl_encrypt_cbc.phpt"}
+{"path":"ext/openssl/tests/openssl_decrypt_basic.phpt"}
+{"path":"ext/openssl/tests/openssl_encrypt_error.phpt"}

@@ -6,6 +6,7 @@ use crate::ConstantValue;
 
 /// Target PHP version.
 pub const PHP_VERSION: &str = "8.5.7";
+pub const ZEND_VERSION: &str = "4.5.7";
 /// Target PHP version ID.
 pub const PHP_VERSION_ID: i64 = 80507;
 /// Target PHP major version.
@@ -20,6 +21,14 @@ pub const PHP_INT_SIZE: i64 = std::mem::size_of::<isize>() as i64;
 pub const PHP_INT_MAX: i64 = isize::MAX as i64;
 /// PHP minimum integer for the current build target.
 pub const PHP_INT_MIN: i64 = isize::MIN as i64;
+/// Number of decimal digits that can be rounded into a float and back without precision loss.
+pub const PHP_FLOAT_DIG: i64 = f64::DIGITS as i64;
+/// Difference between 1.0 and the next representable float.
+pub const PHP_FLOAT_EPSILON: FloatValue = FloatValue::from_f64(f64::EPSILON);
+/// Maximum finite PHP float.
+pub const PHP_FLOAT_MAX: FloatValue = FloatValue::from_f64(f64::MAX);
+/// Minimum positive normalized PHP float.
+pub const PHP_FLOAT_MIN: FloatValue = FloatValue::from_f64(f64::MIN_POSITIVE);
 /// PHP positive infinity constant.
 pub const INF: FloatValue = FloatValue::from_f64(f64::INFINITY);
 /// PHP quiet NaN constant.
@@ -131,10 +140,85 @@ pub const PHP_EOL: &str = "\n";
 pub const PHP_SAPI: &str = "cli";
 /// PHP binary display path for this CLI engine.
 pub const PHP_BINARY: &str = "phrust-php";
+/// PHP extension directory display path for this compatibility surface.
+pub const PHP_EXTENSION_DIR: &str = "/usr/local/lib/php/extensions/debug-non-zts-20250925";
+/// PEAR extension directory display path for this compatibility surface.
+pub const PEAR_EXTENSION_DIR: &str = PHP_EXTENSION_DIR;
+/// PEAR install directory display path for this compatibility surface.
+pub const PEAR_INSTALL_DIR: &str = "";
+/// PHP binary directory display path for this compatibility surface.
+pub const PHP_BINDIR: &str = "/usr/local/bin";
+/// PHP build date display string for this compatibility surface.
+pub const PHP_BUILD_DATE: &str = "Jan  1 1980 00:00:00";
+/// Whether CLI process-title support is exposed.
+pub const PHP_CLI_PROCESS_TITLE: bool = true;
+/// PHP config file directory display path for this compatibility surface.
+pub const PHP_CONFIG_FILE_PATH: &str = "/usr/local/lib";
+/// PHP config scan directory display path for this compatibility surface.
+pub const PHP_CONFIG_FILE_SCAN_DIR: &str = "";
+/// PHP data directory display path for this compatibility surface.
+pub const PHP_DATADIR: &str = "/usr/local/share/php";
+/// Whether the reference-compatible PHP surface is a debug build.
+pub const PHP_DEBUG: bool = true;
+/// PHP extra version suffix for this compatibility surface.
+pub const PHP_EXTRA_VERSION: &str = "";
+/// File descriptor set size exposed by the target PHP build.
+pub const PHP_FD_SETSIZE: i64 = 1024;
+/// PHP library directory display path for this compatibility surface.
+pub const PHP_LIBDIR: &str = "/usr/local/lib/php";
+/// PHP local state directory display path for this compatibility surface.
+pub const PHP_LOCALSTATEDIR: &str = "/usr/local/var";
+/// PHP manual directory display path for this compatibility surface.
+pub const PHP_MANDIR: &str = "/usr/local/php/man";
+/// PHP install prefix display path for this compatibility surface.
+pub const PHP_PREFIX: &str = "/usr/local";
+/// PHP system binary directory display path for this compatibility surface.
+pub const PHP_SBINDIR: &str = "/usr/local/sbin";
+/// Shared library suffix exposed by the target PHP build.
+pub const PHP_SHLIB_SUFFIX: &str = "so";
+/// PHP system config directory display path for this compatibility surface.
+pub const PHP_SYSCONFDIR: &str = "/usr/local/etc";
+/// Whether the target PHP build exposes Zend Thread Safety.
+pub const PHP_ZTS: bool = false;
+/// Whether the target Zend build is a debug build.
+pub const ZEND_DEBUG_BUILD: bool = true;
+/// Whether the target Zend build exposes thread safety.
+pub const ZEND_THREAD_SAFE: bool = false;
+/// Zend VM kind exposed by the target PHP build.
+pub const ZEND_VM_KIND: &str = "ZEND_VM_KIND_TAILCALL";
 /// Default include path for this CLI engine.
 pub const DEFAULT_INCLUDE_PATH: &str = ".";
 /// Maximum path length used by the compatibility surface.
 pub const PHP_MAXPATHLEN: i64 = 1024;
+/// Output handler phase flag for continue/write.
+pub const PHP_OUTPUT_HANDLER_CONT: i64 = 0;
+/// Output handler phase flag for write.
+pub const PHP_OUTPUT_HANDLER_WRITE: i64 = 0;
+/// Output handler phase flag for start.
+pub const PHP_OUTPUT_HANDLER_START: i64 = 1;
+/// Output handler phase flag for clean.
+pub const PHP_OUTPUT_HANDLER_CLEAN: i64 = 2;
+/// Output handler phase flag for flush.
+pub const PHP_OUTPUT_HANDLER_FLUSH: i64 = 4;
+/// Output handler phase flag for final/end.
+pub const PHP_OUTPUT_HANDLER_FINAL: i64 = 8;
+/// Output handler phase flag for end.
+pub const PHP_OUTPUT_HANDLER_END: i64 = PHP_OUTPUT_HANDLER_FINAL;
+/// Output handler capability flag for cleanable handlers.
+pub const PHP_OUTPUT_HANDLER_CLEANABLE: i64 = 16;
+/// Output handler capability flag for flushable handlers.
+pub const PHP_OUTPUT_HANDLER_FLUSHABLE: i64 = 32;
+/// Output handler capability flag for removable handlers.
+pub const PHP_OUTPUT_HANDLER_REMOVABLE: i64 = 64;
+/// Output handler default capability flags.
+pub const PHP_OUTPUT_HANDLER_STDFLAGS: i64 =
+    PHP_OUTPUT_HANDLER_CLEANABLE | PHP_OUTPUT_HANDLER_FLUSHABLE | PHP_OUTPUT_HANDLER_REMOVABLE;
+/// Output handler state flag for started handlers.
+pub const PHP_OUTPUT_HANDLER_STARTED: i64 = 4096;
+/// Output handler state flag for disabled handlers.
+pub const PHP_OUTPUT_HANDLER_DISABLED: i64 = 8192;
+/// Output handler state flag for processed handlers.
+pub const PHP_OUTPUT_HANDLER_PROCESSED: i64 = 16384;
 /// Include object metadata in debug backtraces.
 pub const DEBUG_BACKTRACE_PROVIDE_OBJECT: i64 = 1;
 /// Omit argument values from debug backtraces.
@@ -524,6 +608,89 @@ mod tests {
             .expect("PHP_VERSION_ID");
         assert_eq!(version_id.value(), Some(ConstantValue::Int(80507)));
 
+        for (name, expected_extension) in [
+            ("TRUE", "core"),
+            ("FALSE", "core"),
+            ("NULL", "core"),
+            ("PHP_EXTENSION_DIR", "core"),
+            ("PEAR_EXTENSION_DIR", "core"),
+            ("PEAR_INSTALL_DIR", "core"),
+            ("PHP_BINDIR", "core"),
+            ("PHP_BUILD_DATE", "core"),
+            ("PHP_CLI_PROCESS_TITLE", "core"),
+            ("PHP_CONFIG_FILE_PATH", "core"),
+            ("PHP_CONFIG_FILE_SCAN_DIR", "core"),
+            ("PHP_DATADIR", "core"),
+            ("PHP_DEBUG", "core"),
+            ("PHP_EXTRA_VERSION", "core"),
+            ("PHP_FD_SETSIZE", "core"),
+            ("PHP_LIBDIR", "core"),
+            ("PHP_LOCALSTATEDIR", "core"),
+            ("PHP_MANDIR", "core"),
+            ("PHP_PREFIX", "core"),
+            ("PHP_SBINDIR", "core"),
+            ("PHP_SHLIB_SUFFIX", "core"),
+            ("PHP_SYSCONFDIR", "core"),
+            ("PHP_ZTS", "core"),
+            ("ZEND_DEBUG_BUILD", "core"),
+            ("ZEND_THREAD_SAFE", "core"),
+            ("ZEND_VM_KIND", "core"),
+            ("PHP_OUTPUT_HANDLER_CLEAN", "core"),
+            ("PHP_OUTPUT_HANDLER_CLEANABLE", "core"),
+            ("PHP_OUTPUT_HANDLER_CONT", "core"),
+            ("PHP_OUTPUT_HANDLER_DISABLED", "core"),
+            ("PHP_OUTPUT_HANDLER_END", "core"),
+            ("PHP_OUTPUT_HANDLER_FINAL", "core"),
+            ("PHP_OUTPUT_HANDLER_FLUSH", "core"),
+            ("PHP_OUTPUT_HANDLER_FLUSHABLE", "core"),
+            ("PHP_OUTPUT_HANDLER_PROCESSED", "core"),
+            ("PHP_OUTPUT_HANDLER_REMOVABLE", "core"),
+            ("PHP_OUTPUT_HANDLER_START", "core"),
+            ("PHP_OUTPUT_HANDLER_STARTED", "core"),
+            ("PHP_OUTPUT_HANDLER_STDFLAGS", "core"),
+            ("PHP_OUTPUT_HANDLER_WRITE", "core"),
+            ("PHP_FLOAT_DIG", "core"),
+            ("PHP_FLOAT_EPSILON", "core"),
+            ("PHP_FLOAT_MAX", "core"),
+            ("PHP_FLOAT_MIN", "core"),
+            ("STDIN", "core"),
+            ("STDOUT", "core"),
+            ("STDERR", "core"),
+            ("UPLOAD_ERR_OK", "core"),
+            ("UPLOAD_ERR_EXTENSION", "core"),
+            ("DIRECTORY_SEPARATOR", "standard"),
+            ("PATH_SEPARATOR", "standard"),
+            ("INF", "standard"),
+            ("NAN", "standard"),
+        ] {
+            assert_eq!(
+                registry
+                    .enabled_constant(name)
+                    .map(crate::ConstantDescriptor::extension),
+                Some(expected_extension),
+                "{name} should be registered under the php-src owner extension"
+            );
+        }
+
+        assert_eq!(
+            registry
+                .enabled_constant("TRUE")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Bool(true))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("FALSE")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Bool(false))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("NULL")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Null)
+        );
+
         let separator = registry
             .enabled_constant("DIRECTORY_SEPARATOR")
             .expect("DIRECTORY_SEPARATOR");
@@ -543,6 +710,30 @@ mod tests {
                 .enabled_constant("PHP_INT_SIZE")
                 .and_then(crate::ConstantDescriptor::value),
             Some(ConstantValue::Int(PHP_INT_SIZE))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("PEAR_EXTENSION_DIR")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::String(PEAR_EXTENSION_DIR))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("PHP_DEBUG")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Bool(PHP_DEBUG))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("PHP_OUTPUT_HANDLER_STDFLAGS")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::Int(PHP_OUTPUT_HANDLER_STDFLAGS))
+        );
+        assert_eq!(
+            registry
+                .enabled_constant("ZEND_VM_KIND")
+                .and_then(crate::ConstantDescriptor::value),
+            Some(ConstantValue::String(ZEND_VM_KIND))
         );
         assert!(matches!(
             registry
@@ -689,19 +880,23 @@ mod tests {
         let mut registry = ExtensionRegistry::standard_library().clone();
         assert_eq!(
             registry
-                .enabled_constant("JSON_ERROR_NONE")
+                .enabled_constant("JSON_ERROR_NON_BACKED_ENUM")
                 .and_then(crate::ConstantDescriptor::value),
-            Some(ConstantValue::Int(0))
+            Some(ConstantValue::Int(11))
         );
 
         registry.disable_extension("json").expect("disable json");
-        assert!(registry.enabled_constant("JSON_ERROR_NONE").is_none());
+        assert!(
+            registry
+                .enabled_constant("JSON_ERROR_NON_BACKED_ENUM")
+                .is_none()
+        );
         registry.enable_extension("json").expect("re-enable json");
         assert_eq!(
             registry
-                .enabled_constant("JSON_ERROR_NONE")
+                .enabled_constant("JSON_ERROR_NON_BACKED_ENUM")
                 .and_then(crate::ConstantDescriptor::value),
-            Some(ConstantValue::Int(0))
+            Some(ConstantValue::Int(11))
         );
     }
 }

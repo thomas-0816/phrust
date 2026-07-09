@@ -4,8 +4,8 @@
   "priority": "igbinary extension primitive value compatibility slice",
   "selected_manifest": "tests/phpt/manifests/modules/igbinary.selected.jsonl",
   "corpus_count": 0,
-  "selected_count": 1,
-  "pass_count": 1,
+  "selected_count": 2,
+  "pass_count": 2,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
@@ -15,13 +15,14 @@
     "igbinary_serialize and igbinary_unserialize",
     "Null, boolean, integer, float, byte string, packed array, and mixed array encoding",
     "Primitive igbinary scalar and array decoding with PHP int/string array keys",
-    "igbinary string table references for repeated non-empty strings in arrays"
+    "igbinary string table references for repeated non-empty strings in arrays",
+    "Redis and Memcached serializer option smoke for SERIALIZER_IGBINARY"
   ],
   "non_scope": [
     "Object serialization hooks and incomplete object restoration",
     "Reference identity and cyclic structure preservation",
     "Session serializer registration",
-    "Redis and Memcached serializer option integration",
+    "Redis and Memcached wire-format serializer integration",
     "PECL constants not present in the current igbinary function stub"
   ],
   "target_gates": [

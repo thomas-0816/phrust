@@ -32,6 +32,8 @@ pub struct BuiltinErrorContext {
     pub suggestion: Option<String>,
     /// JSON error code used when a JSON builtin throws JsonException.
     pub json_error_code: Option<i64>,
+    /// PHP source line inside a tokenizer input string for ParseError objects.
+    pub tokenizer_parse_line: Option<i64>,
 }
 
 impl BuiltinError {
@@ -85,6 +87,13 @@ impl BuiltinError {
     #[must_use]
     pub fn with_json_error_code(mut self, code: i64) -> Self {
         self.context_mut().json_error_code = Some(code);
+        self
+    }
+
+    /// Adds the tokenizer input source line used for ParseError construction.
+    #[must_use]
+    pub fn with_tokenizer_parse_line(mut self, line: i64) -> Self {
+        self.context_mut().tokenizer_parse_line = Some(line);
         self
     }
 

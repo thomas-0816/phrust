@@ -1,17 +1,22 @@
 {
   "schema_version": "phpt-module-plan-v1",
   "module": "bcmath",
-  "priority": "Bounded decimal math MVP",
+  "priority": "Decimal math function compatibility",
   "selected_manifest": "tests/phpt/manifests/modules/bcmath.selected.jsonl",
-  "corpus_count": 2,
-  "selected_count": 2,
-  "pass_count": 2,
+  "corpus_count": 3,
+  "selected_count": 3,
+  "pass_count": 3,
   "skip_count": 0,
   "fail_count": 0,
   "bork_count": 0,
   "known_failure_count": 0,
-  "scope": ["BigInt-backed decimal add/sub/mul/div/mod/pow/compare", "request-local bcscale default persistence"],
-  "non_scope": ["Full bcmath rounding and warning-edge parity"],
+  "scope": [
+    "BigInt-backed decimal add/sub/mul/div/mod/pow/powmod/sqrt/compare",
+    "request-local bcscale default persistence",
+    "fractional-part validation for bcpowmod integer operands",
+    "negative-zero sqrt normalization"
+  ],
+  "non_scope": ["BcMath\\\\Number object API", "bcdivmod/bcfloor/bcceil/bcround helpers", "Full bcmath rounding and warning-edge parity"],
   "target_gates": ["just phpt-dev-module MODULE=bcmath"],
-  "next_step": "Increase rounding and warning-edge fixtures after compatibility triage."
+  "next_step": "Add the remaining PHP 8.5 bcmath helper functions and BcMath\\\\Number object API after compatibility triage."
 }

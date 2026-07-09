@@ -4,14 +4,14 @@
   "priority":"bounded-facade focused",
   "selected_manifest":"tests/phpt/manifests/modules/soap.selected.jsonl",
   "corpus_count":589,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":2,
+  "pass_count":2,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
   "known_failure_count":577,
-  "scope":["extension_loaded(\"soap\")","SOAP helper function checks","SOAP legacy and generated class visibility"],
-  "non_scope":["full upstream ext/soap corpus","SoapClient and SoapServer calls","WSDL","HTTP transport","XML schema","encoding and persistence behavior"],
+  "scope":["extension_loaded(\"soap\")","SOAP helper function checks","SOAP legacy and generated class visibility","SOAP constants","SoapParam/SoapHeader/SoapVar constructors","SoapFault properties and recognition"],
+  "non_scope":["full upstream ext/soap corpus","complete SoapClient and SoapServer calls","WSDL","HTTP transport","XML schema","encoding and persistence behavior","full Exception inheritance layout for SoapFault"],
   "target_gates":["PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=soap","nix develop -c just verify-phpt"],
-  "next_step":"Grow SOAP behind local WSDL and serializer fixtures before promoting upstream SOAP PHPTs."
+  "next_step":"Grow SoapClient/SoapServer behind local WSDL and serializer fixtures before promoting upstream SOAP PHPTs."
 }

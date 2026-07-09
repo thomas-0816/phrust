@@ -1,4 +1,4 @@
-//! Bounded UTF-8 mbstring builtins.
+//! Bounded mbstring builtins over PHP strings.
 
 use crate::Value;
 use crate::builtins::modules::core::{
@@ -6,8 +6,9 @@ use crate::builtins::modules::core::{
 };
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
-    RuntimeSourceSpan,
+    MbSubstituteCharacter, RuntimeSourceSpan,
 };
+use encoding_rs::{EUC_JP, Encoding, ISO_2022_JP, SHIFT_JIS, WINDOWS_1252};
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
@@ -30,6 +31,21 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         builtin_mb_internal_encoding,
         BuiltinCompatibility::Php,
     ),
+    BuiltinEntry::new(
+        "mb_list_encodings",
+        builtin_mb_list_encodings,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mb_encoding_aliases",
+        builtin_mb_encoding_aliases,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new(
+        "mb_substitute_character",
+        builtin_mb_substitute_character,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("mb_strlen", builtin_mb_strlen, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "mb_strtolower",
@@ -43,6 +59,17 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new("mb_stripos", builtin_mb_stripos, BuiltinCompatibility::Php),
     BuiltinEntry::new("mb_strpos", builtin_mb_strpos, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "mb_strripos",
+        builtin_mb_strripos,
+        BuiltinCompatibility::Php,
+    ),
+    BuiltinEntry::new("mb_strrpos", builtin_mb_strrpos, BuiltinCompatibility::Php),
+    BuiltinEntry::new(
+        "mb_substr_count",
+        builtin_mb_substr_count,
+        BuiltinCompatibility::Php,
+    ),
     BuiltinEntry::new("mb_substr", builtin_mb_substr, BuiltinCompatibility::Php),
 ];
 
@@ -98,7 +125,7 @@ fn builtin_mb_check_encoding(
 }
 
 fn builtin_mb_convert_encoding(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
@@ -114,27 +141,24 @@ fn builtin_mb_convert_encoding(
         .get(2)
         .map(|value| encoding_arg("mb_convert_encoding", value))
         .transpose()?
-        .unwrap_or_else(|| "UTF-8".to_owned());
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
     let Some(to_canonical) = canonical_encoding(&to_encoding) else {
         return Err(unsupported_encoding_error(
             "mb_convert_encoding",
+            "#2 ($to_encoding)",
             &to_encoding,
         ));
     };
     let Some(from_canonical) = canonical_encoding(&from_encoding) else {
         return Err(unsupported_encoding_error(
             "mb_convert_encoding",
+            "#3 ($from_encoding)",
             &from_encoding,
         ));
     };
-    if to_canonical != "UTF-8" || from_canonical != "UTF-8" {
-        return Err(BuiltinError::new(
-            "E_PHP_RUNTIME_UNSUPPORTED_MBSTRING_ENCODING",
-            "mb_convert_encoding(): only UTF-8 to UTF-8 conversion is implemented",
-        ));
-    }
-    validate_utf8("mb_convert_encoding", string.as_bytes())?;
-    Ok(Value::String(string))
+    let text = decode_bytes("mb_convert_encoding", string.as_bytes(), from_canonical)?;
+    let output = encode_text("mb_convert_encoding", &text, to_canonical)?;
+    Ok(Value::string(output))
 }
 
 fn builtin_mb_internal_encoding(
@@ -152,10 +176,71 @@ fn builtin_mb_internal_encoding(
     let Some(canonical) = canonical_encoding(&encoding) else {
         return Ok(Value::Bool(false));
     };
-    if canonical != "UTF-8" && canonical != "ASCII" {
-        return Ok(Value::Bool(false));
-    }
     context.set_mb_internal_encoding(canonical);
+    Ok(Value::Bool(true))
+}
+
+fn builtin_mb_list_encodings(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !args.is_empty() {
+        return Err(arity_error("mb_list_encodings", "zero arguments"));
+    }
+    Ok(Value::packed_array(
+        SUPPORTED_ENCODINGS
+            .iter()
+            .copied()
+            .map(Value::string)
+            .collect(),
+    ))
+}
+
+fn builtin_mb_encoding_aliases(
+    _context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() != 1 {
+        return Err(arity_error("mb_encoding_aliases", "exactly one argument"));
+    }
+    let encoding = encoding_arg("mb_encoding_aliases", &args[0])?;
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_VALUE",
+            format!(
+                "mb_encoding_aliases(): Argument #1 ($encoding) must be a valid encoding, {encoding:?} given"
+            ),
+        ));
+    };
+    Ok(Value::packed_array(
+        encoding_aliases(canonical)
+            .iter()
+            .copied()
+            .map(Value::string)
+            .collect(),
+    ))
+}
+
+fn builtin_mb_substitute_character(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if args.len() > 1 {
+        return Err(arity_error(
+            "mb_substitute_character",
+            "zero or one argument",
+        ));
+    }
+    let Some(value) = args.first() else {
+        return Ok(substitute_character_value(
+            context.mb_substitute_character(),
+        ));
+    };
+    let substitute = parse_substitute_character(value)?;
+    context.set_mb_substitute_character(substitute);
     Ok(Value::Bool(true))
 }
 
@@ -173,26 +258,21 @@ fn builtin_mb_strlen(
         .map(|value| encoding_arg("mb_strlen", value))
         .transpose()?
         .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
-    match canonical_encoding(&encoding) {
-        Some("UTF-8") => Ok(Value::Int(
-            validate_utf8("mb_strlen", string.as_bytes())?
-                .chars()
-                .count() as i64,
-        )),
-        Some("8BIT") => Ok(Value::Int(string.len() as i64)),
-        Some("ASCII") => {
-            if string.as_bytes().is_ascii() {
-                Ok(Value::Int(string.len() as i64))
-            } else {
-                Err(argument_value_error(
-                    "mb_strlen",
-                    "#1 ($string)",
-                    "is not valid for encoding ASCII",
-                ))
-            }
-        }
-        _ => Err(unsupported_encoding_error("mb_strlen", &encoding)),
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_strlen",
+            "#2 ($encoding)",
+            &encoding,
+        ));
+    };
+    if canonical == "8BIT" {
+        return Ok(Value::Int(string.len() as i64));
     }
+    Ok(Value::Int(
+        decode_bytes("mb_strlen", string.as_bytes(), canonical)?
+            .chars()
+            .count() as i64,
+    ))
 }
 
 fn builtin_mb_strtolower(
@@ -231,12 +311,20 @@ fn builtin_mb_substr(
         .transpose()?
         .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
     let Some(canonical) = canonical_encoding(&encoding) else {
-        return Err(unsupported_encoding_error("mb_substr", &encoding));
+        return Err(unsupported_encoding_error(
+            "mb_substr",
+            "#4 ($encoding)",
+            &encoding,
+        ));
     };
-    if canonical != "UTF-8" {
-        return Err(unsupported_encoding_error("mb_substr", &encoding));
+    if canonical == "8BIT" {
+        return Ok(Value::string(byte_substring(
+            string.as_bytes(),
+            start,
+            length,
+        )));
     }
-    let text = validate_utf8("mb_substr", string.as_bytes())?;
+    let text = decode_bytes("mb_substr", string.as_bytes(), canonical)?;
     let chars = text.char_indices().collect::<Vec<_>>();
     let total = chars.len();
     let start = normalize_character_offset(total, start);
@@ -256,9 +344,8 @@ fn builtin_mb_substr(
     let byte_end = chars
         .get(end_char)
         .map_or(text.len(), |(offset, _)| *offset);
-    Ok(Value::string(
-        text.as_bytes()[byte_start..byte_end].to_vec(),
-    ))
+    let output = encode_text("mb_substr", &text[byte_start..byte_end], canonical)?;
+    Ok(Value::string(output))
 }
 
 fn builtin_mb_strpos(
@@ -275,6 +362,63 @@ fn builtin_mb_stripos(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     string_position_builtin(context, "mb_stripos", args, true)
+}
+
+fn builtin_mb_strrpos(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    reverse_string_position_builtin(context, "mb_strrpos", args, false)
+}
+
+fn builtin_mb_strripos(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    reverse_string_position_builtin(context, "mb_strripos", args, true)
+}
+
+fn builtin_mb_substr_count(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    _span: RuntimeSourceSpan,
+) -> BuiltinResult {
+    if !(2..=3).contains(&args.len()) {
+        return Err(arity_error("mb_substr_count", "two or three argument(s)"));
+    }
+    let haystack = string_arg("mb_substr_count", &args[0])?;
+    let needle = string_arg("mb_substr_count", &args[1])?;
+    if needle.is_empty() {
+        return Err(argument_value_error(
+            "mb_substr_count",
+            "#2 ($needle)",
+            "must not be empty",
+        ));
+    }
+    let encoding = args
+        .get(2)
+        .map(|value| encoding_arg("mb_substr_count", value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            "mb_substr_count",
+            "#3 ($encoding)",
+            &encoding,
+        ));
+    };
+    if canonical == "8BIT" {
+        return Ok(Value::Int(
+            non_overlapping_byte_count(haystack.as_bytes(), needle.as_bytes()) as i64,
+        ));
+    }
+    let haystack = decode_bytes("mb_substr_count", haystack.as_bytes(), canonical)?;
+    let needle = decode_bytes("mb_substr_count", needle.as_bytes(), canonical)?;
+    Ok(Value::Int(
+        non_overlapping_text_count(&haystack, &needle) as i64
+    ))
 }
 
 fn string_position_builtin(
@@ -299,19 +443,26 @@ fn string_position_builtin(
         .transpose()?
         .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
     let Some(canonical) = canonical_encoding(&encoding) else {
-        return Err(unsupported_encoding_error(name, &encoding));
+        return Err(unsupported_encoding_error(
+            name,
+            "#4 ($encoding)",
+            &encoding,
+        ));
     };
-    let haystack_chars = encoded_chars(name, haystack.as_bytes(), canonical)?;
-    let needle_string = encoded_chars(name, needle.as_bytes(), canonical)?
-        .into_iter()
-        .collect::<String>();
-    let start = if offset < 0 {
-        haystack_chars
-            .len()
-            .saturating_sub(offset.unsigned_abs() as usize)
-    } else {
-        (offset as usize).min(haystack_chars.len())
-    };
+    if canonical == "8BIT" {
+        return byte_position(
+            haystack.as_bytes(),
+            needle.as_bytes(),
+            offset,
+            case_insensitive,
+            name,
+        );
+    }
+    let haystack_chars = decode_bytes(name, haystack.as_bytes(), canonical)?
+        .chars()
+        .collect::<Vec<_>>();
+    let needle_string = decode_bytes(name, needle.as_bytes(), canonical)?;
+    let start = validate_position_offset(haystack_chars.len(), offset, name)?;
     let tail = haystack_chars[start..].iter().collect::<String>();
     let (tail, needle_string) = if case_insensitive {
         (lowercase(&tail), lowercase(&needle_string))
@@ -325,21 +476,81 @@ fn string_position_builtin(
         }))
 }
 
-fn lowercase(value: &str) -> String {
-    value.chars().flat_map(char::to_lowercase).collect()
+fn reverse_string_position_builtin(
+    context: &mut BuiltinContext<'_>,
+    name: &'static str,
+    args: Vec<Value>,
+    case_insensitive: bool,
+) -> BuiltinResult {
+    if !(2..=4).contains(&args.len()) {
+        return Err(arity_error(name, "two to four argument(s)"));
+    }
+    let haystack = string_arg(name, &args[0])?;
+    let needle = string_arg(name, &args[1])?;
+    let offset = args
+        .get(2)
+        .map(|value| int_arg(name, value))
+        .transpose()?
+        .unwrap_or(0);
+    let encoding = args
+        .get(3)
+        .map(|value| encoding_arg(name, value))
+        .transpose()?
+        .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
+    let Some(canonical) = canonical_encoding(&encoding) else {
+        return Err(unsupported_encoding_error(
+            name,
+            "#4 ($encoding)",
+            &encoding,
+        ));
+    };
+    if canonical == "8BIT" {
+        return byte_reverse_position(
+            haystack.as_bytes(),
+            needle.as_bytes(),
+            offset,
+            case_insensitive,
+            name,
+        );
+    }
+    let haystack = decode_bytes(name, haystack.as_bytes(), canonical)?;
+    let needle = decode_bytes(name, needle.as_bytes(), canonical)?;
+    reverse_text_position(&haystack, &needle, offset, case_insensitive, name)
 }
 
-fn encoded_chars(function: &str, bytes: &[u8], encoding: &str) -> Result<Vec<char>, BuiltinError> {
-    match encoding {
-        "UTF-8" => Ok(validate_utf8(function, bytes)?.chars().collect()),
-        "ASCII" if bytes.is_ascii() => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
-        "ASCII" => Err(argument_value_error(
-            function,
-            "#1 ($string)",
-            "is not valid for encoding ASCII",
-        )),
-        _ => Err(unsupported_encoding_error(function, encoding)),
+fn reverse_text_position(
+    haystack: &str,
+    needle: &str,
+    offset: i64,
+    case_insensitive: bool,
+    name: &str,
+) -> BuiltinResult {
+    let total = haystack.chars().count();
+    let limit = validate_reverse_offset(total, offset, name)?;
+    if needle.is_empty() {
+        return Ok(Value::Int(if offset < 0 { limit } else { total } as i64));
     }
+    let (haystack, needle) = if case_insensitive {
+        (lowercase(haystack), lowercase(needle))
+    } else {
+        (haystack.to_owned(), needle.to_owned())
+    };
+    Ok(haystack
+        .match_indices(&needle)
+        .filter_map(|(byte_offset, _)| {
+            let position = haystack[..byte_offset].chars().count();
+            if offset >= 0 {
+                (position >= limit).then_some(position)
+            } else {
+                (position <= limit).then_some(position)
+            }
+        })
+        .last()
+        .map_or(Value::Bool(false), |position| Value::Int(position as i64)))
+}
+
+fn lowercase(value: &str) -> String {
+    value.chars().flat_map(char::to_lowercase).collect()
 }
 
 fn convert_case_builtin(
@@ -358,12 +569,16 @@ fn convert_case_builtin(
         .transpose()?
         .unwrap_or_else(|| context.mb_internal_encoding().to_owned());
     let Some(canonical) = canonical_encoding(&encoding) else {
-        return Err(unsupported_encoding_error(name, &encoding));
+        return Err(unsupported_encoding_error(
+            name,
+            "#2 ($encoding)",
+            &encoding,
+        ));
     };
-    if canonical != "UTF-8" {
-        return Err(unsupported_encoding_error(name, &encoding));
+    if canonical == "8BIT" {
+        return Ok(Value::String(string));
     }
-    let text = validate_utf8(name, string.as_bytes())?;
+    let text = decode_bytes(name, string.as_bytes(), canonical)?;
     let mut output = String::new();
     for character in text.chars() {
         if uppercase {
@@ -372,7 +587,7 @@ fn convert_case_builtin(
             output.extend(character.to_lowercase());
         }
     }
-    Ok(Value::string(output))
+    Ok(Value::string(encode_text(name, &output, canonical)?))
 }
 
 fn encoding_arg(name: &str, value: &Value) -> Result<String, BuiltinError> {
@@ -412,17 +627,54 @@ fn canonical_encoding(encoding: &str) -> Option<&'static str> {
         "" | "utf8" => Some("UTF-8"),
         "ascii" | "usascii" => Some("ASCII"),
         "8bit" | "binary" => Some("8BIT"),
+        "iso88591" | "latin1" => Some("ISO-8859-1"),
+        "windows1252" | "cp1252" => Some("Windows-1252"),
+        "sjis" | "shiftjis" | "shiftjisx0213" | "sjiswin" | "cp932" => Some("SJIS"),
+        "eucjp" | "ujis" => Some("EUC-JP"),
+        "iso2022jp" | "jis" => Some("ISO-2022-JP"),
         _ => None,
     }
 }
 
-fn bytes_match_encoding(bytes: &[u8], encoding: &str) -> bool {
+const SUPPORTED_ENCODINGS: &[&str] = &[
+    "UTF-8",
+    "ASCII",
+    "8bit",
+    "ISO-8859-1",
+    "Windows-1252",
+    "SJIS",
+    "EUC-JP",
+    "ISO-2022-JP",
+];
+
+fn encoding_aliases(encoding: &str) -> &'static [&'static str] {
     match encoding {
-        "ASCII" => bytes.is_ascii(),
-        "8BIT" => true,
-        "UTF-8" => std::str::from_utf8(bytes).is_ok(),
-        _ => false,
+        "UTF-8" => &["utf8"],
+        "ASCII" => &[
+            "ANSI_X3.4-1968",
+            "iso-ir-6",
+            "ANSI_X3.4-1986",
+            "ISO_646.irv:1991",
+            "US-ASCII",
+            "ISO646-US",
+            "us",
+            "IBM367",
+            "IBM-367",
+            "cp367",
+            "csASCII",
+        ],
+        "8BIT" => &["binary"],
+        "ISO-8859-1" => &["ISO8859-1", "latin1"],
+        "Windows-1252" => &["cp1252"],
+        "SJIS" => &["x-sjis", "SHIFT-JIS"],
+        "EUC-JP" => &["EUC", "EUC_JP", "eucJP", "x-euc-jp"],
+        "ISO-2022-JP" => &[],
+        _ => &[],
     }
+}
+
+fn bytes_match_encoding(bytes: &[u8], encoding: &str) -> bool {
+    decode_bytes("mb_detect_encoding", bytes, encoding).is_ok()
 }
 
 fn value_matches_encoding(value: &Value, encoding: &str) -> Result<bool, BuiltinError> {
@@ -449,10 +701,220 @@ fn validate_utf8<'a>(name: &str, bytes: &'a [u8]) -> Result<&'a str, BuiltinErro
         .map_err(|_| argument_value_error(name, "#1 ($string)", "is not valid for encoding UTF-8"))
 }
 
-fn unsupported_encoding_error(name: &str, encoding: &str) -> BuiltinError {
+fn decode_bytes(name: &str, bytes: &[u8], encoding: &str) -> Result<String, BuiltinError> {
+    match encoding {
+        "8BIT" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
+        "ASCII" if bytes.is_ascii() => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
+        "ASCII" => Err(invalid_encoding_value_error(name, encoding)),
+        "UTF-8" => validate_utf8(name, bytes).map(ToOwned::to_owned),
+        "ISO-8859-1" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
+        "Windows-1252" | "SJIS" | "EUC-JP" | "ISO-2022-JP" => {
+            let encoding = encoding_rs_encoding(encoding);
+            let (text, had_errors) = encoding.decode_without_bom_handling(bytes);
+            if had_errors {
+                Err(invalid_encoding_value_error(name, encoding.name()))
+            } else {
+                Ok(text.into_owned())
+            }
+        }
+        _ => Err(unsupported_encoding_error(name, "encoding", encoding)),
+    }
+}
+
+fn encode_text(name: &str, text: &str, encoding: &str) -> Result<Vec<u8>, BuiltinError> {
+    match encoding {
+        "8BIT" | "UTF-8" => Ok(text.as_bytes().to_vec()),
+        "ASCII" => {
+            if text.is_ascii() {
+                Ok(text.as_bytes().to_vec())
+            } else {
+                Err(invalid_encoding_value_error(name, encoding))
+            }
+        }
+        "ISO-8859-1" => encode_latin1(name, text),
+        "Windows-1252" | "SJIS" | "EUC-JP" | "ISO-2022-JP" => {
+            let encoding = encoding_rs_encoding(encoding);
+            let (bytes, _encoding, had_errors) = encoding.encode(text);
+            if had_errors {
+                Err(invalid_encoding_value_error(name, encoding.name()))
+            } else {
+                Ok(bytes.into_owned())
+            }
+        }
+        _ => Err(unsupported_encoding_error(name, "encoding", encoding)),
+    }
+}
+
+fn encode_latin1(name: &str, text: &str) -> Result<Vec<u8>, BuiltinError> {
+    let mut output = Vec::with_capacity(text.len());
+    for character in text.chars() {
+        let value = character as u32;
+        if value > 0xff {
+            return Err(invalid_encoding_value_error(name, "ISO-8859-1"));
+        }
+        output.push(value as u8);
+    }
+    Ok(output)
+}
+
+fn encoding_rs_encoding(encoding: &str) -> &'static Encoding {
+    match encoding {
+        "Windows-1252" => WINDOWS_1252,
+        "SJIS" => SHIFT_JIS,
+        "EUC-JP" => EUC_JP,
+        "ISO-2022-JP" => ISO_2022_JP,
+        _ => Encoding::for_label(encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
+    }
+}
+
+fn invalid_encoding_value_error(name: &str, encoding: &str) -> BuiltinError {
     BuiltinError::new(
-        "E_PHP_RUNTIME_UNSUPPORTED_MBSTRING_ENCODING",
-        format!("{name}(): encoding {encoding:?} is outside the bounded UTF-8 mbstring MVP"),
+        "E_PHP_RUNTIME_BUILTIN_VALUE",
+        format!("{name}(): Argument #1 ($string) is not valid for encoding {encoding}"),
+    )
+}
+
+fn parse_substitute_character(value: &Value) -> Result<MbSubstituteCharacter, BuiltinError> {
+    match deref_value(value) {
+        Value::Int(codepoint) if valid_unicode_codepoint(codepoint) => {
+            Ok(MbSubstituteCharacter::Codepoint(codepoint))
+        }
+        Value::String(_) => {
+            let mode = encoding_arg("mb_substitute_character", value)?;
+            match mode.to_ascii_lowercase().as_str() {
+                "none" => Ok(MbSubstituteCharacter::Mode("none")),
+                "long" => Ok(MbSubstituteCharacter::Mode("long")),
+                "entity" => Ok(MbSubstituteCharacter::Mode("entity")),
+                _ => Err(invalid_substitute_character_error()),
+            }
+        }
+        _ => Err(invalid_substitute_character_error()),
+    }
+}
+
+fn substitute_character_value(substitute: &MbSubstituteCharacter) -> Value {
+    match substitute {
+        MbSubstituteCharacter::Codepoint(codepoint) => Value::Int(*codepoint),
+        MbSubstituteCharacter::Mode(mode) => Value::string(*mode),
+    }
+}
+
+fn valid_unicode_codepoint(codepoint: i64) -> bool {
+    matches!(codepoint, 0..=0xd7ff | 0xe000..=0x10ffff)
+}
+
+fn invalid_substitute_character_error() -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_BUILTIN_VALUE",
+        "mb_substitute_character(): Argument #1 ($substitute_character) must be \"none\", \"long\", \"entity\" or a valid codepoint",
+    )
+}
+
+fn byte_substring(bytes: &[u8], start: i64, length: Option<i64>) -> Vec<u8> {
+    let total = bytes.len();
+    let start = normalize_character_offset(total, start);
+    if start >= total {
+        return Vec::new();
+    }
+    let len = match length {
+        None => total - start,
+        Some(length) if length >= 0 => (length as usize).min(total - start),
+        Some(length) => (total - start).saturating_sub(length.unsigned_abs() as usize),
+    };
+    bytes[start..start + len].to_vec()
+}
+
+fn byte_position(
+    haystack: &[u8],
+    needle: &[u8],
+    offset: i64,
+    case_insensitive: bool,
+    name: &str,
+) -> BuiltinResult {
+    let start = validate_position_offset(haystack.len(), offset, name)?;
+    if needle.is_empty() {
+        return Ok(Value::Int(start as i64));
+    }
+    if start > haystack.len() {
+        return Ok(Value::Bool(false));
+    }
+    let mut haystack_tail = haystack[start..].to_vec();
+    let mut needle = needle.to_vec();
+    if case_insensitive {
+        haystack_tail.make_ascii_lowercase();
+        needle.make_ascii_lowercase();
+    }
+    Ok(haystack_tail
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())
+        .map_or(Value::Bool(false), |offset| {
+            Value::Int((start + offset) as i64)
+        }))
+}
+
+fn byte_reverse_position(
+    haystack: &[u8],
+    needle: &[u8],
+    offset: i64,
+    case_insensitive: bool,
+    name: &str,
+) -> BuiltinResult {
+    let total = haystack.len();
+    let limit = validate_reverse_offset(total, offset, name)?;
+    if needle.is_empty() {
+        return Ok(Value::Int(if offset < 0 { limit } else { total } as i64));
+    }
+    let mut haystack = haystack.to_vec();
+    let mut needle = needle.to_vec();
+    if case_insensitive {
+        haystack.make_ascii_lowercase();
+        needle.make_ascii_lowercase();
+    }
+    Ok(haystack
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(position, window)| {
+            if window != needle.as_slice() {
+                return None;
+            }
+            if offset >= 0 {
+                (position >= limit).then_some(position)
+            } else {
+                (position <= limit).then_some(position)
+            }
+        })
+        .last()
+        .map_or(Value::Bool(false), |position| Value::Int(position as i64)))
+}
+
+fn non_overlapping_byte_count(haystack: &[u8], needle: &[u8]) -> usize {
+    let mut count = 0;
+    let mut tail = haystack;
+    while let Some(offset) = tail
+        .windows(needle.len())
+        .position(|window| window == needle)
+    {
+        count += 1;
+        tail = &tail[offset + needle.len()..];
+    }
+    count
+}
+
+fn non_overlapping_text_count(haystack: &str, needle: &str) -> usize {
+    let mut count = 0;
+    let mut tail = haystack;
+    while let Some(offset) = tail.find(needle) {
+        count += 1;
+        tail = &tail[offset + needle.len()..];
+    }
+    count
+}
+
+fn unsupported_encoding_error(name: &str, argument: &str, encoding: &str) -> BuiltinError {
+    argument_value_error(
+        name,
+        argument,
+        &format!("must be a valid encoding, {encoding:?} given"),
     )
 }
 
@@ -462,6 +924,32 @@ fn normalize_character_offset(total: usize, offset: i64) -> usize {
     } else {
         total.saturating_sub(offset.unsigned_abs() as usize)
     }
+}
+
+fn validate_position_offset(total: usize, offset: i64, name: &str) -> Result<usize, BuiltinError> {
+    if offset > total as i64 || offset < -(total as i64) {
+        return Err(argument_value_error(
+            name,
+            "#3 ($offset)",
+            "must be contained in argument #1 ($haystack)",
+        ));
+    }
+    Ok(normalize_character_offset(total, offset))
+}
+
+fn validate_reverse_offset(total: usize, offset: i64, name: &str) -> Result<usize, BuiltinError> {
+    if offset > total as i64 || offset < -(total as i64) {
+        return Err(argument_value_error(
+            name,
+            "#3 ($offset)",
+            "must be contained in argument #1 ($haystack)",
+        ));
+    }
+    Ok(if offset < 0 {
+        total - offset.unsigned_abs() as usize
+    } else {
+        offset as usize
+    })
 }
 
 #[cfg(test)]
@@ -523,6 +1011,105 @@ mod tests {
         )
         .expect("mb_stripos succeeds");
         assert_eq!(insensitive_position, Value::Int(1));
+
+        let invalid_position_offset = (registry.get("mb_strpos").unwrap().function())(
+            &mut context,
+            vec![Value::string("Aé日é"), Value::string("é"), Value::Int(5)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("mb_strpos rejects out-of-range offset");
+        assert_eq!(
+            invalid_position_offset.message(),
+            "mb_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
+        );
+
+        let reverse_position = (registry.get("mb_strrpos").unwrap().function())(
+            &mut context,
+            vec![Value::string("Aé日é"), Value::string("é")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_strrpos succeeds");
+        assert_eq!(reverse_position, Value::Int(3));
+
+        let reverse_negative_offset = (registry.get("mb_strrpos").unwrap().function())(
+            &mut context,
+            vec![Value::string("foo"), Value::string("foo"), Value::Int(-1)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_strrpos negative offset succeeds");
+        assert_eq!(reverse_negative_offset, Value::Int(0));
+
+        let reverse_insensitive_position = (registry.get("mb_strripos").unwrap().function())(
+            &mut context,
+            vec![Value::string("Aé日É"), Value::string("é")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_strripos succeeds");
+        assert_eq!(reverse_insensitive_position, Value::Int(3));
+
+        let count = (registry.get("mb_substr_count").unwrap().function())(
+            &mut context,
+            vec![Value::string("日本語日本語日本語"), Value::string("日本語")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_substr_count succeeds");
+        assert_eq!(count, Value::Int(3));
+    }
+
+    #[test]
+    fn mbstring_substr_count_matches_non_overlapping_and_error_edges() {
+        let registry = BuiltinRegistry::new();
+        let entry = registry
+            .get("mb_substr_count")
+            .expect("mb_substr_count exists");
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        let ascii = (entry.function())(
+            &mut context,
+            vec![Value::string("abcabcabc"), Value::string("abcabc")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("ascii count succeeds");
+        assert_eq!(ascii, Value::Int(1));
+
+        let binary = (entry.function())(
+            &mut context,
+            vec![
+                Value::string(vec![0xff, b'A', 0xff, b'A']),
+                Value::string(vec![0xff, b'A']),
+                Value::string("8bit"),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("8bit count succeeds");
+        assert_eq!(binary, Value::Int(2));
+
+        let empty_needle = (entry.function())(
+            &mut context,
+            vec![Value::string("abc"), Value::string("")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("empty needle is rejected");
+        assert_eq!(
+            empty_needle.message(),
+            "mb_substr_count(): Argument #2 ($needle) must not be empty"
+        );
+
+        let bad_encoding = (entry.function())(
+            &mut context,
+            vec![
+                Value::string("abc"),
+                Value::string("a"),
+                Value::string("unknown-encoding"),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect_err("unknown encoding is rejected");
+        assert_eq!(
+            bad_encoding.message(),
+            "mb_substr_count(): Argument #3 ($encoding) must be a valid encoding, \"unknown-encoding\" given"
+        );
     }
 
     #[test]
@@ -580,5 +1167,115 @@ mod tests {
         )
         .expect("mb_check_encoding 8bit succeeds");
         assert_eq!(check, Value::Bool(true));
+    }
+
+    #[test]
+    fn mbstring_common_legacy_encodings_convert_and_count() {
+        let registry = BuiltinRegistry::new();
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        let latin1 = Value::string(vec![b'R', 0xe9, b's', b'u', b'm', 0xe9]);
+        let converted = (registry.get("mb_convert_encoding").unwrap().function())(
+            &mut context,
+            vec![
+                latin1.clone(),
+                Value::string("UTF-8"),
+                Value::string("ISO-8859-1"),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("latin1 to utf8 succeeds");
+        assert_eq!(converted, Value::string("Résumé"));
+
+        let roundtrip = (registry.get("mb_convert_encoding").unwrap().function())(
+            &mut context,
+            vec![
+                converted,
+                Value::string("ISO-8859-1"),
+                Value::string("UTF-8"),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("utf8 to latin1 succeeds");
+        assert_eq!(roundtrip, latin1);
+
+        let sjis = Value::string(vec![0x93, 0xfa, 0x96, 0x7b]);
+        let len = (registry.get("mb_strlen").unwrap().function())(
+            &mut context,
+            vec![sjis.clone(), Value::string("SJIS")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("sjis length succeeds");
+        assert_eq!(len, Value::Int(2));
+
+        let detected = (registry.get("mb_detect_encoding").unwrap().function())(
+            &mut context,
+            vec![
+                sjis,
+                Value::packed_array(vec![Value::string("ASCII"), Value::string("SJIS")]),
+                Value::Bool(true),
+            ],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("sjis detection succeeds");
+        assert_eq!(detected, Value::string("SJIS"));
+    }
+
+    #[test]
+    fn mbstring_registry_helpers_cover_supported_aliases_and_substitution_state() {
+        let registry = BuiltinRegistry::new();
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+
+        let encodings = (registry.get("mb_list_encodings").unwrap().function())(
+            &mut context,
+            vec![],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("mb_list_encodings succeeds");
+        let Value::Array(encodings) = encodings else {
+            panic!("expected encoding array");
+        };
+        assert!(
+            encodings
+                .iter()
+                .any(|(_, value)| value == &Value::string("UTF-8"))
+        );
+        assert!(
+            encodings
+                .iter()
+                .any(|(_, value)| value == &Value::string("SJIS"))
+        );
+
+        let aliases = (registry.get("mb_encoding_aliases").unwrap().function())(
+            &mut context,
+            vec![Value::string("SJIS")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("aliases succeed");
+        let Value::Array(aliases) = aliases else {
+            panic!("expected alias array");
+        };
+        assert!(
+            aliases
+                .iter()
+                .any(|(_, value)| value == &Value::string("SHIFT-JIS"))
+        );
+
+        let substitute = registry.get("mb_substitute_character").unwrap();
+        let current = (substitute.function())(&mut context, vec![], RuntimeSourceSpan::default())
+            .expect("default substitute");
+        assert_eq!(current, Value::Int(63));
+        let updated = (substitute.function())(
+            &mut context,
+            vec![Value::string("none")],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("set substitute");
+        assert_eq!(updated, Value::Bool(true));
+        let current = (substitute.function())(&mut context, vec![], RuntimeSourceSpan::default())
+            .expect("updated substitute");
+        assert_eq!(current, Value::string("none"));
     }
 }

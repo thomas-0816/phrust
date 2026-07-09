@@ -1,6 +1,8 @@
 //! Deterministic System V message queue compatibility slice.
 
-use super::core::{argument_type_error, arity_error, assign_reference_arg, int_arg, string_arg};
+use super::core::{
+    argument_type_error, argument_value_error, arity_error, assign_reference_arg, int_arg,
+};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan, context::SysvMessage,
@@ -10,10 +12,9 @@ use crate::{
 };
 
 const QUEUE_CLASS: &str = "SysvMessageQueue";
-const QUEUE_ID_PROPERTY: &str = "__sysvmsg_id";
-
 const MSG_EAGAIN: i64 = libc::EAGAIN as i64;
 const MSG_ENOMSG: i64 = libc::ENOMSG as i64;
+const MSG_EINVAL: i64 = libc::EINVAL as i64;
 const MSG_NOERROR: i64 = 0o10000;
 const MSG_EXCEPT: i64 = 0o20000;
 const E2BIG: i64 = libc::E2BIG as i64;
@@ -61,7 +62,9 @@ fn builtin_msg_get_queue(
     let key = int_arg("msg_get_queue", &args[0])?;
     let permissions = optional_int("msg_get_queue", &args, 1, 0o666)?;
     let id = context.sysvmsg_state().get_queue(key, permissions);
-    Ok(Value::Object(queue_object(id)))
+    let object = queue_object();
+    context.sysvmsg_state().bind_object(object.id(), id);
+    Ok(Value::Object(object))
 }
 
 fn builtin_msg_send(
@@ -70,12 +73,13 @@ fn builtin_msg_send(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("msg_send", &args, 3, 6)?;
-    let queue_id = queue_id("msg_send", &args[0])?;
+    let queue_id = queue_id(context, "msg_send", &args[0])?;
     let message_type = int_arg("msg_send", &args[1])?;
     if message_type <= 0 {
-        return Err(BuiltinError::new(
-            "E_PHP_RUNTIME_SYSVMSG_TYPE",
-            "msg_send(): Argument #2 ($message_type) must be greater than 0",
+        return Err(argument_value_error(
+            "msg_send",
+            "#2 ($message_type)",
+            "must be greater than 0",
         ));
     }
     let serialize = optional_bool("msg_send", &args, 3, true)?;
@@ -89,12 +93,17 @@ fn builtin_msg_send(
         message_scalar_bytes("msg_send", &args[2])?
     };
 
-    if !blocking
-        && context
-            .sysvmsg_state()
-            .queue(queue_id)
-            .is_some_and(|queue| queue.byte_count() + payload.len() > queue.max_bytes() as usize)
-    {
+    let Some(queue) = context.sysvmsg_state().queue(queue_id) else {
+        context.php_warning(
+            "E_PHP_RUNTIME_SYSVMSG_SEND",
+            "msg_send(): msgsnd failed: Invalid argument",
+            _span,
+        );
+        assign_reference_arg(args.get(5), Value::Int(MSG_EINVAL));
+        return Ok(Value::Bool(false));
+    };
+
+    if !blocking && queue.byte_count() + payload.len() > queue.max_bytes() as usize {
         assign_reference_arg(args.get(5), Value::Int(MSG_EAGAIN));
         return Ok(Value::Bool(false));
     }
@@ -116,16 +125,31 @@ fn builtin_msg_receive(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_between("msg_receive", &args, 5, 8)?;
-    let queue_id = queue_id("msg_receive", &args[0])?;
+    let queue_id = queue_id(context, "msg_receive", &args[0])?;
     let desired_type = int_arg("msg_receive", &args[1])?;
     let max_size = int_arg("msg_receive", &args[3])?;
+    if max_size <= 0 {
+        return Err(argument_value_error(
+            "msg_receive",
+            "#4 ($max_message_size)",
+            "must be greater than 0",
+        ));
+    }
     let unserialize = optional_bool("msg_receive", &args, 5, true)?;
     let flags = optional_int("msg_receive", &args, 6, 0)?;
     let except = flags & MSG_EXCEPT != 0 && desired_type > 0;
+    if context.sysvmsg_state().queue(queue_id).is_none() {
+        assign_reference_arg(args.get(2), Value::Int(0));
+        assign_reference_arg(args.get(4), Value::Bool(false));
+        assign_reference_arg(args.get(7), Value::Int(MSG_EINVAL));
+        return Ok(Value::Bool(false));
+    }
     let Some(message) = context
         .sysvmsg_state()
         .receive(queue_id, desired_type, except)
     else {
+        assign_reference_arg(args.get(2), Value::Int(0));
+        assign_reference_arg(args.get(4), Value::Bool(false));
         assign_reference_arg(args.get(7), Value::Int(MSG_ENOMSG));
         return Ok(Value::Bool(false));
     };
@@ -141,20 +165,37 @@ fn builtin_msg_receive(
             message.payload()[..max_size as usize].to_vec(),
             message.is_serialized(),
         );
-        return receive_message(args, truncated, unserialize);
+        return receive_message(context, args, truncated, unserialize, _span);
     }
 
-    receive_message(args, message, unserialize)
+    receive_message(context, args, message, unserialize, _span)
 }
 
-fn receive_message(args: Vec<Value>, message: SysvMessage, unserialize: bool) -> BuiltinResult {
+fn receive_message(
+    context: &mut BuiltinContext<'_>,
+    args: Vec<Value>,
+    message: SysvMessage,
+    unserialize: bool,
+    span: RuntimeSourceSpan,
+) -> BuiltinResult {
     assign_reference_arg(args.get(2), Value::Int(message.message_type()));
-    let value = if unserialize && message.is_serialized() {
-        crate::unserialize(
+    let value = if unserialize {
+        match crate::unserialize(
             &PhpString::from_bytes(message.payload().to_vec()),
             crate::UnserializeOptions::default(),
-        )
-        .map_err(|error| BuiltinError::new("E_PHP_RUNTIME_SYSVMSG_UNSERIALIZE", error.message()))?
+        ) {
+            Ok(value) => value,
+            Err(_) => {
+                context.php_warning(
+                    "E_PHP_RUNTIME_SYSVMSG_CORRUPTED",
+                    "msg_receive(): Message corrupted",
+                    span,
+                );
+                assign_reference_arg(args.get(4), Value::Bool(false));
+                assign_reference_arg(args.get(7), Value::Int(MSG_EINVAL));
+                return Ok(Value::Bool(false));
+            }
+        }
     } else {
         Value::string(message.payload().to_vec())
     };
@@ -169,7 +210,7 @@ fn builtin_msg_remove_queue(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("msg_remove_queue", &args, 1)?;
-    let queue_id = queue_id("msg_remove_queue", &args[0])?;
+    let queue_id = queue_id(context, "msg_remove_queue", &args[0])?;
     Ok(Value::Bool(context.sysvmsg_state().remove_queue(queue_id)))
 }
 
@@ -179,12 +220,14 @@ fn builtin_msg_stat_queue(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("msg_stat_queue", &args, 1)?;
-    let queue_id = queue_id("msg_stat_queue", &args[0])?;
+    let queue_id = queue_id(context, "msg_stat_queue", &args[0])?;
     let Some(queue) = context.sysvmsg_state().queue(queue_id) else {
         return Ok(Value::Bool(false));
     };
     let mut result = PhpArray::new();
     result.insert(string_key("msg_perm.key"), Value::Int(queue.key()));
+    result.insert(string_key("msg_perm.uid"), Value::Int(queue.owner_uid()));
+    result.insert(string_key("msg_perm.gid"), Value::Int(queue.owner_gid()));
     result.insert(string_key("msg_perm.mode"), Value::Int(queue.permissions()));
     result.insert(
         string_key("msg_qnum"),
@@ -204,7 +247,7 @@ fn builtin_msg_set_queue(
     _span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     expect_exact("msg_set_queue", &args, 2)?;
-    let queue_id = queue_id("msg_set_queue", &args[0])?;
+    let queue_id = queue_id(context, "msg_set_queue", &args[0])?;
     let Value::Array(data) = &args[1] else {
         return Err(argument_type_error(
             "msg_set_queue",
@@ -218,6 +261,12 @@ fn builtin_msg_set_queue(
     };
     if let Some(value) = data.get(&string_key("msg_perm.mode")) {
         queue.set_permissions(int_arg("msg_set_queue", value)?);
+    }
+    if let Some(value) = data.get(&string_key("msg_perm.uid")) {
+        queue.set_owner_uid(int_arg("msg_set_queue", value)?);
+    }
+    if let Some(value) = data.get(&string_key("msg_perm.gid")) {
+        queue.set_owner_gid(int_arg("msg_set_queue", value)?);
     }
     if let Some(value) = data.get(&string_key("msg_qbytes")) {
         queue.set_max_bytes(int_arg("msg_set_queue", value)?);
@@ -275,33 +324,66 @@ fn optional_bool(
 
 fn message_scalar_bytes(name: &str, value: &Value) -> Result<Vec<u8>, BuiltinError> {
     match value {
-        Value::Null | Value::Array(_) | Value::Object(_) | Value::Resource(_) => Err(
-            argument_type_error(name, "#3 ($message)", "string|int|float|bool", value),
-        ),
-        _ => Ok(string_arg(name, value)?.as_bytes().to_vec()),
+        Value::String(value) => Ok(value.as_bytes().to_vec()),
+        Value::Int(value) => Ok(value.to_string().into_bytes()),
+        Value::Float(value) => Ok(sysvmsg_raw_float_bytes(value.to_f64())),
+        Value::Bool(false) => Ok(b"0".to_vec()),
+        Value::Bool(true) => Ok(b"1".to_vec()),
+        Value::Reference(cell) => message_scalar_bytes(name, &cell.get()),
+        Value::Null
+        | Value::Array(_)
+        | Value::Object(_)
+        | Value::Resource(_)
+        | Value::Fiber(_)
+        | Value::Generator(_)
+        | Value::Callable(_)
+        | Value::Uninitialized => Err(argument_type_error(
+            name,
+            "#3 ($message)",
+            "string|int|float|bool",
+            value,
+        )),
     }
 }
 
-fn queue_id(name: &str, value: &Value) -> Result<i64, BuiltinError> {
+fn sysvmsg_raw_float_bytes(value: f64) -> Vec<u8> {
+    if value.is_nan() {
+        b"NAN".to_vec()
+    } else if value.is_infinite() {
+        if value.is_sign_negative() {
+            b"-INF".to_vec()
+        } else {
+            b"INF".to_vec()
+        }
+    } else {
+        format!("{value:.6}").into_bytes()
+    }
+}
+
+fn queue_id(
+    context: &mut BuiltinContext<'_>,
+    name: &str,
+    value: &Value,
+) -> Result<i64, BuiltinError> {
     let Value::Object(object) = value else {
         return Err(argument_type_error(name, "#1 ($queue)", QUEUE_CLASS, value));
     };
     if normalize_class_name(&object.class_name()) != "sysvmessagequeue" {
         return Err(argument_type_error(name, "#1 ($queue)", QUEUE_CLASS, value));
     }
-    match object.get_property(QUEUE_ID_PROPERTY) {
-        Some(Value::Int(id)) if id > 0 => Ok(id),
-        _ => Err(BuiltinError::new(
-            "E_PHP_RUNTIME_SYSVMSG_INVALID",
-            format!("{name}(): SysvMessageQueue object is no longer valid"),
-        )),
-    }
+    context
+        .sysvmsg_state()
+        .queue_id_for_object(object.id())
+        .ok_or_else(|| {
+            BuiltinError::new(
+                "E_PHP_RUNTIME_SYSVMSG_INVALID",
+                format!("{name}(): SysvMessageQueue object is no longer valid"),
+            )
+        })
 }
 
-fn queue_object(id: i64) -> ObjectRef {
-    let object = ObjectRef::new_with_display_name(&runtime_class(QUEUE_CLASS), QUEUE_CLASS);
-    object.set_property(QUEUE_ID_PROPERTY, Value::Int(id));
-    object
+fn queue_object() -> ObjectRef {
+    ObjectRef::new_with_display_name(&runtime_class(QUEUE_CLASS), QUEUE_CLASS)
 }
 
 fn runtime_class(name: &str) -> ClassEntry {
@@ -328,6 +410,8 @@ fn string_key(key: &str) -> ArrayKey {
 mod tests {
     use super::*;
     use crate::{OutputBuffer, ReferenceCell};
+
+    const MSG_IPC_NOWAIT: i64 = libc::IPC_NOWAIT as i64;
 
     #[test]
     fn queue_send_receive_serialized_payload_and_metadata() {
@@ -375,5 +459,256 @@ mod tests {
             panic!("expected stats array");
         };
         assert_eq!(stats.get(&string_key("msg_qnum")), Some(&Value::Int(0)));
+    }
+
+    #[test]
+    fn queue_object_does_not_expose_internal_id_property() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let queue = builtin_msg_get_queue(
+            &mut context,
+            vec![Value::Int(456)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("queue");
+        let Value::Object(queue) = queue else {
+            panic!("expected queue object");
+        };
+
+        assert_eq!(queue.get_property("__sysvmsg_id"), None);
+    }
+
+    #[test]
+    fn receive_raw_payload_with_unserialize_reports_corruption() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let queue = builtin_msg_get_queue(
+            &mut context,
+            vec![Value::Int(789)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("queue");
+        assert_eq!(
+            builtin_msg_send(
+                &mut context,
+                vec![
+                    queue.clone(),
+                    Value::Int(1),
+                    Value::string("Hi"),
+                    Value::Bool(false),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("send"),
+            Value::Bool(true)
+        );
+
+        let received_type = ReferenceCell::new(Value::Null);
+        let received_message = ReferenceCell::new(Value::Null);
+        let error = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            builtin_msg_receive(
+                &mut context,
+                vec![
+                    queue,
+                    Value::Int(0),
+                    Value::Reference(received_type.clone()),
+                    Value::Int(1024),
+                    Value::Reference(received_message.clone()),
+                    Value::Bool(true),
+                    Value::Int(0),
+                    Value::Reference(error.clone()),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("receive"),
+            Value::Bool(false)
+        );
+        assert_eq!(received_type.get(), Value::Int(1));
+        assert_eq!(received_message.get(), Value::Bool(false));
+        assert_eq!(error.get(), Value::Int(MSG_EINVAL));
+    }
+
+    #[test]
+    fn raw_message_scalar_bytes_follow_sysvmsg_c_formatting() {
+        assert_eq!(
+            message_scalar_bytes("msg_send", &Value::Bool(false)).expect("false"),
+            b"0"
+        );
+        assert_eq!(
+            message_scalar_bytes("msg_send", &Value::Bool(true)).expect("true"),
+            b"1"
+        );
+        assert_eq!(
+            message_scalar_bytes("msg_send", &Value::float(9_223_372_036_854_776_000.0))
+                .expect("float"),
+            b"9223372036854775808.000000"
+        );
+        assert_eq!(
+            message_scalar_bytes("msg_send", &Value::float(1.01)).expect("float"),
+            b"1.010000"
+        );
+    }
+
+    #[test]
+    fn empty_nowait_receive_assigns_false_message_and_zero_type() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let queue = builtin_msg_get_queue(
+            &mut context,
+            vec![Value::Int(2468)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("queue");
+        let received_type = ReferenceCell::new(Value::Null);
+        let received_message = ReferenceCell::new(Value::Null);
+        let error = ReferenceCell::new(Value::Null);
+
+        assert_eq!(
+            builtin_msg_receive(
+                &mut context,
+                vec![
+                    queue,
+                    Value::Int(1),
+                    Value::Reference(received_type.clone()),
+                    Value::Int(1024),
+                    Value::Reference(received_message.clone()),
+                    Value::Bool(false),
+                    Value::Int(MSG_IPC_NOWAIT),
+                    Value::Reference(error.clone()),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("receive"),
+            Value::Bool(false)
+        );
+        assert_eq!(received_type.get(), Value::Int(0));
+        assert_eq!(received_message.get(), Value::Bool(false));
+        assert_eq!(error.get(), Value::Int(MSG_ENOMSG));
+    }
+
+    #[test]
+    fn removed_queue_object_operations_return_false_without_invalidating_handle() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let queue = builtin_msg_get_queue(
+            &mut context,
+            vec![Value::Int(9753)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("queue");
+
+        assert_eq!(
+            builtin_msg_remove_queue(
+                &mut context,
+                vec![queue.clone()],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("remove"),
+            Value::Bool(true)
+        );
+
+        let mut settings = PhpArray::new();
+        settings.insert(string_key("msg_qbytes"), Value::Int(1));
+        assert_eq!(
+            builtin_msg_set_queue(
+                &mut context,
+                vec![queue.clone(), Value::Array(settings)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("set removed"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            builtin_msg_stat_queue(
+                &mut context,
+                vec![queue.clone()],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("stat removed"),
+            Value::Bool(false)
+        );
+
+        let received_type = ReferenceCell::new(Value::Null);
+        let received_message = ReferenceCell::new(Value::Null);
+        let receive_error = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            builtin_msg_receive(
+                &mut context,
+                vec![
+                    queue.clone(),
+                    Value::Int(0),
+                    Value::Reference(received_type.clone()),
+                    Value::Int(1),
+                    Value::Reference(received_message.clone()),
+                    Value::Bool(true),
+                    Value::Int(0),
+                    Value::Reference(receive_error.clone()),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("receive removed"),
+            Value::Bool(false)
+        );
+        assert_eq!(received_type.get(), Value::Int(0));
+        assert_eq!(received_message.get(), Value::Bool(false));
+        assert_eq!(receive_error.get(), Value::Int(MSG_EINVAL));
+
+        let send_error = ReferenceCell::new(Value::Null);
+        assert_eq!(
+            builtin_msg_send(
+                &mut context,
+                vec![
+                    queue,
+                    Value::Int(1),
+                    Value::string("foo"),
+                    Value::Bool(true),
+                    Value::Bool(true),
+                    Value::Reference(send_error.clone()),
+                ],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("send removed"),
+            Value::Bool(false)
+        );
+        assert_eq!(send_error.get(), Value::Int(MSG_EINVAL));
+    }
+
+    #[test]
+    fn set_queue_updates_uid_gid_metadata() {
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        let queue = builtin_msg_get_queue(
+            &mut context,
+            vec![Value::Int(987)],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("queue");
+        let mut settings = PhpArray::new();
+        settings.insert(string_key("msg_perm.uid"), Value::Int(101));
+        settings.insert(string_key("msg_perm.gid"), Value::Int(202));
+        assert_eq!(
+            builtin_msg_set_queue(
+                &mut context,
+                vec![queue.clone(), Value::Array(settings)],
+                RuntimeSourceSpan::default(),
+            )
+            .expect("set"),
+            Value::Bool(true)
+        );
+
+        let stats = builtin_msg_stat_queue(&mut context, vec![queue], RuntimeSourceSpan::default())
+            .expect("stats");
+        let Value::Array(stats) = stats else {
+            panic!("expected stats array");
+        };
+        assert_eq!(
+            stats.get(&string_key("msg_perm.uid")),
+            Some(&Value::Int(101))
+        );
+        assert_eq!(
+            stats.get(&string_key("msg_perm.gid")),
+            Some(&Value::Int(202))
+        );
     }
 }

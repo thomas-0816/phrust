@@ -179,6 +179,13 @@ impl OutputBuffer {
         self.bytes.len()
     }
 
+    /// Returns the root-visible byte count plus bytes captured by active PHP
+    /// output-buffering levels.
+    #[must_use]
+    pub fn total_len(&self) -> usize {
+        self.bytes.len() + self.stack.iter().map(Vec::len).sum::<usize>()
+    }
+
     /// Returns true when no output bytes have been buffered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -282,6 +289,7 @@ mod tests {
         assert_eq!(output.current_buffer_bytes(), Some(&b"a"[..]));
         assert_eq!(output.pop_buffer_flush(), Some(()));
         assert_eq!(output.as_bytes(), b"roota");
+        assert_eq!(output.total_len(), 5);
         assert_eq!(output.stats().appends, 4);
         assert_eq!(output.stats().batch_writes, 0);
         assert_eq!(output.stats().batched_appends, 0);
@@ -303,6 +311,7 @@ mod tests {
         output.flush_active_buffers_to_root();
 
         assert_eq!(output.as_bytes(), b"root|outerinner");
+        assert_eq!(output.total_len(), 15);
         assert_eq!(output.buffer_level(), 2);
         assert_eq!(output.current_buffer_bytes(), Some(&b""[..]));
         assert_eq!(output.stats().flushes, 1);

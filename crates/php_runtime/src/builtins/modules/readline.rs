@@ -1,13 +1,29 @@
 //! Noninteractive readline compatibility slice.
 
-use super::core::{argument_type_error, arity_error, deref_value, string_arg};
+use super::core::{arity_error, conversion_error, deref_value, string_arg};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
-use crate::{ArrayKey, CallableValue, PhpArray, PhpString, Value};
+use crate::{ArrayKey, CallableValue, PhpArray, PhpString, Value, to_bool, to_int};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const READLINE_INFO_ORDER: &[&str] = &[
+    "line_buffer",
+    "point",
+    "end",
+    "mark",
+    "done",
+    "pending_input",
+    "prompt",
+    "terminal_name",
+    "completion_append_character",
+    "completion_suppress_append",
+    "library_version",
+    "readline_name",
+    "attempted_completion_over",
+];
 
 pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("readline", builtin_readline, BuiltinCompatibility::Php),
@@ -99,16 +115,24 @@ fn builtin_readline_info(
     }
     if args.is_empty() || matches!(args[0], Value::Null) {
         let mut array = PhpArray::new();
+        for key in READLINE_INFO_ORDER {
+            if let Some(value) = context.readline_state().info_value(key) {
+                array.insert(string_key(key), value);
+            }
+        }
         for (key, value) in context.readline_state().info() {
-            array.insert(string_key(key), value.clone());
+            if !READLINE_INFO_ORDER.contains(&key.as_str()) {
+                array.insert(string_key(key), value.clone());
+            }
         }
         return Ok(Value::Array(array));
     }
     let name = string_arg("readline_info", &args[0])?.to_string_lossy();
     if let Some(value) = args.get(1) {
+        let value = normalize_info_value(&name, value)?;
         let previous = context
             .readline_state()
-            .set_info_value(name.to_string(), value.clone())
+            .set_info_value(name.to_string(), value)
             .unwrap_or(Value::Null);
         return Ok(previous);
     }
@@ -158,7 +182,7 @@ fn builtin_readline_list_history(
 fn builtin_readline_read_history(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
         return Err(arity_error("readline_read_history", "zero or one argument"));
@@ -166,6 +190,10 @@ fn builtin_readline_read_history(
     let Some(path) = optional_path("readline_read_history", args.first())? else {
         return Ok(Value::Bool(false));
     };
+    if readline_path_is_outside_open_basedir(context, &path) {
+        emit_open_basedir_warning(context, "readline_read_history", &path, span);
+        return Ok(Value::Bool(false));
+    }
     let Ok(contents) = fs::read_to_string(path) else {
         return Ok(Value::Bool(false));
     };
@@ -178,7 +206,7 @@ fn builtin_readline_read_history(
 fn builtin_readline_write_history(
     context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if args.len() > 1 {
         return Err(arity_error(
@@ -189,6 +217,10 @@ fn builtin_readline_write_history(
     let Some(path) = optional_path("readline_write_history", args.first())? else {
         return Ok(Value::Bool(false));
     };
+    if readline_path_is_outside_open_basedir(context, &path) {
+        emit_open_basedir_warning(context, "readline_write_history", &path, span);
+        return Ok(Value::Bool(false));
+    }
     let mut contents = String::new();
     for entry in context.readline_state().history() {
         contents.push_str(entry);
@@ -220,6 +252,7 @@ fn builtin_readline_callback_handler_install(
         "#2 ($callback)",
         &args[1],
     )?;
+    context.output().write_bytes(prompt.as_bytes());
     context
         .readline_state()
         .install_callback_handler(prompt.to_string(), callback);
@@ -273,17 +306,146 @@ fn optional_path(name: &str, value: Option<&Value>) -> Result<Option<PathBuf>, B
     }
 }
 
+fn readline_path_is_outside_open_basedir(context: &BuiltinContext<'_>, path: &Path) -> bool {
+    context
+        .ini_get("open_basedir")
+        .map(str::to_owned)
+        .filter(|open_basedir| !open_basedir.trim().is_empty())
+        .is_some_and(|open_basedir| !open_basedir_allows_path(path, &open_basedir, context.cwd()))
+}
+
+fn emit_open_basedir_warning(
+    context: &mut BuiltinContext<'_>,
+    function: &str,
+    path: &Path,
+    span: RuntimeSourceSpan,
+) {
+    let open_basedir = context
+        .ini_get("open_basedir")
+        .map(str::to_owned)
+        .unwrap_or_default();
+    context.php_warning(
+        "E_PHP_RUNTIME_READLINE_OPEN_BASEDIR",
+        format!(
+            "{function}(): open_basedir restriction in effect. File({}) is not within the allowed path(s): ({open_basedir})",
+            path.display()
+        ),
+        span,
+    );
+}
+
+fn open_basedir_allows_path(path: &Path, open_basedir: &str, cwd: &Path) -> bool {
+    let candidate = canonicalize_open_basedir_path(path, cwd);
+    open_basedir
+        .split(open_basedir_separator())
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            (!entry.is_empty()).then(|| canonicalize_open_basedir_path(Path::new(entry), cwd))
+        })
+        .any(|allowed| candidate == allowed || candidate.starts_with(&allowed))
+}
+
+fn canonicalize_open_basedir_path(path: &Path, cwd: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    std::fs::canonicalize(&absolute).unwrap_or_else(|_| normalize_open_basedir_path(&absolute))
+}
+
+fn normalize_open_basedir_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn open_basedir_separator() -> char {
+    if cfg!(windows) { ';' } else { ':' }
+}
+
 fn callback_arg(name: &str, argument: &str, value: &Value) -> Result<String, BuiltinError> {
     let value = deref_value(value);
     match &value {
-        Value::String(callback) => Ok(callback.to_string_lossy()),
+        Value::String(callback) => {
+            let callback = callback.to_string_lossy();
+            if is_valid_callback_name(&callback) {
+                Ok(callback)
+            } else {
+                Err(invalid_callback_error(
+                    name,
+                    argument,
+                    &format!("function \"{callback}\" not found or invalid function name"),
+                ))
+            }
+        }
         other => match other.as_callable() {
             Some(CallableValue::UserFunction { name })
             | Some(CallableValue::InternalBuiltin { name }) => Ok(name.clone()),
             Some(callable) => Ok(format!("{callable:?}")),
-            None => Err(argument_type_error(name, argument, "callable", &value)),
+            None => Err(invalid_callback_error(
+                name,
+                argument,
+                "no array or string given",
+            )),
         },
     }
+}
+
+fn normalize_info_value(name: &str, value: &Value) -> Result<Value, BuiltinError> {
+    Ok(match name {
+        "line_buffer" | "readline_name" | "prompt" | "terminal_name" => {
+            Value::string(string_arg("readline_info", value)?.to_string_lossy())
+        }
+        "completion_append_character" => {
+            let value = string_arg("readline_info", value)?.to_string_lossy();
+            let bytes = value
+                .as_bytes()
+                .split(|byte| *byte == 0)
+                .next()
+                .unwrap_or_default()
+                .to_vec();
+            Value::string(bytes)
+        }
+        "completion_suppress_append" => Value::Bool(
+            to_bool(value).map_err(|message| conversion_error("readline_info", message))?,
+        ),
+        "point" | "end" | "mark" | "done" | "pending_input" | "attempted_completion_over" => {
+            Value::Int(to_int(value).map_err(|message| conversion_error("readline_info", message))?)
+        }
+        _ => value.clone(),
+    })
+}
+
+fn invalid_callback_error(name: &str, argument: &str, reason: &str) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_BUILTIN_TYPE",
+        format!("{name}(): Argument {argument} must be a valid callback, {reason}"),
+    )
+}
+
+fn is_valid_callback_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .split('\\')
+            .all(|part| !part.is_empty() && is_valid_callback_name_part(part))
+}
+
+fn is_valid_callback_name_part(part: &str) -> bool {
+    let mut chars = part.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn expect_exact(name: &str, args: &[Value], expected: usize) -> Result<(), BuiltinError> {

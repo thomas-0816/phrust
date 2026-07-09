@@ -110,6 +110,36 @@ mod identity_storage {
     }
 
     #[test]
+    fn released_object_ids_are_reused_in_lifo_order() {
+        let class = ClassEntry {
+            name: "box".to_owned(),
+            parent: None,
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor_id: None,
+            flags: ClassFlags::default(),
+        };
+        let first = ObjectRef::new(&class);
+        let second = ObjectRef::new(&class);
+        let first_id = first.id();
+        let second_id = second.id();
+
+        first.release_php_handle();
+        second.release_php_handle();
+
+        let reused_first = ObjectRef::new(&class);
+        let reused_second = ObjectRef::new(&class);
+
+        assert_eq!(reused_first.id(), second_id);
+        assert_eq!(reused_second.id(), first_id);
+    }
+
+    #[test]
     fn object_refs_preserve_parent_metadata_and_declared_properties() {
         let class = ClassEntry {
             name: "child".to_owned(),

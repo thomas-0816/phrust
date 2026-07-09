@@ -10,6 +10,43 @@ use php_runtime::experimental::numeric_string::{
     NumericStringKind, NumericStringValue, classify_php_string,
 };
 
+/// Indexed lookup over the generated builtin signature table.
+///
+/// The generated `function_metadata` is a linear scan with per-entry
+/// case-insensitive compares over ~2.3k entries; it sat on the per-argument
+/// hot path of every builtin call. This variant builds one lazy map keyed by
+/// lowercase name and answers in O(1). Names arriving already lowercase (the
+/// VM normalizes builtin names) hit without allocating.
+#[must_use]
+pub fn function_metadata_indexed(
+    name: &str,
+) -> Option<&'static generated_arginfo::GeneratedFunctionMetadata> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static INDEX: OnceLock<
+        HashMap<&'static str, &'static generated_arginfo::GeneratedFunctionMetadata>,
+    > = OnceLock::new();
+    static LOWER_INDEX: OnceLock<
+        HashMap<String, &'static generated_arginfo::GeneratedFunctionMetadata>,
+    > = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        generated_arginfo::GENERATED_FUNCTIONS
+            .iter()
+            .map(|function| (function.name, function))
+            .collect()
+    });
+    if let Some(function) = index.get(name) {
+        return Some(function);
+    }
+    let lower_index = LOWER_INDEX.get_or_init(|| {
+        generated_arginfo::GENERATED_FUNCTIONS
+            .iter()
+            .map(|function| (function.name.to_ascii_lowercase(), function))
+            .collect()
+    });
+    lower_index.get(&name.to_ascii_lowercase()).copied()
+}
+
 /// PHP builtin coercion mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoercionMode {

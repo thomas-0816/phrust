@@ -5,3 +5,8 @@
 {"path":"ext/curl/tests/curl_escape.phpt"}
 {"path":"ext/curl/tests/curl_multi_strerror_001.phpt"}
 {"path":"ext/curl/tests/curl_version_basic_001.phpt"}
+{"path":"ext/curl/tests/curl_strerror_001.phpt"}
+{"path":"ext/curl/tests/curl_share_setopt_basic001.phpt"}
+{"path":"ext/curl/tests/curl_share_errno_strerror_001.phpt"}
+{"path":"ext/curl/tests/curlopt_private.phpt"}
+{"path":"ext/curl/tests/bug52202.phpt"}

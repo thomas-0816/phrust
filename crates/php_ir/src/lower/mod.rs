@@ -7,9 +7,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::function::{FunctionFlags, IrCapture, IrParam, IrReturnType};
 use crate::ids::{BlockId, FileId, FunctionId, LocalId, RegId};
 use crate::instruction::{
-    CallableKind, CastKind, ClosureCaptureArg, CompareOp, InstructionKind, IrCallArg,
-    IrCallArgValueKind, IrCallDimTarget, IrCallPropertyDimTarget, IrCallPropertyTarget,
-    IrDiagnosticSeverity,
+    CallableKind, CastKind, ClosureCaptureArg, CompareOp, InstructionKind, IrCallArgValueKind,
+    IrCallDimTarget, IrCallPropertyDimTarget, IrCallPropertyTarget, IrDiagnosticSeverity,
 };
 use crate::literal_text::{
     InterpolatedDim, InterpolatedPart, heredoc_literal_body, interpolated_literal_parts,
@@ -3478,6 +3477,41 @@ mod tests {
     }
 
     #[test]
+    fn lower_short_circuit_or_die_statement_terminates_only_failure_path() {
+        let frontend = analyze_source("<?php $ok or die('failed'); echo 'after';");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("jump_if"), "{snapshot}");
+        assert!(snapshot.contains("string \"failed\""), "{snapshot}");
+        assert!(snapshot.contains("exit r"), "{snapshot}");
+        assert!(snapshot.contains("string \"after\""), "{snapshot}");
+        assert!(!snapshot.contains("unsupported"), "{snapshot}");
+        assert!(!snapshot.contains("missing"), "{snapshot}");
+    }
+
+    #[test]
+    fn lower_assignment_or_die_statement_terminates_only_failure_path() {
+        let frontend =
+            analyze_source("<?php $q = msg_get_queue($id) or die('failed'); echo 'after';");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        let snapshot = result.unit.to_snapshot_text();
+        assert!(snapshot.contains("call_function r"), "{snapshot}");
+        assert!(snapshot.contains("\"msg_get_queue\""), "{snapshot}");
+        assert!(snapshot.contains("jump_if"), "{snapshot}");
+        assert!(snapshot.contains("string \"failed\""), "{snapshot}");
+        assert!(snapshot.contains("exit r"), "{snapshot}");
+        assert!(snapshot.contains("string \"after\""), "{snapshot}");
+        assert!(!snapshot.contains("unsupported"), "{snapshot}");
+        assert!(!snapshot.contains("missing"), "{snapshot}");
+    }
+
+    #[test]
     fn lower_zero_arg_die_statement_terminates_without_operand() {
         let frontend = analyze_source("<?php function stop_now() { die(); echo 'after'; }");
         let result = lower_frontend_result(&frontend, LoweringOptions::default());
@@ -3802,6 +3836,18 @@ mod tests {
                 .unit
                 .constants
                 .contains(&IrConstant::String("hello\\n".to_string()))
+        );
+
+        let frontend = analyze_source("<?php $a = <<<'TXT'\n  <?php echo 1;\n  TXT; echo $a;");
+        let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+        assert!(result.verification.is_ok(), "{:#?}", result.verification);
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        assert!(
+            result
+                .unit
+                .constants
+                .contains(&IrConstant::String("<?php echo 1;".to_string()))
         );
 
         let frontend = analyze_source("<?php $a = <<<TXT\n\\\"quotes\nTXT; $b = \"\\\"quotes\";");

@@ -4,14 +4,14 @@
   "priority":"CLI process control compatibility MVP",
   "selected_manifest":"tests/phpt/manifests/modules/pcntl.selected.jsonl",
   "corpus_count":60,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":7,
+  "pass_count":7,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":59,
-  "scope":["extension visibility","selected process-control function visibility","common signal/wait/priority constants","async signal flag state","signal handler registration and lookup","signal dispatch return contract","alarm cancellation","fork/waitpid child status helpers","last-error helpers"],
-  "non_scope":["executing PHP signal callbacks during dispatch","successful pcntl_exec process replacement PHPTs","async signal delivery","sigprocmask","sigwaitinfo","sigtimedwait","waitid","rfork/forkx/unshare/affinity/qos helpers","web/server mode enablement","exact php-src warning strings"],
+  "known_failure_count":53,
+  "scope":["extension visibility","selected process-control function visibility","common signal/wait/priority constants","PCNTL errno aliases","Darwin priority constants","async signal flag state","signal handler registration and lookup","signal dispatch return contract","alarm cancellation","fork/waitpid child status helpers","last-error helpers","pcntl_exec argv/env validation","Darwin getpriority/setpriority validation"],
+  "non_scope":["executing PHP signal callbacks during dispatch","successful pcntl_exec process replacement PHPTs","async signal delivery","sigprocmask","sigwaitinfo","sigtimedwait","waitid","rfork/forkx/unshare","CPU affinity","QoS helpers","web/server mode enablement"],
   "target_gates":["nix develop -c cargo test -p php_runtime pcntl --no-fail-fast","nix develop -c cargo test -p php_std pcntl --no-fail-fast","REFERENCE_PHP=/Volumes/CrucialMusic/src/phrust/third_party/php-src/sapi/cli/php PHP_SRC_DIR=/Volumes/CrucialMusic/src/phrust/third_party/php-src PHPT_REUSE_LAST=0 PHPT_DEV_REUSE_TARGET_PASS=0 nix develop -c just phpt-dev-module MODULE=pcntl"],
-  "next_step":"Promote upstream pcntl PHPTs after VM callback dispatch, process replacement isolation, signal masks, waitid, and platform-specific process helpers are implemented."
+  "next_step":"Promote remaining upstream pcntl PHPTs after VM callback dispatch, async signal delivery, process replacement isolation, signal masks, waitid, and platform-specific process helpers are implemented."
 }

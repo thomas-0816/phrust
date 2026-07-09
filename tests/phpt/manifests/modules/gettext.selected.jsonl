@@ -1,1 +1,9 @@
 {"path":"tests/phpt/generated/gettext/fallback-state.phpt"}
+{"path":"tests/phpt/generated/gettext/mo-catalog.phpt"}
+{"path":"ext/gettext/tests/gettext_bindtextdomain-path.phpt"}
+{"path":"ext/gettext/tests/gettext_bindtextdomain-emptydomain.phpt"}
+{"path":"ext/gettext/tests/gettext_bind_textdomain_codeset-retval.phpt"}
+{"path":"ext/gettext/tests/dcngettext.phpt"}
+{"path":"ext/gettext/tests/dcgettext_lcall.phpt"}
+{"path":"ext/gettext/tests/44938.phpt"}
+{"path":"ext/gettext/tests/gh17400.phpt"}

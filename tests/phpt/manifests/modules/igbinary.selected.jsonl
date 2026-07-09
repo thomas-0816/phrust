@@ -1,1 +1,2 @@
 {"path":"tests/phpt/generated/igbinary/basic.phpt","module":"igbinary","kind":"contract","generated_timestamp":"20260704T000000Z","generator_version":"manual-extension-pack","reason":"covers extension/function visibility and primitive/list/map igbinary encoding and decoding"}
+{"path":"tests/phpt/generated/igbinary/cache-serializer-options.phpt","module":"igbinary","kind":"contract","generated_timestamp":"20260708T000000Z","generator_version":"manual-extension-pack","reason":"covers Redis and Memcached igbinary serializer option smoke without external cache services"}

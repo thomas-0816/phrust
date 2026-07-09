@@ -4,14 +4,14 @@
   "priority":"shared-memory object compatibility MVP",
   "selected_manifest":"tests/phpt/manifests/modules/shmop.selected.jsonl",
   "corpus_count":5,
-  "selected_count":1,
-  "pass_count":1,
+  "selected_count":4,
+  "pass_count":4,
   "skip_count":0,
   "fail_count":0,
   "bork_count":0,
-  "known_failure_count":5,
+  "known_failure_count":0,
   "scope":["extension visibility","Shmop class visibility","request-local keyed segments","IPC_PRIVATE-style key zero isolation","binary-safe reads and writes","read-only attach mode","segment delete semantics"],
-  "non_scope":["real SysV shared memory allocation","cross-process shared segments","platform errno-specific warning text","resource leakage behavior","deprecated shmop_close warning text"],
+  "non_scope":["real SysV shared memory allocation","cross-process shared segments","platform errno-specific warning text","resource leakage behavior","deprecated shmop_close warning text","Windows-only upstream rows on non-Windows hosts"],
   "target_gates":["nix develop -c cargo test -p php_runtime shmop","nix develop -c cargo test -p php_std shmop","nix develop -c just phpt-dev-module MODULE=shmop"],
-  "next_step":"Promote upstream shmop PHPTs after host-backed SysV memory is available behind platform-gated cleanup."
+  "next_step":"Portable upstream shmop PHPT coverage is fully promoted; rerun Windows-only upstream rows on a Windows host when platform support is available."
 }

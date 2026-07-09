@@ -7,7 +7,9 @@ use crate::{
     routing::RouteConfig,
     serve::serve_until_shutdown,
     session_store::SessionStore,
-    state::{AppState, ServerEngineState, SessionConfig, preload_script_cache},
+    state::{
+        AppState, ServerEngineState, SessionConfig, preload_script_cache, server_env_snapshot,
+    },
     tls::build_tls_acceptor,
 };
 use php_diagnostics::{
@@ -273,7 +275,7 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
         request_profile_source_attribution: config.request_profile_source_attribution,
         request_profile_trigger_header: config.request_profile_trigger_header,
         network_requests_enabled: config.network_requests_enabled,
-        env_snapshot: Arc::new(std::env::vars().collect()),
+        env_snapshot: server_env_snapshot(std::env::vars()),
         debug: config.debug,
         error_format: config.error_format,
         debug_log: config.debug_log,
@@ -467,7 +469,7 @@ mod tests {
         assert_eq!(output.status, PhpExecutionStatus::Success);
         assert_eq!(output.stdout, b"123512351235");
         let counters = output.counters.expect("counters should be collected");
-        assert_eq!(counters.jit_mode, "cranelift");
+        assert_eq!(counters.jit_mode, "off");
         assert_eq!(counters.native_executions, counters.jit_executed);
         assert!(counters.bytecode_lower_attempts > 0, "{counters:?}");
         assert!(counters.quickening_attempts > 0, "{counters:?}");
@@ -540,6 +542,26 @@ mod tests {
         assert_eq!(
             options.vm_options.dense_jump_threading,
             DenseJumpThreadingMode::Off
+        );
+    }
+
+    #[test]
+    fn default_server_runtime_includes_match_entry_optimization() {
+        let engine = ServerEngineState::new(
+            EngineProfileName::Default,
+            100_000,
+            Arc::new(CompiledScriptCache::new(1)),
+            Arc::new(IncludeCache::new(1)),
+            None,
+            Default::default(),
+        );
+
+        let options = engine.executor_options();
+
+        assert_eq!(engine.compile_optimization_level, OptimizationLevel::O2);
+        assert_eq!(
+            options.vm_options.include_optimization_level,
+            engine.compile_optimization_level
         );
     }
 
@@ -782,13 +804,13 @@ mod tests {
             request_context,
             SessionState::default(),
             Arc::from(&b"request-body"[..]),
-            vec![
+            Arc::new(vec![
                 (
                     "PHRUST_MYSQL_TEST_DSN".to_string(),
                     "mysql://app:secret@mariadb:3306/app".to_string(),
                 ),
                 ("APP_DB_HOST".to_string(), "mariadb:3306".to_string()),
-            ],
+            ]),
         );
 
         assert_eq!(
@@ -819,10 +841,26 @@ mod tests {
     }
 
     #[test]
+    fn server_env_for_request_reuses_prepared_snapshot_without_overlay() {
+        let fixture = ServerCacheFixture::new();
+        let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
+        state.env_snapshot = server_env_snapshot(vec![
+            ("ZED".to_string(), "last".to_string()),
+            ("ALPHA".to_string(), "first".to_string()),
+        ]);
+
+        let env = server_env_for_request(&state);
+
+        assert!(Arc::ptr_eq(&env, &state.env_snapshot));
+        assert_eq!(env[0].0, "ALPHA");
+        assert_eq!(env[1].0, "ZED");
+    }
+
+    #[test]
     fn server_env_for_request_hides_rewrite_configuration() {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
-        state.env_snapshot = Arc::new(vec![(
+        state.env_snapshot = server_env_snapshot(vec![(
             crate::config::BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV.to_string(),
             "/api=route".to_string(),
         )]);
@@ -841,7 +879,8 @@ mod tests {
         let fixture = ServerCacheFixture::new();
         let mut state = test_state(&fixture, Arc::new(CompiledScriptCache::new(1)), false);
         state.network_requests_enabled = true;
-        state.env_snapshot = Arc::new(vec![("PHRUST_NET_TESTS".to_string(), "0".to_string())]);
+        state.env_snapshot =
+            server_env_snapshot(vec![("PHRUST_NET_TESTS".to_string(), "0".to_string())]);
 
         let env = server_env_for_request(&state);
 
@@ -1068,7 +1107,7 @@ mod tests {
             request_profile_source_attribution: false,
             request_profile_trigger_header: false,
             network_requests_enabled: false,
-            env_snapshot: Arc::new(Vec::new()),
+            env_snapshot: server_env_snapshot(Vec::new()),
             debug: false,
             error_format: DiagnosticOutputFormat::Text,
             debug_log: None,

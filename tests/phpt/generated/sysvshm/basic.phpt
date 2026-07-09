@@ -17,7 +17,11 @@ var_dump(shm_get_var($shm, 10));
 var_dump(shm_remove_var($shm, 10));
 var_dump(shm_has_var($shm, 10));
 var_dump(shm_detach($shm));
-var_dump(shm_remove($shm));
+try {
+    shm_remove($shm);
+} catch (Error $exception) {
+    echo $exception->getMessage(), "\n";
+}
 ?>
 --EXPECT--
 loaded
@@ -34,4 +38,4 @@ array(1) {
 bool(true)
 bool(false)
 bool(true)
-bool(true)
+Shared memory block has already been destroyed

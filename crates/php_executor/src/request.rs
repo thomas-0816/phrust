@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
 pub(crate) fn include_loader_for(input: &EngineInput) -> Result<Option<IncludeLoader>, String> {
     let mut roots = Vec::new();
     push_existing_root(&mut roots, &input.cwd);
-    if let Some(real_path) = input.real_path.as_ref().and_then(|path| path.parent()) {
-        push_existing_root(&mut roots, real_path);
-    }
+    push_script_roots(&mut roots, input.real_path.as_deref());
     if let Some(include_path) = &input.ini.include_path {
         for entry in include_path {
             if entry.is_absolute() {
@@ -35,9 +33,7 @@ pub(crate) fn include_loader_for_request(
 ) -> Result<Option<IncludeLoader>, String> {
     let mut roots = Vec::new();
     push_existing_root(&mut roots, &input.cwd);
-    if let Some(real_path) = input.real_path.as_ref().and_then(|path| path.parent()) {
-        push_existing_root(&mut roots, real_path);
-    }
+    push_script_roots(&mut roots, input.real_path.as_deref());
     for entry in &input.include_roots {
         if entry.is_absolute() {
             push_existing_root(&mut roots, entry);
@@ -59,6 +55,15 @@ pub(crate) fn include_loader_for_request(
 fn push_existing_root(roots: &mut Vec<PathBuf>, path: &Path) {
     if path.exists() {
         roots.push(path.to_path_buf());
+    }
+}
+
+fn push_script_roots(roots: &mut Vec<PathBuf>, real_path: Option<&Path>) {
+    if let Some(script_dir) = real_path.and_then(Path::parent) {
+        push_existing_root(roots, script_dir);
+        if let Some(parent) = script_dir.parent() {
+            push_existing_root(roots, parent);
+        }
     }
 }
 
@@ -87,6 +92,9 @@ pub(crate) fn runtime_context_for(
     }
     if let Some(default_input_filter) = input.ini.default_input_filter {
         context.ini.default_input_filter = default_input_filter;
+    }
+    if let Some(default_input_filter_flags) = input.ini.default_input_filter_flags {
+        context.ini.default_input_filter_flags = default_input_filter_flags;
     }
     let mut capabilities = FilesystemCapabilities::none().with_stdio(true);
     if let Some(loader) = include_loader {

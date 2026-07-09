@@ -267,7 +267,9 @@ impl Vm {
                     );
                 }
                 if is_config_builtin_name(&name) {
-                    return self.call_config_builtin(compiled, &name, args, output, stack, state);
+                    return self.call_config_builtin(
+                        compiled, &name, args, call_span, output, stack, state,
+                    );
                 }
                 if is_error_handling_builtin_name(&name) {
                     return self.call_error_handling_builtin(
@@ -289,11 +291,16 @@ impl Vm {
                 }
                 if is_pcre_callback_builtin_name(&name) {
                     return self.call_pcre_callback_builtin(
-                        compiled, &name, args, output, stack, state,
+                        compiled, &name, args, call_span, output, stack, state,
                     );
                 }
+                if let Some(result) = self.try_execute_preg_match_start_offset_ascii_call_fast(
+                    &name, &args, compiled, stack, state,
+                ) {
+                    return result;
+                }
                 let values = match call_builtin_args_to_positional(
-                    compiled, &name, args, call_span, output, stack, state,
+                    self, compiled, &name, args, call_span, output, stack, state,
                 ) {
                     Ok(values) => values,
                     Err(InternalBuiltinArgError::Message(message)) => {
