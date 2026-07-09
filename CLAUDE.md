@@ -41,9 +41,9 @@ Install the versioned git hooks once per checkout:
 nix develop -c just install-hooks
 ```
 
-The pre-commit hook runs fmt + clippy + the PHPT gate; pre-push runs
-`just ci-local`. `PHRUST_SKIP_GIT_HOOKS=1` exists only for exceptional,
-manually-verified cases.
+The pre-commit hook runs a lightweight fmt + source-integrity gate in one Nix
+shell; pre-push runs `just ci-local`. `PHRUST_SKIP_GIT_HOOKS=1` exists only for
+exceptional, manually-verified cases.
 
 ## Common commands
 

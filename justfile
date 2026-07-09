@@ -167,10 +167,15 @@ help:
       '  just phpt-verify-baseline Verify committed PHPT full baseline files' \
       '  just phpt-verify-source-integrity Verify pinned php-src was not mutated' \
       '  just install-hooks       Install versioned git hooks' \
+      '  just pre-commit          Run the lightweight local commit gate' \
       '  just ci-local            Run the local GitHub Actions parity gate'
 
 install-hooks:
     scripts/git/install-hooks.sh
+
+pre-commit:
+    @just fmt
+    @just source-integrity
 
 fmt:
     cargo fmt --all --check
