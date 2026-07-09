@@ -1075,7 +1075,7 @@ struct ExecutionState {
     shutdown_functions: Vec<ShutdownFunctionEntry>,
     ini: IniRegistry,
     default_timezone: String,
-    env: Vec<(String, String)>,
+    env: Arc<Vec<(String, String)>>,
     resources: ResourceTable,
     stdin: Option<php_runtime::ResourceRef>,
     stdout: Option<php_runtime::ResourceRef>,
@@ -30175,7 +30175,11 @@ impl Vm {
                             "E_PHP_RUNTIME_BUILTIN_VALUE: putenv(): Argument #1 ($assignment) must have a valid syntax",
                         );
                     }
-                    set_env_entry(&mut state.env, key.to_string(), Some(value.to_string()));
+                    set_env_entry(
+                        Arc::make_mut(&mut state.env),
+                        key.to_string(),
+                        Some(value.to_string()),
+                    );
                 } else {
                     if assignment.is_empty() {
                         return self.runtime_error(
@@ -30185,7 +30189,7 @@ impl Vm {
                             "E_PHP_RUNTIME_BUILTIN_VALUE: putenv(): Argument #1 ($assignment) must have a valid syntax",
                         );
                     }
-                    set_env_entry(&mut state.env, assignment, None);
+                    set_env_entry(Arc::make_mut(&mut state.env), assignment, None);
                 }
                 VmResult::success_no_output(Some(Value::Bool(true)))
             }

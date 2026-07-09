@@ -84,9 +84,6 @@ pub fn resolve_route(method: &str, path: &str, config: &RouteConfig) -> Resolved
 
     if let Some(front_controller) = &config.front_controller {
         let script_path = config.docroot.join(front_controller);
-        if !script_path.exists() {
-            return ResolvedRoute::NotFound;
-        }
         return resolve_existing_path(method, &script_path, path_info(path), config);
     }
 
@@ -108,16 +105,11 @@ fn resolve_path_info_script(
             continue;
         }
         let script_path = config.docroot.join(&script_relative);
-        if !script_path.exists() {
-            continue;
-        }
         let path_info = format!("/{}", relative_segments[split..].join("/"));
-        return Some(resolve_existing_path(
-            method,
-            &script_path,
-            Some(path_info),
-            config,
-        ));
+        let route = resolve_existing_path(method, &script_path, Some(path_info), config);
+        if !matches!(route, ResolvedRoute::NotFound) {
+            return Some(route);
+        }
     }
     None
 }

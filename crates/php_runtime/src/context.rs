@@ -472,7 +472,7 @@ pub struct RuntimeContext {
     /// PHP CLI argv vector. Element 0 is the script path when configured.
     pub argv: Vec<String>,
     /// Controlled environment entries. Host env is never imported implicitly.
-    pub env: Vec<(String, String)>,
+    pub env: Arc<Vec<(String, String)>>,
     /// Deterministic bytes exposed through CLI stdin resources.
     pub stdin: Arc<[u8]>,
     /// Minimal include path placeholder.
@@ -507,7 +507,7 @@ impl Default for RuntimeContext {
         Self {
             cwd: PathBuf::from("."),
             argv: Vec::new(),
-            env: Vec::new(),
+            env: Arc::new(Vec::new()),
             stdin: Arc::from([]),
             include_path: vec![PathBuf::from(".")],
             ini: RuntimeIniOptions::default(),
@@ -609,6 +609,13 @@ impl RuntimeContext {
     #[must_use]
     pub fn with_env(mut self, mut env: Vec<(String, String)>) -> Self {
         env.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        self.env = Arc::new(env);
+        self
+    }
+
+    /// Sets already sorted controlled environment entries.
+    #[must_use]
+    pub fn with_sorted_env_arc(mut self, env: Arc<Vec<(String, String)>>) -> Self {
         self.env = env;
         self
     }
@@ -809,7 +816,7 @@ impl RuntimeContext {
 
     fn env_array(&self) -> PhpArray {
         let mut array = PhpArray::new();
-        for (key, value) in &self.env {
+        for (key, value) in self.env.iter() {
             array.insert(string_key(key), Value::string(value.as_bytes().to_vec()));
         }
         array
@@ -1422,6 +1429,7 @@ mod tests {
         parse_query_string_with_separators,
     };
     use crate::{ArrayKey, PhpString, Value};
+    use std::sync::Arc;
 
     #[test]
     fn context_defaults_are_deterministic() {
@@ -1493,10 +1501,16 @@ mod tests {
         assert_eq!(context.env[0].0, "ALPHA");
         assert_eq!(context.env[1].0, "ZED");
         assert!(context.global_value("_ENV").is_some());
-        assert_eq!(
-            RuntimeContext::default().env,
-            Vec::<(String, String)>::new()
-        );
+        assert!(RuntimeContext::default().env.is_empty());
+    }
+
+    #[test]
+    fn context_accepts_shared_sorted_environment() {
+        let env = Arc::new(vec![("ALPHA".to_string(), "first".to_string())]);
+        let context = RuntimeContext::default().with_sorted_env_arc(Arc::clone(&env));
+
+        assert!(Arc::ptr_eq(&context.env, &env));
+        assert_eq!(context.env[0].0, "ALPHA");
     }
 
     #[test]

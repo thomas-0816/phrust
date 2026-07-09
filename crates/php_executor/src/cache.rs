@@ -108,15 +108,15 @@ impl CompiledScriptCache {
         })?;
 
         loop {
-            let metadata = self.read_script_metadata(&input.path)?;
-            if let Some(compiled) = self.lookup_by_metadata(&canonical_path, &input, &metadata) {
+            if let Some(compiled) = self.lookup_fresh_by_path(&canonical_path, &input) {
                 return Ok(CompiledScriptCacheLookup {
                     compiled,
                     hit: true,
                 });
             }
 
-            if let Some(compiled) = self.lookup_fresh_by_path(&canonical_path) {
+            let metadata = self.read_script_metadata(&input.path)?;
+            if let Some(compiled) = self.lookup_by_metadata(&canonical_path, &input, &metadata) {
                 return Ok(CompiledScriptCacheLookup {
                     compiled,
                     hit: true,
@@ -167,7 +167,11 @@ impl CompiledScriptCache {
         }
     }
 
-    fn lookup_fresh_by_path(&self, canonical_path: &Path) -> Option<Arc<CompiledPhpScript>> {
+    fn lookup_fresh_by_path(
+        &self,
+        canonical_path: &Path,
+        input: &PhpScriptCacheInput,
+    ) -> Option<Arc<CompiledPhpScript>> {
         if self.check_interval.is_zero() {
             return None;
         }
@@ -177,7 +181,9 @@ impl CompiledScriptCache {
             .expect("compiled script cache shard mutex poisoned");
         let now = Instant::now();
         let (_, entry) = shard.iter_mut().find(|(key, entry)| {
-            key.path == canonical_path && now.duration_since(entry.checked_at) < self.check_interval
+            key.path == canonical_path
+                && key.same_runtime_fingerprint(input)
+                && now.duration_since(entry.checked_at) < self.check_interval
         })?;
         self.stats.hits.fetch_add(1, Ordering::Relaxed);
         self.stats.compiles_avoided.fetch_add(1, Ordering::Relaxed);
@@ -606,6 +612,28 @@ mod tests {
         assert_eq!(stats.compile_in_progress, 0);
         assert_eq!(stats.entries, 1);
         assert_eq!(stats.entries_by_shard.iter().sum::<usize>(), 1);
+    }
+
+    #[test]
+    fn positive_check_interval_hits_before_metadata_stat() {
+        let fixture = CacheFixture::new("cache-fresh-path");
+        fixture.write("<?php echo \"fresh\\n\";");
+        let executor = PhpExecutor::new();
+        let cache = CompiledScriptCache::new_with_limits(1, 8, Duration::from_secs(60));
+
+        let first = cache
+            .get_or_compile_script(&executor, fixture.input())
+            .expect("first compile");
+        let second = cache
+            .get_or_compile_script(&executor, fixture.input())
+            .expect("fresh lookup");
+
+        assert!(!first.hit);
+        assert!(second.hit);
+        let stats = cache.cache_stats();
+        assert_eq!(stats.metadata_stats, 1);
+        assert_eq!(stats.source_reads, 1);
+        assert_eq!(stats.compiles_avoided, 1);
     }
 
     #[test]

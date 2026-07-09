@@ -277,7 +277,11 @@ impl ServerConfig {
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_SOURCE_ATTRIBUTION"));
         let mut request_profile_trigger_header = file_config
             .bool("request_profile_trigger_header")?
-            .unwrap_or_else(|| env_bool(&env_value, "PHRUST_REQUEST_PROFILE_TRIGGER_HEADER"));
+            .unwrap_or_else(|| {
+                env_value("PHRUST_REQUEST_PROFILE_TRIGGER_HEADER").map_or(true, |value| {
+                    matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "on")
+                })
+            });
         let mut network_requests_enabled = file_config
             .bool("network_requests_enabled")?
             .unwrap_or_else(|| env_bool(&env_value, "PHRUST_SERVER_ENABLE_NETWORK_REQUESTS"));
@@ -632,7 +636,7 @@ impl ServerConfig {
             request_profile: None,
             request_profile_vm_counters: false,
             request_profile_source_attribution: false,
-            request_profile_trigger_header: false,
+            request_profile_trigger_header: true,
             network_requests_enabled: false,
             help: false,
         })
@@ -673,10 +677,10 @@ Options:\n\
   --access-log <path|->        write compact access logs to file or stdout\n\
   --perf-trace <path>          append per-PHP-request performance trace JSONL\n\
   --perf-trace-vm-counters     include heavy VM counters in perf trace rows\n\
-  --request-profile <dir>      write one JSON request profile per PHP request\n\
+  --request-profile <dir>      write JSON request profiles for opted-in PHP requests\n\
   --request-profile-vm-counters  collect heavy VM counters for profiled requests\n\
   --request-profile-source-attribution  collect per-clone source attribution (slow)\n\
-  --request-profile-trigger-header  profile only requests sending x-phrust-request-profile: 1\n\
+  --request-profile-trigger-header  profile only requests sending x-phrust-request-profile: 1 (default)\n\
   --enable-network-requests    allow PHP cURL requests to external hosts\n\
   --debug                      emit structured server debug events to stderr\n\
   --error-format <text|json>   render server diagnostics/debug events as text or JSON\n\
@@ -1205,6 +1209,7 @@ mod tests {
         assert_eq!(config.perf_trace, None);
         assert!(!config.perf_trace_vm_counters);
         assert_eq!(config.request_profile, None);
+        assert!(config.request_profile_trigger_header);
         assert!(!config.network_requests_enabled);
         assert!(config.script_cache_enabled);
         assert_eq!(config.script_cache_shards, 16);
@@ -1339,6 +1344,7 @@ mod tests {
         assert_eq!(config.perf_trace, Some(PathBuf::from("perf.jsonl")));
         assert!(config.perf_trace_vm_counters);
         assert_eq!(config.request_profile, Some(PathBuf::from("profiles")));
+        assert!(config.request_profile_trigger_header);
         assert!(config.network_requests_enabled);
         assert!(config.debug);
         assert_eq!(config.error_format, DiagnosticOutputFormat::Json);

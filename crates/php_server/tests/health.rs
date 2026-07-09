@@ -451,7 +451,13 @@ fn server_request_profile_alone_stays_in_summary_mode() {
     let mut child = start_server(&docroot, &["--request-profile", &profile_arg]);
 
     let address = read_listening_address(&mut child);
-    let response = http_request(&address, "GET", "/summary.php");
+    let response = http_request_with_headers(
+        &address,
+        "GET",
+        "/summary.php",
+        &[("x-phrust-request-profile", "1")],
+        "",
+    );
 
     stop_child(child);
 
@@ -485,6 +491,41 @@ fn server_request_profile_alone_stays_in_summary_mode() {
 }
 
 #[test]
+fn server_request_profile_without_trigger_header_does_not_write_profile() {
+    let docroot = temp_docroot();
+    fs::write(
+        docroot.join("summary.php"),
+        "<?php\necho strtoupper('ok');\n",
+    )
+    .expect("write summary fixture");
+    let profile_dir = temp_docroot();
+    let profile_arg = profile_dir.to_string_lossy().to_string();
+    let mut child = start_server(&docroot, &["--request-profile", &profile_arg]);
+
+    let address = read_listening_address(&mut child);
+    let response = http_request(&address, "GET", "/summary.php");
+
+    stop_child(child);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_eq!(response_body(&response), "OK");
+    let profiles = fs::read_dir(&profile_dir)
+        .expect("read profile dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .count();
+    assert_eq!(profiles, 0);
+
+    fs::remove_dir_all(profile_dir).expect("remove profile dir");
+    fs::remove_dir_all(docroot).expect("remove temp docroot");
+}
+
+#[test]
 fn server_request_profile_source_attribution_mode_collects_attribution() {
     let docroot = temp_docroot();
     fs::write(
@@ -509,7 +550,13 @@ fn server_request_profile_source_attribution_mode_collects_attribution() {
     );
 
     let address = read_listening_address(&mut child);
-    let response = http_request(&address, "GET", "/profile.php");
+    let response = http_request_with_headers(
+        &address,
+        "GET",
+        "/profile.php",
+        &[("x-phrust-request-profile", "1")],
+        "",
+    );
 
     stop_child(child);
 

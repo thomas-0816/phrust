@@ -1,7 +1,7 @@
 use super::{
     access_log::AccessLogEntry,
     diagnostics::{
-        RequestDiagnostic, emit_request_diagnostic, emit_server_debug, header_debug_value,
+        RequestDiagnostic, emit_request_diagnostic, emit_server_debug_lazy, header_debug_value,
         route_debug_name,
     },
     metrics::metrics_response,
@@ -131,29 +131,31 @@ pub(crate) async fn handle_parts(
         .uri
         .path_and_query()
         .map_or_else(|| parts.uri.path().to_string(), |value| value.to_string());
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_REQUEST_ACCEPTED",
         "request",
         "server request accepted",
-        BTreeMap::from([
-            ("peer".to_string(), peer.to_string()),
-            ("method".to_string(), method.to_string()),
-            ("path".to_string(), parts.uri.path().to_string()),
-            (
-                "query_present".to_string(),
-                parts.uri.query().is_some().to_string(),
-            ),
-            (
-                "authorization".to_string(),
-                header_debug_value(&parts.headers, header::AUTHORIZATION),
-            ),
-            (
-                "cookie".to_string(),
-                header_debug_value(&parts.headers, header::COOKIE),
-            ),
-        ]),
+        || {
+            BTreeMap::from([
+                ("peer".to_string(), peer.to_string()),
+                ("method".to_string(), method.to_string()),
+                ("path".to_string(), parts.uri.path().to_string()),
+                (
+                    "query_present".to_string(),
+                    parts.uri.query().is_some().to_string(),
+                ),
+                (
+                    "authorization".to_string(),
+                    header_debug_value(&parts.headers, header::AUTHORIZATION),
+                ),
+                (
+                    "cookie".to_string(),
+                    header_debug_value(&parts.headers, header::COOKIE),
+                ),
+            ])
+        },
     );
     let admission_started = Instant::now();
     let _permit = match timeout(
@@ -200,13 +202,13 @@ pub(crate) async fn handle_parts(
         super::metrics::RequestPhase::RouteResolution,
         route_resolution.as_nanos(),
     );
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_ROUTE_RESOLVED",
         "routing",
         "server route resolved",
-        BTreeMap::from([("route".to_string(), route_debug_name(&route).to_string())]),
+        || BTreeMap::from([("route".to_string(), route_debug_name(&route).to_string())]),
     );
     debug!(
         %peer,
@@ -358,24 +360,26 @@ pub(crate) async fn handle_parts(
         }
     }
     state.metrics.record_response(response.status());
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(&request_id),
         "D_PHRUST_SERVER_RESPONSE",
         "response",
         "server response generated",
-        BTreeMap::from([
-            ("status".to_string(), response.status().as_u16().to_string()),
-            (
-                "content_length".to_string(),
-                response_content_length(&response).to_string(),
-            ),
-            ("route".to_string(), route_kind.to_string()),
-            (
-                "duration_ms".to_string(),
-                started.elapsed().as_millis().to_string(),
-            ),
-        ]),
+        || {
+            BTreeMap::from([
+                ("status".to_string(), response.status().as_u16().to_string()),
+                (
+                    "content_length".to_string(),
+                    response_content_length(&response).to_string(),
+                ),
+                ("route".to_string(), route_kind.to_string()),
+                (
+                    "duration_ms".to_string(),
+                    started.elapsed().as_millis().to_string(),
+                ),
+            ])
+        },
     );
     write_access_log(
         &state,
@@ -416,16 +420,18 @@ async fn execute_builtin_router_before_normal_route(
     request_id: &str,
 ) -> Option<Response<ResponseBody>> {
     state.route_config.builtin_router.as_ref()?;
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(request_id),
         "D_PHRUST_SERVER_BODY_READ_START",
         "body_read",
         "request body read started",
-        BTreeMap::from([(
-            "max_body_bytes".to_string(),
-            state.max_body_bytes.to_string(),
-        )]),
+        || {
+            BTreeMap::from([(
+                "max_body_bytes".to_string(),
+                state.max_body_bytes.to_string(),
+            )])
+        },
     );
     let body_started = Instant::now();
     let body = match timeout(
@@ -435,16 +441,18 @@ async fn execute_builtin_router_before_normal_route(
     .await
     {
         Err(_) => {
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(request_id),
                 "D_PHRUST_SERVER_BODY_READ_TIMEOUT",
                 "body_read",
                 "request body read timed out",
-                BTreeMap::from([(
-                    "timeout_ms".to_string(),
-                    state.request_timeout.as_millis().to_string(),
-                )]),
+                || {
+                    BTreeMap::from([(
+                        "timeout_ms".to_string(),
+                        state.request_timeout.as_millis().to_string(),
+                    )])
+                },
             );
             state.metrics.record_phase(
                 super::metrics::RequestPhase::BodyRead,
@@ -458,16 +466,18 @@ async fn execute_builtin_router_before_normal_route(
         Ok(Ok(body)) => body,
         Ok(Err(BodyReadError::TooLarge)) => {
             state.metrics.body_too_large.fetch_add(1, Ordering::Relaxed);
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(request_id),
                 "D_PHRUST_SERVER_BODY_TOO_LARGE",
                 "body_read",
                 "request body exceeded configured limit",
-                BTreeMap::from([(
-                    "max_body_bytes".to_string(),
-                    state.max_body_bytes.to_string(),
-                )]),
+                || {
+                    BTreeMap::from([(
+                        "max_body_bytes".to_string(),
+                        state.max_body_bytes.to_string(),
+                    )])
+                },
             );
             debug!(%peer, max_body_bytes=state.max_body_bytes, "request body too large");
             state.metrics.record_phase(
@@ -480,13 +490,13 @@ async fn execute_builtin_router_before_normal_route(
             ));
         }
         Ok(Err(BodyReadError::Invalid)) => {
-            emit_server_debug(
+            emit_server_debug_lazy(
                 &state,
                 Some(request_id),
                 "D_PHRUST_SERVER_BODY_INVALID",
                 "body_read",
                 "request body read failed",
-                BTreeMap::new(),
+                BTreeMap::new,
             );
             warn!(%peer, "failed to read request body");
             state.metrics.record_phase(
@@ -500,13 +510,13 @@ async fn execute_builtin_router_before_normal_route(
         super::metrics::RequestPhase::BodyRead,
         body_started.elapsed().as_nanos(),
     );
-    emit_server_debug(
+    emit_server_debug_lazy(
         &state,
         Some(request_id),
         "D_PHRUST_SERVER_BODY_READ_END",
         "body_read",
         "request body read completed",
-        BTreeMap::from([("body_bytes".to_string(), body.len().to_string())]),
+        || BTreeMap::from([("body_bytes".to_string(), body.len().to_string())]),
     );
     execute_builtin_router_if_configured(parts, state, body, peer, request_id, None)
 }

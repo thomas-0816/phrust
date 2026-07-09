@@ -20,6 +20,7 @@ from normalize_perf_output import normalize
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENGINE = ROOT / "target/debug/php-vm"
 DEFAULT_OUT_DIR = ROOT / "target/performance/managed-fast"
+DEFAULT_JIT_MODE = "off"
 
 
 @dataclass(frozen=True)
@@ -163,10 +164,8 @@ def predicate_checks(counters: dict[str, Any]) -> dict[str, Callable[[], bool]]:
         > 0,
         "builtin_intrinsics_specific": lambda: nested_total(counters, "intrinsic_hits") > 0
         and nested_total(counters, "builtin_fast_stub_hits") > 0,
-        "native_policy": lambda: (
-            int_counter(counters, "native_compiled_regions") == 0
-            or int_counter(counters, "native_executions") > 0
-        )
+        "native_policy": lambda: int_counter(counters, "native_compiled_regions") == 0
+        and int_counter(counters, "native_executions") == 0
         and isinstance(counters.get("native_platform_unavailable", 0), int),
         "magic_get_reason": lambda: any(
             "magic_get_present" in profile.get("non_eligible_reasons", [])
@@ -187,8 +186,10 @@ def assert_case(case: Case, baseline: RunResult, default: RunResult) -> list[str
     if default.stderr != baseline.stderr:
         failures.append("stderr/runtime diagnostics differ from baseline")
     counters = default.counters
-    if counters.get("jit_mode") != "cranelift":
-        failures.append(f"jit_mode={counters.get('jit_mode')!r}; expected cranelift")
+    if counters.get("jit_mode") != DEFAULT_JIT_MODE:
+        failures.append(
+            f"jit_mode={counters.get('jit_mode')!r}; expected {DEFAULT_JIT_MODE}"
+        )
     for key, minimum in case.floors.items():
         actual = int_counter(counters, key)
         if actual < minimum:
@@ -398,7 +399,10 @@ def render_markdown(summary: dict[str, Any]) -> str:
 
 def self_test() -> int:
     counters = {
-        "jit_mode": "cranelift",
+        "jit_mode": DEFAULT_JIT_MODE,
+        "native_compiled_regions": 0,
+        "native_executions": 0,
+        "native_platform_unavailable": 0,
         "superinstructions_executed": {"load_const_echo": 1},
         "array_fast_path_hits_by_family": {
             "packed_int_fetch": 1,

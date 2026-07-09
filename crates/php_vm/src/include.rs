@@ -172,6 +172,7 @@ pub struct IncludeCache {
     resolution_shards: Vec<Mutex<HashMap<IncludeResolutionKey, ResolvedIncludePath>>>,
     negative_shards: Vec<Mutex<HashMap<IncludeResolutionKey, NegativeIncludeEntry>>>,
     compile_shards: Vec<Mutex<HashMap<CompiledIncludeKey, Arc<CompiledUnit>>>>,
+    compile_lookup_shards: Vec<Mutex<HashMap<CompiledIncludeLookupKey, CompiledIncludeKey>>>,
     compile_locks: Vec<IncludeCompileLockShard>,
     stats: IncludeCacheCounters,
     /// Deployment-root fingerprint installed by production-mode server runs.
@@ -206,6 +207,9 @@ impl IncludeCache {
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect(),
             compile_shards: (0..shard_count)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
+            compile_lookup_shards: (0..shard_count)
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect(),
             compile_locks: (0..shard_count)
@@ -294,27 +298,26 @@ impl IncludeCache {
     ) -> Result<ResolvedIncludePath, VmError> {
         let key = IncludeResolutionKey::new(loader, including_file, path, include_path, cwd);
         let shard_index = self.resolution_shard_index(&key);
-        {
-            let mut shard = self.resolution_shards[shard_index]
+        if let Some(resolved) = {
+            let shard = self.resolution_shards[shard_index]
                 .lock()
                 .map_err(|_| include_cache_lock_error("resolution", "lookup"))?;
-            if let Some(resolved) = shard.get(&key).cloned() {
-                match include_path_file_fingerprint(&resolved.canonical_path) {
-                    Ok(current) if current == resolved.fingerprint => {
-                        self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
-                        // Observe the directory version after dropping the
-                        // shard lock so the extra stat never serializes other
-                        // threads on this shard.
-                        drop(shard);
-                        self.observe_directory_version(&resolved);
-                        return Ok(resolved);
-                    }
-                    Ok(_) | Err(_) => {
-                        shard.remove(&key);
-                        self.stats
-                            .stale_invalidations
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
+            shard.get(&key).cloned()
+        } {
+            match include_path_file_fingerprint(&resolved.canonical_path) {
+                Ok(current) if current == resolved.fingerprint => {
+                    self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
+                    self.observe_directory_version(&resolved);
+                    return Ok(resolved);
+                }
+                Ok(_) | Err(_) => {
+                    let mut shard = self.resolution_shards[shard_index]
+                        .lock()
+                        .map_err(|_| include_cache_lock_error("resolution", "invalidate"))?;
+                    shard.remove(&key);
+                    self.stats
+                        .stale_invalidations
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -448,10 +451,14 @@ impl IncludeCache {
             let compiled = match compile_loaded_include(loaded, optimization_level) {
                 Ok(compiled) => {
                     let compiled = Arc::new(compiled);
-                    let mut shard = self.compile_shards[shard_index]
-                        .lock()
-                        .map_err(|_| include_cache_lock_error("compiled", "insert"))?;
-                    Ok(Arc::clone(shard.entry(key).or_insert(compiled)))
+                    let compiled = {
+                        let mut shard = self.compile_shards[shard_index]
+                            .lock()
+                            .map_err(|_| include_cache_lock_error("compiled", "insert"))?;
+                        Arc::clone(shard.entry(key.clone()).or_insert(compiled))
+                    };
+                    self.insert_compiled_lookup_index(&key)?;
+                    Ok(compiled)
                 }
                 Err(message) => {
                     self.stats.compile_errors.fetch_add(1, Ordering::Relaxed);
@@ -467,69 +474,69 @@ impl IncludeCache {
         resolved: &ResolvedIncludePath,
         optimization_level: OptimizationLevel,
     ) -> Result<Option<Arc<CompiledUnit>>, VmError> {
-        let shard_index = self.compile_shard_index_for_path(&resolved.canonical_path);
-        let mut shard = self.compile_shards[shard_index]
+        let lookup_key = CompiledIncludeLookupKey::new(resolved, optimization_level);
+        let shard_index = self.compile_shard_index_for_path(&lookup_key.canonical_path);
+        let Some(full_key) = ({
+            let lookup_shard = self.compile_lookup_shards[shard_index]
+                .lock()
+                .map_err(|_| include_cache_lock_error("compiled-index", "lookup"))?;
+            lookup_shard.get(&lookup_key).cloned()
+        }) else {
+            return Ok(None);
+        };
+        let hit = {
+            let shard = self.compile_shards[shard_index]
+                .lock()
+                .map_err(|_| include_cache_lock_error("compiled", "lookup"))?;
+            shard
+                .get_key_value(&full_key)
+                .map(|(key, compiled)| (key.clone(), Arc::clone(compiled)))
+        };
+        let Some((key, compiled)) = hit else {
+            return Ok(None);
+        };
+        match self.dependencies_are_fresh(&key) {
+            Ok(true) => {
+                self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
+                Ok(Some(compiled))
+            }
+            Ok(false) | Err(_) => {
+                let mut shard = self.compile_shards[shard_index]
+                    .lock()
+                    .map_err(|_| include_cache_lock_error("compiled", "invalidate"))?;
+                if shard.remove(&key).is_some() {
+                    drop(shard);
+                    self.remove_compiled_lookup_index(&key)?;
+                    self.stats
+                        .stale_invalidations
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .stale_dependency_invalidations
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    fn insert_compiled_lookup_index(&self, key: &CompiledIncludeKey) -> Result<(), VmError> {
+        let shard_index = self.compile_shard_index(key);
+        let lookup_key = CompiledIncludeLookupKey::from_compiled_key(key);
+        let mut shard = self.compile_lookup_shards[shard_index]
             .lock()
-            .map_err(|_| include_cache_lock_error("compiled", "lookup"))?;
-        let mut stale_path_entries = 0_u64;
-        let mut stale_dependency_entries = 0_u64;
-        let mut hit_key = None;
+            .map_err(|_| include_cache_lock_error("compiled-index", "insert"))?;
+        shard.insert(lookup_key, key.clone());
+        Ok(())
+    }
 
-        for key in shard.keys() {
-            if key.canonical_path != resolved.canonical_path
-                || !key.same_runtime_fingerprint(optimization_level)
-            {
-                continue;
-            }
-            if !key.matches_resolved_fingerprint(resolved) {
-                stale_path_entries += 1;
-                continue;
-            }
-            match self.dependencies_are_fresh(key) {
-                Ok(true) => {
-                    hit_key = Some(key.clone());
-                    break;
-                }
-                Ok(false) => {
-                    stale_dependency_entries += 1;
-                }
-                Err(_) => {
-                    stale_dependency_entries += 1;
-                }
-            }
-        }
-
-        if stale_path_entries > 0 || stale_dependency_entries > 0 {
-            let before = shard.len();
-            shard.retain(|key, _| {
-                if key.canonical_path != resolved.canonical_path
-                    || !key.same_runtime_fingerprint(optimization_level)
-                {
-                    return true;
-                }
-                key.matches_resolved_fingerprint(resolved)
-                    && self.dependencies_are_fresh(key).unwrap_or(false)
-            });
-            let removed = before.saturating_sub(shard.len()) as u64;
-            if removed > 0 {
-                self.stats
-                    .stale_invalidations
-                    .fetch_add(removed, Ordering::Relaxed);
-            }
-            if stale_dependency_entries > 0 {
-                self.stats
-                    .stale_dependency_invalidations
-                    .fetch_add(stale_dependency_entries, Ordering::Relaxed);
-            }
-        }
-
-        if let Some(key) = hit_key
-            && let Some(compiled) = shard.get(&key)
-        {
-            self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
-            return Ok(Some(Arc::clone(compiled)));
-        }
-        Ok(None)
+    fn remove_compiled_lookup_index(&self, key: &CompiledIncludeKey) -> Result<(), VmError> {
+        let shard_index = self.compile_shard_index(key);
+        let lookup_key = CompiledIncludeLookupKey::from_compiled_key(key);
+        let mut shard = self.compile_lookup_shards[shard_index]
+            .lock()
+            .map_err(|_| include_cache_lock_error("compiled-index", "remove"))?;
+        shard.remove(&lookup_key);
+        Ok(())
     }
 
     /// Compares the stored parent-directory version against the current one
@@ -588,6 +595,12 @@ impl IncludeCache {
             shard
                 .lock()
                 .map_err(|_| include_cache_lock_error("compiled", "clear"))?
+                .clear();
+        }
+        for shard in &self.compile_lookup_shards {
+            shard
+                .lock()
+                .map_err(|_| include_cache_lock_error("compiled-index", "clear"))?
                 .clear();
         }
         Ok(())
@@ -1426,6 +1439,17 @@ struct CompiledIncludeKey {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CompiledIncludeLookupKey {
+    canonical_path: PathBuf,
+    len: u64,
+    modified_unix_nanos: Option<u128>,
+    readonly: bool,
+    compiler_version: &'static str,
+    debug_assertions: bool,
+    optimization_level: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CompiledIncludeDependencyKey {
     canonical_path: PathBuf,
     len: u64,
@@ -1451,17 +1475,31 @@ impl CompiledIncludeKey {
             optimization_level: optimization_level.as_str(),
         }
     }
+}
 
-    fn matches_resolved_fingerprint(&self, resolved: &ResolvedIncludePath) -> bool {
-        self.len == resolved.fingerprint.len
-            && self.modified_unix_nanos == resolved.fingerprint.modified_unix_nanos
-            && self.readonly == resolved.fingerprint.readonly
+impl CompiledIncludeLookupKey {
+    fn new(resolved: &ResolvedIncludePath, optimization_level: OptimizationLevel) -> Self {
+        Self {
+            canonical_path: resolved.canonical_path.clone(),
+            len: resolved.fingerprint.len,
+            modified_unix_nanos: resolved.fingerprint.modified_unix_nanos,
+            readonly: resolved.fingerprint.readonly,
+            compiler_version: env!("CARGO_PKG_VERSION"),
+            debug_assertions: cfg!(debug_assertions),
+            optimization_level: optimization_level.as_str(),
+        }
     }
 
-    fn same_runtime_fingerprint(&self, optimization_level: OptimizationLevel) -> bool {
-        self.compiler_version == env!("CARGO_PKG_VERSION")
-            && self.debug_assertions == cfg!(debug_assertions)
-            && self.optimization_level == optimization_level.as_str()
+    fn from_compiled_key(key: &CompiledIncludeKey) -> Self {
+        Self {
+            canonical_path: key.canonical_path.clone(),
+            len: key.len,
+            modified_unix_nanos: key.modified_unix_nanos,
+            readonly: key.readonly,
+            compiler_version: key.compiler_version,
+            debug_assertions: key.debug_assertions,
+            optimization_level: key.optimization_level,
+        }
     }
 }
 

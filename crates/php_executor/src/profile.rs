@@ -122,7 +122,7 @@ impl EngineProfile {
                 vm_options.bytecode_layout = BytecodeLayoutMode::Source;
                 vm_options.quickening = QuickeningMode::On;
                 vm_options.inline_caches = InlineCacheMode::On;
-                vm_options.jit = JitMode::Cranelift;
+                vm_options.jit = JitMode::Off;
                 vm_options.jit_blacklist = JitBlacklistMode::On;
                 vm_options.tiering = TieringOptions::default();
                 vm_options.jit_threshold = vm_options.tiering.function_entry_threshold;
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn default_profile_is_managed_fast_runtime_with_cranelift_experiment() {
+    fn default_profile_is_managed_fast_runtime_without_unavailable_cranelift() {
         let options = PhpExecutorOptions::managed_fast_runtime();
 
         assert_eq!(options.optimization_level, OptimizationLevel::O2);
@@ -247,7 +247,7 @@ mod tests {
         );
         assert_eq!(options.vm_options.quickening, QuickeningMode::On);
         assert_eq!(options.vm_options.inline_caches, InlineCacheMode::On);
-        assert_eq!(options.vm_options.jit, JitMode::Cranelift);
+        assert_eq!(options.vm_options.jit, JitMode::Off);
         assert_eq!(options.vm_options.jit_blacklist, JitBlacklistMode::On);
         assert!(options.vm_options.tiering.enabled);
         assert!(options.vm_options.typecheck_fast_paths);
