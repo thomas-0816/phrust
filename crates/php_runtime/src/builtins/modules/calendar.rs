@@ -868,7 +868,7 @@ fn sdn_to_julian(sdn: i64) -> (i64, i64, i64) {
     if sdn <= 0 {
         return (0, 0, 0);
     }
-    if sdn > (i64::MAX - JULIAN_SDN_OFFSET * 4 + 1) / 4 || sdn < i64::MIN / 4 {
+    if !(i64::MIN / 4..=(i64::MAX - JULIAN_SDN_OFFSET * 4 + 1) / 4).contains(&sdn) {
         return (0, 0, 0);
     }
     let mut temp = sdn * 4 + (JULIAN_SDN_OFFSET * 4 - 1);

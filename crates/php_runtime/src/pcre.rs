@@ -1109,10 +1109,16 @@ mod tests {
 
     #[test]
     fn formats_pcre2_compile_errors_like_php() {
+        // The error offset comes straight from the linked PCRE2. The pinned
+        // PHP 8.5.7 reference (and the pcre2-sys bundled 10.46) report offset
+        // 0 for a leading quantifier; PCRE2 10.47 moved it to 1. The oracle
+        // defines correctness here, so this expects the 10.46 behavior — if
+        // the build ever links a system PCRE2 via pkg-config instead of the
+        // bundled one, this test flags the divergence.
         let error = compile_regex("*", "", PcreMatchLimits::default()).unwrap_err();
         assert_eq!(
             error.message(),
-            "Compilation failed: quantifier does not follow a repeatable item at offset 1"
+            "Compilation failed: quantifier does not follow a repeatable item at offset 0"
         );
     }
 

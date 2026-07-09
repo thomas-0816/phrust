@@ -6,6 +6,7 @@ use std::cell::{BorrowError, BorrowMutError, Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 /// Class-owned declared-property layout, shared across instances of the
 /// same class through a thread-local cache. The layout maps storage names
@@ -113,8 +114,8 @@ fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
 
 #[derive(Debug)]
 struct ObjectStorage {
-    class_name: String,
-    display_name: String,
+    class_name: Arc<str>,
+    display_name: Arc<str>,
     is_enum: bool,
     enum_backing_type: Option<ClassEnumBackingType>,
     id_guard: Option<ObjectIdGuard>,
@@ -310,8 +311,8 @@ impl ObjectRef {
         Self {
             id,
             storage: Rc::new(RefCell::new(ObjectStorage {
-                class_name: class.name.clone(),
-                display_name,
+                class_name: Arc::from(class.name.as_str()),
+                display_name: Arc::from(display_name),
                 is_enum: class.flags.is_enum,
                 enum_backing_type: class.enum_backing_type,
                 id_guard: Some(ObjectIdGuard::new(id)),
@@ -354,8 +355,8 @@ impl ObjectRef {
         Self {
             id: source.id,
             storage: Rc::new(RefCell::new(ObjectStorage {
-                class_name: source.class_name(),
-                display_name: source.display_name(),
+                class_name: source.class_name_handle(),
+                display_name: source.display_name_handle(),
                 is_enum: false,
                 enum_backing_type: None,
                 id_guard: None,
@@ -392,13 +393,27 @@ impl ObjectRef {
     /// Returns the object's class name.
     #[must_use]
     pub fn class_name(&self) -> String {
-        self.storage.borrow().class_name.clone()
+        self.storage.borrow().class_name.to_string()
+    }
+
+    /// Returns the object's class name as a shared handle (a refcount bump,
+    /// no fresh allocation).
+    #[must_use]
+    pub fn class_name_handle(&self) -> Arc<str> {
+        Arc::clone(&self.storage.borrow().class_name)
     }
 
     /// Returns the source-spelled display class name for diagnostics and dumps.
     #[must_use]
     pub fn display_name(&self) -> String {
-        self.storage.borrow().display_name.clone()
+        self.storage.borrow().display_name.to_string()
+    }
+
+    /// Returns the display class name as a shared handle (a refcount bump,
+    /// no fresh allocation).
+    #[must_use]
+    pub fn display_name_handle(&self) -> Arc<str> {
+        Arc::clone(&self.storage.borrow().display_name)
     }
 
     /// Returns whether this object represents an enum case.

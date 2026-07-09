@@ -883,7 +883,7 @@ fn byte_reverse_position(
                 (position <= limit).then_some(position)
             }
         })
-        .last()
+        .next_back()
         .map_or(Value::Bool(false), |position| Value::Int(position as i64)))
 }
 

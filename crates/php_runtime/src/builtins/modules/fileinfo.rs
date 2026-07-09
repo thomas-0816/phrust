@@ -1,5 +1,9 @@
 //! Fileinfo MVP for common media MIME checks.
 
+// Bounded libmagic FFI: every unsafe block is a direct host-library call
+// wrapped in a checked result.
+#![allow(unsafe_code)]
+
 use super::core::{
     argument_type_error, argument_value_error, arity_error, int_arg, read_file_value,
     resolve_runtime_path, resource_arg, string_arg,

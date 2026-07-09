@@ -475,17 +475,12 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 enum PluralExpression {
+    #[default]
     English,
     French,
     One,
-}
-
-impl Default for PluralExpression {
-    fn default() -> Self {
-        Self::English
-    }
 }
 
 impl PluralExpression {

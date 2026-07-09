@@ -510,6 +510,7 @@ fn builtin_getmyuid(
     Ok(Value::Int(current_process_uid()))
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 pub(in crate::builtins::modules) fn current_process_uid() -> i64 {
     unsafe { libc::getuid() as i64 }
@@ -520,6 +521,7 @@ pub(in crate::builtins::modules) fn current_process_uid() -> i64 {
     0
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 pub(in crate::builtins::modules) fn current_process_gid() -> i64 {
     unsafe { libc::getgid() as i64 }

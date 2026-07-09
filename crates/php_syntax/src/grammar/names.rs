@@ -16,7 +16,9 @@ pub(crate) fn parse_name(parser: &mut Parser<'_>) -> bool {
 
     loop {
         bump_trivia(parser);
-        if !parser.at(symbol(b'\\')) {
+        // A lone backslash lexes as `T_NS_SEPARATOR` (tokenizer parity);
+        // adjacent segments are already folded into one qualified-name token.
+        if !parser.at(named(TokenName::NsSeparator)) {
             break;
         }
         if next_non_trivia_is(parser, 1, symbol(b'{')) {

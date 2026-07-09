@@ -278,7 +278,7 @@ impl ServerConfig {
         let mut request_profile_trigger_header = file_config
             .bool("request_profile_trigger_header")?
             .unwrap_or_else(|| {
-                env_value("PHRUST_REQUEST_PROFILE_TRIGGER_HEADER").map_or(true, |value| {
+                env_value("PHRUST_REQUEST_PROFILE_TRIGGER_HEADER").is_none_or(|value| {
                     matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "on")
                 })
             });

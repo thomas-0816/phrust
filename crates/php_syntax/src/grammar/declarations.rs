@@ -183,7 +183,7 @@ fn parse_use_import_clause(parser: &mut Parser<'_>, allow_item_kind: bool) {
     }
 
     bump_trivia(parser);
-    if parser.at(symbol(b'\\')) && next_non_trivia_is(parser, 1, symbol(b'{')) {
+    if parser.at(named(TokenName::NsSeparator)) && next_non_trivia_is(parser, 1, symbol(b'{')) {
         parser.bump();
         parse_group_use_list(parser);
         return;

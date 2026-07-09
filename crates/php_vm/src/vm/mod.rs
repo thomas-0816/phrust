@@ -45,7 +45,7 @@ use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservat
 #[cfg(feature = "jit-cranelift")]
 use crate::deopt::GuardKind;
 use crate::error::VmError;
-use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument};
+use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument, TraceArguments};
 use crate::include::{
     IncludeCacheStats, LoadedInclude, compile_loaded_include, include_path_file_fingerprint,
 };
@@ -1983,6 +1983,13 @@ struct PropertyHookCall {
 
 struct FunctionCall<'a> {
     args: Vec<CallArgument>,
+    /// R1.2 fast lane: bare positional argument values for an exact-arity
+    /// plain-positional call to a known simple callee, pre-validated by the
+    /// dense call arm. When non-empty, `args` is empty and the executor's
+    /// direct-bind loop consumes these values straight into the frame locals
+    /// — no `CallArgument` construction, no by-ref bookkeeping per argument.
+    /// Values are already effective (references dereferenced at read).
+    positional_values: Vec<Value>,
     captures: Vec<ClosureCaptureValue>,
     call_span: Option<php_ir::IrSpan>,
     call_site_strict_types: Option<bool>,
@@ -1990,9 +1997,9 @@ struct FunctionCall<'a> {
     allow_by_ref_value_warnings: bool,
     by_ref_warning_callable_name: Option<String>,
     this_value: Option<ObjectRef>,
-    scope_class: Option<String>,
-    called_class: Option<String>,
-    declaring_class: Option<String>,
+    scope_class: Option<Arc<str>>,
+    called_class: Option<Arc<str>>,
+    declaring_class: Option<Arc<str>>,
     shared_top_level_locals: Option<&'a mut HashMap<String, Slot>>,
     shared_top_level_bind_missing_globals: bool,
     running_generator: Option<GeneratorRef>,
@@ -2007,6 +2014,7 @@ impl FunctionCall<'_> {
     fn new(args: Vec<CallArgument>, captures: Vec<ClosureCaptureValue>) -> Self {
         Self {
             args,
+            positional_values: Vec::new(),
             captures,
             call_span: None,
             call_site_strict_types: None,
@@ -2031,6 +2039,21 @@ impl FunctionCall<'_> {
     fn with_call_span(mut self, span: php_ir::IrSpan) -> Self {
         self.call_span = Some(span);
         self
+    }
+
+    fn with_positional_values(mut self, values: Vec<Value>) -> Self {
+        debug_assert!(self.args.is_empty());
+        self.positional_values = values;
+        self
+    }
+
+    /// PHP-visible call arity across both argument representations.
+    fn arg_count(&self) -> usize {
+        if self.positional_values.is_empty() {
+            self.args.len()
+        } else {
+            self.positional_values.len()
+        }
     }
 
     fn with_optional_call_span(mut self, span: Option<php_ir::IrSpan>) -> Self {
@@ -2123,9 +2146,28 @@ impl FunctionCall<'_> {
         called_class: impl Into<String>,
         declaring_class: impl Into<String>,
     ) -> Self {
-        self.scope_class = Some(normalize_class_name(&scope_class.into()));
-        self.called_class = Some(display_class_name(&called_class.into()));
-        self.declaring_class = Some(normalize_class_name(&declaring_class.into()));
+        self.scope_class = Some(Arc::from(normalize_class_name(&scope_class.into())));
+        self.called_class = Some(Arc::from(display_class_name(&called_class.into())));
+        self.declaring_class = Some(Arc::from(normalize_class_name(&declaring_class.into())));
+        self
+    }
+
+    /// Class-context fast path: the handles are already in the exact
+    /// normalized/display form `with_class_context` would produce, so
+    /// attaching them is three refcount bumps instead of three fresh
+    /// normalizing allocations.
+    fn with_class_context_handles(
+        mut self,
+        scope_class: Arc<str>,
+        called_class: Arc<str>,
+        declaring_class: Arc<str>,
+    ) -> Self {
+        debug_assert_eq!(normalize_class_name(&scope_class), *scope_class);
+        debug_assert_eq!(display_class_name(&called_class), *called_class);
+        debug_assert_eq!(normalize_class_name(&declaring_class), *declaring_class);
+        self.scope_class = Some(scope_class);
+        self.called_class = Some(called_class);
+        self.declaring_class = Some(declaring_class);
         self
     }
 }
@@ -2246,7 +2288,7 @@ fn call_frame_layout_class(
     {
         return "known_method_frame";
     }
-    if function_is_specialized_tiny_leaf_candidate(function, call.args.len(), shape) {
+    if function_is_specialized_tiny_leaf_candidate(function, call.arg_count(), shape) {
         return "tiny_leaf_frame";
     }
     "known_function_frame"
@@ -2487,6 +2529,11 @@ pub struct Vm {
     /// body scan, so repeated calls to the same function do not re-scan its
     /// whole body on every invocation to classify the call frame.
     frame_shape_flags: RefCell<HashMap<(u64, u32), FrameShapeFlags>>,
+    /// Memoized activation-context class-name handles keyed by the exact name
+    /// spelling dispatch sees. The normalized/display forms of a spelling never
+    /// change, so hot method-call sites attach shared handles with refcount
+    /// bumps instead of re-normalizing three fresh `String`s per call.
+    class_name_handles: RefCell<HashMap<String, ClassNameHandles>>,
     /// Memoized resolved runtime class entries so repeated instantiations of a
     /// class do not rebuild the whole entry (lineage walk, property/constant
     /// evaluation, method mapping) on every `new`. Invalidated whenever the
@@ -2536,6 +2583,7 @@ impl Vm {
             argument_vector_observers: RefCell::new(HashMap::new()),
             trivial_method_plans: RefCell::new(HashMap::new()),
             frame_shape_flags: RefCell::new(HashMap::new()),
+            class_name_handles: RefCell::new(HashMap::new()),
             runtime_class_entry_cache: RefCell::new(RuntimeClassEntryCache::default()),
             ir_class_entry_cache: RefCell::new(IrClassEntryCache::default()),
             default_slot_template_cache: RefCell::new(DefaultSlotTemplateCache::default()),
@@ -3043,6 +3091,15 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_dense_direct_call_hit();
+        }
+    }
+
+    fn record_counter_dense_call_bare_args_hit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_dense_call_bare_args_hit();
         }
     }
 
@@ -5208,6 +5265,24 @@ impl Vm {
         shape
     }
 
+    /// Returns shared normalized/display handles for a class-name spelling,
+    /// allocating them only on its first sighting. `with_class_context`
+    /// re-derives both forms per call; the forms are pure functions of the
+    /// spelling, so reusing the handles is behavior-neutral.
+    fn class_name_handles(&self, name: &str) -> ClassNameHandles {
+        if let Some(handles) = self.class_name_handles.borrow().get(name) {
+            return handles.clone();
+        }
+        let handles = ClassNameHandles {
+            normalized: Arc::from(normalize_class_name(name)),
+            display: Arc::from(display_class_name(name)),
+        };
+        self.class_name_handles
+            .borrow_mut()
+            .insert(name.to_owned(), handles.clone());
+        handles
+    }
+
     /// Returns the resolved runtime class entry for a class, building it only on
     /// the first instantiation within a class-table epoch and reusing the shared
     /// `Rc` afterward. When the class table changes (new class declared or
@@ -6712,7 +6787,7 @@ impl Vm {
         if function.flags.is_method != call.this_value.is_some() || !call.captures.is_empty() {
             return None;
         }
-        if call.args.len() != function.params.len() {
+        if call.arg_count() != function.params.len() {
             return None;
         }
         // Named args would misalign positional slots. By-reference *arg* fields
@@ -6720,6 +6795,8 @@ impl Vm {
         // potential write-back; they are set for any variable passed positionally
         // and are moot here because the recognizer already rejects functions with
         // by-reference *parameters* — the value is passed by value regardless.
+        // (`positional_values` is positional by construction, so only the
+        // `CallArgument` form can carry names.)
         if call.args.iter().any(|arg| arg.name.is_some()) {
             return None;
         }
@@ -6733,11 +6810,15 @@ impl Vm {
         // occupies local 0 in method IR, so the receiver leads and the
         // declared parameters follow at their local indices.
         let mut params: Vec<Value> =
-            Vec::with_capacity(call.args.len() + usize::from(call.this_value.is_some()));
+            Vec::with_capacity(call.arg_count() + usize::from(call.this_value.is_some()));
         if let Some(this) = call.this_value.as_ref() {
             params.push(Value::Object(this.clone()));
         }
-        params.extend(call.args.iter().map(|arg| arg.value.clone()));
+        if call.positional_values.is_empty() {
+            params.extend(call.args.iter().map(|arg| arg.value.clone()));
+        } else {
+            params.extend(call.positional_values.iter().cloned());
+        }
         // Return-and-resume call compositions need the VM to drive the
         // suspend/perform-call/re-enter loop rather than a single region run.
         if leaf.resume_plan().is_some() {
@@ -6871,13 +6952,18 @@ impl Vm {
             },
         );
         if let Some(frame) = stack.current_mut() {
-            frame.trace_arguments.reserve(leaf_args.len());
-            for value in leaf_args.iter() {
-                frame.trace_arguments.push(FrameTraceArgument {
-                    name: None,
-                    value: value.clone(),
-                });
-            }
+            // Native leaf frames never bind arguments into locals, so the
+            // lazy trace reconstruction has no source — keep the eager
+            // snapshot here (guaranteed-int args, so the clones are cheap).
+            frame.trace_arguments = TraceArguments::Materialized(
+                leaf_args
+                    .iter()
+                    .map(|value| FrameTraceArgument {
+                        name: None,
+                        value: value.clone(),
+                    })
+                    .collect(),
+            );
             frame.arguments = leaf_args.to_vec();
         }
 
@@ -7057,13 +7143,16 @@ impl Vm {
                             },
                         );
                         if let Some(frame) = stack.current_mut() {
-                            frame.trace_arguments.reserve(params.len());
-                            for value in params.iter() {
-                                frame.trace_arguments.push(FrameTraceArgument {
-                                    name: None,
-                                    value: value.clone(),
-                                });
-                            }
+                            // Native leaf frame: see the tail-call arm above.
+                            frame.trace_arguments = TraceArguments::Materialized(
+                                params
+                                    .iter()
+                                    .map(|value| FrameTraceArgument {
+                                        name: None,
+                                        value: value.clone(),
+                                    })
+                                    .collect(),
+                            );
                             frame.arguments = params.to_vec();
                         }
                         frame_pushed = true;
@@ -8101,9 +8190,24 @@ impl Vm {
         // reporting, and the backtrace snapshot stay byte-identical (see the
         // shared `is_direct_bind_fast_shape`, `coerce_or_check_param_type`, and
         // `trace_value_for_bound_param`).
-        let direct_bind =
-            elide_frame_args && arguments::is_direct_bind_fast_shape(ir_function, &call.args);
-        let mut direct_args: Vec<CallArgument> = Vec::new();
+        // R1.2 fast lane: the dense call arm may hand bare positional values
+        // (pre-validated shape, references already dereferenced at operand
+        // read) — no `CallArgument` vector exists at all for those calls.
+        let prebound_values = std::mem::take(&mut call.positional_values);
+        // The dense fast lane may only pre-bind values for the exact shape the
+        // classic predicate accepts; anything else must arrive as
+        // `CallArgument`s so the general binder sees it.
+        debug_assert!(
+            prebound_values.is_empty()
+                || (elide_frame_args
+                    && call.args.is_empty()
+                    && prebound_values.len() == ir_function.params.len()
+                    && arguments::params_bind_direct(ir_function)),
+            "pre-bound positional values outside the direct-bind fast shape"
+        );
+        let direct_bind = !prebound_values.is_empty()
+            || (elide_frame_args && arguments::is_direct_bind_fast_shape(ir_function, &call.args));
+        let mut direct_values: Vec<Value> = Vec::new();
         let mut prepared_args: Vec<PreparedArg> = Vec::new();
         let mut frame_args: Vec<Value> = Vec::new();
         let mut binding_diagnostics: Vec<RuntimeDiagnostic> = Vec::new();
@@ -8115,13 +8219,17 @@ impl Vm {
             // params, no defaults, no variadic, and no named arguments, so
             // `frame_args`/`binding_diagnostics` stay empty as they would on the
             // general path for this shape.
-            let mut args = std::mem::take(&mut call.args);
-            for arg in &mut args {
-                if let Value::Reference(cell) = &arg.value {
-                    arg.value = cell.get();
-                }
-            }
-            direct_args = args;
+            direct_values = if prebound_values.is_empty() {
+                std::mem::take(&mut call.args)
+                    .into_iter()
+                    .map(|arg| match arg.value {
+                        Value::Reference(cell) => cell.get(),
+                        value => value,
+                    })
+                    .collect()
+            } else {
+                prebound_values
+            };
             has_by_ref_arg = false;
         } else {
             let prepared = match arguments::prepare_arguments(
@@ -8240,7 +8348,7 @@ impl Vm {
         {
             let frame = stack.current_mut().expect("bytecode frame was pushed");
             let args_is_empty = if direct_bind {
-                direct_args.is_empty()
+                direct_values.is_empty()
             } else {
                 prepared_args.is_empty()
             };
@@ -8254,23 +8362,16 @@ impl Vm {
                 }
             } else {
                 frame.arguments = frame_args;
-                // Build the backtrace snapshot straight into the frame's pooled
-                // vector (from the raw args, before they move into locals),
-                // rather than allocating one per call and discarding it for the
-                // tiny-frame fast path above.
-                if direct_bind {
-                    build_frame_trace_arguments_direct(
-                        &mut frame.trace_arguments,
-                        &direct_args,
-                        &ir_function.params,
-                    );
-                } else {
-                    build_frame_trace_arguments(
-                        &mut frame.trace_arguments,
-                        &prepared_args,
-                        &ir_function.params,
-                    );
-                }
+                // Backtrace arguments reconstruct lazily from the live locals
+                // (reference-engine semantics: traces show current slot
+                // values), so no per-call snapshot is built here.
+                frame.trace_arguments = TraceArguments::Lazy {
+                    arg_count: if direct_bind {
+                        direct_values.len() as u32
+                    } else {
+                        prepared_args.len() as u32
+                    },
+                };
             }
         }
         if let Err(message) = initialize_captures(ir_function, call.captures, stack) {
@@ -8303,9 +8404,12 @@ impl Vm {
             // general path, then write it straight into the frame's locals. The
             // fast shape has no by-ref params, so there is no reference cell to
             // bind (`coerce_or_check_param_type` ignores the by-ref flag anyway).
-            for (arg_index, (param, arg)) in ir_function.params.iter().zip(direct_args).enumerate()
-            {
-                let mut value = arg.value;
+            let mut direct_values = direct_values;
+            let bound_count = direct_values.len().min(ir_function.params.len());
+            for arg_index in 0..bound_count {
+                let param = &ir_function.params[arg_index];
+                let mut value =
+                    std::mem::replace(&mut direct_values[arg_index], Value::Uninitialized);
                 if let Err(message) = coerce_or_check_param_type(
                     compiled,
                     state,
@@ -8318,6 +8422,32 @@ impl Vm {
                     argument_policy.call_site_strict_types,
                     call.call_span,
                 ) {
+                    // Cold: the frame's arguments are elided on this fast
+                    // path, so the lazy trace has no source for the failing
+                    // (and any later) argument — materialize the snapshot from
+                    // the already-bound locals plus the remaining raw args so
+                    // the TypeError's own trace shows the real values.
+                    direct_values[arg_index] = value;
+                    let entries: Vec<FrameTraceArgument> = (0..direct_values.len())
+                        .map(|index| {
+                            let param = ir_function.params.get(index);
+                            let value = match param {
+                                Some(param) if index < arg_index => stack
+                                    .current()
+                                    .and_then(|frame| frame.locals.get(param.local))
+                                    .unwrap_or(Value::Null),
+                                _ => direct_values[index].clone(),
+                            };
+                            let sensitive = param.is_some_and(param_is_sensitive);
+                            FrameTraceArgument {
+                                name: None,
+                                value: trace_value_for_param(&value, sensitive),
+                            }
+                        })
+                        .collect();
+                    if let Some(frame) = stack.current_mut() {
+                        frame.trace_arguments = TraceArguments::Materialized(entries);
+                    }
                     let result = self.runtime_error(output, compiled, stack, message);
                     if let Some(throwable) = runtime_error_throwable(&result) {
                         tag_throwable_location(&throwable, compiled, ir_function.span);
@@ -10581,16 +10711,48 @@ impl Vm {
                                 return result;
                             }
                         }
-                        let values = match self
-                            .read_dense_call_args_for_function(dense, compiled, stack, name, args)
-                        {
-                            Ok(values) => values,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
-                        };
+                        // R1.2: a plain positional argument list (no names,
+                        // direct values only) has a call shape fully determined
+                        // by the dense metadata — byte-identical to what
+                        // `function_call_shape` derives after materializing
+                        // `CallArgument`s. Deriving it up front lets the IC
+                        // resolve the callee before any operand is read, so a
+                        // qualifying dense→dense direct-bind call reads bare
+                        // values straight into the callee binder and never
+                        // allocates the `Vec<CallArgument>`. `by_ref_local` is
+                        // set for *any* variable passed positionally (write-back
+                        // tracking) and is admitted: the callee gate below
+                        // excludes by-ref params, the classic direct-bind shape
+                        // ignores it too, and the shared post-call register
+                        // unset works from the dense metadata either way. The
+                        // dim/property by-ref targets stay on the materialized
+                        // path — building them reads object operands and can
+                        // fault before the call. Plain operand reads are
+                        // effect-free (no warnings), so deferring them past the
+                        // IC lookup is not observable.
+                        let bare_positional_shape = args.iter().all(|arg| {
+                            arg.name.is_none()
+                                && matches!(arg.value_kind, IrCallArgValueKind::Direct)
+                                && arg.by_ref_dim.is_none()
+                                && arg.by_ref_property.is_none()
+                                && arg.by_ref_property_dim.is_none()
+                        });
+                        let mut deferred_values: Option<Vec<CallArgument>> = None;
+                        if !bare_positional_shape {
+                            deferred_values = Some(
+                                match self.read_dense_call_args_for_function(
+                                    dense, compiled, stack, name, args,
+                                ) {
+                                    Ok(values) => values,
+                                    Err(message) => {
+                                        let result =
+                                            self.runtime_error(output, compiled, stack, message);
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                },
+                            );
+                        }
                         // Prefer the per-unit interned normalized name: no
                         // per-call lowering allocation, and the IC guard
                         // compares by symbol identity.
@@ -10607,7 +10769,26 @@ impl Vm {
                             }
                         };
                         let epoch = state.lookup_epoch();
-                        let call_shape = function_call_shape(&values);
+                        let call_shape = match &deferred_values {
+                            Some(values) => function_call_shape(values),
+                            // Keep in lockstep with `call_argument_has_by_ref_metadata`:
+                            // materialization preserves each target's presence
+                            // (`Option` → `Option`), so metadata presence here is
+                            // exactly the flag the materialized shape would carry.
+                            None => FunctionCallShape {
+                                arity: args.len().try_into().unwrap_or(u32::MAX),
+                                named_arguments: Vec::new(),
+                                by_ref_arguments: args
+                                    .iter()
+                                    .map(|arg| {
+                                        arg.by_ref_local.is_some()
+                                            || arg.by_ref_dim.is_some()
+                                            || arg.by_ref_property.is_some()
+                                            || arg.by_ref_property_dim.is_some()
+                                    })
+                                    .collect(),
+                            },
+                        };
                         self.observe_dense_call_inline_cache(
                             compiled,
                             function_id,
@@ -10661,6 +10842,69 @@ impl Vm {
                             resolved
                         };
                         self.record_counter_dense_direct_call_hit();
+                        // R1.2 fast lane: the IC resolved a current-unit dense
+                        // callee whose bind shape sends arguments straight into
+                        // frame locals (`is_direct_bind_fast_shape` split: the
+                        // dense metadata proved the argument side above, the
+                        // callee's params prove the rest here). Read the
+                        // operands as bare `Value`s; the direct-bind loop in
+                        // `execute_bytecode_function` coerces and writes them
+                        // to locals with no `Vec<CallArgument>` in between.
+                        let mut fast_lane_values: Option<Vec<Value>> = None;
+                        if bare_positional_shape
+                            && let Some(plan) = plan
+                            && let FunctionCallCacheTarget::CurrentUnit { function } = &target
+                            && matches!(
+                                plan.function_plan(function.index()),
+                                Some(DenseFunctionPlan::Dense)
+                            )
+                            && let Some(callee) = compiled.unit().functions.get(function.index())
+                            && args.len() == callee.params.len()
+                            && arguments::params_bind_direct(callee)
+                            && self.frame_args_elidable(compiled, *function, callee)
+                        {
+                            let mut positional = Vec::with_capacity(args.len());
+                            for arg in args {
+                                match self.read_dense_operand_with_source(
+                                    compiled,
+                                    stack,
+                                    arg.value,
+                                    layout_source::CALL_ARGUMENT_SNAPSHOT,
+                                ) {
+                                    Ok(value) => {
+                                        self.record_counter_value_clone_reason(
+                                            layout_source::CALL_ARGUMENT_SNAPSHOT.name(),
+                                        );
+                                        positional.push(value);
+                                    }
+                                    Err(message) => {
+                                        let result =
+                                            self.runtime_error(output, compiled, stack, message);
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                }
+                            }
+                            self.record_counter_dense_call_bare_args_hit();
+                            fast_lane_values = Some(positional);
+                        }
+                        let values = if fast_lane_values.is_some() {
+                            Vec::new()
+                        } else if let Some(values) = deferred_values {
+                            values
+                        } else {
+                            match self.read_dense_call_args_for_function(
+                                dense, compiled, stack, name, args,
+                            ) {
+                                Ok(values) => values,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        };
                         let result = if let Some(plan) = plan
                             && let FunctionCallCacheTarget::CurrentUnit { function } =
                                 target.clone()
@@ -10697,7 +10941,7 @@ impl Vm {
                                         stack.pop_recycle();
                                         return result;
                                     };
-                                    let call = FunctionCall::new(values, Vec::new())
+                                    let mut call = FunctionCall::new(values, Vec::new())
                                         .with_call_site_strict_types(
                                             compiled.unit().strict_types,
                                         )
@@ -10707,6 +10951,9 @@ impl Vm {
                                                 .get(instruction.span.index())
                                                 .copied(),
                                         );
+                                    if let Some(positional) = fast_lane_values.take() {
+                                        call = call.with_positional_values(positional);
+                                    }
                                     // Copy-and-patch native leaf tier, fired from
                                     // the hot dense call path. The dense fast path
                                     // dispatches straight to `execute_bytecode_function`,
@@ -15219,6 +15466,12 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
+        // Bare positional values are a dense-executor hand-off; the rich path
+        // binds from `call.args` and would silently see a zero-arg call.
+        debug_assert!(
+            call.positional_values.is_empty(),
+            "pre-bound positional values reached the rich call path"
+        );
         let unit = compiled.unit();
         let Some(function) = unit.functions.get(function_id.index()) else {
             return self.runtime_error(output, compiled, stack, "called function is missing");
@@ -15549,11 +15802,11 @@ impl Vm {
             }
             {
                 let frame = stack.current_mut().expect("frame was pushed");
-                // This executor keeps the backtrace snapshot for every frame
-                // (tiny frames included), so build it unconditionally, directly
-                // into the frame's pooled vector from the raw args before they
-                // move into locals.
-                build_frame_trace_arguments(&mut frame.trace_arguments, &args, &function.params);
+                // Backtrace arguments reconstruct lazily from the live
+                // locals (reference-engine semantics); nothing to build here.
+                frame.trace_arguments = TraceArguments::Lazy {
+                    arg_count: args.len() as u32,
+                };
                 if specialized_tiny_frame {
                     if !args.is_empty() {
                         self.record_counter_arg_array_avoided();
@@ -15594,7 +15847,18 @@ impl Vm {
                 bind_top_level_global_locals(function, stack, state);
                 self.record_counter_alias_state(AliasState::GlobalOrSuperglobalReference);
             }
-            for (arg_index, (param, mut arg)) in function.params.iter().zip(args).enumerate() {
+            let mut args = args;
+            let bound_count = args.len().min(function.params.len());
+            for arg_index in 0..bound_count {
+                let param = &function.params[arg_index];
+                let mut arg = std::mem::replace(
+                    &mut args[arg_index],
+                    PreparedArg {
+                        value: Value::Uninitialized,
+                        reference: None,
+                        trace_holds_reference: false,
+                    },
+                );
                 if let Err(message) = coerce_or_check_param_type(
                     compiled,
                     state,
@@ -15607,6 +15871,31 @@ impl Vm {
                     argument_policy.call_site_strict_types,
                     call.call_span,
                 ) {
+                    // Cold: materialize the trace snapshot (bound params from
+                    // locals, the failing and later ones from the raw args) so
+                    // the TypeError's trace shows the real argument values —
+                    // the lazy reconstruction has no bound local for them.
+                    args[arg_index] = arg;
+                    let entries: Vec<FrameTraceArgument> = (0..args.len())
+                        .map(|index| {
+                            let param = function.params.get(index);
+                            let value = match param {
+                                Some(param) if index < arg_index => stack
+                                    .current()
+                                    .and_then(|frame| frame.locals.get(param.local))
+                                    .unwrap_or(Value::Null),
+                                _ => args[index].value.clone(),
+                            };
+                            let sensitive = param.is_some_and(param_is_sensitive);
+                            FrameTraceArgument {
+                                name: None,
+                                value: trace_value_for_param(&value, sensitive),
+                            }
+                        })
+                        .collect();
+                    if let Some(frame) = stack.current_mut() {
+                        frame.trace_arguments = TraceArguments::Materialized(entries);
+                    }
                     let result = self.runtime_error(output, compiled, stack, message);
                     if let Some(throwable) = runtime_error_throwable(&result) {
                         tag_throwable_location(&throwable, compiled, function.span);
@@ -18520,10 +18809,10 @@ impl Vm {
                                     .with_call_site_strict_types(compiled.unit().strict_types)
                                     .with_call_span(instruction.span)
                                     .with_this(object.clone())
-                                    .with_class_context(
-                                        constructor.class.name.clone(),
-                                        object.display_name(),
-                                        constructor.class.name.clone(),
+                                    .with_class_context_handles(
+                                        self.class_name_handles(&constructor.class.name).normalized,
+                                        object_called_class_handle(&object),
+                                        self.class_name_handles(&constructor.class.name).normalized,
                                     )
                                     .inherit_fiber_context(&running_fiber),
                                 output,
@@ -19976,10 +20265,10 @@ impl Vm {
                                     .with_call_site_strict_types(compiled.unit().strict_types)
                                     .with_call_span(instruction.span)
                                     .with_this(object.clone())
-                                    .with_class_context(
-                                        constructor.class.name.clone(),
-                                        object.display_name(),
-                                        constructor.class.name.clone(),
+                                    .with_class_context_handles(
+                                        self.class_name_handles(&constructor.class.name).normalized,
+                                        object_called_class_handle(&object),
+                                        self.class_name_handles(&constructor.class.name).normalized,
                                     )
                                     .inherit_fiber_context(&running_fiber),
                                 output,
@@ -27262,10 +27551,12 @@ impl Vm {
                                                 )
                                                 .with_call_span(instruction.span)
                                                 .with_this(object.clone())
-                                                .with_class_context(
-                                                    resolved.class.name.clone(),
-                                                    object.display_name(),
-                                                    resolved.class.name.clone(),
+                                                .with_class_context_handles(
+                                                    self.class_name_handles(&resolved.class.name)
+                                                        .normalized,
+                                                    object_called_class_handle(&object),
+                                                    self.class_name_handles(&resolved.class.name)
+                                                        .normalized,
                                                 ),
                                             output,
                                             stack,
@@ -28657,10 +28948,10 @@ impl Vm {
                                 .with_call_site_strict_types(compiled.unit().strict_types)
                                 .with_call_span(instruction.span)
                                 .with_this(object.clone())
-                                .with_class_context(
-                                    declaring_class.name.clone(),
-                                    class.display_name.clone(),
-                                    declaring_class.name.clone(),
+                                .with_class_context_handles(
+                                    self.class_name_handles(&declaring_class.name).normalized,
+                                    self.class_name_handles(&class.display_name).display,
+                                    self.class_name_handles(&declaring_class.name).normalized,
                                 )
                                 .inherit_fiber_context(&running_fiber),
                             output,
@@ -29663,10 +29954,10 @@ impl Vm {
                         let mut call = FunctionCall::new(values, Vec::new())
                             .with_call_site_strict_types(compiled.unit().strict_types)
                             .with_call_span(instruction.span)
-                            .with_class_context(
-                                declaring_class.name.clone(),
-                                called_class,
-                                declaring_class.name.clone(),
+                            .with_class_context_handles(
+                                self.class_name_handles(&declaring_class.name).normalized,
+                                self.class_name_handles(&called_class).display,
+                                self.class_name_handles(&declaring_class.name).normalized,
                             )
                             .inherit_fiber_context(&running_fiber);
                         if let Some(bound_this) = bound_this_for_scoped_call {
@@ -29774,7 +30065,7 @@ impl Vm {
                             call = call.with_this(bound_this.clone());
                         }
                         if let Some(scope_class) = &payload.context.scope_class {
-                            call = call.with_class_context(
+                            call = call.with_class_context_handles(
                                 scope_class.clone(),
                                 payload
                                     .context
@@ -34380,7 +34671,7 @@ impl Vm {
                         call = call.with_this(bound_this);
                     }
                     if let Some(scope_class) = payload.context.scope_class {
-                        call = call.with_class_context(
+                        call = call.with_class_context_handles(
                             scope_class.clone(),
                             payload
                                 .context
@@ -35510,10 +35801,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    declaring_class_name.clone(),
-                    object.display_name(),
-                    declaring_class_name,
+                .with_class_context_handles(
+                    self.class_name_handles(&declaring_class_name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&declaring_class_name).normalized,
                 )
                 .inherit_fiber_context(running_fiber),
             output,
@@ -36064,10 +36355,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -36158,10 +36449,10 @@ impl Vm {
             resolved.method.function,
             FunctionCall::new(args, Vec::new())
                 .with_call_site_strict_types(compiled.unit().strict_types)
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    class.display_name.clone(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    self.class_name_handles(&class.display_name).display,
+                    self.class_name_handles(&resolved.class.name).normalized,
                 )
                 .with_optional_call_span(call_span),
             output,
@@ -36291,10 +36582,10 @@ impl Vm {
                                 .with_call_site_strict_types(compiled.unit().strict_types)
                                 .with_optional_call_span(call_span)
                                 .with_this(object.clone())
-                                .with_class_context(
-                                    resolved.class.name.clone(),
-                                    object.display_name(),
-                                    resolved.class.name.clone(),
+                                .with_class_context_handles(
+                                    self.class_name_handles(&resolved.class.name).normalized,
+                                    object_called_class_handle(&object),
+                                    self.class_name_handles(&resolved.class.name).normalized,
                                 ),
                             output,
                             stack,
@@ -36739,10 +37030,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    declaring_class.name.clone(),
-                    object.display_name(),
-                    declaring_class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&declaring_class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&declaring_class.name).normalized,
                 ),
             output,
             stack,
@@ -39451,10 +39742,10 @@ impl Vm {
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -39523,10 +39814,10 @@ impl Vm {
             FunctionCall::new(magic_args, Vec::new())
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_optional_call_span(call_span)
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    called_class,
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    self.class_name_handles(&called_class).display,
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -39591,7 +39882,9 @@ impl Vm {
             context.called_class,
             context.declaring_class,
         ) {
-            call = call.with_class_context(scope_class, called_class, declaring_class);
+            // Captured from a call that already went through
+            // `with_class_context`, so the handles keep their exact form.
+            call = call.with_class_context_handles(scope_class, called_class, declaring_class);
         }
         let result = self.execute_function(
             compiled,
@@ -40330,10 +40623,10 @@ impl Vm {
                 FunctionCall::new(Vec::new(), Vec::new())
                     .with_call_site_strict_types(owner.unit().strict_types)
                     .with_this(object.clone())
-                    .with_class_context(
-                        resolved.class.name.clone(),
-                        object.display_name(),
-                        resolved.class.name.clone(),
+                    .with_class_context_handles(
+                        self.class_name_handles(&resolved.class.name).normalized,
+                        object_called_class_handle(&object),
+                        self.class_name_handles(&resolved.class.name).normalized,
                     )
                     .with_optional_call_span(call_span),
                 output,
@@ -40417,10 +40710,10 @@ impl Vm {
             FunctionCall::new(Vec::new(), Vec::new())
                 .with_call_site_strict_types(owner.unit().strict_types)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 )
                 .with_optional_call_span(call_span),
             output,
@@ -43174,10 +43467,10 @@ impl Vm {
             FunctionCall::new(args, Vec::new())
                 .with_call_site_strict_types(owner.unit().strict_types)
                 .with_this(object.clone())
-                .with_class_context(
-                    resolved.class.name.clone(),
-                    object.display_name(),
-                    resolved.class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
                 ),
             output,
             stack,
@@ -43230,10 +43523,10 @@ impl Vm {
             FunctionCall::new(args, Vec::new())
                 .with_call_site_strict_types(compiled.unit().strict_types)
                 .with_this(object.clone())
-                .with_class_context(
-                    class.name.clone(),
-                    object.display_name(),
-                    class.name.clone(),
+                .with_class_context_handles(
+                    self.class_name_handles(&class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&class.name).normalized,
                 ),
             output,
             stack,
@@ -43571,10 +43864,10 @@ impl Vm {
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
         let mut call = FunctionCall::new(args, Vec::new())
             .with_call_site_strict_types(compiled.unit().strict_types)
-            .with_class_context(
-                declaring_class.name.clone(),
-                called_class,
-                declaring_class.name.clone(),
+            .with_class_context_handles(
+                self.class_name_handles(&declaring_class.name).normalized,
+                self.class_name_handles(&called_class).display,
+                self.class_name_handles(&declaring_class.name).normalized,
             )
             .with_optional_call_span(call_span);
         if let Some(bound_this) = bound_this_for_scoped_call {
@@ -44063,6 +44356,7 @@ impl Vm {
             .get(function_id.index())
             .is_some_and(|function| function.flags.is_top_level);
         let call = FunctionCall {
+            positional_values: Vec::new(),
             args: Vec::new(),
             captures: Vec::new(),
             call_span: Some(instruction_span),
@@ -47188,10 +47482,10 @@ impl Vm {
                     .with_call_site_strict_types(compiled.unit().strict_types)
                     .with_call_span(call_span)
                     .with_this(object.clone())
-                    .with_class_context(
-                        constructor.class.name.clone(),
-                        object.display_name(),
-                        constructor.class.name.clone(),
+                    .with_class_context_handles(
+                        self.class_name_handles(&constructor.class.name).normalized,
+                        object_called_class_handle(&object),
+                        self.class_name_handles(&constructor.class.name).normalized,
                     ),
                 output,
                 stack,
@@ -47506,6 +47800,7 @@ impl Vm {
 
         let mut shared = shared_locals_from_current_frame(compiled, stack);
         let call = FunctionCall {
+            positional_values: Vec::new(),
             args: Vec::new(),
             captures: Vec::new(),
             call_span: Some(eval_span),
@@ -49321,6 +49616,28 @@ impl PhpTokenStaticMethodError {
             Self::RuntimeClass(error) => error.into_message(),
             Self::Runtime(message) => message,
         }
+    }
+}
+
+/// Activation-context handles for one class-name spelling; see
+/// `Vm::class_name_handles`.
+#[derive(Clone, Debug)]
+struct ClassNameHandles {
+    /// `normalize_class_name` form for scope/declaring-class fields.
+    normalized: Arc<str>,
+    /// `display_class_name` form for the late-static-binding called class.
+    display: Arc<str>,
+}
+
+/// Late-static-binding handle for a receiver object. The stored display name
+/// already carries the PHP-visible spelling, so the shared handle is reused
+/// directly unless a leading root slash still needs stripping.
+fn object_called_class_handle(object: &ObjectRef) -> Arc<str> {
+    let display = object.display_name_handle();
+    if display.starts_with('\\') {
+        Arc::from(display_class_name(&display))
+    } else {
+        display
     }
 }
 
@@ -52698,9 +53015,12 @@ fn resolve_static_class_name(
     match normalize_class_name(class_name).as_str() {
         "self" => {
             let Some(scope) = current_scope_class(compiled, stack) else {
-                return Err(format!(
-                    "E_PHP_VM_INVALID_STATIC_SCOPE: {class_name}:: is not available outside class scope"
-                ));
+                // Reference wording (PHP 8.5.7): thrown when a deferred
+                // closure/global `self` reference is resolved without scope.
+                return Err(
+                    "E_PHP_VM_INVALID_STATIC_SCOPE: Cannot use \"self\" in the global scope"
+                        .to_owned(),
+                );
             };
             lookup_class_in_state(compiled, state, &scope)
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {scope} is not defined"))
@@ -52710,7 +53030,7 @@ fn resolve_static_class_name(
                 .or_else(|| current_scope_class(compiled, stack))
             else {
                 return Err(
-                    "E_PHP_VM_INVALID_STATIC_SCOPE: static:: is not available outside class scope"
+                    "E_PHP_VM_INVALID_STATIC_SCOPE: Cannot use \"static\" in the global scope"
                         .to_owned(),
                 );
             };
@@ -52723,7 +53043,7 @@ fn resolve_static_class_name(
         "parent" => {
             let Some(scope) = current_scope_class(compiled, stack) else {
                 return Err(
-                    "E_PHP_VM_INVALID_STATIC_SCOPE: parent:: is not available outside class scope"
+                    "E_PHP_VM_INVALID_STATIC_SCOPE: Cannot use \"parent\" in the global scope"
                         .to_owned(),
                 );
             };
@@ -54217,11 +54537,15 @@ fn closure_static_method_value(
 fn bind_closure_callable_value(callable: CallableValue, bound_this: Option<ObjectRef>) -> Value {
     match callable {
         CallableValue::Closure(payload) => {
-            let rebound_class = bound_this.as_ref().map(ObjectRef::class_name);
+            // Scope/declaring carry the canonical lookup name; the
+            // late-static-binding called class keeps the PHP-visible display
+            // spelling, matching what method activation stores in frames.
+            let rebound_class = bound_this.as_ref().map(ObjectRef::class_name_handle);
+            let rebound_display = bound_this.as_ref().map(object_called_class_handle);
             let context = ClosureContext {
                 owner_unit: payload.context.owner_unit,
                 scope_class: rebound_class.clone().or(payload.context.scope_class),
-                called_class: rebound_class.clone().or(payload.context.called_class),
+                called_class: rebound_display.or(payload.context.called_class),
                 declaring_class: rebound_class.or(payload.context.declaring_class),
             };
             Value::closure(
@@ -54564,9 +54888,11 @@ fn current_closure_value(
             .with_bound_this(bound_this)
             .with_context(ClosureContext {
                 owner_unit: dynamic_unit_index_for_compiled(state, compiled),
-                scope_class: current_scope_class(compiled, stack),
-                called_class: current_called_class(compiled, stack),
-                declaring_class: current_scope_class(compiled, stack),
+                scope_class: current_scope_class(compiled, stack).map(Arc::from),
+                // Display spelling: `static::class` inside the closure must
+                // reproduce the PHP-visible name, like method frames do.
+                called_class: current_called_class_display(compiled, stack).map(Arc::from),
+                declaring_class: current_scope_class(compiled, stack).map(Arc::from),
             }),
     ))
 }
@@ -58601,7 +58927,7 @@ fn debug_backtrace_array(
         if !ignore_args {
             entry.insert(
                 string_key("args"),
-                Value::Array(frame_trace_args_array(frame)),
+                Value::Array(frame_trace_args_array(compiled, frame)),
             );
         }
         trace.append(Value::Array(entry));
@@ -58624,7 +58950,7 @@ fn capture_debug_print_backtrace_string(
             let args = if ignore_args {
                 String::new()
             } else {
-                format_frame_trace_args(frame)
+                format_frame_trace_args(compiled, frame)
             };
             format!(
                 "#{index} {file}({line}): {}({args})",
@@ -58705,19 +59031,105 @@ fn frame_function_display_name(compiled: &CompiledUnit, frame: &Frame) -> String
     function.name.clone()
 }
 
-fn frame_trace_args_array(frame: &Frame) -> PhpArray {
-    if frame.trace_arguments.is_empty() {
+/// Materializes a frame's backtrace arguments (see [`TraceArguments`]).
+///
+/// The lazy variant reconstructs from the live parameter locals — matching the
+/// reference engine, where traces show the *current* slot values, parameter
+/// mutations included — with the `arguments` vector supplying positional
+/// extras beyond the declared parameters. A variadic tail expands its
+/// collected array (named-argument labels preserved as string keys). Sensitive
+/// parameters redact exactly as the eager builder did. When the frame's
+/// function is not resolvable in `compiled` (foreign-unit frame), the raw
+/// `arguments` vector is the fallback, mirroring the previous empty-snapshot
+/// behavior.
+fn materialized_frame_trace_arguments(
+    compiled: &CompiledUnit,
+    frame: &Frame,
+) -> Vec<FrameTraceArgument> {
+    let arg_count = match &frame.trace_arguments {
+        TraceArguments::Materialized(entries) => return entries.clone(),
+        TraceArguments::Lazy { arg_count } => *arg_count as usize,
+    };
+    let raw_fallback = |values: &[Value]| -> Vec<FrameTraceArgument> {
+        values
+            .iter()
+            .map(|value| FrameTraceArgument {
+                name: None,
+                value: value.clone(),
+            })
+            .collect()
+    };
+    let Some(function) = compiled.unit().functions.get(frame.function.index()) else {
+        return raw_fallback(&frame.arguments);
+    };
+    // A parameter local can be unbound when the frame failed argument
+    // binding (a bind-time TypeError's own trace still shows the raw
+    // argument, as the reference engine does) — fall back to the preserved
+    // arguments vector by position.
+    let live_local = |local: LocalId, index: usize| -> Value {
+        match frame.locals.get_slot(local) {
+            Some(Slot::Value(value)) if !value.is_uninitialized() => value.clone(),
+            Some(Slot::Reference(cell)) => cell.get(),
+            _ => frame.arguments.get(index).cloned().unwrap_or(Value::Null),
+        }
+    };
+    let mut out = Vec::with_capacity(arg_count);
+    for (index, param) in function.params.iter().enumerate() {
+        if param.variadic {
+            let sensitive = param_is_sensitive(param);
+            if let Value::Array(array) = live_local(param.local, index) {
+                for (key, value) in array.iter() {
+                    let name = match key {
+                        ArrayKey::String(name) => Some(name.to_string_lossy()),
+                        ArrayKey::Int(_) => None,
+                    };
+                    out.push(FrameTraceArgument {
+                        name,
+                        value: trace_value_for_param(value, sensitive),
+                    });
+                }
+            }
+            return out;
+        }
+        if index >= arg_count {
+            return out;
+        }
+        let value = live_local(param.local, index);
+        out.push(FrameTraceArgument {
+            name: None,
+            value: trace_value_for_param(&value, param_is_sensitive(param)),
+        });
+    }
+    // Positional extras beyond the declared parameters come from the
+    // preserved arguments vector (they have no bound local).
+    for value in frame
+        .arguments
+        .iter()
+        .take(arg_count)
+        .skip(function.params.len())
+    {
+        out.push(FrameTraceArgument {
+            name: None,
+            value: value.clone(),
+        });
+    }
+    out
+}
+
+fn frame_trace_args_array(compiled: &CompiledUnit, frame: &Frame) -> PhpArray {
+    let entries = materialized_frame_trace_arguments(compiled, frame);
+    if entries.is_empty() {
         return PhpArray::from_packed(frame.arguments.clone());
     }
     let mut array = PhpArray::new();
-    for arg in &frame.trace_arguments {
+    for arg in entries {
         // By-ref parameters store the live cell; PHP-visible trace args
         // carry the current value, not the reference wrapper.
-        let value = match &arg.value {
+        let value = match arg.value {
             Value::Reference(cell) => cell.get(),
-            value => value.clone(),
+            value => value,
         };
-        if let Some(name) = &arg.name {
+        if let Some(name) = arg.name {
             array.insert(ArrayKey::String(PhpString::from(name.as_str())), value);
         } else {
             array.append(value);
@@ -58726,8 +59138,9 @@ fn frame_trace_args_array(frame: &Frame) -> PhpArray {
     array
 }
 
-fn format_frame_trace_args(frame: &Frame) -> String {
-    if frame.trace_arguments.is_empty() {
+fn format_frame_trace_args(compiled: &CompiledUnit, frame: &Frame) -> String {
+    let entries = materialized_frame_trace_arguments(compiled, frame);
+    if entries.is_empty() {
         return frame
             .arguments
             .iter()
@@ -58735,8 +59148,7 @@ fn format_frame_trace_args(frame: &Frame) -> String {
             .collect::<Vec<_>>()
             .join(", ");
     }
-    frame
-        .trace_arguments
+    entries
         .iter()
         .map(|arg| {
             let value = format_trace_arg(&arg.value);
@@ -58799,7 +59211,7 @@ fn format_trace_call(compiled: &CompiledUnit, frame: &Frame) -> String {
     {
         return "{closure}()".to_owned();
     }
-    let args = format_frame_trace_args(frame);
+    let args = format_frame_trace_args(compiled, frame);
     let name = frame_function_display_name(compiled, frame);
     format!("{name}({args})")
 }
@@ -61410,113 +61822,6 @@ fn trace_value_for_param(value: &Value, sensitive: bool) -> Value {
     }
 }
 
-/// Rebuilds a frame's backtrace-visible arguments in place, pushing directly
-/// into the frame's (capacity-retained) vector instead of allocating a fresh
-/// one per call. It reproduces exactly the snapshot the argument binder used to
-/// return: one entry per bound positional argument (a supplied by-ref parameter
-/// holds the live cell, `#[\SensitiveParameter]` values are redacted), a
-/// variadic tail expanded to its elements with their named labels, and extra
-/// positional arguments appended verbatim without redaction. Call it only for
-/// frames that will actually keep their trace arguments; the raw (pre-coercion)
-/// `prepared_args` must be read before they are moved into the frame's locals.
-fn build_frame_trace_arguments(
-    trace: &mut Vec<FrameTraceArgument>,
-    prepared_args: &[PreparedArg],
-    params: &[IrParam],
-) {
-    debug_assert!(trace.is_empty());
-    trace.reserve(prepared_args.len());
-    for (index, arg) in prepared_args.iter().enumerate() {
-        match params.get(index) {
-            // The variadic parameter collapses its tail into one prepared array
-            // argument; expand it back into one trace entry per element, keyed
-            // by the named-argument labels the array preserves in order. No
-            // parameters follow a variadic one.
-            Some(param) if param.variadic => {
-                let sensitive = param_is_sensitive(param);
-                if let Value::Array(array) = &arg.value {
-                    for (key, value) in array.iter() {
-                        let name = match key {
-                            ArrayKey::String(name) => Some(name.to_string_lossy()),
-                            ArrayKey::Int(_) => None,
-                        };
-                        trace.push(FrameTraceArgument {
-                            name,
-                            value: trace_value_for_param(value, sensitive),
-                        });
-                    }
-                }
-                break;
-            }
-            Some(param) => {
-                trace.push(FrameTraceArgument {
-                    name: None,
-                    value: trace_value_for_bound_param(
-                        param,
-                        &arg.value,
-                        arg.reference.as_ref(),
-                        arg.trace_holds_reference,
-                    ),
-                });
-            }
-            // Extra positional arguments beyond the declared parameters have no
-            // parameter to consult, so they are neither named nor redacted.
-            None => {
-                trace.push(FrameTraceArgument {
-                    name: None,
-                    value: arg.value.clone(),
-                });
-            }
-        }
-    }
-}
-
-/// The backtrace-visible value for one bound positional parameter: redacted for
-/// `#[\SensitiveParameter]`, the live by-ref cell when the trace must observe
-/// writes through the parameter, otherwise a value snapshot. Shared by the
-/// prepared-arguments trace builder and the dense direct-bind trace builder so
-/// both produce byte-identical entries.
-fn trace_value_for_bound_param(
-    param: &IrParam,
-    value: &Value,
-    reference: Option<&ReferenceCell>,
-    trace_holds_reference: bool,
-) -> Value {
-    if param_is_sensitive(param) {
-        trace_value_for_param(value, true)
-    } else if let Some(cell) = reference.filter(|_| trace_holds_reference) {
-        // A by-ref trace argument is expected to carry its cell; if it does
-        // not (an unexpected binder state), degrade to the value snapshot the
-        // non-reference branch produces rather than panic on the trace path.
-        Value::Reference(cell.clone())
-    } else {
-        value.clone()
-    }
-}
-
-/// Builds a frame's backtrace-visible arguments for the dense executor's
-/// direct-to-locals fast path, reading the raw (reference-resolved, pre-coercion)
-/// call arguments instead of a `Vec<PreparedArg>`. The fast shape guarantees
-/// exact arity with no by-ref, variadic, or extra positional arguments, so every
-/// argument maps to a declared parameter and produces exactly the entry
-/// `build_frame_trace_arguments` would for the equivalent prepared arguments
-/// (`reference: None`, `trace_holds_reference: false`). Read the arguments before
-/// they move into the frame's locals.
-fn build_frame_trace_arguments_direct(
-    trace: &mut Vec<FrameTraceArgument>,
-    args: &[CallArgument],
-    params: &[IrParam],
-) {
-    debug_assert!(trace.is_empty());
-    trace.reserve(args.len());
-    for (param, arg) in params.iter().zip(args) {
-        trace.push(FrameTraceArgument {
-            name: None,
-            value: trace_value_for_bound_param(param, &arg.value, None, false),
-        });
-    }
-}
-
 fn sensitive_parameter_value() -> Value {
     Value::Object(ObjectRef::new_with_display_name(
         &RuntimeClassEntry {
@@ -61758,9 +62063,11 @@ fn make_closure_value(
             .with_bound_this(bound_this)
             .with_context(ClosureContext {
                 owner_unit: dynamic_unit_index_for_compiled(state, compiled),
-                scope_class: current_scope_class(compiled, stack),
-                called_class: current_called_class(compiled, stack),
-                declaring_class: current_scope_class(compiled, stack),
+                scope_class: current_scope_class(compiled, stack).map(Arc::from),
+                // Display spelling: `static::class` inside the closure must
+                // reproduce the PHP-visible name, like method frames do.
+                called_class: current_called_class_display(compiled, stack).map(Arc::from),
+                declaring_class: current_scope_class(compiled, stack).map(Arc::from),
             }),
     )
 }

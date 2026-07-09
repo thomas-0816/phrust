@@ -628,7 +628,7 @@ pub(super) fn new_soap_object(
     }
     let normalized = normalize_class_name(class_name);
     let display_name = soap_display_name(&normalized);
-    let object = ObjectRef::new_with_display_name(&soap_runtime_class(&display_name), display_name);
+    let object = ObjectRef::new_with_display_name(&soap_runtime_class(display_name), display_name);
     call_soap_method(&object, "__construct", args)?;
     Ok(object)
 }
@@ -3374,7 +3374,7 @@ pub(super) fn zip_pending_entry_by_index(
             Value::Array(entry) => Ok(Some((position, entry.clone()))),
             _ => Err(format!(
                 "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
-                value_type_name(&value)
+                value_type_name(value)
             )),
         };
     }
@@ -3390,10 +3390,10 @@ pub(super) fn zip_pending_entry_by_name(
         let Value::Array(entry) = value else {
             return Err(format!(
                 "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
-                value_type_name(&value)
+                value_type_name(value)
             ));
         };
-        if zip_entry_string(&entry, "name")? == name {
+        if zip_entry_string(entry, "name")? == name {
             return Ok(Some((position, entry.clone())));
         }
     }
@@ -3420,10 +3420,10 @@ pub(super) fn zip_pending_locate_name(
         let Value::Array(entry) = value else {
             return Err(format!(
                 "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
-                value_type_name(&value)
+                value_type_name(value)
             ));
         };
-        if zip_entry_name_matches(&zip_entry_string(&entry, "name")?, name, flags) {
+        if zip_entry_name_matches(&zip_entry_string(entry, "name")?, name, flags) {
             return Ok(Some(position));
         }
     }
@@ -3677,10 +3677,10 @@ pub(super) fn zip_pending_entry_pairs(
             let Value::Array(entry) = value else {
                 return Err(format!(
                     "E_PHP_VM_ZIP_WRITE_STATE: zip pending entry {position} must be array, {} found",
-                    value_type_name(&value)
+                    value_type_name(value)
                 ));
             };
-            let name = zip_entry_string(&entry, "name")?;
+            let name = zip_entry_string(entry, "name")?;
             Ok((name, entry.clone()))
         })
         .collect()

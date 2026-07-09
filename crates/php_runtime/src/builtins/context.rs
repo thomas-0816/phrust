@@ -1474,17 +1474,9 @@ impl OpcacheState {
 }
 
 /// Request-local SOAP facade state.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct SoapState {
     error_handler_enabled: bool,
-}
-
-impl Default for SoapState {
-    fn default() -> Self {
-        Self {
-            error_handler_enabled: false,
-        }
-    }
 }
 
 impl SoapState {
@@ -2045,6 +2037,7 @@ impl SysvMessageQueueState {
     }
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 fn current_uid() -> i64 {
     unsafe { libc::getuid() as i64 }
@@ -2055,6 +2048,7 @@ fn current_uid() -> i64 {
     0
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 fn current_gid() -> i64 {
     unsafe { libc::getgid() as i64 }
@@ -2172,7 +2166,7 @@ impl SysvSemaphoreState {
         };
         #[cfg(unix)]
         {
-            return semaphore.acquire(non_blocking);
+            semaphore.acquire(non_blocking)
         }
         #[cfg(not(unix))]
         {
@@ -2196,7 +2190,7 @@ impl SysvSemaphoreState {
         };
         #[cfg(unix)]
         {
-            return semaphore.release();
+            semaphore.release()
         }
         #[cfg(not(unix))]
         {
@@ -2235,7 +2229,7 @@ impl SysvSemaphore {
             if self.removed {
                 return false;
             }
-            return sysvsem_ipc_stat(self.semid).is_ok();
+            sysvsem_ipc_stat(self.semid).is_ok()
         }
         #[cfg(not(unix))]
         {
@@ -2243,6 +2237,7 @@ impl SysvSemaphore {
         }
     }
 
+    #[allow(unsafe_code)] // direct libc call, result checked
     #[cfg(unix)]
     fn open(
         key: i64,
@@ -2346,6 +2341,7 @@ impl SysvSemaphore {
         }
     }
 
+    #[allow(unsafe_code)] // direct libc call, result checked
     #[cfg(unix)]
     fn remove(&mut self) -> Result<(), SysvSemaphoreError> {
         if let Err(error) = sysvsem_ipc_stat(self.semid) {
@@ -2380,6 +2376,7 @@ fn sysvsem_op(
     }
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 fn sysvsem_semop_retry(semid: libc::c_int, ops: &mut [libc::sembuf]) -> Result<(), libc::c_int> {
     loop {
@@ -2394,6 +2391,7 @@ fn sysvsem_semop_retry(semid: libc::c_int, ops: &mut [libc::sembuf]) -> Result<(
     }
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 fn sysvsem_semctl_getval(
     semid: libc::c_int,
@@ -2407,6 +2405,7 @@ fn sysvsem_semctl_getval(
     }
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 fn sysvsem_semctl_setval(
     semid: libc::c_int,
@@ -2421,6 +2420,7 @@ fn sysvsem_semctl_setval(
     }
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 fn sysvsem_ipc_stat(semid: libc::c_int) -> Result<(), libc::c_int> {
     let mut stat = std::mem::MaybeUninit::<libc::semid_ds>::zeroed();

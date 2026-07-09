@@ -1,5 +1,9 @@
 //! Deterministic System V semaphore compatibility slice.
 
+// Bounded SysV IPC via host libc calls; unsafe blocks are direct syscall
+// wrappers with checked results.
+#![allow(unsafe_code)]
+
 use super::core::{argument_type_error, arity_error, int_arg};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,

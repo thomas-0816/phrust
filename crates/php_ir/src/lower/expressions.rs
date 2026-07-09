@@ -5391,12 +5391,12 @@ impl LoweringContext<'_> {
     ) -> Option<LoweredExpr> {
         let left = left?;
         let right = right?;
-        if matches!(operator, "&&" | "and" | "||" | "or") {
-            if let Some(exit_expr) = self.exit_operand_for_expr(right) {
-                return self.lower_short_circuit_exit_to_register(
-                    builder, site, operator, left, right, exit_expr,
-                );
-            }
+        if matches!(operator, "&&" | "and" | "||" | "or")
+            && let Some(exit_expr) = self.exit_operand_for_expr(right)
+        {
+            return self.lower_short_circuit_exit_to_register(
+                builder, site, operator, left, right, exit_expr,
+            );
         }
         let left_value = if operator == "??" {
             self.lower_coalesce_left_to_register(builder, site, left)?
@@ -8895,6 +8895,7 @@ impl LoweringContext<'_> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lower_local_assignment_logical_exit_guard_to_register(
         &mut self,
         builder: &mut IrBuilder,

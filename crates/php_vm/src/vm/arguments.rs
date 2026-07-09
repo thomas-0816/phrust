@@ -113,9 +113,18 @@ pub(super) fn is_direct_bind_fast_shape(function: &IrFunction, args: &[CallArgum
             arg.name.is_none()
                 && !matches!(arg.value_kind, IrCallArgValueKind::ByRefLocationPlaceholder)
         })
-        && function.params.iter().all(|param| {
-            !param.variadic && !param.by_ref && (param.type_.is_none() || param.default.is_none())
-        })
+        && params_bind_direct(function)
+}
+
+/// The parameter-side half of [`is_direct_bind_fast_shape`]: every param is
+/// by-value, non-variadic, and not typed-with-default. The dense call arm's
+/// bare-value fast lane checks this against the *callee* before any argument
+/// exists, pairing it with the dense-metadata equivalent of the argument-side
+/// half; keep the two predicates in lockstep.
+pub(super) fn params_bind_direct(function: &IrFunction) -> bool {
+    function.params.iter().all(|param| {
+        !param.variadic && !param.by_ref && (param.type_.is_none() || param.default.is_none())
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

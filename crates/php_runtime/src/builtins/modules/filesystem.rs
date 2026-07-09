@@ -704,6 +704,7 @@ pub(in crate::builtins::modules) fn builtin_ftok(
     ftok_key(context, &resolved, project_id.as_bytes()[0], span)
 }
 
+#[allow(unsafe_code)] // direct libc call, result checked
 #[cfg(unix)]
 fn ftok_key(
     context: &mut BuiltinContext<'_>,
@@ -1163,6 +1164,7 @@ mod tests {
     use super::*;
     use crate::{FilesystemCapabilities, OutputBuffer, RuntimeUploadedFile, UploadRegistry};
 
+    #[allow(unsafe_code)] // direct libc call, result checked
     #[cfg(unix)]
     #[test]
     fn ftok_matches_host_key_for_allowed_path() {

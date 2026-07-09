@@ -177,6 +177,9 @@ pub struct VmCounters {
     pub dense_property_fallback_by_reason: BTreeMap<String, u64>,
     pub dense_property_ic_reuse: u64,
     pub dense_direct_call_hits: u64,
+    /// R1.2 fast lane: dense direct calls whose arguments were read as bare
+    /// positional values (no `Vec<CallArgument>` materialized).
+    pub dense_call_bare_args_hits: u64,
     pub dense_method_call_hits: u64,
     pub dense_static_call_hits: u64,
     pub dense_callable_call_hits: u64,
@@ -1308,6 +1311,10 @@ impl VmCounters {
 
     pub(crate) fn record_dense_direct_call_hit(&mut self) {
         self.dense_direct_call_hits += 1;
+    }
+
+    pub(crate) fn record_dense_call_bare_args_hit(&mut self) {
+        self.dense_call_bare_args_hits += 1;
     }
 
     pub(crate) fn record_dense_method_call_hit(&mut self) {
@@ -2759,6 +2766,12 @@ impl VmCounters {
             &mut json,
             "dense_direct_call_hits",
             self.dense_direct_call_hits,
+            true,
+        );
+        push_field(
+            &mut json,
+            "dense_call_bare_args_hits",
+            self.dense_call_bare_args_hits,
             true,
         );
         push_field(
