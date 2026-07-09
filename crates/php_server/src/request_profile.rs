@@ -405,6 +405,10 @@ fn calls_json(counters: &VmCounters) -> Value {
         ("builtin_call_ic_hits", counters.builtin_call_ic_hits),
         ("builtin_call_ic_misses", counters.builtin_call_ic_misses),
         ("dense_direct_call_hits", counters.dense_direct_call_hits),
+        (
+            "dense_call_bare_args_hits",
+            counters.dense_call_bare_args_hits,
+        ),
         ("dense_method_call_hits", counters.dense_method_call_hits),
         ("dense_static_call_hits", counters.dense_static_call_hits),
         ("dense_call_ic_hits", counters.dense_call_ic_hits),

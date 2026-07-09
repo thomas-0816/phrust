@@ -1983,6 +1983,13 @@ struct PropertyHookCall {
 
 struct FunctionCall<'a> {
     args: Vec<CallArgument>,
+    /// R1.2 fast lane: bare positional argument values for an exact-arity
+    /// plain-positional call to a known simple callee, pre-validated by the
+    /// dense call arm. When non-empty, `args` is empty and the executor's
+    /// direct-bind loop consumes these values straight into the frame locals
+    /// — no `CallArgument` construction, no by-ref bookkeeping per argument.
+    /// Values are already effective (references dereferenced at read).
+    positional_values: Vec<Value>,
     captures: Vec<ClosureCaptureValue>,
     call_span: Option<php_ir::IrSpan>,
     call_site_strict_types: Option<bool>,
@@ -2007,6 +2014,7 @@ impl FunctionCall<'_> {
     fn new(args: Vec<CallArgument>, captures: Vec<ClosureCaptureValue>) -> Self {
         Self {
             args,
+            positional_values: Vec::new(),
             captures,
             call_span: None,
             call_site_strict_types: None,
@@ -2031,6 +2039,21 @@ impl FunctionCall<'_> {
     fn with_call_span(mut self, span: php_ir::IrSpan) -> Self {
         self.call_span = Some(span);
         self
+    }
+
+    fn with_positional_values(mut self, values: Vec<Value>) -> Self {
+        debug_assert!(self.args.is_empty());
+        self.positional_values = values;
+        self
+    }
+
+    /// PHP-visible call arity across both argument representations.
+    fn arg_count(&self) -> usize {
+        if self.positional_values.is_empty() {
+            self.args.len()
+        } else {
+            self.positional_values.len()
+        }
     }
 
     fn with_optional_call_span(mut self, span: Option<php_ir::IrSpan>) -> Self {
@@ -2246,7 +2269,7 @@ fn call_frame_layout_class(
     {
         return "known_method_frame";
     }
-    if function_is_specialized_tiny_leaf_candidate(function, call.args.len(), shape) {
+    if function_is_specialized_tiny_leaf_candidate(function, call.arg_count(), shape) {
         return "tiny_leaf_frame";
     }
     "known_function_frame"
@@ -3043,6 +3066,15 @@ impl Vm {
         }
         if let Some(counters) = self.counters.borrow_mut().as_mut() {
             counters.record_dense_direct_call_hit();
+        }
+    }
+
+    fn record_counter_dense_call_bare_args_hit(&self) {
+        if !self.options.collect_counters {
+            return;
+        }
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_dense_call_bare_args_hit();
         }
     }
 
@@ -6712,7 +6744,7 @@ impl Vm {
         if function.flags.is_method != call.this_value.is_some() || !call.captures.is_empty() {
             return None;
         }
-        if call.args.len() != function.params.len() {
+        if call.arg_count() != function.params.len() {
             return None;
         }
         // Named args would misalign positional slots. By-reference *arg* fields
@@ -6720,6 +6752,8 @@ impl Vm {
         // potential write-back; they are set for any variable passed positionally
         // and are moot here because the recognizer already rejects functions with
         // by-reference *parameters* — the value is passed by value regardless.
+        // (`positional_values` is positional by construction, so only the
+        // `CallArgument` form can carry names.)
         if call.args.iter().any(|arg| arg.name.is_some()) {
             return None;
         }
@@ -6733,11 +6767,15 @@ impl Vm {
         // occupies local 0 in method IR, so the receiver leads and the
         // declared parameters follow at their local indices.
         let mut params: Vec<Value> =
-            Vec::with_capacity(call.args.len() + usize::from(call.this_value.is_some()));
+            Vec::with_capacity(call.arg_count() + usize::from(call.this_value.is_some()));
         if let Some(this) = call.this_value.as_ref() {
             params.push(Value::Object(this.clone()));
         }
-        params.extend(call.args.iter().map(|arg| arg.value.clone()));
+        if call.positional_values.is_empty() {
+            params.extend(call.args.iter().map(|arg| arg.value.clone()));
+        } else {
+            params.extend(call.positional_values.iter().cloned());
+        }
         // Return-and-resume call compositions need the VM to drive the
         // suspend/perform-call/re-enter loop rather than a single region run.
         if leaf.resume_plan().is_some() {
@@ -8109,9 +8147,24 @@ impl Vm {
         // reporting, and the backtrace snapshot stay byte-identical (see the
         // shared `is_direct_bind_fast_shape`, `coerce_or_check_param_type`, and
         // `trace_value_for_bound_param`).
-        let direct_bind =
-            elide_frame_args && arguments::is_direct_bind_fast_shape(ir_function, &call.args);
-        let mut direct_args: Vec<CallArgument> = Vec::new();
+        // R1.2 fast lane: the dense call arm may hand bare positional values
+        // (pre-validated shape, references already dereferenced at operand
+        // read) — no `CallArgument` vector exists at all for those calls.
+        let prebound_values = std::mem::take(&mut call.positional_values);
+        // The dense fast lane may only pre-bind values for the exact shape the
+        // classic predicate accepts; anything else must arrive as
+        // `CallArgument`s so the general binder sees it.
+        debug_assert!(
+            prebound_values.is_empty()
+                || (elide_frame_args
+                    && call.args.is_empty()
+                    && prebound_values.len() == ir_function.params.len()
+                    && arguments::params_bind_direct(ir_function)),
+            "pre-bound positional values outside the direct-bind fast shape"
+        );
+        let direct_bind = !prebound_values.is_empty()
+            || (elide_frame_args && arguments::is_direct_bind_fast_shape(ir_function, &call.args));
+        let mut direct_values: Vec<Value> = Vec::new();
         let mut prepared_args: Vec<PreparedArg> = Vec::new();
         let mut frame_args: Vec<Value> = Vec::new();
         let mut binding_diagnostics: Vec<RuntimeDiagnostic> = Vec::new();
@@ -8123,13 +8176,17 @@ impl Vm {
             // params, no defaults, no variadic, and no named arguments, so
             // `frame_args`/`binding_diagnostics` stay empty as they would on the
             // general path for this shape.
-            let mut args = std::mem::take(&mut call.args);
-            for arg in &mut args {
-                if let Value::Reference(cell) = &arg.value {
-                    arg.value = cell.get();
-                }
-            }
-            direct_args = args;
+            direct_values = if prebound_values.is_empty() {
+                std::mem::take(&mut call.args)
+                    .into_iter()
+                    .map(|arg| match arg.value {
+                        Value::Reference(cell) => cell.get(),
+                        value => value,
+                    })
+                    .collect()
+            } else {
+                prebound_values
+            };
             has_by_ref_arg = false;
         } else {
             let prepared = match arguments::prepare_arguments(
@@ -8248,7 +8305,7 @@ impl Vm {
         {
             let frame = stack.current_mut().expect("bytecode frame was pushed");
             let args_is_empty = if direct_bind {
-                direct_args.is_empty()
+                direct_values.is_empty()
             } else {
                 prepared_args.is_empty()
             };
@@ -8267,7 +8324,7 @@ impl Vm {
                 // values), so no per-call snapshot is built here.
                 frame.trace_arguments = TraceArguments::Lazy {
                     arg_count: if direct_bind {
-                        direct_args.len() as u32
+                        direct_values.len() as u32
                     } else {
                         prepared_args.len() as u32
                     },
@@ -8304,12 +8361,12 @@ impl Vm {
             // general path, then write it straight into the frame's locals. The
             // fast shape has no by-ref params, so there is no reference cell to
             // bind (`coerce_or_check_param_type` ignores the by-ref flag anyway).
-            let mut direct_args = direct_args;
-            let bound_count = direct_args.len().min(ir_function.params.len());
+            let mut direct_values = direct_values;
+            let bound_count = direct_values.len().min(ir_function.params.len());
             for arg_index in 0..bound_count {
                 let param = &ir_function.params[arg_index];
                 let mut value =
-                    std::mem::replace(&mut direct_args[arg_index].value, Value::Uninitialized);
+                    std::mem::replace(&mut direct_values[arg_index], Value::Uninitialized);
                 if let Err(message) = coerce_or_check_param_type(
                     compiled,
                     state,
@@ -8327,8 +8384,8 @@ impl Vm {
                     // (and any later) argument — materialize the snapshot from
                     // the already-bound locals plus the remaining raw args so
                     // the TypeError's own trace shows the real values.
-                    direct_args[arg_index].value = value;
-                    let entries: Vec<FrameTraceArgument> = (0..direct_args.len())
+                    direct_values[arg_index] = value;
+                    let entries: Vec<FrameTraceArgument> = (0..direct_values.len())
                         .map(|index| {
                             let param = ir_function.params.get(index);
                             let value = match param {
@@ -8336,7 +8393,7 @@ impl Vm {
                                     .current()
                                     .and_then(|frame| frame.locals.get(param.local))
                                     .unwrap_or(Value::Null),
-                                _ => direct_args[index].value.clone(),
+                                _ => direct_values[index].clone(),
                             };
                             let sensitive = param.is_some_and(param_is_sensitive);
                             FrameTraceArgument {
@@ -10611,16 +10668,48 @@ impl Vm {
                                 return result;
                             }
                         }
-                        let values = match self
-                            .read_dense_call_args_for_function(dense, compiled, stack, name, args)
-                        {
-                            Ok(values) => values,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
-                        };
+                        // R1.2: a plain positional argument list (no names,
+                        // direct values only) has a call shape fully determined
+                        // by the dense metadata — byte-identical to what
+                        // `function_call_shape` derives after materializing
+                        // `CallArgument`s. Deriving it up front lets the IC
+                        // resolve the callee before any operand is read, so a
+                        // qualifying dense→dense direct-bind call reads bare
+                        // values straight into the callee binder and never
+                        // allocates the `Vec<CallArgument>`. `by_ref_local` is
+                        // set for *any* variable passed positionally (write-back
+                        // tracking) and is admitted: the callee gate below
+                        // excludes by-ref params, the classic direct-bind shape
+                        // ignores it too, and the shared post-call register
+                        // unset works from the dense metadata either way. The
+                        // dim/property by-ref targets stay on the materialized
+                        // path — building them reads object operands and can
+                        // fault before the call. Plain operand reads are
+                        // effect-free (no warnings), so deferring them past the
+                        // IC lookup is not observable.
+                        let bare_positional_shape = args.iter().all(|arg| {
+                            arg.name.is_none()
+                                && matches!(arg.value_kind, IrCallArgValueKind::Direct)
+                                && arg.by_ref_dim.is_none()
+                                && arg.by_ref_property.is_none()
+                                && arg.by_ref_property_dim.is_none()
+                        });
+                        let mut deferred_values: Option<Vec<CallArgument>> = None;
+                        if !bare_positional_shape {
+                            deferred_values = Some(
+                                match self.read_dense_call_args_for_function(
+                                    dense, compiled, stack, name, args,
+                                ) {
+                                    Ok(values) => values,
+                                    Err(message) => {
+                                        let result =
+                                            self.runtime_error(output, compiled, stack, message);
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                },
+                            );
+                        }
                         // Prefer the per-unit interned normalized name: no
                         // per-call lowering allocation, and the IC guard
                         // compares by symbol identity.
@@ -10637,7 +10726,26 @@ impl Vm {
                             }
                         };
                         let epoch = state.lookup_epoch();
-                        let call_shape = function_call_shape(&values);
+                        let call_shape = match &deferred_values {
+                            Some(values) => function_call_shape(values),
+                            // Keep in lockstep with `call_argument_has_by_ref_metadata`:
+                            // materialization preserves each target's presence
+                            // (`Option` → `Option`), so metadata presence here is
+                            // exactly the flag the materialized shape would carry.
+                            None => FunctionCallShape {
+                                arity: args.len().try_into().unwrap_or(u32::MAX),
+                                named_arguments: Vec::new(),
+                                by_ref_arguments: args
+                                    .iter()
+                                    .map(|arg| {
+                                        arg.by_ref_local.is_some()
+                                            || arg.by_ref_dim.is_some()
+                                            || arg.by_ref_property.is_some()
+                                            || arg.by_ref_property_dim.is_some()
+                                    })
+                                    .collect(),
+                            },
+                        };
                         self.observe_dense_call_inline_cache(
                             compiled,
                             function_id,
@@ -10691,6 +10799,69 @@ impl Vm {
                             resolved
                         };
                         self.record_counter_dense_direct_call_hit();
+                        // R1.2 fast lane: the IC resolved a current-unit dense
+                        // callee whose bind shape sends arguments straight into
+                        // frame locals (`is_direct_bind_fast_shape` split: the
+                        // dense metadata proved the argument side above, the
+                        // callee's params prove the rest here). Read the
+                        // operands as bare `Value`s; the direct-bind loop in
+                        // `execute_bytecode_function` coerces and writes them
+                        // to locals with no `Vec<CallArgument>` in between.
+                        let mut fast_lane_values: Option<Vec<Value>> = None;
+                        if bare_positional_shape
+                            && let Some(plan) = plan
+                            && let FunctionCallCacheTarget::CurrentUnit { function } = &target
+                            && matches!(
+                                plan.function_plan(function.index()),
+                                Some(DenseFunctionPlan::Dense)
+                            )
+                            && let Some(callee) = compiled.unit().functions.get(function.index())
+                            && args.len() == callee.params.len()
+                            && arguments::params_bind_direct(callee)
+                            && self.frame_args_elidable(compiled, *function, callee)
+                        {
+                            let mut positional = Vec::with_capacity(args.len());
+                            for arg in args {
+                                match self.read_dense_operand_with_source(
+                                    compiled,
+                                    stack,
+                                    arg.value,
+                                    layout_source::CALL_ARGUMENT_SNAPSHOT,
+                                ) {
+                                    Ok(value) => {
+                                        self.record_counter_value_clone_reason(
+                                            layout_source::CALL_ARGUMENT_SNAPSHOT.name(),
+                                        );
+                                        positional.push(value);
+                                    }
+                                    Err(message) => {
+                                        let result =
+                                            self.runtime_error(output, compiled, stack, message);
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                }
+                            }
+                            self.record_counter_dense_call_bare_args_hit();
+                            fast_lane_values = Some(positional);
+                        }
+                        let values = if fast_lane_values.is_some() {
+                            Vec::new()
+                        } else if let Some(values) = deferred_values {
+                            values
+                        } else {
+                            match self.read_dense_call_args_for_function(
+                                dense, compiled, stack, name, args,
+                            ) {
+                                Ok(values) => values,
+                                Err(message) => {
+                                    let result =
+                                        self.runtime_error(output, compiled, stack, message);
+                                    stack.pop_recycle();
+                                    return result;
+                                }
+                            }
+                        };
                         let result = if let Some(plan) = plan
                             && let FunctionCallCacheTarget::CurrentUnit { function } =
                                 target.clone()
@@ -10727,7 +10898,7 @@ impl Vm {
                                         stack.pop_recycle();
                                         return result;
                                     };
-                                    let call = FunctionCall::new(values, Vec::new())
+                                    let mut call = FunctionCall::new(values, Vec::new())
                                         .with_call_site_strict_types(
                                             compiled.unit().strict_types,
                                         )
@@ -10737,6 +10908,9 @@ impl Vm {
                                                 .get(instruction.span.index())
                                                 .copied(),
                                         );
+                                    if let Some(positional) = fast_lane_values.take() {
+                                        call = call.with_positional_values(positional);
+                                    }
                                     // Copy-and-patch native leaf tier, fired from
                                     // the hot dense call path. The dense fast path
                                     // dispatches straight to `execute_bytecode_function`,
@@ -15249,6 +15423,12 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
+        // Bare positional values are a dense-executor hand-off; the rich path
+        // binds from `call.args` and would silently see a zero-arg call.
+        debug_assert!(
+            call.positional_values.is_empty(),
+            "pre-bound positional values reached the rich call path"
+        );
         let unit = compiled.unit();
         let Some(function) = unit.functions.get(function_id.index()) else {
             return self.runtime_error(output, compiled, stack, "called function is missing");
@@ -44129,6 +44309,7 @@ impl Vm {
             .get(function_id.index())
             .is_some_and(|function| function.flags.is_top_level);
         let call = FunctionCall {
+            positional_values: Vec::new(),
             args: Vec::new(),
             captures: Vec::new(),
             call_span: Some(instruction_span),
@@ -47572,6 +47753,7 @@ impl Vm {
 
         let mut shared = shared_locals_from_current_frame(compiled, stack);
         let call = FunctionCall {
+            positional_values: Vec::new(),
             args: Vec::new(),
             captures: Vec::new(),
             call_span: Some(eval_span),
