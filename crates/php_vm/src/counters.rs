@@ -580,6 +580,14 @@ pub struct VmCounters {
     pub last_use_array_read_releases: u64,
     /// Candidate register reads left cloning, grouped by stable rejection reason.
     pub last_use_move_ineligible_by_reason: BTreeMap<String, u64>,
+    /// Pipeline stage counters for diagnosing why moves do or don't fire:
+    /// plans built (one per analyzed dense function), reads the plans marked
+    /// move-eligible / release-eligible, and how often the executor actually
+    /// consulted a plan for a register operand.
+    pub last_use_plans_built: u64,
+    pub last_use_eligible_reads: u64,
+    pub last_use_release_reads: u64,
+    pub last_use_move_consultations: u64,
 }
 
 /// Diagnostic metadata for one successful Cranelift compile.
@@ -1264,6 +1272,19 @@ impl VmCounters {
             .last_use_move_ineligible_by_reason
             .entry(reason.to_owned())
             .or_default() += count;
+    }
+
+    /// Records one built last-use plan with its marked-site totals.
+    pub(crate) fn record_last_use_plan_built(&mut self, eligible: u64, releases: u64) {
+        self.last_use_plans_built += 1;
+        self.last_use_eligible_reads += eligible;
+        self.last_use_release_reads += releases;
+    }
+
+    /// Records one executor consultation of a last-use plan for a register
+    /// operand (whether or not the read was eligible).
+    pub(crate) fn record_last_use_move_consultation(&mut self) {
+        self.last_use_move_consultations += 1;
     }
 
     pub(crate) fn record_dense_property_fetch_hit(&mut self) {
@@ -3073,6 +3094,48 @@ impl VmCounters {
             &mut json,
             "last_use_array_read_releases",
             self.last_use_array_read_releases,
+            true,
+        );
+        push_field(
+            &mut json,
+            "last_use_moves_applied",
+            self.last_use_moves_applied,
+            true,
+        );
+        push_field(
+            &mut json,
+            "last_use_move_clones_avoided",
+            self.last_use_move_clones_avoided,
+            true,
+        );
+        push_field(
+            &mut json,
+            "last_use_plans_built",
+            self.last_use_plans_built,
+            true,
+        );
+        push_field(
+            &mut json,
+            "last_use_eligible_reads",
+            self.last_use_eligible_reads,
+            true,
+        );
+        push_field(
+            &mut json,
+            "last_use_release_reads",
+            self.last_use_release_reads,
+            true,
+        );
+        push_field(
+            &mut json,
+            "last_use_move_consultations",
+            self.last_use_move_consultations,
+            true,
+        );
+        push_string_u64_map_field(
+            &mut json,
+            "last_use_move_ineligible_by_reason",
+            &self.last_use_move_ineligible_by_reason,
             true,
         );
         push_string_u64_map_field(

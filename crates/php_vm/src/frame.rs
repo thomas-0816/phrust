@@ -53,7 +53,11 @@ impl LocalFile {
     /// whenever possible.
     pub fn reset_for_function(&mut self, count: u32) {
         self.locals.clear();
-        self.locals.resize(count as usize, Slot::uninitialized());
+        // `resize_with` constructs each slot in place; `resize` would clone a
+        // template `Slot`, paying one counted `Value::clone` per local on
+        // every frame reset (~a million per WordPress request).
+        self.locals
+            .resize_with(count as usize, Slot::uninitialized);
     }
 
     /// Reads a local slot mutably without panicking.
@@ -188,8 +192,10 @@ impl RegisterFile {
     /// capacity whenever possible.
     pub fn reset_for_function(&mut self, count: u32) {
         self.registers.clear();
+        // See `LocalFile::reset_for_function`: construct in place instead of
+        // cloning a template per register.
         self.registers
-            .resize(count as usize, TempValue::uninitialized());
+            .resize_with(count as usize, TempValue::uninitialized);
     }
 
     /// Reads a register without panicking.

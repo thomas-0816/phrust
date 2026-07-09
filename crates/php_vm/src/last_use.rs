@@ -230,6 +230,10 @@ impl LastUseMovePlan {
             let is_array_release = releasable_array_operand(instruction) == Some(register);
             if !is_value_move && !is_array_release {
                 plan.record_ineligible(reason::UNMOVABLE_LAST_USE_SITE);
+                #[cfg(debug_assertions)]
+                if std::env::var_os("PHRUST_LAST_USE_DEBUG").is_some() {
+                    eprintln!("[last-use-unmovable] {:?}", instruction.opcode);
+                }
                 continue;
             }
             let Ok(instruction_index) = u32::try_from(last_use) else {
@@ -345,6 +349,13 @@ fn note_block(facts: &mut RegisterFacts, block: u32) {
 fn movable_operand(instruction: &DenseInstruction) -> Option<u32> {
     match (instruction.opcode, &instruction.operands) {
         (DenseOpcode::Move, DenseOperands::RegOperand { src, .. }) => register_index(*src),
+        // Plain register-to-local store: the value is written into the local,
+        // so a provably-dead source register moves instead of cloning. The
+        // discard variant is not planned here — its executor arm always takes
+        // (it unsets the register immediately after the store anyway).
+        (DenseOpcode::StoreLocal, DenseOperands::LocalOperand { src, .. }) => {
+            register_index(*src)
+        }
         (DenseOpcode::Cast, DenseOperands::Cast { src, .. }) => register_index(*src),
         (
             DenseOpcode::AssignDim | DenseOpcode::AppendDim,

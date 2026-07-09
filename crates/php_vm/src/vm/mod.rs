@@ -5106,6 +5106,9 @@ impl Vm {
         }
         let plan = Rc::new(crate::last_use::LastUseMovePlan::analyze(dense_function));
         self.record_counter_last_use_move_ineligible(&plan);
+        if let Some(counters) = self.counters.borrow_mut().as_mut() {
+            counters.record_last_use_plan_built(plan.eligible_reads(), plan.array_release_reads());
+        }
         self.last_use_move_plans
             .borrow_mut()
             .insert(key, Rc::clone(&plan));
@@ -5127,11 +5130,15 @@ impl Vm {
     ) -> Result<Value, String> {
         if let Some(plan) = move_plan
             && operand.kind == DenseOperandKind::Register
-            && plan.is_move_eligible(dense_instruction_index, operand.index)
         {
-            let value = self.take_consumed_dense_operand(compiled, stack, operand)?;
-            self.record_counter_last_use_move_applied(value_clone_is_heap(&value));
-            return Ok(value);
+            if let Some(counters) = self.counters.borrow_mut().as_mut() {
+                counters.record_last_use_move_consultation();
+            }
+            if plan.is_move_eligible(dense_instruction_index, operand.index) {
+                let value = self.take_consumed_dense_operand(compiled, stack, operand)?;
+                self.record_counter_last_use_move_applied(value_clone_is_heap(&value));
+                return Ok(value);
+            }
         }
         self.read_dense_operand(compiled, stack, operand)
     }
@@ -9681,7 +9688,23 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        let value = match self.read_dense_operand(compiled, stack, src) {
+                        // The discard variant unsets the source register right
+                        // after the store, so a register read here is a move by
+                        // definition — take it instead of clone-then-unset. The
+                        // plain store keeps the register live and only moves
+                        // when the last-use plan proves this read is dead.
+                        let value = if instruction.opcode == DenseOpcode::StoreLocalDiscard {
+                            self.take_consumed_dense_operand(compiled, stack, src)
+                        } else {
+                            self.read_dense_operand_last_use(
+                                compiled,
+                                stack,
+                                src,
+                                move_plan,
+                                dense_instruction_index,
+                            )
+                        };
+                        let value = match value {
                             Ok(value) => value,
                             Err(message) => {
                                 let result = self.runtime_error(output, compiled, stack, message);
