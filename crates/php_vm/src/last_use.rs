@@ -391,9 +391,7 @@ fn movable_operand(instruction: &DenseInstruction) -> Option<u32> {
         // so a provably-dead source register moves instead of cloning. The
         // discard variant is not planned here — its executor arm always takes
         // (it unsets the register immediately after the store anyway).
-        (DenseOpcode::StoreLocal, DenseOperands::LocalOperand { src, .. }) => {
-            register_index(*src)
-        }
+        (DenseOpcode::StoreLocal, DenseOperands::LocalOperand { src, .. }) => register_index(*src),
         (DenseOpcode::Cast, DenseOperands::Cast { src, .. }) => register_index(*src),
         (
             DenseOpcode::AssignDim | DenseOpcode::AppendDim,

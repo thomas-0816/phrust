@@ -56,8 +56,7 @@ impl LocalFile {
         // `resize_with` constructs each slot in place; `resize` would clone a
         // template `Slot`, paying one counted `Value::clone` per local on
         // every frame reset (~a million per WordPress request).
-        self.locals
-            .resize_with(count as usize, Slot::uninitialized);
+        self.locals.resize_with(count as usize, Slot::uninitialized);
     }
 
     /// Reads a local slot mutably without panicking.

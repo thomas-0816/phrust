@@ -436,7 +436,7 @@ fn sample_unattributed_backtrace() {
         seen.set(next);
         next
     });
-    if seen % every != 0 {
+    if !seen.is_multiple_of(every) {
         return;
     }
     let backtrace = std::backtrace::Backtrace::force_capture();
