@@ -127,7 +127,7 @@ pub fn negative_include_cache_enabled() -> bool {
 /// a non-`NotFound` (transient) failure, or a symlink candidate whose target
 /// could appear in a directory these guards do not cover.
 pub(crate) struct NegativeProbeTrace {
-    guards: Option<Vec<(PathBuf, IncludeDirectoryVersion)>>,
+    guards: Option<Vec<NegativeProbeGuard>>,
 }
 
 impl NegativeProbeTrace {
@@ -136,19 +136,32 @@ impl NegativeProbeTrace {
     }
 }
 
+/// One probed missing candidate and the parent-directory version observed
+/// before the probe. The candidate path itself is rechecked on replay so files
+/// that appear on filesystems with coarse directory-mtime granularity still
+/// invalidate the cached miss.
+#[derive(Clone, Debug)]
+struct NegativeProbeGuard {
+    candidate: PathBuf,
+    directory: PathBuf,
+    directory_version: IncludeDirectoryVersion,
+}
+
 /// One cached missing-include resolution: the deterministic error to replay
 /// plus the directory-version guards that must all still match for the entry
 /// to be served.
 #[derive(Clone, Debug)]
 struct NegativeIncludeEntry {
     error: VmError,
-    guards: Vec<(PathBuf, IncludeDirectoryVersion)>,
+    guards: Vec<NegativeProbeGuard>,
 }
 
 impl NegativeIncludeEntry {
     fn is_still_valid(&self) -> bool {
-        self.guards.iter().all(|(dir, stored)| {
-            include_directory_version(dir).is_some_and(|current| current == *stored)
+        self.guards.iter().all(|guard| {
+            fs::symlink_metadata(&guard.candidate).is_err()
+                && include_directory_version(&guard.directory)
+                    .is_some_and(|current| current == guard.directory_version)
         })
     }
 }
@@ -974,11 +987,12 @@ impl IncludeLoader {
         // in the resolution key — the server and CLI never chdir while serving).
         let capture_guards = negative_include_cache_enabled();
         let mut process_cwd: Option<Option<PathBuf>> = None;
-        let mut guards: Vec<(PathBuf, IncludeDirectoryVersion)> = Vec::new();
+        let mut guards: Vec<NegativeProbeGuard> = Vec::new();
         let mut cacheable = capture_guards;
         let mut last_error = None;
         let mut canonical = None;
         for candidate in &candidates {
+            let mut guard_candidate = None;
             if cacheable {
                 let absolute = if candidate.is_absolute() {
                     Some(candidate.clone())
@@ -988,15 +1002,20 @@ impl IncludeLoader {
                         .clone();
                     cwd.map(|cwd| cwd.join(candidate))
                 };
-                match absolute.as_ref().and_then(|path| path.parent()) {
-                    Some(parent) => {
-                        if !guards.iter().any(|(dir, _)| dir == parent) {
-                            match include_directory_version(parent) {
-                                Some(version) => guards.push((parent.to_path_buf(), version)),
-                                None => cacheable = false,
-                            }
+                match absolute.and_then(|path| {
+                    let parent = path.parent()?.to_path_buf();
+                    Some((path, parent))
+                }) {
+                    Some((path, parent)) => match include_directory_version(&parent) {
+                        Some(version) => {
+                            guard_candidate = Some(NegativeProbeGuard {
+                                candidate: path,
+                                directory: parent,
+                                directory_version: version,
+                            });
                         }
-                    }
+                        None => cacheable = false,
+                    },
                     None => cacheable = false,
                 }
             }
@@ -1011,6 +1030,13 @@ impl IncludeLoader {
                             || fs::symlink_metadata(candidate).is_ok())
                     {
                         cacheable = false;
+                    }
+                    if cacheable {
+                        if let Some(guard) = guard_candidate {
+                            guards.push(guard);
+                        } else {
+                            cacheable = false;
+                        }
                     }
                     last_error = Some(
                         include_error(
