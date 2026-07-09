@@ -1,0 +1,15 @@
+source: fixtures/semantic/scopes/closure-context-keywords.php
+parse_ok: true
+semantic_ok: true
+diagnostics:
+  []
+symbols:
+  - class Plain
+hir_summary:
+  statements: 11
+  expressions: 23
+  types: 1
+  const_exprs: 0
+  class_likes: 1
+  methods: 1
+  properties: 0
