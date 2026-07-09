@@ -22,8 +22,10 @@ use php_ir::{
     IrReturnType, LocalId, Operand, RegId,
 };
 
+use crate::aarch64::Cond;
+#[cfg(target_arch = "aarch64")]
 use crate::aarch64::{
-    Aarch64Assembler, Cond, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
+    Aarch64Assembler, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
 };
 use crate::abi::JitCValueTag;
 use crate::helpers::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, phrust_jit_abs_i64};
@@ -120,6 +122,7 @@ pub enum IntBinOp {
 impl IntBinOp {
     /// Emit the operation on `X4` (lhs) / `X5` (rhs) into `X6`, taking `deopt`
     /// on overflow or an out-of-domain operand. `X3` is used as scratch.
+    #[cfg(target_arch = "aarch64")]
     fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
         match self {
             IntBinOp::Add => {
@@ -393,6 +396,7 @@ pub enum FloatBinOp {
 impl FloatBinOp {
     /// Emit the operation on `D0`/`D1` into `D2`, taking `deopt` on a zero
     /// divisor (Div only).
+    #[cfg(target_arch = "aarch64")]
     fn emit(self, asm: &mut Aarch64Assembler, deopt: Label) {
         match self {
             FloatBinOp::Add => asm.fadd(D2, D0, D1),
@@ -443,6 +447,7 @@ fn check_float_op_slots(op: ScalarFloatOp) -> Result<(), SlotSequenceError> {
 
 /// Emit a copy of the whole 24-byte value `slot[dst] = slot[src]` (tag +
 /// payload + aux); the tag travels with the value so downstream ops still guard.
+#[cfg(target_arch = "aarch64")]
 fn emit_value_copy(asm: &mut Aarch64Assembler, dst: u32, src: u32) {
     asm.ldr_w(X3, X0, tag_off(src));
     asm.str_w(X3, X0, tag_off(dst));
@@ -452,6 +457,7 @@ fn emit_value_copy(asm: &mut Aarch64Assembler, dst: u32, src: u32) {
     asm.str_x(X5, X0, aux_off(dst));
 }
 
+#[cfg(target_arch = "aarch64")]
 fn emit_float_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarFloatOp) {
     match op {
         ScalarFloatOp::Const { dst, bits } => {
@@ -481,6 +487,7 @@ fn check_slot(slot: u32) -> Result<(), SlotSequenceError> {
 }
 
 /// Guard that `slot`'s tag is `Int`, taking the side exit otherwise.
+#[cfg(target_arch = "aarch64")]
 fn emit_int_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, INT_TAG);
@@ -490,6 +497,7 @@ fn emit_int_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 /// Guard that `slot`'s tag is `Bool`, taking the side exit otherwise. Used on a
 /// branch condition so arbitrary-truthiness conditions (int, string, …) fall
 /// back to the interpreter rather than being mis-tested here.
+#[cfg(target_arch = "aarch64")]
 fn emit_bool_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, BOOL_TAG);
@@ -515,6 +523,7 @@ fn emit_bool_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 ///
 /// Nothing is assumed to survive the `blr` except through the stack: both the
 /// result and the slot base are reloaded from the reserved frame afterward.
+#[cfg(target_arch = "aarch64")]
 fn emit_call_abs_i64(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32) {
     // 1–2: guard + read the argument while X0 is still the slot base.
     emit_int_guard(asm, deopt, arg);
@@ -552,6 +561,7 @@ fn emit_call_abs_i64(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u3
 /// Only a genuine array slot reaches the length helper — a scalar, a `Countable`
 /// object (marshaled as `Uninitialized`), or any other value side-exits here so
 /// the interpreter reproduces `count()`'s exact semantics/errors.
+#[cfg(target_arch = "aarch64")]
 fn emit_array_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, ARRAY_TAG);
@@ -581,6 +591,7 @@ fn emit_array_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 ///
 /// Nothing is assumed to survive the `blr` except through the stack; the helper
 /// only reads the borrowed value and never mutates, frees, or re-enters the VM.
+#[cfg(target_arch = "aarch64")]
 fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
     // 1–2: guard the arg is an array + read its borrowed-pointer payload while
     // X0 is still the slot base.
@@ -620,6 +631,7 @@ fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32,
 /// an object, `null`, or any other value (all of which PHP's `strlen` would
 /// coerce or reject) side-exits here so the interpreter reproduces the exact
 /// semantics.
+#[cfg(target_arch = "aarch64")]
 fn emit_string_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, STRING_TAG);
@@ -637,6 +649,7 @@ fn emit_string_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 /// / `x1 = &out`, `blr` the helper, side-exit on a non-OK status, else reload
 /// the byte length and store the `Int` result. The helper only reads the
 /// borrowed value's byte length; it never mutates, frees, or re-enters the VM.
+#[cfg(target_arch = "aarch64")]
 fn emit_call_strlen(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, helper: u64) {
     // 1–2: guard the arg is a string + read its borrowed-pointer payload while
     // X0 is still the slot base.
@@ -675,6 +688,7 @@ fn emit_call_strlen(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32
 /// Only a genuine object slot reaches the property-load helper — a scalar, a
 /// string, an array, `null`, or any other value side-exits here so the
 /// interpreter reproduces the exact property-access semantics/errors.
+#[cfg(target_arch = "aarch64")]
 fn emit_object_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, OBJECT_TAG);
@@ -709,6 +723,7 @@ fn emit_object_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 /// Nothing is assumed to survive the `blr` except through the stack; the helper
 /// only reads the borrowed object's declared property and never mutates, frees,
 /// invokes a hook/`__get`, or re-enters the VM.
+#[cfg(target_arch = "aarch64")]
 fn emit_property_load(
     asm: &mut Aarch64Assembler,
     deopt: Label,
@@ -766,6 +781,7 @@ fn emit_property_load(
 /// comparison. Every definite tag yields a correct true/false, so there is no
 /// wrong-answer path: an unrecognized shape is either a decidable non-match or an
 /// `Uninitialized` side exit.
+#[cfg(target_arch = "aarch64")]
 fn emit_is_type(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, expected_tag: u16) {
     asm.ldr_w(X3, X0, tag_off(arg));
     // An Uninitialized-marshaled value is ambiguous; defer to the interpreter.
@@ -778,6 +794,7 @@ fn emit_is_type(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32, ex
 }
 
 /// Write `value` to `slot[dst]` tagged as `Int`.
+#[cfg(target_arch = "aarch64")]
 fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, INT_TAG);
     asm.str_w(X3, X0, tag_off(dst));
@@ -785,6 +802,7 @@ fn emit_store_int(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 }
 
 /// Write `value` (0 or 1 in the low bit) to `slot[dst]` tagged as `Bool`.
+#[cfg(target_arch = "aarch64")]
 fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, BOOL_TAG);
     asm.str_w(X3, X0, tag_off(dst));
@@ -792,6 +810,7 @@ fn emit_store_bool(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
 }
 
 /// Guard that `slot`'s tag is `FloatBits`, taking the side exit otherwise.
+#[cfg(target_arch = "aarch64")]
 fn emit_float_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
     asm.ldr_w(X3, X0, tag_off(slot));
     asm.cmp_imm_w(X3, FLOAT_TAG);
@@ -799,6 +818,7 @@ fn emit_float_guard(asm: &mut Aarch64Assembler, deopt: Label, slot: u32) {
 }
 
 /// Write the double register `value` to `slot[dst]` tagged as `FloatBits`.
+#[cfg(target_arch = "aarch64")]
 fn emit_store_float(asm: &mut Aarch64Assembler, dst: u32, value: Reg) {
     asm.movz(X3, FLOAT_TAG);
     asm.str_w(X3, X0, tag_off(dst));
@@ -1336,6 +1356,7 @@ fn check_op_slots(op: ScalarIntOp) -> Result<(), SlotSequenceError> {
 /// Emit one scalar-int op, reading operands from and writing the result to the
 /// slot buffer. `X3`..`X6` are scratch; nothing is kept in registers across ops
 /// (values live in slots), so ops compose freely — including inside a loop body.
+#[cfg(target_arch = "aarch64")]
 fn emit_op(asm: &mut Aarch64Assembler, deopt: Label, op: ScalarIntOp) {
     match op {
         ScalarIntOp::Const { dst, value } => {
@@ -2690,12 +2711,12 @@ fn compile_scalar_int_cfg(
     #[cfg(target_arch = "x86_64")]
     {
         let code = x86_emit::emit_cfg(function, constants, permits, result_slot)?;
-        return Some(CompiledScalarRegion {
+        Some(CompiledScalarRegion {
             code,
             result_slot,
             buffer_slots,
             tail_call: None,
-        });
+        })
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -3350,9 +3371,17 @@ mod tests {
 
     #[test]
     fn empty_sequence_emits_only_the_return_epilogue() {
-        // movz x0,#0 ; ret ; movz x0,#1 ; ret = four 32-bit instructions.
         let code = emit_guarded_int_add_sequence(&[]).expect("empty sequence emits");
-        assert_eq!(code.len(), 4 * 4);
+        #[cfg(target_arch = "aarch64")]
+        {
+            // movz x0,#0 ; ret ; movz x0,#1 ; ret = four 32-bit instructions.
+            assert_eq!(code.len(), 4 * 4);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            // mov rax,0 ; ret ; mov rax,1 ; ret.
+            assert_eq!(code.len(), (10 + 1) * 2);
+        }
     }
 
     #[test]
@@ -3376,9 +3405,11 @@ mod tests {
             },
         ])
         .expect("two steps emit");
+        let empty = emit_guarded_int_add_sequence(&[]).expect("empty sequence emits");
         // Each step emits the same fixed-size stencil, so two steps add exactly
         // one step's worth of instructions over one step.
-        assert_eq!(two.len() - one.len(), one.len() - 4 * 4);
+        assert_eq!(two.len() - one.len(), one.len() - empty.len());
+        #[cfg(target_arch = "aarch64")]
         assert!(one.len().is_multiple_of(4) && two.len().is_multiple_of(4));
     }
 
