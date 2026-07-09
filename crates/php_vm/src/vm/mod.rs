@@ -1906,8 +1906,31 @@ struct DestructorSweep {
 /// `run_destructors_for_unreferenced_value` path, which is gated on the
 /// destructor queue.
 fn release_unrooted_object_handles(value: &Value, stack: &CallStack, state: &ExecutionState) {
+    // Hot-path guard: the deep root traversal below walks every frame local/
+    // register/reference plus globals per call, which turned every
+    // object-overwriting store into a full-heap scan (measured 5x on the
+    // WordPress request). The common shapes never need it:
+    // - A top-level object whose storage is held only by the dropped value
+    //   and the candidate list (strong count <= 2) provably has no other
+    //   holder, so it is unrooted — release it without any scan.
+    // - Anything shared or nested keeps its handle until the natural drop
+    //   recycles the id; per this function's contract the eager scan only
+    //   tightens id-reuse timing (destructor timing runs through the separate
+    //   destructor queue), so skipping it is safe, just less eager.
+    if let Value::Object(object) = value {
+        if object.gc_refcount_estimate() <= 1 {
+            object.release_php_handle();
+        }
+        return;
+    }
     let candidates = destructor_candidates_for_value(value);
     if candidates.is_empty() {
+        return;
+    }
+    if candidates
+        .iter()
+        .all(|object| object.gc_refcount_estimate() > 2)
+    {
         return;
     }
     let rooted_object_ids = php_visible_root_object_ids(stack, state);
