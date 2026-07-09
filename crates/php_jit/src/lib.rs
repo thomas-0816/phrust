@@ -49,9 +49,10 @@ pub use eligibility::{
 };
 pub use helpers::{
     JIT_HELPER_REGISTRY_ABI_HASH, JIT_HELPER_STATUS_FALLBACK, JIT_HELPER_STATUS_OK,
-    JIT_HELPER_STATUS_OVERFLOW, JIT_HELPER_STATUS_TAILCALL, JIT_HELPER_SYMBOLS, JitHelperArgKind,
-    JitHelperId, JitHelperReturnKind, JitHelperSymbol, helper_registry_is_stable,
-    helper_registry_layout_summary, lookup_helper_by_id, lookup_helper_by_name,
+    JIT_HELPER_STATUS_OVERFLOW, JIT_HELPER_STATUS_RESUME_CALL_BASE, JIT_HELPER_STATUS_TAILCALL,
+    JIT_HELPER_SYMBOLS, JitHelperArgKind, JitHelperId, JitHelperReturnKind, JitHelperSymbol,
+    helper_registry_is_stable, helper_registry_layout_summary, lookup_helper_by_id,
+    lookup_helper_by_name,
 };
 use php_ir::{FunctionId, IrUnit};
 use std::fmt;

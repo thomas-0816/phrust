@@ -125,6 +125,15 @@ impl Aarch64Assembler {
         self.labels[label.0] = Some(self.code.len());
     }
 
+    /// Current emission byte offset. Stable through [`Self::finish`] (fixups
+    /// patch branch instructions in place, never inserting bytes), so it can
+    /// name a re-entry point — e.g. the resume address after a
+    /// return-and-resume call step — into the finished code.
+    #[must_use]
+    pub fn current_offset(&self) -> usize {
+        self.code.len()
+    }
+
     /// `movz Xd, #imm16` — move a 16-bit immediate, zeroing the rest of `Xd`.
     pub fn movz(&mut self, rd: Reg, imm16: u16) {
         self.emit(0xD280_0000 | (u32::from(imm16) << 5) | u32::from(rd));

@@ -6708,6 +6708,21 @@ impl Vm {
             params.push(Value::Object(this.clone()));
         }
         params.extend(call.args.iter().map(|arg| arg.value.clone()));
+        // Return-and-resume call compositions need the VM to drive the
+        // suspend/perform-call/re-enter loop rather than a single region run.
+        if leaf.resume_plan().is_some() {
+            return self.execute_copy_patch_resume_leaf(
+                compiled,
+                function_id,
+                function,
+                call,
+                &leaf,
+                &params,
+                output,
+                stack,
+                state,
+            );
+        }
         match leaf.run_outcome(&params) {
             crate::copy_patch_bridge::LeafOutcome::Value(value) => {
                 Some(VmResult::success_no_output(Some(value)))
@@ -6873,6 +6888,216 @@ impl Vm {
         }
         stack.pop_recycle();
         Some(result)
+    }
+
+    /// Drive a return-and-resume call-composition leaf: run the region until
+    /// it suspends, perform each requested userland call through the normal
+    /// interpreter path, write the `Int` result into the site's slot, and
+    /// re-enter the region — repeating until the region completes.
+    ///
+    /// Soundness contract (mirrors `compile_scalar_int_resume_leaf`):
+    ///
+    /// - Before the first performed call nothing has run but pure native
+    ///   prefix work, so any mismatch (side exit, resolution change) falls
+    ///   back to interpreting the whole leaf.
+    /// - After a call has been performed, re-running is unsound (the callee's
+    ///   side effects happened). Every anomaly past that point is an engine
+    ///   invariant violation surfaced as a deterministic runtime error — by
+    ///   construction none is reachable: arguments are guarded/proven `Int`,
+    ///   callees are compile-time-resolved unit functions whose names cannot
+    ///   be legally redeclared, and their declared `: int` return coercion
+    ///   guarantees an `Int` result or a throw (which propagates instead of
+    ///   resuming).
+    /// - Generator/fiber/continuation contexts are rejected up front: a
+    ///   suspension inside a callee could otherwise abandon the region with
+    ///   the call half-performed. Outside a fiber, `Fiber::suspend()` inside
+    ///   the callee is PHP error behavior and propagates as such.
+    ///
+    /// The leaf's own frame is materialized around the whole loop (exactly
+    /// like the tail-call path) so throwing or stack-inspecting callees
+    /// observe the interpreter-identical stack, and the final result runs
+    /// through the leaf's return-site coercion.
+    #[cfg(all(feature = "jit-copy-patch", unix, target_arch = "aarch64"))]
+    #[allow(clippy::too_many_arguments)]
+    fn execute_copy_patch_resume_leaf(
+        &self,
+        compiled: &CompiledUnit,
+        leaf_function_id: FunctionId,
+        leaf_function: &IrFunction,
+        call: &FunctionCall<'_>,
+        leaf: &std::rc::Rc<crate::copy_patch_bridge::NativeLeaf>,
+        params: &[Value],
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Option<VmResult> {
+        use crate::copy_patch_bridge::ResumeStep;
+
+        if call.resume_continuation.is_some()
+            || call.resume_fiber_continuation.is_some()
+            || call.running_generator.is_some()
+            || call.running_fiber.is_some()
+        {
+            return None;
+        }
+        let plan = leaf.resume_plan()?;
+        let (mut session, mut step) = leaf.begin_resume(params)?;
+        let mut frame_pushed = false;
+        let mut calls_performed = false;
+        let resume_invariant = |this: &Self,
+                                output: &mut OutputBuffer,
+                                stack: &mut CallStack,
+                                detail: &str|
+         -> VmResult {
+            this.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!("E_PHP_VM_COPY_PATCH_RESUME_INVARIANT: {detail}"),
+            )
+        };
+        loop {
+            match step {
+                ResumeStep::Fallback => {
+                    if calls_performed {
+                        // Unreachable by construction; never re-run a leaf
+                        // whose callee side effects already happened.
+                        let result = resume_invariant(
+                            self,
+                            output,
+                            stack,
+                            "post-call side exit or unrepresentable result",
+                        );
+                        stack.pop_recycle();
+                        return Some(result);
+                    }
+                    // Pure native prefix only — interpreting the whole leaf is
+                    // sound (no frame was pushed yet).
+                    return None;
+                }
+                ResumeStep::CallRequest { site } => {
+                    let expected = plan.targets.get(site).copied()?;
+                    let normalized = plan.normalized_names.get(site)?;
+                    let resolved = self.resolve_function_call_target(compiled, state, normalized);
+                    let matches_expected = matches!(
+                        resolved,
+                        Some(FunctionCallCacheTarget::CurrentUnit { function })
+                            if function == expected
+                    );
+                    if !matches_expected {
+                        if calls_performed {
+                            let result = resume_invariant(
+                                self,
+                                output,
+                                stack,
+                                "resume callee resolution changed mid-region",
+                            );
+                            stack.pop_recycle();
+                            return Some(result);
+                        }
+                        // Nothing ran yet; the interpreter handles whatever
+                        // the divergent resolution means.
+                        return None;
+                    }
+                    let Some(args) = leaf.resume_args(&session, site) else {
+                        if calls_performed {
+                            let result = resume_invariant(
+                                self,
+                                output,
+                                stack,
+                                "non-int marshaled argument slot",
+                            );
+                            stack.pop_recycle();
+                            return Some(result);
+                        }
+                        return None;
+                    };
+                    if !frame_pushed {
+                        // Materialize the leaf's frame around the whole loop
+                        // (mirrors `execute_copy_patch_tailcall`).
+                        stack.push_fresh_frame(
+                            leaf_function_id,
+                            leaf_function.register_count,
+                            leaf_function.local_count,
+                            FrameActivationContext {
+                                scope_class: None,
+                                called_class: None,
+                                declaring_class: None,
+                                call_span: call.call_span,
+                            },
+                        );
+                        if let Some(frame) = stack.current_mut() {
+                            frame.trace_arguments.reserve(params.len());
+                            for value in params.iter() {
+                                frame.trace_arguments.push(FrameTraceArgument {
+                                    name: None,
+                                    value: value.clone(),
+                                });
+                            }
+                            frame.arguments = params.to_vec();
+                        }
+                        frame_pushed = true;
+                    }
+                    let sub_args: Vec<CallArgument> =
+                        args.into_iter().map(CallArgument::positional).collect();
+                    let sub_call = FunctionCall::new(sub_args, Vec::new())
+                        .with_call_site_strict_types(compiled.unit().strict_types)
+                        .with_optional_call_span(plan.call_spans.get(site).copied().flatten())
+                        .inherit_fiber_context(&call.running_fiber);
+                    let result =
+                        self.execute_function(compiled, expected, sub_call, output, stack, state);
+                    calls_performed = true;
+                    if !result.status.is_success()
+                        || result.process_exit_code.is_some()
+                        || result.yielded.is_some()
+                        || result.fiber_suspension.is_some()
+                    {
+                        // Exception/exit/suspension: the leaf's return never
+                        // completes; propagate faithfully.
+                        stack.pop_recycle();
+                        return Some(result);
+                    }
+                    let value = result.return_value.unwrap_or(Value::Null);
+                    if !matches!(value, Value::Int(_)) {
+                        let result = resume_invariant(
+                            self,
+                            output,
+                            stack,
+                            "resume callee returned a non-int despite a declared int return",
+                        );
+                        stack.pop_recycle();
+                        return Some(result);
+                    }
+                    step = leaf.resume(&mut session, site, &value);
+                }
+                ResumeStep::Value(value) => {
+                    // The interpreter coerces at the leaf's return site; mirror
+                    // it exactly (identity for the proven-`Int` result, and the
+                    // frame is still pushed for error attribution).
+                    match coerce_return_value(
+                        compiled,
+                        state,
+                        leaf_function,
+                        Some(value),
+                        self.typecheck_fast_path_context(),
+                    ) {
+                        Ok(value) => {
+                            if frame_pushed {
+                                stack.pop_recycle();
+                            }
+                            return Some(VmResult::success_no_output(value));
+                        }
+                        Err(message) => {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            if frame_pushed {
+                                stack.pop_recycle();
+                            }
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Hosts without the copy-patch emitter always fall back to the interpreter.

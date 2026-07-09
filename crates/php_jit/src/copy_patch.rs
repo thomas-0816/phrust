@@ -14,7 +14,7 @@
 //! flow, non-int values) is rejected by the region compiler and left to the
 //! interpreter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use php_ir::instruction::{IrCallArgValueKind, TerminatorKind};
 use php_ir::{
@@ -28,7 +28,10 @@ use crate::aarch64::{
     Aarch64Assembler, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
 };
 use crate::abi::JitCValueTag;
-use crate::helpers::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, phrust_jit_abs_i64};
+use crate::helpers::{
+    JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_RESUME_CALL_BASE, JIT_HELPER_STATUS_TAILCALL,
+    phrust_jit_abs_i64,
+};
 use crate::region_ir::{
     NodeId, RegionBuilder, RegionCompareOp, RegionConst, RegionGraph, RegionId, RegionNode,
     RegionNodeKind, RegionValueType, VmSlotId,
@@ -3218,6 +3221,381 @@ fn compile_scalar_int_tailcall_leaf(
             callee_name: name.clone(),
             arg_slots,
         }),
+    })
+}
+
+/// One suspension point of a return-and-resume call region: when the region
+/// returns [`JIT_HELPER_STATUS_RESUME_CALL_BASE`]` + index`, it has marshaled
+/// this site's positional `Int` arguments into `arg_slots` and suspended
+/// itself. The VM performs the call to `callee_name` through the normal
+/// interpreter path, writes the callee's result — guaranteed `Int` by the
+/// callee's own declared-`: int` return coercion — into `result_slot`, and
+/// re-enters the finished code at byte `resume_offset` with the same buffer.
+/// Every live value sits in the flat slot buffer (nothing is kept in registers
+/// across ops), so re-entry at an op boundary is exactly like the region entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeCallSite {
+    /// Callee name exactly as written at the call site; the VM resolved it to a
+    /// same-unit plain userland `: int` function at compile time and
+    /// re-validates the resolution before performing the first call.
+    pub callee_name: String,
+    /// Buffer slots holding the marshaled positional `Int` arguments, in order.
+    pub arg_slots: Vec<u32>,
+    /// Slot the VM writes the callee's `Int` result into before resuming.
+    pub result_slot: u32,
+    /// Byte offset into the finished code where execution resumes.
+    pub resume_offset: usize,
+}
+
+/// A region lowered with return-and-resume call sites (the non-tail
+/// generalization of [`TailCallPlan`]): native segments interleaved with
+/// suspensions, one per userland call, over one persistent slot buffer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledResumeRegion {
+    /// Emitted `extern "C" fn(slot_base: *mut JitCValue) -> i32`, re-enterable
+    /// at each site's `resume_offset`.
+    pub code: Vec<u8>,
+    /// Slot holding the region result after the final `0` (OK) return.
+    pub result_slot: u32,
+    /// Number of `JitCValue` slots the caller's buffer must provide.
+    pub buffer_slots: u32,
+    /// Suspension points in execution order; the region returns
+    /// [`JIT_HELPER_STATUS_RESUME_CALL_BASE`]` + i` to request site `i`.
+    pub sites: Vec<ResumeCallSite>,
+}
+
+/// Track which slots provably hold `Int`-tagged values at the current program
+/// point of a resume region. Parameters are proven by the entry guards; a
+/// call's result slot by the callee's declared `: int` return type; `Const` and
+/// `Binary` results by construction (a binary either produces an `Int` or takes
+/// the pre-call side exit); a `Compare` result is `Bool`, so it *un*-proves its
+/// destination; a `Copy` propagates its source's status.
+fn update_proven_int(proven: &mut HashSet<u32>, op: &ScalarIntOp) {
+    match op {
+        ScalarIntOp::Const { dst, .. }
+        | ScalarIntOp::Binary { dst, .. }
+        | ScalarIntOp::BinaryConst { dst, .. } => {
+            proven.insert(*dst);
+        }
+        ScalarIntOp::Copy { dst, src } => {
+            if proven.contains(src) {
+                proven.insert(*dst);
+            } else {
+                proven.remove(dst);
+            }
+        }
+        ScalarIntOp::Compare { dst, .. }
+        | ScalarIntOp::CallAbsI64 { dst, .. }
+        | ScalarIntOp::CallCountI64 { dst, .. }
+        | ScalarIntOp::CallStrlenI64 { dst, .. }
+        | ScalarIntOp::IsType { dst, .. }
+        | ScalarIntOp::CallPropertyLoadScalar { dst, .. } => {
+            // Bool results and helper-call results are not proven `Int` for the
+            // post-call subset (helpers are conservative even though abs/count/
+            // strlen do produce ints — they never appear post-call anyway).
+            proven.remove(dst);
+        }
+        ScalarIntOp::CallPropertyStoreScalar { .. } => {}
+    }
+}
+
+/// Recognize a return-and-resume *call-composition* leaf and lower it, gated by
+/// `permits.allow_userland_tailcall` and per-callee by `callee_allowed` (the VM
+/// owns function resolution; `php_jit` has no registry).
+///
+/// The matched shape is a single-block `int`-returning free function (`int`,
+/// by-value, non-variadic, no-default parameters) whose meaningful
+/// instructions form: a scalar-int prefix, then one or more
+/// `CallFunction { dst, name, args }` steps separated by *move-only* segments
+/// (`LoadLocal`/`StoreLocal`/`Move`/`LoadConst` — no arithmetic, no compares),
+/// ending in `Return(%r)` of a proven-`Int` register. Sequenced calls
+/// (`$a = h($x); return g($a);`) and nested compositions (`return g(h($x));`)
+/// both lower.
+///
+/// Soundness rules (why the shape is this narrow):
+///
+/// - **Side exits are only legal before the first call.** Re-running the whole
+///   leaf through the interpreter is the only fallback, and it is only correct
+///   while no side effect has happened. So the full guarded subset is allowed
+///   only in the prefix; every post-call op must be *guard-free* and every
+///   post-call operand must be *proven* `Int` (a parameter guarded at entry, a
+///   call result whose callee declares `: int`, or a constant), so no
+///   post-call guard or overflow exit can ever be needed.
+/// - **Callees must be statically resolved, plain userland `: int` functions**
+///   (`callee_allowed` — the VM validates against the unit's function table).
+///   The declared return type is what proves the result slot `Int` without a
+///   runtime guard: the callee's own return coercion either produced an `int`
+///   or threw, and a throw propagates instead of resuming.
+/// - Named/spread/by-ref-placeholder arguments, non-register/non-int-constant
+///   argument values, and any out-of-subset instruction reject the whole leaf
+///   (the interpreter runs it, exactly as before).
+///
+/// Argument slots are fresh (above locals + registers, cumulatively per site),
+/// so marshaling never clobbers a live value. The first site's arguments are
+/// marshaled with `Int` guards (still pre-call); later sites' arguments are
+/// unguarded copies of proven slots.
+pub fn compile_scalar_int_resume_leaf(
+    function: &IrFunction,
+    constants: &[IrConstant],
+    permits: NativeCallPermits,
+    callee_allowed: &dyn Fn(&str, usize) -> bool,
+) -> Option<CompiledResumeRegion> {
+    if !permits.allow_userland_tailcall {
+        return None;
+    }
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if function.return_type != Some(IrReturnType::Int) {
+        return None;
+    }
+    for param in &function.params {
+        if param.by_ref
+            || param.variadic
+            || param.default.is_some()
+            || param.type_ != Some(IrReturnType::Int)
+        {
+            return None;
+        }
+    }
+    let [block] = function.blocks.as_slice() else {
+        return None;
+    };
+
+    // Partition the meaningful instructions into segments split by the calls.
+    let kinds = meaningful_kinds(block);
+    let mut segments: Vec<Vec<InstructionKind>> = vec![Vec::new()];
+    let mut calls: Vec<(String, Vec<php_ir::instruction::IrCallArg>, RegId)> = Vec::new();
+    for kind in kinds {
+        if let InstructionKind::CallFunction { dst, name, args } = kind {
+            calls.push((name, args, dst));
+            segments.push(Vec::new());
+        } else {
+            segments.last_mut()?.push(kind);
+        }
+    }
+    // At least one call, otherwise the ordinary leaf paths own the shape. A
+    // single trailing call is the tail-call recognizer's territory; it runs
+    // first in the compile order, so reaching here with such a shape only
+    // happens when that path rejected it — compiling it as a resume region is
+    // correct, just less direct.
+    if calls.is_empty() {
+        return None;
+    }
+    // Engagement heuristic: driving the suspend/perform-call/re-enter loop
+    // costs a buffer allocation, a materialized frame, and marshaling per
+    // invocation. When the region contains no real computation (pure
+    // move-only call glue like `$a = h($x); return g($a);`), the interpreter
+    // is measurably faster, so only compile when enough arithmetic/compare
+    // work moves into native code to pay for the loop. Move/const glue does
+    // not count; only compute ops do.
+    const RESUME_MIN_COMPUTE_OPS: usize = 4;
+    let compute_ops = segments
+        .iter()
+        .flatten()
+        .filter(|kind| {
+            matches!(
+                kind,
+                InstructionKind::Binary { .. } | InstructionKind::Compare { .. }
+            )
+        })
+        .count();
+    if compute_ops < RESUME_MIN_COMPUTE_OPS {
+        return None;
+    }
+
+    let local_count = function.local_count;
+    let reg_slot = |r: RegId| local_count + r.raw();
+    let first_arg_slot = local_count.checked_add(function.register_count)?;
+
+    // Entry-guarded parameters are the initial proven-`Int` set.
+    let mut proven: HashSet<u32> = function
+        .params
+        .iter()
+        .map(|param| param.local.raw())
+        .collect();
+
+    // Prefix (segment 0): the full guarded scalar-int subset.
+    let mut prefix = Vec::with_capacity(segments[0].len());
+    for kind in &segments[0] {
+        let op = scalar_int_prefix_op(kind, constants, local_count, reg_slot)?;
+        update_proven_int(&mut proven, &op);
+        prefix.push(op);
+    }
+
+    // Temporal walk over the call sites and their following segments.
+    struct SiteSpec {
+        name: String,
+        args: Vec<TailArgSource>,
+        result_slot: u32,
+    }
+    let mut site_specs: Vec<SiteSpec> = Vec::with_capacity(calls.len());
+    let mut post_segments: Vec<Vec<ScalarIntOp>> = Vec::with_capacity(calls.len());
+    let mut next_arg_slot = first_arg_slot;
+    for (index, (name, args, dst)) in calls.iter().enumerate() {
+        if !callee_allowed(name, args.len()) {
+            return None;
+        }
+        let mut sources = Vec::with_capacity(args.len());
+        for arg in args {
+            if arg.name.is_some()
+                || arg.unpack
+                || arg.value_kind == IrCallArgValueKind::ByRefLocationPlaceholder
+            {
+                return None;
+            }
+            let source = match arg.value {
+                Operand::Register(reg) => {
+                    let slot = reg_slot(reg);
+                    // Post-call argument marshaling is unguarded, so its
+                    // sources must be proven `Int`.
+                    if index > 0 && !proven.contains(&slot) {
+                        return None;
+                    }
+                    TailArgSource::GuardedCopy { src: slot }
+                }
+                Operand::Constant(constant) => TailArgSource::Const {
+                    value: int_constant(constants, constant)?,
+                },
+                Operand::Local(_) => return None,
+            };
+            sources.push(source);
+        }
+        let result_slot = reg_slot(*dst);
+        proven.insert(result_slot);
+        next_arg_slot = next_arg_slot.checked_add(u32::try_from(args.len()).ok()?)?;
+        site_specs.push(SiteSpec {
+            name: name.clone(),
+            args: sources,
+            result_slot,
+        });
+
+        // The segment after this call: move-only ops over proven slots.
+        let mut ops = Vec::new();
+        for kind in &segments[index + 1] {
+            let op = scalar_int_prefix_op(kind, constants, local_count, reg_slot)?;
+            match op {
+                ScalarIntOp::Const { dst, .. } => {
+                    proven.insert(dst);
+                }
+                ScalarIntOp::Copy { dst, src } => {
+                    if !proven.contains(&src) {
+                        return None;
+                    }
+                    proven.insert(dst);
+                }
+                _ => return None,
+            }
+            ops.push(op);
+        }
+        post_segments.push(ops);
+    }
+
+    // The return value must be a proven-`Int` register.
+    let TerminatorKind::Return {
+        value: Some(Operand::Register(ret_reg)),
+        by_ref_local: None,
+    } = &block.terminator.as_ref()?.kind
+    else {
+        return None;
+    };
+    let result_slot = reg_slot(*ret_reg);
+    if !proven.contains(&result_slot) {
+        return None;
+    }
+
+    let buffer_slots = next_arg_slot;
+    let param_slots: Vec<u32> = function
+        .params
+        .iter()
+        .map(|param| param.local.raw())
+        .collect();
+
+    // Slot-range validation before emission.
+    for op in prefix.iter().chain(post_segments.iter().flatten()) {
+        check_op_slots(*op).ok()?;
+    }
+    for &slot in &param_slots {
+        check_slot(slot).ok()?;
+    }
+    check_slot(result_slot).ok()?;
+    if buffer_slots > 0 {
+        check_slot(buffer_slots - 1).ok()?;
+    }
+
+    // Emission: prefix + per-site (marshal, suspend, resume label, segment).
+    let mut asm = Aarch64Assembler::new();
+    let deopt = asm.new_label();
+    for &slot in &param_slots {
+        emit_int_guard(&mut asm, deopt, slot);
+    }
+    for op in &prefix {
+        emit_op(&mut asm, deopt, *op);
+    }
+    let mut sites = Vec::with_capacity(site_specs.len());
+    let mut arg_cursor = first_arg_slot;
+    for (index, spec) in site_specs.iter().enumerate() {
+        let mut arg_slots = Vec::with_capacity(spec.args.len());
+        for arg in &spec.args {
+            let slot = arg_cursor;
+            arg_cursor = arg_cursor.checked_add(1)?;
+            match arg {
+                TailArgSource::GuardedCopy { src } => {
+                    if index == 0 {
+                        // Pre-call: a non-int argument side-exits (status 1) and
+                        // the interpreter runs the whole leaf.
+                        emit_int_guard(&mut asm, deopt, *src);
+                    }
+                    // Post-call sources are proven `Int`; no guard is emitted,
+                    // and none may be (the side exit would re-run a performed
+                    // call).
+                    emit_value_copy(&mut asm, slot, *src);
+                }
+                TailArgSource::Const { value } => {
+                    asm.mov_imm64(X6, *value as u64);
+                    emit_store_int(&mut asm, slot, X6);
+                }
+            }
+            arg_slots.push(slot);
+        }
+        // Suspend: request this call site. The status fits u16 for any
+        // realistic site count (checked above via slot bounds long before).
+        let status = JIT_HELPER_STATUS_RESUME_CALL_BASE + i32::try_from(index).ok()?;
+        asm.movz(X0, u16::try_from(status).ok()?);
+        asm.ret();
+        let resume_offset = asm.current_offset();
+        for op in &post_segments[index] {
+            // Move-only ops (validated above): guard-free by construction.
+            emit_op(&mut asm, deopt, *op);
+        }
+        sites.push(ResumeCallSite {
+            callee_name: spec.name.clone(),
+            arg_slots,
+            result_slot: spec.result_slot,
+            resume_offset,
+        });
+    }
+    asm.movz(X0, 0);
+    asm.ret();
+    asm.bind(deopt);
+    asm.movz(X0, 1);
+    asm.ret();
+    let code = asm.finish();
+    // Resume offsets must land inside the finished code (they do by
+    // construction; this is the cheap invariant the bridge's re-entry
+    // transmute relies on).
+    if sites.iter().any(|site| site.resume_offset >= code.len()) {
+        return None;
+    }
+    Some(CompiledResumeRegion {
+        code,
+        result_slot,
+        buffer_slots,
+        sites,
     })
 }
 

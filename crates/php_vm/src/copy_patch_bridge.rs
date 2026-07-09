@@ -1029,6 +1029,55 @@ pub struct NativeLeaf {
     /// synthesizes `Value::Null` instead of unmarshaling a result slot (the
     /// region writes none).
     void_null_result: bool,
+    /// `Some` for a return-and-resume call-composition leaf: the region
+    /// suspends at each userland call site and the VM drives the
+    /// perform-call/write-slot/re-enter loop (see [`NativeLeaf::begin_resume`]).
+    resume: Option<ResumePlan>,
+}
+
+/// The VM-facing plan of a return-and-resume leaf: the region's suspension
+/// sites plus the same-unit function each site's callee resolved to when the
+/// leaf compiled. The VM re-validates the resolution before performing the
+/// *first* call (nothing has run yet, so a mismatch safely falls back to the
+/// interpreter); later sites cannot change resolution — a unit function's name
+/// can never be legally redeclared — so a mismatch there is an engine
+/// invariant violation, not a fallback.
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub struct ResumePlan {
+    /// Suspension sites in execution order (from the compiled region).
+    pub sites: Vec<php_jit::copy_patch::ResumeCallSite>,
+    /// Compile-time resolution of each site's callee.
+    pub targets: Vec<FunctionId>,
+    /// Normalized callee names, precomputed so the per-invocation driver loop
+    /// allocates nothing for resolution.
+    pub normalized_names: Vec<String>,
+    /// Call-site spans in site order (single-block leaf, calls in instruction
+    /// order) for the callee frames' backtrace lines.
+    pub call_spans: Vec<Option<IrSpan>>,
+}
+
+/// A running return-and-resume leaf: the persistent slot buffer the region
+/// suspends over. All parameters were guarded `Int` before the first
+/// suspension, so the buffer never holds a borrowed handle payload across a
+/// suspension (see `marshal_local`'s lifetime contract).
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub struct ResumeSession {
+    buffer: Vec<JitCValue>,
+}
+
+/// One step of driving a return-and-resume leaf.
+#[cfg(all(unix, target_arch = "aarch64"))]
+pub enum ResumeStep {
+    /// The region completed; this is the leaf's (pre-return-coercion) result.
+    Value(Value),
+    /// A guard side exit or defensive mismatch. Only sound to act on before
+    /// the first performed call (interpret the whole leaf); afterwards the
+    /// driver must treat it as an engine invariant violation.
+    Fallback,
+    /// The region suspended requesting call site `site`: read the arguments
+    /// with [`NativeLeaf::resume_args`], perform the call, and continue with
+    /// [`NativeLeaf::resume`].
+    CallRequest { site: usize },
 }
 
 /// The result of running a [`NativeLeaf`] over its arguments.
@@ -1096,6 +1145,7 @@ impl NativeLeaf {
                     property_metadata: Some(metadata),
                     property_store_metadata: None,
                     void_null_result: false,
+                    resume: None,
                 });
             }
             // Recognized but could not lower/finalize: fall through. The shape
@@ -1129,6 +1179,7 @@ impl NativeLeaf {
                     property_metadata: None,
                     property_store_metadata: Some(metadata),
                     void_null_result: true,
+                    resume: None,
                 });
             }
             // Recognized but could not lower/finalize: fall through; the shape
@@ -1146,18 +1197,78 @@ impl NativeLeaf {
             array_len: copy_patch_array_len_abi as *const () as usize as u64,
             strlen: copy_patch_strlen_abi as *const () as usize as u64,
         };
-        let compiled = php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
-            target, constants, region_id, permits, helpers,
+        if let Some(compiled) =
+            php_jit::copy_patch::compile_scalar_int_function_with_permits_and_helpers(
+                target, constants, region_id, permits, helpers,
+            )
+            && let Ok(code) = php_jit::code_memory::CodeMemory::new(&compiled.code)
+        {
+            return Some(Self {
+                code,
+                result_slot: compiled.result_slot,
+                buffer_slots: compiled.buffer_slots,
+                tail_call: compiled.tail_call,
+                property_metadata: None,
+                property_store_metadata: None,
+                void_null_result: false,
+                resume: None,
+            });
+        }
+
+        // Return-and-resume call composition — sequenced/nested userland calls
+        // with move-only glue (`$a = h($x); return g($a);`). Tried last: every
+        // tighter recognizer (tail call included) has already declined, and
+        // this one only admits shapes they reject (multiple calls, or work
+        // after a call). The callee predicate is the VM-owned resolution
+        // (`resume_callee_target`): same-unit plain userland functions whose
+        // declared `: int` return proves the result slot's tag.
+        let callee_allowed = |name: &str, arity: usize| -> bool {
+            resume_callee_target(unit, name, arity).is_some()
+        };
+        let compiled = php_jit::copy_patch::compile_scalar_int_resume_leaf(
+            target,
+            constants,
+            permits,
+            &callee_allowed,
         )?;
+        let targets: Option<Vec<FunctionId>> = compiled
+            .sites
+            .iter()
+            .map(|site| resume_callee_target(unit, &site.callee_name, site.arg_slots.len()))
+            .collect();
+        let targets = targets?;
+        let normalized_names: Vec<String> = compiled
+            .sites
+            .iter()
+            .map(|site| crate::vm::normalize_function_name(&site.callee_name))
+            .collect();
+        let call_spans: Vec<Option<IrSpan>> = target
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter_map(|instruction| match instruction.kind {
+                InstructionKind::CallFunction { .. } => Some(Some(instruction.span)),
+                _ => None,
+            })
+            .collect();
+        if call_spans.len() != compiled.sites.len() {
+            return None;
+        }
         let code = php_jit::code_memory::CodeMemory::new(&compiled.code).ok()?;
         Some(Self {
             code,
             result_slot: compiled.result_slot,
             buffer_slots: compiled.buffer_slots,
-            tail_call: compiled.tail_call,
+            tail_call: None,
             property_metadata: None,
             property_store_metadata: None,
             void_null_result: false,
+            resume: Some(ResumePlan {
+                sites: compiled.sites,
+                targets,
+                normalized_names,
+                call_spans,
+            }),
         })
     }
 
@@ -1238,6 +1349,158 @@ impl NativeLeaf {
             LeafOutcome::TailCall { .. } | LeafOutcome::Fallback => None,
         }
     }
+
+    /// The return-and-resume plan, when this leaf is a call-composition region.
+    #[must_use]
+    pub fn resume_plan(&self) -> Option<&ResumePlan> {
+        self.resume.as_ref()
+    }
+
+    /// Run the region code starting at byte `offset` over `buffer`.
+    ///
+    /// SAFETY (internal): `offset` is either `0` or a site's `resume_offset`,
+    /// both instruction boundaries `compile_scalar_int_resume_leaf` produced
+    /// for exactly this code (validated `< code.len()` at compile), and the
+    /// region ABI takes the slot base in `x0` at every such boundary (nothing
+    /// lives in registers across ops).
+    fn run_at(&self, offset: usize, buffer: &mut [JitCValue]) -> i32 {
+        // SAFETY: see above; `buffer` is a live, aligned `[JitCValue]` sized to
+        // `buffer_slots` that outlives the synchronous call.
+        let entry: extern "C" fn(*mut JitCValue) -> i32 = unsafe {
+            core::mem::transmute::<*const u8, extern "C" fn(*mut JitCValue) -> i32>(
+                self.code.as_ptr().add(offset),
+            )
+        };
+        entry(buffer.as_mut_ptr())
+    }
+
+    /// Map a region status to a driver step.
+    fn resume_step(&self, status: i32, buffer: &[JitCValue]) -> ResumeStep {
+        if status == JIT_HELPER_STATUS_OK {
+            return match buffer
+                .get(self.result_slot as usize)
+                .and_then(unmarshal_result)
+            {
+                Some(value) => ResumeStep::Value(value),
+                None => ResumeStep::Fallback,
+            };
+        }
+        if status >= php_jit::JIT_HELPER_STATUS_RESUME_CALL_BASE
+            && let Some(plan) = self.resume.as_ref()
+        {
+            let site = (status - php_jit::JIT_HELPER_STATUS_RESUME_CALL_BASE) as usize;
+            if site < plan.sites.len() {
+                return ResumeStep::CallRequest { site };
+            }
+        }
+        ResumeStep::Fallback
+    }
+
+    /// Start a return-and-resume leaf over positional parameter values.
+    /// Returns `None` when this leaf has no resume plan.
+    ///
+    /// The first step is either `CallRequest { site: 0 }` (every parameter
+    /// guarded `Int`, the prefix ran, site 0's arguments are marshaled) or
+    /// `Fallback` (a pre-call side exit — nothing ran, interpreting the whole
+    /// leaf is sound). A `Value` first step is impossible (the plan has at
+    /// least one site) and maps to `Fallback` by the status dispatch.
+    #[must_use]
+    pub fn begin_resume(&self, params: &[Value]) -> Option<(ResumeSession, ResumeStep)> {
+        self.resume.as_ref()?;
+        let mut buffer: Vec<JitCValue> = (0..self.buffer_slots)
+            .map(|slot| {
+                params
+                    .get(slot as usize)
+                    .map_or_else(JitCValue::uninitialized, marshal_local)
+            })
+            .collect();
+        let status = self.run_at(0, &mut buffer);
+        let step = self.resume_step(status, &buffer);
+        Some((ResumeSession { buffer }, step))
+    }
+
+    /// Read call site `site`'s marshaled `Int` arguments out of the session.
+    /// `None` on a non-`Int` slot — impossible by construction (the region
+    /// guards or proves every argument source), so the driver treats it as an
+    /// invariant violation, never a fallback.
+    #[must_use]
+    pub fn resume_args(&self, session: &ResumeSession, site: usize) -> Option<Vec<Value>> {
+        let plan = self.resume.as_ref()?;
+        let slots = &plan.sites.get(site)?.arg_slots;
+        let mut args = Vec::with_capacity(slots.len());
+        for &slot in slots {
+            match session.buffer.get(slot as usize) {
+                Some(value) if value.tag == JitCValueTag::Int => {
+                    args.push(Value::Int(value.payload as i64));
+                }
+                _ => return None,
+            }
+        }
+        Some(args)
+    }
+
+    /// Write call site `site`'s result into its slot and re-enter the region at
+    /// the site's resume offset. `result` must be `Value::Int` (the callee's
+    /// declared `: int` return guarantees it; the driver validated it) —
+    /// anything else returns `Fallback` without re-entering.
+    #[must_use]
+    pub fn resume(&self, session: &mut ResumeSession, site: usize, result: &Value) -> ResumeStep {
+        let Some(plan) = self.resume.as_ref() else {
+            return ResumeStep::Fallback;
+        };
+        let Some(site_plan) = plan.sites.get(site) else {
+            return ResumeStep::Fallback;
+        };
+        let Value::Int(int) = result else {
+            return ResumeStep::Fallback;
+        };
+        let Some(slot) = session.buffer.get_mut(site_plan.result_slot as usize) else {
+            return ResumeStep::Fallback;
+        };
+        *slot = JitCValue::int(*int);
+        let status = self.run_at(site_plan.resume_offset, &mut session.buffer);
+        self.resume_step(status, &session.buffer)
+    }
+}
+
+/// Resolve `name` (as written at a call site) as a valid return-and-resume
+/// callee of arity `arity`: a same-unit plain userland function — not a
+/// method/closure/generator, no by-ref return or by-ref/variadic parameters —
+/// whose declared `: int` return type proves the call-result slot's tag
+/// without a runtime guard, and whose parameter list accepts `arity`
+/// positional arguments. Same-unit resolution is stable for the whole request:
+/// a unit function's name can never be legally redeclared, so a later dynamic
+/// unit cannot shadow it.
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn resume_callee_target(unit: &CompiledUnit, name: &str, arity: usize) -> Option<FunctionId> {
+    let function_id = unit.lookup_function(&crate::vm::normalize_function_name(name))?;
+    let function = unit.unit().functions.get(function_id.index())?;
+    let flags = function.flags;
+    if flags.is_top_level || flags.is_closure || flags.is_method || flags.is_generator {
+        return None;
+    }
+    if function.returns_by_ref || !function.captures.is_empty() {
+        return None;
+    }
+    if function.return_type != Some(IrReturnType::Int) {
+        return None;
+    }
+    if function
+        .params
+        .iter()
+        .any(|param| param.by_ref || param.variadic)
+    {
+        return None;
+    }
+    let required = function
+        .params
+        .iter()
+        .filter(|param| param.required)
+        .count();
+    if arity < required || arity > function.params.len() {
+        return None;
+    }
+    Some(function_id)
 }
 
 /// `(unit id, function id)` → compiled leaf, or `None` for a function proven
