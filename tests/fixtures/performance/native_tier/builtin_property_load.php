@@ -16,7 +16,13 @@
 // reads the property. Only a *scalar* result (int/bool/float) commits natively;
 // a non-scalar value (string/array/object/null), an uninitialized typed
 // property, a property with a get/set hook, or a class with a public __get all
-// side-exit so the interpreter reproduces the exact value/error.
+// side-exit so the interpreter reproduces the exact value/error. Because the
+// native result bypasses the interpreter's return-site coercion, only scalar
+// (`int`/`float`/`bool`) and `mixed` return types are recognized, and the
+// helper additionally requires the property value to already have exactly the
+// declared return type's tag — a mismatching scalar (a `bool` in an untyped
+// property returned through `: int`) side-exits so the interpreter coerces or
+// errors exactly.
 //
 // Differential harness: scripts/performance/copy_patch_native_diff.py runs this
 // with the native tier off and on and asserts identical output, and against the
@@ -56,8 +62,9 @@ echo get_x($p), "\n";                          // 42
 echo(get_flag($p) ? "true" : "false"), "\n";   // true
 echo get_ratio($p), "\n";                      // 1.5
 
-// Non-scalar property values are recognized leaves but side-exit at the
-// scalar-result gate; the interpreter produces the value identically.
+// Non-scalar return types (`: string`, `: array`) are rejected at recognition
+// (their values could never commit natively, and richer types have a coercion
+// matrix); the interpreter produces the value identically.
 echo get_label($p), "\n";                      // hi
 echo count(get_items($p)), "\n";               // 3
 
@@ -79,3 +86,22 @@ try {
 } catch (\Error $e) {
     echo "Error\n";                            // Error
 }
+
+// Return-type coercion: untyped properties can hold any scalar, so the
+// helper's result-tag guard is what keeps the native result faithful. A tag
+// match commits natively; a mismatch (bool through `: int`, int through
+// `: float`) side-exits and the interpreter's return-site coercion produces
+// the exact typed value — var_dump pins the type, which echo would hide.
+class Loose {
+    public $n = 7;    // int in an untyped slot
+    public $b = true; // bool in an untyped slot
+}
+
+function loose_int(Loose $o): int { return $o->n; }
+function loose_bool_as_int(Loose $o): int { return $o->b; }
+function loose_int_as_float(Loose $o): float { return $o->n; }
+
+$l = new Loose();
+var_dump(loose_int($l));           // int(7) (native: tag match)
+var_dump(loose_bool_as_int($l));   // int(1) (side-exit: interpreter coerces)
+var_dump(loose_int_as_float($l));  // float(7) (side-exit: interpreter coerces)

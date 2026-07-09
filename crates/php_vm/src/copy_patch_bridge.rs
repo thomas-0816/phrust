@@ -268,6 +268,14 @@ extern "C" fn copy_patch_property_load_abi(
         Value::Float(float) => JitCValue::float(float.to_f64()),
         _ => return JIT_HELPER_STATUS_FALLBACK,
     };
+    // Return-type scoping: the native result bypasses the interpreter's
+    // return-site coercion, so the scalar must already have exactly the tag the
+    // declared return type requires (e.g. a `bool` in an untyped property
+    // returned through `: int` side-exits and the interpreter coerces it to
+    // `int(1)`). `0` means no expectation (`mixed`).
+    if metadata.expected_result_tag != 0 && marshaled.tag as u16 != metadata.expected_result_tag {
+        return JIT_HELPER_STATUS_FALLBACK;
+    }
     // SAFETY: `out` is non-null and a valid `JitCValue` for this synchronous call.
     unsafe {
         *out = marshaled;
@@ -512,13 +520,21 @@ fn recognize_property_load_leaf(
     if function.returns_by_ref || !function.captures.is_empty() {
         return None;
     }
-    // A value return type: a property load produces a value.
-    if matches!(
-        function.return_type,
-        None | Some(IrReturnType::Void | IrReturnType::Never)
-    ) {
-        return None;
-    }
+    // The native result bypasses the interpreter's return-site coercion, so
+    // only return types whose value can be committed *unchanged* are admitted:
+    // a scalar type (the helper then requires the property value to already
+    // have exactly that tag — a `bool` in an untyped property returned through
+    // `: int` must side-exit so the interpreter coerces it to `int(1)`), or
+    // `mixed` (never coerces; any scalar commits). Everything else — string/
+    // array/class returns always side-exit at the scalar gate anyway, and
+    // nullable/union/literal types have a coercion matrix — rejects.
+    let expected_result_tag = match function.return_type.as_ref() {
+        Some(IrReturnType::Int) => JitCValueTag::Int as u16,
+        Some(IrReturnType::Float) => JitCValueTag::FloatBits as u16,
+        Some(IrReturnType::Bool) => JitCValueTag::Bool as u16,
+        Some(IrReturnType::Mixed) => 0,
+        _ => return None,
+    };
     // Exactly one by-value, non-variadic, no-default object parameter.
     let [param] = function.params.as_slice() else {
         return None;
@@ -613,6 +629,7 @@ fn recognize_property_load_leaf(
         storage_name: property_storage_name(declaring_class, property_entry),
         property_slot_index,
         layout_version: 0,
+        expected_result_tag,
     };
     Some(PropertyLoadLeaf {
         object_slot: param.local.raw(),

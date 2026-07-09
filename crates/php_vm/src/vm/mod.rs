@@ -6828,7 +6828,36 @@ impl Vm {
             .with_call_site_strict_types(compiled.unit().strict_types)
             .with_optional_call_span(callee_call_span)
             .inherit_fiber_context(running_fiber);
-        let result = self.execute_function(&callee_unit, callee_id, sub_call, output, stack, state);
+        let mut result =
+            self.execute_function(&callee_unit, callee_id, sub_call, output, stack, state);
+        // The interpreter coerces the callee's value against the *leaf's*
+        // declared return type at the leaf's `return g(...)` site (weak-mode
+        // `"5"` → `int(5)` through `: int`, or the exact `TypeError`); the
+        // callee's own return coercion does not subsume it. Mirror that here on
+        // the normal-return path only — an exception/exit/suspension result
+        // never reaches the leaf's return, so it propagates untouched. The
+        // leaf's frame is still on the stack, so a thrown `TypeError`
+        // attributes exactly as under the interpreter.
+        if result.status.is_success()
+            && result.process_exit_code.is_none()
+            && result.yielded.is_none()
+            && result.fiber_suspension.is_none()
+        {
+            match coerce_return_value(
+                compiled,
+                state,
+                leaf_function,
+                result.return_value.take(),
+                self.typecheck_fast_path_context(),
+            ) {
+                Ok(value) => result.return_value = value,
+                Err(message) => {
+                    let error = self.runtime_error(output, compiled, stack, message);
+                    stack.pop_recycle();
+                    return Some(error);
+                }
+            }
+        }
         stack.pop_recycle();
         Some(result)
     }

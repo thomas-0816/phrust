@@ -194,6 +194,17 @@ pub struct JitPropertyLoadMetadata {
     pub property_slot_index: usize,
     /// Lookup/layout epoch captured when the handle was compiled.
     pub layout_version: u64,
+    /// `JitCValueTag` (as `u16`) the loading function's declared return type
+    /// requires the property value to already have, or `0` for no expectation.
+    ///
+    /// A leaf's native result bypasses the interpreter's return-site coercion,
+    /// so a scalar of a *different* type than the declared return type must
+    /// side-exit (the interpreter then coerces `bool` → `int(1)`, `int` →
+    /// `float`, or throws the exact `TypeError`) instead of committing the raw
+    /// property value. Recognizers set this from the return type (`int` →
+    /// `Int`, `float` → `FloatBits`, `bool` → `Bool`, `mixed` → `0`) and
+    /// reject return types with a richer coercion matrix.
+    pub expected_result_tag: u16,
 }
 
 /// Compile-time metadata for a monomorphic property-store fast path.
