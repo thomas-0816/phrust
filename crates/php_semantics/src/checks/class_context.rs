@@ -3,8 +3,8 @@
 use crate::diagnostics::{DiagnosticId, DiagnosticPhase, DiagnosticSeverity, SemanticDiagnostic};
 use crate::hir::MagicMethodKind;
 use php_ast::{
-    ArrowFunctionExpr, AstNode, AstToken, ClassDecl, ClosureExpr, EnumDecl, InterfaceDecl,
-    MethodDecl, Param, TokenView, TraitDecl, descendant_tokens, modifier_tokens,
+    ArrowFunctionExpr, AstNode, AstToken, ClassDecl, ClosureExpr, EnumDecl, FunctionDecl,
+    InterfaceDecl, MethodDecl, Param, TokenView, TraitDecl, descendant_tokens, modifier_tokens,
     syntax_child_nodes, syntax_child_tokens,
 };
 use php_source::TextRange;
@@ -66,6 +66,25 @@ impl ClassContextChecker {
         }
         if let Some(method) = MethodDecl::cast(node) {
             self.check_magic_method(method);
+        }
+        if ClosureExpr::cast(node).is_some() || ArrowFunctionExpr::cast(node).is_some() {
+            // The reference engine compiles `self`/`static`/`parent` inside
+            // closure and arrow-function bodies regardless of the lexical
+            // scope: `Closure::bind` can supply or replace the class scope,
+            // so the check is deferred to invocation time.
+            self.visit_children(
+                node,
+                Some(ClassContext {
+                    parent_allowed: true,
+                }),
+            );
+            return;
+        }
+        if FunctionDecl::cast(node).is_some() {
+            // A named function body is global scope even when its
+            // declaration is nested inside a class member or closure.
+            self.visit_children(node, None);
+            return;
         }
 
         self.check_context_tokens(node, context);
@@ -299,6 +318,26 @@ mod tests {
     fn diagnoses_parent_without_parent_but_allows_traits() {
         let diagnostics = diagnostics(
             "<?php class C { function f(){ parent::f(); } } trait T { function f(){ parent::f(); } }\n",
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].id(), DiagnosticId::InvalidClassContextName);
+    }
+
+    #[test]
+    fn defers_context_keywords_inside_closures_and_arrow_functions() {
+        // Reference-confirmed (PHP 8.5.7): closure and arrow-function bodies
+        // compile with self/static/parent in any lexical scope; the scope is
+        // resolved when the closure is invoked or rebound.
+        let diagnostics = diagnostics(
+            "<?php $a = function () { return self::class; }; $b = fn () => static::class; $c = static function () { return parent::class; }; class C { function f() { return function () { return parent::class; }; } }\n",
+        );
+        assert_eq!(diagnostics.len(), 0, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn named_function_bodies_stay_global_scope_inside_closures() {
+        let diagnostics = diagnostics(
+            "<?php $a = function () { function g() { return self::class; } };\n",
         );
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].id(), DiagnosticId::InvalidClassContextName);

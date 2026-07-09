@@ -124,3 +124,6 @@
 {"id":"functions-by-ref-capture","path":"fixtures/runtime/valid/functions/by-ref-capture.php","tags":["runtime","functions"],"expect":{"exit":0,"stdout":"3"}}
 {"id":"php85-pipe-not-callable","path":"fixtures/runtime/invalid/php85/pipe-not-callable.php","tags":["runtime","php85","invalid"],"expect":{"exit":255,"stdout_contains":"Uncaught Error: int is not callable","stderr":""}}
 {"id":"generator-gap","path":"fixtures/runtime/valid/generators/yield.php","tags":["runtime","generators"],"expect":{"exit":0,"stdout":"1"}}
+{"id":"closures-scope-keywords-compile-deferred","path":"fixtures/runtime/valid/closures/scope-keywords-compile-deferred.php","tags":["runtime","closures"],"expect":{"exit":0,"stdout":"compiled"}}
+{"id":"closures-scope-keywords-rebound","path":"fixtures/runtime/valid/closures/scope-keywords-rebound.php","tags":["runtime","closures"],"expect":{"exit":0,"stdout":"MixedCase"}}
+{"id":"closures-self-global-scope-error","path":"fixtures/runtime/invalid/closures/self-global-scope-error.php","tags":["runtime","closures","invalid"],"expect":{"exit":255,"stdout_contains":"Uncaught Error: Cannot use \"self\" in the global scope"}}

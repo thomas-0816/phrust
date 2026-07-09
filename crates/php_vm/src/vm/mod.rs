@@ -53015,9 +53015,12 @@ fn resolve_static_class_name(
     match normalize_class_name(class_name).as_str() {
         "self" => {
             let Some(scope) = current_scope_class(compiled, stack) else {
-                return Err(format!(
-                    "E_PHP_VM_INVALID_STATIC_SCOPE: {class_name}:: is not available outside class scope"
-                ));
+                // Reference wording (PHP 8.5.7): thrown when a deferred
+                // closure/global `self` reference is resolved without scope.
+                return Err(
+                    "E_PHP_VM_INVALID_STATIC_SCOPE: Cannot use \"self\" in the global scope"
+                        .to_owned(),
+                );
             };
             lookup_class_in_state(compiled, state, &scope)
                 .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: class {scope} is not defined"))
@@ -53027,7 +53030,7 @@ fn resolve_static_class_name(
                 .or_else(|| current_scope_class(compiled, stack))
             else {
                 return Err(
-                    "E_PHP_VM_INVALID_STATIC_SCOPE: static:: is not available outside class scope"
+                    "E_PHP_VM_INVALID_STATIC_SCOPE: Cannot use \"static\" in the global scope"
                         .to_owned(),
                 );
             };
@@ -53040,7 +53043,7 @@ fn resolve_static_class_name(
         "parent" => {
             let Some(scope) = current_scope_class(compiled, stack) else {
                 return Err(
-                    "E_PHP_VM_INVALID_STATIC_SCOPE: parent:: is not available outside class scope"
+                    "E_PHP_VM_INVALID_STATIC_SCOPE: Cannot use \"parent\" in the global scope"
                         .to_owned(),
                 );
             };
@@ -54534,11 +54537,15 @@ fn closure_static_method_value(
 fn bind_closure_callable_value(callable: CallableValue, bound_this: Option<ObjectRef>) -> Value {
     match callable {
         CallableValue::Closure(payload) => {
+            // Scope/declaring carry the canonical lookup name; the
+            // late-static-binding called class keeps the PHP-visible display
+            // spelling, matching what method activation stores in frames.
             let rebound_class = bound_this.as_ref().map(ObjectRef::class_name_handle);
+            let rebound_display = bound_this.as_ref().map(object_called_class_handle);
             let context = ClosureContext {
                 owner_unit: payload.context.owner_unit,
                 scope_class: rebound_class.clone().or(payload.context.scope_class),
-                called_class: rebound_class.clone().or(payload.context.called_class),
+                called_class: rebound_display.or(payload.context.called_class),
                 declaring_class: rebound_class.or(payload.context.declaring_class),
             };
             Value::closure(
@@ -54882,7 +54889,9 @@ fn current_closure_value(
             .with_context(ClosureContext {
                 owner_unit: dynamic_unit_index_for_compiled(state, compiled),
                 scope_class: current_scope_class(compiled, stack).map(Arc::from),
-                called_class: current_called_class(compiled, stack).map(Arc::from),
+                // Display spelling: `static::class` inside the closure must
+                // reproduce the PHP-visible name, like method frames do.
+                called_class: current_called_class_display(compiled, stack).map(Arc::from),
                 declaring_class: current_scope_class(compiled, stack).map(Arc::from),
             }),
     ))
@@ -62055,7 +62064,9 @@ fn make_closure_value(
             .with_context(ClosureContext {
                 owner_unit: dynamic_unit_index_for_compiled(state, compiled),
                 scope_class: current_scope_class(compiled, stack).map(Arc::from),
-                called_class: current_called_class(compiled, stack).map(Arc::from),
+                // Display spelling: `static::class` inside the closure must
+                // reproduce the PHP-visible name, like method frames do.
+                called_class: current_called_class_display(compiled, stack).map(Arc::from),
                 declaring_class: current_scope_class(compiled, stack).map(Arc::from),
             }),
     )
