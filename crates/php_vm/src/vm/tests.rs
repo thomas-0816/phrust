@@ -15242,10 +15242,9 @@ fn runtime_types_check_returns_void_and_properties() {
         "E_PHP_VM_UNCAUGHT_EXCEPTION"
     );
     assert!(
-        bad_property
-            .output
-            .to_string_lossy()
-            .contains("Uncaught TypeError: property Box::$value got array, expected int"),
+        bad_property.output.to_string_lossy().contains(
+            "Uncaught TypeError: Cannot assign array to property Box::$value of type int"
+        ),
         "{}",
         bad_property.output.to_string_lossy()
     );

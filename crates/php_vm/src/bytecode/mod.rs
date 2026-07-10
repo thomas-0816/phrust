@@ -205,6 +205,7 @@ pub enum DenseOpcode {
     /// `object->property[dims...] = value` (or `[] =` append).
     AssignPropertyDim = 89,
     UnsetPropertyDim = 90,
+    AssignDynamicProperty = 91,
 }
 
 impl DenseOpcode {
@@ -316,6 +317,7 @@ impl DenseOpcode {
             Self::CloneObject => "clone_object",
             Self::AssignPropertyDim => "assign_property_dim",
             Self::UnsetPropertyDim => "unset_property_dim",
+            Self::AssignDynamicProperty => "assign_dynamic_property",
         }
     }
 
@@ -564,6 +566,13 @@ pub enum DenseOperands {
         property: u32,
         dims: Vec<DenseOperand>,
         append: bool,
+        value: DenseOperand,
+    },
+    /// Runtime-named instance property assignment operands.
+    AssignDynamicProperty {
+        dst: u32,
+        object: DenseOperand,
+        property: DenseOperand,
         value: DenseOperand,
     },
     /// Instance property array-dimension unset operands.
@@ -2020,7 +2029,8 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::FetchStaticProperty
         | DenseOpcode::CloneObject
         | DenseOpcode::AssignPropertyDim
-        | DenseOpcode::UnsetPropertyDim => None,
+        | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty => None,
     }
 }
 
@@ -2717,6 +2727,20 @@ fn lower_instruction(
                 property: push_name(names, property).index() as u32,
                 dims: dims.iter().copied().map(lower_operand).collect(),
                 append: *append,
+                value: lower_operand(*value),
+            },
+        ),
+        InstructionKind::AssignDynamicProperty {
+            dst,
+            object,
+            property,
+            value,
+        } => (
+            DenseOpcode::AssignDynamicProperty,
+            DenseOperands::AssignDynamicProperty {
+                dst: dst.raw(),
+                object: lower_operand(*object),
+                property: lower_operand(*property),
                 value: lower_operand(*value),
             },
         ),
@@ -3481,6 +3505,20 @@ fn verify_instruction(
             verify_operand(*value, unit, function, errors);
         }
         (
+            DenseOpcode::AssignDynamicProperty,
+            DenseOperands::AssignDynamicProperty {
+                dst,
+                object,
+                property,
+                value,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_operand(*object, unit, function, errors);
+            verify_operand(*property, unit, function, errors);
+            verify_operand(*value, unit, function, errors);
+        }
+        (
             DenseOpcode::UnsetPropertyDim,
             DenseOperands::UnsetPropertyDim {
                 object,
@@ -4116,6 +4154,19 @@ fn render_operands(operands: &DenseOperands) -> String {
                 render_operand(*object),
                 dims.join(", "),
                 if *append { " append" } else { "" },
+                render_operand(*value)
+            )
+        }
+        DenseOperands::AssignDynamicProperty {
+            dst,
+            object,
+            property,
+            value,
+        } => {
+            format!(
+                "r{dst} {} {} {}",
+                render_operand(*object),
+                render_operand(*property),
                 render_operand(*value)
             )
         }

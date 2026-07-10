@@ -9193,6 +9193,103 @@ impl Vm {
                             return result;
                         }
                     }
+                    DenseOpcode::AssignDynamicProperty => {
+                        let _profile = self.request_profile_operation_start(
+                            RequestProfileOperationCategory::Object,
+                            "property_assign",
+                        );
+                        let DenseOperands::AssignDynamicProperty {
+                            dst,
+                            object,
+                            property,
+                            value,
+                        } = instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let property_value = match self
+                            .read_dense_operand(compiled, stack, property)
+                        {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        // Mirrors `dynamic_property_name` on the rich path:
+                        // string conversion with PHP-visible warnings/raises.
+                        let property = match self.value_to_string(
+                            compiled,
+                            &property_value,
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            Ok(name) => name.to_string_lossy(),
+                            Err(result) => {
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let object = match self.read_dense_operand(compiled, stack, object) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let value = match self.read_dense_operand(compiled, stack, value) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let span = dense
+                            .spans
+                            .get(instruction.span.index())
+                            .copied()
+                            .unwrap_or_default();
+                        let value = match self.dense_assign_property_value(
+                            compiled,
+                            output,
+                            stack,
+                            state,
+                            function_id,
+                            BlockId::new(block_index),
+                            InstrId::new(dense_instruction_index),
+                            &property,
+                            object,
+                            value,
+                            span,
+                        ) {
+                            Ok(value) => value,
+                            Err(result) => {
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
                     DenseOpcode::UnsetPropertyDim => {
                         let DenseOperands::UnsetPropertyDim {
                             object,
@@ -62869,7 +62966,7 @@ fn check_property_type(
         Ok(())
     } else {
         Err(format!(
-            "E_PHP_VM_PROPERTY_TYPE_MISMATCH: property {class_name}::${property} got {}, expected {}",
+            "E_PHP_VM_PROPERTY_TYPE_MISMATCH: Cannot assign {} to property {class_name}::${property} of type {}",
             value_type_name(value),
             runtime_type_name(runtime_type)
         ))
@@ -67588,7 +67685,8 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         DenseOpcode::FetchProperty
         | DenseOpcode::AssignProperty
         | DenseOpcode::AssignPropertyDim
-        | DenseOpcode::UnsetPropertyDim => "properties",
+        | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty => "properties",
         DenseOpcode::InstanceOf
         | DenseOpcode::FetchClassConstant
         | DenseOpcode::FetchStaticProperty

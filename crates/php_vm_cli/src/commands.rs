@@ -3022,6 +3022,7 @@ fn classify_baseline_stencil_instruction(opcode: DenseOpcode) -> BaselineStencil
         | DenseOpcode::AssignDim
         | DenseOpcode::AssignPropertyDim
         | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => BaselineStencilClass {
@@ -3387,6 +3388,7 @@ fn classify_copy_patch_stencil_instruction(
         | DenseOpcode::AssignDim
         | DenseOpcode::AssignPropertyDim
         | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => unsupported_copy_patch_class(
@@ -3695,6 +3697,7 @@ fn classify_mid_tier_instruction(
         | DenseOpcode::AssignDim
         | DenseOpcode::AssignPropertyDim
         | DenseOpcode::UnsetPropertyDim
+        | DenseOpcode::AssignDynamicProperty
         | DenseOpcode::AppendDim
         | DenseOpcode::BindReferenceDim
         | DenseOpcode::UnsetDim => {
