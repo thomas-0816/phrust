@@ -167,6 +167,11 @@ phrust_server_include_resolution_misses_total {}\n\
 phrust_server_include_compile_hits_total {}\n\
 phrust_server_include_compile_misses_total {}\n\
 phrust_server_include_source_reads_total {}\n\
+phrust_server_include_source_bytes_hashed_total {}\n\
+phrust_server_include_content_validations_total {}\n\
+phrust_server_include_identity_only_hits_total {}\n\
+phrust_server_include_content_mismatches_total {}\n\
+phrust_server_include_conservative_misses_total {}\n\
 phrust_server_include_dependency_metadata_validations_total {}\n\
 phrust_server_include_stale_invalidations_total {}\n\
 phrust_server_include_stale_dependency_invalidations_total {}\n\
@@ -183,7 +188,6 @@ phrust_server_deployment_fingerprint_present_total {}\n\
 phrust_server_deployment_fingerprint_missing_total {}\n\
 phrust_server_deployment_fingerprint_stale_total {}\n\
 phrust_server_entry_script_source_reads_total {}\n\
-phrust_server_include_source_reads_total {}\n\
 phrust_server_response_output_bytes_total {}\n\
 phrust_server_runtime_diagnostics_total {}\n\
 phrust_server_session_seed_attempts_total {}\n\
@@ -259,6 +263,11 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             include_cache.compile_hits,
             include_cache.compile_misses,
             include_cache.source_reads,
+            include_cache.source_bytes_hashed,
+            include_cache.content_validations,
+            include_cache.identity_only_hits,
+            include_cache.content_mismatches,
+            include_cache.conservative_misses,
             include_cache.dependency_metadata_validations,
             include_cache.stale_invalidations,
             include_cache.stale_dependency_invalidations,
@@ -275,7 +284,6 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             include_cache.deployment_fingerprint_missing,
             include_cache.deployment_fingerprint_stale,
             cache.source_reads,
-            include_cache.source_reads,
             self.response_output_bytes.load(Ordering::Relaxed),
             self.runtime_diagnostics.load(Ordering::Relaxed),
             self.session_seed_attempts.load(Ordering::Relaxed),
@@ -404,5 +412,34 @@ mod tests {
             HeaderValue::from_static("Bearer wrong"),
         );
         assert!(metrics_token_authorized(&headers, "secret"));
+    }
+
+    #[test]
+    fn include_identity_metrics_are_rendered_once() {
+        let include_cache = IncludeCacheStats {
+            source_reads: 11,
+            source_bytes_hashed: 12,
+            content_validations: 13,
+            identity_only_hits: 14,
+            content_mismatches: 15,
+            conservative_misses: 16,
+            ..IncludeCacheStats::default()
+        };
+        let rendered = ServerMetrics::default().render(
+            0,
+            php_executor::CompiledScriptCacheStats::default(),
+            include_cache,
+            PersistentMetadataStats::default(),
+        );
+        for expected in [
+            "phrust_server_include_source_reads_total 11\n",
+            "phrust_server_include_source_bytes_hashed_total 12\n",
+            "phrust_server_include_content_validations_total 13\n",
+            "phrust_server_include_identity_only_hits_total 14\n",
+            "phrust_server_include_content_mismatches_total 15\n",
+            "phrust_server_include_conservative_misses_total 16\n",
+        ] {
+            assert_eq!(rendered.matches(expected).count(), 1, "{expected}");
+        }
     }
 }

@@ -6823,6 +6823,7 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
         InvalidationEpoch::new(1),
         IncludePathCacheTarget {
             canonical_path: resolved.canonical_path.clone(),
+            resolution_path: resolved.resolution_path.clone(),
             fingerprint: resolved.fingerprint.clone(),
             directory_version: resolved.directory_version,
         },
@@ -6837,9 +6838,7 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
         InvalidationEpoch::new(1),
     );
     let target = target.expect("cached target");
-    let current =
-        include_path_file_fingerprint(&target.canonical_path).expect("current fingerprint");
-    let event = if current == target.fingerprint {
+    let event = if target.is_current() {
         table.record_include_path_hit(23, function, block, instruction)
     } else {
         table.invalidate_include_path(23, function, block, instruction)
@@ -6849,6 +6848,35 @@ fn include_path_inline_cache_invalidates_changed_file_metadata() {
     assert_eq!(probe.kind, Some(InlineCacheKind::IncludePath));
     assert!(event.invalidation);
     assert!(event.miss);
+}
+
+#[cfg(unix)]
+#[test]
+fn include_path_inline_cache_rejects_symlink_target_swap() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "phrust-include-path-ic-link-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp root");
+    std::fs::write(root.join("first.php"), "<?php echo 'first';\n").expect("first target");
+    std::fs::write(root.join("other.php"), "<?php echo 'other';\n").expect("other target");
+    let link = root.join("linked.php");
+    symlink(root.join("first.php"), &link).expect("first symlink");
+    let loader = IncludeLoader::for_root(&root).expect("loader");
+    let resolved = loader
+        .resolve_with_include_path(None, &link.to_string_lossy(), &[], None)
+        .expect("resolve first symlink target");
+    let target = IncludePathCacheTarget::from_resolved(&resolved);
+    assert!(target.is_current());
+
+    std::fs::remove_file(&link).expect("remove first symlink");
+    symlink(root.join("other.php"), &link).expect("replacement symlink");
+
+    assert!(!target.is_current());
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

@@ -5,7 +5,10 @@ use std::path::PathBuf;
 
 use php_runtime::PhpString;
 
-use crate::include::{IncludeDirectoryVersion, IncludePathFileFingerprint};
+use crate::include::{
+    IncludeDirectoryVersion, IncludePathFileFingerprint, ResolvedIncludePath,
+    include_path_file_fingerprint, resolution_path_targets,
+};
 use crate::{DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolStats};
 
 use php_ir::{
@@ -480,10 +483,30 @@ pub struct IncludePathCacheKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IncludePathCacheTarget {
     pub canonical_path: PathBuf,
+    /// Candidate path re-canonicalized before hit acceptance so symlink swaps
+    /// cannot keep returning an old canonical target.
+    pub resolution_path: Option<PathBuf>,
     pub fingerprint: IncludePathFileFingerprint,
     /// Parent-directory version at resolve time, compared on revalidation for
     /// the `directory_version_*` counters only — never for hit acceptance.
     pub directory_version: Option<IncludeDirectoryVersion>,
+}
+
+impl IncludePathCacheTarget {
+    pub(crate) fn from_resolved(resolved: &ResolvedIncludePath) -> Self {
+        Self {
+            canonical_path: resolved.canonical_path.clone(),
+            resolution_path: resolved.resolution_path.clone(),
+            fingerprint: resolved.fingerprint.clone(),
+            directory_version: resolved.directory_version,
+        }
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        resolution_path_targets(self.resolution_path.as_deref(), &self.canonical_path)
+            && include_path_file_fingerprint(&self.canonical_path)
+                .is_ok_and(|current| current == self.fingerprint)
+    }
 }
 
 /// Class-like lookup flavor cached by autoload lookup IC slots.
@@ -3931,9 +3954,11 @@ mod tests {
         };
         let target = IncludePathCacheTarget {
             canonical_path: PathBuf::from("/repo/src/lib.php"),
+            resolution_path: Some(PathBuf::from("/repo/src/lib.php")),
             fingerprint: IncludePathFileFingerprint {
                 len: 17,
                 modified_unix_nanos: Some(10),
+                changed_unix_nanos: None,
                 readonly: false,
                 inode: None,
                 device: None,
@@ -4007,9 +4032,11 @@ mod tests {
             InvalidationEpoch::new(2),
             IncludePathCacheTarget {
                 canonical_path: PathBuf::from("/repo/first/lib.php"),
+                resolution_path: Some(PathBuf::from("/repo/first/lib.php")),
                 fingerprint: IncludePathFileFingerprint {
                     len: 17,
                     modified_unix_nanos: Some(10),
+                    changed_unix_nanos: None,
                     readonly: false,
                     inode: None,
                     device: None,
@@ -4061,9 +4088,11 @@ mod tests {
             InvalidationEpoch::new(2),
             IncludePathCacheTarget {
                 canonical_path: PathBuf::from("/repo/src/lib.php"),
+                resolution_path: Some(PathBuf::from("/repo/src/lib.php")),
                 fingerprint: IncludePathFileFingerprint {
                     len: 17,
                     modified_unix_nanos: Some(10),
+                    changed_unix_nanos: None,
                     readonly: false,
                     inode: None,
                     device: None,

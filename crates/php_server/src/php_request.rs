@@ -555,6 +555,36 @@ pub(crate) async fn execute_php_request(
                 .source_reads
                 .saturating_sub(include_cache_before.source_reads),
         ),
+        (
+            "include_source_bytes_hashed",
+            include_cache_after
+                .source_bytes_hashed
+                .saturating_sub(include_cache_before.source_bytes_hashed),
+        ),
+        (
+            "include_content_validations",
+            include_cache_after
+                .content_validations
+                .saturating_sub(include_cache_before.content_validations),
+        ),
+        (
+            "include_identity_only_hits",
+            include_cache_after
+                .identity_only_hits
+                .saturating_sub(include_cache_before.identity_only_hits),
+        ),
+        (
+            "include_content_mismatches",
+            include_cache_after
+                .content_mismatches
+                .saturating_sub(include_cache_before.content_mismatches),
+        ),
+        (
+            "include_conservative_misses",
+            include_cache_after
+                .conservative_misses
+                .saturating_sub(include_cache_before.conservative_misses),
+        ),
     ]);
     match result {
         Ok(mut output) => {

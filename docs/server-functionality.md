@@ -130,17 +130,20 @@ VM through `php_executor`. The cache has two independent shard sets: one for
 include path resolution and one for compiled include units. Resolution entries
 are keyed by the including directory, requested path, include path entries, cwd,
 and allowed-root fingerprint. Compiled include entries are keyed by canonical
-path plus file metadata, optimization level, compiler/runtime fingerprint, and
-local dependency fingerprints discovered at compile time. Warm compiled-include
-hits validate metadata and dependency metadata before returning the cached
-compiled unit, so unchanged include hits do not read source or rescan dependency
-source. File or dependency metadata changes remove stale entries before reuse.
+path plus opened-source identity, optimization level, compiler/runtime
+fingerprint, and local dependency identities discovered at compile time.
+Mutable-mode hits validate current primary and dependency bytes before returning
+the cached unit. Explicitly immutable deployments use a metadata-only fast path
+only while deployment, directory, and file-generation guards remain valid. File
+generation or content changes remove stale entries before reuse.
 
 `include_once` and `require_once` tracking stays request-local in VM state; the
 shared cache only reuses resolved paths and compiled units. The server exposes
-include resolution hits/misses, include compile hits/misses, include source
-reads, dependency metadata validations, stale invalidations, stale dependency
-invalidations, and include compile errors under `/__phrust/metrics`.
+include resolution hits/misses, include compile hits/misses, source reads and
+bytes hashed, content validations, identity-only hits, content mismatches,
+conservative misses, dependency metadata validations, stale invalidations,
+stale dependency invalidations, and include compile errors under
+`/__phrust/metrics`.
 
 Web requests allow includes under the public docroot and its parent app root so
 compatibility fixtures can keep non-public helpers outside `public/`. Compiled

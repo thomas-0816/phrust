@@ -46,9 +46,7 @@ use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservat
 use crate::deopt::GuardKind;
 use crate::error::VmError;
 use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument, TraceArguments};
-use crate::include::{
-    IncludeCacheStats, LoadedInclude, compile_loaded_include, include_path_file_fingerprint,
-};
+use crate::include::{IncludeCacheStats, LoadedInclude, compile_loaded_include};
 use crate::inline_cache::{
     AutoloadClassLookupCacheKey, AutoloadClassLookupCacheTarget, AutoloadClassLookupEpochs,
     AutoloadClassLookupKind, ClassConstantStaticPropertyCacheKind,
@@ -44970,92 +44968,85 @@ impl Vm {
                     InvalidationEpoch::default(),
                 );
                 if let Some(target) = cached {
-                    match include_path_file_fingerprint(&target.canonical_path) {
-                        Ok(current) if current == target.fingerprint => {
-                            self.record_include_path_inline_cache_hit(
-                                unit_key,
-                                function_id,
-                                block_id,
-                                instruction_id,
-                            );
-                            self.record_counter_directory_version_observation(&target);
-                            match loader.load_resolved(target.canonical_path) {
-                                Ok(loaded) => loaded,
-                                Err(message) => {
-                                    return include_failure(
-                                        output,
-                                        compiled,
-                                        instruction_span,
-                                        kind,
-                                        message,
-                                        state,
-                                        stack_trace(compiled, stack),
-                                    );
-                                }
+                    if target.is_current() {
+                        self.record_include_path_inline_cache_hit(
+                            unit_key,
+                            function_id,
+                            block_id,
+                            instruction_id,
+                        );
+                        self.record_counter_directory_version_observation(&target);
+                        match loader.load_resolved(target.canonical_path) {
+                            Ok(loaded) => loaded,
+                            Err(message) => {
+                                return include_failure(
+                                    output,
+                                    compiled,
+                                    instruction_span,
+                                    kind,
+                                    message,
+                                    state,
+                                    stack_trace(compiled, stack),
+                                );
                             }
                         }
-                        Ok(_) | Err(_) => {
-                            self.record_include_path_inline_cache_invalidation(
-                                unit_key,
-                                function_id,
-                                block_id,
-                                instruction_id,
-                            );
-                            self.record_counter_invalidation_by_reason("file_fingerprint_changed");
-                            self.record_counter_include_stale_invalidation_by_reason(
-                                "file_fingerprint_changed",
-                            );
-                            match loader.resolve_with_include_path(
-                                including_file.as_deref(),
-                                &path,
-                                &include_path,
-                                Some(&cwd),
-                            ) {
-                                Ok(resolved) => {
-                                    let target = IncludePathCacheTarget {
-                                        canonical_path: resolved.canonical_path.clone(),
-                                        fingerprint: resolved.fingerprint.clone(),
-                                        directory_version: resolved.directory_version,
-                                    };
-                                    self.install_include_path_inline_cache(
-                                        unit_key,
-                                        function_id,
-                                        block_id,
-                                        instruction_id,
-                                        request.clone(),
-                                        InvalidationEpoch::default(),
-                                        target,
-                                    );
-                                    match loader.load_resolved(resolved.canonical_path) {
-                                        Ok(loaded) => loaded,
-                                        Err(message) => {
-                                            return include_failure(
-                                                output,
-                                                compiled,
-                                                instruction_span,
-                                                kind,
-                                                message,
-                                                state,
-                                                stack_trace(compiled, stack),
-                                            );
-                                        }
+                    } else {
+                        self.record_include_path_inline_cache_invalidation(
+                            unit_key,
+                            function_id,
+                            block_id,
+                            instruction_id,
+                        );
+                        self.record_counter_invalidation_by_reason("file_fingerprint_changed");
+                        self.record_counter_include_stale_invalidation_by_reason(
+                            "file_fingerprint_changed",
+                        );
+                        match loader.resolve_with_include_path(
+                            including_file.as_deref(),
+                            &path,
+                            &include_path,
+                            Some(&cwd),
+                        ) {
+                            Ok(resolved) => {
+                                let target = IncludePathCacheTarget::from_resolved(&resolved);
+                                self.install_include_path_inline_cache(
+                                    unit_key,
+                                    function_id,
+                                    block_id,
+                                    instruction_id,
+                                    request.clone(),
+                                    InvalidationEpoch::default(),
+                                    target,
+                                );
+                                match loader.load_resolved(resolved.canonical_path) {
+                                    Ok(loaded) => loaded,
+                                    Err(message) => {
+                                        return include_failure(
+                                            output,
+                                            compiled,
+                                            instruction_span,
+                                            kind,
+                                            message,
+                                            state,
+                                            stack_trace(compiled, stack),
+                                        );
                                     }
                                 }
-                                Err(message) => {
-                                    self.record_include_graph_resolution_fallback(
-                                        &path,
-                                        &message.render_message(),
-                                    );
-                                    return include_failure(
-                                        output,
-                                        compiled,
-                                        instruction_span,
-                                        kind,
-                                        message,
-                                        state,
-                                        stack_trace(compiled, stack),
-                                    );
-                                }
+                            }
+                            Err(message) => {
+                                self.record_include_graph_resolution_fallback(
+                                    &path,
+                                    &message.render_message(),
+                                );
+                                return include_failure(
+                                    output,
+                                    compiled,
+                                    instruction_span,
+                                    kind,
+                                    message,
+                                    state,
+                                    stack_trace(compiled, stack),
+                                );
                             }
                         }
                     }
@@ -45067,11 +45058,7 @@ impl Vm {
                         Some(&cwd),
                     ) {
                         Ok(resolved) => {
-                            let target = IncludePathCacheTarget {
-                                canonical_path: resolved.canonical_path.clone(),
-                                fingerprint: resolved.fingerprint.clone(),
-                                directory_version: resolved.directory_version,
-                            };
+                            let target = IncludePathCacheTarget::from_resolved(&resolved);
                             self.install_include_path_inline_cache(
                                 unit_key,
                                 function_id,

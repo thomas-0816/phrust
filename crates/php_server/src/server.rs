@@ -750,7 +750,12 @@ mod tests {
         assert_eq!(include_stats_after_hit.compile_hits, 1);
         assert_eq!(
             include_stats_after_hit.source_reads,
-            include_stats.source_reads
+            include_stats.source_reads + 1,
+            "mutable include hits validate current source bytes"
+        );
+        assert_eq!(
+            include_stats_after_hit.content_validations,
+            include_stats.content_validations + 1
         );
     }
 

@@ -8,8 +8,9 @@ use php_diagnostics::{
 use php_optimizer::{OptimizationLevel, PassContext, PassPipeline};
 use php_runtime::{FilesystemCapabilities, phar};
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -26,6 +27,20 @@ pub struct LoadedInclude {
     pub source: String,
 }
 
+#[derive(Clone, Debug)]
+struct ValidatedLoadedInclude {
+    loaded: LoadedInclude,
+    identity: OpenedSourceIdentity,
+    bytes_hashed: u64,
+}
+
+/// Identity of the exact bytes read from one stable opened file generation.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct OpenedSourceIdentity {
+    generation: IncludePathFileFingerprint,
+    content_hash: u64,
+}
+
 /// Metadata fingerprint used to validate cached include-path resolutions.
 ///
 /// `inode`/`device` capture filesystem identity where the platform exposes it
@@ -34,13 +49,22 @@ pub struct LoadedInclude {
 /// do not expose identity; because the whole struct is compared by equality,
 /// a missing identity only ever matches another missing identity — it never
 /// widens reuse (fail-closed).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct IncludePathFileFingerprint {
     pub len: u64,
     pub modified_unix_nanos: Option<u128>,
+    /// Metadata-change time where the platform exposes it. Unlike mtime, this
+    /// changes when callers rewrite bytes and restore the visible mtime.
+    pub changed_unix_nanos: Option<i128>,
     pub readonly: bool,
     pub inode: Option<u64>,
     pub device: Option<u64>,
+}
+
+impl IncludePathFileFingerprint {
+    fn has_reliable_generation(&self) -> bool {
+        self.inode.is_some() && self.device.is_some() && self.changed_unix_nanos.is_some()
+    }
 }
 
 /// Portable directory version for the include/autoload graph.
@@ -85,6 +109,11 @@ pub fn include_directory_version(dir: &Path) -> Option<IncludeDirectoryVersion> 
 pub struct ResolvedIncludePath {
     /// Canonical path used for once tracking and source maps.
     pub canonical_path: PathBuf,
+    /// Candidate path whose canonical target produced `canonical_path`.
+    /// Re-canonicalizing this path detects final-component and ancestor
+    /// symlink swaps before a cached resolution is reused. Phar entries do
+    /// not have a local candidate path.
+    pub resolution_path: Option<PathBuf>,
     /// File metadata fingerprint used to invalidate stale path resolutions.
     pub fingerprint: IncludePathFileFingerprint,
     /// Version of the canonical path's parent directory at resolve time.
@@ -304,8 +333,12 @@ impl IncludeCache {
                 .map_err(|_| include_cache_lock_error("resolution", "lookup"))?;
             shard.get(&key).cloned()
         } {
+            let target_is_current = resolution_path_targets(
+                resolved.resolution_path.as_deref(),
+                &resolved.canonical_path,
+            );
             match include_path_file_fingerprint(&resolved.canonical_path) {
-                Ok(current) if current == resolved.fingerprint => {
+                Ok(current) if target_is_current && current == resolved.fingerprint => {
                     self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
                     self.observe_directory_version(&resolved);
                     return Ok(resolved);
@@ -429,8 +462,26 @@ impl IncludeCache {
         resolved: &ResolvedIncludePath,
         optimization_level: OptimizationLevel,
     ) -> Result<Arc<CompiledUnit>, VmError> {
+        let compiler = IncludeCompilerIdentity::current(optimization_level);
         loop {
-            if let Some(compiled) = self.lookup_compiled_include(resolved, optimization_level)? {
+            let validation_mode = if self.immutable_identity_only_allowed(resolved) {
+                IncludeValidationMode::IdentityOnly
+            } else {
+                IncludeValidationMode::Content
+            };
+            let validated = match validation_mode {
+                IncludeValidationMode::Content => {
+                    Some(self.load_and_record_validation(loader, resolved)?)
+                }
+                IncludeValidationMode::IdentityOnly => None,
+            };
+            let validation = validated.as_ref().map_or(
+                PrimarySourceValidation::IdentityOnly(&resolved.fingerprint),
+                |loaded| PrimarySourceValidation::Content(&loaded.identity),
+            );
+            if let Some(compiled) =
+                self.lookup_compiled_include(resolved, &compiler, validation, validation_mode)?
+            {
                 return Ok(compiled);
             }
 
@@ -439,17 +490,32 @@ impl IncludeCache {
                 continue;
             };
 
-            if let Some(compiled) = self.lookup_compiled_include(resolved, optimization_level)? {
+            if let Some(compiled) =
+                self.lookup_compiled_include(resolved, &compiler, validation, validation_mode)?
+            {
                 return Ok(compiled);
             }
 
-            self.stats.source_reads.fetch_add(1, Ordering::Relaxed);
-            let loaded = loader.load_resolved(resolved.canonical_path.clone())?;
-            let key = CompiledIncludeKey::new(resolved, optimization_level, &loaded.source);
-            let shard_index = self.compile_shard_index(&key);
+            let validated = match validated {
+                Some(validated) => validated,
+                None => self.load_and_record_validation(loader, resolved)?,
+            };
             self.stats.compile_misses.fetch_add(1, Ordering::Relaxed);
-            let compiled = match compile_loaded_include(loaded, optimization_level) {
-                Ok(compiled) => {
+            let source_identity = validated.identity;
+            let canonical_path = validated.loaded.canonical_path.clone();
+            let compiled = match compile_loaded_include_with_dependencies(
+                validated.loaded,
+                optimization_level,
+            ) {
+                Ok((compiled, local_dependencies)) => {
+                    self.record_compiled_dependency_reads(&local_dependencies);
+                    let key = CompiledIncludeKey::new(
+                        canonical_path,
+                        source_identity,
+                        local_dependencies,
+                        compiler.clone(),
+                    );
+                    let shard_index = self.compile_shard_index(&key);
                     let compiled = Arc::new(compiled);
                     let compiled = {
                         let mut shard = self.compile_shards[shard_index]
@@ -472,9 +538,12 @@ impl IncludeCache {
     fn lookup_compiled_include(
         &self,
         resolved: &ResolvedIncludePath,
-        optimization_level: OptimizationLevel,
+        compiler: &IncludeCompilerIdentity,
+        validation: PrimarySourceValidation<'_>,
+        validation_mode: IncludeValidationMode,
     ) -> Result<Option<Arc<CompiledUnit>>, VmError> {
-        let lookup_key = CompiledIncludeLookupKey::new(resolved, optimization_level);
+        let lookup_key =
+            CompiledIncludeLookupKey::new(resolved.canonical_path.clone(), compiler.clone());
         let shard_index = self.compile_shard_index_for_path(&lookup_key.canonical_path);
         let Some(full_key) = ({
             let lookup_shard = self.compile_lookup_shards[shard_index]
@@ -495,28 +564,70 @@ impl IncludeCache {
         let Some((key, compiled)) = hit else {
             return Ok(None);
         };
-        match self.dependencies_are_fresh(&key) {
+        if !self.primary_source_is_fresh(&key, validation) {
+            self.invalidate_compiled_include(&key, false)?;
+            return Ok(None);
+        }
+        match self.dependencies_are_fresh(&key, validation_mode) {
             Ok(true) => {
+                if validation_mode == IncludeValidationMode::IdentityOnly {
+                    self.stats
+                        .identity_only_hits
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 self.stats.compile_hits.fetch_add(1, Ordering::Relaxed);
                 Ok(Some(compiled))
             }
             Ok(false) | Err(_) => {
-                let mut shard = self.compile_shards[shard_index]
-                    .lock()
-                    .map_err(|_| include_cache_lock_error("compiled", "invalidate"))?;
-                if shard.remove(&key).is_some() {
-                    drop(shard);
-                    self.remove_compiled_lookup_index(&key)?;
-                    self.stats
-                        .stale_invalidations
-                        .fetch_add(1, Ordering::Relaxed);
-                    self.stats
-                        .stale_dependency_invalidations
-                        .fetch_add(1, Ordering::Relaxed);
-                }
+                self.invalidate_compiled_include(&key, true)?;
                 Ok(None)
             }
         }
+    }
+
+    fn primary_source_is_fresh(
+        &self,
+        key: &CompiledIncludeKey,
+        validation: PrimarySourceValidation<'_>,
+    ) -> bool {
+        match validation {
+            PrimarySourceValidation::Content(identity) => {
+                if key.source_identity.content_hash != identity.content_hash {
+                    self.stats
+                        .content_mismatches
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                key.source_identity == *identity
+            }
+            PrimarySourceValidation::IdentityOnly(generation) => {
+                generation.has_reliable_generation()
+                    && key.source_identity.generation == *generation
+            }
+        }
+    }
+
+    fn invalidate_compiled_include(
+        &self,
+        key: &CompiledIncludeKey,
+        dependency: bool,
+    ) -> Result<(), VmError> {
+        let shard_index = self.compile_shard_index(key);
+        let mut shard = self.compile_shards[shard_index]
+            .lock()
+            .map_err(|_| include_cache_lock_error("compiled", "invalidate"))?;
+        if shard.remove(key).is_some() {
+            drop(shard);
+            self.remove_compiled_lookup_index(key)?;
+            self.stats
+                .stale_invalidations
+                .fetch_add(1, Ordering::Relaxed);
+            if dependency {
+                self.stats
+                    .stale_dependency_invalidations
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(())
     }
 
     fn insert_compiled_lookup_index(&self, key: &CompiledIncludeKey) -> Result<(), VmError> {
@@ -564,17 +675,145 @@ impl IncludeCache {
         }
     }
 
-    fn dependencies_are_fresh(&self, key: &CompiledIncludeKey) -> Result<bool, VmError> {
+    fn dependencies_are_fresh(
+        &self,
+        key: &CompiledIncludeKey,
+        validation_mode: IncludeValidationMode,
+    ) -> Result<bool, VmError> {
         for dependency in &key.local_dependencies {
             self.stats
                 .dependency_metadata_validations
                 .fetch_add(1, Ordering::Relaxed);
-            let current = include_path_file_fingerprint(&dependency.canonical_path)?;
-            if !dependency.matches_fingerprint(&current) {
-                return Ok(false);
+            match validation_mode {
+                IncludeValidationMode::IdentityOnly => {
+                    if !dependency
+                        .source_identity
+                        .generation
+                        .has_reliable_generation()
+                    {
+                        self.stats
+                            .conservative_misses
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Ok(false);
+                    }
+                    let current = include_path_file_fingerprint(&dependency.canonical_path)?;
+                    if current != dependency.source_identity.generation {
+                        return Ok(false);
+                    }
+                }
+                IncludeValidationMode::Content => {
+                    let current = match read_validated_file(&dependency.canonical_path) {
+                        Ok(current) => current,
+                        Err(_) => {
+                            self.stats
+                                .conservative_misses
+                                .fetch_add(1, Ordering::Relaxed);
+                            return Ok(false);
+                        }
+                    };
+                    self.record_content_validation(&current);
+                    if current.identity.content_hash != dependency.source_identity.content_hash {
+                        self.stats
+                            .content_mismatches
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    if current.identity != dependency.source_identity {
+                        return Ok(false);
+                    }
+                }
             }
         }
         Ok(true)
+    }
+
+    fn immutable_identity_only_allowed(&self, resolved: &ResolvedIncludePath) -> bool {
+        let fingerprint = match self.deployment_root.lock() {
+            Ok(slot) => slot.clone(),
+            Err(_) => {
+                self.stats
+                    .conservative_misses
+                    .fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+        };
+        let Some(fingerprint) = fingerprint else {
+            return false;
+        };
+        if fingerprint.mode != DeploymentRootMode::ImmutableDeclared
+            || !resolved
+                .canonical_path
+                .starts_with(&fingerprint.canonical_root)
+        {
+            return false;
+        }
+
+        let deployment_is_current = match (
+            fingerprint.directory_version,
+            include_directory_version(&fingerprint.canonical_root),
+        ) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        let parent_is_current = match (
+            resolved.directory_version,
+            resolved
+                .canonical_path
+                .parent()
+                .and_then(include_directory_version),
+        ) {
+            (Some(stored), Some(current)) => stored == current,
+            _ => false,
+        };
+        let source_is_current = resolved.fingerprint.has_reliable_generation()
+            && include_path_file_fingerprint(&resolved.canonical_path)
+                .is_ok_and(|current| current == resolved.fingerprint);
+        if deployment_is_current && parent_is_current && source_is_current {
+            true
+        } else {
+            self.stats
+                .conservative_misses
+                .fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+
+    fn load_and_record_validation(
+        &self,
+        loader: &IncludeLoader,
+        resolved: &ResolvedIncludePath,
+    ) -> Result<ValidatedLoadedInclude, VmError> {
+        let loaded = loader.load_validated_resolved(resolved).inspect_err(|_| {
+            self.stats
+                .conservative_misses
+                .fetch_add(1, Ordering::Relaxed);
+        })?;
+        self.record_content_validation(&loaded);
+        Ok(loaded)
+    }
+
+    fn record_content_validation(&self, loaded: &ValidatedLoadedInclude) {
+        self.stats.source_reads.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .source_bytes_hashed
+            .fetch_add(loaded.bytes_hashed, Ordering::Relaxed);
+        self.stats
+            .content_validations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_compiled_dependency_reads(&self, dependencies: &[CompiledIncludeDependencyKey]) {
+        let count = dependencies.len() as u64;
+        let bytes = dependencies
+            .iter()
+            .map(|dependency| dependency.source_identity.generation.len)
+            .sum();
+        self.stats.source_reads.fetch_add(count, Ordering::Relaxed);
+        self.stats
+            .source_bytes_hashed
+            .fetch_add(bytes, Ordering::Relaxed);
+        self.stats
+            .content_validations
+            .fetch_add(count, Ordering::Relaxed);
     }
 
     /// Clears cached include resolutions and compiled include units.
@@ -615,6 +854,11 @@ impl IncludeCache {
             compile_hits: self.stats.compile_hits.load(Ordering::Relaxed),
             compile_misses: self.stats.compile_misses.load(Ordering::Relaxed),
             source_reads: self.stats.source_reads.load(Ordering::Relaxed),
+            source_bytes_hashed: self.stats.source_bytes_hashed.load(Ordering::Relaxed),
+            content_validations: self.stats.content_validations.load(Ordering::Relaxed),
+            identity_only_hits: self.stats.identity_only_hits.load(Ordering::Relaxed),
+            content_mismatches: self.stats.content_mismatches.load(Ordering::Relaxed),
+            conservative_misses: self.stats.conservative_misses.load(Ordering::Relaxed),
             dependency_metadata_validations: self
                 .stats
                 .dependency_metadata_validations
@@ -727,6 +971,11 @@ pub struct IncludeCacheStats {
     pub compile_hits: u64,
     pub compile_misses: u64,
     pub source_reads: u64,
+    pub source_bytes_hashed: u64,
+    pub content_validations: u64,
+    pub identity_only_hits: u64,
+    pub content_mismatches: u64,
+    pub conservative_misses: u64,
     pub dependency_metadata_validations: u64,
     pub stale_invalidations: u64,
     pub stale_dependency_invalidations: u64,
@@ -751,6 +1000,11 @@ struct IncludeCacheCounters {
     compile_hits: AtomicU64,
     compile_misses: AtomicU64,
     source_reads: AtomicU64,
+    source_bytes_hashed: AtomicU64,
+    content_validations: AtomicU64,
+    identity_only_hits: AtomicU64,
+    content_mismatches: AtomicU64,
+    conservative_misses: AtomicU64,
     dependency_metadata_validations: AtomicU64,
     stale_invalidations: AtomicU64,
     stale_dependency_invalidations: AtomicU64,
@@ -1003,7 +1257,7 @@ impl IncludeLoader {
         let mut guards: Vec<NegativeProbeGuard> = Vec::new();
         let mut cacheable = capture_guards;
         let mut last_error = None;
-        let mut canonical = None;
+        let mut resolved_candidate = None;
         for candidate in &candidates {
             let mut guard_candidate = None;
             if cacheable {
@@ -1034,7 +1288,15 @@ impl IncludeLoader {
             }
             match fs::canonicalize(candidate) {
                 Ok(path) => {
-                    canonical = Some(path);
+                    let candidate = if candidate.is_absolute() {
+                        candidate.clone()
+                    } else {
+                        process_cwd
+                            .get_or_insert_with(|| std::env::current_dir().ok())
+                            .as_ref()
+                            .map_or_else(|| candidate.clone(), |cwd| cwd.join(candidate))
+                    };
+                    resolved_candidate = Some((path, candidate));
                     break;
                 }
                 Err(error) => {
@@ -1061,7 +1323,7 @@ impl IncludeLoader {
                 }
             }
         }
-        let Some(canonical) = canonical else {
+        let Some((canonical, resolution_path)) = resolved_candidate else {
             let error = last_error.unwrap_or_else(|| {
                 include_error("E_PHP_VM_INCLUDE_MISSING", format!("{path}: not found"))
                     .with_context("path", path)
@@ -1090,6 +1352,7 @@ impl IncludeLoader {
         let directory_version = canonical.parent().and_then(include_directory_version);
         Ok(ResolvedIncludePath {
             canonical_path: canonical,
+            resolution_path: Some(resolution_path),
             fingerprint,
             directory_version,
         })
@@ -1127,6 +1390,40 @@ impl IncludeLoader {
         })
     }
 
+    fn load_validated_resolved(
+        &self,
+        resolved: &ResolvedIncludePath,
+    ) -> Result<ValidatedLoadedInclude, VmError> {
+        let canonical_text = resolved.canonical_path.to_string_lossy();
+        if phar::is_phar_uri(&canonical_text) {
+            let loaded = self.load_phar_include(&canonical_text)?;
+            let bytes_hashed = loaded.source.len() as u64;
+            return Ok(ValidatedLoadedInclude {
+                identity: OpenedSourceIdentity {
+                    generation: resolved.fingerprint.clone(),
+                    content_hash: fnv1a_64(loaded.source.as_bytes()),
+                },
+                loaded,
+                bytes_hashed,
+            });
+        }
+        if !self
+            .allowed_roots
+            .iter()
+            .any(|root| resolved.canonical_path.starts_with(root))
+        {
+            return Err(include_error(
+                "E_PHP_VM_INCLUDE_OUTSIDE_ROOT",
+                format!(
+                    "{} is outside allowed include roots",
+                    resolved.canonical_path.display()
+                ),
+            )
+            .with_context("canonical_path", resolved.canonical_path.display()));
+        }
+        read_validated_file(&resolved.canonical_path)
+    }
+
     fn resolve_phar_include(
         &self,
         path: &str,
@@ -1148,6 +1445,7 @@ impl IncludeLoader {
         let fingerprint = include_path_file_fingerprint(&parsed.archive_path)?;
         Ok(ResolvedIncludePath {
             canonical_path,
+            resolution_path: None,
             fingerprint,
             // Phar entries have no meaningful parent-directory version; `None`
             // always counts as a directory-version miss (conservative).
@@ -1173,6 +1471,63 @@ impl IncludeLoader {
             source,
         })
     }
+}
+
+fn read_validated_file(path: &Path) -> Result<ValidatedLoadedInclude, VmError> {
+    const MAX_STABLE_READ_ATTEMPTS: usize = 3;
+
+    for _ in 0..MAX_STABLE_READ_ATTEMPTS {
+        let mut file = File::open(path).map_err(|error| include_read_error(path, error))?;
+        let before = file
+            .metadata()
+            .map(|metadata| include_file_fingerprint(&metadata))
+            .map_err(|error| include_metadata_error(path, error))?;
+        let mut bytes = Vec::with_capacity(before.len.try_into().unwrap_or(0));
+        file.read_to_end(&mut bytes)
+            .map_err(|error| include_read_error(path, error))?;
+        let after = file
+            .metadata()
+            .map(|metadata| include_file_fingerprint(&metadata))
+            .map_err(|error| include_metadata_error(path, error))?;
+        if before != after || after.len != bytes.len() as u64 {
+            continue;
+        }
+        let bytes_hashed = bytes.len() as u64;
+        let content_hash = fnv1a_64(&bytes);
+        return Ok(ValidatedLoadedInclude {
+            loaded: LoadedInclude {
+                canonical_path: path.to_path_buf(),
+                source: php_source_from_bytes(bytes),
+            },
+            identity: OpenedSourceIdentity {
+                generation: after,
+                content_hash,
+            },
+            bytes_hashed,
+        });
+    }
+    Err(include_error(
+        "E_PHP_VM_INCLUDE_CHANGED_DURING_READ",
+        format!("{} changed while it was being read", path.display()),
+    )
+    .with_context("canonical_path", path.display())
+    .with_context("attempts", MAX_STABLE_READ_ATTEMPTS))
+}
+
+fn include_read_error(path: &Path, error: std::io::Error) -> VmError {
+    include_error(
+        "E_PHP_VM_INCLUDE_READ",
+        format!("{}: {error}", path.display()),
+    )
+    .with_context("canonical_path", path.display())
+}
+
+fn include_metadata_error(path: &Path, error: std::io::Error) -> VmError {
+    include_error(
+        "E_PHP_VM_INCLUDE_METADATA",
+        format!("{}: {error}", path.display()),
+    )
+    .with_context("path", path.display())
 }
 
 fn include_error_suggestion(code: &str) -> &'static str {
@@ -1218,26 +1573,34 @@ fn include_cache_lock_error(cache: &'static str, operation: &'static str) -> VmE
 }
 
 pub fn include_path_file_fingerprint(path: &Path) -> Result<IncludePathFileFingerprint, VmError> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        include_error(
-            "E_PHP_VM_INCLUDE_METADATA",
-            format!("{}: {error}", path.display()),
-        )
-        .with_context("path", path.display())
-    })?;
+    let metadata = fs::metadata(path).map_err(|error| include_metadata_error(path, error))?;
+    Ok(include_file_fingerprint(&metadata))
+}
+
+pub(crate) fn resolution_path_targets(
+    resolution_path: Option<&Path>,
+    canonical_path: &Path,
+) -> bool {
+    resolution_path.is_none_or(|path| {
+        fs::canonicalize(path).is_ok_and(|canonical| canonical == canonical_path)
+    })
+}
+
+fn include_file_fingerprint(metadata: &fs::Metadata) -> IncludePathFileFingerprint {
     let modified_unix_nanos = metadata
         .modified()
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos());
     let (inode, device) = file_identity(&metadata);
-    Ok(IncludePathFileFingerprint {
+    IncludePathFileFingerprint {
         len: metadata.len(),
         modified_unix_nanos,
+        changed_unix_nanos: file_changed_unix_nanos(metadata),
         readonly: metadata.permissions().readonly(),
         inode,
         device,
-    })
+    }
 }
 
 /// Stable, dependency-free 64-bit FNV-1a hash for engine-owned content
@@ -1297,9 +1660,10 @@ fn render_composer_map_fingerprint(composer_dir: &Path) -> String {
         match include_path_file_fingerprint(&composer_dir.join(name)) {
             Ok(fingerprint) => {
                 rendered.push_str(&format!(
-                    "{name}|{}|{}|{}|{}|{}\n",
+                    "{name}|{}|{}|{}|{}|{}|{}\n",
                     fingerprint.len,
                     field(fingerprint.modified_unix_nanos),
+                    field(fingerprint.changed_unix_nanos),
                     u8::from(fingerprint.readonly),
                     field(fingerprint.inode),
                     field(fingerprint.device),
@@ -1368,9 +1732,20 @@ fn file_identity(metadata: &fs::Metadata) -> (Option<u64>, Option<u64>) {
     (Some(metadata.ino()), Some(metadata.dev()))
 }
 
+#[cfg(unix)]
+fn file_changed_unix_nanos(metadata: &fs::Metadata) -> Option<i128> {
+    use std::os::unix::fs::MetadataExt as _;
+    Some(i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()))
+}
+
 #[cfg(not(unix))]
 fn file_identity(_metadata: &fs::Metadata) -> (Option<u64>, Option<u64>) {
     (None, None)
+}
+
+#[cfg(not(unix))]
+fn file_changed_unix_nanos(_metadata: &fs::Metadata) -> Option<i128> {
+    None
 }
 
 fn path_has_explicit_relative_prefix(path: &Path) -> bool {
@@ -1431,16 +1806,13 @@ impl IncludeResolutionKey {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CompiledIncludeKey {
     canonical_path: PathBuf,
-    len: u64,
-    modified_unix_nanos: Option<u128>,
-    readonly: bool,
-    /// Stable FNV-1a hash of the source read at compile time. Costs no extra
-    /// I/O (the source is already in memory) and gives the compiled-unit
-    /// identity a content dimension the stat-based probe cannot: a future
-    /// persistent cache must validate by content, and probe-time fingerprints
-    /// never carry a hash, so absence stays conservative by construction.
-    source_content_hash: u64,
+    source_identity: OpenedSourceIdentity,
     local_dependencies: Vec<CompiledIncludeDependencyKey>,
+    compiler: IncludeCompilerIdentity,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct IncludeCompilerIdentity {
     compiler_version: &'static str,
     debug_assertions: bool,
     optimization_level: &'static str,
@@ -1449,35 +1821,46 @@ struct CompiledIncludeKey {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CompiledIncludeLookupKey {
     canonical_path: PathBuf,
-    len: u64,
-    modified_unix_nanos: Option<u128>,
-    readonly: bool,
-    compiler_version: &'static str,
-    debug_assertions: bool,
-    optimization_level: &'static str,
+    compiler: IncludeCompilerIdentity,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CompiledIncludeDependencyKey {
     canonical_path: PathBuf,
-    len: u64,
-    modified_unix_nanos: Option<u128>,
-    readonly: bool,
+    source_identity: OpenedSourceIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IncludeValidationMode {
+    Content,
+    IdentityOnly,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PrimarySourceValidation<'a> {
+    Content(&'a OpenedSourceIdentity),
+    IdentityOnly(&'a IncludePathFileFingerprint),
 }
 
 impl CompiledIncludeKey {
     fn new(
-        resolved: &ResolvedIncludePath,
-        optimization_level: OptimizationLevel,
-        source: &str,
+        canonical_path: PathBuf,
+        source_identity: OpenedSourceIdentity,
+        local_dependencies: Vec<CompiledIncludeDependencyKey>,
+        compiler: IncludeCompilerIdentity,
     ) -> Self {
         Self {
-            canonical_path: resolved.canonical_path.clone(),
-            len: resolved.fingerprint.len,
-            modified_unix_nanos: resolved.fingerprint.modified_unix_nanos,
-            readonly: resolved.fingerprint.readonly,
-            source_content_hash: fnv1a_64(source.as_bytes()),
-            local_dependencies: local_psr_source_dependencies(source, &resolved.canonical_path),
+            canonical_path,
+            source_identity,
+            local_dependencies,
+            compiler,
+        }
+    }
+}
+
+impl IncludeCompilerIdentity {
+    fn current(optimization_level: OptimizationLevel) -> Self {
+        Self {
             compiler_version: env!("CARGO_PKG_VERSION"),
             debug_assertions: cfg!(debug_assertions),
             optimization_level: optimization_level.as_str(),
@@ -1486,36 +1869,18 @@ impl CompiledIncludeKey {
 }
 
 impl CompiledIncludeLookupKey {
-    fn new(resolved: &ResolvedIncludePath, optimization_level: OptimizationLevel) -> Self {
+    fn new(canonical_path: PathBuf, compiler: IncludeCompilerIdentity) -> Self {
         Self {
-            canonical_path: resolved.canonical_path.clone(),
-            len: resolved.fingerprint.len,
-            modified_unix_nanos: resolved.fingerprint.modified_unix_nanos,
-            readonly: resolved.fingerprint.readonly,
-            compiler_version: env!("CARGO_PKG_VERSION"),
-            debug_assertions: cfg!(debug_assertions),
-            optimization_level: optimization_level.as_str(),
+            canonical_path,
+            compiler,
         }
     }
 
     fn from_compiled_key(key: &CompiledIncludeKey) -> Self {
         Self {
             canonical_path: key.canonical_path.clone(),
-            len: key.len,
-            modified_unix_nanos: key.modified_unix_nanos,
-            readonly: key.readonly,
-            compiler_version: key.compiler_version,
-            debug_assertions: key.debug_assertions,
-            optimization_level: key.optimization_level,
+            compiler: key.compiler.clone(),
         }
-    }
-}
-
-impl CompiledIncludeDependencyKey {
-    fn matches_fingerprint(&self, fingerprint: &IncludePathFileFingerprint) -> bool {
-        self.len == fingerprint.len
-            && self.modified_unix_nanos == fingerprint.modified_unix_nanos
-            && self.readonly == fingerprint.readonly
     }
 }
 
@@ -1523,8 +1888,17 @@ pub(crate) fn compile_loaded_include(
     loaded: LoadedInclude,
     optimization_level: OptimizationLevel,
 ) -> Result<CompiledUnit, VmError> {
+    compile_loaded_include_with_dependencies(loaded, optimization_level)
+        .map(|(compiled, _)| compiled)
+}
+
+fn compile_loaded_include_with_dependencies(
+    loaded: LoadedInclude,
+    optimization_level: OptimizationLevel,
+) -> Result<(CompiledUnit, Vec<CompiledIncludeDependencyKey>), VmError> {
     let mut source = loaded.source.clone();
     let mut appended_traits = Vec::new();
+    let mut local_dependencies = Vec::new();
     let mut last_missing_traits = Vec::new();
 
     let mut lowering = loop {
@@ -1570,15 +1944,15 @@ pub(crate) fn compile_loaded_include(
             if appended_traits.contains(&path) {
                 continue;
             }
-            let trait_source = fs::read_to_string(&path).map_err(|error| {
-                include_error(
-                    "E_PHP_VM_INCLUDE_READ",
-                    format!("{}: {error}", path.display()),
-                )
-                .with_context("canonical_path", path.display())
-            })?;
+            let trait_source = read_validated_file(&path)?;
             source.push('\n');
-            source.push_str(&strip_php_opening_tag_and_strict_declare(&trait_source));
+            source.push_str(&strip_php_opening_tag_and_strict_declare(
+                &trait_source.loaded.source,
+            ));
+            local_dependencies.push(CompiledIncludeDependencyKey {
+                canonical_path: path.clone(),
+                source_identity: trait_source.identity,
+            });
             appended_traits.push(path);
             added_any = true;
         }
@@ -1623,7 +1997,7 @@ pub(crate) fn compile_loaded_include(
                 .with_context("stage", "optimizer")
             })?;
     }
-    Ok(CompiledUnit::new(lowering.unit))
+    Ok((CompiledUnit::new(lowering.unit), local_dependencies))
 }
 
 fn ir_lowering_failure_detail(lowering: &php_ir::LoweringResult) -> String {
@@ -1654,34 +2028,6 @@ fn missing_local_trait_diagnostics(lowering: &php_ir::LoweringResult) -> Vec<Str
         }
     }
     traits
-}
-
-fn local_psr_source_dependencies(
-    source: &str,
-    canonical_path: &Path,
-) -> Vec<CompiledIncludeDependencyKey> {
-    let Some(map) = LocalPsrSourceMap::infer(source, canonical_path) else {
-        return Vec::new();
-    };
-    let mut dependencies = Vec::new();
-    for import in &map.imports {
-        let Some(path) = map.path_for_name(import) else {
-            continue;
-        };
-        let Ok(fingerprint) = include_path_file_fingerprint(&path) else {
-            continue;
-        };
-        let dependency = CompiledIncludeDependencyKey {
-            canonical_path: path,
-            len: fingerprint.len,
-            modified_unix_nanos: fingerprint.modified_unix_nanos,
-            readonly: fingerprint.readonly,
-        };
-        if !dependencies.iter().any(|existing| existing == &dependency) {
-            dependencies.push(dependency);
-        }
-    }
-    dependencies
 }
 
 #[derive(Clone, Debug)]
@@ -1937,6 +2283,8 @@ fn default_include_cache_shards() -> usize {
 mod tests {
     use super::*;
     use php_ir::instruction::{BinaryOp, InstructionKind};
+    use std::fs::{FileTimes, OpenOptions};
+    use std::sync::Barrier;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1944,6 +2292,7 @@ mod tests {
         let base = IncludePathFileFingerprint {
             len: 17,
             modified_unix_nanos: Some(10),
+            changed_unix_nanos: Some(11),
             readonly: false,
             inode: Some(1),
             device: Some(2),
@@ -1986,6 +2335,25 @@ mod tests {
         let fingerprint = fingerprint.expect("fingerprint for a readable temp file");
         assert!(fingerprint.inode.is_some(), "unix exposes inode");
         assert!(fingerprint.device.is_some(), "unix exposes device");
+        assert!(
+            fingerprint.changed_unix_nanos.is_some(),
+            "unix exposes ctime"
+        );
+        assert!(fingerprint.has_reliable_generation());
+    }
+
+    #[test]
+    fn missing_platform_identity_blocks_metadata_only_reuse() {
+        let fingerprint = IncludePathFileFingerprint {
+            len: 17,
+            modified_unix_nanos: Some(10),
+            changed_unix_nanos: None,
+            readonly: false,
+            inode: None,
+            device: None,
+        };
+
+        assert!(!fingerprint.has_reliable_generation());
     }
 
     #[test]
@@ -2331,6 +2699,70 @@ mod tests {
         assert!(cache.cache_stats().stale_invalidations >= 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn include_cache_rejects_same_metadata_atomic_replacement() {
+        let fixture = IncludeCacheFixture::new("compiled-atomic-replace");
+        let path = fixture.root.join("lib.php");
+        fixture.write(
+            "lib.php",
+            "<?php class CachedPrimary { public $first = null; }\n",
+        );
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+        let first = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("first compile");
+
+        replace_preserving_metadata(
+            &path,
+            "<?php class CachedPrimary { public $other = null; }\n",
+        );
+        let resolved_after_replace = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve replacement");
+        let second = cache
+            .get_or_compile_include(&loader, &resolved_after_replace, OptimizationLevel::O0)
+            .expect("compile replacement");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(class_has_property(&second, "cachedprimary", "other"));
+        assert!(!class_has_property(&second, "cachedprimary", "first"));
+    }
+
+    #[test]
+    fn mutable_include_cache_rejects_same_metadata_in_place_rewrite() {
+        let fixture = IncludeCacheFixture::new("compiled-in-place-rewrite");
+        let path = fixture.root.join("lib.php");
+        fixture.write(
+            "lib.php",
+            "<?php class CachedMutable { public $first = null; }\n",
+        );
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+        let first = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("first compile");
+
+        rewrite_preserving_metadata(
+            &path,
+            "<?php class CachedMutable { public $other = null; }\n",
+        );
+        let second = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("compile rewritten source");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(class_has_property(&second, "cachedmutable", "other"));
+        assert!(!class_has_property(&second, "cachedmutable", "first"));
+    }
+
     #[test]
     fn include_cache_keys_compiled_units_by_optimization_level() {
         let fixture = IncludeCacheFixture::new("compiled-optimization");
@@ -2356,8 +2788,26 @@ mod tests {
     }
 
     #[test]
-    fn compiled_include_cache_hit_does_not_read_source() {
-        let fixture = IncludeCacheFixture::new("compiled-hit-no-read");
+    fn compiler_identity_includes_version_profile_and_optimization() {
+        let baseline = IncludeCompilerIdentity::current(OptimizationLevel::O0);
+        let optimized = IncludeCompilerIdentity::current(OptimizationLevel::O2);
+        let different_version = IncludeCompilerIdentity {
+            compiler_version: "different",
+            ..baseline.clone()
+        };
+        let different_profile = IncludeCompilerIdentity {
+            debug_assertions: !baseline.debug_assertions,
+            ..baseline.clone()
+        };
+
+        assert_ne!(baseline, optimized);
+        assert_ne!(baseline, different_version);
+        assert_ne!(baseline, different_profile);
+    }
+
+    #[test]
+    fn mutable_compiled_include_cache_validates_content_on_hit() {
+        let fixture = IncludeCacheFixture::new("compiled-hit-content-validation");
         fixture.write("lib.php", "<?php echo 'cached';\n");
         let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
         let cache = IncludeCache::new(1);
@@ -2376,9 +2826,87 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(source_reads_after_first, 1);
-        assert_eq!(stats.source_reads, source_reads_after_first);
+        assert_eq!(stats.source_reads, 2);
+        assert_eq!(stats.content_validations, 2);
+        assert!(stats.source_bytes_hashed > 0);
+        assert_eq!(stats.identity_only_hits, 0);
         assert_eq!(stats.compile_misses, 1);
         assert_eq!(stats.compile_hits, 1);
+    }
+
+    #[test]
+    fn immutable_compiled_include_cache_uses_guarded_identity_hit() {
+        let fixture = IncludeCacheFixture::new("compiled-hit-immutable-identity");
+        fixture.write("lib.php", "<?php echo 'cached';\n");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+            &fixture.root,
+            DeploymentRootMode::ImmutableDeclared,
+        ));
+        let resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+
+        let first = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("first compile");
+        let second = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("second lookup");
+        let stats = cache.cache_stats();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(stats.source_reads, 1);
+        assert_eq!(stats.content_validations, 1);
+        assert_eq!(stats.identity_only_hits, 1);
+        assert_eq!(stats.compile_misses, 1);
+        assert_eq!(stats.compile_hits, 1);
+    }
+
+    #[test]
+    fn concurrent_include_miss_compiles_once() {
+        const THREADS: usize = 8;
+
+        let fixture = IncludeCacheFixture::new("compiled-stampede");
+        fixture.write("lib.php", "<?php class StampedeTarget {}\n");
+        let loader = Arc::new(IncludeLoader::for_root(&fixture.root).expect("loader"));
+        let cache = Arc::new(IncludeCache::new(4));
+        let resolved = Arc::new(
+            cache
+                .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+                .expect("resolve include"),
+        );
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles = (0..THREADS)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let cache = Arc::clone(&cache);
+                let loader = Arc::clone(&loader);
+                let resolved = Arc::clone(&resolved);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cache
+                        .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+                        .expect("concurrent compile")
+                })
+            })
+            .collect::<Vec<_>>();
+        let compiled = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("compile thread"))
+            .collect::<Vec<_>>();
+
+        assert!(
+            compiled.iter().all(|unit| Arc::ptr_eq(&compiled[0], unit)),
+            "every waiter receives the one installed compiled unit"
+        );
+        let stats = cache.cache_stats();
+        assert_eq!(stats.compile_misses, 1);
+        assert_eq!(stats.compile_hits, (THREADS - 1) as u64);
+        assert!(stats.source_reads >= THREADS as u64);
+        assert!(stats.source_reads <= (THREADS * 2 - 1) as u64);
+        assert_eq!(stats.content_validations, stats.source_reads);
     }
 
     #[test]
@@ -2463,7 +2991,10 @@ mod tests {
 
         assert!(!Arc::ptr_eq(&first, &second));
         let stats = cache.cache_stats();
-        assert_eq!(stats.source_reads, 2);
+        assert_eq!(
+            stats.source_reads, 5,
+            "primary and trait bytes are counted for validation and recompilation"
+        );
         assert!(stats.dependency_metadata_validations > 0);
         assert!(stats.stale_dependency_invalidations > 0);
         let class = second
@@ -2478,6 +3009,94 @@ mod tests {
                 .iter()
                 .any(|property| property.name == "second")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiled_include_cache_rejects_same_metadata_trait_replacement() {
+        let fixture = IncludeCacheFixture::new("local-psr-trait-atomic-replace");
+        fixture.write(
+            "src/Providers/ProviderRegistry.php",
+            "<?php\nnamespace Demo\\Providers;\nuse Demo\\Providers\\Http\\Traits\\WithHttpTransporterTrait;\nclass ProviderRegistry { use WithHttpTransporterTrait; }\n",
+        );
+        let trait_path = fixture
+            .root
+            .join("src/Providers/Http/Traits/WithHttpTransporterTrait.php");
+        fixture.write(
+            "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
+            "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait { private $first = null; }\n",
+        );
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let resolved = loader
+            .resolve_with_include_path(
+                None,
+                "src/Providers/ProviderRegistry.php",
+                &[],
+                Some(&fixture.root),
+            )
+            .expect("resolve include");
+        let first = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("first compile");
+
+        replace_preserving_metadata(
+            &trait_path,
+            "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait { private $other = null; }\n",
+        );
+        let second = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect("compile replacement dependency");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(class_has_property(
+            &second,
+            "demo\\providers\\providerregistry",
+            "other"
+        ));
+        assert!(!class_has_property(
+            &second,
+            "demo\\providers\\providerregistry",
+            "first"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn include_cache_rejects_symlink_target_swap() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = IncludeCacheFixture::new("compiled-symlink-swap");
+        fixture.write(
+            "first.php",
+            "<?php class CachedSymlink { public $first = null; }\n",
+        );
+        fixture.write(
+            "other.php",
+            "<?php class CachedSymlink { public $other = null; }\n",
+        );
+        let link = fixture.root.join("lib.php");
+        symlink(fixture.root.join("first.php"), &link).expect("create first symlink");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        let first_resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve first target");
+        let first = cache
+            .get_or_compile_include(&loader, &first_resolved, OptimizationLevel::O0)
+            .expect("compile first target");
+
+        fs::remove_file(&link).expect("remove first symlink");
+        symlink(fixture.root.join("other.php"), &link).expect("create replacement symlink");
+        let second_resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("resolve replacement target");
+        let second = cache
+            .get_or_compile_include(&loader, &second_resolved, OptimizationLevel::O0)
+            .expect("compile replacement target");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(class_has_property(&second, "cachedsymlink", "other"));
     }
 
     #[test]
@@ -2867,6 +3486,77 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn rewrite_preserving_metadata(path: &Path, replacement: &str) {
+        let before = fs::metadata(path).expect("metadata before rewrite");
+        assert_eq!(
+            before.len(),
+            replacement.len() as u64,
+            "same-length fixture"
+        );
+        fs::write(path, replacement).expect("rewrite fixture");
+        fs::set_permissions(path, before.permissions()).expect("restore permissions");
+        restore_file_times(path, &before);
+        let after = fs::metadata(path).expect("metadata after rewrite");
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified().ok(), before.modified().ok());
+        assert_eq!(
+            after.permissions().readonly(),
+            before.permissions().readonly()
+        );
+    }
+
+    #[cfg(unix)]
+    fn replace_preserving_metadata(path: &Path, replacement: &str) {
+        let before = fs::metadata(path).expect("metadata before replacement");
+        assert_eq!(
+            before.len(),
+            replacement.len() as u64,
+            "same-length fixture"
+        );
+        let replacement_path = path.with_extension("replacement.php");
+        fs::write(&replacement_path, replacement).expect("write replacement fixture");
+        fs::set_permissions(&replacement_path, before.permissions()).expect("restore permissions");
+        restore_file_times(&replacement_path, &before);
+        fs::rename(&replacement_path, path).expect("atomically replace fixture");
+        let after = fs::metadata(path).expect("metadata after replacement");
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified().ok(), before.modified().ok());
+        assert_eq!(
+            after.permissions().readonly(),
+            before.permissions().readonly()
+        );
+    }
+
+    fn restore_file_times(path: &Path, metadata: &fs::Metadata) {
+        let mut times = FileTimes::new();
+        if let Ok(modified) = metadata.modified() {
+            times = times.set_modified(modified);
+        }
+        if let Ok(accessed) = metadata.accessed() {
+            times = times.set_accessed(accessed);
+        }
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open fixture to restore times")
+            .set_times(times)
+            .expect("restore fixture times");
+    }
+
+    fn class_has_property(compiled: &CompiledUnit, class_name: &str, property_name: &str) -> bool {
+        compiled
+            .unit()
+            .classes
+            .iter()
+            .find(|class| class.name == class_name)
+            .is_some_and(|class| {
+                class
+                    .properties
+                    .iter()
+                    .any(|property| property.name == property_name)
+            })
     }
 
     fn binary_add_count(compiled: &CompiledUnit) -> usize {

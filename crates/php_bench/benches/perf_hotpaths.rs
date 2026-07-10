@@ -1,13 +1,19 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use php_ir::{LoweringOptions, lower_frontend_result};
 use php_lexer::{LexerConfig, lex_all};
+use php_optimizer::OptimizationLevel;
 use php_runtime::api::{ArrayKey, PhpArray, PhpString, Value};
 use php_runtime::builtins::string_intrinsics;
 use php_semantics::analyze_source;
 use php_source::byte_kernel;
 use php_syntax::parse_source_file;
-use php_vm::api::{CompiledUnit, InlineCacheMode, QuickeningMode, Vm, VmOptions};
-use std::time::Duration;
+use php_vm::api::{
+    CompiledUnit, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache, IncludeLoader,
+    InlineCacheMode, QuickeningMode, Vm, VmOptions,
+};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const FRONTEND_SOURCE: &str = r#"<?php
 function perf_add($a, $b) {
@@ -105,6 +111,100 @@ fn execute_unit(unit: &CompiledUnit) {
     let result = vm.execute(unit.clone());
     assert!(result.status.is_success(), "{:?}", result.status);
     black_box(result.output);
+}
+
+struct IncludeBenchmarkFixture {
+    root: PathBuf,
+}
+
+impl IncludeBenchmarkFixture {
+    fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "phrust-include-bench-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos()),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create include benchmark root");
+        std::fs::write(
+            root.join("lib.php"),
+            "<?php function include_benchmark_target($value) { return $value + 1; }\n",
+        )
+        .expect("write include benchmark source");
+        Self { root }
+    }
+}
+
+impl Drop for IncludeBenchmarkFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn bench_include_cache_identity(c: &mut Criterion) {
+    let fixture = IncludeBenchmarkFixture::new();
+    let loader = IncludeLoader::for_root(&fixture.root).expect("include loader");
+
+    let mutable_cache = IncludeCache::new(4);
+    let mutable_resolved = mutable_cache
+        .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+        .expect("resolve mutable include");
+    mutable_cache
+        .get_or_compile_include(&loader, &mutable_resolved, OptimizationLevel::O0)
+        .expect("warm mutable include");
+    c.bench_function("performance/include_cache_hit_mutable_content", |b| {
+        b.iter(|| {
+            black_box(
+                mutable_cache
+                    .get_or_compile_include(
+                        black_box(&loader),
+                        black_box(&mutable_resolved),
+                        OptimizationLevel::O0,
+                    )
+                    .expect("mutable include hit"),
+            );
+        });
+    });
+    let mutable_stats = mutable_cache.cache_stats();
+
+    let immutable_cache = IncludeCache::new(4);
+    immutable_cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+        &fixture.root,
+        DeploymentRootMode::ImmutableDeclared,
+    ));
+    let immutable_resolved = immutable_cache
+        .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+        .expect("resolve immutable include");
+    immutable_cache
+        .get_or_compile_include(&loader, &immutable_resolved, OptimizationLevel::O0)
+        .expect("warm immutable include");
+    c.bench_function("performance/include_cache_hit_immutable_identity", |b| {
+        b.iter(|| {
+            black_box(
+                immutable_cache
+                    .get_or_compile_include(
+                        black_box(&loader),
+                        black_box(&immutable_resolved),
+                        OptimizationLevel::O0,
+                    )
+                    .expect("immutable include hit"),
+            );
+        });
+    });
+    let immutable_stats = immutable_cache.cache_stats();
+
+    eprintln!(
+        "include-cache counters: mutable validations={} bytes_hashed={} identity_hits={}; immutable validations={} bytes_hashed={} identity_hits={}",
+        mutable_stats.content_validations,
+        mutable_stats.source_bytes_hashed,
+        mutable_stats.identity_only_hits,
+        immutable_stats.content_validations,
+        immutable_stats.source_bytes_hashed,
+        immutable_stats.identity_only_hits,
+    );
 }
 
 fn bench_frontend(c: &mut Criterion) {
@@ -336,6 +436,6 @@ fn bench_string_intrinsics(c: &mut Criterion) {
 criterion_group! {
     name = perf_hotpaths;
     config = configured_criterion();
-    targets = bench_frontend, bench_vm, bench_runtime, bench_byte_kernels, bench_string_intrinsics
+    targets = bench_frontend, bench_vm, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity
 }
 criterion_main!(perf_hotpaths);

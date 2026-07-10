@@ -78,6 +78,11 @@ be disabled with `--disable-metrics-endpoint` or protected with
 
 The include cache additionally reports production-fingerprint counters:
 `phrust_server_include_directory_version_hits/misses_total`,
+`phrust_server_include_source_bytes_hashed_total`,
+`phrust_server_include_content_validations_total`,
+`phrust_server_include_identity_only_hits_total`,
+`phrust_server_include_content_mismatches_total`,
+`phrust_server_include_conservative_misses_total`,
 `phrust_server_composer_fingerprint_stale_total`,
 `phrust_server_deployment_fingerprint_present/missing/stale_total`, and the
 default-on directory-version-guarded negative include cache
