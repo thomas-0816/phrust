@@ -7,7 +7,7 @@ use php_diagnostics::{
 };
 use php_optimizer::{OptimizationLevel, PassContext, PassPipeline};
 use php_runtime::{FilesystemCapabilities, phar};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::Read as _;
@@ -462,7 +462,10 @@ impl IncludeCache {
         resolved: &ResolvedIncludePath,
         optimization_level: OptimizationLevel,
     ) -> Result<Arc<CompiledUnit>, VmError> {
-        let compiler = IncludeCompilerIdentity::current(optimization_level);
+        let compiler = IncludeCompilerIdentity::current(
+            optimization_level,
+            loader.compilation_dependency_fingerprint(),
+        );
         loop {
             let validation_mode = if self.immutable_identity_only_allowed(resolved) {
                 IncludeValidationMode::IdentityOnly
@@ -503,7 +506,7 @@ impl IncludeCache {
             self.stats.compile_misses.fetch_add(1, Ordering::Relaxed);
             let source_identity = validated.identity;
             let canonical_path = validated.loaded.canonical_path.clone();
-            let mut resolver = FilesystemCompilationResolver::new(loader.allowed_roots());
+            let mut resolver = LoaderCompilationResolver::new(loader);
             let compiled = match compile_loaded_include_with_dependencies(
                 validated.loaded,
                 optimization_level,
@@ -1048,6 +1051,7 @@ impl Drop for IncludeCompilePermit<'_> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IncludeLoader {
     allowed_roots: Vec<PathBuf>,
+    compilation_dependencies: BTreeMap<String, PathBuf>,
 }
 
 impl IncludeLoader {
@@ -1066,7 +1070,10 @@ impl IncludeLoader {
                 allowed_roots.push(canonical);
             }
         }
-        Ok(Self { allowed_roots })
+        Ok(Self {
+            allowed_roots,
+            compilation_dependencies: BTreeMap::new(),
+        })
     }
 
     /// Creates a loader that permits files under `root`.
@@ -1078,6 +1085,43 @@ impl IncludeLoader {
     #[must_use]
     pub fn allowed_roots(&self) -> &[PathBuf] {
         &self.allowed_roots
+    }
+
+    /// Adds an explicit declaration-to-file mapping for multi-file lowering.
+    ///
+    /// The executor or autoload metadata provider owns these mappings. The
+    /// compiler never searches source text or directory trees to guess where
+    /// a declaration lives. Relative paths are resolved from the first
+    /// configured root and all targets remain subject to the normal root
+    /// policy when loaded.
+    #[must_use]
+    pub fn with_compilation_dependency(
+        mut self,
+        declaration: impl AsRef<str>,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        self.compilation_dependencies.insert(
+            php_ir::module::normalize_class_name(declaration.as_ref()),
+            path.into(),
+        );
+        self
+    }
+
+    fn compilation_dependency(&self, declaration: &str) -> Option<&Path> {
+        self.compilation_dependencies
+            .get(&php_ir::module::normalize_class_name(declaration))
+            .map(PathBuf::as_path)
+    }
+
+    fn compilation_dependency_fingerprint(&self) -> u64 {
+        let mut serialized = Vec::new();
+        for (declaration, path) in &self.compilation_dependencies {
+            serialized.extend_from_slice(declaration.as_bytes());
+            serialized.push(0);
+            serialized.extend_from_slice(path.to_string_lossy().as_bytes());
+            serialized.push(b'\n');
+        }
+        fnv1a_64(&serialized)
     }
 
     /// Converts an include/require error string to the shared diagnostic envelope.
@@ -1818,6 +1862,7 @@ struct IncludeCompilerIdentity {
     compiler_version: &'static str,
     debug_assertions: bool,
     optimization_level: &'static str,
+    compilation_dependency_fingerprint: u64,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1861,11 +1906,15 @@ impl CompiledIncludeKey {
 }
 
 impl IncludeCompilerIdentity {
-    fn current(optimization_level: OptimizationLevel) -> Self {
+    fn current(
+        optimization_level: OptimizationLevel,
+        compilation_dependency_fingerprint: u64,
+    ) -> Self {
         Self {
             compiler_version: env!("CARGO_PKG_VERSION"),
             debug_assertions: cfg!(debug_assertions),
             optimization_level: optimization_level.as_str(),
+            compilation_dependency_fingerprint,
         }
     }
 }
@@ -1890,13 +1939,17 @@ pub(crate) fn compile_loaded_include(
     loaded: LoadedInclude,
     optimization_level: OptimizationLevel,
 ) -> Result<CompiledUnit, VmError> {
-    let roots = loaded
-        .canonical_path
-        .parent()
-        .map(Path::to_path_buf)
-        .into_iter()
-        .collect::<Vec<_>>();
-    let mut resolver = FilesystemCompilationResolver::new(&roots);
+    let mut resolver = NoCompilationResolver;
+    compile_loaded_include_with_dependencies(loaded, optimization_level, &mut resolver)
+        .map(|(compiled, _)| compiled)
+}
+
+pub(crate) fn compile_loaded_include_with_loader(
+    loaded: LoadedInclude,
+    optimization_level: OptimizationLevel,
+    loader: &IncludeLoader,
+) -> Result<CompiledUnit, VmError> {
+    let mut resolver = LoaderCompilationResolver::new(loader);
     compile_loaded_include_with_dependencies(loaded, optimization_level, &mut resolver)
         .map(|(compiled, _)| compiled)
 }
@@ -1908,109 +1961,65 @@ trait CompilationResolver {
     ) -> Result<Option<ValidatedLoadedInclude>, VmError>;
 }
 
-#[derive(Debug)]
-struct FilesystemCompilationResolver {
-    roots: Vec<PathBuf>,
-}
+struct NoCompilationResolver;
 
-impl FilesystemCompilationResolver {
-    fn new(roots: &[PathBuf]) -> Self {
-        Self {
-            roots: roots.to_vec(),
-        }
+impl CompilationResolver for NoCompilationResolver {
+    fn resolve_trait(
+        &mut self,
+        _request: &php_ir::UnresolvedTraitRequest,
+    ) -> Result<Option<ValidatedLoadedInclude>, VmError> {
+        Ok(None)
     }
 }
 
-impl CompilationResolver for FilesystemCompilationResolver {
+struct LoaderCompilationResolver<'a> {
+    loader: &'a IncludeLoader,
+}
+
+impl<'a> LoaderCompilationResolver<'a> {
+    const fn new(loader: &'a IncludeLoader) -> Self {
+        Self { loader }
+    }
+}
+
+impl CompilationResolver for LoaderCompilationResolver<'_> {
     fn resolve_trait(
         &mut self,
         request: &php_ir::UnresolvedTraitRequest,
     ) -> Result<Option<ValidatedLoadedInclude>, VmError> {
-        let basename = request
-            .normalized_name
-            .rsplit('\\')
-            .next()
-            .unwrap_or_default();
-        let expected_file = format!("{basename}.php");
-        let mut candidates = Vec::new();
-        let mut visited = HashSet::new();
-        for root in &self.roots {
-            collect_declaration_candidates(root, &expected_file, &mut visited, &mut candidates)?;
-        }
-        candidates.sort();
-        let mut matched = Vec::new();
-        for candidate in candidates {
-            let loaded = read_validated_file(&candidate)?;
-            let probe = php_ir::CompilationSession::new(
-                candidate.to_string_lossy().into_owned(),
-                loaded.loaded.source.clone(),
-            );
-            if probe
-                .declared_trait_names(probe.entry())
-                .iter()
-                .any(|name| name == &request.normalized_name)
-            {
-                matched.push(loaded);
-            }
-        }
-        if matched.len() > 1 {
+        let Some(path) = self.loader.compilation_dependency(&request.normalized_name) else {
+            return Ok(None);
+        };
+        let path = path.to_string_lossy();
+        let resolved = self.loader.resolve_with_include_path(
+            None,
+            &path,
+            &[],
+            self.loader.allowed_roots().first().map(PathBuf::as_path),
+        )?;
+        let loaded = self.loader.load_validated_resolved(&resolved)?;
+        let probe = php_ir::CompilationSession::new(
+            loaded.loaded.canonical_path.to_string_lossy().into_owned(),
+            loaded.loaded.source.clone(),
+        );
+        if !probe
+            .declared_trait_names(probe.entry())
+            .iter()
+            .any(|name| name == &request.normalized_name)
+        {
             return Err(include_error(
-                "E_PHP_VM_INCLUDE_DUPLICATE_DECLARATION",
+                "E_PHP_VM_INCLUDE_DEPENDENCY_MISMATCH",
                 format!(
-                    "duplicate trait declaration `{}` found in {}",
-                    request.normalized_name,
-                    matched
-                        .iter()
-                        .map(|loaded| loaded.loaded.canonical_path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(":")
+                    "mapped file {} does not declare trait `{}`",
+                    loaded.loaded.canonical_path.display(),
+                    request.normalized_name
                 ),
             )
-            .with_context("declaration", &request.normalized_name));
+            .with_context("declaration", &request.normalized_name)
+            .with_context("canonical_path", loaded.loaded.canonical_path.display()));
         }
-        Ok(matched.pop())
+        Ok(Some(loaded))
     }
-}
-
-fn collect_declaration_candidates(
-    directory: &Path,
-    expected_file: &str,
-    visited: &mut HashSet<PathBuf>,
-    candidates: &mut Vec<PathBuf>,
-) -> Result<(), VmError> {
-    let canonical = match fs::canonicalize(directory) {
-        Ok(path) => path,
-        Err(_) => return Ok(()),
-    };
-    if !visited.insert(canonical.clone()) {
-        return Ok(());
-    }
-    let mut entries = fs::read_dir(&canonical)
-        .map_err(|error| include_read_error(&canonical, error))?
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(_) => continue,
-        };
-        if file_type.is_dir() {
-            collect_declaration_candidates(&path, expected_file, visited, candidates)?;
-        } else if file_type.is_file()
-            && entry
-                .file_name()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(expected_file)
-        {
-            candidates.push(
-                fs::canonicalize(path)
-                    .map_err(|error| include_error("E_PHP_VM_INCLUDE_READ", error.to_string()))?,
-            );
-        }
-    }
-    Ok(())
 }
 
 fn compile_loaded_include_with_dependencies(
@@ -2690,8 +2699,8 @@ mod tests {
 
     #[test]
     fn compiler_identity_includes_version_profile_and_optimization() {
-        let baseline = IncludeCompilerIdentity::current(OptimizationLevel::O0);
-        let optimized = IncludeCompilerIdentity::current(OptimizationLevel::O2);
+        let baseline = IncludeCompilerIdentity::current(OptimizationLevel::O0, 0);
+        let optimized = IncludeCompilerIdentity::current(OptimizationLevel::O2, 0);
         let different_version = IncludeCompilerIdentity {
             compiler_version: "different",
             ..baseline.clone()
@@ -2700,10 +2709,15 @@ mod tests {
             debug_assertions: !baseline.debug_assertions,
             ..baseline.clone()
         };
+        let different_dependencies = IncludeCompilerIdentity {
+            compilation_dependency_fingerprint: 1,
+            ..baseline.clone()
+        };
 
         assert_ne!(baseline, optimized);
         assert_ne!(baseline, different_version);
         assert_ne!(baseline, different_profile);
+        assert_ne!(baseline, different_dependencies);
     }
 
     #[test]
@@ -2839,7 +2853,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_include_resolves_local_psr_trait_dependency() {
+    fn compiled_include_resolves_explicit_trait_dependency() {
         let fixture = IncludeCacheFixture::new("local-psr-trait");
         fixture.write(
             "src/Providers/ProviderRegistry.php",
@@ -2849,7 +2863,12 @@ mod tests {
             "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
             "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait {\n    private $httpTransporter = null;\n    public function setHttpTransporter($value): void { $this->httpTransporter = $value; }\n}\n",
         );
-        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let loader = IncludeLoader::for_root(&fixture.root)
+            .expect("loader")
+            .with_compilation_dependency(
+                "Demo\\Providers\\Http\\Traits\\WithHttpTransporterTrait",
+                "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
+            );
         let cache = IncludeCache::new(1);
         let resolved = loader
             .resolve_with_include_path(
@@ -2898,6 +2917,75 @@ mod tests {
     }
 
     #[test]
+    fn explicit_trait_dependency_must_declare_the_requested_trait() {
+        let fixture = IncludeCacheFixture::new("mapped-trait-mismatch");
+        fixture.write(
+            "src/Registry.php",
+            "<?php namespace Demo; use Shared\\ExpectedTrait; class Registry { use ExpectedTrait; }",
+        );
+        fixture.write(
+            "src/WrongTrait.php",
+            "<?php namespace Shared; trait WrongTrait {}",
+        );
+        let loader = IncludeLoader::for_root(&fixture.root)
+            .expect("loader")
+            .with_compilation_dependency("Shared\\ExpectedTrait", "src/WrongTrait.php");
+        let cache = IncludeCache::new(1);
+        let resolved = loader
+            .resolve_with_include_path(None, "src/Registry.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+
+        let error = cache
+            .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
+            .expect_err("a mismatched declaration mapping must fail closed");
+
+        assert_eq!(error.code(), "E_PHP_VM_INCLUDE_DEPENDENCY_MISMATCH");
+        assert_eq!(
+            error.context().get("declaration").map(String::as_str),
+            Some("shared\\expectedtrait")
+        );
+    }
+
+    #[test]
+    fn compilation_dependency_mapping_participates_in_cache_identity() {
+        let fixture = IncludeCacheFixture::new("mapped-trait-cache-identity");
+        fixture.write(
+            "src/Registry.php",
+            "<?php namespace Demo; use Shared\\SelectedTrait; class Registry { use SelectedTrait; }",
+        );
+        fixture.write(
+            "src/FirstTrait.php",
+            "<?php namespace Shared; trait SelectedTrait { private $first = null; }",
+        );
+        fixture.write(
+            "src/SecondTrait.php",
+            "<?php namespace Shared; trait SelectedTrait { private $second = null; }",
+        );
+        let first_loader = IncludeLoader::for_root(&fixture.root)
+            .expect("first loader")
+            .with_compilation_dependency("Shared\\SelectedTrait", "src/FirstTrait.php");
+        let second_loader = IncludeLoader::for_root(&fixture.root)
+            .expect("second loader")
+            .with_compilation_dependency("Shared\\SelectedTrait", "src/SecondTrait.php");
+        let cache = IncludeCache::new(1);
+        let resolved = first_loader
+            .resolve_with_include_path(None, "src/Registry.php", &[], Some(&fixture.root))
+            .expect("resolve include");
+
+        let first = cache
+            .get_or_compile_include(&first_loader, &resolved, OptimizationLevel::O0)
+            .expect("compile first mapping");
+        let second = cache
+            .get_or_compile_include(&second_loader, &resolved, OptimizationLevel::O0)
+            .expect("compile second mapping");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(class_has_property(&first, "demo\\registry", "first"));
+        assert!(class_has_property(&second, "demo\\registry", "second"));
+        assert_eq!(cache.cache_stats().compile_misses, 2);
+    }
+
+    #[test]
     fn compiled_include_resolves_nested_trait_dependencies() {
         let fixture = IncludeCacheFixture::new("nested-trait-session");
         fixture.write(
@@ -2912,7 +3000,10 @@ mod tests {
             "src/Traits/InnerTrait.php",
             "<?php\nnamespace Demo\\Traits;\ntrait InnerTrait { private $inner = null; public function innerMethod(): void {} }\n",
         );
-        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let loader = IncludeLoader::for_root(&fixture.root)
+            .expect("loader")
+            .with_compilation_dependency("Demo\\Traits\\OuterTrait", "src/Traits/OuterTrait.php")
+            .with_compilation_dependency("Demo\\Traits\\InnerTrait", "src/Traits/InnerTrait.php");
         let cache = IncludeCache::new(1);
         let resolved = loader
             .resolve_with_include_path(None, "src/Registry.php", &[], Some(&fixture.root))
@@ -2955,6 +3046,10 @@ mod tests {
             "src/Registry.php",
             "<?php namespace Demo; use Missing\\AbsentTrait; class Registry { use AbsentTrait; }",
         );
+        fixture.write(
+            "src/AbsentTrait.php",
+            "<?php namespace Missing; trait AbsentTrait {}",
+        );
         let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
         let cache = IncludeCache::new(1);
         let resolved = loader
@@ -2963,7 +3058,7 @@ mod tests {
 
         let error = cache
             .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
-            .expect_err("missing trait must fail");
+            .expect_err("an unmapped sibling trait must not be discovered by scanning");
         assert_eq!(error.code(), "E_PHP_VM_INCLUDE_COMPILE_ERROR");
         assert!(error.render_message().contains("E_PHP_IR_TRAIT_NOT_FOUND"));
     }
@@ -2973,15 +3068,20 @@ mod tests {
         let fixture = IncludeCacheFixture::new("duplicate-trait-session");
         fixture.write(
             "src/Registry.php",
-            "<?php namespace Demo; use Shared\\DuplicateTrait; class Registry { use DuplicateTrait; }",
+            "<?php namespace Demo; use Shared\\FirstTrait; use Shared\\SecondTrait; class Registry { use FirstTrait; use SecondTrait; }",
         );
-        for directory in ["a", "b"] {
-            fixture.write(
-                &format!("{directory}/DuplicateTrait.php"),
-                "<?php namespace Shared; trait DuplicateTrait {}",
-            );
-        }
-        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        fixture.write(
+            "a/FirstTrait.php",
+            "<?php namespace Shared; trait FirstTrait {} trait DuplicateTrait {}",
+        );
+        fixture.write(
+            "b/SecondTrait.php",
+            "<?php namespace Shared; trait SecondTrait {} trait DuplicateTrait {}",
+        );
+        let loader = IncludeLoader::for_root(&fixture.root)
+            .expect("loader")
+            .with_compilation_dependency("Shared\\FirstTrait", "a/FirstTrait.php")
+            .with_compilation_dependency("Shared\\SecondTrait", "b/SecondTrait.php");
         let cache = IncludeCache::new(1);
         let resolved = loader
             .resolve_with_include_path(None, "src/Registry.php", &[], Some(&fixture.root))
@@ -3005,7 +3105,9 @@ mod tests {
             "src/B.php",
             "<?php namespace Demo; use Demo\\A; trait B { use A; }",
         );
-        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let loader = IncludeLoader::for_root(&fixture.root)
+            .expect("loader")
+            .with_compilation_dependency("Demo\\B", "src/B.php");
         let cache = IncludeCache::new(1);
         let resolved = loader
             .resolve_with_include_path(None, "src/A.php", &[], Some(&fixture.root))
@@ -3024,7 +3126,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_include_cache_invalidates_after_local_psr_trait_edit() {
+    fn compiled_include_cache_invalidates_after_explicit_trait_edit() {
         let fixture = IncludeCacheFixture::new("local-psr-trait-stale");
         fixture.write(
             "src/Providers/ProviderRegistry.php",
@@ -3034,7 +3136,12 @@ mod tests {
             "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
             "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait { private $first = null; }\n",
         );
-        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let loader = IncludeLoader::for_root(&fixture.root)
+            .expect("loader")
+            .with_compilation_dependency(
+                "Demo\\Providers\\Http\\Traits\\WithHttpTransporterTrait",
+                "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
+            );
         let cache = IncludeCache::new(1);
         let resolved = loader
             .resolve_with_include_path(
@@ -3094,7 +3201,12 @@ mod tests {
             "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
             "<?php\nnamespace Demo\\Providers\\Http\\Traits;\ntrait WithHttpTransporterTrait { private $first = null; }\n",
         );
-        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let loader = IncludeLoader::for_root(&fixture.root)
+            .expect("loader")
+            .with_compilation_dependency(
+                "Demo\\Providers\\Http\\Traits\\WithHttpTransporterTrait",
+                "src/Providers/Http/Traits/WithHttpTransporterTrait.php",
+            );
         let cache = IncludeCache::new(1);
         let resolved = loader
             .resolve_with_include_path(

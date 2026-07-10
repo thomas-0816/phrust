@@ -417,8 +417,12 @@ impl Vm {
             loader
                 .load_resolved(resolved.canonical_path.clone())
                 .and_then(|loaded| {
-                    compile_loaded_include(loaded, self.options.include_optimization_level)
-                        .map(|_| ())
+                    compile_loaded_include_with_loader(
+                        loaded,
+                        self.options.include_optimization_level,
+                        loader,
+                    )
+                    .map(|_| ())
                 })
         };
         if let Err(message) = compile_result {

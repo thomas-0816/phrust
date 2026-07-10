@@ -134,6 +134,18 @@ impl IncludeBenchmarkFixture {
             "<?php function include_benchmark_target($value) { return $value + 1; }\n",
         )
         .expect("write include benchmark source");
+        std::fs::write(
+            root.join("Registry.php"),
+            "<?php namespace Bench; use Bench\\Traits\\SharedTrait; class Registry { use SharedTrait; }\n",
+        )
+        .expect("write multi-file include benchmark root");
+        std::fs::create_dir_all(root.join("Traits"))
+            .expect("create multi-file include benchmark dependency directory");
+        std::fs::write(
+            root.join("Traits/SharedTrait.php"),
+            "<?php namespace Bench\\Traits; trait SharedTrait { private $value = 1; }\n",
+        )
+        .expect("write multi-file include benchmark dependency");
         Self { root }
     }
 }
@@ -205,6 +217,31 @@ fn bench_include_cache_identity(c: &mut Criterion) {
         immutable_stats.source_bytes_hashed,
         immutable_stats.identity_only_hits,
     );
+}
+
+fn bench_multi_file_include_compile(c: &mut Criterion) {
+    let fixture = IncludeBenchmarkFixture::new();
+    let loader = IncludeLoader::for_root(&fixture.root)
+        .expect("include loader")
+        .with_compilation_dependency("Bench\\Traits\\SharedTrait", "Traits/SharedTrait.php");
+    let resolved = IncludeCache::new(1)
+        .resolve_with_include_path(&loader, None, "Registry.php", &[], Some(&fixture.root))
+        .expect("resolve multi-file include");
+
+    c.bench_function("performance/multi_file_trait_compile", |b| {
+        b.iter(|| {
+            let cache = IncludeCache::new(1);
+            black_box(
+                cache
+                    .get_or_compile_include(
+                        black_box(&loader),
+                        black_box(&resolved),
+                        OptimizationLevel::O0,
+                    )
+                    .expect("compile multi-file include"),
+            );
+        });
+    });
 }
 
 fn bench_frontend(c: &mut Criterion) {
@@ -436,6 +473,6 @@ fn bench_string_intrinsics(c: &mut Criterion) {
 criterion_group! {
     name = perf_hotpaths;
     config = configured_criterion();
-    targets = bench_frontend, bench_vm, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity
+    targets = bench_frontend, bench_vm, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
 }
 criterion_main!(perf_hotpaths);

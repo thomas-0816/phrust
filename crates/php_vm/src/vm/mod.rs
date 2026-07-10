@@ -48,7 +48,9 @@ use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservat
 use crate::deopt::GuardKind;
 use crate::error::VmError;
 use crate::frame::{CallStack, Frame, FrameActivationContext, FrameTraceArgument, TraceArguments};
-use crate::include::{IncludeCacheStats, LoadedInclude, compile_loaded_include};
+use crate::include::{
+    IncludeCacheStats, LoadedInclude, compile_loaded_include, compile_loaded_include_with_loader,
+};
 use crate::inline_cache::{
     AutoloadClassLookupCacheKey, AutoloadClassLookupCacheTarget, AutoloadClassLookupEpochs,
     AutoloadClassLookupKind, ClassConstantStaticPropertyCacheKind,
@@ -44274,7 +44276,15 @@ impl Vm {
         let compiled_from_shared_cache = compiled_include.is_some();
         let included = match compiled_include {
             Some(included) => included,
-            None => match compile_loaded_include(loaded, self.options.include_optimization_level) {
+            None => match if let Some(loader) = &self.options.include_loader {
+                compile_loaded_include_with_loader(
+                    loaded,
+                    self.options.include_optimization_level,
+                    loader,
+                )
+            } else {
+                compile_loaded_include(loaded, self.options.include_optimization_level)
+            } {
                 Ok(included) => {
                     self.record_counter_include_compile_miss();
                     included

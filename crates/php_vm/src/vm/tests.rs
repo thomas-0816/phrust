@@ -5562,7 +5562,15 @@ fn linked_trait_calls_use_the_declaring_files_strict_types_mode() {
     let result = execute_source_with_options_and_path(
         "<?php include 'Registry.php'; $registry = new Demo\\Registry(); $registry->weakCall(); $registry->strictCall(); echo 'unreachable';",
         VmOptions {
-            include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+            include_loader: Some(
+                IncludeLoader::for_root(&root)
+                    .expect("loader")
+                    .with_compilation_dependency("Demo\\Traits\\WeakCalls", "Traits/WeakCalls.php")
+                    .with_compilation_dependency(
+                        "Demo\\Traits\\StrictCalls",
+                        "Traits/StrictCalls.php",
+                    ),
+            ),
             runtime_context: RuntimeContext::default().with_cwd(root.clone()),
             ..VmOptions::default()
         },
@@ -5632,7 +5640,18 @@ fn linked_trait_files_preserve_execution_order_interfaces_and_reflection_paths()
             echo (new ReflectionMethod(Demo\\Registry::class, 'send'))->getFileName();
         ",
         VmOptions {
-            include_loader: Some(IncludeLoader::for_root(&root).expect("loader")),
+            include_loader: Some(
+                IncludeLoader::for_root(&root)
+                    .expect("loader")
+                    .with_compilation_dependency(
+                        "Demo\\Traits\\PrimaryTrait",
+                        "Traits/PrimaryTrait.php",
+                    )
+                    .with_compilation_dependency(
+                        "Demo\\Traits\\SecondaryTrait",
+                        "Traits/SecondaryTrait.php",
+                    ),
+            ),
             runtime_context: RuntimeContext::default().with_cwd(root.clone()),
             ..VmOptions::default()
         },

@@ -90,7 +90,10 @@ selected candidate path so symlink target swaps invalidate the cached canonical
 target. Compiled include entries are keyed by canonical path, an opened-source
 identity (filesystem generation plus content hash), optimization level,
 compiler/runtime fingerprint, and opened-source identities for local
-dependencies discovered during compile.
+dependencies discovered during compile. The compiler fingerprint includes the
+explicit declaration-to-path map supplied by the include/executor layer, so a
+mapping change cannot reuse an artifact linked against a previous dependency.
+Compilation does not recursively search allowed roots for matching filenames.
 
 In the default mutable mode, a warm compiled-include hit reads through an opened
 file handle, verifies that the file generation stayed stable across the read,

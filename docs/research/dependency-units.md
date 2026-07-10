@@ -12,13 +12,23 @@ source is parsed and analyzed independently, dependency files are lowered in a
 deterministic graph order into one linked `IrUnit`, and every IR span continues
 to reference its original file-table entry. No PHP source is concatenated or
 rewritten. The include layer supplies the declaration resolver; the compiler
-does not infer Composer or PSR mappings by scanning source lines.
+does not infer Composer or PSR mappings by scanning source lines or directory
+trees. `IncludeLoader::with_compilation_dependency` supplies normalized
+declaration-to-path metadata explicitly. An unmapped declaration remains
+unresolved even when a same-named PHP file exists below an allowed root, and a
+mapped file that does not declare the requested trait fails closed.
 
 The linked unit retains entry-file `strict_types` as a compatibility field and
 also records `file_strict_types[FileId]` for dependency-owned functions. Exact
 dependency content identities are included in the compiled-include cache key,
 so edits, same-metadata rewrites, and atomic replacements invalidate the root
-artifact.
+artifact. The deterministic declaration-map fingerprint is also part of the
+compiler identity, preventing artifacts compiled with different resolver
+inputs from sharing a cache hit.
+
+`performance/multi_file_trait_compile` in `php_bench` measures the cold linked
+include path with an explicit trait mapping. The existing include-cache and
+framework benchmarks continue to cover warm-cache and request behavior.
 
 ## Graph Shape
 
