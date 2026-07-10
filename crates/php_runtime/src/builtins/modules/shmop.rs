@@ -262,6 +262,21 @@ mod tests {
     fn sysv_segments_share_by_key_and_private_key_zero_is_isolated() {
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
+        // Remove any key-42 segment a crashed previous run left behind;
+        // the end-of-test delete cannot run when the process is killed
+        // mid-test.
+        if let Ok(stale) = builtin_shmop_open(
+            &mut context,
+            vec![
+                Value::Int(42),
+                Value::string("c"),
+                Value::Int(0o600),
+                Value::Int(16),
+            ],
+            RuntimeSourceSpan::default(),
+        ) {
+            let _ = builtin_shmop_delete(&mut context, vec![stale], RuntimeSourceSpan::default());
+        }
         let created = builtin_shmop_open(
             &mut context,
             vec![

@@ -411,8 +411,23 @@ mod tests {
 
     const MSG_IPC_NOWAIT: i64 = libc::IPC_NOWAIT as i64;
 
+    /// Derives a per-process test key and removes any queue a crashed
+    /// previous run left behind under it: the 16-bit pid slice wraps, so
+    /// orphans from killed test runs otherwise make these tests adopt
+    /// stale queue state.
     fn unique_sysvmsg_key(offset: i64) -> i64 {
-        0x5300_0000_i64 | (((std::process::id() as i64) & 0xffff) << 4) | (offset & 0x0f)
+        let key = 0x5300_0000_i64 | (((std::process::id() as i64) & 0xffff) << 4) | (offset & 0x0f);
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        if let Ok(queue) = builtin_msg_get_queue(
+            &mut context,
+            vec![Value::Int(key)],
+            RuntimeSourceSpan::default(),
+        ) {
+            let _ =
+                builtin_msg_remove_queue(&mut context, vec![queue], RuntimeSourceSpan::default());
+        }
+        key
     }
 
     #[test]

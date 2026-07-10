@@ -237,11 +237,28 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
+    /// Derives a per-process test key and removes any semaphore set a
+    /// crashed previous run left behind under it (the 16-bit pid slice
+    /// wraps).
+    fn fresh_sysvsem_key() -> i64 {
+        let key = 0x7072_0000_i64 | (i64::from(std::process::id()) & 0xffff);
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        if let Ok(semaphore) = builtin_sem_get(
+            &mut context,
+            vec![Value::Int(key)],
+            RuntimeSourceSpan::default(),
+        ) {
+            let _ = builtin_sem_remove(&mut context, vec![semaphore], RuntimeSourceSpan::default());
+        }
+        key
+    }
+
     #[test]
     fn semaphore_tracks_acquire_release_and_remove() {
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
-        let key = 0x7072_0000_i64 | (i64::from(std::process::id()) & 0xffff);
+        let key = fresh_sysvsem_key();
         let semaphore = builtin_sem_get(
             &mut context,
             vec![Value::Int(key), Value::Int(1), Value::Int(0o600)],

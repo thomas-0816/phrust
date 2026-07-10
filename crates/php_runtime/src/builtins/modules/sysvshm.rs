@@ -303,8 +303,20 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
+    /// Derives a per-process test key and removes any segment a crashed
+    /// previous run left behind under it (the 16-bit pid slice wraps).
     fn unique_sysvshm_key(offset: i64) -> i64 {
-        0x5400_0000_i64 | (((std::process::id() as i64) & 0xffff) << 4) | (offset & 0x0f)
+        let key = 0x5400_0000_i64 | (((std::process::id() as i64) & 0xffff) << 4) | (offset & 0x0f);
+        let mut output = OutputBuffer::new();
+        let mut context = BuiltinContext::new(&mut output);
+        if let Ok(shm) = builtin_shm_attach(
+            &mut context,
+            vec![Value::Int(key)],
+            RuntimeSourceSpan::default(),
+        ) {
+            let _ = builtin_shm_remove(&mut context, vec![shm], RuntimeSourceSpan::default());
+        }
+        key
     }
 
     #[test]
