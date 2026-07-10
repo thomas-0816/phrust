@@ -57,9 +57,9 @@ use crate::inline_cache::{
     FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
     FunctionCallShape, IncludePathCacheKey, IncludePathCacheTarget, InlineCacheKind,
     InlineCacheObservation, InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget,
-    MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape, PropertyAssignCacheTarget,
-    PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget, PropertyFetchCacheTarget,
-    PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
+    MethodCallDispatchRoute, MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape,
+    PropertyAssignCacheTarget, PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget,
+    PropertyFetchCacheTarget, PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
 };
 use crate::literal_pool::LiteralPool;
 use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
@@ -29018,6 +29018,9 @@ impl Vm {
                             declaring_class: declaring_class.name.clone(),
                             function: method_entry.function,
                             guard: method_guard,
+                            // The rich arm lacks the owner plan here; hits
+                            // keep the legacy re-resolving path.
+                            route: None,
                         });
                         let target = match declaring_dynamic_owner_index {
                             Some(unit_index) => MethodCallCacheTarget::DynamicUnit {
@@ -35819,6 +35822,100 @@ impl Vm {
         self.execute_function(owner, function, call, output, stack, state)
     }
 
+    /// Builds the direct dispatch route a warmed method-call site reuses on
+    /// every hit: the owner unit, its execution plan (only when the method is
+    /// planned dense), the declaring class entry, and the normalized name
+    /// handle. Returns `None` when the body must run through the re-resolving
+    /// legacy path.
+    fn method_dispatch_route(
+        &self,
+        owner: &CompiledUnit,
+        function: FunctionId,
+        declaring_class: &php_ir::module::ClassEntry,
+    ) -> Option<MethodCallDispatchRoute> {
+        let plan = self.get_or_build_dense_execution_plan(owner).ok()?;
+        if !matches!(
+            plan.function_plan(function.index()),
+            Some(DenseFunctionPlan::Dense)
+        ) {
+            return None;
+        }
+        Some(MethodCallDispatchRoute {
+            owner: owner.clone(),
+            plan,
+            declaring_class: Arc::new(declaring_class.clone()),
+            declaring_class_handle: self.class_name_handles(&declaring_class.name).normalized,
+        })
+    }
+
+    /// Dispatches a routed method call straight into the dense executor. The
+    /// fill-time route guarantees the function is planned dense in `plan`;
+    /// call-context continuations still take the general path.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_routed_dense_method(
+        &self,
+        route: &MethodCallDispatchRoute,
+        function: FunctionId,
+        call: FunctionCall<'_>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        let owner = &route.owner;
+        let plan = route.plan.as_ref();
+        #[cfg(feature = "jit-copy-patch")]
+        if let Some(ir_function) = owner.unit().functions.get(function.index())
+            && let Some(result) = self.try_execute_copy_patch_leaf(
+                owner,
+                function,
+                ir_function,
+                &call,
+                output,
+                stack,
+                state,
+            )
+        {
+            return result;
+        }
+        self.record_counter_dense_method_dispatch_attempt();
+        if call.resume_continuation.is_some()
+            || call.resume_fiber_continuation.is_some()
+            || call.running_generator.is_some()
+            || call.running_fiber.is_some()
+        {
+            self.record_counter_dense_method_dispatch_fallback("generator_or_fiber_context");
+            return self.execute_function(owner, function, call, output, stack, state);
+        }
+        let (Some(dense_function), Some(ir_function)) = (
+            plan.unit.functions.get(function.index()),
+            owner.unit().functions.get(function.index()),
+        ) else {
+            self.record_counter_dense_method_dispatch_fallback("dense_body_missing");
+            return self.execute_function(owner, function, call, output, stack, state);
+        };
+        self.record_counter_dense_method_dispatch_hit();
+        let profile_boundary = self.request_profile_boundary_start();
+        let function_profile = profile_boundary
+            .is_some()
+            .then(|| (ir_function.name.clone(), ir_function.flags.is_method));
+        let result = self.execute_bytecode_function(
+            owner,
+            &plan.unit,
+            Some(plan),
+            dense_function,
+            ir_function,
+            function,
+            call,
+            output,
+            stack,
+            state,
+        );
+        if let Some((name, is_method)) = function_profile {
+            self.record_counter_function_profile(&name, is_method, profile_boundary);
+        }
+        result
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn execute_method_call_target(
         &self,
@@ -35833,6 +35930,33 @@ impl Vm {
         running_fiber: &Option<FiberRef>,
         dense_plan: Option<&DenseExecutionPlan>,
     ) -> VmResult {
+        // Routed fast path: the cache key pinned method, receiver, scope, and
+        // epoch at fill time, and the guard epochs invalidate on class-table
+        // changes — so a hit re-uses the resolved owner, plan, and class
+        // without lookups or re-validation.
+        if let Some(route) = target.resolved_target().route.clone() {
+            let function = target.resolved_target().function;
+            if let Some(result) = self.try_inline_trivial_method(
+                &route.owner,
+                function,
+                &route.declaring_class,
+                &object,
+                &args,
+            ) {
+                return result;
+            }
+            let call = FunctionCall::new(args, Vec::new())
+                .with_call_site_strict_types(compiled.unit().strict_types)
+                .with_optional_call_span(call_span)
+                .with_this(object.clone())
+                .with_class_context_handles(
+                    route.declaring_class_handle.clone(),
+                    object_called_class_handle(&object),
+                    route.declaring_class_handle.clone(),
+                )
+                .inherit_fiber_context(running_fiber);
+            return self.execute_routed_dense_method(&route, function, call, output, stack, state);
+        }
         let declaring_class_name = target.resolved_target().declaring_class.clone();
         let function = target.resolved_target().function;
         let owner = match target {

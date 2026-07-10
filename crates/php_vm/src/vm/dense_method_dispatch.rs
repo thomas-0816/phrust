@@ -263,11 +263,15 @@ impl Vm {
             has_magic_call,
             has_by_ref_argument,
         );
+        let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
+        let route =
+            self.method_dispatch_route(&class_owner, method_entry.function, declaring_class);
         let method_target = Box::new(MethodCallResolvedTarget {
             receiver_class: receiver_class.clone(),
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
             guard: method_guard,
+            route,
         });
         let declaring_dynamic_owner_index =
             dynamic_class_owner_index_in_state(state, &declaring_class.name);
@@ -292,7 +296,6 @@ impl Vm {
             target,
         );
         self.record_counter_dense_method_call_hit();
-        let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         self.execute_function_with_dense_plan(
             compiled,
             &class_owner,
@@ -732,11 +735,15 @@ impl Vm {
             has_magic_call,
             dense_call_has_by_ref_argument(&args),
         );
+        let static_owner = class_owner_in_state(compiled, state, &declaring_class.name);
+        let route =
+            self.method_dispatch_route(&static_owner, method_entry.function, declaring_class);
         let method_target = Box::new(MethodCallResolvedTarget {
             receiver_class: receiver_class.clone(),
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
             guard: method_guard,
+            route,
         });
         let declaring_dynamic_owner_index =
             dynamic_class_owner_index_in_state(state, &declaring_class.name);

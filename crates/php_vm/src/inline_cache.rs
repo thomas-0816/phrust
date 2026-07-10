@@ -229,7 +229,38 @@ pub struct MethodCallResolvedTarget {
     pub declaring_class: String,
     pub function: FunctionId,
     pub guard: MethodCallGuardMetadata,
+    /// Execution route captured at fill time. The cache key already pins
+    /// method, receiver class, calling scope, and lookup epoch, and the guard
+    /// epochs invalidate the entry on class-table changes — so a hit may
+    /// dispatch through this route without re-resolving the owner unit, the
+    /// class entry, or the execution plan. `None` keeps the legacy
+    /// re-resolving path.
+    pub route: Option<MethodCallDispatchRoute>,
 }
+
+/// Owner unit, execution plan, and declaring-class data a warmed method-call
+/// site dispatches through directly.
+#[derive(Clone, Debug)]
+pub struct MethodCallDispatchRoute {
+    /// Unit whose IR owns the method body.
+    pub owner: crate::compiled_unit::CompiledUnit,
+    /// The owner's dense execution plan; the target function is planned
+    /// `Dense` in it at fill time.
+    pub plan: std::sync::Arc<crate::bytecode::DenseExecutionPlan>,
+    /// Declaring class entry, for trivial-method inlining on the hit path.
+    pub declaring_class: std::sync::Arc<php_ir::module::ClassEntry>,
+    /// Normalized declaring-class name handle for frame class context.
+    pub declaring_class_handle: std::sync::Arc<str>,
+}
+
+impl PartialEq for MethodCallDispatchRoute {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.plan, &other.plan)
+            && std::sync::Arc::ptr_eq(&self.declaring_class, &other.declaring_class)
+    }
+}
+
+impl Eq for MethodCallDispatchRoute {}
 
 /// Resolution target cached by a method-call IC slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2551,6 +2582,7 @@ mod tests {
                 receiver_class: receiver_class.to_owned(),
                 declaring_class: declaring_class.to_owned(),
                 function,
+                route: None,
                 guard: MethodCallGuardMetadata {
                     receiver_class_id,
                     class_layout_epoch: epoch.raw(),

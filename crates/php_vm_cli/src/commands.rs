@@ -5070,6 +5070,9 @@ mod tests {
 
     #[test]
     fn run_output_matches_php_executor_for_basic_fixture() {
+        // `run` reads error-format environment variables; hold the lock so
+        // concurrently running env-mutating tests cannot flip its behavior.
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let fixture_path = fixture("fixtures/runtime/valid/hello.php");
         let mut cli_stdout = Vec::new();
         let mut cli_stderr = Vec::new();
