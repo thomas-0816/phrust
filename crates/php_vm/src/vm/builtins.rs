@@ -14,6 +14,11 @@ impl Vm {
         compiled: &CompiledUnit,
     ) -> VmResult {
         self.record_counter_internal_function_dispatch();
+        // Coarse fallback attribution: every clone inside this dispatch
+        // (argument coercion, trace snapshots, the builtin body itself, and
+        // callbacks it re-enters) counts as `builtin_body` unless a more
+        // specific family is entered deeper in the call.
+        let _source = layout_source::enter_default(layout_source::BUILTIN_BODY);
         let Some(entry) = self.lookup_internal_function_dispatch(name) else {
             return unknown_builtin_result(name, output);
         };

@@ -22,7 +22,11 @@ impl DenseOperandRead<'_> {
 
     pub(super) fn into_owned(self) -> Value {
         match self {
-            Self::Borrowed(value) => value.clone(),
+            Self::Borrowed(value) => {
+                let _source =
+                    layout_source::enter_default(layout_source::STACK_REGISTER_LOCAL_MOVE);
+                value.clone()
+            }
             Self::Owned(value) => value,
         }
     }

@@ -1591,6 +1591,9 @@ fn gc_roots_from_vm(stack: &CallStack, state: &ExecutionState) -> Vec<GcRoot> {
 }
 
 fn php_visible_root_object_ids(stack: &CallStack, state: &ExecutionState) -> HashSet<u64> {
+    // The root scan reads every live register, local, and object snapshot;
+    // its clones are scan overhead, not program dataflow.
+    let _source = layout_source::enter(layout_source::GC_ROOT_SCAN);
     let mut object_ids = HashSet::new();
     let mut seen = HashSet::new();
     for frame in stack.frames() {

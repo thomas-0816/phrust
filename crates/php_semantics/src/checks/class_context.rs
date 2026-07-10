@@ -336,9 +336,8 @@ mod tests {
 
     #[test]
     fn named_function_bodies_stay_global_scope_inside_closures() {
-        let diagnostics = diagnostics(
-            "<?php $a = function () { function g() { return self::class; } };\n",
-        );
+        let diagnostics =
+            diagnostics("<?php $a = function () { function g() { return self::class; } };\n");
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].id(), DiagnosticId::InvalidClassContextName);
     }

@@ -183,6 +183,7 @@ pub enum LayoutSourceFamily {
     ClosureCaptureBinding,
     CowSeparationContents,
     ForeachValue,
+    GcRootScan,
     ObjectPropertyRead,
     OutputStringConversion,
     ReferenceDereference,
@@ -192,7 +193,7 @@ pub enum LayoutSourceFamily {
 }
 
 /// Number of source families, sizing the fixed per-event counter arrays.
-pub const LAYOUT_SOURCE_FAMILY_COUNT: usize = 18;
+pub const LAYOUT_SOURCE_FAMILY_COUNT: usize = 19;
 
 impl LayoutSourceFamily {
     /// Stable JSON label for this family.
@@ -211,6 +212,7 @@ impl LayoutSourceFamily {
             Self::ClosureCaptureBinding => "closure_capture_binding",
             Self::CowSeparationContents => "cow_separation_contents",
             Self::ForeachValue => "foreach_value",
+            Self::GcRootScan => "gc_root_scan",
             Self::ObjectPropertyRead => "object_property_read",
             Self::OutputStringConversion => "output_string_conversion",
             Self::ReferenceDereference => "reference_dereference",
@@ -233,6 +235,7 @@ impl LayoutSourceFamily {
         Self::ClosureCaptureBinding,
         Self::CowSeparationContents,
         Self::ForeachValue,
+        Self::GcRootScan,
         Self::ObjectPropertyRead,
         Self::OutputStringConversion,
         Self::ReferenceDereference,
@@ -272,6 +275,9 @@ pub const SOURCE_BUILTIN_ARGUMENT_MATERIALIZATION: LayoutSourceFamily =
     LayoutSourceFamily::BuiltinArgumentMaterialization;
 /// Value copied while materializing foreach-style iteration output.
 pub const SOURCE_FOREACH_VALUE: LayoutSourceFamily = LayoutSourceFamily::ForeachValue;
+/// Value copied while the GC root scan walks frames and object graphs to
+/// find PHP-visible object handles.
+pub const SOURCE_GC_ROOT_SCAN: LayoutSourceFamily = LayoutSourceFamily::GcRootScan;
 /// Value copied while reading object property storage.
 pub const SOURCE_OBJECT_PROPERTY_READ: LayoutSourceFamily = LayoutSourceFamily::ObjectPropertyRead;
 /// Value copied while converting output to string storage.
