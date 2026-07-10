@@ -206,6 +206,9 @@ pub enum DenseOpcode {
     AssignPropertyDim = 89,
     UnsetPropertyDim = 90,
     AssignDynamicProperty = 91,
+    AssignStaticProperty = 92,
+    IssetStaticProperty = 93,
+    EmptyStaticProperty = 94,
 }
 
 impl DenseOpcode {
@@ -318,6 +321,9 @@ impl DenseOpcode {
             Self::AssignPropertyDim => "assign_property_dim",
             Self::UnsetPropertyDim => "unset_property_dim",
             Self::AssignDynamicProperty => "assign_dynamic_property",
+            Self::AssignStaticProperty => "assign_static_property",
+            Self::IssetStaticProperty => "isset_static_property",
+            Self::EmptyStaticProperty => "empty_static_property",
         }
     }
 
@@ -566,6 +572,13 @@ pub enum DenseOperands {
         property: u32,
         dims: Vec<DenseOperand>,
         append: bool,
+        value: DenseOperand,
+    },
+    /// Static property assignment operands.
+    AssignStaticProperty {
+        dst: u32,
+        class_name: u32,
+        property: u32,
         value: DenseOperand,
     },
     /// Runtime-named instance property assignment operands.
@@ -2030,7 +2043,10 @@ fn select_dense_single_rule(instruction: &DenseInstruction) -> Option<RuleKind> 
         | DenseOpcode::CloneObject
         | DenseOpcode::AssignPropertyDim
         | DenseOpcode::UnsetPropertyDim
-        | DenseOpcode::AssignDynamicProperty => None,
+        | DenseOpcode::AssignDynamicProperty
+        | DenseOpcode::AssignStaticProperty
+        | DenseOpcode::IssetStaticProperty
+        | DenseOpcode::EmptyStaticProperty => None,
     }
 }
 
@@ -2807,6 +2823,44 @@ fn lower_instruction(
             property,
         } => (
             DenseOpcode::FetchStaticProperty,
+            DenseOperands::FetchClassConstant {
+                dst: dst.raw(),
+                class_name: push_name(names, class_name).index() as u32,
+                constant: push_name(names, property).index() as u32,
+            },
+        ),
+        InstructionKind::AssignStaticProperty {
+            dst,
+            class_name,
+            property,
+            value,
+        } => (
+            DenseOpcode::AssignStaticProperty,
+            DenseOperands::AssignStaticProperty {
+                dst: dst.raw(),
+                class_name: push_name(names, class_name).index() as u32,
+                property: push_name(names, property).index() as u32,
+                value: lower_operand(*value),
+            },
+        ),
+        InstructionKind::IssetStaticProperty {
+            dst,
+            class_name,
+            property,
+        } => (
+            DenseOpcode::IssetStaticProperty,
+            DenseOperands::FetchClassConstant {
+                dst: dst.raw(),
+                class_name: push_name(names, class_name).index() as u32,
+                constant: push_name(names, property).index() as u32,
+            },
+        ),
+        InstructionKind::EmptyStaticProperty {
+            dst,
+            class_name,
+            property,
+        } => (
+            DenseOpcode::EmptyStaticProperty,
             DenseOperands::FetchClassConstant {
                 dst: dst.raw(),
                 class_name: push_name(names, class_name).index() as u32,
@@ -3693,7 +3747,24 @@ fn verify_instruction(
             verify_name(*name, unit, errors);
         }
         (
-            DenseOpcode::FetchClassConstant | DenseOpcode::FetchStaticProperty,
+            DenseOpcode::AssignStaticProperty,
+            DenseOperands::AssignStaticProperty {
+                dst,
+                class_name,
+                property,
+                value,
+            },
+        ) => {
+            verify_register(*dst, function, errors);
+            verify_name(*class_name, unit, errors);
+            verify_name(*property, unit, errors);
+            verify_operand(*value, unit, function, errors);
+        }
+        (
+            DenseOpcode::FetchClassConstant
+            | DenseOpcode::FetchStaticProperty
+            | DenseOpcode::IssetStaticProperty
+            | DenseOpcode::EmptyStaticProperty,
             DenseOperands::FetchClassConstant {
                 dst,
                 class_name,
@@ -4154,6 +4225,17 @@ fn render_operands(operands: &DenseOperands) -> String {
                 render_operand(*object),
                 dims.join(", "),
                 if *append { " append" } else { "" },
+                render_operand(*value)
+            )
+        }
+        DenseOperands::AssignStaticProperty {
+            dst,
+            class_name,
+            property,
+            value,
+        } => {
+            format!(
+                "r{dst} n{class_name} n{property} {}",
                 render_operand(*value)
             )
         }

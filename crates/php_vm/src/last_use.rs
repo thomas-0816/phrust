@@ -626,6 +626,10 @@ pub(crate) fn collect_defs_uses(
                 push_use(uses, *dim);
             }
         }
+        DenseOperands::AssignStaticProperty { dst, value, .. } => {
+            defs.push(*dst);
+            push_use(uses, *value);
+        }
         DenseOperands::AssignDynamicProperty {
             dst,
             object,

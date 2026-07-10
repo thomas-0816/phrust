@@ -1063,6 +1063,16 @@ enum ClassConstantFetch {
 /// Outcome of [`Vm::assign_property_dim_value`] when it cannot produce a value.
 /// Like [`ClassConstantFetch`], the shared helper never routes control flow; the
 /// caller translates the fault (rich routes/returns in-frame, dense propagates).
+/// Outcome of a shared static-property assignment attempt.
+enum StaticPropertyAssignError {
+    /// Autoload or nested user code produced a final result.
+    Vm(Box<VmResult>),
+    /// A catchable runtime `\Error` must be raised at this span.
+    Raise(IrSpan, String),
+    /// A non-catchable runtime error with this message.
+    Fatal(String),
+}
+
 enum PropertyDimAssign {
     /// A catchable runtime `\Error` must be raised at this span.
     Raise(IrSpan, String),
@@ -8863,7 +8873,7 @@ impl Vm {
                                     .take()
                                     .or_else(|| runtime_error_throwable(&result))
                                 {
-                                    stack.pop_recycle();
+                                    // propagate_exception pops this frame.
                                     return self
                                         .propagate_exception(output, stack, state, throwable);
                                 }
@@ -8894,7 +8904,9 @@ impl Vm {
                                         return result;
                                     }
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                 }
@@ -8986,7 +8998,7 @@ impl Vm {
                                     .take()
                                     .or_else(|| runtime_error_throwable(&result))
                                 {
-                                    stack.pop_recycle();
+                                    // propagate_exception pops this frame.
                                     return self
                                         .propagate_exception(output, stack, state, throwable);
                                 }
@@ -9017,7 +9029,9 @@ impl Vm {
                                         return result;
                                     }
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                 }
@@ -9140,7 +9154,7 @@ impl Vm {
                                     .take()
                                     .or_else(|| runtime_error_throwable(&result))
                                 {
-                                    stack.pop_recycle();
+                                    // propagate_exception pops this frame.
                                     return self
                                         .propagate_exception(output, stack, state, throwable);
                                 }
@@ -9171,7 +9185,9 @@ impl Vm {
                                         return result;
                                     }
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                 }
@@ -9187,6 +9203,270 @@ impl Vm {
                             .expect("bytecode frame was pushed")
                             .registers
                             .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::AssignStaticProperty => {
+                        let DenseOperands::AssignStaticProperty {
+                            dst,
+                            class_name,
+                            property,
+                            value,
+                        } = &instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let dst = *dst;
+                        let value_operand = *value;
+                        let (Some(class_name), Some(property)) = (
+                            dense.names.get(*class_name as usize),
+                            dense.names.get(*property as usize),
+                        ) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                "invalid dense bytecode static property names".to_owned(),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let class_name = class_name.clone();
+                        let property = property.clone();
+                        let value = match self.read_dense_operand(compiled, stack, value_operand) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        let span = dense_instruction_span(dense, instruction);
+                        let (value, previous_effective) = match self.assign_static_property_value(
+                            compiled,
+                            &class_name,
+                            &property,
+                            value,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                BlockId::new(block_index),
+                                InstrId::new(dense_instruction_index),
+                            )),
+                            span,
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            Ok(outcome) => outcome,
+                            Err(StaticPropertyAssignError::Vm(result)) => {
+                                let result = *result;
+                                if let Some(throwable) = state
+                                    .pending_throw
+                                    .take()
+                                    .or_else(|| runtime_error_throwable(&result))
+                                {
+                                    // propagate_exception pops this frame.
+                                    return self
+                                        .propagate_exception(output, stack, state, throwable);
+                                }
+                                stack.pop_recycle();
+                                return result;
+                            }
+                            Err(StaticPropertyAssignError::Raise(span, message)) => {
+                                let mut exception_handlers = Vec::new();
+                                let mut pending_control = None;
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(_) => {
+                                        let result = self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            "E_PHP_VM_DENSE_ASSIGN_STATIC_PROPERTY_HANDLER: dense functions have no local exception handlers".to_string(),
+                                        );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                    RaiseOutcome::Done(result) => {
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
+                                        return *result;
+                                    }
+                                }
+                            }
+                            Err(StaticPropertyAssignError::Fatal(message)) => {
+                                let result = self.runtime_error(output, compiled, stack, message);
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        {
+                            let mut exception_handlers = Vec::new();
+                            let mut pending_control = None;
+                            if let Some(outcome) = self.run_destructors_for_unreferenced_value(
+                                compiled,
+                                output,
+                                stack,
+                                state,
+                                &mut exception_handlers,
+                                &mut pending_control,
+                                &previous_effective,
+                            ) {
+                                match outcome {
+                                    RaiseOutcome::Caught(_) => {
+                                        let result = self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            "E_PHP_VM_DENSE_ASSIGN_STATIC_PROPERTY_HANDLER: dense functions have no local exception handlers".to_string(),
+                                        );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                    RaiseOutcome::Done(result) => {
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
+                                        return *result;
+                                    }
+                                }
+                            }
+                        }
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), value)
+                        {
+                            let result = self.runtime_error(output, compiled, stack, message);
+                            stack.pop_recycle();
+                            return result;
+                        }
+                    }
+                    DenseOpcode::IssetStaticProperty | DenseOpcode::EmptyStaticProperty => {
+                        let empty_probe =
+                            matches!(instruction.opcode, DenseOpcode::EmptyStaticProperty);
+                        let DenseOperands::FetchClassConstant {
+                            dst,
+                            class_name,
+                            constant,
+                        } = &instruction.operands
+                        else {
+                            let result = self.invalid_bytecode_operand_shape(
+                                output,
+                                compiled,
+                                stack,
+                                instruction,
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let dst = *dst;
+                        let (Some(class_name), Some(property)) = (
+                            dense.names.get(*class_name as usize),
+                            dense.names.get(*constant as usize),
+                        ) else {
+                            let result = self.runtime_error(
+                                output,
+                                compiled,
+                                stack,
+                                "invalid dense bytecode static property names".to_owned(),
+                            );
+                            stack.pop_recycle();
+                            return result;
+                        };
+                        let class_name = class_name.clone();
+                        let property = property.clone();
+                        let span = dense_instruction_span(dense, instruction);
+                        let probe = match static_property_isset_empty_result(
+                            self,
+                            compiled,
+                            state,
+                            stack,
+                            &class_name,
+                            &property,
+                            empty_probe,
+                            span,
+                            Some((
+                                compiled_unit_cache_key(compiled),
+                                function_id,
+                                BlockId::new(block_index),
+                                InstrId::new(dense_instruction_index),
+                            )),
+                            output,
+                        ) {
+                            Ok(result) => result,
+                            Err(StaticPropertyIssetEmptyError::Runtime(message)) => {
+                                let mut exception_handlers = Vec::new();
+                                let mut pending_control = None;
+                                match self.raise_runtime_error(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    span,
+                                    message,
+                                ) {
+                                    RaiseOutcome::Caught(_) => {
+                                        let result = self.runtime_error(
+                                            output,
+                                            compiled,
+                                            stack,
+                                            "E_PHP_VM_DENSE_STATIC_PROPERTY_PROBE_HANDLER: dense functions have no local exception handlers".to_string(),
+                                        );
+                                        stack.pop_recycle();
+                                        return result;
+                                    }
+                                    RaiseOutcome::Done(result) => {
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
+                                        return *result;
+                                    }
+                                }
+                            }
+                            Err(StaticPropertyIssetEmptyError::Vm(result)) => {
+                                let result = *result;
+                                if let Some(throwable) = state
+                                    .pending_throw
+                                    .take()
+                                    .or_else(|| runtime_error_throwable(&result))
+                                {
+                                    // propagate_exception pops this frame.
+                                    return self
+                                        .propagate_exception(output, stack, state, throwable);
+                                }
+                                stack.pop_recycle();
+                                return result;
+                            }
+                        };
+                        if let Err(message) = stack
+                            .current_mut()
+                            .expect("bytecode frame was pushed")
+                            .registers
+                            .set(RegId::new(dst), Value::Bool(probe))
                         {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
@@ -9468,7 +9748,9 @@ impl Vm {
                                         return result;
                                     }
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                 }
@@ -10191,7 +10473,9 @@ impl Vm {
                             ) {
                                 match outcome {
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                     RaiseOutcome::Caught(_) => {
@@ -11383,7 +11667,9 @@ impl Vm {
                             ) {
                                 match outcome {
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                     RaiseOutcome::Caught(_) => {
@@ -11573,7 +11859,9 @@ impl Vm {
                                         return result;
                                     }
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                 }
@@ -13168,7 +13456,9 @@ impl Vm {
                             ) {
                                 match outcome {
                                     RaiseOutcome::Done(result) => {
-                                        stack.pop_recycle();
+                                        if state.pending_throw.is_none() {
+                                            stack.pop_recycle();
+                                        }
                                         return *result;
                                     }
                                     RaiseOutcome::Caught(target) => {
@@ -24448,72 +24738,49 @@ impl Vm {
                         property,
                         value,
                     } => {
-                        if let Err(result) = self.autoload_static_class_if_missing(
+                        let value_operand = *value;
+                        let value =
+                            match read_operand_at_frame(unit, stack, frame_index, value_operand) {
+                                Ok(value) => value,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
+                        let (value, previous_effective) = match self.assign_static_property_value(
                             compiled,
                             class_name,
-                            instruction.span,
+                            property,
+                            value,
                             Some((
                                 compiled_unit_cache_key(compiled),
                                 function_id,
                                 block_id,
                                 instruction.id,
                             )),
+                            instruction.span,
                             output,
                             stack,
                             state,
                         ) {
-                            match self.route_throwable_result(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                result,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
-                                }
-                                RaiseOutcome::Done(result) => return *result,
-                            }
-                        }
-                        let class =
-                            match resolve_static_class_name(compiled, state, stack, class_name) {
-                                Ok(class) => class,
-                                Err(message) => {
-                                    match self.raise_runtime_error(
-                                        compiled,
-                                        output,
-                                        stack,
-                                        state,
-                                        &mut exception_handlers,
-                                        &mut pending_control,
-                                        instruction.span,
-                                        message,
-                                    ) {
-                                        RaiseOutcome::Caught(target) => {
-                                            block_id = target;
-                                            continue 'dispatch;
-                                        }
-                                        RaiseOutcome::Done(result) => return *result,
+                            Ok(outcome) => outcome,
+                            Err(StaticPropertyAssignError::Vm(result)) => {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    *result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
                                     }
+                                    RaiseOutcome::Done(result) => return *result,
                                 }
-                            };
-                        let scope = current_scope_class(compiled, stack);
-                        let resolved = match lookup_resolved_property_in_state(
-                            compiled,
-                            state,
-                            &class,
-                            property,
-                            scope.as_deref(),
-                        ) {
-                            Ok(Some(resolved)) => resolved,
-                            Ok(None) => {
-                                let message = format!(
-                                    "E_PHP_VM_UNKNOWN_STATIC_PROPERTY: Access to undeclared static property {}::${property}",
-                                    class.display_name
-                                );
+                            }
+                            Err(StaticPropertyAssignError::Raise(span, message)) => {
                                 match self.raise_runtime_error(
                                     compiled,
                                     output,
@@ -24521,7 +24788,7 @@ impl Vm {
                                     state,
                                     &mut exception_handlers,
                                     &mut pending_control,
-                                    instruction.span,
+                                    span,
                                     message,
                                 ) {
                                     RaiseOutcome::Caught(target) => {
@@ -24531,100 +24798,10 @@ impl Vm {
                                     RaiseOutcome::Done(result) => return *result,
                                 }
                             }
-                            Err(message) => {
+                            Err(StaticPropertyAssignError::Fatal(message)) => {
                                 return self.runtime_error(output, compiled, stack, message);
                             }
                         };
-                        if !resolved.property.flags.is_static {
-                            return self.runtime_error(
-                                output,
-                                compiled,
-                                stack,
-                                format!(
-                                    "E_PHP_VM_NON_STATIC_PROPERTY_ACCESS: property {}::${} is not static",
-                                    resolved.class.name, resolved.property.name
-                                ),
-                            );
-                        }
-                        if let Err(message) = validate_property_access_in_state(
-                            compiled,
-                            state,
-                            stack,
-                            &resolved.class,
-                            &resolved.property,
-                        ) {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                        let value_operand = *value;
-                        let value =
-                            match read_operand_at_frame(unit, stack, frame_index, value_operand) {
-                                Ok(value) => value,
-                                Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
-                                }
-                            };
-                        let property_type = ir_runtime_type(resolved.property.type_.as_ref());
-                        if let Err(message) = check_property_type(
-                            compiled,
-                            Some(state),
-                            resolved.class.display_name.as_str(),
-                            resolved.property.name.as_str(),
-                            &property_type,
-                            &value,
-                            self.typecheck_fast_path_context(),
-                        ) {
-                            match self.raise_runtime_error(
-                                compiled,
-                                output,
-                                stack,
-                                state,
-                                &mut exception_handlers,
-                                &mut pending_control,
-                                instruction.span,
-                                message,
-                            ) {
-                                RaiseOutcome::Caught(target) => {
-                                    block_id = target;
-                                    continue 'dispatch;
-                                }
-                                RaiseOutcome::Done(result) => return *result,
-                            }
-                        }
-                        let key = static_property_key(&resolved.class, &resolved.property);
-                        let current = if let Some(value) = state.static_properties.get(&key) {
-                            value.clone()
-                        } else {
-                            match static_property_default(
-                                compiled,
-                                state,
-                                stack,
-                                &resolved.class,
-                                &resolved.property,
-                            ) {
-                                Ok(value) => value,
-                                Err(message) => {
-                                    return self.runtime_error(output, compiled, stack, message);
-                                }
-                            }
-                        };
-                        if let Err(message) = validate_static_property_write(
-                            compiled,
-                            stack,
-                            &resolved.class,
-                            &resolved.property,
-                            &current,
-                        ) {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
-                        let previous_effective = effective_value(&current);
-                        if let Err(message) = write_static_property_lvalue(
-                            &mut state.static_properties,
-                            key,
-                            current.clone(),
-                            value.clone(),
-                        ) {
-                            return self.runtime_error(output, compiled, stack, message);
-                        }
                         if let Some(outcome) = self.run_destructors_for_unreferenced_value(
                             compiled,
                             output,
@@ -43304,6 +43481,117 @@ impl Vm {
     /// are returned for the caller to route; `cache_site` supplies the
     /// inline-cache key.
     #[allow(clippy::too_many_arguments)]
+    /// Shared static-property assignment: autoload, class/property
+    /// resolution, static/visibility/type/readonly validation, and the
+    /// lvalue write. Returns the assigned value plus the replaced effective
+    /// value; the caller runs replaced-value destructors with its own
+    /// handler context and stores the destination register.
+    #[allow(clippy::too_many_arguments)]
+    fn assign_static_property_value(
+        &self,
+        compiled: &CompiledUnit,
+        class_name: &str,
+        property: &str,
+        value: Value,
+        autoload_site: Option<(u64, FunctionId, BlockId, InstrId)>,
+        span: IrSpan,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(Value, Value), StaticPropertyAssignError> {
+        if let Err(result) = self.autoload_static_class_if_missing(
+            compiled,
+            class_name,
+            span,
+            autoload_site,
+            output,
+            stack,
+            state,
+        ) {
+            return Err(StaticPropertyAssignError::Vm(Box::new(result)));
+        }
+        let class = resolve_static_class_name(compiled, state, stack, class_name)
+            .map_err(|message| StaticPropertyAssignError::Raise(span, message))?;
+        let scope = current_scope_class(compiled, stack);
+        let resolved = match lookup_resolved_property_in_state(
+            compiled,
+            state,
+            &class,
+            property,
+            scope.as_deref(),
+        ) {
+            Ok(Some(resolved)) => resolved,
+            Ok(None) => {
+                return Err(StaticPropertyAssignError::Raise(
+                    span,
+                    format!(
+                        "E_PHP_VM_UNKNOWN_STATIC_PROPERTY: Access to undeclared static property {}::${property}",
+                        class.display_name
+                    ),
+                ));
+            }
+            Err(message) => return Err(StaticPropertyAssignError::Fatal(message)),
+        };
+        if !resolved.property.flags.is_static {
+            return Err(StaticPropertyAssignError::Fatal(format!(
+                "E_PHP_VM_NON_STATIC_PROPERTY_ACCESS: property {}::${} is not static",
+                resolved.class.name, resolved.property.name
+            )));
+        }
+        if let Err(message) = validate_property_access_in_state(
+            compiled,
+            state,
+            stack,
+            &resolved.class,
+            &resolved.property,
+        ) {
+            return Err(StaticPropertyAssignError::Fatal(message));
+        }
+        let property_type = ir_runtime_type(resolved.property.type_.as_ref());
+        if let Err(message) = check_property_type(
+            compiled,
+            Some(state),
+            resolved.class.display_name.as_str(),
+            resolved.property.name.as_str(),
+            &property_type,
+            &value,
+            self.typecheck_fast_path_context(),
+        ) {
+            return Err(StaticPropertyAssignError::Raise(span, message));
+        }
+        let key = static_property_key(&resolved.class, &resolved.property);
+        let current = if let Some(value) = state.static_properties.get(&key) {
+            value.clone()
+        } else {
+            match static_property_default(
+                compiled,
+                state,
+                stack,
+                &resolved.class,
+                &resolved.property,
+            ) {
+                Ok(value) => value,
+                Err(message) => return Err(StaticPropertyAssignError::Fatal(message)),
+            }
+        };
+        if let Err(message) = validate_static_property_write(
+            compiled,
+            stack,
+            &resolved.class,
+            &resolved.property,
+            &current,
+        ) {
+            return Err(StaticPropertyAssignError::Fatal(message));
+        }
+        let previous_effective = effective_value(&current);
+        if let Err(message) =
+            write_static_property_lvalue(&mut state.static_properties, key, current, value.clone())
+        {
+            return Err(StaticPropertyAssignError::Fatal(message));
+        }
+        Ok((value, previous_effective))
+    }
+
     fn fetch_static_property_value(
         &self,
         compiled: &CompiledUnit,
@@ -67686,7 +67974,10 @@ fn dense_opcode_family(opcode: DenseOpcode) -> &'static str {
         | DenseOpcode::AssignProperty
         | DenseOpcode::AssignPropertyDim
         | DenseOpcode::UnsetPropertyDim
-        | DenseOpcode::AssignDynamicProperty => "properties",
+        | DenseOpcode::AssignDynamicProperty
+        | DenseOpcode::AssignStaticProperty
+        | DenseOpcode::IssetStaticProperty
+        | DenseOpcode::EmptyStaticProperty => "properties",
         DenseOpcode::InstanceOf
         | DenseOpcode::FetchClassConstant
         | DenseOpcode::FetchStaticProperty
