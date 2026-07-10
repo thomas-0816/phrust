@@ -1097,15 +1097,39 @@ impl LoweringContext<'_> {
                 continue;
             };
             for trait_name in trait_use.traits() {
+                let display_trait_name = trait_name.source().to_owned();
                 let trait_name = trait_resolution_name(trait_name);
                 let Some((_trait_id, trait_class_like)) = trait_class_likes.get(&trait_name) else {
-                    self.unsupported(
-                        UnsupportedFeature::TraitRuntime,
+                    let span = span_from_range(
+                        self.file,
                         self.span_for(SourceMappedId::from(trait_use_id)),
-                        format!(
+                    );
+                    let owner_kind = match class_like.kind() {
+                        ClassLikeKind::Class => MissingTraitOwnerKind::Class,
+                        ClassLikeKind::Interface => MissingTraitOwnerKind::Interface,
+                        ClassLikeKind::Trait => MissingTraitOwnerKind::Trait,
+                        ClassLikeKind::Enum => MissingTraitOwnerKind::Enum,
+                        ClassLikeKind::AnonymousClass => MissingTraitOwnerKind::AnonymousClass,
+                    };
+                    self.diagnostics.push(LoweringDiagnostic {
+                        id: UnsupportedFeature::TraitRuntime.diagnostic_id().to_string(),
+                        feature: UnsupportedFeature::TraitRuntime,
+                        span,
+                        message: format!(
                             "E_PHP_IR_TRAIT_NOT_FOUND: trait {trait_name} used by {class_name} is not declared"
                         ),
-                    );
+                        payload: Some(LoweringDiagnosticPayload::MissingTrait(
+                            MissingTraitDiagnostic::new(
+                                &trait_name,
+                                display_trait_name,
+                                class_name,
+                                display_class_name,
+                                owner_kind,
+                                &self.options.source_path,
+                                span,
+                            ),
+                        )),
+                    });
                     continue;
                 };
                 self.collect_trait_composition_members(

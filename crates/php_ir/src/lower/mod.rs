@@ -47,7 +47,7 @@ mod expressions;
 mod statements;
 
 pub use context::{LoweringContext, LoweringOptions, LoweringResult};
-pub use diagnostics::{LoweringDiagnostic, LoweringDiagnosticContext, UnsupportedFeature};
+pub use diagnostics::*;
 use expressions::cast_kind;
 
 const AUTO_GLOBAL_NAMES: &[&str] = &[
@@ -2180,12 +2180,11 @@ mod tests {
 
     #[test]
     fn unsupported_feature_diagnostic_has_shared_envelope() {
-        let diagnostic = LoweringDiagnostic {
-            id: UnsupportedFeature::Eval.diagnostic_id().to_string(),
-            feature: UnsupportedFeature::Eval,
-            span: IrSpan::new(FileId::new(0), 10, 14),
-            message: "eval is not supported by IR lowering".to_string(),
-        };
+        let diagnostic = LoweringDiagnostic::unsupported(
+            UnsupportedFeature::Eval,
+            IrSpan::new(FileId::new(0), 10, 14),
+            "eval is not supported by IR lowering",
+        );
         let context = LoweringDiagnosticContext {
             source_id: Some("source:0".to_string()),
             origin: Some("hir:expr:2".to_string()),

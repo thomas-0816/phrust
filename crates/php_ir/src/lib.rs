@@ -36,8 +36,9 @@ pub use instruction::{
     InstructionKind, IrDiagnosticSeverity, UnaryOp,
 };
 pub use lower::{
-    LoweringContext, LoweringDiagnostic, LoweringOptions, LoweringResult, UnsupportedFeature,
-    lower_frontend_result,
+    LoweringContext, LoweringDiagnostic, LoweringDiagnosticPayload, LoweringOptions,
+    LoweringResult, MISSING_TRAIT_DIAGNOSTIC_CODE, MissingTraitDiagnostic, MissingTraitOwnerKind,
+    UnsupportedFeature, lower_frontend_result,
 };
 pub use module::{
     AttributeEntry, ClassEntry, ClassEnumBackingType, ClassEnumCaseEntry, ClassFlags,

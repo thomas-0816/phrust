@@ -1,32 +1,28 @@
 {
   "diagnostic_string_parsing_allowlist": [
     {
-      "id": "crates/php_vm/src/include.rs:diagnostic_code_prefix_parse:0e24b9d25125:1",
-      "reason": "pre-remediation diagnostic display parsing; remove in Prompt 02 or Prompt 15"
-    },
-    {
       "id": "crates/php_vm/src/vm/arguments.rs:diagnostic_code_prefix_parse:b821d1b33019:1",
-      "reason": "pre-remediation diagnostic display parsing; remove in Prompt 02 or Prompt 15"
+      "reason": "legacy parameter type-check helper returns encoded text; replace with a typed runtime error in Prompt 07"
     },
     {
       "id": "crates/php_vm/src/vm/mod.rs:diagnostic_code_prefix_parse:ecc50dc89547:1",
-      "reason": "pre-remediation diagnostic display parsing; remove in Prompt 02 or Prompt 15"
+      "reason": "function-redeclaration rendering strips a legacy code prefix; move to typed VM diagnostics in Prompt 10"
     },
     {
       "id": "crates/php_vm/src/vm/mod.rs:diagnostic_target_parse:d87ea97a5782:1",
-      "reason": "pre-remediation diagnostic display parsing; remove in Prompt 02 or Prompt 15"
+      "reason": "include warning rendering recovers target and reason from legacy text; replace with typed include failures in Prompt 04"
     },
     {
       "id": "crates/php_vm/src/vm/mod.rs:diagnostic_code_prefix_parse:51b252e1a273:1",
-      "reason": "pre-remediation diagnostic display parsing; remove in Prompt 02 or Prompt 15"
+      "reason": "builtin type-error rendering strips a legacy runtime prefix; replace at the runtime boundary in Prompt 07"
     },
     {
       "id": "crates/php_vm/src/vm/mod.rs:diagnostic_code_prefix_parse:99236549912f:1",
-      "reason": "pre-remediation diagnostic display parsing; remove in Prompt 02 or Prompt 15"
+      "reason": "negative string-offset rendering recovers a typed index from legacy text; move to typed VM diagnostics in Prompt 10"
     },
     {
       "id": "crates/php_vm_cli/src/commands.rs:diagnostic_target_parse:c7d6758f4d23:1",
-      "reason": "pre-remediation diagnostic display parsing; remove in Prompt 02 or Prompt 15"
+      "reason": "CLI oracle comparison extracts an include target from legacy text; consume the typed include failure introduced in Prompt 04"
     }
   ],
   "generated_file_allowlist": [

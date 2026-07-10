@@ -1926,7 +1926,7 @@ fn compile_loaded_include_with_dependencies(
             break lowering;
         }
 
-        let missing_traits = missing_local_trait_diagnostics(&lowering);
+        let missing_traits = missing_local_trait_names(&lowering);
         if missing_traits.is_empty() || missing_traits == last_missing_traits {
             break lowering;
         }
@@ -2010,21 +2010,17 @@ fn ir_lowering_failure_detail(lowering: &php_ir::LoweringResult) -> String {
     "unknown IR lowering failure".to_string()
 }
 
-fn missing_local_trait_diagnostics(lowering: &php_ir::LoweringResult) -> Vec<String> {
+fn missing_local_trait_names(lowering: &php_ir::LoweringResult) -> Vec<String> {
     let mut traits = Vec::new();
     for diagnostic in &lowering.diagnostics {
-        let Some(rest) = diagnostic
-            .message
-            .strip_prefix("E_PHP_IR_TRAIT_NOT_FOUND: trait ")
-        else {
+        let Some(missing_trait) = diagnostic.missing_trait() else {
             continue;
         };
-        let Some((trait_name, _)) = rest.split_once(" used by ") else {
-            continue;
-        };
-        let trait_name = trait_name.trim();
-        if !trait_name.is_empty() && !traits.iter().any(|existing| existing == trait_name) {
-            traits.push(trait_name.to_owned());
+        if !traits
+            .iter()
+            .any(|existing| existing == &missing_trait.normalized_name)
+        {
+            traits.push(missing_trait.normalized_name.clone());
         }
     }
     traits
@@ -2803,6 +2799,34 @@ mod tests {
         assert_ne!(baseline, optimized);
         assert_ne!(baseline, different_version);
         assert_ne!(baseline, different_profile);
+    }
+
+    #[test]
+    fn missing_trait_resolution_uses_typed_payload_not_rendered_message() {
+        let source = concat!(
+            "<?php namespace Demo; ",
+            "use Vendor\\Package\\Odd_used_by_Trait as LocalAlias; ",
+            "class Owner { use LocalAlias; }"
+        );
+        let frontend = php_semantics::analyze_source(source);
+        let mut lowering = php_ir::lower_frontend_result(
+            &frontend,
+            php_ir::LoweringOptions {
+                source_path: "typed-trait.php".to_string(),
+                source_text: Some(source.to_string()),
+                ..php_ir::LoweringOptions::default()
+            },
+        );
+
+        let expected = vec!["vendor\\package\\odd_used_by_trait".to_string()];
+        assert_eq!(missing_local_trait_names(&lowering), expected);
+        lowering
+            .diagnostics
+            .iter_mut()
+            .find(|diagnostic| diagnostic.missing_trait().is_some())
+            .expect("missing-trait diagnostic")
+            .message = "rendering can change without changing compiler control flow".to_string();
+        assert_eq!(missing_local_trait_names(&lowering), expected);
     }
 
     #[test]

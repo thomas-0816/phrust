@@ -19,6 +19,18 @@ code does not hide debt. Removing a finding is allowed; adding one fails the
 gate until the architecture is deliberately reviewed and the baseline is
 updated.
 
+## Diagnostic control-flow debt
+
+Missing-trait recovery uses the typed `php_ir` lowering payload; include
+compilation no longer parses `E_PHP_IR_TRAIT_NOT_FOUND` rendering. The inventory
+has no allowance for that pattern, so reintroducing the former prefix parser
+fails the gate.
+
+The remaining allowlisted parsers are narrower legacy rendering boundaries:
+typed include failures are owned by Prompt 04, runtime type errors by Prompt 07,
+and VM diagnostic construction by Prompt 10. Each baseline entry names its
+specific migration owner; new diagnostic-string control flow remains rejected.
+
 Reports are generated under `target/architecture/` and remain untracked. To
 lower the baseline after a remediation, run:
 

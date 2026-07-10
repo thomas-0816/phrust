@@ -332,12 +332,8 @@ impl LoweringContext<'_> {
         message: impl Into<String>,
     ) {
         let span = span_from_range(self.file, range);
-        self.diagnostics.push(LoweringDiagnostic {
-            id: feature.diagnostic_id().to_string(),
-            feature,
-            span,
-            message: message.into(),
-        });
+        self.diagnostics
+            .push(LoweringDiagnostic::unsupported(feature, span, message));
     }
 
     pub(super) fn span_for(&self, id: SourceMappedId) -> TextRange {
