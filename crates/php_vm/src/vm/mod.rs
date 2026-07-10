@@ -8019,6 +8019,8 @@ impl Vm {
             self.record_counter_bytecode_lower_success();
             let slot_count = crate::bytecode::assign_function_call_cache_slots(&mut plan.unit);
             plan.call_slots = crate::bytecode::DenseCallSlotTable::with_slot_count(slot_count);
+            plan.property_slots =
+                crate::bytecode::DensePropertySlotTable::with_slot_count(slot_count);
             return Ok(plan);
         }
 
@@ -8073,6 +8075,7 @@ impl Vm {
             functions,
             call_shape_meta: Vec::new(),
             call_slots: crate::bytecode::DenseCallSlotTable::with_slot_count(slot_count),
+            property_slots: crate::bytecode::DensePropertySlotTable::with_slot_count(slot_count),
         })
     }
 
@@ -9560,6 +9563,9 @@ impl Vm {
                             object,
                             value,
                             span,
+                            // Dynamic property names are not site-invariant,
+                            // so this arm never carries a cache slot.
+                            None,
                         ) {
                             Ok(value) => value,
                             Err(result) => {
@@ -13893,6 +13899,12 @@ impl Vm {
                             property,
                             object,
                             span,
+                            if self.options.inline_caches.enabled() {
+                                plan.zip(instruction.cache_slot)
+                                    .map(|(plan, slot)| (&plan.property_slots, slot))
+                            } else {
+                                None
+                            },
                         ) {
                             Ok(value) => value,
                             Err(result) => {
@@ -13982,6 +13994,12 @@ impl Vm {
                             object,
                             value,
                             span,
+                            if self.options.inline_caches.enabled() {
+                                plan.zip(instruction.cache_slot)
+                                    .map(|(plan, slot)| (&plan.property_slots, slot))
+                            } else {
+                                None
+                            },
                         ) {
                             Ok(value) => value,
                             Err(result) => {
@@ -14447,6 +14465,7 @@ impl Vm {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn dense_fetch_property_value(
         &self,
         compiled: &CompiledUnit,
@@ -14460,6 +14479,10 @@ impl Vm {
         property: &str,
         object_value: Value,
         span: IrSpan,
+        property_slot: Option<(
+            &crate::bytecode::DensePropertySlotTable,
+            crate::bytecode::DenseCacheSlotId,
+        )>,
     ) -> Result<Value, VmResult> {
         let object = match object_value {
             Value::Object(object) => object,
@@ -14522,6 +14545,36 @@ impl Vm {
             });
         }
 
+        // Slot-indexed L1: a warm monomorphic repeat skips the class-table
+        // lookup, both name normalizations, and the keyed inline-cache walks
+        // below. Raw (case-preserved) receiver/scope compares are strictly
+        // narrower than the keyed table's normalized guards, so a raw
+        // mismatch only demotes to the keyed path.
+        let scope = current_scope_class(compiled, stack);
+        if let Some((table, slot)) = property_slot
+            && let Some(target) = table.fetch_hit(
+                slot,
+                self.vm_nonce,
+                state.lookup_epoch(),
+                &object.class_name_handle(),
+                scope.as_deref(),
+            )
+        {
+            match self.read_property_fetch_target(compiled, target, &object, stack, state) {
+                Ok(PropertyFetchCacheRead::Value(value)) => {
+                    self.record_counter_dense_property_ic_reuse();
+                    self.record_counter_dense_property_fetch_hit();
+                    return Ok(value);
+                }
+                Ok(PropertyFetchCacheRead::Fallback) => {}
+                Err(message) => {
+                    return Err(
+                        self.dense_runtime_error(compiled, output, stack, state, span, message)
+                    );
+                }
+            }
+        }
+
         let class = match lookup_class_in_state(compiled, state, &object.class_name()) {
             Some(class) => class,
             None => {
@@ -14539,7 +14592,6 @@ impl Vm {
                 ));
             }
         };
-        let scope = current_scope_class(compiled, stack);
         let normalized_scope = scope.as_deref().map(normalize_class_name);
         let receiver_class = normalize_class_name(&object.class_name());
         let lookup_epoch = state.lookup_epoch();
@@ -14562,6 +14614,18 @@ impl Vm {
             normalized_scope.as_deref(),
             lookup_epoch,
         ) {
+            // Warm the slot from the keyed hit so the next repeat takes the
+            // indexed load instead of the keyed walks.
+            if let Some((table, slot)) = property_slot {
+                table.store_fetch(
+                    slot,
+                    self.vm_nonce,
+                    lookup_epoch,
+                    object.class_name_handle(),
+                    scope.clone(),
+                    target.clone(),
+                );
+            }
             match self.read_property_fetch_target(compiled, target, &object, stack, state) {
                 Ok(PropertyFetchCacheRead::Value(value)) => {
                     self.record_counter_dense_property_ic_reuse();
@@ -14813,6 +14877,10 @@ impl Vm {
         object_value: Value,
         value: Value,
         span: IrSpan,
+        property_slot: Option<(
+            &crate::bytecode::DensePropertySlotTable,
+            crate::bytecode::DenseCacheSlotId,
+        )>,
     ) -> Result<Value, VmResult> {
         let object = match object_value {
             Value::Object(object) => object,
@@ -14882,6 +14950,40 @@ impl Vm {
             return Ok(value);
         }
 
+        // Slot-indexed L1 mirroring the fetch path: raw receiver/scope
+        // guards, keyed table stays the L2.
+        let scope = current_scope_class(compiled, stack);
+        if let Some((table, slot)) = property_slot
+            && let Some(target) = table.assign_hit(
+                slot,
+                self.vm_nonce,
+                state.lookup_epoch(),
+                &object.class_name_handle(),
+                scope.as_deref(),
+            )
+        {
+            match self.write_property_assign_target(
+                compiled,
+                target,
+                &object,
+                value.clone(),
+                stack,
+                state,
+            ) {
+                Ok(PropertyAssignCacheWrite::Written(value)) => {
+                    self.record_counter_dense_property_ic_reuse();
+                    self.record_counter_dense_property_assignment_hit();
+                    return Ok(value);
+                }
+                Ok(PropertyAssignCacheWrite::Fallback) => {}
+                Err(message) => {
+                    return Err(
+                        self.dense_runtime_error(compiled, output, stack, state, span, message)
+                    );
+                }
+            }
+        }
+
         let class = match lookup_class_in_state(compiled, state, &object.class_name()) {
             Some(class) => class,
             None => {
@@ -14899,7 +15001,6 @@ impl Vm {
                 ));
             }
         };
-        let scope = current_scope_class(compiled, stack);
         let normalized_scope = scope.as_deref().map(normalize_class_name);
         let receiver_class = normalize_class_name(&object.class_name());
         let lookup_epoch = state.lookup_epoch();
@@ -14922,6 +15023,17 @@ impl Vm {
             normalized_scope.as_deref(),
             lookup_epoch,
         ) {
+            // Warm the slot from the keyed hit.
+            if let Some((table, slot)) = property_slot {
+                table.store_assign(
+                    slot,
+                    self.vm_nonce,
+                    lookup_epoch,
+                    object.class_name_handle(),
+                    scope.clone(),
+                    target.clone(),
+                );
+            }
             match self.write_property_assign_target(
                 compiled,
                 target,

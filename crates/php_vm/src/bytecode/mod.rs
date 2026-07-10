@@ -875,6 +875,9 @@ pub struct DenseExecutionPlan {
     /// keyed inline-cache table walks. Empty when a plan is constructed
     /// outside the VM's plan builder.
     pub call_slots: DenseCallSlotTable,
+    /// Slot-indexed property fetch/assign inline-cache entries, sharing the
+    /// `cache_slot` id space with `call_slots`.
+    pub property_slots: DensePropertySlotTable,
 }
 
 /// One slot-indexed dense function-call cache entry. The callee name is a
@@ -972,19 +975,170 @@ pub fn assign_function_call_cache_slots(unit: &mut DenseBytecodeUnit) -> u32 {
     let mut next = unit.cache_slots.len() as u32;
     for function in &mut unit.functions {
         for instruction in &mut function.instructions {
-            if matches!(
-                instruction.opcode,
-                DenseOpcode::CallFunction | DenseOpcode::CallFunctionDiscard
-            ) && instruction.cache_slot.is_none()
-            {
+            let label = match instruction.opcode {
+                DenseOpcode::CallFunction | DenseOpcode::CallFunctionDiscard => "function_call",
+                DenseOpcode::FetchProperty => "property_fetch",
+                DenseOpcode::AssignProperty => "property_assign",
+                _ => continue,
+            };
+            if instruction.cache_slot.is_none() {
                 instruction.cache_slot = Some(DenseCacheSlotId::new(next));
-                unit.cache_slots.push("function_call".to_owned());
+                unit.cache_slots.push(label.to_owned());
                 next += 1;
             }
         }
     }
     next
 }
+
+/// One slot-indexed dense property cache entry. The property name is a
+/// compile-time operand, so the guards are the populating VM instance, the
+/// function-table epoch, and the receiver class plus calling scope observed
+/// verbatim (case-preserved): raw equality is strictly narrower than the
+/// keyed table's normalized compare, so a raw mismatch only demotes to the
+/// keyed lookup.
+#[derive(Clone, Debug, Default)]
+struct DensePropertySlotEntry {
+    vm_nonce: u64,
+    epoch: crate::inline_cache::InvalidationEpoch,
+    receiver_class: Option<std::sync::Arc<str>>,
+    scope: Option<Option<String>>,
+    fetch: Option<crate::inline_cache::PropertyFetchCacheTarget>,
+    assign: Option<crate::inline_cache::PropertyAssignCacheTarget>,
+}
+
+/// Slot-indexed property fetch/assign inline-cache storage attached to a
+/// dense plan; same lifecycle and equality semantics as
+/// [`DenseCallSlotTable`].
+#[derive(Debug, Default)]
+pub struct DensePropertySlotTable {
+    entries: std::cell::RefCell<Vec<DensePropertySlotEntry>>,
+}
+
+impl DensePropertySlotTable {
+    /// Creates a table with `count` cold slots.
+    #[must_use]
+    pub fn with_slot_count(count: u32) -> Self {
+        Self {
+            entries: std::cell::RefCell::new(vec![
+                DensePropertySlotEntry::default();
+                count as usize
+            ]),
+        }
+    }
+
+    fn guards_match(
+        entry: &DensePropertySlotEntry,
+        vm_nonce: u64,
+        epoch: crate::inline_cache::InvalidationEpoch,
+        receiver_class: &str,
+        scope: Option<&str>,
+    ) -> bool {
+        entry.vm_nonce == vm_nonce
+            && entry.epoch == epoch
+            && entry.receiver_class.as_deref() == Some(receiver_class)
+            && entry
+                .scope
+                .as_ref()
+                .is_some_and(|cached| cached.as_deref() == scope)
+    }
+
+    /// Returns the cached fetch target when every guard matches.
+    #[must_use]
+    pub fn fetch_hit(
+        &self,
+        slot: DenseCacheSlotId,
+        vm_nonce: u64,
+        epoch: crate::inline_cache::InvalidationEpoch,
+        receiver_class: &str,
+        scope: Option<&str>,
+    ) -> Option<crate::inline_cache::PropertyFetchCacheTarget> {
+        let entries = self.entries.borrow();
+        let entry = entries.get(slot.index())?;
+        Self::guards_match(entry, vm_nonce, epoch, receiver_class, scope)
+            .then(|| entry.fetch.clone())
+            .flatten()
+    }
+
+    /// Returns the cached assign target when every guard matches.
+    #[must_use]
+    pub fn assign_hit(
+        &self,
+        slot: DenseCacheSlotId,
+        vm_nonce: u64,
+        epoch: crate::inline_cache::InvalidationEpoch,
+        receiver_class: &str,
+        scope: Option<&str>,
+    ) -> Option<crate::inline_cache::PropertyAssignCacheTarget> {
+        let entries = self.entries.borrow();
+        let entry = entries.get(slot.index())?;
+        Self::guards_match(entry, vm_nonce, epoch, receiver_class, scope)
+            .then(|| entry.assign.clone())
+            .flatten()
+    }
+
+    /// Installs a fetch target under the given guards.
+    pub fn store_fetch(
+        &self,
+        slot: DenseCacheSlotId,
+        vm_nonce: u64,
+        epoch: crate::inline_cache::InvalidationEpoch,
+        receiver_class: std::sync::Arc<str>,
+        scope: Option<String>,
+        target: crate::inline_cache::PropertyFetchCacheTarget,
+    ) {
+        let mut entries = self.entries.borrow_mut();
+        let Some(entry) = entries.get_mut(slot.index()) else {
+            return;
+        };
+        *entry = DensePropertySlotEntry {
+            vm_nonce,
+            epoch,
+            receiver_class: Some(receiver_class),
+            scope: Some(scope),
+            fetch: Some(target),
+            assign: None,
+        };
+    }
+
+    /// Installs an assign target under the given guards.
+    pub fn store_assign(
+        &self,
+        slot: DenseCacheSlotId,
+        vm_nonce: u64,
+        epoch: crate::inline_cache::InvalidationEpoch,
+        receiver_class: std::sync::Arc<str>,
+        scope: Option<String>,
+        target: crate::inline_cache::PropertyAssignCacheTarget,
+    ) {
+        let mut entries = self.entries.borrow_mut();
+        let Some(entry) = entries.get_mut(slot.index()) else {
+            return;
+        };
+        *entry = DensePropertySlotEntry {
+            vm_nonce,
+            epoch,
+            receiver_class: Some(receiver_class),
+            scope: Some(scope),
+            fetch: None,
+            assign: Some(target),
+        };
+    }
+}
+
+impl Clone for DensePropertySlotTable {
+    fn clone(&self) -> Self {
+        Self::with_slot_count(self.entries.borrow().len() as u32)
+    }
+}
+
+impl PartialEq for DensePropertySlotTable {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for DensePropertySlotTable {}
 
 /// Function-invariant facts the dense call path consults on every call.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1355,6 +1509,7 @@ fn lower_mixed_plan(unit: &IrUnit) -> DenseExecutionPlan {
         functions,
         call_shape_meta: Vec::new(),
         call_slots: DenseCallSlotTable::default(),
+        property_slots: DensePropertySlotTable::default(),
     }
 }
 
