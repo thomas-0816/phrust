@@ -337,5 +337,15 @@ mod tests {
             shmop_segment_id("shmop_size", &private_a).expect("id a"),
             shmop_segment_id("shmop_size", &private_b).expect("id b")
         );
+        // Delete every created segment: SysV shared memory outlives the
+        // process, and the keyed segment otherwise makes the exclusive
+        // create above fail on every subsequent run.
+        for segment in [created, private_a, private_b] {
+            assert_eq!(
+                builtin_shmop_delete(&mut context, vec![segment], RuntimeSourceSpan::default())
+                    .expect("delete segment"),
+                Value::Bool(true)
+            );
+        }
     }
 }
