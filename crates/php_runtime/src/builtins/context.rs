@@ -3296,6 +3296,19 @@ mod sysvmsg_ffi {
 
     use super::SysvMessageQueueStats;
 
+    #[cfg(any(target_os = "linux", target_os = "emscripten", target_os = "fuchsia"))]
+    fn current_byte_count(stats: &libc::msqid_ds) -> usize {
+        // Linux-family libc headers expose `msg_cbytes` as a C macro alias for
+        // the ABI field named `__msg_cbytes`; Rust's libc bindings expose the
+        // field itself rather than the macro.
+        stats.__msg_cbytes as usize
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "emscripten", target_os = "fuchsia")))]
+    fn current_byte_count(stats: &libc::msqid_ds) -> usize {
+        stats.msg_cbytes as usize
+    }
+
     pub(super) unsafe fn msgget(key: libc::key_t, flags: libc::c_int) -> libc::c_int {
         // SAFETY: the caller handles the raw return value.
         unsafe { libc::msgget(key, flags) }
@@ -3338,7 +3351,7 @@ mod sysvmsg_ffi {
             owner_gid: stats.msg_perm.gid as i64,
             permissions: stats.msg_perm.mode as i64,
             message_count: stats.msg_qnum as usize,
-            byte_count: stats.msg_cbytes as usize,
+            byte_count: current_byte_count(&stats),
             max_bytes: stats.msg_qbytes as i64,
         })
     }

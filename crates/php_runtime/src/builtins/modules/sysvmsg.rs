@@ -435,6 +435,26 @@ mod tests {
             .expect("send"),
             Value::Bool(true)
         );
+
+        let pending_stats = builtin_msg_stat_queue(
+            &mut context,
+            vec![queue.clone()],
+            RuntimeSourceSpan::default(),
+        )
+        .expect("pending stats");
+        let Value::Array(pending_stats) = pending_stats else {
+            panic!("expected pending stats array");
+        };
+        assert_eq!(
+            pending_stats.get(&string_key("msg_qnum")),
+            Some(&Value::Int(1))
+        );
+        assert!(
+            pending_stats
+                .get(&string_key("msg_cbytes"))
+                .is_some_and(|value| int_arg("test", value).is_ok_and(|bytes| bytes > 0))
+        );
+
         let received_type = ReferenceCell::new(Value::Null);
         let received_message = ReferenceCell::new(Value::Null);
         assert_eq!(
