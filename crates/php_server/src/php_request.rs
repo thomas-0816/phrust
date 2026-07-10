@@ -73,7 +73,11 @@ pub(crate) async fn execute_php_request(
     route_resolution: Duration,
 ) -> (Response<ResponseBody>, Option<bool>) {
     let PartsAndBody { parts, body } = request;
-    let mut trace = PerfTraceEvent {
+    // Trace events only reach the perf-trace/request-profile writers; skip
+    // the per-request string clones and phase vector entirely when neither
+    // consumer is configured.
+    let collect_request_trace = state.perf_trace.is_some() || state.request_profile.is_some();
+    let mut trace = collect_request_trace.then(|| PerfTraceEvent {
         request_id: request_id.clone(),
         method: parts.method.to_string(),
         path: parts
@@ -83,7 +87,7 @@ pub(crate) async fn execute_php_request(
         script_path: script_path.display().to_string(),
         phases: vec![("route_resolution", route_resolution.as_nanos())],
         ..PerfTraceEvent::default()
-    };
+    });
     emit_server_debug_lazy(
         &state,
         Some(&request_id),
@@ -197,7 +201,9 @@ pub(crate) async fn execute_php_request(
         "body_read",
         body_started.elapsed(),
     );
-    trace.body_bytes = body.len() as u64;
+    if let Some(trace) = trace.as_mut() {
+        trace.body_bytes = body.len() as u64;
+    }
     emit_server_debug_lazy(
         &state,
         Some(&request_id),
@@ -245,10 +251,8 @@ pub(crate) async fn execute_php_request(
     // Cache-stat deltas only surface through the perf-trace/request-profile
     // writers; snapshotting locks every script-cache shard, so skip it when
     // no trace consumer is configured.
-    let collect_cache_trace_counters =
-        state.perf_trace.is_some() || state.request_profile.is_some();
     let script_cache_before =
-        collect_cache_trace_counters.then(|| state.engine.script_cache.cache_stats());
+        collect_request_trace.then(|| state.engine.script_cache.cache_stats());
     let script_cache_started = Instant::now();
     let lookup = match state.compile_script(&script_path) {
         Ok(lookup) => {
@@ -312,7 +316,7 @@ pub(crate) async fn execute_php_request(
         "script_cache_lookup",
         script_cache_started.elapsed(),
     );
-    if let Some(script_cache_before) = &script_cache_before {
+    if let Some((script_cache_before, trace)) = script_cache_before.as_ref().zip(trace.as_mut()) {
         let script_cache_after = state.engine.script_cache.cache_stats();
         trace.counters.extend([
             (
@@ -529,7 +533,7 @@ pub(crate) async fn execute_php_request(
         },
     );
     let include_cache_before =
-        collect_cache_trace_counters.then(|| state.engine.include_cache.cache_stats());
+        collect_request_trace.then(|| state.engine.include_cache.cache_stats());
     let profile_requested = request_profile_requested(&state, &parts.headers);
     let result = execute_compiled_php_in_blocking_region(
         Arc::clone(&state),
@@ -546,7 +550,7 @@ pub(crate) async fn execute_php_request(
         "php_vm_execution",
         execution_started.elapsed(),
     );
-    if let Some(include_cache_before) = &include_cache_before {
+    if let Some((include_cache_before, trace)) = include_cache_before.as_ref().zip(trace.as_mut()) {
         let include_cache_after = state.engine.include_cache.cache_stats();
         trace.counters.extend([
             (
@@ -613,11 +617,13 @@ pub(crate) async fn execute_php_request(
     }
     match result {
         Ok(mut output) => {
-            append_vm_counters_to_trace(&mut trace, output.counters.as_ref());
-            if state.request_profile.is_some() {
-                trace.profile_counters = output.counters.clone();
+            if let Some(trace) = trace.as_mut() {
+                append_vm_counters_to_trace(trace, output.counters.as_ref());
+                if state.request_profile.is_some() {
+                    trace.profile_counters = output.counters.clone();
+                }
+                trace.profile_requested = profile_requested;
             }
-            trace.profile_requested = profile_requested;
             emit_server_debug_lazy(
                 &state,
                 Some(&request_id),
@@ -698,11 +704,14 @@ pub(crate) async fn execute_php_request(
                 "session_finalize",
                 session_finalize_started.elapsed(),
             );
-            trace.runtime_diagnostics = output.runtime_diagnostics.len() as u64;
+            let runtime_diagnostics = output.runtime_diagnostics.len() as u64;
+            if let Some(trace) = trace.as_mut() {
+                trace.runtime_diagnostics = runtime_diagnostics;
+            }
             state
                 .metrics
                 .runtime_diagnostics
-                .fetch_add(trace.runtime_diagnostics, Ordering::Relaxed);
+                .fetch_add(runtime_diagnostics, Ordering::Relaxed);
             if php_execution_timed_out(&output) {
                 state
                     .metrics
@@ -1764,27 +1773,26 @@ fn session_load_callback(state: &AppState) -> SessionLoadCallback {
 
 fn record_phase(
     state: &AppState,
-    trace: &mut PerfTraceEvent,
+    trace: &mut Option<PerfTraceEvent>,
     phase: RequestPhase,
     name: &'static str,
     duration: Duration,
 ) {
     let nanos = duration.as_nanos();
     state.metrics.record_phase(phase, nanos);
-    trace.phases.push((name, nanos));
+    if let Some(trace) = trace.as_mut() {
+        trace.phases.push((name, nanos));
+    }
 }
 
 fn finish_php_request(
     state: &AppState,
-    mut trace: PerfTraceEvent,
+    trace: Option<PerfTraceEvent>,
     response: Response<ResponseBody>,
     cache_hit: Option<bool>,
     failure_phase: Option<&'static str>,
 ) -> (Response<ResponseBody>, Option<bool>) {
-    trace.status = response.status().as_u16();
-    trace.cache_hit = cache_hit;
-    trace.failure_phase = failure_phase;
-    trace.response_bytes = response
+    let response_bytes = response
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
@@ -1799,17 +1807,23 @@ fn finish_php_request(
     state
         .metrics
         .response_output_bytes
-        .fetch_add(trace.response_bytes, Ordering::Relaxed);
-    if let Some(writer) = &state.perf_trace
-        && let Err(error) = writer.write(&trace)
-    {
-        warn!(%error, path=%writer.path().display(), "perf trace write failed");
-    }
-    if trace.profile_requested
-        && let Some(writer) = &state.request_profile
-        && let Err(error) = writer.write(&trace, trace.profile_counters.as_ref())
-    {
-        warn!(%error, dir=%writer.dir().display(), "request profile write failed");
+        .fetch_add(response_bytes, Ordering::Relaxed);
+    if let Some(mut trace) = trace {
+        trace.status = response.status().as_u16();
+        trace.cache_hit = cache_hit;
+        trace.failure_phase = failure_phase;
+        trace.response_bytes = response_bytes;
+        if let Some(writer) = &state.perf_trace
+            && let Err(error) = writer.write(&trace)
+        {
+            warn!(%error, path=%writer.path().display(), "perf trace write failed");
+        }
+        if trace.profile_requested
+            && let Some(writer) = &state.request_profile
+            && let Err(error) = writer.write(&trace, trace.profile_counters.as_ref())
+        {
+            warn!(%error, dir=%writer.dir().display(), "request profile write failed");
+        }
     }
     (response, cache_hit)
 }
