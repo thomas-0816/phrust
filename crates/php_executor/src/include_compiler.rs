@@ -114,38 +114,41 @@ fn compile_include(
                 );
                 continue;
             }
-            let Some(dependency_source) =
-                loader.load_compilation_dependency(&request.normalized_name)?
-            else {
-                continue;
-            };
-            let probe = php_ir::CompilationSession::new(
-                dependency_source
-                    .loaded()
-                    .canonical_path
-                    .to_string_lossy()
-                    .into_owned(),
-                dependency_source.loaded().source.clone(),
-            );
-            if !probe
-                .declared_trait_names(probe.entry())
-                .iter()
-                .any(|name| name == &request.normalized_name)
-            {
-                return Err(include_compile_error(
-                    "E_PHP_VM_INCLUDE_DEPENDENCY_MISMATCH",
-                    format!(
-                        "mapped file {} does not declare trait `{}`",
-                        dependency_source.loaded().canonical_path.display(),
-                        request.normalized_name
-                    ),
-                )
-                .with_context("declaration", &request.normalized_name)
-                .with_context(
-                    "canonical_path",
-                    dependency_source.loaded().canonical_path.display(),
-                ));
-            }
+            let dependency_source =
+                match loader.load_compilation_dependency(&request.normalized_name)? {
+                    Some(dependency_source) => {
+                        if !source_declares_trait(&dependency_source, &request.normalized_name) {
+                            return Err(include_compile_error(
+                                "E_PHP_VM_INCLUDE_DEPENDENCY_MISMATCH",
+                                format!(
+                                    "mapped file {} does not declare trait `{}`",
+                                    dependency_source.loaded().canonical_path.display(),
+                                    request.normalized_name
+                                ),
+                            )
+                            .with_context("declaration", &request.normalized_name)
+                            .with_context(
+                                "canonical_path",
+                                dependency_source.loaded().canonical_path.display(),
+                            ));
+                        }
+                        dependency_source
+                    }
+                    // No explicit mapping: infer the trait's file from the
+                    // requesting file's own PSR-4 layout, the same file the
+                    // reference autoloader would pull in at class-link time.
+                    // A miss, a policy-rejected path, or a file that does not
+                    // declare the trait falls through to the standard
+                    // missing-trait diagnostic.
+                    None => {
+                        let Some(dependency_source) =
+                            load_psr_inferred_trait(&session, file_id, &request, loader)
+                        else {
+                            continue;
+                        };
+                        dependency_source
+                    }
+                };
 
             let path = dependency_source.loaded().canonical_path.clone();
             let dependency = session.add_dependency(
@@ -236,6 +239,48 @@ fn compile_include(
         unit: CompiledUnit::new(lowering.unit),
         dependencies,
     })
+}
+
+fn source_declares_trait(source: &ValidatedIncludeSource, normalized_name: &str) -> bool {
+    let probe = php_ir::CompilationSession::new(
+        source
+            .loaded()
+            .canonical_path
+            .to_string_lossy()
+            .into_owned(),
+        source.loaded().source.clone(),
+    );
+    probe
+        .declared_trait_names(probe.entry())
+        .iter()
+        .any(|name| name == normalized_name)
+}
+
+/// Loads the trait file a PSR-4 autoloader would provide for `request`,
+/// inferred from the requesting file's namespace-to-path layout. Returns
+/// `None` when inference fails, the loader's root policy rejects the file,
+/// or the file does not declare the requested trait.
+fn load_psr_inferred_trait(
+    session: &php_ir::CompilationSession,
+    file_id: php_ir::CompilationFileId,
+    request: &php_ir::UnresolvedTraitRequest,
+    loader: &IncludeLoader,
+) -> Option<ValidatedIncludeSource> {
+    let requesting = &session.files()[file_id.index()];
+    let requesting_path = std::path::Path::new(requesting.path());
+    let map = crate::psr_map::LocalPsrSourceMap::infer(requesting.source(), requesting_path)?;
+    let path = map.resolve_declaration(&request.normalized_name)?;
+    let path = path.to_string_lossy();
+    let resolved = loader
+        .resolve_with_include_path(
+            None,
+            &path,
+            &[],
+            loader.allowed_roots().first().map(std::path::Path::new),
+        )
+        .ok()?;
+    let dependency_source = loader.load_validated_resolved(&resolved).ok()?;
+    source_declares_trait(&dependency_source, &request.normalized_name).then_some(dependency_source)
 }
 
 fn include_compile_error(code: &'static str, message: impl Into<String>) -> VmError {

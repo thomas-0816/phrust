@@ -18,6 +18,7 @@ mod include_compiler;
 mod input;
 mod pipeline;
 mod profile;
+mod psr_map;
 mod request;
 
 pub use cache::{
