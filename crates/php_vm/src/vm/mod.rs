@@ -13963,6 +13963,18 @@ impl Vm {
             self.record_counter_dense_property_fallback("simplexml_property");
             return Ok(php_runtime::xml::simplexml_property(&object, property));
         }
+        if spl_array_object_uses_array_as_props(&object) {
+            // ARRAY_AS_PROPS routes property reads through the container's
+            // array storage; the rich arm takes the same branch.
+            self.record_counter_dense_property_fallback("spl_array_as_props");
+            return spl_container_offset_get(
+                &object,
+                &Value::String(PhpString::from_test_str(property)),
+            )
+            .map_err(|message| {
+                self.dense_runtime_error(compiled, output, stack, state, span, message)
+            });
+        }
 
         let class = match lookup_class_in_state(compiled, state, &object.class_name()) {
             Some(class) => class,
@@ -14304,6 +14316,20 @@ impl Vm {
             }
         };
 
+        if spl_array_object_uses_array_as_props(&object) {
+            // ARRAY_AS_PROPS routes property writes into the container's
+            // array storage; the rich arms take the same branch before any
+            // declared/dynamic property handling.
+            self.record_counter_dense_property_fallback("spl_array_as_props");
+            if let Err(message) = spl_container_offset_set(
+                &object,
+                Value::String(PhpString::from_test_str(property)),
+                value.clone(),
+            ) {
+                return Err(self.dense_runtime_error(compiled, output, stack, state, span, message));
+            }
+            return Ok(value);
+        }
         if is_std_class_runtime_class(&object.class_name()) {
             self.record_counter_dense_property_fallback("dynamic_property");
             object.set_property(property, value.clone());
