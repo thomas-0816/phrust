@@ -36,7 +36,11 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{task, time::timeout};
+use tokio::{
+    sync::{OwnedSemaphorePermit, TryAcquireError},
+    task,
+    time::timeout,
+};
 use tracing::{debug, warn};
 
 pub(crate) struct PartsAndBody {
@@ -209,7 +213,9 @@ pub(crate) async fn execute_php_request(
         peer,
         &request_id,
         Some(&script_path),
-    ) {
+    )
+    .await
+    {
         return finish_php_request(&state, trace, response, None, Some("builtin_router"));
     }
     emit_server_debug_lazy(
@@ -322,6 +328,13 @@ pub(crate) async fn execute_php_request(
         ),
     ]);
     let script_cache_hit = Some(lookup.hit);
+    let Some(cpu_permit) = acquire_cpu_execution_permit(&state).await else {
+        let response = response::text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PHP execution queue full\n",
+        );
+        return finish_php_request(&state, trace, response, script_cache_hit, Some("cpu_queue"));
+    };
     let script_name = script_name_for(&state.route_config.docroot, &script_path);
     let request_context_started = Instant::now();
     let mut request_context = http_runtime_context(
@@ -516,6 +529,7 @@ pub(crate) async fn execute_php_request(
         runtime_context,
         profile_requested,
     );
+    drop(cpu_permit);
     record_phase(
         &state,
         &mut trace,
@@ -769,7 +783,7 @@ pub(crate) async fn execute_php_request(
     }
 }
 
-pub(crate) fn execute_builtin_router_if_configured(
+pub(crate) async fn execute_builtin_router_if_configured(
     parts: &Parts,
     state: Arc<AppState>,
     body: Arc<[u8]>,
@@ -794,6 +808,12 @@ pub(crate) fn execute_builtin_router_if_configured(
     if target_script_path.is_some_and(|target| router_path == target) {
         return None;
     }
+    let Some(cpu_permit) = acquire_cpu_execution_permit(&state).await else {
+        return Some(response::text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PHP execution queue full\n",
+        ));
+    };
     let script_name = script_name_for(&state.route_config.docroot, &router_path);
     let request_context = http_runtime_context(
         parts,
@@ -850,6 +870,7 @@ pub(crate) fn execute_builtin_router_if_configured(
             ));
         }
     };
+    drop(cpu_permit);
     emit_server_debug_lazy(
         &state,
         Some(request_id),
@@ -871,6 +892,95 @@ pub(crate) fn execute_builtin_router_if_configured(
             parts.method == Method::HEAD,
             parts.version,
         ))
+    }
+}
+
+struct CpuQueueCancellationGuard<'a> {
+    metrics: &'a super::metrics::ServerMetrics,
+    completed: bool,
+}
+
+impl Drop for CpuQueueCancellationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.metrics
+                .cpu_execution_cancelled
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+async fn acquire_cpu_execution_permit(state: &AppState) -> Option<OwnedSemaphorePermit> {
+    let started = Instant::now();
+    match Arc::clone(&state.cpu_execution).try_acquire_owned() {
+        Ok(permit) => {
+            state
+                .metrics
+                .cpu_execution_admitted
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .record_phase(RequestPhase::CpuQueue, started.elapsed().as_nanos());
+            return Some(permit);
+        }
+        Err(TryAcquireError::Closed) => {
+            state
+                .metrics
+                .cpu_execution_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        Err(TryAcquireError::NoPermits) => {
+            state
+                .metrics
+                .cpu_execution_queued
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .cpu_execution_saturated
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let mut cancellation = CpuQueueCancellationGuard {
+        metrics: &state.metrics,
+        completed: false,
+    };
+    let permit = timeout(
+        state.request_timeout,
+        Arc::clone(&state.cpu_execution).acquire_owned(),
+    )
+    .await;
+    cancellation.completed = true;
+    state
+        .metrics
+        .record_phase(RequestPhase::CpuQueue, started.elapsed().as_nanos());
+    match permit {
+        Ok(Ok(permit)) => {
+            state
+                .metrics
+                .cpu_execution_admitted
+                .fetch_add(1, Ordering::Relaxed);
+            Some(permit)
+        }
+        Ok(Err(_)) => {
+            state
+                .metrics
+                .cpu_execution_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            None
+        }
+        Err(_) => {
+            state
+                .metrics
+                .cpu_execution_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .cpu_execution_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            None
+        }
     }
 }
 

@@ -4,11 +4,13 @@ use php_ir::constants::IrConstant;
 use php_ir::ids::FunctionId;
 use php_ir::module::{ClassEntry, normalize_class_name};
 use php_ir::source_map::IrSpan;
+use php_ir::verify::verify_unit;
 use php_ir::{ConstId, IrUnit};
+use php_runtime::RuntimeDiagnostic;
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -50,6 +52,53 @@ struct CompiledUnitInner {
     class_lookup: HashMap<String, usize>,
     unit_class_lookup: HashMap<String, usize>,
     source_line_cache: Mutex<Vec<Option<SourceLineIndex>>>,
+    prepared: PreparedUnit,
+}
+
+#[derive(Debug)]
+struct PreparedUnit {
+    ir_verification_errors: OnceLock<usize>,
+    class_validation: OnceLock<Result<(), PreparedClassValidationError>>,
+    ir_verification_runs: AtomicU64,
+    class_validation_runs: AtomicU64,
+    function_facts: Box<[OnceLock<PreparedFunctionFacts>]>,
+}
+
+impl PreparedUnit {
+    fn new(function_count: usize) -> Self {
+        Self {
+            ir_verification_errors: OnceLock::new(),
+            class_validation: OnceLock::new(),
+            ir_verification_runs: AtomicU64::new(0),
+            class_validation_runs: AtomicU64::new(0),
+            function_facts: (0..function_count).map(|_| OnceLock::new()).collect(),
+        }
+    }
+}
+
+/// Immutable class-validation failure retained with a compiled artifact.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedClassValidationError {
+    pub(crate) message: String,
+    pub(crate) diagnostic: Option<RuntimeDiagnostic>,
+}
+
+/// Number of immutable preparation passes performed for a compiled unit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PreparedUnitStats {
+    /// IR verification passes.
+    pub ir_verification_runs: u64,
+    /// Static class-table validation passes.
+    pub class_validation_runs: u64,
+}
+
+/// Function-invariant execution facts shared by all requests for a unit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PreparedFunctionFacts {
+    pub(crate) observes_argument_vector: bool,
+    pub(crate) has_try_or_finally: bool,
+    pub(crate) may_hold_destructor_sensitive_value: bool,
+    pub(crate) has_inline_blocker: bool,
 }
 
 /// Dense executable artifact kind cached for one compiled unit.
@@ -109,6 +158,7 @@ impl CompiledUnit {
     #[must_use]
     pub fn new(unit: IrUnit) -> Self {
         let file_count = unit.files.len();
+        let function_count = unit.functions.len();
         let function_table = unit
             .function_table
             .iter()
@@ -175,6 +225,7 @@ impl CompiledUnit {
                 class_lookup,
                 unit_class_lookup,
                 source_line_cache: Mutex::new(vec![None; file_count]),
+                prepared: PreparedUnit::new(function_count),
             }),
         }
     }
@@ -195,6 +246,64 @@ impl CompiledUnit {
     #[must_use]
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Returns the cached immutable IR verification result.
+    pub(crate) fn prepared_ir_verification_errors(&self) -> usize {
+        *self.inner.prepared.ir_verification_errors.get_or_init(|| {
+            self.inner
+                .prepared
+                .ir_verification_runs
+                .fetch_add(1, Ordering::Relaxed);
+            verify_unit(&self.inner.unit).map_or_else(|errors| errors.len(), |()| 0)
+        })
+    }
+
+    /// Returns cached static class validation, computing it at most once.
+    pub(crate) fn prepared_class_validation(
+        &self,
+        prepare: impl FnOnce() -> Result<(), PreparedClassValidationError>,
+    ) -> Result<(), PreparedClassValidationError> {
+        self.inner
+            .prepared
+            .class_validation
+            .get_or_init(|| {
+                self.inner
+                    .prepared
+                    .class_validation_runs
+                    .fetch_add(1, Ordering::Relaxed);
+                prepare()
+            })
+            .clone()
+    }
+
+    /// Preparation counters for validation and diagnostics.
+    #[must_use]
+    pub fn prepared_unit_stats(&self) -> PreparedUnitStats {
+        PreparedUnitStats {
+            ir_verification_runs: self
+                .inner
+                .prepared
+                .ir_verification_runs
+                .load(Ordering::Relaxed),
+            class_validation_runs: self
+                .inner
+                .prepared
+                .class_validation_runs
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    /// Returns immutable per-function facts, scanning a function at most once.
+    pub(crate) fn prepared_function_facts(
+        &self,
+        function: FunctionId,
+        prepare: impl FnOnce() -> PreparedFunctionFacts,
+    ) -> PreparedFunctionFacts {
+        let Some(facts) = self.inner.prepared.function_facts.get(function.index()) else {
+            return prepare();
+        };
+        *facts.get_or_init(prepare)
     }
 
     /// Finds a user function by normalized name.

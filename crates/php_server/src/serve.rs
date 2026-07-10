@@ -518,7 +518,7 @@ async fn execute_builtin_router_before_normal_route(
         "request body read completed",
         || BTreeMap::from([("body_bytes".to_string(), body.len().to_string())]),
     );
-    execute_builtin_router_if_configured(parts, state, body, peer, request_id, None)
+    execute_builtin_router_if_configured(parts, state, body, peer, request_id, None).await
 }
 
 pub(crate) fn clear_cache_response(state: &AppState, peer: SocketAddr) -> Response<ResponseBody> {

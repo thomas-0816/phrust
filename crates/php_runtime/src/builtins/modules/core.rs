@@ -11742,6 +11742,19 @@ mod tests {
             call(
                 "htmlspecialchars",
                 vec![
+                    Value::string("PhrustBenchmark &raquo; Feed"),
+                    Value::Int(3),
+                    Value::string("UTF-8"),
+                    Value::Bool(false)
+                ],
+                &mut output
+            ),
+            Value::string("PhrustBenchmark &raquo; Feed")
+        );
+        assert_eq!(
+            call(
+                "htmlspecialchars",
+                vec![
                     Value::string("&bogus;"),
                     Value::Int(3),
                     Value::string("UTF-8"),

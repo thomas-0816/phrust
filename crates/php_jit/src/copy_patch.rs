@@ -14,7 +14,9 @@
 //! flow, non-int values) is rejected by the region compiler and left to the
 //! interpreter.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(target_arch = "aarch64")]
+use std::collections::HashSet;
 
 use php_ir::instruction::{IrCallArgValueKind, TerminatorKind};
 use php_ir::{
@@ -28,10 +30,9 @@ use crate::aarch64::{
     Aarch64Assembler, D0, D1, D2, Label, Reg, SP, X0, X1, X2, X3, X4, X5, X6, X9,
 };
 use crate::abi::JitCValueTag;
-use crate::helpers::{
-    JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_RESUME_CALL_BASE, JIT_HELPER_STATUS_TAILCALL,
-    phrust_jit_abs_i64,
-};
+#[cfg(target_arch = "aarch64")]
+use crate::helpers::JIT_HELPER_STATUS_RESUME_CALL_BASE;
+use crate::helpers::{JIT_HELPER_STATUS_OK, JIT_HELPER_STATUS_TAILCALL, phrust_jit_abs_i64};
 use crate::region_ir::{
     NodeId, RegionBuilder, RegionCompareOp, RegionConst, RegionGraph, RegionId, RegionNode,
     RegionNodeKind, RegionValueType, VmSlotId,
@@ -705,6 +706,7 @@ fn emit_call_count(asm: &mut Aarch64Assembler, deopt: Label, dst: u32, arg: u32,
 /// The helper is a read-only packed-element fetch (no mutation, free, or VM
 /// re-entry); the borrowed array pointer is valid for the synchronous call per
 /// `marshal_local`'s contract.
+#[cfg(target_arch = "aarch64")]
 fn emit_array_fetch(
     asm: &mut Aarch64Assembler,
     deopt: Label,
@@ -923,6 +925,7 @@ fn emit_property_load(
 /// interior-mutability layer and never frees, invokes a hook/`__set`, or
 /// re-enters the VM (those shapes are excluded at recognition time or side-exit
 /// at the storage guard).
+#[cfg(target_arch = "aarch64")]
 fn emit_property_store(
     asm: &mut Aarch64Assembler,
     deopt: Label,
@@ -3428,6 +3431,7 @@ pub struct CompiledResumeRegion {
 /// `Binary` results by construction (a binary either produces an `Int` or takes
 /// the pre-call side exit); a `Compare` result is `Bool`, so it *un*-proves its
 /// destination; a `Copy` propagates its source's status.
+#[cfg(target_arch = "aarch64")]
 fn update_proven_int(proven: &mut HashSet<u32>, op: &ScalarIntOp) {
     match op {
         ScalarIntOp::Const { dst, .. }
@@ -3493,6 +3497,7 @@ fn update_proven_int(proven: &mut HashSet<u32>, op: &ScalarIntOp) {
 /// so marshaling never clobbers a live value. The first site's arguments are
 /// marshaled with `Int` guards (still pre-call); later sites' arguments are
 /// unguarded copies of proven slots.
+#[cfg(target_arch = "aarch64")]
 pub fn compile_scalar_int_resume_leaf(
     function: &IrFunction,
     constants: &[IrConstant],
@@ -3756,6 +3761,18 @@ pub fn compile_scalar_int_resume_leaf(
         buffer_slots,
         sites,
     })
+}
+
+/// The return-and-resume stencil currently has only an AArch64 emitter. Other
+/// targets retain the generic VM path until they gain an equivalent emitter.
+#[cfg(not(target_arch = "aarch64"))]
+pub fn compile_scalar_int_resume_leaf(
+    _function: &IrFunction,
+    _constants: &[IrConstant],
+    _permits: NativeCallPermits,
+    _callee_allowed: &dyn Fn(&str, usize) -> bool,
+) -> Option<CompiledResumeRegion> {
+    None
 }
 
 /// Map an IR `BinaryOp` to the native scalar-float subset (`Div` is included

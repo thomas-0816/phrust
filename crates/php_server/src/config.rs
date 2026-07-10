@@ -50,6 +50,7 @@ pub struct ServerConfig {
     pub session_cookie_path: String,
     pub sessions_enabled: bool,
     pub max_in_flight: usize,
+    pub cpu_execution_limit: usize,
     pub request_timeout_ms: u64,
     pub max_execution_ms: u64,
     pub max_vm_steps: usize,
@@ -58,7 +59,8 @@ pub struct ServerConfig {
     /// Declared mutability of the deployment root. `dev` (default) marks the
     /// docroot as mutable, which keeps every deployment-fingerprint-gated
     /// persistent reuse blocked; `immutable` is an operator declaration for
-    /// atomically swapped release directories. Metadata and counters only.
+    /// atomically swapped release directories whose cached source remains
+    /// trusted until cache clear or restart.
     pub deployment_mode: DeploymentRootMode,
     pub dense_includes: Option<DenseIncludeMode>,
     pub perf_ablation: ServerPerfAblation,
@@ -198,6 +200,9 @@ impl ServerConfig {
         let mut max_in_flight = file_config
             .positive_usize("max_in_flight")?
             .unwrap_or_else(default_max_in_flight);
+        let mut cpu_execution_limit = file_config
+            .positive_usize("cpu_execution_limit")?
+            .unwrap_or_else(default_cpu_execution_limit);
         let mut request_timeout_ms = file_config
             .positive_u64("request_timeout_ms")?
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
@@ -348,6 +353,10 @@ impl ServerConfig {
                 "--max-in-flight" => {
                     max_in_flight = parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
                 }
+                "--cpu-execution-limit" => {
+                    cpu_execution_limit =
+                        parse_positive_usize(&arg, &required_value(&arg, &mut args)?)?;
+                }
                 "--request-timeout-ms" => {
                     request_timeout_ms =
                         parse_positive_u64(&arg, &required_value(&arg, &mut args)?)?;
@@ -478,6 +487,7 @@ impl ServerConfig {
                 session_cookie_path,
                 sessions_enabled,
                 max_in_flight,
+                cpu_execution_limit,
                 request_timeout_ms,
                 max_execution_ms,
                 max_vm_steps,
@@ -533,6 +543,7 @@ impl ServerConfig {
             session_cookie_path,
             sessions_enabled,
             max_in_flight,
+            cpu_execution_limit,
             request_timeout_ms,
             max_execution_ms,
             max_vm_steps,
@@ -609,6 +620,7 @@ impl ServerConfig {
             session_cookie_path: DEFAULT_SESSION_COOKIE_PATH.to_string(),
             sessions_enabled: true,
             max_in_flight: default_max_in_flight(),
+            cpu_execution_limit: default_cpu_execution_limit(),
             request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             max_execution_ms: DEFAULT_MAX_EXECUTION_MS,
             max_vm_steps: DEFAULT_MAX_VM_STEPS,
@@ -661,6 +673,7 @@ Options:\n\
   --session-cookie-path <path> session cookie path (default: /)\n\
   --disable-sessions           disable persistent web sessions\n\
   --max-in-flight <n>          maximum concurrent in-flight requests\n\
+  --cpu-execution-limit <n>    maximum concurrent CPU-bound PHP executions (default: available CPUs)\n\
   --request-timeout-ms <n>     body read timeout in milliseconds (default: 30000)\n\
   --max-execution-ms <n>       PHP execution deadline in milliseconds (default: 30000)\n\
   --max-vm-steps <n>           maximum VM dispatches per request (default: 100000)\n\
@@ -1131,6 +1144,10 @@ fn default_max_in_flight() -> usize {
     DEFAULT_MAX_IN_FLIGHT
 }
 
+fn default_cpu_execution_limit() -> usize {
+    std::thread::available_parallelism().map_or(1, usize::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BUILTIN_SERVER_REWRITE_PREFIX_QUERY_ENV, DeploymentRootMode, ServerConfig};
@@ -1254,6 +1271,8 @@ mod tests {
             "--disable-sessions",
             "--max-in-flight",
             "2",
+            "--cpu-execution-limit",
+            "3",
             "--request-timeout-ms",
             "250",
             "--max-execution-ms",
@@ -1318,6 +1337,7 @@ mod tests {
         assert_eq!(config.session_cookie_path, "/app");
         assert!(!config.sessions_enabled);
         assert_eq!(config.max_in_flight, 2);
+        assert_eq!(config.cpu_execution_limit, 3);
         assert_eq!(config.request_timeout_ms, 250);
         assert_eq!(config.max_execution_ms, 125);
         assert_eq!(config.max_vm_steps, 250_000);
@@ -1604,6 +1624,14 @@ index = "../bad.php"
         assert_eq!(
             error.to_string(),
             "--max-in-flight must be greater than zero"
+        );
+
+        let error = ServerConfig::parse_from(["--docroot", "public", "--cpu-execution-limit", "0"])
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "--cpu-execution-limit must be greater than zero"
         );
 
         let error =

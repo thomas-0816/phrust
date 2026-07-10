@@ -106,6 +106,7 @@ impl Vm {
                     || is_spl_file_runtime_class(&class)
             })
             || is_php_token_runtime_class(&receiver_class)
+            || is_date_time_runtime_class(&receiver_class)
             || internal_throwable_instanceof(&receiver_class, "throwable").is_some()
             || is_sqlite_runtime_class(&receiver_class)
             || is_pdo_runtime_class(&receiver_class)

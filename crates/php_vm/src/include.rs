@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Arc, Condvar, Mutex, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::UNIX_EPOCH;
@@ -198,10 +198,10 @@ impl NegativeIncludeEntry {
 /// Shared process-local include cache for resolution and compiled include units.
 #[derive(Debug)]
 pub struct IncludeCache {
-    resolution_shards: Vec<Mutex<HashMap<IncludeResolutionKey, ResolvedIncludePath>>>,
-    negative_shards: Vec<Mutex<HashMap<IncludeResolutionKey, NegativeIncludeEntry>>>,
-    compile_shards: Vec<Mutex<HashMap<CompiledIncludeKey, Arc<CompiledUnit>>>>,
-    compile_lookup_shards: Vec<Mutex<HashMap<CompiledIncludeLookupKey, CompiledIncludeKey>>>,
+    resolution_shards: Vec<RwLock<HashMap<IncludeResolutionKey, ResolvedIncludePath>>>,
+    negative_shards: Vec<RwLock<HashMap<IncludeResolutionKey, NegativeIncludeEntry>>>,
+    compile_shards: Vec<RwLock<HashMap<CompiledIncludeKey, Arc<CompiledUnit>>>>,
+    compile_lookup_shards: Vec<RwLock<HashMap<CompiledIncludeLookupKey, CompiledIncludeKey>>>,
     compile_locks: Vec<IncludeCompileLockShard>,
     stats: IncludeCacheCounters,
     /// Deployment-root fingerprint installed by production-mode server runs.
@@ -230,16 +230,16 @@ impl IncludeCache {
         let shard_count = shards.max(1);
         Self {
             resolution_shards: (0..shard_count)
-                .map(|_| Mutex::new(HashMap::new()))
+                .map(|_| RwLock::new(HashMap::new()))
                 .collect(),
             negative_shards: (0..shard_count)
-                .map(|_| Mutex::new(HashMap::new()))
+                .map(|_| RwLock::new(HashMap::new()))
                 .collect(),
             compile_shards: (0..shard_count)
-                .map(|_| Mutex::new(HashMap::new()))
+                .map(|_| RwLock::new(HashMap::new()))
                 .collect(),
             compile_lookup_shards: (0..shard_count)
-                .map(|_| Mutex::new(HashMap::new()))
+                .map(|_| RwLock::new(HashMap::new()))
                 .collect(),
             compile_locks: (0..shard_count)
                 .map(|_| IncludeCompileLockShard::default())
@@ -329,7 +329,7 @@ impl IncludeCache {
         let shard_index = self.resolution_shard_index(&key);
         if let Some(resolved) = {
             let shard = self.resolution_shards[shard_index]
-                .lock()
+                .read()
                 .map_err(|_| include_cache_lock_error("resolution", "lookup"))?;
             shard.get(&key).cloned()
         } {
@@ -337,6 +337,13 @@ impl IncludeCache {
                 resolved.resolution_path.as_deref(),
                 &resolved.canonical_path,
             );
+            if target_is_current && self.trusts_immutable_path(&resolved.canonical_path) {
+                self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .immutable_release_hits
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(resolved);
+            }
             match include_path_file_fingerprint(&resolved.canonical_path) {
                 Ok(current) if target_is_current && current == resolved.fingerprint => {
                     self.stats.resolution_hits.fetch_add(1, Ordering::Relaxed);
@@ -345,7 +352,7 @@ impl IncludeCache {
                 }
                 Ok(_) | Err(_) => {
                     let mut shard = self.resolution_shards[shard_index]
-                        .lock()
+                        .write()
                         .map_err(|_| include_cache_lock_error("resolution", "invalidate"))?;
                     shard.remove(&key);
                     self.stats
@@ -371,7 +378,7 @@ impl IncludeCache {
             }
         };
         let mut shard = self.resolution_shards[shard_index]
-            .lock()
+            .write()
             .map_err(|_| include_cache_lock_error("resolution", "insert"))?;
         shard.entry(key).or_insert_with(|| resolved.clone());
         Ok(resolved)
@@ -391,7 +398,7 @@ impl IncludeCache {
         // A poisoned shard is advisory-degraded to a cache miss, never a hard
         // include failure.
         let entry = {
-            let shard = self.negative_shards[shard_index].lock().ok()?;
+            let shard = self.negative_shards[shard_index].read().ok()?;
             shard.get(key)?.clone()
         };
         if entry.is_still_valid() {
@@ -400,7 +407,7 @@ impl IncludeCache {
                 .fetch_add(1, Ordering::Relaxed);
             return Some(entry.error);
         }
-        if let Ok(mut shard) = self.negative_shards[shard_index].lock() {
+        if let Ok(mut shard) = self.negative_shards[shard_index].write() {
             shard.remove(key);
         }
         self.stats
@@ -434,7 +441,7 @@ impl IncludeCache {
             guards,
         };
         let shard_index = self.negative_shard_index(&key);
-        let Ok(mut shard) = self.negative_shards[shard_index].lock() else {
+        let Ok(mut shard) = self.negative_shards[shard_index].write() else {
             return;
         };
         if shard.len() >= NEGATIVE_INCLUDE_CACHE_SHARD_CAPACITY && !shard.contains_key(&key) {
@@ -453,6 +460,16 @@ impl IncludeCache {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
         (hasher.finish() as usize) % self.negative_shards.len()
+    }
+
+    fn trusts_immutable_path(&self, path: &Path) -> bool {
+        let Ok(root) = self.deployment_root.lock() else {
+            return false;
+        };
+        root.as_ref().is_some_and(|root| {
+            root.mode == DeploymentRootMode::ImmutableDeclared
+                && path.starts_with(&root.canonical_root)
+        })
     }
 
     /// Returns a compiled include unit for a resolved path, compiling on miss.
@@ -524,7 +541,7 @@ impl IncludeCache {
                     let compiled = Arc::new(compiled);
                     let compiled = {
                         let mut shard = self.compile_shards[shard_index]
-                            .lock()
+                            .write()
                             .map_err(|_| include_cache_lock_error("compiled", "insert"))?;
                         Arc::clone(shard.entry(key.clone()).or_insert(compiled))
                     };
@@ -552,7 +569,7 @@ impl IncludeCache {
         let shard_index = self.compile_shard_index_for_path(&lookup_key.canonical_path);
         let Some(full_key) = ({
             let lookup_shard = self.compile_lookup_shards[shard_index]
-                .lock()
+                .read()
                 .map_err(|_| include_cache_lock_error("compiled-index", "lookup"))?;
             lookup_shard.get(&lookup_key).cloned()
         }) else {
@@ -560,7 +577,7 @@ impl IncludeCache {
         };
         let hit = {
             let shard = self.compile_shards[shard_index]
-                .lock()
+                .read()
                 .map_err(|_| include_cache_lock_error("compiled", "lookup"))?;
             shard
                 .get_key_value(&full_key)
@@ -618,7 +635,7 @@ impl IncludeCache {
     ) -> Result<(), VmError> {
         let shard_index = self.compile_shard_index(key);
         let mut shard = self.compile_shards[shard_index]
-            .lock()
+            .write()
             .map_err(|_| include_cache_lock_error("compiled", "invalidate"))?;
         if shard.remove(key).is_some() {
             drop(shard);
@@ -639,7 +656,7 @@ impl IncludeCache {
         let shard_index = self.compile_shard_index(key);
         let lookup_key = CompiledIncludeLookupKey::from_compiled_key(key);
         let mut shard = self.compile_lookup_shards[shard_index]
-            .lock()
+            .write()
             .map_err(|_| include_cache_lock_error("compiled-index", "insert"))?;
         shard.insert(lookup_key, key.clone());
         Ok(())
@@ -649,7 +666,7 @@ impl IncludeCache {
         let shard_index = self.compile_shard_index(key);
         let lookup_key = CompiledIncludeLookupKey::from_compiled_key(key);
         let mut shard = self.compile_lookup_shards[shard_index]
-            .lock()
+            .write()
             .map_err(|_| include_cache_lock_error("compiled-index", "remove"))?;
         shard.remove(&lookup_key);
         Ok(())
@@ -685,6 +702,17 @@ impl IncludeCache {
         key: &CompiledIncludeKey,
         validation_mode: IncludeValidationMode,
     ) -> Result<bool, VmError> {
+        if self.trusts_immutable_path(&key.canonical_path)
+            && key
+                .local_dependencies
+                .iter()
+                .all(|dependency| self.trusts_immutable_path(&dependency.canonical_path))
+        {
+            self.stats
+                .immutable_release_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(true);
+        }
         for dependency in &key.local_dependencies {
             self.stats
                 .dependency_metadata_validations
@@ -752,34 +780,20 @@ impl IncludeCache {
             return false;
         }
 
-        let deployment_is_current = match (
-            fingerprint.directory_version,
-            include_directory_version(&fingerprint.canonical_root),
+        // Immutable mode is an operator promise that files beneath the release
+        // root remain valid until the cache is explicitly cleared. Still
+        // re-canonicalize the original candidate so a symlink or release-root
+        // swap cannot keep an artifact compiled for the previous target.
+        if !resolution_path_targets(
+            resolved.resolution_path.as_deref(),
+            &resolved.canonical_path,
         ) {
-            (Some(stored), Some(current)) => stored == current,
-            _ => false,
-        };
-        let parent_is_current = match (
-            resolved.directory_version,
-            resolved
-                .canonical_path
-                .parent()
-                .and_then(include_directory_version),
-        ) {
-            (Some(stored), Some(current)) => stored == current,
-            _ => false,
-        };
-        let source_is_current = resolved.fingerprint.has_reliable_generation()
-            && include_path_file_fingerprint(&resolved.canonical_path)
-                .is_ok_and(|current| current == resolved.fingerprint);
-        if deployment_is_current && parent_is_current && source_is_current {
-            true
-        } else {
             self.stats
                 .conservative_misses
                 .fetch_add(1, Ordering::Relaxed);
-            false
+            return false;
         }
+        true
     }
 
     fn load_and_record_validation(
@@ -825,25 +839,25 @@ impl IncludeCache {
     pub fn clear(&self) -> Result<(), VmError> {
         for shard in &self.resolution_shards {
             shard
-                .lock()
+                .write()
                 .map_err(|_| include_cache_lock_error("resolution", "clear"))?
                 .clear();
         }
         for shard in &self.negative_shards {
             shard
-                .lock()
+                .write()
                 .map_err(|_| include_cache_lock_error("negative", "clear"))?
                 .clear();
         }
         for shard in &self.compile_shards {
             shard
-                .lock()
+                .write()
                 .map_err(|_| include_cache_lock_error("compiled", "clear"))?
                 .clear();
         }
         for shard in &self.compile_lookup_shards {
             shard
-                .lock()
+                .write()
                 .map_err(|_| include_cache_lock_error("compiled-index", "clear"))?
                 .clear();
         }
@@ -892,6 +906,7 @@ impl IncludeCache {
                 .stats
                 .deployment_fingerprint_stale
                 .load(Ordering::Relaxed),
+            immutable_release_hits: self.stats.immutable_release_hits.load(Ordering::Relaxed),
             negative_cache_hits: self.stats.negative_cache_hits.load(Ordering::Relaxed),
             negative_cache_installs: self.stats.negative_cache_installs.load(Ordering::Relaxed),
             negative_cache_invalidations: self
@@ -991,6 +1006,7 @@ pub struct IncludeCacheStats {
     pub deployment_fingerprint_present: u64,
     pub deployment_fingerprint_missing: u64,
     pub deployment_fingerprint_stale: u64,
+    pub immutable_release_hits: u64,
     pub negative_cache_hits: u64,
     pub negative_cache_installs: u64,
     pub negative_cache_invalidations: u64,
@@ -1020,6 +1036,7 @@ struct IncludeCacheCounters {
     deployment_fingerprint_present: AtomicU64,
     deployment_fingerprint_missing: AtomicU64,
     deployment_fingerprint_stale: AtomicU64,
+    immutable_release_hits: AtomicU64,
     negative_cache_hits: AtomicU64,
     negative_cache_installs: AtomicU64,
     negative_cache_invalidations: AtomicU64,
@@ -1728,8 +1745,8 @@ pub enum DeploymentRootMode {
     /// reuse keyed on the root stays blocked.
     DevMutable,
     /// Operator-declared immutable deployment root (for example an atomically
-    /// swapped release directory). Declaration is a config input, not a
-    /// filesystem probe — the engine still revalidates the directory version.
+    /// swapped release directory). Cached paths and compiled artifacts beneath
+    /// the observed root are trusted until explicit cache clear or restart.
     ImmutableDeclared,
 }
 
@@ -1746,7 +1763,8 @@ impl DeploymentRootMode {
 
 /// Deployment-root fingerprint for production-mode server runs: the canonical
 /// root, its directory version at startup, and the operator-declared
-/// mutability mode. Metadata and counters only.
+/// mutability mode. Immutable mode is an explicit source-validation policy;
+/// development mode remains the default and validates source on cache hits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentRootFingerprint {
     pub canonical_root: PathBuf,
@@ -2674,6 +2692,43 @@ mod tests {
     }
 
     #[test]
+    fn immutable_release_trusts_cache_until_explicit_clear() {
+        let fixture = IncludeCacheFixture::new("compiled-immutable");
+        fixture.write("lib.php", "<?php echo 'one';\n");
+        let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
+        let cache = IncludeCache::new(1);
+        cache.set_deployment_root_fingerprint(DeploymentRootFingerprint::observe(
+            &fixture.root,
+            DeploymentRootMode::ImmutableDeclared,
+        ));
+
+        let first_resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("first resolve");
+        let first = cache
+            .get_or_compile_include(&loader, &first_resolved, OptimizationLevel::O0)
+            .expect("first compile");
+        fixture.write("lib.php", "<?php echo 'changed and longer';\n");
+        let trusted_resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("trusted resolve");
+        let trusted = cache
+            .get_or_compile_include(&loader, &trusted_resolved, OptimizationLevel::O0)
+            .expect("trusted compile lookup");
+        assert!(Arc::ptr_eq(&first, &trusted));
+        assert!(cache.cache_stats().immutable_release_hits >= 2);
+
+        cache.clear().expect("clear immutable cache");
+        let fresh_resolved = cache
+            .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
+            .expect("fresh resolve after clear");
+        let fresh = cache
+            .get_or_compile_include(&loader, &fresh_resolved, OptimizationLevel::O0)
+            .expect("fresh compile after clear");
+        assert!(!Arc::ptr_eq(&first, &fresh));
+    }
+
+    #[test]
     fn include_cache_keys_compiled_units_by_optimization_level() {
         let fixture = IncludeCacheFixture::new("compiled-optimization");
         fixture.write("lib.php", "<?php echo 1 + 2;\n");
@@ -3551,7 +3606,7 @@ mod tests {
         fixture.write("lib.php", "<?php echo 'lib';\n");
         let loader = IncludeLoader::for_root(&fixture.root).expect("loader");
         let cache = IncludeCache::new(1);
-        poison_mutex(&cache.resolution_shards[0]);
+        poison_rwlock(&cache.resolution_shards[0]);
 
         let error = cache
             .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
@@ -3573,7 +3628,7 @@ mod tests {
         let resolved = loader
             .resolve_with_include_path(None, "lib.php", &[], Some(&fixture.root))
             .expect("resolve include");
-        poison_mutex(&cache.compile_shards[0]);
+        poison_rwlock(&cache.compile_shards[0]);
 
         let error = cache
             .get_or_compile_include(&loader, &resolved, OptimizationLevel::O0)
@@ -3762,6 +3817,13 @@ mod tests {
         let _ = std::panic::catch_unwind(|| {
             let _guard = mutex.lock().expect("lock before poisoning");
             panic!("poison include-cache mutex for deterministic error test");
+        });
+    }
+
+    fn poison_rwlock<T>(lock: &RwLock<T>) {
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = lock.write().expect("lock before poisoning");
+            panic!("poison include-cache rwlock for deterministic error test");
         });
     }
 }

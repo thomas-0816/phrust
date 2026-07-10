@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use php_ir::{LoweringOptions, lower_frontend_result};
 use php_lexer::{LexerConfig, lex_all};
 use php_optimizer::OptimizationLevel;
@@ -69,6 +69,18 @@ $box = new PerfPropertyBox();
 $sum = 0;
 for ($i = 0; $i < 48; $i++) {
     $sum = $sum + $box->value + $box->get();
+}
+echo $sum;
+"#;
+
+const VM_BUILTIN_MIX_SOURCE: &str = r#"<?php
+$sum = 0;
+for ($i = 0; $i < 64; $i++) {
+    $text = trim(strtolower('  WordPress-Plugin-Route  '));
+    $parts = explode('-', $text);
+    $sum += strlen($text) + count($parts);
+    $sum += function_exists('strlen') ? 1 : 0;
+    $sum += defined('PHP_VERSION') ? 1 : 0;
 }
 echo $sum;
 "#;
@@ -274,6 +286,7 @@ fn bench_vm(c: &mut Criterion) {
     let loop_unit = compile_unit(VM_LOOP_SOURCE);
     let call_unit = compile_unit(VM_CALL_SOURCE);
     let property_unit = compile_unit(VM_PROPERTY_SOURCE);
+    let builtin_mix_unit = compile_unit(VM_BUILTIN_MIX_SOURCE);
 
     c.bench_function("performance/vm_dispatch_micro_loop", |b| {
         b.iter(|| execute_unit(black_box(&loop_unit)));
@@ -284,6 +297,52 @@ fn bench_vm(c: &mut Criterion) {
     c.bench_function("performance/property_lookup", |b| {
         b.iter(|| execute_unit(black_box(&property_unit)));
     });
+    c.bench_function("performance/builtin_context_arginfo_mix", |b| {
+        b.iter(|| execute_unit(black_box(&builtin_mix_unit)));
+    });
+}
+
+fn dynamic_symbol_source(symbols: usize) -> String {
+    let mut source = String::from("<?php\nif (true) {\n");
+    for index in 0..symbols {
+        source.push_str(&format!("function dynamic_symbol_{index}() {{ return {index}; }}\n"));
+    }
+    source.push_str(&format!(
+        "}}\necho dynamic_symbol_0() + dynamic_symbol_{}();\n",
+        symbols - 1
+    ));
+    source
+}
+
+fn bench_dynamic_symbols(c: &mut Criterion) {
+    let units = [128usize, 1_024, 4_096]
+        .into_iter()
+        .map(|symbols| (symbols, compile_unit(&dynamic_symbol_source(symbols))))
+        .collect::<Vec<_>>();
+    let mut group = c.benchmark_group("performance/dynamic_symbol_registration_lookup");
+    for (symbols, unit) in &units {
+        group.bench_with_input(BenchmarkId::from_parameter(symbols), unit, |b, unit| {
+            b.iter(|| execute_unit(black_box(unit)));
+        });
+    }
+    group.finish();
+}
+
+fn mixed_string_array(size: i64) -> PhpArray {
+    let mut array = PhpArray::new();
+    for index in 0..size {
+        array.insert(
+            ArrayKey::String(PhpString::from_bytes(format!("key-{index}").into_bytes())),
+            Value::Int(index),
+        );
+    }
+    array
+}
+
+fn mixed_key(index: i64) -> ArrayKey {
+    ArrayKey::String(PhpString::from_bytes(
+        format!("key-{index}").into_bytes(),
+    ))
 }
 
 fn bench_runtime(c: &mut Criterion) {
@@ -299,6 +358,9 @@ fn bench_runtime(c: &mut Criterion) {
             black_box(sum);
         });
     });
+    c.bench_function("performance/packed_array_iteration", |b| {
+        b.iter(|| black_box(packed.iter().count()));
+    });
 
     let mut mixed = PhpArray::new();
     for index in 0..64 {
@@ -308,13 +370,76 @@ fn bench_runtime(c: &mut Criterion) {
             Value::Int(index),
         );
     }
-    let mixed_key = ArrayKey::String(PhpString::from("key37"));
+    let mixed_access_key = ArrayKey::String(PhpString::from("key37"));
     c.bench_function("performance/mixed_array_access", |b| {
         b.iter(|| {
             let int_value = mixed.get(black_box(&ArrayKey::Int(37)));
-            let string_value = mixed.get(black_box(&mixed_key));
+            let string_value = mixed.get(black_box(&mixed_access_key));
             black_box((int_value, string_value));
         });
+    });
+
+    let mut delete_group = c.benchmark_group("performance/mixed_array_delete");
+    for size in [128i64, 1_024, 4_096] {
+        delete_group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+            b.iter_batched(
+                || mixed_string_array(*size),
+                |mut array| {
+                    for step in 0..(*size / 2) {
+                        let index = (step * 73) % *size;
+                        black_box(array.remove(&mixed_key(index)));
+                    }
+                    black_box(array);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    delete_group.finish();
+
+    let mut reinsert_group = c.benchmark_group("performance/mixed_array_delete_reinsert");
+    for size in [128i64, 1_024, 4_096] {
+        reinsert_group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, size| {
+            b.iter_batched(
+                || mixed_string_array(*size),
+                |mut array| {
+                    for step in 0..(*size / 4) {
+                        let index = (step * 73) % *size;
+                        let key = mixed_key(index);
+                        black_box(array.remove(&key));
+                        array.insert(key, Value::Int(index + *size));
+                    }
+                    black_box(array);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    reinsert_group.finish();
+
+    c.bench_function("performance/mixed_array_compaction_threshold", |b| {
+        b.iter_batched(
+            || {
+                let mut array = mixed_string_array(4_096);
+                for step in 0..2_047 {
+                    array.remove(&mixed_key((step * 73) % 4_096));
+                }
+                array
+            },
+            |mut array| {
+                black_box(array.remove(&mixed_key((2_047 * 73) % 4_096)));
+                black_box(array);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let mut tombstones = mixed_string_array(4_096);
+    for index in (0..4_096).step_by(3) {
+        tombstones.remove(&mixed_key(index));
+    }
+    c.bench_function("performance/mixed_array_iterate_tombstones", |b| {
+        b.iter(|| black_box(tombstones.iter().count()));
     });
 
     c.bench_function("performance/string_concat_builder", |b| {
@@ -473,6 +598,6 @@ fn bench_string_intrinsics(c: &mut Criterion) {
 criterion_group! {
     name = perf_hotpaths;
     config = configured_criterion();
-    targets = bench_frontend, bench_vm, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
+    targets = bench_frontend, bench_vm, bench_dynamic_symbols, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
 }
 criterion_main!(perf_hotpaths);

@@ -4334,7 +4334,11 @@ fn failure_fingerprint(result: &PhptRunResult) -> String {
 
 fn normalize_failure_detail_for_fingerprint(detail: &str) -> String {
     let mut normalized = detail.to_string();
-    for marker in ["/target/phpt-work/", "target/phpt-work/"] {
+    // PHPT_WORK_DIR is configurable. Keep the conventional `phpt-work`
+    // prefix recognizable when callers use an isolated sibling such as
+    // `phpt-work-one-worker`; otherwise the run directory leaks into every
+    // failure fingerprint and makes an unchanged failure look new.
+    for marker in ["/target/phpt-work", "target/phpt-work"] {
         while let Some(marker_start) = normalized.find(marker) {
             let prefix_start = normalized[..marker_start]
                 .rfind(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '=' | '"' | '`'))
@@ -4347,7 +4351,7 @@ fn normalize_failure_detail_for_fingerprint(detail: &str) -> String {
             normalized.replace_range(prefix_start..end, "<phpt-test.php>");
         }
     }
-    for marker in ["/target/phpt-work/", "target/phpt-work/"] {
+    for marker in ["/target/phpt-work", "target/phpt-work"] {
         while let Some(marker_start) = normalized.find(marker) {
             let prefix_start = normalized[..marker_start]
                 .rfind(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '=' | '"' | '`'))
@@ -6590,6 +6594,13 @@ mod tests {
         assert_eq!(
             normalize_failure_detail_for_fingerprint(left),
             normalize_failure_detail_for_fingerprint(right)
+        );
+
+        let isolated = "stderr=/tmp/repo/target/phpt-work-one-worker/full-runs/c/work/target/case-3-4/test.php: E\nthread 'main' (789) panicked";
+
+        assert_eq!(
+            normalize_failure_detail_for_fingerprint(left),
+            normalize_failure_detail_for_fingerprint(isolated)
         );
 
         let left = "thread 'main' (123) panicked at crates/php_vm/src/vm.rs:7824:37:\n             at /rustc/hash/library/std/src/panicking.rs:689:5";

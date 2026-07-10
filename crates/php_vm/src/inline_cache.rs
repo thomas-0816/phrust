@@ -157,11 +157,46 @@ pub enum FunctionCallCacheTarget {
 }
 
 /// Guarded argument metadata for a function-call IC slot.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CallReferenceMask {
+    inline: u64,
+    overflow: Vec<u64>,
+}
+
+impl CallReferenceMask {
+    #[must_use]
+    pub fn from_flags(flags: impl IntoIterator<Item = bool>) -> Self {
+        let mut mask = Self::default();
+        for (index, is_reference) in flags.into_iter().enumerate() {
+            if !is_reference {
+                continue;
+            }
+            if index < u64::BITS as usize {
+                mask.inline |= 1u64 << index;
+                continue;
+            }
+            let overflow_index = index - u64::BITS as usize;
+            let word = overflow_index / u64::BITS as usize;
+            if mask.overflow.len() <= word {
+                mask.overflow.resize(word + 1, 0);
+            }
+            mask.overflow[word] |= 1u64 << (overflow_index % u64::BITS as usize);
+        }
+        mask
+    }
+
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.inline != 0 || self.overflow.iter().any(|word| *word != 0)
+    }
+}
+
+/// Guarded argument metadata for a function-call IC slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionCallShape {
     pub arity: u32,
     pub named_arguments: Vec<String>,
-    pub by_ref_arguments: Vec<bool>,
+    pub by_ref_arguments: CallReferenceMask,
 }
 
 /// Persistable snapshot of one monomorphic entry-unit function-call IC site.
@@ -205,7 +240,7 @@ pub struct FunctionCallPolymorphicEntry {
 pub struct MethodCallShape {
     pub arity: u32,
     pub named_arguments: Vec<String>,
-    pub by_ref_arguments: Vec<bool>,
+    pub by_ref_arguments: CallReferenceMask,
 }
 
 /// Stable method and receiver metadata guarded by a method-call IC slot.
@@ -1166,7 +1201,7 @@ impl InlineCacheTable {
                     };
                 if builtin_metadata.is_some()
                     || !shape.named_arguments.is_empty()
-                    || shape.by_ref_arguments.iter().any(|by_ref| *by_ref)
+                    || shape.by_ref_arguments.any()
                 {
                     return None;
                 }
@@ -1245,7 +1280,7 @@ impl InlineCacheTable {
                 FunctionCallShape {
                     arity: site.arity,
                     named_arguments: Vec::new(),
-                    by_ref_arguments: vec![false; site.arity as usize],
+                    by_ref_arguments: CallReferenceMask::default(),
                 },
                 None,
                 FunctionCallCacheTarget::CurrentUnit {
@@ -2571,7 +2606,7 @@ fn inline_cache_key(
 mod tests {
     use super::{
         AutoloadClassLookupCacheKey, AutoloadClassLookupCacheTarget, AutoloadClassLookupEpochs,
-        AutoloadClassLookupKind, ClassConstantStaticPropertyCacheKind,
+        AutoloadClassLookupKind, CallReferenceMask, ClassConstantStaticPropertyCacheKind,
         ClassConstantStaticPropertyCacheTarget, ClassRelationCache, ClassRelationCacheKey,
         ClassRelationCacheLookup, ClassRelationCacheTarget, ClassRelationEpochs, ClassRelationKind,
         FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
@@ -2589,8 +2624,25 @@ mod tests {
         FunctionCallShape {
             arity,
             named_arguments: Vec::new(),
-            by_ref_arguments: vec![false; arity as usize],
+            by_ref_arguments: CallReferenceMask::default(),
         }
+    }
+
+    #[test]
+    fn call_reference_mask_keeps_common_positional_shape_inline() {
+        let common = CallReferenceMask::from_flags(std::iter::repeat_n(false, 12));
+        assert!(!common.any());
+        assert_eq!(common.inline, 0);
+        assert!(common.overflow.is_empty());
+
+        let mut flags = vec![false; 130];
+        flags[1] = true;
+        flags[129] = true;
+        let complex = CallReferenceMask::from_flags(flags);
+        assert!(complex.any());
+        assert_eq!(complex.inline, 1 << 1);
+        assert_eq!(complex.overflow.len(), 2);
+        assert_eq!(complex.overflow[1], 1 << 1);
     }
 
     fn method_target(
@@ -2619,7 +2671,7 @@ mod tests {
                     argument_shape: MethodCallShape {
                         arity: 0,
                         named_arguments: Vec::new(),
-                        by_ref_arguments: Vec::new(),
+                        by_ref_arguments: CallReferenceMask::default(),
                     },
                     by_ref_compatible: true,
                     has_magic_call: false,
@@ -2811,7 +2863,7 @@ mod tests {
         let shape = FunctionCallShape {
             arity: 2,
             named_arguments: vec!["left".to_owned(), "right".to_owned()],
-            by_ref_arguments: vec![false, false],
+            by_ref_arguments: CallReferenceMask::default(),
         };
 
         table.observe_slot(
@@ -3802,7 +3854,7 @@ mod tests {
             FunctionCallShape {
                 arity: 0,
                 named_arguments: Vec::new(),
-                by_ref_arguments: Vec::new(),
+                by_ref_arguments: CallReferenceMask::default(),
             },
             None,
             FunctionCallCacheTarget::CurrentUnit {
@@ -3813,7 +3865,7 @@ mod tests {
         let shape = FunctionCallShape {
             arity: 0,
             named_arguments: Vec::new(),
-            by_ref_arguments: Vec::new(),
+            by_ref_arguments: CallReferenceMask::default(),
         };
         let (_, observation) = table.lookup_function_call(
             7,
@@ -3856,7 +3908,7 @@ mod tests {
         let shape = FunctionCallShape {
             arity: 0,
             named_arguments: Vec::new(),
-            by_ref_arguments: Vec::new(),
+            by_ref_arguments: CallReferenceMask::default(),
         };
         let (target, _) = table.lookup_function_call(
             1,
@@ -3894,7 +3946,7 @@ mod tests {
         let shape = FunctionCallShape {
             arity: 1,
             named_arguments: Vec::new(),
-            by_ref_arguments: vec![false],
+            by_ref_arguments: CallReferenceMask::default(),
         };
         // Matching name/shape/epoch: the seeded target dispatches and the hit
         // attributes to the seed.

@@ -155,7 +155,8 @@ smoke measurements. The gate is intentionally optional:
 
 - non-Linux hosts skip with a recorded reason in
   `target/performance/callgrind/summary.json`;
-- Linux hosts without `valgrind` in `PATH` also skip cleanly;
+- Linux hosts without `valgrind` in `PATH`, or where Valgrind cannot launch the
+  VM's configured runtime thread, also skip cleanly with the tool diagnostic;
 - Linux hosts with Valgrind run three small CLI scenarios from
   `tests/fixtures/performance/perf_smoke/` under `--tool=callgrind`;
 - outputs are still compared to fixture expectations before instruction counts

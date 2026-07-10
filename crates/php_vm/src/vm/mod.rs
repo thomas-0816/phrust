@@ -40,7 +40,10 @@ use crate::bytecode::{
     DenseExecutionPlan, DenseFunction, DenseFunctionPlan, DenseInstruction, DenseOpcode,
     DenseOperand, DenseOperandKind, DenseOperands, SuperinstructionSelectionReport,
 };
-use crate::compiled_unit::{CompiledUnit, DenseExecutionArtifactKey, DenseExecutionArtifactMode};
+use crate::compiled_unit::{
+    CompiledUnit, DenseExecutionArtifactKey, DenseExecutionArtifactMode,
+    PreparedClassValidationError, PreparedFunctionFacts,
+};
 #[cfg(feature = "jit-cranelift")]
 use crate::counters::JitCompileDescriptor;
 use crate::counters::{MethodCallProfileObservation, PropertyFetchProfileObservation, VmCounters};
@@ -53,7 +56,7 @@ use crate::include::{
 };
 use crate::inline_cache::{
     AutoloadClassLookupCacheKey, AutoloadClassLookupCacheTarget, AutoloadClassLookupEpochs,
-    AutoloadClassLookupKind, ClassConstantStaticPropertyCacheKind,
+    AutoloadClassLookupKind, CallReferenceMask, ClassConstantStaticPropertyCacheKind,
     ClassConstantStaticPropertyCacheTarget, ClassRelationCache, ClassRelationCacheKey,
     ClassRelationCacheLookup, ClassRelationCacheTarget, ClassRelationEpochs, ClassRelationKind,
     FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
@@ -82,7 +85,6 @@ use php_ir::module::{
 };
 use php_ir::operand::Operand;
 use php_ir::source_map::IrSpan;
-use php_ir::verify::verify_unit;
 use php_runtime::IniRegistry;
 use php_runtime::ResourceTable;
 use php_runtime::debug::{GcEntityId, GcEntityKind, GcRoot, GcRootKind, GcSnapshot, scan_roots};
@@ -1202,6 +1204,7 @@ impl UserStreamWrapperRegistry {
 struct ExecutionState {
     globals: GlobalSymbolTable,
     included_once: Vec<PathBuf>,
+    included_once_set: HashSet<PathBuf>,
     include_stack: Vec<PathBuf>,
     cwd: PathBuf,
     /// Request-invariant: network builtins explicitly enabled via env.
@@ -1224,6 +1227,7 @@ struct ExecutionState {
     autoload_stack_epoch: u64,
     class_table_epoch: u64,
     include_config_epoch: u64,
+    parsed_include_path: Arc<Vec<PathBuf>>,
     class_relation_cache: ClassRelationCache,
     autoload_registry: AutoloadRegistry,
     autoload_stack: Vec<String>,
@@ -1233,9 +1237,13 @@ struct ExecutionState {
     /// map detected (unknown, blocks persistent reuse keyed on it).
     composer_map_fingerprint: Option<Option<Arc<str>>>,
     dynamic_units: Vec<CompiledUnit>,
+    dynamic_unit_index: HashMap<u64, usize>,
     dynamic_functions: Vec<DynamicFunctionEntry>,
+    dynamic_function_index: HashMap<String, usize>,
     dynamic_classes: Vec<DynamicClassEntry>,
+    dynamic_class_index: HashMap<String, usize>,
     dynamic_constants: Vec<DynamicConstantEntry>,
+    dynamic_constant_index: HashMap<String, usize>,
     validated_class_dependencies: HashSet<String>,
     failed_class_declarations: HashSet<String>,
     user_constants: HashMap<String, Value>,
@@ -1243,6 +1251,8 @@ struct ExecutionState {
     ini: IniRegistry,
     default_timezone: String,
     env: Arc<Vec<(String, String)>>,
+    filter_input_arrays: Arc<BTreeMap<i64, PhpArray>>,
+    network_requests_enabled: bool,
     resources: ResourceTable,
     stdin: Option<php_runtime::ResourceRef>,
     stdout: Option<php_runtime::ResourceRef>,
@@ -1306,6 +1316,52 @@ struct ExecutionState {
 }
 
 impl ExecutionState {
+    fn has_included(&self, path: &Path) -> bool {
+        self.included_once_set.contains(path)
+    }
+
+    fn record_included(&mut self, path: PathBuf) -> bool {
+        if !self.included_once_set.insert(path.clone()) {
+            return false;
+        }
+        self.included_once.push(path);
+        true
+    }
+}
+
+impl ExecutionState {
+    fn push_dynamic_unit(&mut self, unit: CompiledUnit) -> usize {
+        let index = self.dynamic_units.len();
+        let identity = unit.cache_identity();
+        self.dynamic_units.push(unit);
+        self.dynamic_unit_index.insert(identity, index);
+        index
+    }
+
+    fn push_dynamic_function(&mut self, entry: DynamicFunctionEntry) {
+        let index = self.dynamic_functions.len();
+        self.dynamic_function_index
+            .entry(entry.name.clone())
+            .or_insert(index);
+        self.dynamic_functions.push(entry);
+    }
+
+    fn push_dynamic_class(&mut self, entry: DynamicClassEntry) {
+        let index = self.dynamic_classes.len();
+        self.dynamic_class_index
+            .entry(entry.lookup_name.clone())
+            .or_insert(index);
+        self.dynamic_classes.push(entry);
+    }
+
+    fn push_dynamic_constant(&mut self, entry: DynamicConstantEntry) {
+        let index = self.dynamic_constants.len();
+        self.dynamic_constant_index
+            .entry(entry.name.clone())
+            .or_insert(index);
+        self.dynamic_constants.push(entry);
+    }
+
     fn lookup_epoch(&self) -> InvalidationEpoch {
         InvalidationEpoch::new(self.function_table_epoch)
     }
@@ -1345,6 +1401,7 @@ impl ExecutionState {
 
     fn bump_include_config_epoch(&mut self) {
         self.include_config_epoch = self.include_config_epoch.saturating_add(1);
+        self.parsed_include_path = parse_ini_include_path(&self.ini);
         self.bump_lookup_epoch();
     }
 
@@ -2282,6 +2339,19 @@ fn dense_call_shape_meta_for_unit(unit: &php_ir::module::IrUnit) -> Vec<DenseCal
         .collect()
 }
 
+fn prepared_function_facts(
+    compiled: &CompiledUnit,
+    function_id: FunctionId,
+    function: &IrFunction,
+) -> PreparedFunctionFacts {
+    compiled.prepared_function_facts(function_id, || PreparedFunctionFacts {
+        observes_argument_vector: function_body_observes_argument_vector(function),
+        has_try_or_finally: function_has_try_or_finally(function),
+        may_hold_destructor_sensitive_value: function_may_hold_destructor_sensitive_value(function),
+        has_inline_blocker: method_body_has_inline_blocker(function),
+    })
+}
+
 fn frame_reuse_call_shape_blocked_reason(
     function: &IrFunction,
     call: &FunctionCall<'_>,
@@ -2555,7 +2625,9 @@ fn function_call_shape(args: &[CallArgument]) -> FunctionCallShape {
             .iter()
             .filter_map(|arg| arg.name.clone())
             .collect::<Vec<_>>(),
-        by_ref_arguments: args.iter().map(call_argument_has_by_ref_metadata).collect(),
+        by_ref_arguments: CallReferenceMask::from_flags(
+            args.iter().map(call_argument_has_by_ref_metadata),
+        ),
     }
 }
 
@@ -2566,7 +2638,9 @@ fn method_call_shape(args: &[CallArgument]) -> MethodCallShape {
             .iter()
             .filter_map(|arg| arg.name.clone())
             .collect::<Vec<_>>(),
-        by_ref_arguments: args.iter().map(call_argument_has_by_ref_metadata).collect(),
+        by_ref_arguments: CallReferenceMask::from_flags(
+            args.iter().map(call_argument_has_by_ref_metadata),
+        ),
     }
 }
 
@@ -2617,15 +2691,8 @@ pub struct Vm {
     jit: RefCell<JitRuntimeState>,
     tiering: RefCell<TieringState>,
     internal_function_dispatch_cache: RefCell<InternalFunctionDispatchCache>,
-    /// Memoized per-(unit, function): whether the body can observe its
-    /// argument vector (func_get_args-style builtins or dynamic dispatch).
-    argument_vector_observers: RefCell<HashMap<(u64, u32), bool>>,
     /// Memoized per-(unit, function) trivial-method inline plans.
     trivial_method_plans: RefCell<HashMap<(u64, u32), Option<TrivialMethodPlan>>>,
-    /// Memoized per-(unit, function) frame-shape flags derived from a single
-    /// body scan, so repeated calls to the same function do not re-scan its
-    /// whole body on every invocation to classify the call frame.
-    frame_shape_flags: RefCell<HashMap<(u64, u32), FrameShapeFlags>>,
     /// Memoized activation-context class-name handles keyed by the exact name
     /// spelling dispatch sees. The normalized/display forms of a spelling never
     /// change, so hot method-call sites attach shared handles with refcount
@@ -2677,9 +2744,7 @@ impl Vm {
             trace: RefCell::new(Vec::new()),
             counters: RefCell::new(None),
             literal_pool: RefCell::new(LiteralPool::default()),
-            argument_vector_observers: RefCell::new(HashMap::new()),
             trivial_method_plans: RefCell::new(HashMap::new()),
-            frame_shape_flags: RefCell::new(HashMap::new()),
             class_name_handles: RefCell::new(HashMap::new()),
             runtime_class_entry_cache: RefCell::new(RuntimeClassEntryCache::default()),
             ir_class_entry_cache: RefCell::new(IrClassEntryCache::default()),
@@ -2709,9 +2774,7 @@ impl Vm {
         let mut output = OutputBuffer::with_capacity(output_preallocation_hint(unit.unit()));
         self.trace.borrow_mut().clear();
         *self.literal_pool.borrow_mut() = LiteralPool::default();
-        self.argument_vector_observers.borrow_mut().clear();
         self.trivial_method_plans.borrow_mut().clear();
-        self.frame_shape_flags.borrow_mut().clear();
         self.last_use_move_plans.borrow_mut().clear();
         *self.runtime_class_entry_cache.borrow_mut() = RuntimeClassEntryCache::default();
         *self.ir_class_entry_cache.borrow_mut() = IrClassEntryCache::default();
@@ -2791,21 +2854,57 @@ impl Vm {
         }
         reset_float_string_precision();
 
-        if self.options.verify_ir
-            && let Err(errors) = verify_unit(unit.unit())
-        {
-            return VmResult::compile_error(
-                output,
-                format!("IR verifier failed with {} error(s)", errors.len()),
-            );
+        if self.options.verify_ir {
+            let prepared_ir_errors = unit.prepared_ir_verification_errors();
+            if self.options.revalidate_prepared_unit {
+                let recomputed_ir_errors = php_ir::verify::verify_unit(unit.unit())
+                    .map_or_else(|errors| errors.len(), |()| 0);
+                if recomputed_ir_errors != prepared_ir_errors {
+                    return VmResult::compile_error(
+                        output,
+                        format!(
+                            "E_PHP_VM_PREPARED_VALIDATION_MISMATCH: cached IR errors={prepared_ir_errors}, recomputed={recomputed_ir_errors}"
+                        ),
+                    );
+                }
+            }
+            if prepared_ir_errors > 0 {
+                return VmResult::compile_error(
+                    output,
+                    format!("IR verifier failed with {prepared_ir_errors} error(s)"),
+                );
+            }
         }
 
         let entry = unit.unit().entry;
         if unit.unit().functions.get(entry.index()).is_none() {
             return VmResult::compile_error(output, "entry function is missing");
         }
-        if let Err(error) = validate_class_table(&unit) {
-            let (message, diagnostic) = error.into_parts();
+        let prepared_class_validation = unit.prepared_class_validation(|| {
+            validate_class_table(&unit).map_err(|error| {
+                let (message, diagnostic) = error.into_parts();
+                PreparedClassValidationError {
+                    message,
+                    diagnostic,
+                }
+            })
+        });
+        if self.options.revalidate_prepared_unit {
+            let recomputed = validate_class_table(&unit).err().map(|error| error.message);
+            let prepared = prepared_class_validation
+                .as_ref()
+                .err()
+                .map(|error| error.message.as_str());
+            if recomputed.as_deref() != prepared {
+                return VmResult::compile_error(
+                    output,
+                    "E_PHP_VM_PREPARED_VALIDATION_MISMATCH: class validation changed",
+                );
+            }
+        }
+        if let Err(error) = prepared_class_validation {
+            let message = error.message;
+            let diagnostic = error.diagnostic;
             return match diagnostic {
                 Some(diagnostic) => VmResult {
                     status: ExecutionStatus::compile_error(message),
@@ -2831,17 +2930,21 @@ impl Vm {
         self.warm_literal_pool(unit.unit());
 
         let mut stack = CallStack::new();
+        let ini = self.options.runtime_context.ini_registry();
+        let parsed_include_path = parse_ini_include_path(&ini);
+        let env = sorted_request_env(&self.options.runtime_context.env);
+        let filter_input_arrays = request_filter_input_arrays(&self.options.runtime_context);
+        let network_requests_enabled = env
+            .iter()
+            .any(|(name, value)| name == "PHRUST_NET_TESTS" && value == "1");
         let mut state = ExecutionState {
             cwd: self.options.runtime_context.cwd.clone(),
-            ini: self.options.runtime_context.ini_registry(),
+            ini,
+            parsed_include_path,
             default_timezone: php_runtime::datetime::DEFAULT_TIMEZONE.to_owned(),
-            env: self.options.runtime_context.env.clone(),
-            network_requests_enabled: self
-                .options
-                .runtime_context
-                .env
-                .iter()
-                .any(|(name, value)| name == "PHRUST_NET_TESTS" && value == "1"),
+            env,
+            filter_input_arrays,
+            network_requests_enabled,
             spl_autoload_extensions: ".inc,.php".to_owned(),
             upload_registry: self.options.runtime_context.upload_registry(),
             session: self.options.runtime_context.session.clone(),
@@ -2951,7 +3054,6 @@ impl Vm {
             match self.run_shutdown_functions(&unit, &mut output, &mut state) {
                 Ok(diagnostics) => {
                     result.diagnostics.extend(diagnostics);
-                    result.output = output.clone();
                 }
                 Err(error) => {
                     result = error;
@@ -2962,7 +3064,6 @@ impl Vm {
             match self.run_shutdown_user_stream_wrappers(&unit, &mut output, &mut state) {
                 Ok(diagnostics) => {
                     result.diagnostics.extend(diagnostics);
-                    result.output = output.clone();
                 }
                 Err(error) => {
                     result = error;
@@ -2973,7 +3074,6 @@ impl Vm {
             match self.run_shutdown_destructors(&unit, &mut output, &mut state) {
                 Ok(diagnostics) => {
                     result.diagnostics.extend(diagnostics);
-                    result.output = output.clone();
                 }
                 Err(error) => {
                     result = error;
@@ -2996,7 +3096,6 @@ impl Vm {
             },
         ));
         result.diagnostics.extend(state.diagnostics);
-        result.output = output.clone();
         result.http_response = state.http_response;
         result.upload_registry = state.upload_registry;
         result.session = state.session;
@@ -3022,6 +3121,7 @@ impl Vm {
         if self.options.tiering.collect_stats {
             result.tiering_stats = Some(self.tiering.borrow().stats());
         }
+        result.output = output;
         result
     }
 
@@ -5279,15 +5379,7 @@ impl Vm {
         function_id: FunctionId,
         function: &IrFunction,
     ) -> bool {
-        let key = (compiled_unit_cache_key(compiled), function_id.raw());
-        if let Some(observes) = self.argument_vector_observers.borrow().get(&key) {
-            return !observes;
-        }
-        let observes = function_body_observes_argument_vector(function);
-        self.argument_vector_observers
-            .borrow_mut()
-            .insert(key, observes);
-        !observes
+        !prepared_function_facts(compiled, function_id, function).observes_argument_vector
     }
 
     /// Returns the memoized frame-shape flags for a callee, scanning its body
@@ -5299,19 +5391,12 @@ impl Vm {
         function_id: FunctionId,
         function: &IrFunction,
     ) -> FrameShapeFlags {
-        let key = (compiled_unit_cache_key(compiled), function_id.raw());
-        if let Some(shape) = self.frame_shape_flags.borrow().get(&key) {
-            return *shape;
+        let facts = prepared_function_facts(compiled, function_id, function);
+        FrameShapeFlags {
+            has_try_or_finally: facts.has_try_or_finally,
+            may_hold_destructor_sensitive_value: facts.may_hold_destructor_sensitive_value,
+            has_inline_blocker: facts.has_inline_blocker,
         }
-        let shape = FrameShapeFlags {
-            has_try_or_finally: function_has_try_or_finally(function),
-            may_hold_destructor_sensitive_value: function_may_hold_destructor_sensitive_value(
-                function,
-            ),
-            has_inline_blocker: method_body_has_inline_blocker(function),
-        };
-        self.frame_shape_flags.borrow_mut().insert(key, shape);
-        shape
     }
 
     /// Returns shared normalized/display handles for a class-name spelling,
@@ -6674,7 +6759,14 @@ impl Vm {
 
     fn constant_value(&self, unit: &IrUnit, constant: ConstId) -> Result<Value, String> {
         let Some(value) = unit.constants.get(constant.index()) else {
-            return Err(format!("invalid constant const:{}", constant.raw()));
+            return Err(format!(
+                "invalid constant const:{} for unit {} with {} constants",
+                constant.raw(),
+                unit.files
+                    .first()
+                    .map_or("<unknown>", |file| file.path.as_str()),
+                unit.constants.len()
+            ));
         };
         Ok(self.inline_constant_value(value))
     }
@@ -11318,15 +11410,14 @@ impl Vm {
                             None => FunctionCallShape {
                                 arity: args.len().try_into().unwrap_or(u32::MAX),
                                 named_arguments: Vec::new(),
-                                by_ref_arguments: args
-                                    .iter()
-                                    .map(|arg| {
+                                by_ref_arguments: CallReferenceMask::from_flags(args.iter().map(
+                                    |arg| {
                                         arg.by_ref_local.is_some()
                                             || arg.by_ref_dim.is_some()
                                             || arg.by_ref_property.is_some()
                                             || arg.by_ref_property_dim.is_some()
-                                    })
-                                    .collect(),
+                                    },
+                                )),
                             },
                         };
                         self.observe_dense_call_inline_cache(
@@ -15829,7 +15920,7 @@ impl Vm {
             }
             Some(ForeachIterator::ArrayHandle { array, position }) => {
                 let _source = layout_source::enter(layout_source::FOREACH_VALUE);
-                let next = array.pair_at(*position).map(|(key, value)| {
+                let next = array.next_pair_at_cursor(position).map(|(key, value)| {
                     let value = match value {
                         Value::Reference(cell) => cell.get(),
                         other => other,
@@ -15837,7 +15928,6 @@ impl Vm {
                     (Some(array_key_to_value(key)), value)
                 });
                 if next.is_some() {
-                    *position += 1;
                     self.record_counter_value_clone_reason(layout_source::FOREACH_VALUE.name());
                 }
                 next
@@ -26494,15 +26584,15 @@ impl Vm {
                             }
                             Some(ForeachIterator::ArrayHandle { array, position }) => {
                                 let _source = layout_source::enter(layout_source::FOREACH_VALUE);
-                                let next = array.pair_at(*position).map(|(key, value)| {
-                                    let value = match value {
-                                        Value::Reference(cell) => cell.get(),
-                                        other => other,
-                                    };
-                                    (Some(array_key_to_value(key)), value)
-                                });
+                                let next =
+                                    array.next_pair_at_cursor(position).map(|(key, value)| {
+                                        let value = match value {
+                                            Value::Reference(cell) => cell.get(),
+                                            other => other,
+                                        };
+                                        (Some(array_key_to_value(key)), value)
+                                    });
                                 if next.is_some() {
-                                    *position += 1;
                                     self.record_counter_value_clone_reason(
                                         layout_source::FOREACH_VALUE.name(),
                                     );
@@ -37050,6 +37140,12 @@ impl Vm {
             };
             return VmResult::success_no_output(Some(value));
         }
+        if is_date_time_runtime_class(&object.class_name()) {
+            return match call_date_time_method(object, method, args) {
+                Ok(value) => VmResult::success_no_output(Some(value)),
+                Err(message) => self.runtime_error(output, compiled, stack, message),
+            };
+        }
         if spl_runtime_marker(&object).is_some_and(|class| is_spl_heap_runtime_class(&class))
             && spl_heap_method_is_supported(method)
             && normalize_method_name(method) != "compare"
@@ -43910,7 +44006,7 @@ impl Vm {
         ));
         let request = IncludePathCacheKey {
             path: path.clone(),
-            include_path: include_path.clone(),
+            include_path: include_path.as_ref().clone(),
             cwd: cwd.clone(),
             calling_file_directory: including_file
                 .as_deref()
@@ -43989,7 +44085,7 @@ impl Vm {
                     state.include_stack.len(),
                 ));
                 if matches!(kind, IncludeKind::IncludeOnce | IncludeKind::RequireOnce) {
-                    if state.included_once.contains(&resolved.canonical_path) {
+                    if state.has_included(&resolved.canonical_path) {
                         self.record_counter_include_once_skip();
                         self.record_include_trace_event(format!(
                             "once kind={} canonical={} decision=skip stack_depth={}",
@@ -43999,7 +44095,7 @@ impl Vm {
                         ));
                         return VmResult::success_no_output(Some(Value::Bool(true)));
                     }
-                    state.included_once.push(resolved.canonical_path.clone());
+                    state.record_included(resolved.canonical_path.clone());
                     include_path_recorded = true;
                     self.record_include_trace_event(format!(
                         "once kind={} canonical={} decision=record stack_depth={}",
@@ -44008,9 +44104,7 @@ impl Vm {
                         state.include_stack.len(),
                     ));
                 } else {
-                    if !state.included_once.contains(&resolved.canonical_path) {
-                        state.included_once.push(resolved.canonical_path.clone());
-                    }
+                    state.record_included(resolved.canonical_path.clone());
                     include_path_recorded = true;
                     self.record_include_trace_event(format!(
                         "once kind={} canonical={} decision=not_once stack_depth={}",
@@ -44223,7 +44317,7 @@ impl Vm {
         };
         if !include_path_recorded {
             if matches!(kind, IncludeKind::IncludeOnce | IncludeKind::RequireOnce) {
-                if state.included_once.contains(&loaded.canonical_path) {
+                if state.has_included(&loaded.canonical_path) {
                     self.record_counter_include_once_skip();
                     self.record_include_trace_event(format!(
                         "once kind={} canonical={} decision=skip stack_depth={}",
@@ -44233,7 +44327,7 @@ impl Vm {
                     ));
                     return VmResult::success_no_output(Some(Value::Bool(true)));
                 }
-                state.included_once.push(loaded.canonical_path.clone());
+                state.record_included(loaded.canonical_path.clone());
                 self.record_include_trace_event(format!(
                     "once kind={} canonical={} decision=record stack_depth={}",
                     include_kind_function_name(kind),
@@ -44241,9 +44335,7 @@ impl Vm {
                     state.include_stack.len(),
                 ));
             } else {
-                if !state.included_once.contains(&loaded.canonical_path) {
-                    state.included_once.push(loaded.canonical_path.clone());
-                }
+                state.record_included(loaded.canonical_path.clone());
                 self.record_include_trace_event(format!(
                     "once kind={} canonical={} decision=not_once stack_depth={}",
                     include_kind_function_name(kind),
@@ -46789,7 +46881,7 @@ impl Vm {
         };
         let unit_index = dynamic_class_owner_index_in_state(state, &class.name)
             .unwrap_or_else(|| dynamic_or_retain_unit_index(state, compiled));
-        state.dynamic_classes.push(DynamicClassEntry {
+        state.push_dynamic_class(DynamicClassEntry {
             lookup_name: normalize_class_name(&alias_name),
             class,
             unit_index,
@@ -55557,16 +55649,14 @@ fn register_dynamic_unit(
     unit: CompiledUnit,
     load_kind: DeclarationLoadKind,
 ) -> usize {
-    let unit_index = state.dynamic_units.len();
+    // Retain the owner before publishing symbol-table entries so every
+    // indexed declaration always points at an already-valid unit slot.
+    let unit_index = state.push_dynamic_unit(unit.clone());
     for entry in unit.function_table() {
-        if state
-            .dynamic_functions
-            .iter()
-            .any(|existing| existing.name == entry.name)
-        {
+        if state.dynamic_function_index.contains_key(&entry.name) {
             continue;
         }
-        state.dynamic_functions.push(DynamicFunctionEntry {
+        state.push_dynamic_function(DynamicFunctionEntry {
             name: entry.name.clone(),
             unit_index,
             function: entry.function,
@@ -55578,14 +55668,13 @@ fn register_dynamic_unit(
         if dynamic_constant_declared(compiled, state, &entry.name) {
             continue;
         }
-        state.dynamic_constants.push(DynamicConstantEntry {
+        state.push_dynamic_constant(DynamicConstantEntry {
             name: entry.name.clone(),
             unit_index,
             value: entry.value,
             origin: constant_declaration_origin(&unit, &entry.name, load_kind),
         });
     }
-    state.dynamic_units.push(unit);
     state.bump_class_table_epoch();
     unit_index
 }
@@ -55593,10 +55682,7 @@ fn register_dynamic_unit(
 fn dynamic_constant_declared(compiled: &CompiledUnit, state: &ExecutionState, name: &str) -> bool {
     compiled.lookup_constant(name).is_some()
         || state.user_constants.contains_key(name)
-        || state
-            .dynamic_constants
-            .iter()
-            .any(|existing| existing.name == name)
+        || state.dynamic_constant_index.contains_key(name)
 }
 
 fn current_instruction_diagnostic_span(
@@ -55642,7 +55728,7 @@ fn validate_dynamic_declarations(
                 entry.name
             ));
         }
-        if let Some(existing) = dynamic_function_entry_in_state(state, &entry.name) {
+        if let Some(existing) = dynamic_function_entry_by_normalized_name(state, &entry.name) {
             return Err(format!(
                 "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {}() previously declared at {}",
                 entry.name,
@@ -55672,9 +55758,7 @@ fn validate_dynamic_declarations(
 }
 
 fn retain_dynamic_closure_unit(state: &mut ExecutionState, unit: CompiledUnit) -> usize {
-    let unit_index = state.dynamic_units.len();
-    state.dynamic_units.push(unit);
-    unit_index
+    state.push_dynamic_unit(unit)
 }
 
 fn dynamic_or_retain_unit_index(state: &mut ExecutionState, compiled: &CompiledUnit) -> usize {
@@ -55686,10 +55770,21 @@ fn dynamic_unit_index_for_compiled(
     state: &ExecutionState,
     compiled: &CompiledUnit,
 ) -> Option<usize> {
+    let identity = compiled.cache_identity();
+    if let Some(&index) = state.dynamic_unit_index.get(&identity)
+        && state
+            .dynamic_units
+            .get(index)
+            .is_some_and(|unit| unit.ptr_eq(compiled))
+    {
+        return Some(index);
+    }
+    // Cache identities are process-unique. Retain a pointer-only collision
+    // fallback so integer wraparound can never select the wrong unit.
     state
         .dynamic_units
         .iter()
-        .rposition(|unit| unit == compiled)
+        .rposition(|unit| unit.ptr_eq(compiled))
 }
 
 impl DeclarationOrigin {
@@ -55793,7 +55888,7 @@ fn declare_runtime_function(
             function_previous_declaration_suffix(compiled, existing)
         ));
     }
-    if let Some(existing) = dynamic_function_entry_in_state(state, &normalized) {
+    if let Some(existing) = dynamic_function_entry_by_normalized_name(state, &normalized) {
         return Err(format!(
             "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}() (previously declared in {}:{})",
             existing.origin.source_path, existing.origin.line
@@ -55805,7 +55900,7 @@ fn declare_runtime_function(
         ));
     }
     let unit_index = dynamic_or_retain_unit_index(state, compiled);
-    state.dynamic_functions.push(DynamicFunctionEntry {
+    state.push_dynamic_function(DynamicFunctionEntry {
         name: normalized,
         unit_index,
         function,
@@ -55840,14 +55935,10 @@ fn register_dynamic_classes(
         class.span != php_ir::source_map::IrSpan::default() && !class.flags.is_conditional
     }) {
         let normalized = normalize_class_name(&class.name);
-        if state
-            .dynamic_classes
-            .iter()
-            .any(|existing| normalize_class_name(&existing.class.name) == normalized)
-        {
+        if state.dynamic_class_index.contains_key(&normalized) {
             continue;
         }
-        state.dynamic_classes.push(DynamicClassEntry {
+        state.push_dynamic_class(DynamicClassEntry {
             lookup_name: normalized,
             class: Arc::new(class.clone()),
             unit_index,
@@ -55906,7 +55997,7 @@ fn declare_runtime_class(
         ));
     };
     let unit_index = dynamic_or_retain_unit_index(state, compiled);
-    state.dynamic_classes.push(DynamicClassEntry {
+    state.push_dynamic_class(DynamicClassEntry {
         lookup_name: normalized,
         origin: declaration_origin(
             compiled,
@@ -55936,10 +56027,17 @@ fn dynamic_function_entry_in_state<'a>(
     function_name: &str,
 ) -> Option<&'a DynamicFunctionEntry> {
     let normalized = normalize_function_name(function_name);
-    state
-        .dynamic_functions
-        .iter()
-        .find(|entry| entry.name == normalized)
+    dynamic_function_entry_by_normalized_name(state, &normalized)
+}
+
+fn dynamic_function_entry_by_normalized_name<'a>(
+    state: &'a ExecutionState,
+    normalized_name: &str,
+) -> Option<&'a DynamicFunctionEntry> {
+    let index = *state.dynamic_function_index.get(normalized_name)?;
+    let entry = state.dynamic_functions.get(index)?;
+    debug_assert_eq!(entry.name, normalized_name);
+    Some(entry)
 }
 
 fn dynamic_function_target_in_state(
@@ -55955,10 +56053,17 @@ fn dynamic_class_entry_in_state<'a>(
     class_name: &str,
 ) -> Option<&'a DynamicClassEntry> {
     let normalized = normalize_class_name(class_name);
-    state
-        .dynamic_classes
-        .iter()
-        .find(|entry| entry.lookup_name == normalized)
+    dynamic_class_entry_by_normalized_name(state, &normalized)
+}
+
+fn dynamic_class_entry_by_normalized_name<'a>(
+    state: &'a ExecutionState,
+    normalized_name: &str,
+) -> Option<&'a DynamicClassEntry> {
+    let index = *state.dynamic_class_index.get(normalized_name)?;
+    let entry = state.dynamic_classes.get(index)?;
+    debug_assert_eq!(entry.lookup_name, normalized_name);
+    Some(entry)
 }
 
 fn dynamic_class_in_loaded_units(
@@ -56044,7 +56149,7 @@ fn lookup_class_in_state_ref(
     class_name: &str,
 ) -> Option<ClassLookup> {
     let normalized = normalize_class_name(class_name);
-    if let Some(entry) = dynamic_class_entry_in_state(state, &normalized) {
+    if let Some(entry) = dynamic_class_entry_by_normalized_name(state, &normalized) {
         return Some(ClassLookup::Shared(Arc::clone(&entry.class)));
     }
     if let Some(class) = compiled.lookup_class_arc(class_name) {
@@ -56733,10 +56838,7 @@ fn destructor_entry_owner(
 
 fn dynamic_class_owner_index_in_state(state: &ExecutionState, class_name: &str) -> Option<usize> {
     let normalized = normalize_class_name(class_name);
-    if let Some(entry) = state
-        .dynamic_classes
-        .iter()
-        .find(|entry| entry.lookup_name == normalized)
+    if let Some(entry) = dynamic_class_entry_by_normalized_name(state, &normalized)
         && state.dynamic_units.get(entry.unit_index).is_some()
     {
         return Some(entry.unit_index);
@@ -56823,13 +56925,13 @@ fn dynamic_constant_value_in_state(
     state: &ExecutionState,
     name: &str,
 ) -> Result<Option<Value>, String> {
-    let Some(entry) = state
-        .dynamic_constants
-        .iter()
-        .find(|entry| entry.name == name)
-    else {
+    let Some(entry_index) = state.dynamic_constant_index.get(name).copied() else {
         return Ok(None);
     };
+    let Some(entry) = state.dynamic_constants.get(entry_index) else {
+        return Ok(None);
+    };
+    debug_assert_eq!(entry.name, name);
     let Some(owner) = state.dynamic_units.get(entry.unit_index) else {
         return Ok(None);
     };
@@ -57472,15 +57574,19 @@ fn error_level_severity(level: i64) -> RuntimeSeverity {
     }
 }
 
-fn state_include_path(state: &ExecutionState) -> Vec<PathBuf> {
-    state
-        .ini
-        .get("include_path")
-        .unwrap_or(".")
-        .split(':')
-        .filter(|entry| !entry.is_empty())
-        .map(PathBuf::from)
-        .collect()
+fn state_include_path(state: &ExecutionState) -> Arc<Vec<PathBuf>> {
+    Arc::clone(&state.parsed_include_path)
+}
+
+fn parse_ini_include_path(ini: &IniRegistry) -> Arc<Vec<PathBuf>> {
+    Arc::new(
+        ini.get("include_path")
+            .unwrap_or(".")
+            .split(':')
+            .filter(|entry| !entry.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    )
 }
 
 fn php_string_key(value: &str) -> ArrayKey {
@@ -61329,34 +61435,29 @@ fn execute_builtin_entry(
 ) -> VmResult {
     let include_path = state_include_path(state);
     let diagnostic_display = diagnostic_display_options(state);
+    if state.default_timezone.is_empty() {
+        state.default_timezone = php_runtime::datetime::DEFAULT_TIMEZONE.to_owned();
+    }
+    if state.mb_internal_encoding.is_empty() {
+        state.mb_internal_encoding = "UTF-8".to_owned();
+    }
     let mut context = BuiltinContext::with_runtime(
         output,
-        state.cwd.clone(),
+        PathBuf::new(),
         runtime_context.filesystem.clone(),
         Some(&mut state.resources),
     );
-    context.set_include_path(include_path);
-    context.set_ini_registry(state.ini.clone());
+    context.set_cwd_state(&mut state.cwd);
+    context.set_include_path_shared(include_path);
+    context.set_ini_registry_state(&mut state.ini);
     context.set_network_requests_enabled(state.network_requests_enabled);
     context.set_env_entries(Arc::clone(&state.env));
     if let php_runtime::RuntimeRequestMode::Http(request) = &runtime_context.request_mode {
         context.set_php_input(Arc::clone(&request.raw_body));
     }
-    context.set_default_timezone(if state.default_timezone.is_empty() {
-        php_runtime::datetime::DEFAULT_TIMEZONE.to_owned()
-    } else {
-        state.default_timezone.clone()
-    });
+    context.set_default_timezone_state(&mut state.default_timezone);
     context.set_diagnostic_display(diagnostic_display);
-    // Only the filter_* builtins read the input-source arrays; building all
-    // five superglobal snapshots for every builtin call dominated the
-    // per-dispatch setup cost.
-    if matches!(
-        entry.name(),
-        "filter_input" | "filter_input_array" | "filter_has_var"
-    ) {
-        set_filter_input_arrays(&mut context, runtime_context);
-    }
+    context.set_filter_input_arrays_shared(Arc::clone(&state.filter_input_arrays));
     context.set_pcre_cache_state(&mut state.pcre_cache);
     context.set_preg_last_error_state(&mut state.preg_last_error);
     context.set_json_last_error(state.json_last_error);
@@ -61386,12 +61487,8 @@ fn execute_builtin_entry(
     context.set_upload_registry(&mut state.upload_registry);
     context.set_mysql_state(&mut state.mysql);
     context.set_postgres_state(&mut state.postgres);
-    context.set_mb_internal_encoding(if state.mb_internal_encoding.is_empty() {
-        "UTF-8".to_owned()
-    } else {
-        state.mb_internal_encoding.clone()
-    });
-    context.set_mb_substitute_character(state.mb_substitute_character.clone());
+    context.set_mb_internal_encoding_state(&mut state.mb_internal_encoding);
+    context.set_mb_substitute_character_state(&mut state.mb_substitute_character);
     let initial_session_global =
         if state.session.status() == php_runtime::PHP_SESSION_ACTIVE || state.session.started() {
             state.session.data_value()
@@ -61407,14 +61504,9 @@ fn execute_builtin_entry(
     let time_limit_arg = (entry.name() == "set_time_limit").then(|| args.first().cloned());
     let result = (entry.function())(&mut context, args, source_span.clone());
     context.sync_session_state_from_global();
-    state.cwd = context.cwd().to_path_buf();
-    state.ini = context.ini_registry().clone();
     state.json_last_error = context.json_last_error().0;
     state.posix_last_error = context.posix_last_error();
     state.bcmath_scale = context.bcmath_scale();
-    state.default_timezone = context.default_timezone().to_owned();
-    state.mb_internal_encoding = context.mb_internal_encoding().to_owned();
-    state.mb_substitute_character = context.mb_substitute_character().clone();
     let mut diagnostics = context.take_diagnostics();
     let error_output = result.as_ref().err().map(|_| context.output().clone());
     drop(context);
@@ -61469,12 +61561,20 @@ fn execute_builtin_entry(
     }
 }
 
-fn set_filter_input_arrays(context: &mut BuiltinContext<'_>, runtime_context: &RuntimeContext) {
+fn request_filter_input_arrays(runtime_context: &RuntimeContext) -> Arc<BTreeMap<i64, PhpArray>> {
+    let mut arrays = BTreeMap::new();
     for source in [0, 1, 2, 4, 5] {
         if let Some(array) = runtime_context.filter_input_array(source) {
-            context.set_filter_input_array(source, array);
+            arrays.insert(source, array);
         }
     }
+    Arc::new(arrays)
+}
+
+fn sorted_request_env(env: &Arc<Vec<(String, String)>>) -> Arc<Vec<(String, String)>> {
+    let mut sorted = env.as_ref().clone();
+    sorted.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    Arc::new(sorted)
 }
 
 fn unknown_builtin_result(name: &str, output: &OutputBuffer) -> VmResult {
@@ -61641,7 +61741,7 @@ fn validate_internal_builtin_args(
     if metadata.params.iter().any(|param| param.by_ref) {
         return Ok(values);
     }
-    let Some(info) = php_std::arginfo::FunctionArgInfo::from_generated(metadata) else {
+    let Some(info) = php_std::arginfo::function_arginfo_indexed(name) else {
         return Ok(values);
     };
     let mode = if compiled.unit().strict_types {
@@ -61650,9 +61750,10 @@ fn validate_internal_builtin_args(
         php_std::arginfo::CoercionMode::Weak
     };
     let span = builtin_source_span(compiled, call_span);
-    match php_std::arginfo::ArgumentValidator::new(mode).validate(&info, &values, span) {
+    match php_std::arginfo::ArgumentValidator::new(mode).validate_owned(info, values, span) {
         Ok(validated) => {
-            for diagnostic in validated.diagnostics() {
+            let (values, diagnostics) = validated.into_parts();
+            for diagnostic in &diagnostics {
                 emit_vm_diagnostic(
                     output,
                     state,
@@ -61661,7 +61762,7 @@ fn validate_internal_builtin_args(
                     php_runtime::PHP_E_DEPRECATED,
                 );
             }
-            Ok(validated.values().to_vec())
+            Ok(values)
         }
         Err(error) => Err(arginfo_error_result(error, output)),
     }

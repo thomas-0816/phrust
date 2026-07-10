@@ -233,6 +233,7 @@ max_body_bytes = 1048576
 upload_temp_dir = "/var/tmp/phrust-uploads"
 session_save_path = "/var/tmp/phrust-sessions"
 max_in_flight = 200
+cpu_execution_limit = 8
 request_timeout_ms = 30000
 max_execution_ms = 30000
 metrics_endpoint_enabled = true

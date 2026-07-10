@@ -22,6 +22,14 @@ on:
         options:
           - "false"
           - "true"
+      run_wordpress_performance:
+        description: "Run strict WordPress Phrust vs PHP-FPM/OPcache gate"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -189,3 +197,33 @@ jobs:
           path: |
             target/phpt-work/full-runs/**
             docs/phpt/reports/full-baseline.md
+
+  wordpress-performance:
+    name: WordPress Phrust vs PHP-FPM performance
+    runs-on: mayflower-k8s-runners
+    if: github.event_name == 'workflow_dispatch' && inputs.run_wordpress_performance == 'true'
+    env:
+      PHRUST_WORDPRESS_DIR: ${{ vars.PHRUST_WORDPRESS_DIR }}
+      PHRUST_WORDPRESS_DB_IDENTITY: ${{ vars.PHRUST_WORDPRESS_DB_IDENTITY }}
+      PHRUST_WORDPRESS_HOST_HEADER: ${{ vars.PHRUST_WORDPRESS_HOST_HEADER }}
+      PHRUST_WORDPRESS_ROOT_BASELINE_JSON: ${{ vars.PHRUST_WORDPRESS_ROOT_BASELINE_JSON }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Build pinned PHP-FPM reference image
+        run: nix develop -c just wordpress-reference-image
+
+      - name: Run strict clean gate
+        run: nix develop -c just wordpress-root-regression-gate
+
+      - name: Upload WordPress performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordpress-performance
+          if-no-files-found: error
+          path: target/performance/wordpress-root/**

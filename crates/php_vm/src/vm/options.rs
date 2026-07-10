@@ -13,6 +13,9 @@ use std::sync::Arc;
 pub struct VmOptions {
     /// Verify IR before dispatching it.
     pub verify_ir: bool,
+    /// Recompute immutable preparation and compare it with the cached image.
+    /// Intended for slow validation/debug runs, never production timing.
+    pub revalidate_prepared_unit: bool,
     /// Maximum instruction dispatches before reporting a runtime error.
     pub max_steps: usize,
     /// Optional local include loader. When absent, include/require are disabled
@@ -114,6 +117,7 @@ impl Default for VmOptions {
     fn default() -> Self {
         Self {
             verify_ir: true,
+            revalidate_prepared_unit: false,
             max_steps: 100_000,
             include_loader: None,
             include_cache: None,

@@ -4783,7 +4783,7 @@ impl<'a> BuiltinIoContext<'a> {
     fn new(output: &'a mut OutputBuffer) -> Self {
         Self {
             output,
-            php_input: Arc::from(Vec::new()),
+            php_input: Arc::from([]),
             diagnostic_display: PhpDiagnosticDisplayOptions::default(),
             diagnostics: Vec::new(),
         }
@@ -4792,7 +4792,8 @@ impl<'a> BuiltinIoContext<'a> {
 
 pub(in crate::builtins) struct BuiltinFilesystemContext<'a> {
     cwd: PathBuf,
-    include_path: Vec<PathBuf>,
+    cwd_slot: Option<&'a mut PathBuf>,
+    include_path: Arc<Vec<PathBuf>>,
     filesystem: FilesystemCapabilities,
     resources: Option<&'a mut ResourceTable>,
     filesystem_state: FilesystemRuntimeState,
@@ -4809,7 +4810,8 @@ impl<'a> BuiltinFilesystemContext<'a> {
     ) -> Self {
         Self {
             cwd: cwd.into(),
-            include_path: vec![PathBuf::from(".")],
+            cwd_slot: None,
+            include_path: Arc::new(vec![PathBuf::from(".")]),
             filesystem,
             resources,
             filesystem_state: FilesystemRuntimeState::default(),
@@ -4824,7 +4826,7 @@ impl<'a> BuiltinFilesystemContext<'a> {
 pub(in crate::builtins) struct BuiltinHttpContext<'a> {
     http_response: RuntimeHttpResponseState,
     http_response_state: Option<&'a mut RuntimeHttpResponseState>,
-    filter_inputs: BTreeMap<i64, crate::PhpArray>,
+    filter_inputs: Arc<BTreeMap<i64, crate::PhpArray>>,
     upload_registry: Option<&'a mut UploadRegistry>,
 }
 
@@ -4875,7 +4877,9 @@ pub(in crate::builtins) struct BuiltinExtensionState<'a> {
     socket_state_slot: Option<&'a mut SocketState>,
     posix_last_error: i32,
     mb_internal_encoding: String,
+    mb_internal_encoding_slot: Option<&'a mut String>,
     mb_substitute_character: MbSubstituteCharacter,
+    mb_substitute_character_slot: Option<&'a mut MbSubstituteCharacter>,
     mysql_state: Option<&'a mut MysqlState>,
     postgres_state: Option<&'a mut PostgresState>,
 }
@@ -4941,7 +4945,9 @@ impl<'a> Default for BuiltinExtensionState<'a> {
             socket_state_slot: None,
             posix_last_error: 0,
             mb_internal_encoding: "UTF-8".to_owned(),
+            mb_internal_encoding_slot: None,
             mb_substitute_character: MbSubstituteCharacter::Codepoint(63),
+            mb_substitute_character_slot: None,
             mysql_state: None,
             postgres_state: None,
         }
@@ -4963,7 +4969,9 @@ pub struct BuiltinContext<'a> {
     extensions: BuiltinExtensionState<'a>,
     sessions: BuiltinSessionContext<'a>,
     ini: IniRegistry,
+    ini_slot: Option<&'a mut IniRegistry>,
     default_timezone: String,
+    default_timezone_slot: Option<&'a mut String>,
     env: Arc<Vec<(String, String)>>,
     network_requests_enabled: bool,
 }
@@ -4983,7 +4991,9 @@ impl<'a> BuiltinContext<'a> {
             extensions: BuiltinExtensionState::default(),
             sessions: BuiltinSessionContext::default(),
             ini: IniRegistry::default(),
+            ini_slot: None,
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
+            default_timezone_slot: None,
             env: Arc::new(Vec::new()),
             network_requests_enabled: false,
         }
@@ -5004,7 +5014,9 @@ impl<'a> BuiltinContext<'a> {
             extensions: BuiltinExtensionState::default(),
             sessions: BuiltinSessionContext::default(),
             ini: IniRegistry::default(),
+            ini_slot: None,
             default_timezone: datetime::DEFAULT_TIMEZONE.to_string(),
+            default_timezone_slot: None,
             env: Arc::new(Vec::new()),
             network_requests_enabled: false,
         }
@@ -5149,56 +5161,94 @@ impl<'a> BuiltinContext<'a> {
     /// Current working directory for path and filesystem builtins.
     #[must_use]
     pub fn cwd(&self) -> &Path {
-        &self.filesystem.cwd
+        self.filesystem
+            .cwd_slot
+            .as_deref()
+            .unwrap_or(&self.filesystem.cwd)
     }
 
     /// Updates the request-local current working directory for filesystem builtins.
     pub fn set_cwd(&mut self, cwd: impl Into<PathBuf>) {
-        self.filesystem.cwd = cwd.into();
+        let cwd = cwd.into();
+        match self.filesystem.cwd_slot.as_deref_mut() {
+            Some(slot) => *slot = cwd,
+            None => self.filesystem.cwd = cwd,
+        }
+    }
+
+    /// Borrows the VM-owned request current working directory.
+    pub fn set_cwd_state(&mut self, cwd: &'a mut PathBuf) {
+        self.filesystem.cwd_slot = Some(cwd);
     }
 
     /// Include path entries used by stream include-path resolution.
     #[must_use]
     pub fn include_path(&self) -> &[PathBuf] {
-        &self.filesystem.include_path
+        self.filesystem.include_path.as_slice()
     }
 
     /// Sets request-local include path entries.
     pub fn set_include_path(&mut self, include_path: Vec<PathBuf>) {
+        self.filesystem.include_path = Arc::new(include_path);
+    }
+
+    /// Shares a request-scoped parsed include path.
+    pub fn set_include_path_shared(&mut self, include_path: Arc<Vec<PathBuf>>) {
         self.filesystem.include_path = include_path;
     }
 
     /// Reads a request-local INI option visible to standard-library builtins.
     #[must_use]
     pub fn ini_get(&self, name: &str) -> Option<&str> {
-        self.ini.get(name)
+        self.ini_registry().get(name)
     }
 
     /// Sets request-local INI options visible to standard-library builtins.
     pub fn set_ini_registry(&mut self, ini: IniRegistry) {
         self.ini = ini;
+        self.ini_slot = None;
+    }
+
+    /// Borrows the VM-owned request INI registry.
+    pub fn set_ini_registry_state(&mut self, ini: &'a mut IniRegistry) {
+        self.ini_slot = Some(ini);
     }
 
     /// Returns request-local INI options visible to standard-library builtins.
     #[must_use]
-    pub const fn ini_registry(&self) -> &IniRegistry {
-        &self.ini
+    pub fn ini_registry(&self) -> &IniRegistry {
+        self.ini_slot.as_deref().unwrap_or(&self.ini)
     }
 
     /// Updates a request-local INI option visible to standard-library builtins.
     pub fn ini_set(&mut self, name: &str, value: impl Into<String>) -> Option<String> {
-        self.ini.set(name, value)
+        match self.ini_slot.as_deref_mut() {
+            Some(ini) => ini.set(name, value),
+            None => self.ini.set(name, value),
+        }
     }
 
     /// Current request-local default timezone.
     #[must_use]
     pub fn default_timezone(&self) -> &str {
-        &self.default_timezone
+        self.default_timezone_slot
+            .as_deref()
+            .map(String::as_str)
+            .unwrap_or(&self.default_timezone)
     }
 
     /// Updates the request-local default timezone.
     pub fn set_default_timezone(&mut self, identifier: impl Into<String>) {
-        self.default_timezone = identifier.into();
+        let identifier = identifier.into();
+        match self.default_timezone_slot.as_deref_mut() {
+            Some(timezone) => *timezone = identifier,
+            None => self.default_timezone = identifier,
+        }
+    }
+
+    /// Borrows the VM-owned request timezone.
+    pub fn set_default_timezone_state(&mut self, timezone: &'a mut String) {
+        self.default_timezone_slot = Some(timezone);
     }
 
     /// Filesystem capabilities for path and filesystem builtins.
@@ -5247,7 +5297,12 @@ impl<'a> BuiltinContext<'a> {
 
     /// Sets a deterministic request-input array for `filter_input`.
     pub fn set_filter_input_array(&mut self, source: i64, array: crate::PhpArray) {
-        self.http.filter_inputs.insert(source, array);
+        Arc::make_mut(&mut self.http.filter_inputs).insert(source, array);
+    }
+
+    /// Shares request-input arrays materialized once during request setup.
+    pub fn set_filter_input_arrays_shared(&mut self, arrays: Arc<BTreeMap<i64, crate::PhpArray>>) {
+        self.http.filter_inputs = arrays;
     }
 
     /// Looks up a top-level request-input value for `filter_input`.
@@ -5606,23 +5661,47 @@ impl<'a> BuiltinContext<'a> {
     /// Current request-local mbstring internal encoding.
     #[must_use]
     pub fn mb_internal_encoding(&self) -> &str {
-        &self.extensions.mb_internal_encoding
+        self.extensions
+            .mb_internal_encoding_slot
+            .as_deref()
+            .map(String::as_str)
+            .unwrap_or(&self.extensions.mb_internal_encoding)
     }
 
     /// Updates the request-local mbstring internal encoding.
     pub fn set_mb_internal_encoding(&mut self, encoding: impl Into<String>) {
-        self.extensions.mb_internal_encoding = encoding.into();
+        let encoding = encoding.into();
+        match self.extensions.mb_internal_encoding_slot.as_deref_mut() {
+            Some(slot) => *slot = encoding,
+            None => self.extensions.mb_internal_encoding = encoding,
+        }
+    }
+
+    /// Borrows the VM-owned request mbstring encoding.
+    pub fn set_mb_internal_encoding_state(&mut self, encoding: &'a mut String) {
+        self.extensions.mb_internal_encoding_slot = Some(encoding);
     }
 
     /// Current request-local mbstring substitute-character mode.
     #[must_use]
     pub fn mb_substitute_character(&self) -> &MbSubstituteCharacter {
-        &self.extensions.mb_substitute_character
+        self.extensions
+            .mb_substitute_character_slot
+            .as_deref()
+            .unwrap_or(&self.extensions.mb_substitute_character)
     }
 
     /// Updates the request-local mbstring substitute-character mode.
     pub fn set_mb_substitute_character(&mut self, substitute: MbSubstituteCharacter) {
-        self.extensions.mb_substitute_character = substitute;
+        match self.extensions.mb_substitute_character_slot.as_deref_mut() {
+            Some(slot) => *slot = substitute,
+            None => self.extensions.mb_substitute_character = substitute,
+        }
+    }
+
+    /// Borrows the VM-owned request mbstring substitute-character state.
+    pub fn set_mb_substitute_character_state(&mut self, substitute: &'a mut MbSubstituteCharacter) {
+        self.extensions.mb_substitute_character_slot = Some(substitute);
     }
 
     /// Sets request-local session state and the live `$_SESSION` global slot.

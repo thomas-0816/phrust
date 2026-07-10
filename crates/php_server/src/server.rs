@@ -264,6 +264,8 @@ pub async fn run(config: ServerConfig) -> Result<(), ServerError> {
             .then(|| Duration::from_millis(config.max_execution_ms)),
         in_flight: Arc::new(Semaphore::new(config.max_in_flight)),
         max_in_flight: config.max_in_flight,
+        cpu_execution: Arc::new(Semaphore::new(config.cpu_execution_limit)),
+        cpu_execution_limit: config.cpu_execution_limit,
         metrics: Arc::new(ServerMetrics::default()),
         engine,
         metrics_token: config.metrics_token,
@@ -615,6 +617,7 @@ mod tests {
     fn persistent_engine_shares_immutable_artifacts_without_request_state() {
         let fixture = ServerCacheFixture::new();
         fixture.write(request_isolation_source());
+        std::fs::create_dir(fixture.root.join("subdir")).expect("create request cwd fixture");
         let cache = Arc::new(CompiledScriptCache::new_with_limits(2, 8, Duration::ZERO));
         let state = Arc::new(test_state(&fixture, Arc::clone(&cache), false));
         let initial = state
@@ -653,7 +656,13 @@ mod tests {
                     false,
                 )
                 .expect("request execution");
-                assert_eq!(output.status, PhpExecutionStatus::Success);
+                assert_eq!(
+                    output.status,
+                    PhpExecutionStatus::Success,
+                    "diagnostics={} runtime={:?}",
+                    output.diagnostics_text,
+                    output.runtime_diagnostics
+                );
                 let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
                 let isolated_header = output.http_response.headers.iter().any(|header| {
                     header.name.eq_ignore_ascii_case("x-isolated") && header.value == id
@@ -669,6 +678,10 @@ mod tests {
                 "{stdout}"
             );
             assert!(stdout.contains("|destruct"), "{stdout}");
+            assert!(stdout.contains("|static=1:1"), "{stdout}");
+            assert!(stdout.contains("|ini=14"), "{stdout}");
+            assert!(stdout.contains("|timezone=UTC"), "{stdout}");
+            assert!(stdout.contains("|cwd=phrust-server-cache-"), "{stdout}");
             assert!(isolated_header);
         }
 
@@ -1094,6 +1107,8 @@ mod tests {
             execution_time_limit: Some(Duration::from_secs(30)),
             in_flight: Arc::new(Semaphore::new(1)),
             max_in_flight: 1,
+            cpu_execution: Arc::new(Semaphore::new(1)),
+            cpu_execution_limit: 1,
             metrics: Arc::new(ServerMetrics::default()),
             engine: Arc::new(ServerEngineState::new(
                 EngineProfileName::Default,
@@ -1145,7 +1160,18 @@ mod tests {
 
     fn request_isolation_source() -> &'static str {
         "<?php\n\
+         function request_static_counter() { static $value = 0; $value = $value + 1; return $value; }\n\
+         class ServerIsolationStatics { public static $value = 0; }\n\
          $GLOBALS['counter'] = ($GLOBALS['counter'] ?? 0) + 1;\n\
+         $functionStatic = request_static_counter();\n\
+         $classStatic = ServerIsolationStatics::$value + 1;\n\
+         ServerIsolationStatics::$value = $classStatic;\n\
+         $initialPrecision = ini_get('precision');\n\
+         ini_set('precision', '9');\n\
+         $initialTimezone = date_default_timezone_get();\n\
+         date_default_timezone_set('Europe/Paris');\n\
+         $initialCwd = basename(getcwd());\n\
+         chdir('subdir');\n\
          header('X-Isolated: ' . $_GET['id']);\n\
          ob_start();\n\
          echo 'buffer';\n\
@@ -1160,7 +1186,7 @@ mod tests {
              public function __destruct() { echo '|destruct'; }\n\
          }\n\
          $object = new ServerIsolationDestructor();\n\
-         echo 'id=', $_GET['id'], '|global=', $GLOBALS['counter'], '|buf=', $buffer, '|cow=', count($items), ':', count($copy), '|ref=', $ref;\n"
+         echo 'id=', $_GET['id'], '|global=', $GLOBALS['counter'], '|buf=', $buffer, '|cow=', count($items), ':', count($copy), '|ref=', $ref, '|static=', $functionStatic, ':', $classStatic, '|ini=', $initialPrecision, '|timezone=', $initialTimezone, '|cwd=', $initialCwd;\n"
     }
 
     struct ServerCacheFixture {

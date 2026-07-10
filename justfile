@@ -88,7 +88,9 @@ help:
       '  just wordpress-real-install-smoke Run DB-backed real WordPress install smoke' \
       '  just wordpress-real-perf-report Run optional local real WordPress perf report' \
       '  just wordpress-root-profile Run optional local real WordPress request profile' \
-      '  just wordpress-root-benchmark Run optional real WordPress root benchmark gate' \
+      '  just wordpress-reference-image Build pinned PHP-FPM/OPcache benchmark image' \
+      '  just wordpress-root-benchmark Run clean Phrust vs PHP-FPM WordPress gate' \
+      '  just wordpress-root-diagnostics Run timing-ineligible Phrust diagnostics' \
       '  just wordpress-dense-fallback-report Summarize dense fallback attribution from latest request profile' \
       '  just wordpress-clone-churn-report Summarize clone/COW attribution from latest request profile' \
       '  just wordpress-array-hotpath-report Summarize array hotpath attribution from latest request profile' \
@@ -455,6 +457,7 @@ verify-stdlib:
     @just diff-spl-reflection
 
 verify-performance:
+    @just wordpress-benchmark-self-test
     @just performance-tests
     @just performance-regression
     @just perf-flag-matrix
@@ -1113,15 +1116,30 @@ wordpress-root-profile:
     cargo build -p php_server --bin phrust-server
     PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/wordpress/root_profile.py
 
-wordpress-root-benchmark:
-    if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
-    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py
+wordpress-benchmark-self-test:
+    scripts/performance/wordpress_root_benchmark.py --self-test
 
-# Regression gate: compare a WordPress root run against a recorded baseline;
-# fails on >5% latency / >10% clone-counter regressions, SKIPs without WordPress.
+# Build the pinned stock PHP-FPM 8.5.7 + mysqli + OPcache reference image.
+wordpress-reference-image:
+    docker build --build-arg PHP_VERSION=8.5.7 --tag phrust-php-fpm:8.5.7 docker/performance/php-fpm
+    docker pull nginx:1.28.0-alpine
+
+# Clean timing: release Phrust and stock PHP-FPM/OPcache. This never enables
+# request profiles, VM counters, or trace collection.
+wordpress-root-benchmark *args:
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean {{args}}
+
+# Instrumented Phrust-only attribution. Its samples are marked timing-ineligible.
+wordpress-root-diagnostics *args:
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode diagnostic {{args}}
+
+# Strict regression gate: compare both engines and a recorded Phrust baseline;
+# missing WordPress or reference PHP is a failure.
 wordpress-root-regression-gate *args:
-    if [ -z "${PHRUST_WORDPRESS_URL:-}" ]; then cargo build -p php_server --bin phrust-server; fi
-    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/debug/phrust-server}" scripts/performance/wordpress_root_benchmark.py --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
+    if [ -z "${PHRUST_WORDPRESS_PHRUST_URL:-${PHRUST_WORDPRESS_URL:-}}" ]; then cargo build --release -p php_server --bin phrust-server; fi
+    PHRUST_SERVER="${PHRUST_SERVER:-${CARGO_TARGET_DIR:-target}/release/phrust-server}" scripts/performance/wordpress_root_benchmark.py --mode clean --strict --compare "${PHRUST_WORDPRESS_ROOT_BASELINE_JSON:-target/performance/wordpress-root/baseline.json}" {{args}}
 
 # Anti-theater guard: fail performance branches that only add docs, reports,
 # counters, or metric renames without production Rust changes or gates.

@@ -7,6 +7,122 @@ use php_ir::{
 use php_runtime::{ExitStatus, RuntimeDiagnosticPayload, VmCompileDiagnostic};
 use std::sync::Arc;
 
+fn test_declaration_origin(kind: DeclarationKind) -> DeclarationOrigin {
+    DeclarationOrigin {
+        source_path: "dynamic-symbol-test.php".to_owned(),
+        line: 1,
+        span: IrSpan::default(),
+        namespace: None,
+        kind,
+        load_kind: DeclarationLoadKind::Include,
+    }
+}
+
+#[test]
+fn dynamic_symbol_indexes_preserve_vector_order_and_first_declaration() {
+    let mut state = ExecutionState::default();
+    let first_unit = CompiledUnit::new(php_ir::IrUnit::new(UnitId::new(1)));
+    let equal_but_distinct_unit = CompiledUnit::new(php_ir::IrUnit::new(UnitId::new(1)));
+
+    assert_eq!(state.push_dynamic_unit(first_unit.clone()), 0);
+    assert_eq!(state.push_dynamic_unit(first_unit.clone()), 1);
+    assert_eq!(
+        dynamic_unit_index_for_compiled(&state, &first_unit),
+        Some(1)
+    );
+    assert_eq!(
+        dynamic_unit_index_for_compiled(&state, &equal_but_distinct_unit),
+        None,
+        "identity lookup must not use deep CompiledUnit equality"
+    );
+
+    state.push_dynamic_function(DynamicFunctionEntry {
+        name: "app\\first".to_owned(),
+        unit_index: 0,
+        function: php_ir::FunctionId::new(1),
+        origin: test_declaration_origin(DeclarationKind::Function),
+    });
+    state.push_dynamic_function(DynamicFunctionEntry {
+        name: "app\\second".to_owned(),
+        unit_index: 1,
+        function: php_ir::FunctionId::new(2),
+        origin: test_declaration_origin(DeclarationKind::Function),
+    });
+    assert_eq!(
+        state
+            .dynamic_functions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["app\\first", "app\\second"]
+    );
+    assert_eq!(
+        dynamic_function_entry_by_normalized_name(&state, "app\\first").map(|entry| entry.function),
+        Some(php_ir::FunctionId::new(1))
+    );
+
+    state.push_dynamic_constant(DynamicConstantEntry {
+        name: "FIRST".to_owned(),
+        unit_index: 0,
+        value: php_ir::ConstId::new(1),
+        origin: test_declaration_origin(DeclarationKind::GlobalConstant),
+    });
+    state.push_dynamic_constant(DynamicConstantEntry {
+        name: "SECOND".to_owned(),
+        unit_index: 1,
+        value: php_ir::ConstId::new(2),
+        origin: test_declaration_origin(DeclarationKind::GlobalConstant),
+    });
+    assert_eq!(
+        state
+            .dynamic_constants
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["FIRST", "SECOND"]
+    );
+    assert_eq!(state.dynamic_constant_index.get("FIRST"), Some(&0));
+}
+
+#[test]
+fn immutable_unit_validation_is_prepared_once_across_requests() {
+    let source = "<?php class PreparedFixture { public function value(): int { return 7; } } echo (new PreparedFixture())->value();";
+    let frontend = php_semantics::analyze_source(source);
+    assert!(!frontend.has_errors());
+    let lowering = php_ir::lower_frontend_result(
+        &frontend,
+        php_ir::LoweringOptions {
+            source_text: Some(source.to_owned()),
+            ..php_ir::LoweringOptions::default()
+        },
+    );
+    let unit = CompiledUnit::new(lowering.unit);
+    let vm = Vm::new();
+
+    let first = vm.execute(unit.clone());
+    let second = vm.execute(unit.clone());
+    assert!(first.status.is_success(), "{:?}", first.status);
+    assert!(second.status.is_success(), "{:?}", second.status);
+    assert_eq!(first.output.to_string_lossy(), "7");
+    assert_eq!(second.output.to_string_lossy(), "7");
+    assert_eq!(
+        unit.prepared_unit_stats(),
+        crate::compiled_unit::PreparedUnitStats {
+            ir_verification_runs: 1,
+            class_validation_runs: 1,
+        }
+    );
+
+    let validating_vm = Vm::with_options(VmOptions {
+        revalidate_prepared_unit: true,
+        ..VmOptions::default()
+    });
+    let validated = validating_vm.execute(unit.clone());
+    assert!(validated.status.is_success(), "{:?}", validated.status);
+    assert_eq!(unit.prepared_unit_stats().ir_verification_runs, 1);
+    assert_eq!(unit.prepared_unit_stats().class_validation_runs, 1);
+}
+
 #[test]
 fn pdo_mysql_dsn_parser_accepts_common_tcp_options() {
     let (options, charset) = pdo_mysql_connect_options_from_dsn(
@@ -3229,7 +3345,10 @@ fn date_time_runtime_classes_dispatch_methods() {
             echo $date->format('Y-m-d H:i:s T U'), \"\\n\";
             echo $date->getTimestamp(), \"\\n\";
             echo $date->getTimezone()->getName(), \"\\n\";
+            echo $date->setTimezone(new DateTimeZone('+01:00'))->format('H:i P'), \"\\n\";
+            echo call_user_func([$date, 'setTimezone'], new DateTimeZone('+02:00'))->format('H:i P'), \"\\n\";
             echo $date->getOffset(), '|', $zone->getOffset($date), \"\\n\";
+            $date->setTimezone($zone);
             echo DateTime::ATOM, '|', DateTimeImmutable::RFC3339_EXTENDED, '|', DateTimeInterface::RFC7231, \"\\n\";
             echo DateTimeZone::ALL_WITH_BC, \"\\n\";
             echo (new datetimezone('UTC'))->getName(), \"\\n\";
@@ -3253,7 +3372,7 @@ fn date_time_runtime_classes_dispatch_methods() {
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(
         result.output.to_string_lossy(),
-        "UTC\n2024-01-02 03:04:05 UTC 1704164645\n1704164645\nUTC\n0|0\nY-m-d\\TH:i:sP|Y-m-d\\TH:i:s.vP|D, d M Y H:i:s \\G\\M\\T\n4095\nUTC\n+00:00\n19800 -05:30 -0530 GMT-0530\n2024-01-02 03:04:05 CET 1704161045\n1|2|1 2 0 0\n2024-01-03 05:04:05\n2024-01-02|2024-01-03\n86400|0\n"
+        "UTC\n2024-01-02 03:04:05 UTC 1704164645\n1704164645\nUTC\n04:04 +01:00\n05:04 +02:00\n7200|0\nY-m-d\\TH:i:sP|Y-m-d\\TH:i:s.vP|D, d M Y H:i:s \\G\\M\\T\n4095\nUTC\n+00:00\n19800 -05:30 -0530 GMT-0530\n2024-01-02 03:04:05 CET 1704161045\n1|2|1 2 0 0\n2024-01-03 05:04:05\n2024-01-02|2024-01-03\n86400|0\n"
     );
 }
 
@@ -7430,6 +7549,30 @@ fn destructors_run_at_shutdown_in_reverse_registration_order() {
 
     assert!(result.status.is_success(), "{:?}", result.status);
     assert_eq!(result.output.as_bytes(), b"body|d:b|d:a|");
+}
+
+#[test]
+fn shutdown_stages_append_to_the_single_final_output_buffer() {
+    let result = execute_source(
+        "<?php
+        class ShutdownOutputObject {
+            function __destruct() { echo '|destructor'; }
+        }
+        function shutdown_output() { echo '|shutdown'; }
+        $object = new ShutdownOutputObject();
+        register_shutdown_function('shutdown_output');
+        echo str_repeat('x', 65536);
+        ",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(result.output.len(), 65_536 + 20);
+    assert!(
+        result
+            .output
+            .to_string_lossy()
+            .ends_with("|shutdown|destructor")
+    );
 }
 
 #[test]

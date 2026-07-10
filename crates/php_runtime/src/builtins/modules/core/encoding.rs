@@ -767,7 +767,7 @@ pub(in crate::builtins::modules) fn html_escape_with_options(
         let byte = bytes[index];
         match byte {
             b'&' if !double_encode => {
-                if let Some(entity_len) = valid_html_entity_len(&bytes[index..]) {
+                if let Some(entity_len) = valid_html_entity_len(&bytes[index..], flags) {
                     output.extend_from_slice(&bytes[index..index + entity_len]);
                     index += entity_len;
                     continue;
@@ -797,7 +797,7 @@ pub(in crate::builtins::modules) fn htmlentities_escape_with_options(
         let byte = bytes[index];
         match byte {
             b'&' if !double_encode => {
-                if let Some(entity_len) = valid_html_entity_len(&bytes[index..]) {
+                if let Some(entity_len) = valid_html_entity_len(&bytes[index..], flags) {
                     output.extend_from_slice(&bytes[index..index + entity_len]);
                     index += entity_len;
                     continue;
@@ -971,7 +971,7 @@ fn html_escaped_capacity(bytes: &[u8], flags: i64) -> usize {
         .sum()
 }
 
-fn valid_html_entity_len(bytes: &[u8]) -> Option<usize> {
+fn valid_html_entity_len(bytes: &[u8], flags: i64) -> Option<usize> {
     debug_assert_eq!(bytes.first(), Some(&b'&'));
     let semicolon = php_source::byte_kernel::find_byte(bytes, b';')?;
     if semicolon < 3 {
@@ -992,10 +992,20 @@ fn valid_html_entity_len(bytes: &[u8]) -> Option<usize> {
     {
         return Some(semicolon + 1);
     }
-    if matches!(entity, b"amp" | b"lt" | b"gt" | b"quot" | b"apos") {
+    if matches!(entity, b"amp" | b"lt" | b"gt" | b"quot" | b"apos")
+        || html_document_type(flags) != HtmlDocumentType::Xml1 && is_html4_named_entity(entity)
+    {
         return Some(semicolon + 1);
     }
     None
+}
+
+fn is_html4_named_entity(name: &[u8]) -> bool {
+    (0x00a0..=0x00ff)
+        .chain(std::iter::once(0x20ac))
+        .filter_map(char::from_u32)
+        .filter_map(html4_named_entity)
+        .any(|encoded| encoded.get(1..encoded.len() - 1) == Some(name))
 }
 
 pub(in crate::builtins::modules) fn html_entity_decode_with_flags(

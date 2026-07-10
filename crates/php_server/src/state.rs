@@ -38,6 +38,8 @@ pub(crate) struct AppState {
     pub(crate) execution_time_limit: Option<Duration>,
     pub(crate) in_flight: Arc<Semaphore>,
     pub(crate) max_in_flight: usize,
+    pub(crate) cpu_execution: Arc<Semaphore>,
+    pub(crate) cpu_execution_limit: usize,
     pub(crate) metrics: Arc<ServerMetrics>,
     pub(crate) engine: Arc<ServerEngineState>,
     pub(crate) metrics_token: Option<String>,

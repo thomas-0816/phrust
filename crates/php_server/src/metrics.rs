@@ -12,6 +12,12 @@ pub(crate) struct ServerMetrics {
     pub(crate) five_xx: AtomicU64,
     pub(crate) body_too_large: AtomicU64,
     pub(crate) overload: AtomicU64,
+    pub(crate) cpu_execution_admitted: AtomicU64,
+    pub(crate) cpu_execution_queued: AtomicU64,
+    pub(crate) cpu_execution_saturated: AtomicU64,
+    pub(crate) cpu_execution_rejected: AtomicU64,
+    pub(crate) cpu_execution_cancelled: AtomicU64,
+    pub(crate) cpu_execution_timeouts: AtomicU64,
     pub(crate) uploads_total: AtomicU64,
     pub(crate) upload_parse_errors: AtomicU64,
     pub(crate) upload_bytes_accepted: AtomicU64,
@@ -45,6 +51,8 @@ pub(crate) struct ServerMetrics {
     pub(crate) request_headers_skipped_direct: AtomicU64,
     pub(crate) phase_admission_wait_count: AtomicU64,
     pub(crate) phase_admission_wait_nanos: AtomicU64,
+    pub(crate) phase_cpu_queue_count: AtomicU64,
+    pub(crate) phase_cpu_queue_nanos: AtomicU64,
     pub(crate) phase_route_resolution_count: AtomicU64,
     pub(crate) phase_route_resolution_nanos: AtomicU64,
     pub(crate) phase_body_read_count: AtomicU64,
@@ -71,6 +79,7 @@ impl ServerMetrics {
                 &self.phase_admission_wait_count,
                 &self.phase_admission_wait_nanos,
             ),
+            RequestPhase::CpuQueue => (&self.phase_cpu_queue_count, &self.phase_cpu_queue_nanos),
             RequestPhase::RouteResolution => (
                 &self.phase_route_resolution_count,
                 &self.phase_route_resolution_nanos,
@@ -116,6 +125,7 @@ impl ServerMetrics {
     pub(crate) fn render(
         &self,
         in_flight: u64,
+        cpu_executing: u64,
         cache: php_executor::CompiledScriptCacheStats,
         include_cache: IncludeCacheStats,
         persistent_metadata: PersistentMetadataStats,
@@ -136,6 +146,13 @@ phrust_server_php_responses_total {}\n\
 phrust_server_4xx_total {}\n\
 phrust_server_5xx_total {}\n\
 phrust_server_in_flight {}\n\
+phrust_server_cpu_execution_current {}\n\
+phrust_server_cpu_execution_admitted_total {}\n\
+phrust_server_cpu_execution_queued_total {}\n\
+phrust_server_cpu_execution_saturated_total {}\n\
+phrust_server_cpu_execution_rejected_total {}\n\
+phrust_server_cpu_execution_cancelled_total {}\n\
+phrust_server_cpu_execution_timeouts_total {}\n\
 phrust_server_body_too_large_total {}\n\
 phrust_server_overload_total {}\n\
 phrust_server_uploads_total {}\n\
@@ -187,6 +204,7 @@ phrust_server_composer_fingerprint_stale_total {}\n\
 phrust_server_deployment_fingerprint_present_total {}\n\
 phrust_server_deployment_fingerprint_missing_total {}\n\
 phrust_server_deployment_fingerprint_stale_total {}\n\
+phrust_server_immutable_release_cache_hits_total {}\n\
 phrust_server_entry_script_source_reads_total {}\n\
 phrust_server_response_output_bytes_total {}\n\
 phrust_server_runtime_diagnostics_total {}\n\
@@ -202,6 +220,8 @@ phrust_server_request_headers_materialized_total {}\n\
 phrust_server_request_headers_skipped_direct_total {}\n\
 phrust_server_request_phase_count{{phase=\"admission_wait\"}} {}\n\
 phrust_server_request_phase_nanos_total{{phase=\"admission_wait\"}} {}\n\
+phrust_server_request_phase_count{{phase=\"cpu_queue\"}} {}\n\
+phrust_server_request_phase_nanos_total{{phase=\"cpu_queue\"}} {}\n\
 phrust_server_request_phase_count{{phase=\"route_resolution\"}} {}\n\
 phrust_server_request_phase_nanos_total{{phase=\"route_resolution\"}} {}\n\
 phrust_server_request_phase_count{{phase=\"body_read\"}} {}\n\
@@ -232,6 +252,13 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             self.four_xx.load(Ordering::Relaxed),
             self.five_xx.load(Ordering::Relaxed),
             in_flight,
+            cpu_executing,
+            self.cpu_execution_admitted.load(Ordering::Relaxed),
+            self.cpu_execution_queued.load(Ordering::Relaxed),
+            self.cpu_execution_saturated.load(Ordering::Relaxed),
+            self.cpu_execution_rejected.load(Ordering::Relaxed),
+            self.cpu_execution_cancelled.load(Ordering::Relaxed),
+            self.cpu_execution_timeouts.load(Ordering::Relaxed),
             self.body_too_large.load(Ordering::Relaxed),
             self.overload.load(Ordering::Relaxed),
             self.uploads_total.load(Ordering::Relaxed),
@@ -283,6 +310,7 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             include_cache.deployment_fingerprint_present,
             include_cache.deployment_fingerprint_missing,
             include_cache.deployment_fingerprint_stale,
+            include_cache.immutable_release_hits,
             cache.source_reads,
             self.response_output_bytes.load(Ordering::Relaxed),
             self.runtime_diagnostics.load(Ordering::Relaxed),
@@ -299,6 +327,8 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
             self.request_headers_skipped_direct.load(Ordering::Relaxed),
             self.phase_admission_wait_count.load(Ordering::Relaxed),
             self.phase_admission_wait_nanos.load(Ordering::Relaxed),
+            self.phase_cpu_queue_count.load(Ordering::Relaxed),
+            self.phase_cpu_queue_nanos.load(Ordering::Relaxed),
             self.phase_route_resolution_count.load(Ordering::Relaxed),
             self.phase_route_resolution_nanos.load(Ordering::Relaxed),
             self.phase_body_read_count.load(Ordering::Relaxed),
@@ -335,6 +365,7 @@ phrust_server_persistent_engine_feedback_template_absorptions_total {}\n",
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RequestPhase {
     AdmissionWait,
+    CpuQueue,
     RouteResolution,
     BodyRead,
     RequestContext,
@@ -368,6 +399,9 @@ pub(crate) fn metrics_response(state: &AppState, parts: &Parts) -> Response<Resp
             state
                 .max_in_flight
                 .saturating_sub(state.in_flight.available_permits()) as u64,
+            state
+                .cpu_execution_limit
+                .saturating_sub(state.cpu_execution.available_permits()) as u64,
             state.engine.script_cache.cache_stats(),
             state.engine.include_cache.cache_stats(),
             state.engine.persistent_metadata_stats(),
@@ -426,6 +460,7 @@ mod tests {
             ..IncludeCacheStats::default()
         };
         let rendered = ServerMetrics::default().render(
+            0,
             0,
             php_executor::CompiledScriptCacheStats::default(),
             include_cache,
