@@ -12463,6 +12463,11 @@ impl Vm {
                             output,
                             stack,
                             state,
+                            if self.options.inline_caches.enabled() {
+                                instruction.cache_slot
+                            } else {
+                                None
+                            },
                         );
                         if !result.status.is_success() {
                             self.record_counter_dense_call_fallback("dispatch_error");

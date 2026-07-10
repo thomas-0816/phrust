@@ -983,6 +983,7 @@ pub fn assign_function_call_cache_slots(unit: &mut DenseBytecodeUnit) -> u32 {
                 DenseOpcode::FetchProperty => "property_fetch",
                 DenseOpcode::AssignProperty => "property_assign",
                 DenseOpcode::CallMethod => "method_call",
+                DenseOpcode::CallStaticMethod => "static_method_call",
                 _ => continue,
             };
             if instruction.cache_slot.is_none() {

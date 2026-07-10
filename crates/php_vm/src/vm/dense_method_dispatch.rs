@@ -369,6 +369,7 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
+        method_slot: Option<crate::bytecode::DenseCacheSlotId>,
     ) -> VmResult {
         if is_closure_runtime_class(class_name)
             || is_php_token_runtime_class(class_name)
@@ -407,10 +408,39 @@ impl Vm {
             }
         };
         let scope = method_lookup_scope_for_static_call(compiled, stack, class_name);
-        let lowered_method = normalize_method_name(method);
         let epoch = state.lookup_epoch();
-        let receiver_class = class.name.clone();
         let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
+
+        // Slot-indexed L1: guards on the RESOLVED class name (runtime-variant
+        // for self::/static::/parent::) plus scope; late static binding stays
+        // correct because `called_class` is computed per call above and
+        // passed beside the cached target, exactly as the keyed hit does.
+        if let Some((slot_plan, slot)) = plan.zip(method_slot)
+            && let Some(target) = slot_plan.method_slots.hit(
+                slot,
+                self.vm_nonce,
+                epoch,
+                &class.name,
+                scope.as_deref(),
+            )
+        {
+            self.record_counter_dense_call_ic_hit();
+            self.record_counter_dense_static_call_hit();
+            return self.execute_static_method_call_target(
+                compiled,
+                plan,
+                target,
+                called_class,
+                args,
+                call_span,
+                output,
+                stack,
+                state,
+            );
+        }
+
+        let lowered_method = normalize_method_name(method);
+        let receiver_class = class.name.clone();
 
         if class_extends_php_token(compiled, state, &class) && lowered_method == "tokenize" {
             self.record_counter_dense_call_fallback("php_token_subclass_static_method");
@@ -626,6 +656,17 @@ impl Vm {
             epoch,
         );
         if let Some(target) = cached_target {
+            // Warm the slot from the keyed hit.
+            if let Some((slot_plan, slot)) = plan.zip(method_slot) {
+                slot_plan.method_slots.store(
+                    slot,
+                    self.vm_nonce,
+                    epoch,
+                    class.name.as_str().into(),
+                    scope.clone(),
+                    target.clone(),
+                );
+            }
             self.record_counter_dense_call_ic_hit();
             self.record_counter_dense_static_call_hit();
             return self.execute_static_method_call_target(
