@@ -66,7 +66,8 @@ mod symbol_resolution;
 
 use builtin_adapter::{
     BuiltinAdapterState, InternalFunctionDispatchCache, InternalFunctionDispatchCacheOutcome,
-    execute_builtin_entry, request_filter_input_arrays, sorted_request_env, unknown_builtin_result,
+    builtin_source_span, execute_builtin_entry, request_filter_input_arrays, sorted_request_env,
+    unknown_builtin_result,
 };
 use builtin_classes::*;
 use calls::*;
@@ -25835,98 +25836,6 @@ fn fileinfo_method_builtin_name(method: &str) -> Option<&'static str> {
         "set_flags" => Some("finfo_set_flags"),
         _ => None,
     }
-}
-
-fn builtin_source_span(
-    compiled: &CompiledUnit,
-    call_span: Option<php_ir::IrSpan>,
-) -> RuntimeSourceSpan {
-    match call_span {
-        Some(span) => runtime_source_span(compiled, span),
-        None => RuntimeSourceSpan {
-            file: compiled.unit().files.first().map(|file| file.path.clone()),
-            start: 0,
-            end: 0,
-        },
-    }
-}
-
-fn validate_internal_builtin_args(
-    name: &str,
-    values: Vec<Value>,
-    compiled: &CompiledUnit,
-    call_span: Option<php_ir::IrSpan>,
-    output: &mut OutputBuffer,
-    state: &ExecutionState,
-) -> Result<Vec<Value>, VmResult> {
-    if builtin_uses_custom_argument_validation(name) {
-        return Ok(values);
-    }
-    let Some(metadata) = php_std::arginfo::function_metadata_indexed(name) else {
-        return Ok(values);
-    };
-    if metadata.params.iter().any(|param| param.by_ref) {
-        return Ok(values);
-    }
-    let Some(info) = php_std::arginfo::function_arginfo_indexed(name) else {
-        return Ok(values);
-    };
-    let mode = if compiled.unit().strict_types {
-        php_std::arginfo::CoercionMode::Strict
-    } else {
-        php_std::arginfo::CoercionMode::Weak
-    };
-    let span = builtin_source_span(compiled, call_span);
-    match php_std::arginfo::ArgumentValidator::new(mode).validate_owned(info, values, span) {
-        Ok(validated) => {
-            let (values, diagnostics) = validated.into_parts();
-            for diagnostic in &diagnostics {
-                emit_vm_diagnostic(
-                    output,
-                    state,
-                    diagnostic,
-                    php_runtime::PhpDiagnosticChannel::Deprecated,
-                    php_runtime::PHP_E_DEPRECATED,
-                );
-            }
-            Ok(values)
-        }
-        Err(error) => Err(arginfo_error_result(error, output)),
-    }
-}
-
-fn builtin_uses_custom_argument_validation(name: &str) -> bool {
-    matches!(
-        name,
-        "decbin"
-            | "dechex"
-            | "decoct"
-            | "filter_var_array"
-            | "hash_equals"
-            | "number_format"
-            | "range"
-            | "readline_callback_handler_install"
-            | "readline_completion_function"
-            | "round"
-            | "strip_tags"
-            | "stristr"
-            | "strpos"
-            | "strripos"
-            | "strrpos"
-            | "strstr"
-            | "strtr"
-            | "vfprintf"
-            | "vprintf"
-    )
-}
-
-fn arginfo_error_result(error: php_std::arginfo::ArginfoError, output: &OutputBuffer) -> VmResult {
-    let diagnostic = error.diagnostic().clone();
-    VmResult::runtime_error_with_diagnostic(
-        output.clone(),
-        diagnostic.message().to_owned(),
-        diagnostic,
-    )
 }
 
 impl Default for Vm {

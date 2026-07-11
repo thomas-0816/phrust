@@ -1,6 +1,9 @@
 //! Internal builtin registry dispatch for the VM.
 
-use super::builtin_adapter::{execute_builtin_entry, unknown_builtin_result};
+use super::builtin_adapter::{
+    builtin_source_span, execute_builtin_entry, unknown_builtin_result,
+    validate_internal_builtin_args,
+};
 use super::prelude::*;
 
 impl Vm {

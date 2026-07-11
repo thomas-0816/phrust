@@ -1,3 +1,4 @@
+use super::builtin_adapter::builtin_source_span;
 use super::prelude::*;
 
 impl Vm {

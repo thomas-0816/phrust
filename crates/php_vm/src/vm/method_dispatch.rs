@@ -1,5 +1,6 @@
 //! Method route selection and object/static method invocation.
 
+use super::builtin_adapter::builtin_source_span;
 use super::prelude::*;
 
 impl Vm {
