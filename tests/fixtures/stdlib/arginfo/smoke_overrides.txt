@@ -1,0 +1,3 @@
+# Overrides scoped to the minimal php-src arginfo smoke fixture.
+# Format: name=<function> return=<type> required=<count> alias_of=<function> reason=<short-id>
+name=strlen return=int reason=historical-smoke-anchor

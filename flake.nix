@@ -126,6 +126,7 @@
             cmake
             ninja
             clang
+            llvmPackages.libclang
             libxml2
             sqlite
             openssl
@@ -168,6 +169,7 @@
                 export CARGO_TARGET_DIR="$PWD/target"
                 export SCCACHE_DIR="$PWD/.cache/sccache"
                 export CCACHE_DIR="$PWD/.cache/ccache"
+                export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
                 mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR" "$CCACHE_DIR"
                 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
                 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang

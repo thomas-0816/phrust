@@ -146,7 +146,7 @@ impl JitBackendApi for CurrentJitBackend {
             JitBackend::CraneliftExperiment => {
                 #[cfg(feature = "jit-cranelift")]
                 {
-                    let mut backend = CraneliftNoExecBackend::default();
+                    let mut backend = CraneliftNoExecBackend;
                     backend.compile_region(request)
                 }
                 #[cfg(not(feature = "jit-cranelift"))]

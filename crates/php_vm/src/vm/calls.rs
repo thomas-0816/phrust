@@ -1536,7 +1536,6 @@ impl Vm {
     /// planned dense), the declaring class entry, and the normalized name
     /// handle. Returns `None` when the body must run through the re-resolving
     /// legacy path.
-
     pub(super) fn call_array_callable(
         &self,
         compiled: &CompiledUnit,

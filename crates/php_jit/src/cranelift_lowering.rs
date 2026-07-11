@@ -3837,6 +3837,7 @@ fn lower_inline_cfg_condition(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_inline_cfg_terminator(
     builder: &mut FunctionBuilder<'_>,
     unit: &IrUnit,

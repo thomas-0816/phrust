@@ -9,7 +9,7 @@
 //! interpreter side exit rather than misreading a heap handle as an integer.
 //!
 //! The interpreter's function-entry fork (`try_execute_copy_patch_leaf` in
-//! `crate::vm`) consults [`cached_leaf`] before dense dispatch, so recognized
+//! `crate::vm`) consults `cached_leaf` before dense dispatch, so recognized
 //! leaves run natively on their first call under the default engine. The bridge
 //! is additionally exercised by unit tests over a real
 //! [`LocalFile`](crate::frame::LocalFile) so the marshal-in / marshal-out ABI is
@@ -1041,7 +1041,7 @@ fn property_storage_name(class: &ClassEntry, property: &ClassPropertyEntry) -> S
 /// A recognized + compiled scalar-int leaf function, ready to invoke natively.
 ///
 /// Holds the finalized executable mapping so a function is recognized and lowered
-/// once, then reused across calls (the [`cached_leaf`] cache owns these).
+/// once, then reused across calls (the `cached_leaf` cache owns these).
 #[cfg(all(unix, target_arch = "aarch64"))]
 pub struct NativeLeaf {
     code: php_jit::code_memory::CodeMemory,

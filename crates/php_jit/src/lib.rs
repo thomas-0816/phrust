@@ -301,6 +301,7 @@ impl JitFunctionHandle {
     /// Creates a status/out-pointer integer native-entry handle.
     #[must_use]
     #[cfg(feature = "jit-cranelift")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) const fn i64_status_out_native(
         id: u64,
         region_id: String,
@@ -362,6 +363,7 @@ impl JitFunctionHandle {
     /// Creates a status/out-pointer native entry for one opaque value.
     #[must_use]
     #[cfg(feature = "jit-cranelift")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) const fn value_status_out_native(
         id: u64,
         region_id: String,
@@ -393,6 +395,7 @@ impl JitFunctionHandle {
     /// Creates a status/out-pointer native entry for one opaque value plus metadata.
     #[must_use]
     #[cfg(feature = "jit-cranelift")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn value_metadata_status_out_native(
         id: u64,
         region_id: String,
@@ -424,6 +427,7 @@ impl JitFunctionHandle {
     /// Creates a status/out-pointer native entry for two opaque values.
     #[must_use]
     #[cfg(feature = "jit-cranelift")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) const fn value_value_status_out_native(
         id: u64,
         region_id: String,

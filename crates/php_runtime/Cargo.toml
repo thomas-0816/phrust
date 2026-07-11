@@ -63,7 +63,7 @@ pkg-config = { version = "0.3", optional = true }
 php_testkit = { path = "../php_testkit", version = "0.0.0" }
 
 [package.metadata.cargo-machete]
-ignored = ["md-5"]
+ignored = ["libsodium-sys-stable", "md-5", "php_lexer"]
 
 [features]
 default = ["full-runtime", "runtime-telemetry"]

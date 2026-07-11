@@ -21,6 +21,7 @@ from pathlib import Path
 
 inline_cache = Path("crates/php_vm/src/inline_cache.rs").read_text(encoding="utf-8")
 vm = Path("crates/php_vm/src/vm/mod.rs").read_text(encoding="utf-8")
+method_dispatch = Path("crates/php_vm/src/vm/method_dispatch.rs").read_text(encoding="utf-8")
 
 forbidden = "Arc::new(declaring_class.clone())"
 if forbidden in vm:
@@ -32,7 +33,7 @@ required = {
     "canonical declaring class handle": "owner.lookup_class_arc(&declaring_class.name)",
     "stable compiled-unit cache key": "compiled.cache_identity()",
 }
-combined = inline_cache + vm
+combined = inline_cache + vm + method_dispatch
 for contract, needle in required.items():
     if needle not in combined:
         raise SystemExit(f"[fail] inline-cache route contract missing: {contract}")
