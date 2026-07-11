@@ -237,11 +237,11 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    /// Derives a per-process test key and removes any semaphore set a
-    /// crashed previous run left behind under it (the 16-bit pid slice
-    /// wraps).
+    /// Reuses a bounded test key and removes any semaphore set a crashed
+    /// previous run left behind. Process-derived keys leak one set per
+    /// killed run and can exhaust the host's global semaphore limit.
     fn fresh_sysvsem_key() -> i64 {
-        let key = 0x7072_0000_i64 | (i64::from(std::process::id()) & 0xffff);
+        let key = 0x70ff_ff01_i64;
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
         if let Ok(semaphore) = builtin_sem_get(

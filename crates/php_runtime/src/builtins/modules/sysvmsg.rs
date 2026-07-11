@@ -411,12 +411,11 @@ mod tests {
 
     const MSG_IPC_NOWAIT: i64 = libc::IPC_NOWAIT as i64;
 
-    /// Derives a per-process test key and removes any queue a crashed
-    /// previous run left behind under it: the 16-bit pid slice wraps, so
-    /// orphans from killed test runs otherwise make these tests adopt
-    /// stale queue state.
+    /// Reuses a bounded test-key namespace and removes any queue a crashed
+    /// previous run left behind. Process-derived keys leak one queue per
+    /// killed run and can exhaust the host's global queue limit.
     fn unique_sysvmsg_key(offset: i64) -> i64 {
-        let key = 0x5300_0000_i64 | (((std::process::id() as i64) & 0xffff) << 4) | (offset & 0x0f);
+        let key = 0x53ff_ff00_i64 | (offset & 0xff);
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
         if let Ok(queue) = builtin_msg_get_queue(
@@ -513,11 +512,12 @@ mod tests {
             RuntimeSourceSpan::default(),
         )
         .expect("queue");
-        let Value::Object(queue) = queue else {
+        let Value::Object(queue_object) = queue.clone() else {
             panic!("expected queue object");
         };
 
-        assert_eq!(queue.get_property("__sysvmsg_id"), None);
+        assert_eq!(queue_object.get_property("__sysvmsg_id"), None);
+        let _ = builtin_msg_remove_queue(&mut context, vec![queue], RuntimeSourceSpan::default());
     }
 
     #[test]

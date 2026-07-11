@@ -303,10 +303,11 @@ mod tests {
     use super::*;
     use crate::OutputBuffer;
 
-    /// Derives a per-process test key and removes any segment a crashed
-    /// previous run left behind under it (the 16-bit pid slice wraps).
+    /// Reuses a bounded test-key namespace and removes any segment a crashed
+    /// previous run left behind. Process-derived keys leak one segment per
+    /// killed run and can exhaust the host's global shared-memory limit.
     fn unique_sysvshm_key(offset: i64) -> i64 {
-        let key = 0x5400_0000_i64 | (((std::process::id() as i64) & 0xffff) << 4) | (offset & 0x0f);
+        let key = 0x54ff_ff00_i64 | (offset & 0xff);
         let mut output = OutputBuffer::new();
         let mut context = BuiltinContext::new(&mut output);
         if let Ok(shm) = builtin_shm_attach(
