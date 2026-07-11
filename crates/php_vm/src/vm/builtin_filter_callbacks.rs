@@ -1,5 +1,163 @@
 use super::prelude::*;
 
+const VM_FILTER_DEFAULT: i64 = 516;
+const VM_FILTER_CALLBACK: i64 = 1_024;
+const VM_FILTER_REQUIRE_ARRAY: i64 = 16_777_216;
+const VM_FILTER_REQUIRE_SCALAR: i64 = 33_554_432;
+const VM_FILTER_FORCE_ARRAY: i64 = 67_108_864;
+const VM_FILTER_NULL_ON_FAILURE: i64 = 134_217_728;
+
+#[derive(Clone, Debug, Default)]
+struct VmFilterCallbackOptions {
+    flags: i64,
+    callback: Option<Value>,
+    default_value: Option<Value>,
+}
+
+pub(super) fn is_filter_callback_builtin_name(name: &str) -> bool {
+    matches!(
+        name,
+        "filter_var" | "filter_input" | "filter_input_array" | "filter_var_array"
+    )
+}
+
+fn filter_call_needs_vm_callback(name: &str, values: &[Value]) -> bool {
+    match name {
+        "filter_var" => {
+            values
+                .get(1)
+                .and_then(|value| vm_filter_int(value).ok())
+                .unwrap_or(VM_FILTER_DEFAULT)
+                == VM_FILTER_CALLBACK
+        }
+        "filter_input" => {
+            values
+                .get(2)
+                .and_then(|value| vm_filter_int(value).ok())
+                .unwrap_or(VM_FILTER_DEFAULT)
+                == VM_FILTER_CALLBACK
+        }
+        "filter_input_array" | "filter_var_array" => {
+            filter_array_options_need_vm_callback(values.get(1))
+        }
+        _ => false,
+    }
+}
+
+fn filter_array_options_need_vm_callback(options: Option<&Value>) -> bool {
+    match options.map(effective_value) {
+        Some(Value::Int(filter)) => filter == VM_FILTER_CALLBACK,
+        Some(Value::Array(specs)) => specs
+            .iter()
+            .any(|(_, spec)| vm_filter_spec_filter(spec) == Some(VM_FILTER_CALLBACK)),
+        _ => false,
+    }
+}
+
+fn vm_filter_callback_options(value: Option<&Value>) -> Result<VmFilterCallbackOptions, String> {
+    let Some(value) = value else {
+        return Ok(VmFilterCallbackOptions::default());
+    };
+    match effective_value(value) {
+        Value::Array(array) => {
+            let mut options = VmFilterCallbackOptions::default();
+            let flags_key = ArrayKey::String(PhpString::from_test_str("flags"));
+            if let Some(value) = array.get(&flags_key) {
+                options.flags = vm_filter_int(value)?;
+            }
+            let options_key = ArrayKey::String(PhpString::from_test_str("options"));
+            if let Some(value) = array.get(&options_key) {
+                options.callback = Some(value.clone());
+            }
+            let default_key = ArrayKey::String(PhpString::from_test_str("default"));
+            if let Some(value) = array.get(&default_key) {
+                options.default_value = Some(value.clone());
+            }
+            Ok(options)
+        }
+        other => Ok(VmFilterCallbackOptions {
+            flags: vm_filter_int(&other)?,
+            ..VmFilterCallbackOptions::default()
+        }),
+    }
+}
+
+fn vm_filter_spec_filter(value: &Value) -> Option<i64> {
+    match effective_value(value) {
+        Value::Array(array) => {
+            let key = ArrayKey::String(PhpString::from_test_str("filter"));
+            match array.get(&key) {
+                Some(value) => vm_filter_int(value).ok(),
+                None => Some(VM_FILTER_DEFAULT),
+            }
+        }
+        other => vm_filter_int(&other).ok(),
+    }
+}
+
+fn vm_filter_spec_filter_value(value: &Value) -> Value {
+    vm_filter_spec_filter(value)
+        .map(Value::Int)
+        .unwrap_or(Value::Int(VM_FILTER_DEFAULT))
+}
+
+fn vm_filter_int(value: &Value) -> Result<i64, String> {
+    to_int(value).map_err(|message| format!("E_PHP_RUNTIME_BUILTIN_TYPE: {message}"))
+}
+
+fn vm_filter_failure(options: &VmFilterCallbackOptions) -> Value {
+    if let Some(default_value) = options.default_value.clone() {
+        default_value
+    } else if options.flags & VM_FILTER_NULL_ON_FAILURE != 0 {
+        Value::Null
+    } else {
+        Value::Bool(false)
+    }
+}
+
+fn vm_filter_input_missing_value(options: &VmFilterCallbackOptions) -> Value {
+    if let Some(default_value) = options.default_value.clone() {
+        default_value
+    } else if options.flags & VM_FILTER_NULL_ON_FAILURE != 0 {
+        Value::Bool(false)
+    } else {
+        Value::Null
+    }
+}
+
+fn filter_callback_type_error_result(
+    output: &OutputBuffer,
+    compiled: &CompiledUnit,
+    stack: &CallStack,
+    state: &mut ExecutionState,
+    function: &str,
+    call_span: Option<php_ir::IrSpan>,
+) -> VmResult {
+    builtin_type_error_result_with_failed_call(
+        output,
+        compiled,
+        stack,
+        state,
+        function,
+        &[],
+        call_span,
+        format!("{function}(): Option must be a valid callback"),
+    )
+}
+
+fn filter_callback_callable_name(callback: &Value) -> Option<String> {
+    match effective_value(callback) {
+        Value::String(name) => Some(name.to_string_lossy()),
+        Value::Callable(callable) => match *callable {
+            CallableValue::UserFunction { name } | CallableValue::InternalBuiltin { name } => {
+                Some(name)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl Vm {
     pub(super) fn call_filter_callback_builtin(
         &self,
@@ -80,7 +238,7 @@ impl Vm {
         }
     }
 
-    pub(super) fn filter_var_callback_value(
+    fn filter_var_callback_value(
         &self,
         compiled: &CompiledUnit,
         name: &str,
@@ -140,7 +298,7 @@ impl Vm {
         )
     }
 
-    pub(super) fn filter_input_callback_value(
+    fn filter_input_callback_value(
         &self,
         compiled: &CompiledUnit,
         name: &str,
@@ -211,7 +369,7 @@ impl Vm {
         )
     }
 
-    pub(super) fn filter_input_array_callback_value(
+    fn filter_input_array_callback_value(
         &self,
         compiled: &CompiledUnit,
         name: &str,
@@ -264,7 +422,7 @@ impl Vm {
         )
     }
 
-    pub(super) fn filter_var_array_callback_value(
+    fn filter_var_array_callback_value(
         &self,
         compiled: &CompiledUnit,
         name: &str,
@@ -323,7 +481,7 @@ impl Vm {
         )
     }
 
-    pub(super) fn apply_filter_callback_array(
+    fn apply_filter_callback_array(
         &self,
         compiled: &CompiledUnit,
         name: &str,
@@ -471,7 +629,7 @@ impl Vm {
         }
     }
 
-    pub(super) fn apply_filter_callback_value(
+    fn apply_filter_callback_value(
         &self,
         compiled: &CompiledUnit,
         name: &str,
@@ -526,7 +684,7 @@ impl Vm {
         Ok(filtered)
     }
 
-    pub(super) fn apply_filter_callback_array_value(
+    fn apply_filter_callback_array_value(
         &self,
         compiled: &CompiledUnit,
         name: &str,
@@ -571,7 +729,7 @@ impl Vm {
         Ok(Value::Array(result))
     }
 
-    pub(super) fn invoke_filter_callback(
+    fn invoke_filter_callback(
         &self,
         compiled: &CompiledUnit,
         name: &str,
