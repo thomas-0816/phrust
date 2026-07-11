@@ -21089,6 +21089,7 @@ fn sysvmsg_send_propagates_serialize_return_type_error() {
             } catch (TypeError $e) {
                 echo $e->getMessage();
             }
+            msg_remove_queue($queue);
             ",
     );
 
@@ -21109,6 +21110,7 @@ fn sysvmsg_receive_size_value_error_is_catchable() {
             } catch (ValueError $exception) {
                 echo $exception->getMessage();
             }
+            msg_remove_queue($queue);
             ",
     );
 
