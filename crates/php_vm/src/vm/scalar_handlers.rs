@@ -24,6 +24,67 @@ pub(super) fn execute_rich_compare_op(
     Ok(())
 }
 
+pub(super) fn execute_rich_binary_op(
+    vm: &Vm,
+    request: RichBinaryRequest<'_>,
+    output: &mut OutputBuffer,
+    stack: &mut CallStack,
+    state: &mut ExecutionState,
+) -> Result<(), RichBinaryError> {
+    let RichBinaryRequest {
+        compiled,
+        unit,
+        frame_index,
+        function_id,
+        block_id,
+        instruction_id,
+        dst,
+        op,
+        lhs,
+        rhs,
+        span,
+    } = request;
+    let lhs = read_operand_at_frame(unit, stack, frame_index, lhs).map_err(|message| {
+        RichBinaryError::Direct(Box::new(vm.runtime_error(output, compiled, stack, message)))
+    })?;
+    let rhs = read_operand_at_frame(unit, stack, frame_index, rhs).map_err(|message| {
+        RichBinaryError::Direct(Box::new(vm.runtime_error(output, compiled, stack, message)))
+    })?;
+    let value = match op {
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
+            vm.try_quickened_int_int_binary(function_id, block_id, instruction_id, op, &lhs, &rhs)
+        }
+        BinaryOp::Concat => {
+            vm.try_quickened_concat_string_string(function_id, block_id, instruction_id, &lhs, &rhs)
+        }
+        _ => None,
+    };
+    let value = match value {
+        Some(value) => value,
+        None => vm
+            .execute_binary(
+                compiled,
+                op,
+                &lhs,
+                &rhs,
+                runtime_source_span(compiled, span),
+                output,
+                stack,
+                state,
+            )
+            .map_err(|result| RichBinaryError::Route(Box::new(result)))?,
+    };
+    stack
+        .frame_mut(frame_index)
+        .expect("frame was pushed")
+        .registers
+        .set(dst, value)
+        .map_err(|message| {
+            RichBinaryError::Direct(Box::new(vm.runtime_error(output, compiled, stack, message)))
+        })?;
+    Ok(())
+}
+
 pub(super) fn execute_rich_unary_op(
     request: RichUnaryRequest<'_>,
     stack: &mut CallStack,

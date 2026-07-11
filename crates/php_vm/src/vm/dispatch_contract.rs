@@ -38,3 +38,22 @@ pub(super) struct RichUnaryRequest<'unit> {
     pub(super) op: UnaryOp,
     pub(super) src: Operand,
 }
+
+pub(super) struct RichBinaryRequest<'unit> {
+    pub(super) compiled: &'unit CompiledUnit,
+    pub(super) unit: &'unit IrUnit,
+    pub(super) frame_index: usize,
+    pub(super) function_id: FunctionId,
+    pub(super) block_id: BlockId,
+    pub(super) instruction_id: InstrId,
+    pub(super) dst: RegId,
+    pub(super) op: BinaryOp,
+    pub(super) lhs: Operand,
+    pub(super) rhs: Operand,
+    pub(super) span: IrSpan,
+}
+
+pub(super) enum RichBinaryError {
+    Direct(Box<VmResult>),
+    Route(Box<VmResult>),
+}

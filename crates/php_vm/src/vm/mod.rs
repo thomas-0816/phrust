@@ -75,7 +75,9 @@ use class_relations::*;
 use class_validation::*;
 use closure_operations::*;
 use diagnostics::*;
-use dispatch_contract::{DenseExecutionRequest, RichCompareRequest, RichUnaryRequest};
+use dispatch_contract::{
+    DenseExecutionRequest, RichBinaryError, RichBinaryRequest, RichCompareRequest, RichUnaryRequest,
+};
 use exception_dispatch::*;
 use execution_control::{
     ExceptionHandler, ExecutionLimitExceeded, PendingControl, RaiseOutcome,
@@ -119,7 +121,7 @@ pub use result::VmStepLimitDiagnostic;
 pub use result::{VmControlFlow, VmResult};
 pub(crate) use runtime_class_metadata::dense_new_object_lowering_supported;
 use runtime_class_metadata::*;
-use scalar_handlers::{execute_rich_compare_op, execute_rich_unary_op};
+use scalar_handlers::{execute_rich_binary_op, execute_rich_compare_op, execute_rich_unary_op};
 use spl::*;
 use static_property_predicates::*;
 use symbol_resolution::*;
@@ -6675,76 +6677,44 @@ impl Vm {
                         }
                     }
                     InstructionKind::Binary { dst, op, lhs, rhs } => {
-                        let lhs = match read_operand_at_frame(unit, stack, frame_index, *lhs) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
-                        let rhs = match read_operand_at_frame(unit, stack, frame_index, *rhs) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                return self.runtime_error(output, compiled, stack, message);
-                            }
-                        };
-                        let value = match *op {
-                            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => self
-                                .try_quickened_int_int_binary(
-                                    function_id,
-                                    block_id,
-                                    instruction.id,
-                                    *op,
-                                    &lhs,
-                                    &rhs,
-                                ),
-                            BinaryOp::Concat => self.try_quickened_concat_string_string(
+                        match execute_rich_binary_op(
+                            self,
+                            RichBinaryRequest {
+                                compiled,
+                                unit,
+                                frame_index,
                                 function_id,
                                 block_id,
-                                instruction.id,
-                                &lhs,
-                                &rhs,
-                            ),
-                            _ => None,
-                        };
-                        let value = match value {
-                            Some(value) => value,
-                            None => match self.execute_binary(
-                                compiled,
-                                *op,
-                                &lhs,
-                                &rhs,
-                                runtime_source_span(compiled, instruction.span),
-                                output,
-                                stack,
-                                state,
-                            ) {
-                                Ok(value) => value,
-                                Err(result) => {
-                                    match self.route_throwable_result(
-                                        compiled,
-                                        output,
-                                        stack,
-                                        state,
-                                        &mut exception_handlers,
-                                        &mut pending_control,
-                                        result,
-                                    ) {
-                                        RaiseOutcome::Caught(target) => {
-                                            block_id = target;
-                                            continue 'dispatch;
-                                        }
-                                        RaiseOutcome::Done(result) => return *result,
-                                    }
-                                }
+                                instruction_id: instruction.id,
+                                dst: *dst,
+                                op: *op,
+                                lhs: *lhs,
+                                rhs: *rhs,
+                                span: instruction.span,
                             },
-                        };
-                        if let Err(message) = stack
-                            .frame_mut(frame_index)
-                            .expect("frame was pushed")
-                            .registers
-                            .set(*dst, value)
-                        {
-                            return self.runtime_error(output, compiled, stack, message);
+                            output,
+                            stack,
+                            state,
+                        ) {
+                            Ok(()) => {}
+                            Err(RichBinaryError::Direct(result)) => return *result,
+                            Err(RichBinaryError::Route(result)) => {
+                                match self.route_throwable_result(
+                                    compiled,
+                                    output,
+                                    stack,
+                                    state,
+                                    &mut exception_handlers,
+                                    &mut pending_control,
+                                    *result,
+                                ) {
+                                    RaiseOutcome::Caught(target) => {
+                                        block_id = target;
+                                        continue 'dispatch;
+                                    }
+                                    RaiseOutcome::Done(result) => return *result,
+                                }
+                            }
                         }
                     }
                     InstructionKind::Compare { dst, op, lhs, rhs } => {
