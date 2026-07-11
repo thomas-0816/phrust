@@ -465,6 +465,49 @@ fn sample_unattributed_backtrace() {
     eprintln!("[unattributed-clone]\n{backtrace}");
 }
 
+/// Debug-only diagnosis for COW separations: when
+/// `PHRUST_COW_SEPARATION_BACKTRACE=<n>` is set, every `n`-th array
+/// copy-on-write separation prints the owner count and a short backtrace,
+/// so a histogram over a run classifies which co-owners force the copies.
+/// Debug builds only; release builds compile this out entirely.
+#[cfg(debug_assertions)]
+#[cold]
+pub fn sample_cow_separation_backtrace(strong_count: usize) {
+    use std::cell::Cell;
+    thread_local! {
+        static EVERY: Cell<u64> = const { Cell::new(u64::MAX) };
+        static SEEN: Cell<u64> = const { Cell::new(0) };
+    }
+    let every = EVERY.with(|every| {
+        if every.get() == u64::MAX {
+            let parsed = std::env::var("PHRUST_COW_SEPARATION_BACKTRACE")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(0);
+            every.set(parsed);
+        }
+        every.get()
+    });
+    if every == 0 {
+        return;
+    }
+    let seen = SEEN.with(|seen| {
+        let next = seen.get() + 1;
+        seen.set(next);
+        next
+    });
+    if !seen.is_multiple_of(every) {
+        return;
+    }
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    eprintln!("[cow-separation owners={strong_count}]\n{backtrace}");
+}
+
+#[cfg(not(debug_assertions))]
+#[inline]
+pub fn sample_cow_separation_backtrace(_strong_count: usize) {}
+
 fn record_array_handle_clone_source() {
     if !source_attribution_enabled() {
         return;

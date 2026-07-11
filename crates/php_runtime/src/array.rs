@@ -2133,6 +2133,7 @@ impl PhpArray {
     fn storage_mut_for(&mut self, _intent: PhpArrayWriteIntent) -> &mut ArrayStorage {
         if self.is_shared() {
             crate::layout_stats::record_cow_separation();
+            crate::layout_stats::sample_cow_separation_backtrace(Rc::strong_count(&self.storage));
             // Attribute the element deep-copy performed by `Rc::make_mut` to
             // the separation itself instead of the outer operation family.
             let _source = crate::layout_stats::enter_layout_source_family(
