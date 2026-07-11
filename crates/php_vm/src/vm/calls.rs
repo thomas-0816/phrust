@@ -1534,11 +1534,6 @@ impl Vm {
         self.execute_function(owner, function, call, output, stack, state)
     }
 
-    /// Builds the direct dispatch route a warmed method-call site reuses on
-    /// every hit: the owner unit, its execution plan (only when the method is
-    /// planned dense), the declaring class entry, and the normalized name
-    /// handle. Returns `None` when the body must run through the re-resolving
-    /// legacy path.
     pub(super) fn call_array_callable(
         &self,
         compiled: &CompiledUnit,
