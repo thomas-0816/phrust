@@ -1,6 +1,7 @@
 //! Method route selection and object/static method invocation.
 
 use super::builtin_adapter::builtin_source_span;
+use super::builtin_fileinfo::FileinfoMethodCall;
 use super::prelude::*;
 
 impl Vm {
@@ -1049,9 +1050,17 @@ impl Vm {
             };
         }
         if is_fileinfo_runtime_class(&object.class_name()) {
-            return call_fileinfo_method(
-                self, compiled, object, method, args, call_span, output, stack, state,
-            );
+            return FileinfoMethodCall {
+                vm: self,
+                compiled,
+                object,
+                method,
+                call_span,
+                output,
+                stack,
+                state,
+            }
+            .execute(args);
         }
         if is_phar_runtime_class(&object.class_name()) {
             return match call_phar_method(&object, method, args, &self.options.runtime_context) {

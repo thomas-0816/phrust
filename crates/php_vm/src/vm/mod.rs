@@ -10,6 +10,7 @@ mod builtin_callbacks;
 mod builtin_classes;
 mod builtin_environment;
 mod builtin_error_output;
+mod builtin_fileinfo;
 mod builtin_filter_callbacks;
 mod builtin_intrinsics;
 mod builtin_pcre_callbacks;
@@ -66,10 +67,10 @@ mod symbol_resolution;
 
 use builtin_adapter::{
     BuiltinAdapterState, InternalFunctionDispatchCache, InternalFunctionDispatchCacheOutcome,
-    builtin_source_span, execute_builtin_entry, request_filter_input_arrays, sorted_request_env,
-    unknown_builtin_result,
+    builtin_source_span, request_filter_input_arrays, sorted_request_env,
 };
 use builtin_classes::*;
+use builtin_fileinfo::FileinfoMethodCall;
 use calls::*;
 use class_context::*;
 use class_operations::*;
@@ -18705,17 +18706,17 @@ impl Vm {
                             continue;
                         }
                         if is_fileinfo_runtime_class(&object.class_name()) {
-                            let result = call_fileinfo_method(
-                                self,
+                            let result = FileinfoMethodCall {
+                                vm: self,
                                 compiled,
                                 object,
                                 method,
-                                values,
-                                Some(instruction.span),
+                                call_span: Some(instruction.span),
                                 output,
                                 stack,
                                 state,
-                            );
+                            }
+                            .execute(values);
                             if !result.status.is_success() {
                                 return result;
                             }
@@ -25728,114 +25729,6 @@ fn internal_function_dispatch_cacheable(name: &str) -> bool {
                 | "substr"
                 | "trim"
         )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn call_fileinfo_method(
-    vm: &Vm,
-    compiled: &CompiledUnit,
-    object: ObjectRef,
-    method: &str,
-    args: Vec<CallArgument>,
-    call_span: Option<IrSpan>,
-    output: &mut OutputBuffer,
-    stack: &mut CallStack,
-    state: &mut ExecutionState,
-) -> VmResult {
-    let values = match call_args_to_positional(&format!("finfo::{method}"), args) {
-        Ok(values) => values,
-        Err(message) => return vm.runtime_error(output, compiled, stack, message),
-    };
-    call_fileinfo_method_values(
-        vm, compiled, object, method, values, call_span, output, stack, state,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn call_fileinfo_method_values(
-    vm: &Vm,
-    compiled: &CompiledUnit,
-    object: ObjectRef,
-    method: &str,
-    mut values: Vec<Value>,
-    call_span: Option<IrSpan>,
-    output: &mut OutputBuffer,
-    stack: &mut CallStack,
-    state: &mut ExecutionState,
-) -> VmResult {
-    if normalize_method_name(method) == "__construct" {
-        if values.len() > 2 {
-            return vm.runtime_error(
-                output,
-                compiled,
-                stack,
-                format!(
-                    "E_PHP_VM_FILEINFO_ARG_COUNT: finfo::__construct expects 0 to 2 argument(s), {} given",
-                    values.len()
-                ),
-            );
-        }
-        let flags = match values.first().map(to_int).transpose() {
-            Ok(flags) => flags.unwrap_or(0),
-            Err(message) => return vm.runtime_error(output, compiled, stack, message),
-        };
-        let magic_file = match values.get(1) {
-            Some(Value::Null | Value::Uninitialized) | None => None,
-            Some(value) => match to_string(value) {
-                Ok(path) => Some(path.to_string_lossy()),
-                Err(message) => return vm.runtime_error(output, compiled, stack, message),
-            },
-        };
-        if let Err(message) =
-            php_runtime::builtins::validate_fileinfo_options(flags, magic_file.as_deref())
-        {
-            return vm.runtime_error(
-                output,
-                compiled,
-                stack,
-                format!("E_PHP_VM_FILEINFO_MAGIC: {message}"),
-            );
-        }
-        object.set_property("__fileinfo_flags", Value::Int(flags));
-        object.set_property(
-            "__fileinfo_magic_file",
-            magic_file.map(Value::string).unwrap_or(Value::Null),
-        );
-        return VmResult::success_no_output(Some(Value::Null));
-    }
-    let Some(function) = fileinfo_method_builtin_name(method) else {
-        return vm.runtime_error(
-            output,
-            compiled,
-            stack,
-            format!(
-                "E_PHP_VM_UNKNOWN_METHOD: method {}::{} is not defined",
-                object.class_name(),
-                method
-            ),
-        );
-    };
-    values.insert(0, Value::Object(object));
-    let Some(entry) = BuiltinRegistry::new().get(function) else {
-        return unknown_builtin_result(function, output);
-    };
-    execute_builtin_entry(
-        entry,
-        values,
-        output,
-        &vm.options.runtime_context,
-        state,
-        builtin_source_span(compiled, call_span),
-    )
-}
-
-fn fileinfo_method_builtin_name(method: &str) -> Option<&'static str> {
-    match normalize_method_name(method).as_str() {
-        "buffer" => Some("finfo_buffer"),
-        "file" => Some("finfo_file"),
-        "set_flags" => Some("finfo_set_flags"),
-        _ => None,
-    }
 }
 
 impl Default for Vm {
