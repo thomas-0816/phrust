@@ -226,8 +226,8 @@
       "max_lines": 8770
     },
     "crates/php_vm/src/vm/dense_dispatch.rs": {
-      "max_bytes": 311617,
-      "max_lines": 6073
+      "max_bytes": 310036,
+      "max_lines": 6047
     },
     "crates/php_vm/src/vm/mod.rs": {
       "max_bytes": 1479713,

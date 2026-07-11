@@ -2884,40 +2884,14 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        // `execute_compare` is pure, so both operands can be
-                        // borrowed straight from the frame without cloning.
-                        let lhs = match self.read_dense_operand_ref(compiled, stack, lhs) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
-                        };
-                        let rhs = match self.read_dense_operand_ref(compiled, stack, rhs) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
-                        };
-                        let op = dense_compare_op(instruction.opcode)
-                            .expect("dense compare opcode matched");
-                        let value = match execute_compare(op, lhs.as_value(), rhs.as_value()) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
-                        };
-                        if let Err(message) = stack
-                            .current_mut()
-                            .expect("bytecode frame was pushed")
-                            .registers
-                            .set(RegId::new(dst), value)
-                        {
+                        if let Err(message) = self.execute_dense_compare_op(
+                            compiled,
+                            stack,
+                            instruction.opcode,
+                            dst,
+                            lhs,
+                            rhs,
+                        ) {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
                             return result;
