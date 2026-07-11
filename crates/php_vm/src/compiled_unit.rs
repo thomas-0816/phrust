@@ -575,4 +575,33 @@ mod tests {
             Some(ClassId::new(1))
         );
     }
+
+    #[test]
+    fn class_handles_are_canonical_within_one_unit_and_not_across_replacements() {
+        let mut unit = IrUnit::new(UnitId::new(0));
+        unit.classes.push(class_entry(7, "App\\Canonical", false));
+
+        let compiled = CompiledUnit::new(unit.clone());
+        let cloned_handle = compiled.clone();
+        let first = compiled
+            .lookup_class_arc("app\\canonical")
+            .expect("canonical class should resolve");
+        let second = cloned_handle
+            .lookup_class_arc("\\APP\\CANONICAL")
+            .expect("equivalent class spelling should resolve");
+
+        assert_eq!(compiled.cache_identity(), cloned_handle.cache_identity());
+        assert!(compiled.ptr_eq(&cloned_handle));
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.id, ClassId::new(7));
+
+        let replacement = CompiledUnit::new(unit);
+        let replacement_class = replacement
+            .lookup_class_arc("App\\Canonical")
+            .expect("replacement class should resolve");
+        assert_ne!(compiled.cache_identity(), replacement.cache_identity());
+        assert!(!compiled.ptr_eq(&replacement));
+        assert!(!Arc::ptr_eq(&first, &replacement_class));
+        assert_eq!(first.id, replacement_class.id);
+    }
 }

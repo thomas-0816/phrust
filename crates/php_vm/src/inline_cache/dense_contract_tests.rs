@@ -52,6 +52,7 @@ fn dense_slot_binding_reaches_all_payloads_without_coordinate_map_access() {
         positional_shape(0),
         None,
         FunctionCallCacheTarget::CurrentUnit {
+            unit_identity: 7,
             function: FunctionId::new(4),
         },
     );
@@ -66,6 +67,7 @@ fn dense_slot_binding_reaches_all_payloads_without_coordinate_map_access() {
     assert_eq!(
         target,
         Some(FunctionCallCacheTarget::CurrentUnit {
+            unit_identity: 7,
             function: FunctionId::new(4)
         })
     );

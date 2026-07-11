@@ -281,7 +281,6 @@ impl Vm {
         let route =
             self.method_dispatch_route(&class_owner, method_entry.function, declaring_class);
         let method_target = Rc::new(MethodCallResolvedTarget {
-            receiver_class: receiver_class.clone(),
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
             guard: method_guard,
@@ -777,7 +776,6 @@ impl Vm {
         let route =
             self.method_dispatch_route(&static_owner, method_entry.function, declaring_class);
         let method_target = Rc::new(MethodCallResolvedTarget {
-            receiver_class: receiver_class.clone(),
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
             guard: method_guard,

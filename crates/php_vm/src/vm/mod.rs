@@ -61,9 +61,10 @@ use crate::inline_cache::{
     FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
     FunctionCallShape, IncludePathCacheKey, IncludePathCacheTarget, InlineCacheId, InlineCacheKind,
     InlineCacheObservation, InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget,
-    MethodCallDispatchRoute, MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape,
-    PropertyAssignCacheTarget, PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget,
-    PropertyFetchCacheTarget, PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
+    MethodCallDispatchRoute, MethodCallGuardMetadata, MethodCallResolvedTarget,
+    MethodCallRouteIdentity, MethodCallShape, PropertyAssignCacheTarget,
+    PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget, PropertyFetchCacheTarget,
+    PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
 };
 use crate::literal_pool::LiteralPool;
 use crate::quickening::{QuickeningObservation, QuickeningSpecialization, QuickeningTable};
@@ -2808,8 +2809,8 @@ impl Vm {
         *self.constructor_resolution_cache.borrow_mut() = ConstructorResolutionCache::default();
         *self.quickening.borrow_mut() = QuickeningTable::default();
         self.persistent_feedback_epochs.set(None);
-        // IC slots key units by compiled_unit_cache_key (the IR-unit address),
-        // so the entry-unit scope filter must use the same key.
+        // IC slots and the entry-unit scope filter share the compiled unit's
+        // stable cache identity.
         self.persistent_feedback_entry_unit_key
             .set(Some(compiled_unit_cache_key(&unit)));
         let mut persistent_feedback_seeded_sites = 0usize;
@@ -6824,7 +6825,11 @@ impl Vm {
         let normalized = normalize_function_name(callee_name);
         let (callee_unit, callee_id) =
             match self.resolve_function_call_target(compiled, state, &normalized)? {
-                FunctionCallCacheTarget::CurrentUnit { function } => (compiled.clone(), function),
+                FunctionCallCacheTarget::CurrentUnit {
+                    unit_identity,
+                    function,
+                } if unit_identity == compiled.cache_identity() => (compiled.clone(), function),
+                FunctionCallCacheTarget::CurrentUnit { .. } => return None,
                 FunctionCallCacheTarget::DynamicUnit {
                     unit_index,
                     unit_identity,
@@ -7025,8 +7030,10 @@ impl Vm {
                     let resolved = self.resolve_function_call_target(compiled, state, normalized);
                     let matches_expected = matches!(
                         resolved,
-                        Some(FunctionCallCacheTarget::CurrentUnit { function })
-                            if function == expected
+                        Some(FunctionCallCacheTarget::CurrentUnit {
+                            unit_identity,
+                            function,
+                        }) if unit_identity == compiled.cache_identity() && function == expected
                     );
                     if !matches_expected {
                         if calls_performed {
@@ -11339,7 +11346,11 @@ impl Vm {
                         let mut fast_lane_values: Option<Vec<Value>> = None;
                         if bare_positional_shape
                             && let Some(plan) = plan
-                            && let FunctionCallCacheTarget::CurrentUnit { function } = &target
+                            && let FunctionCallCacheTarget::CurrentUnit {
+                                unit_identity,
+                                function,
+                            } = &target
+                            && *unit_identity == compiled.cache_identity()
                             && matches!(
                                 plan.function_plan(function.index()),
                                 Some(DenseFunctionPlan::Dense)
@@ -11394,8 +11405,11 @@ impl Vm {
                             }
                         };
                         let result = if let Some(plan) = plan
-                            && let FunctionCallCacheTarget::CurrentUnit { function } =
-                                target.clone()
+                            && let FunctionCallCacheTarget::CurrentUnit {
+                                unit_identity,
+                                function,
+                            } = target.clone()
+                            && unit_identity == compiled.cache_identity()
                         {
                             match plan.function_plan(function.index()) {
                                 Some(DenseFunctionPlan::Dense) => {
@@ -28945,7 +28959,6 @@ impl Vm {
                                     state,
                                     &target,
                                     &class,
-                                    &receiver_class,
                                     args,
                                     &values,
                                     has_magic_call,
@@ -29324,7 +29337,6 @@ impl Vm {
                             has_by_ref_argument,
                         );
                         let method_target = Rc::new(MethodCallResolvedTarget {
-                            receiver_class: receiver_class.clone(),
                             declaring_class: declaring_class.name.clone(),
                             function: method_entry.function,
                             guard: method_guard,
@@ -35183,7 +35195,10 @@ impl Vm {
             return Some(target);
         }
         if let Some(function) = compiled.lookup_function(name) {
-            return Some(FunctionCallCacheTarget::CurrentUnit { function });
+            return Some(FunctionCallCacheTarget::CurrentUnit {
+                unit_identity: compiled.cache_identity(),
+                function,
+            });
         }
         if let Some((unit_index, function)) = dynamic_function_target_in_state(state, name) {
             return Some(FunctionCallCacheTarget::DynamicUnit {
@@ -35195,7 +35210,10 @@ impl Vm {
 
         if let Some(fallback_name) = namespaced_function_global_fallback(name) {
             if let Some(function) = compiled.lookup_function(fallback_name) {
-                return Some(FunctionCallCacheTarget::CurrentUnit { function });
+                return Some(FunctionCallCacheTarget::CurrentUnit {
+                    unit_identity: compiled.cache_identity(),
+                    function,
+                });
             }
             if let Some((unit_index, function)) =
                 dynamic_function_target_in_state(state, fallback_name)
@@ -35230,17 +35248,30 @@ impl Vm {
         running_fiber: &Option<FiberRef>,
     ) -> VmResult {
         match target {
-            FunctionCallCacheTarget::CurrentUnit { function } => self.execute_function(
-                compiled,
+            FunctionCallCacheTarget::CurrentUnit {
+                unit_identity,
                 function,
-                FunctionCall::new(args, Vec::new())
-                    .with_call_site_strict_types(call_site_strictness(compiled, call_span))
-                    .inherit_fiber_context(running_fiber)
-                    .with_optional_call_span(call_span),
-                output,
-                stack,
-                state,
-            ),
+            } => {
+                if unit_identity != compiled.cache_identity() {
+                    return self.runtime_error(
+                        output,
+                        compiled,
+                        stack,
+                        "E_PHP_VM_INLINE_CACHE_STALE_CURRENT_UNIT: cached unit identity changed",
+                    );
+                }
+                self.execute_function(
+                    compiled,
+                    function,
+                    FunctionCall::new(args, Vec::new())
+                        .with_call_site_strict_types(call_site_strictness(compiled, call_span))
+                        .inherit_fiber_context(running_fiber)
+                        .with_optional_call_span(call_span),
+                    output,
+                    stack,
+                    state,
+                )
+            }
             FunctionCallCacheTarget::DynamicUnit {
                 unit_index,
                 unit_identity,
@@ -35986,6 +36017,16 @@ impl Vm {
         function: FunctionId,
         declaring_class: &php_ir::module::ClassEntry,
     ) -> Option<MethodCallDispatchRoute> {
+        let canonical_class = owner.lookup_class_arc(&declaring_class.name)?;
+        if canonical_class.id != declaring_class.id {
+            return None;
+        }
+        let method_slot_index = canonical_class
+            .methods
+            .iter()
+            .position(|method| method.function == function)?
+            .try_into()
+            .ok()?;
         let plan = self.get_or_build_dense_execution_plan(owner).ok()?;
         if !matches!(
             plan.function_plan(function.index()),
@@ -35994,9 +36035,15 @@ impl Vm {
             return None;
         }
         Some(MethodCallDispatchRoute {
+            identity: MethodCallRouteIdentity {
+                owner_unit_identity: owner.cache_identity(),
+                declaring_class_id: canonical_class.id,
+                function,
+                method_slot_index,
+            },
             owner: owner.clone(),
             plan,
-            declaring_class: Arc::new(declaring_class.clone()),
+            declaring_class: canonical_class,
             declaring_class_handle: self.class_name_handles(&declaring_class.name).normalized,
         })
     }
@@ -50019,7 +50066,7 @@ fn script_exit_result(output: &OutputBuffer, state: &ExecutionState, code: i32) 
 }
 
 fn compiled_unit_cache_key(compiled: &CompiledUnit) -> u64 {
-    std::ptr::from_ref(compiled.unit()) as usize as u64
+    compiled.cache_identity()
 }
 
 /// True when cloning `value` would allocate or bump a refcount (a refcounted
@@ -54051,13 +54098,13 @@ fn method_call_guard_metadata(
     receiver_class: &php_ir::module::ClassEntry,
     declaring_class: &php_ir::module::ClassEntry,
     method_entry: &php_ir::module::ClassMethodEntry,
-    visibility_context: Option<&str>,
+    _visibility_context: Option<&str>,
     epoch: InvalidationEpoch,
     has_magic_call: bool,
     has_by_ref_argument: bool,
 ) -> MethodCallGuardMetadata {
     MethodCallGuardMetadata {
-        receiver_class_id: receiver_class.id.raw(),
+        receiver_class_id: receiver_class.id,
         class_layout_epoch: epoch.raw(),
         method_table_epoch: epoch.raw(),
         method_slot_index: declaring_class
@@ -54067,7 +54114,6 @@ fn method_call_guard_metadata(
                 entry.name == method_entry.name && entry.function == method_entry.function
             })
             .and_then(|index| index.try_into().ok()),
-        visibility_context: visibility_context.map(str::to_owned),
         method_is_final: method_entry.flags.is_final,
         method_is_private: method_entry.flags.is_private,
         method_is_static: method_entry.flags.is_static,
@@ -54097,7 +54143,6 @@ fn method_direct_call_target_is_eligible(
     state: &ExecutionState,
     target: &MethodCallCacheTarget,
     class: &php_ir::module::ClassEntry,
-    receiver_class: &str,
     args: &[IrCallArg],
     values: &[CallArgument],
     has_magic_call: bool,
@@ -54105,7 +54150,7 @@ fn method_direct_call_target_is_eligible(
 ) -> bool {
     let resolved = target.resolved_target();
     let guard = &resolved.guard;
-    if target.receiver_class_id() != class.id.raw() || target.receiver_class() != receiver_class {
+    if target.receiver_class_id() != class.id {
         return false;
     }
     if guard.class_layout_epoch != epoch.raw() || guard.method_table_epoch != epoch.raw() {

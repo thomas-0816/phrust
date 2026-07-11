@@ -15,7 +15,7 @@ use crate::include::{
 use crate::{DEQUICKEN_AFTER_GUARD_MISSES, DISABLE_AFTER_GUARD_MISSES, FallbackProtocolStats};
 
 use php_ir::{
-    ids::{BlockId, FunctionId, InstrId},
+    ids::{BlockId, ClassId, FunctionId, InstrId},
     instruction::InstructionKind,
 };
 
@@ -152,6 +152,7 @@ pub enum FunctionCallBuiltinKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FunctionCallCacheTarget {
     CurrentUnit {
+        unit_identity: u64,
         function: FunctionId,
     },
     DynamicUnit {
@@ -258,11 +259,10 @@ pub struct MethodCallShape {
 /// Stable method and receiver metadata guarded by a method-call IC slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MethodCallGuardMetadata {
-    pub receiver_class_id: u32,
+    pub receiver_class_id: ClassId,
     pub class_layout_epoch: u64,
     pub method_table_epoch: u64,
     pub method_slot_index: Option<u32>,
-    pub visibility_context: Option<String>,
     pub method_is_final: bool,
     pub method_is_private: bool,
     pub method_is_static: bool,
@@ -275,7 +275,6 @@ pub struct MethodCallGuardMetadata {
 /// Resolved method-call target payload kept out of interpreter stack frames.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MethodCallResolvedTarget {
-    pub receiver_class: String,
     pub declaring_class: String,
     pub function: FunctionId,
     pub guard: MethodCallGuardMetadata,
@@ -292,6 +291,9 @@ pub struct MethodCallResolvedTarget {
 /// site dispatches through directly.
 #[derive(Clone, Debug)]
 pub struct MethodCallDispatchRoute {
+    /// Stable route identity. The owned unit and class entry below keep this
+    /// identity alive, but are deliberately not used for equality.
+    pub identity: MethodCallRouteIdentity,
     /// Unit whose IR owns the method body.
     pub owner: crate::compiled_unit::CompiledUnit,
     /// The owner's dense execution plan; the target function is planned
@@ -303,10 +305,18 @@ pub struct MethodCallDispatchRoute {
     pub declaring_class_handle: std::sync::Arc<str>,
 }
 
+/// Allocation-independent identity for one resolved method body.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct MethodCallRouteIdentity {
+    pub owner_unit_identity: u64,
+    pub declaring_class_id: ClassId,
+    pub function: FunctionId,
+    pub method_slot_index: u32,
+}
+
 impl PartialEq for MethodCallDispatchRoute {
     fn eq(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.plan, &other.plan)
-            && std::sync::Arc::ptr_eq(&self.declaring_class, &other.declaring_class)
+        self.identity == other.identity
     }
 }
 
@@ -333,12 +343,7 @@ impl MethodCallCacheTarget {
     }
 
     #[must_use]
-    pub fn receiver_class(&self) -> &str {
-        &self.resolved_target().receiver_class
-    }
-
-    #[must_use]
-    pub fn receiver_class_id(&self) -> u32 {
+    pub fn receiver_class_id(&self) -> ClassId {
         self.resolved_target().guard.receiver_class_id
     }
 
@@ -464,9 +469,9 @@ impl PropertyAssignCacheTarget {
 /// One guarded method-call target in a polymorphic IC slot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MethodCallPolymorphicEntry {
-    pub lowered_method: String,
-    pub receiver_class: String,
-    pub scope: Option<String>,
+    pub lowered_method: Arc<str>,
+    pub receiver_class: Arc<str>,
+    pub scope: Option<Arc<str>>,
     pub epoch: InvalidationEpoch,
     pub target: MethodCallCacheTarget,
 }
@@ -1487,7 +1492,7 @@ impl InlineCacheTable {
                 {
                     return None;
                 }
-                let FunctionCallCacheTarget::CurrentUnit { function } = target else {
+                let FunctionCallCacheTarget::CurrentUnit { function, .. } = target else {
                     return None;
                 };
                 Some(FunctionCallSiteSnapshot {
@@ -1566,6 +1571,7 @@ impl InlineCacheTable {
                 },
                 None,
                 FunctionCallCacheTarget::CurrentUnit {
+                    unit_identity: entry_unit_key,
                     function: FunctionId::new(site.target_function),
                 },
             );
@@ -1868,7 +1874,7 @@ impl InlineCacheTable {
                 );
             }
             let same_method_and_scope = slot.method_call_entries().iter().any(|entry| {
-                entry.lowered_method == lowered_method && entry.scope.as_deref() == scope
+                entry.lowered_method.as_ref() == lowered_method && entry.scope.as_deref() == scope
             });
             let observation = if slot.method_call_entries().len() > 1
                 && same_method_and_scope
@@ -1939,9 +1945,9 @@ impl InlineCacheTable {
                 return;
             }
             let new_entry = MethodCallPolymorphicEntry {
-                lowered_method: lowered_method.to_owned(),
-                receiver_class: receiver_class.to_owned(),
-                scope: scope.map(str::to_owned),
+                lowered_method: Arc::from(lowered_method),
+                receiver_class: Arc::from(receiver_class),
+                scope: scope.map(Arc::from),
                 epoch,
                 target,
             };
@@ -3073,11 +3079,12 @@ mod tests {
         FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
         FunctionCallShape, FunctionCallSiteSnapshot, IncludePathCacheKey, IncludePathCacheTarget,
         InlineCacheKind, InlineCachePayload, InlineCacheState, InlineCacheTable, InvalidationEpoch,
-        MethodCallCacheTarget, MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape,
-        PropertyFetchCacheTarget, PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
+        MethodCallCacheTarget, MethodCallGuardMetadata, MethodCallResolvedTarget,
+        MethodCallRouteIdentity, MethodCallShape, PropertyFetchCacheTarget,
+        PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
     };
     use crate::include::IncludePathFileFingerprint;
-    use php_ir::ids::{BlockId, FunctionId, InstrId};
+    use php_ir::ids::{BlockId, ClassId, FunctionId, InstrId};
     use php_runtime::PhpString;
     use std::path::PathBuf;
     use std::rc::Rc;
@@ -3092,7 +3099,7 @@ mod tests {
     }
 
     pub(super) fn method_target(
-        receiver_class: &str,
+        _receiver_class: &str,
         receiver_class_id: u32,
         declaring_class: &str,
         function: FunctionId,
@@ -3100,16 +3107,14 @@ mod tests {
     ) -> MethodCallCacheTarget {
         MethodCallCacheTarget::CurrentUnit {
             target: Rc::new(MethodCallResolvedTarget {
-                receiver_class: receiver_class.to_owned(),
                 declaring_class: declaring_class.to_owned(),
                 function,
                 route: None,
                 guard: MethodCallGuardMetadata {
-                    receiver_class_id,
+                    receiver_class_id: ClassId::new(receiver_class_id),
                     class_layout_epoch: epoch.raw(),
                     method_table_epoch: epoch.raw(),
                     method_slot_index: Some(0),
-                    visibility_context: None,
                     method_is_final: false,
                     method_is_private: false,
                     method_is_static: false,
@@ -3257,7 +3262,10 @@ mod tests {
             InvalidationEpoch::new(1),
             positional_shape(0),
             None,
-            FunctionCallCacheTarget::CurrentUnit { function },
+            FunctionCallCacheTarget::CurrentUnit {
+                unit_identity: 0,
+                function,
+            },
         );
         let (target, event) = table.lookup_function_call(
             7,
@@ -3378,7 +3386,10 @@ mod tests {
             InvalidationEpoch::new(1),
             positional_shape(0),
             None,
-            FunctionCallCacheTarget::CurrentUnit { function },
+            FunctionCallCacheTarget::CurrentUnit {
+                unit_identity: 0,
+                function,
+            },
         );
 
         let mut saw_megamorphic = false;
@@ -3406,7 +3417,10 @@ mod tests {
                 InvalidationEpoch::new(1),
                 positional_shape(0),
                 None,
-                FunctionCallCacheTarget::CurrentUnit { function },
+                FunctionCallCacheTarget::CurrentUnit {
+                    unit_identity: 0,
+                    function,
+                },
             );
         }
 
@@ -3448,6 +3462,7 @@ mod tests {
                 positional_shape(0),
                 None,
                 FunctionCallCacheTarget::CurrentUnit {
+                    unit_identity: 0,
                     function: FunctionId::new(index as u32),
                 },
             );
@@ -3467,6 +3482,7 @@ mod tests {
         assert_eq!(
             target,
             Some(FunctionCallCacheTarget::CurrentUnit {
+                unit_identity: 0,
                 function: FunctionId::new(1)
             })
         );
@@ -4171,6 +4187,10 @@ mod tests {
             installed_method.resolved_target(),
             method_hit.resolved_target()
         ));
+        let installed_method_name =
+            Arc::clone(&method_table.slots[0].method_call_entries()[0].lowered_method);
+        let cached_method_name = &method_table.slots[0].method_call_entries()[0].lowered_method;
+        assert!(Arc::ptr_eq(&installed_method_name, cached_method_name));
 
         let mut fetch_table = InlineCacheTable::default();
         fetch_table.observe_slot(
@@ -4249,6 +4269,45 @@ mod tests {
             installed_assign.resolved_target(),
             assign_hit.resolved_target()
         ));
+    }
+
+    #[test]
+    fn dispatch_identity_is_stable_and_unit_scoped() {
+        let function = FunctionId::new(4);
+        let current = FunctionCallCacheTarget::CurrentUnit {
+            unit_identity: 11,
+            function,
+        };
+        assert_eq!(current.clone(), current);
+        assert_ne!(
+            current,
+            FunctionCallCacheTarget::CurrentUnit {
+                unit_identity: 12,
+                function,
+            }
+        );
+
+        let route = MethodCallRouteIdentity {
+            owner_unit_identity: 11,
+            declaring_class_id: ClassId::new(2),
+            function,
+            method_slot_index: 3,
+        };
+        assert_eq!(route, route);
+        assert_ne!(
+            route,
+            MethodCallRouteIdentity {
+                owner_unit_identity: 12,
+                ..route
+            }
+        );
+        assert_ne!(
+            route,
+            MethodCallRouteIdentity {
+                method_slot_index: 4,
+                ..route
+            }
+        );
     }
 
     #[test]
@@ -4597,6 +4656,7 @@ mod tests {
             },
             None,
             FunctionCallCacheTarget::CurrentUnit {
+                unit_identity: 0,
                 function: FunctionId::new(9),
             },
         );
@@ -4702,6 +4762,7 @@ mod tests {
         assert_eq!(
             target,
             Some(FunctionCallCacheTarget::CurrentUnit {
+                unit_identity: 42,
                 function: FunctionId::new(9)
             })
         );

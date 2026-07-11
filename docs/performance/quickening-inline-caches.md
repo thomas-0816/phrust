@@ -207,6 +207,9 @@ user-function or builtin execution path as the baseline resolver. Includes,
 eval attempts, and autoload registration changes conservatively bump the epoch;
 a stale slot records an invalidation and refreshes through generic resolution.
 Guard or metadata mismatches record a fallback and use the generic resolver.
+User-function targets carry the owning `CompiledUnit` cache identity next to the
+canonical `FunctionId`; current-unit and dynamic-unit routes therefore cannot
+alias merely because two unit allocations reused the same function index.
 
 The builtin intrinsic set is deliberately small and runs only while
 `--inline-caches=on`: `strlen` for direct strings, `count` for direct arrays,
@@ -231,10 +234,14 @@ path that would change PHP call semantics.
 The implemented method-call IC supports capped polymorphic receiver entries for
 successful concrete `CallMethod` resolution in current-unit classes and
 include-defined dynamic classes. Each slot is keyed by compiled unit, function,
-block, instruction, and IC kind. The guarded target records receiver class id,
-class/method epoch, declaring method slot, visibility context, static/final/private
-flags, override state, call shape, by-reference compatibility, and magic
-`__call` state. Cache hits still call `validate_method_callable` and then
+block, instruction, and IC kind. The cache key owns the normalized method,
+receiver, and visibility-scope names once. The adjacent guard records receiver
+`ClassId`, class/method epochs, declaring method slot, static/final/private flags,
+override state, call shape, by-reference compatibility, and magic `__call`
+state. Dense warmed routes own a clone of the declaring `CompiledUnit` handle
+plus its canonical `Arc<ClassEntry>` and compare an explicit
+unit/class/function/method-slot identity rather than allocation addresses.
+Cache hits still call `validate_method_callable` and then
 tail-call the same `execute_function` path as baseline dispatch. Magic `__call`
 is intentionally not cached as a concrete method target; missing or inaccessible
 methods continue through generic dispatch.
