@@ -60,6 +60,8 @@ mod request_lifecycle;
 mod request_profile;
 mod result;
 mod rich_dispatch;
+mod rich_exception_dispatch;
+mod rich_foreach_dispatch;
 mod runtime_class_metadata;
 mod runtime_class_support;
 mod runtime_environment_support;
@@ -106,7 +108,7 @@ use diagnostics::*;
 use dim_execution_support::*;
 use dispatch_contract::{
     DenseExecutionRequest, RichBinaryError, RichBinaryRequest, RichCompareRequest,
-    RichUnaryRequest, dense_bytecode_unsupported_reason, dense_opcode_family,
+    RichDispatchOutcome, RichUnaryRequest, dense_bytecode_unsupported_reason, dense_opcode_family,
     next_dense_block_index,
 };
 use exception_dispatch::*;
@@ -150,6 +152,8 @@ use reflection::*;
 use request_lifecycle::RequestLifecycleState;
 pub use result::VmStepLimitDiagnostic;
 pub use result::{VmControlFlow, VmResult};
+use rich_exception_dispatch::*;
+use rich_foreach_dispatch::*;
 pub(crate) use runtime_class_metadata::dense_new_object_lowering_supported;
 use runtime_class_metadata::*;
 pub(crate) use runtime_class_support::normalize_function_name;
@@ -353,33 +357,6 @@ const JIT_BLACKLIST_GUARD_FAILURE_THRESHOLD: u64 = 2;
 const JIT_BLACKLIST_COMPILE_ERROR_THRESHOLD: u64 = 1;
 #[cfg(feature = "jit-cranelift")]
 const JIT_BLACKLIST_ABI_MISMATCH_THRESHOLD: u64 = 1;
-fn output_preallocation_hint(unit: &IrUnit) -> usize {
-    unit.functions
-        .iter()
-        .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.instructions)
-        .filter_map(|instruction| match instruction.kind {
-            InstructionKind::Echo {
-                src: Operand::Constant(id),
-            } => unit.constants.get(id.index()),
-            _ => None,
-        })
-        .filter_map(|constant| match constant {
-            IrConstant::String(value) => Some(value.len()),
-            IrConstant::StringBytes(value) => Some(value.len()),
-            _ => None,
-        })
-        .sum()
-}
-
-fn ir_unit_instruction_count(unit: &IrUnit) -> u32 {
-    unit.functions
-        .iter()
-        .flat_map(|function| function.blocks.iter())
-        .map(|block| block.instructions.len() as u32 + u32::from(block.terminator.is_some()))
-        .sum()
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AutoloadTraceOrigin {
     function_name: &'static str,

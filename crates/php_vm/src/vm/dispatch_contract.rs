@@ -216,3 +216,9 @@ pub(super) enum RichBinaryError {
     Direct(Box<VmResult>),
     Route(Box<VmResult>),
 }
+
+pub(super) enum RichDispatchOutcome {
+    Continue,
+    Jump(BlockId),
+    Return(Box<VmResult>),
+}

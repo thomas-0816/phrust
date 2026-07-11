@@ -1,5 +1,32 @@
 use super::*;
 
+pub(super) fn output_preallocation_hint(unit: &IrUnit) -> usize {
+    unit.functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction.kind {
+            InstructionKind::Echo {
+                src: Operand::Constant(id),
+            } => unit.constants.get(id.index()),
+            _ => None,
+        })
+        .filter_map(|constant| match constant {
+            IrConstant::String(value) => Some(value.len()),
+            IrConstant::StringBytes(value) => Some(value.len()),
+            _ => None,
+        })
+        .sum()
+}
+
+pub(super) fn ir_unit_instruction_count(unit: &IrUnit) -> u32 {
+    unit.functions
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .map(|block| block.instructions.len() as u32 + u32::from(block.terminator.is_some()))
+        .sum()
+}
+
 pub(super) fn constant_value(unit: &IrUnit, constant: ConstId) -> Result<Value, String> {
     let Some(value) = unit.constants.get(constant.index()) else {
         return Err(format!("invalid constant const:{}", constant.raw()));
