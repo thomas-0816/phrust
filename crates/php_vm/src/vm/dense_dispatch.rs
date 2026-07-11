@@ -1,20 +1,22 @@
 use super::prelude::*;
 
 impl Vm {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_bytecode_function(
         &self,
-        compiled: &CompiledUnit,
-        dense: &DenseBytecodeUnit,
-        plan: Option<&DenseExecutionPlan>,
-        dense_function: &DenseFunction,
-        ir_function: &IrFunction,
-        function_id: FunctionId,
-        mut call: FunctionCall<'_>,
+        request: DenseExecutionRequest<'_, '_>,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> VmResult {
+        let DenseExecutionRequest {
+            compiled,
+            dense,
+            plan,
+            dense_function,
+            ir_function,
+            function_id,
+            mut call,
+        } = request;
         self.record_counter_dense_function_executed();
         if call.resume_continuation.is_some()
             || call.resume_fiber_continuation.is_some()
@@ -2935,32 +2937,13 @@ impl Vm {
                             stack.pop_recycle();
                             return result;
                         };
-                        // `execute_unary` is pure, so the operand can be
-                        // borrowed straight from the frame without cloning.
-                        let src = match self.read_dense_operand_ref(compiled, stack, src) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
-                        };
-                        let op =
-                            dense_unary_op(instruction.opcode).expect("dense unary opcode matched");
-                        let value = match execute_unary(op, src.as_value()) {
-                            Ok(value) => value,
-                            Err(message) => {
-                                let result = self.runtime_error(output, compiled, stack, message);
-                                stack.pop_recycle();
-                                return result;
-                            }
-                        };
-                        if let Err(message) = stack
-                            .current_mut()
-                            .expect("bytecode frame was pushed")
-                            .registers
-                            .set(RegId::new(dst), value)
-                        {
+                        if let Err(message) = self.execute_dense_unary_op(
+                            compiled,
+                            stack,
+                            instruction.opcode,
+                            dst,
+                            src,
+                        ) {
                             let result = self.runtime_error(output, compiled, stack, message);
                             stack.pop_recycle();
                             return result;
@@ -3457,13 +3440,15 @@ impl Vm {
                                         result
                                     } else {
                                         self.execute_bytecode_function(
-                                            compiled,
-                                            &plan.unit,
-                                            Some(plan),
-                                            dense_function,
-                                            ir_function,
-                                            function,
-                                            call,
+                                            DenseExecutionRequest {
+                                                compiled,
+                                                dense: &plan.unit,
+                                                plan: Some(plan),
+                                                dense_function,
+                                                ir_function,
+                                                function_id: function,
+                                                call,
+                                            },
                                             output,
                                             stack,
                                             state,

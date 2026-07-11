@@ -23,7 +23,9 @@ mod class_validation;
 mod closure_operations;
 mod dense_dispatch;
 mod dense_method_dispatch;
+mod dense_scalar_handlers;
 mod diagnostics;
+mod dispatch_contract;
 mod exception_dispatch;
 mod execution_control;
 mod execution_state;
@@ -73,6 +75,7 @@ use class_relations::*;
 use class_validation::*;
 use closure_operations::*;
 use diagnostics::*;
+use dispatch_contract::DenseExecutionRequest;
 use exception_dispatch::*;
 use execution_control::{
     ExceptionHandler, ExecutionLimitExceeded, PendingControl, RaiseOutcome,
@@ -4077,13 +4080,15 @@ impl Vm {
                 };
                 BytecodeFunctionAttempt::Executed(
                     Box::new(self.execute_bytecode_function(
-                        compiled,
-                        &plan.unit,
-                        Some(plan.as_ref()),
-                        dense_function,
-                        ir_function,
-                        function_id,
-                        call.take().expect("call should be consumed exactly once"),
+                        DenseExecutionRequest {
+                            compiled,
+                            dense: &plan.unit,
+                            plan: Some(plan.as_ref()),
+                            dense_function,
+                            ir_function,
+                            function_id,
+                            call: call.take().expect("call should be consumed exactly once"),
+                        },
                         output,
                         stack,
                         state,
@@ -4169,13 +4174,15 @@ impl Vm {
                     return CachedDenseFunctionDispatch::Continue(call);
                 };
                 CachedDenseFunctionDispatch::Executed(Box::new(self.execute_bytecode_function(
-                    compiled,
-                    &plan.unit,
-                    Some(plan.as_ref()),
-                    dense_function,
-                    function,
-                    function_id,
-                    call,
+                    DenseExecutionRequest {
+                        compiled,
+                        dense: &plan.unit,
+                        plan: Some(plan.as_ref()),
+                        dense_function,
+                        ir_function: function,
+                        function_id,
+                        call,
+                    },
                     output,
                     stack,
                     state,
@@ -21235,63 +21242,6 @@ impl Vm {
         Ok(matches)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    /// Resolves a sort comparator once per builtin call when it is a plain
-    /// function name (string or first-class user-function callable), so the
-    /// per-comparison path can dispatch directly through the shared call
-    /// target executor. Anything else keeps the generic per-comparison
-    /// callable path.
-    #[allow(clippy::too_many_arguments)]
-    /// Attempts to run a trivial getter/setter body as a direct declared
-    /// slot access, skipping frame push and argument binding. Returns None
-    /// to fall back to generic dispatch; every guard failure is
-    /// reason-tagged. Visibility was already validated by the caller, and
-    /// private properties never match the plain-name slot lookup, so
-    /// mangled storage falls back naturally.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    /// Fast half of `write_echo` for callers holding a frame borrow: appends
-    /// values the shared semantic helper classifies as fast hits without
-    /// needing `&mut CallStack`. Returns false when the value requires the
-    /// conversion/`__toString` fallback, which the caller runs via
-    /// `write_echo` on an owned value.
-    /// Resolves a `Class::CONSTANT` (or `Class::class`) fetch to its value,
-    /// shared by the rich and dense executors. The caller writes the returned
-    /// value to its destination; faults are translated by each executor's arm.
-    /// `cache_site` supplies the inline-cache key `(function, block, instr)`.
-    #[allow(clippy::too_many_arguments)]
     fn php_token_static_method_error_result(
         &self,
         compiled: &CompiledUnit,

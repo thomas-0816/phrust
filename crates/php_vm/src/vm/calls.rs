@@ -1498,13 +1498,15 @@ impl Vm {
                                 .is_some()
                                 .then(|| (ir_function.name.clone(), ir_function.flags.is_method));
                             let result = self.execute_bytecode_function(
-                                unit,
-                                &active_plan.unit,
-                                Some(active_plan),
-                                dense_function,
-                                ir_function,
-                                function,
-                                call,
+                                DenseExecutionRequest {
+                                    compiled: unit,
+                                    dense: &active_plan.unit,
+                                    plan: Some(active_plan),
+                                    dense_function,
+                                    ir_function,
+                                    function_id: function,
+                                    call,
+                                },
                                 output,
                                 stack,
                                 state,
