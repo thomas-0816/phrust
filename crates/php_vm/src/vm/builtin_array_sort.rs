@@ -340,3 +340,347 @@ fn trim_leading_ascii_zeroes(bytes: &[u8]) -> &[u8] {
         .unwrap_or(bytes.len());
     &bytes[trimmed..]
 }
+
+pub(super) fn sort_entries_stable<F>(
+    entries: &mut [(ArrayKey, Value)],
+    mut compare_entries: F,
+) -> Result<(), ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    let mut sortable = entries
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(original_index, entry)| SortableArrayEntry {
+            original_index,
+            entry,
+        })
+        .collect::<Vec<_>>();
+    zend_sort_entries(&mut sortable, 0, entries.len(), &mut compare_entries)?;
+    for (target, sorted) in entries.iter_mut().zip(sortable) {
+        *target = sorted.entry;
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct SortableArrayEntry {
+    original_index: usize,
+    entry: (ArrayKey, Value),
+}
+
+fn compare_sortable_entries<F>(
+    entries: &[SortableArrayEntry],
+    left: usize,
+    right: usize,
+    compare_entries: &mut F,
+) -> Result<std::cmp::Ordering, ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    let ordering = compare_entries(&entries[left].entry, &entries[right].entry)?;
+    if ordering.is_eq() {
+        Ok(entries[left]
+            .original_index
+            .cmp(&entries[right].original_index))
+    } else {
+        Ok(ordering)
+    }
+}
+
+fn sortable_gt<F>(
+    entries: &[SortableArrayEntry],
+    left: usize,
+    right: usize,
+    compare_entries: &mut F,
+) -> Result<bool, ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    Ok(compare_sortable_entries(entries, left, right, compare_entries)?.is_gt())
+}
+
+fn zend_sort_2<F>(
+    entries: &mut [SortableArrayEntry],
+    a: usize,
+    b: usize,
+    compare_entries: &mut F,
+) -> Result<(), ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    if sortable_gt(entries, a, b, compare_entries)? {
+        entries.swap(a, b);
+    }
+    Ok(())
+}
+
+fn zend_sort_3<F>(
+    entries: &mut [SortableArrayEntry],
+    a: usize,
+    b: usize,
+    c: usize,
+    compare_entries: &mut F,
+) -> Result<(), ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    if !sortable_gt(entries, a, b, compare_entries)? {
+        if !sortable_gt(entries, b, c, compare_entries)? {
+            return Ok(());
+        }
+        entries.swap(b, c);
+        if sortable_gt(entries, a, b, compare_entries)? {
+            entries.swap(a, b);
+        }
+        return Ok(());
+    }
+    if !sortable_gt(entries, c, b, compare_entries)? {
+        entries.swap(a, c);
+        return Ok(());
+    }
+    entries.swap(a, b);
+    if sortable_gt(entries, b, c, compare_entries)? {
+        entries.swap(b, c);
+    }
+    Ok(())
+}
+
+fn zend_sort_4<F>(
+    entries: &mut [SortableArrayEntry],
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+    compare_entries: &mut F,
+) -> Result<(), ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    zend_sort_3(entries, a, b, c, compare_entries)?;
+    if sortable_gt(entries, c, d, compare_entries)? {
+        entries.swap(c, d);
+        if sortable_gt(entries, b, c, compare_entries)? {
+            entries.swap(b, c);
+            if sortable_gt(entries, a, b, compare_entries)? {
+                entries.swap(a, b);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn zend_sort_5<F>(
+    entries: &mut [SortableArrayEntry],
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+    e: usize,
+    compare_entries: &mut F,
+) -> Result<(), ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    zend_sort_4(entries, a, b, c, d, compare_entries)?;
+    if sortable_gt(entries, d, e, compare_entries)? {
+        entries.swap(d, e);
+        if sortable_gt(entries, c, d, compare_entries)? {
+            entries.swap(c, d);
+            if sortable_gt(entries, b, c, compare_entries)? {
+                entries.swap(b, c);
+                if sortable_gt(entries, a, b, compare_entries)? {
+                    entries.swap(a, b);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn zend_insert_sort_entries<F>(
+    entries: &mut [SortableArrayEntry],
+    start: usize,
+    count: usize,
+    compare_entries: &mut F,
+) -> Result<(), ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    match count {
+        0 | 1 => {}
+        2 => zend_sort_2(entries, start, start + 1, compare_entries)?,
+        3 => zend_sort_3(entries, start, start + 1, start + 2, compare_entries)?,
+        4 => zend_sort_4(
+            entries,
+            start,
+            start + 1,
+            start + 2,
+            start + 3,
+            compare_entries,
+        )?,
+        5 => zend_sort_5(
+            entries,
+            start,
+            start + 1,
+            start + 2,
+            start + 3,
+            start + 4,
+            compare_entries,
+        )?,
+        _ => {
+            let end = start + count;
+            let sentry = start + 6;
+            for i in start + 1..sentry {
+                let mut j = i - 1;
+                if !sortable_gt(entries, j, i, compare_entries)? {
+                    continue;
+                }
+                while j != start {
+                    j -= 1;
+                    if !sortable_gt(entries, j, i, compare_entries)? {
+                        j += 1;
+                        break;
+                    }
+                }
+                for k in (j + 1..=i).rev() {
+                    entries.swap(k, k - 1);
+                }
+            }
+            for i in sentry..end {
+                let mut j = i - 1;
+                if !sortable_gt(entries, j, i, compare_entries)? {
+                    continue;
+                }
+                loop {
+                    j -= 2;
+                    if !sortable_gt(entries, j, i, compare_entries)? {
+                        j += 1;
+                        if !sortable_gt(entries, j, i, compare_entries)? {
+                            j += 1;
+                        }
+                        break;
+                    }
+                    if j == start {
+                        break;
+                    }
+                    if j == start + 1 {
+                        j -= 1;
+                        if sortable_gt(entries, i, j, compare_entries)? {
+                            j += 1;
+                        }
+                        break;
+                    }
+                }
+                for k in (j + 1..=i).rev() {
+                    entries.swap(k, k - 1);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn zend_sort_entries<F>(
+    entries: &mut [SortableArrayEntry],
+    mut start: usize,
+    mut count: usize,
+    compare_entries: &mut F,
+) -> Result<(), ArrayCallbackError>
+where
+    F: FnMut(
+        &(ArrayKey, Value),
+        &(ArrayKey, Value),
+    ) -> Result<std::cmp::Ordering, ArrayCallbackError>,
+{
+    loop {
+        if count <= 16 {
+            zend_insert_sort_entries(entries, start, count, compare_entries)?;
+            return Ok(());
+        }
+        let end = start + count;
+        let offset = count >> 1;
+        let pivot = start + offset;
+        if (count >> 10) != 0 {
+            let delta = offset >> 1;
+            zend_sort_5(
+                entries,
+                start,
+                start + delta,
+                pivot,
+                pivot + delta,
+                end - 1,
+                compare_entries,
+            )?;
+        } else {
+            zend_sort_3(entries, start, pivot, end - 1, compare_entries)?;
+        }
+        entries.swap(start + 1, pivot);
+        let pivot = start + 1;
+        let mut i = pivot + 1;
+        let mut j = end - 1;
+        loop {
+            while sortable_gt(entries, pivot, i, compare_entries)? {
+                i += 1;
+                if i == j {
+                    break;
+                }
+            }
+            if i == j {
+                break;
+            }
+            j -= 1;
+            if j == i {
+                break;
+            }
+            while sortable_gt(entries, j, pivot, compare_entries)? {
+                j -= 1;
+                if j == i {
+                    break;
+                }
+            }
+            if j == i {
+                break;
+            }
+            entries.swap(i, j);
+            i += 1;
+            if i == j {
+                break;
+            }
+        }
+        entries.swap(pivot, i - 1);
+        if (i - 1) - start < end - i {
+            zend_sort_entries(entries, start, i - start - 1, compare_entries)?;
+            start = i;
+            count = end - i;
+        } else {
+            zend_sort_entries(entries, i, end - i, compare_entries)?;
+            count = i - start - 1;
+        }
+    }
+}
