@@ -765,6 +765,103 @@ fn iterator_function_releases_temporary_arg(function: &str) -> bool {
     )
 }
 
+pub(super) fn unset_indirect_temporary_call_arg_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    args: &[IrCallArg],
+) -> Result<(), String> {
+    for arg in args {
+        if arg.value_kind == IrCallArgValueKind::IndirectTemporary {
+            unset_register_operand_at_frame(stack, frame_index, arg.value)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn take_method_call_temporary_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    object: Operand,
+    args: &[IrCallArg],
+) -> Result<Vec<Value>, String> {
+    let mut values = Vec::new();
+    let mut taken = HashSet::new();
+    if let Operand::Register(id) = object {
+        let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
+        let value = frame.registers.take(id)?;
+        if !value.is_uninitialized() {
+            values.push(value);
+        }
+        taken.insert(id);
+    }
+    for arg in args {
+        let Operand::Register(id) = arg.value else {
+            continue;
+        };
+        if !taken.insert(id) {
+            continue;
+        }
+        let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
+        let value = frame.registers.take(id)?;
+        if !value.is_uninitialized() {
+            values.push(value);
+        }
+    }
+    Ok(values)
+}
+
+pub(super) fn unset_consumed_call_arg_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    args: &[IrCallArg],
+    preserved: Option<RegId>,
+) -> Result<(), String> {
+    for arg in args {
+        if arg.by_ref_local.is_none()
+            && arg.by_ref_dim.is_none()
+            && arg.by_ref_property.is_none()
+            && arg.by_ref_property_dim.is_none()
+        {
+            continue;
+        }
+        let Operand::Register(id) = arg.value else {
+            continue;
+        };
+        if Some(id) == preserved {
+            continue;
+        }
+        unset_register_operand_at_frame(stack, frame_index, arg.value)?;
+    }
+    Ok(())
+}
+
+pub(super) fn unset_consumed_dense_call_arg_registers_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    args: &[DenseCallArg],
+    preserved: Option<RegId>,
+) -> Result<(), String> {
+    for arg in args {
+        if arg.by_ref_local.is_none()
+            && arg.by_ref_dim.is_none()
+            && arg.by_ref_property.is_none()
+            && arg.by_ref_property_dim.is_none()
+        {
+            continue;
+        }
+        if arg.value.kind != DenseOperandKind::Register {
+            continue;
+        }
+        let id = RegId::new(arg.value.index);
+        if Some(id) == preserved {
+            continue;
+        }
+        let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
+        frame.registers.unset(id)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PreparedArg {
     pub(super) value: Value,
