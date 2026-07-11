@@ -24273,7 +24273,7 @@ fn lookup_property_in_state(
 fn lookup_resolved_property_in_state(
     compiled: &CompiledUnit,
     state: &ExecutionState,
-    class: &php_ir::module::ClassEntry,
+    class: &Arc<php_ir::module::ClassEntry>,
     property: &str,
     caller_scope: Option<&str>,
 ) -> Result<Option<ResolvedPropertyOwned>, String> {
@@ -24332,7 +24332,7 @@ fn lookup_private_property_in_state_caller_scope(
 fn lookup_resolved_property_in_state_inner(
     compiled: &CompiledUnit,
     state: &ExecutionState,
-    class: &php_ir::module::ClassEntry,
+    class: &Arc<php_ir::module::ClassEntry>,
     property: &str,
     caller_scope: Option<&str>,
     seen: &mut Vec<String>,
@@ -24353,10 +24353,11 @@ fn lookup_resolved_property_in_state_inner(
                 .parent
                 .as_deref()
                 .and_then(|parent| lookup_class_in_state_ref(compiled, state, parent))
+                .map(ClassLookup::into_arc)
             && let Some(parent_property) = lookup_resolved_property_in_state_inner(
                 compiled,
                 state,
-                parent_class.as_ref(),
+                &parent_class,
                 entry.name.as_str(),
                 caller_scope,
                 seen,
@@ -24367,7 +24368,7 @@ fn lookup_resolved_property_in_state_inner(
         }
         seen.pop();
         return Ok(Some(ResolvedPropertyOwned {
-            class: Arc::new(class.clone()),
+            class: Arc::clone(class),
             property: entry.clone(),
         }));
     }
@@ -24378,10 +24379,11 @@ fn lookup_resolved_property_in_state_inner(
                 class.name, parent_name
             ));
         };
+        let parent_class = parent_class.into_arc();
         let resolved = lookup_resolved_property_in_state_inner(
             compiled,
             state,
-            parent_class.as_ref(),
+            &parent_class,
             property,
             caller_scope,
             seen,
