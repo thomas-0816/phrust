@@ -7090,8 +7090,12 @@ impl Vm {
                 FunctionCallCacheTarget::CurrentUnit { function } => (compiled.clone(), function),
                 FunctionCallCacheTarget::DynamicUnit {
                     unit_index,
+                    unit_identity,
                     function,
-                } => (state.dynamic_units.get(unit_index).cloned()?, function),
+                } => (
+                    resolve_dynamic_unit_by_identity(state, unit_index, unit_identity)?,
+                    function,
+                ),
                 // A builtin tail call is out of scope; interpret the whole leaf.
                 FunctionCallCacheTarget::Builtin { .. } => return None,
             };
@@ -35697,6 +35701,7 @@ impl Vm {
         if let Some((unit_index, function)) = dynamic_function_target_in_state(state, name) {
             return Some(FunctionCallCacheTarget::DynamicUnit {
                 unit_index,
+                unit_identity: dynamic_unit_identity(state, unit_index),
                 function,
             });
         }
@@ -35710,6 +35715,7 @@ impl Vm {
             {
                 return Some(FunctionCallCacheTarget::DynamicUnit {
                     unit_index,
+                    unit_identity: dynamic_unit_identity(state, unit_index),
                     function,
                 });
             }
@@ -35750,9 +35756,12 @@ impl Vm {
             ),
             FunctionCallCacheTarget::DynamicUnit {
                 unit_index,
+                unit_identity,
                 function,
             } => {
-                let Some(owner) = state.dynamic_units.get(unit_index).cloned() else {
+                let Some(owner) =
+                    resolve_dynamic_unit_by_identity(state, unit_index, unit_identity)
+                else {
                     return self.runtime_error(
                         output,
                         compiled,
@@ -56453,6 +56462,31 @@ fn dynamic_class_entry_in_state<'a>(
 ) -> Option<&'a DynamicClassEntry> {
     let normalized = normalize_class_name(class_name);
     dynamic_class_entry_by_normalized_name(state, &normalized)
+}
+
+/// Cache identity of a request-local dynamic unit slot.
+fn dynamic_unit_identity(state: &ExecutionState, unit_index: usize) -> u64 {
+    state
+        .dynamic_units
+        .get(unit_index)
+        .map_or(0, CompiledUnit::cache_identity)
+}
+
+/// Fetches a dynamic unit by its remembered index, validating the unit
+/// identity; a mismatch (replay order shifted across requests) re-maps
+/// through the state's identity index.
+fn resolve_dynamic_unit_by_identity(
+    state: &ExecutionState,
+    unit_index: usize,
+    unit_identity: u64,
+) -> Option<CompiledUnit> {
+    if let Some(unit) = state.dynamic_units.get(unit_index)
+        && unit.cache_identity() == unit_identity
+    {
+        return Some(unit.clone());
+    }
+    let index = *state.dynamic_unit_index.get(&unit_identity)?;
+    state.dynamic_units.get(index).cloned()
 }
 
 fn dynamic_class_entry_by_normalized_name<'a>(

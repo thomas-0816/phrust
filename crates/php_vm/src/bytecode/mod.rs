@@ -960,6 +960,7 @@ impl DenseCallSlotTable {
             target,
             crate::inline_cache::FunctionCallCacheTarget::CurrentUnit { .. }
                 | crate::inline_cache::FunctionCallCacheTarget::Builtin { .. }
+                | crate::inline_cache::FunctionCallCacheTarget::DynamicUnit { .. }
         );
         entry.target = Some(target);
     }

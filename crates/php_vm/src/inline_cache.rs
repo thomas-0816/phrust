@@ -148,6 +148,10 @@ pub enum FunctionCallCacheTarget {
     },
     DynamicUnit {
         unit_index: usize,
+        /// Owning unit's cache identity: validates the request-local index
+        /// across requests under worker-stable epochs and re-maps through
+        /// the state's identity index when replay order shifted.
+        unit_identity: u64,
         function: FunctionId,
     },
     Builtin {
