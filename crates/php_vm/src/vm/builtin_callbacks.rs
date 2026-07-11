@@ -1,5 +1,6 @@
 //! VM-mediated callbacks used by internal builtins.
 
+use super::builtin_adapter::execute_builtin_entry;
 use super::prelude::*;
 
 impl Vm {

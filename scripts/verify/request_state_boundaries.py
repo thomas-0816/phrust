@@ -132,8 +132,13 @@ def main() -> int:
         != 1
     ):
         failures.append("VM must own exactly one migrated BuiltinRequestState")
-    if "BuiltinContext::with_runtime_request_state(" not in vm:
-        failures.append("VM dispatch must borrow its request-state owner")
+    request_state_borrow = "BuiltinContext::with_runtime_request_state("
+    if request_state_borrow in vm:
+        failures.append("VM facade must not construct builtin request-state services")
+    if vm_builtin_adapter.count(request_state_borrow) != 1:
+        failures.append(
+            "builtin adapter must borrow its request-state owner exactly once"
+        )
 
     modules = {
         "json": read("crates/php_runtime/src/builtins/modules/json.rs"),
