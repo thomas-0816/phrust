@@ -167,6 +167,7 @@ impl CompactBytes {
     /// be separated first. The uniqueness requirement keeps the mutation
     /// invisible to any other owner, mirroring `Rc::get_mut` semantics.
     #[must_use]
+    #[allow(unsafe_code)]
     pub fn unique_bytes_mut(&mut self) -> &mut [u8] {
         assert!(self.is_unique(), "mutating shared compact bytes");
         let len = self.header().len;
