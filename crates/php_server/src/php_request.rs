@@ -1942,3 +1942,28 @@ pub(crate) fn request_time_pair() -> (i64, i64) {
             .saturating_add(u64::from(duration.subsec_micros())) as i64,
     )
 }
+
+#[cfg(test)]
+mod worker_payload_tests {
+    use super::*;
+
+    fn assert_send<T: Send>() {}
+
+    /// The dedicated PHP worker pool moves a request job onto a pinned
+    /// worker thread and a finished HTTP response back. Everything the job
+    /// captures and everything it returns must stay `Send`; execution-side
+    /// types (`RuntimeContext`, `PhpExecutionOutput`) are deliberately NOT
+    /// in this list — they are `Rc`-based and must be created and consumed
+    /// entirely inside the worker.
+    #[test]
+    fn worker_job_payload_types_are_send() {
+        assert_send::<Arc<AppState>>();
+        assert_send::<CompiledScriptCacheLookup>();
+        assert_send::<PathBuf>();
+        assert_send::<Parts>();
+        assert_send::<Arc<[u8]>>();
+        assert_send::<Option<crate::perf_trace::PerfTraceEvent>>();
+        assert_send::<OwnedSemaphorePermit>();
+        assert_send::<Response<ResponseBody>>();
+    }
+}
