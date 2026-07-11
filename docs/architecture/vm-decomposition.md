@@ -42,6 +42,13 @@ dispatch now live in the separate `method_dispatch` owner.
 
 ## Target Ownership
 
+`rich_dispatch` now owns the complete rich execution cursor instead of leaving
+it embedded in the facade. Its initial 15,212-line move is a migration boundary,
+not an accepted final file size: opcode-family extraction must ratchet it below
+the repository's 5,000-line default while `vm/mod.rs` continues toward the
+2,500-line facade limit. Neither large-file baseline may increase during that
+migration.
+
 | Owner | Owns | Must not own |
 | --- | --- | --- |
 | `vm/mod.rs` | public re-exports, `Vm` construction, request lifecycle, top-level execute/resume orchestration | opcode handlers, extension implementations, JIT ABI, filesystem compilation, SPL behavior |
