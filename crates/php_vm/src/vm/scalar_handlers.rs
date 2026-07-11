@@ -1,6 +1,269 @@
 use super::dispatch_contract::DenseBinaryRequest;
 use super::prelude::*;
 
+fn dense_binary_op(opcode: DenseOpcode) -> Option<BinaryOp> {
+    match opcode {
+        DenseOpcode::BinaryAdd => Some(BinaryOp::Add),
+        DenseOpcode::BinarySub => Some(BinaryOp::Sub),
+        DenseOpcode::BinaryMul => Some(BinaryOp::Mul),
+        DenseOpcode::BinaryDiv => Some(BinaryOp::Div),
+        DenseOpcode::BinaryMod => Some(BinaryOp::Mod),
+        DenseOpcode::BinaryConcat => Some(BinaryOp::Concat),
+        DenseOpcode::BinaryPow => Some(BinaryOp::Pow),
+        DenseOpcode::BinaryBitAnd => Some(BinaryOp::BitAnd),
+        DenseOpcode::BinaryBitOr => Some(BinaryOp::BitOr),
+        DenseOpcode::BinaryBitXor => Some(BinaryOp::BitXor),
+        DenseOpcode::BinaryShiftLeft => Some(BinaryOp::ShiftLeft),
+        DenseOpcode::BinaryShiftRight => Some(BinaryOp::ShiftRight),
+        _ => None,
+    }
+}
+
+pub(super) fn checked_int_binary(op: BinaryOp, lhs: i64, rhs: i64) -> Option<i64> {
+    match op {
+        BinaryOp::Add => lhs.checked_add(rhs),
+        BinaryOp::Sub => lhs.checked_sub(rhs),
+        BinaryOp::Mul => lhs.checked_mul(rhs),
+        BinaryOp::Div
+        | BinaryOp::Mod
+        | BinaryOp::Concat
+        | BinaryOp::Pow
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::ShiftLeft
+        | BinaryOp::ShiftRight => None,
+    }
+}
+
+fn dense_compare_op(opcode: DenseOpcode) -> Option<CompareOp> {
+    match opcode {
+        DenseOpcode::CompareEqual => Some(CompareOp::Equal),
+        DenseOpcode::CompareNotEqual => Some(CompareOp::NotEqual),
+        DenseOpcode::CompareIdentical => Some(CompareOp::Identical),
+        DenseOpcode::CompareNotIdentical => Some(CompareOp::NotIdentical),
+        DenseOpcode::CompareLess => Some(CompareOp::Less),
+        DenseOpcode::CompareLessEqual => Some(CompareOp::LessEqual),
+        DenseOpcode::CompareGreater => Some(CompareOp::Greater),
+        DenseOpcode::CompareGreaterEqual => Some(CompareOp::GreaterEqual),
+        DenseOpcode::CompareSpaceship => Some(CompareOp::Spaceship),
+        _ => None,
+    }
+}
+
+fn dense_unary_op(opcode: DenseOpcode) -> Option<UnaryOp> {
+    match opcode {
+        DenseOpcode::UnaryPlus => Some(UnaryOp::Plus),
+        DenseOpcode::UnaryMinus => Some(UnaryOp::Minus),
+        DenseOpcode::UnaryNot => Some(UnaryOp::Not),
+        DenseOpcode::UnaryBitNot => Some(UnaryOp::BitNot),
+        _ => None,
+    }
+}
+
+pub(super) fn execute_arithmetic(
+    op: BinaryOp,
+    lhs: NumericValue,
+    rhs: NumericValue,
+) -> Result<Value, String> {
+    match op {
+        BinaryOp::Add if !lhs.is_float() && !rhs.is_float() => match (lhs, rhs) {
+            (NumericValue::Int(lhs), NumericValue::Int(rhs)) => Ok(lhs
+                .checked_add(rhs)
+                .map(Value::Int)
+                .unwrap_or_else(|| Value::float(lhs as f64 + rhs as f64))),
+            _ => unreachable!("guarded by integer check"),
+        },
+        BinaryOp::Sub if !lhs.is_float() && !rhs.is_float() => match (lhs, rhs) {
+            (NumericValue::Int(lhs), NumericValue::Int(rhs)) => Ok(lhs
+                .checked_sub(rhs)
+                .map(Value::Int)
+                .unwrap_or_else(|| Value::float(lhs as f64 - rhs as f64))),
+            _ => unreachable!("guarded by integer check"),
+        },
+        BinaryOp::Mul if !lhs.is_float() && !rhs.is_float() => match (lhs, rhs) {
+            (NumericValue::Int(lhs), NumericValue::Int(rhs)) => Ok(lhs
+                .checked_mul(rhs)
+                .map(Value::Int)
+                .unwrap_or_else(|| Value::float(lhs as f64 * rhs as f64))),
+            _ => unreachable!("guarded by integer check"),
+        },
+        BinaryOp::Div => {
+            if rhs.as_f64() == 0.0 {
+                return Err("division by zero".to_owned());
+            }
+            if let (NumericValue::Int(lhs), NumericValue::Int(rhs)) = (lhs, rhs)
+                && lhs % rhs == 0
+            {
+                return Ok(Value::Int(lhs / rhs));
+            }
+            Ok(Value::float(lhs.as_f64() / rhs.as_f64()))
+        }
+        BinaryOp::Mod => match (lhs, rhs) {
+            (NumericValue::Int(_), NumericValue::Int(0)) => Err("modulo by zero".to_owned()),
+            (NumericValue::Int(lhs), NumericValue::Int(rhs)) => Ok(Value::Int(lhs % rhs)),
+            _ => {
+                let rhs = rhs.as_f64() as i64;
+                if rhs == 0 {
+                    return Err("modulo by zero".to_owned());
+                }
+                Ok(Value::Int((lhs.as_f64() as i64) % rhs))
+            }
+        },
+        BinaryOp::Add => Ok(Value::float(lhs.as_f64() + rhs.as_f64())),
+        BinaryOp::Sub => Ok(Value::float(lhs.as_f64() - rhs.as_f64())),
+        BinaryOp::Mul => Ok(Value::float(lhs.as_f64() * rhs.as_f64())),
+        BinaryOp::Concat
+        | BinaryOp::Pow
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::ShiftLeft
+        | BinaryOp::ShiftRight => unreachable!("handled outside arithmetic"),
+    }
+}
+
+pub(super) fn execute_power(lhs: NumericValue, rhs: NumericValue) -> Result<Value, String> {
+    if let (NumericValue::Int(lhs), NumericValue::Int(rhs)) = (lhs, rhs)
+        && rhs >= 0
+        && let Ok(exponent) = u32::try_from(rhs)
+        && let Some(value) = lhs.checked_pow(exponent)
+    {
+        return Ok(Value::Int(value));
+    }
+    Ok(Value::float(lhs.as_f64().powf(rhs.as_f64())))
+}
+
+pub(super) fn execute_bitwise(op: BinaryOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+    match op {
+        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor
+            if matches!((lhs, rhs), (Value::String(_), Value::String(_))) =>
+        {
+            let (Value::String(lhs), Value::String(rhs)) = (lhs, rhs) else {
+                unreachable!("guarded by string match");
+            };
+            Ok(Value::String(PhpString::from_bytes(bitwise_string_bytes(
+                op,
+                lhs.as_bytes(),
+                rhs.as_bytes(),
+            ))))
+        }
+        BinaryOp::BitAnd => Ok(Value::Int(to_int(lhs)? & to_int(rhs)?)),
+        BinaryOp::BitOr => Ok(Value::Int(to_int(lhs)? | to_int(rhs)?)),
+        BinaryOp::BitXor => Ok(Value::Int(to_int(lhs)? ^ to_int(rhs)?)),
+        BinaryOp::ShiftLeft => {
+            let shift = to_int(rhs)?;
+            if shift < 0 {
+                return Err("bit shift by negative number".to_owned());
+            }
+            Ok(Value::Int(to_int(lhs)?.wrapping_shl(shift as u32)))
+        }
+        BinaryOp::ShiftRight => {
+            let shift = to_int(rhs)?;
+            if shift < 0 {
+                return Err("bit shift by negative number".to_owned());
+            }
+            Ok(Value::Int(to_int(lhs)?.wrapping_shr(shift as u32)))
+        }
+        BinaryOp::Add
+        | BinaryOp::Sub
+        | BinaryOp::Mul
+        | BinaryOp::Div
+        | BinaryOp::Mod
+        | BinaryOp::Concat
+        | BinaryOp::Pow => unreachable!("handled outside bitwise"),
+    }
+}
+
+fn bitwise_string_bytes(op: BinaryOp, lhs: &[u8], rhs: &[u8]) -> Vec<u8> {
+    match op {
+        BinaryOp::BitAnd => lhs
+            .iter()
+            .zip(rhs.iter())
+            .map(|(left, right)| left & right)
+            .collect(),
+        BinaryOp::BitXor => lhs
+            .iter()
+            .zip(rhs.iter())
+            .map(|(left, right)| left ^ right)
+            .collect(),
+        BinaryOp::BitOr => {
+            let (longer, shorter, lhs_is_longer) = if lhs.len() >= rhs.len() {
+                (lhs, rhs, true)
+            } else {
+                (rhs, lhs, false)
+            };
+            let mut bytes = Vec::with_capacity(longer.len());
+            for index in 0..longer.len() {
+                let byte = match (longer.get(index), shorter.get(index)) {
+                    (Some(long), Some(short)) if lhs_is_longer => long | short,
+                    (Some(long), Some(short)) => short | long,
+                    (Some(long), None) => *long,
+                    _ => unreachable!("bounded by longer length"),
+                };
+                bytes.push(byte);
+            }
+            bytes
+        }
+        BinaryOp::Add
+        | BinaryOp::Sub
+        | BinaryOp::Mul
+        | BinaryOp::Div
+        | BinaryOp::Mod
+        | BinaryOp::Concat
+        | BinaryOp::Pow
+        | BinaryOp::ShiftLeft
+        | BinaryOp::ShiftRight => unreachable!("not a string bitwise op"),
+    }
+}
+
+fn execute_unary(op: UnaryOp, src: &Value) -> Result<Value, String> {
+    match op {
+        UnaryOp::Plus => match to_number(src)? {
+            NumericValue::Int(value) => Ok(Value::Int(value)),
+            NumericValue::Float(value) => Ok(Value::float(value)),
+        },
+        UnaryOp::Minus => match to_number(src)? {
+            NumericValue::Int(value) => Ok(value
+                .checked_neg()
+                .map(Value::Int)
+                .unwrap_or_else(|| Value::float(-(value as f64)))),
+            NumericValue::Float(value) => Ok(Value::float(-value)),
+        },
+        UnaryOp::Not => Ok(Value::Bool(!to_bool(src)?)),
+        UnaryOp::BitNot => match src {
+            Value::Int(value) => Ok(Value::Int(!value)),
+            Value::String(value) => {
+                let bytes: Vec<u8> = value.as_bytes().iter().map(|byte| !byte).collect();
+                Ok(Value::String(PhpString::from_bytes(bytes)))
+            }
+            _ => Err("bitwise not is only implemented for int and string operands".to_owned()),
+        },
+    }
+}
+
+fn execute_compare(op: CompareOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+    let value = match op {
+        CompareOp::Equal => Value::Bool(equal(lhs, rhs)?),
+        CompareOp::NotEqual => Value::Bool(!equal(lhs, rhs)?),
+        CompareOp::Identical => Value::Bool(identical(lhs, rhs)),
+        CompareOp::NotIdentical => Value::Bool(!identical(lhs, rhs)),
+        CompareOp::Less => Value::Bool(compare(lhs, rhs)?.is_lt()),
+        CompareOp::LessEqual => Value::Bool(!compare(lhs, rhs)?.is_gt()),
+        CompareOp::Greater => Value::Bool(compare(lhs, rhs)?.is_gt()),
+        CompareOp::GreaterEqual => Value::Bool(!compare(lhs, rhs)?.is_lt()),
+        CompareOp::Spaceship => {
+            let result = match compare(lhs, rhs)? {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+            Value::Int(result)
+        }
+    };
+    Ok(value)
+}
+
 pub(super) fn execute_rich_compare_op(
     request: RichCompareRequest<'_>,
     stack: &mut CallStack,
