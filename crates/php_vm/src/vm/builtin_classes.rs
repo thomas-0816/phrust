@@ -14,6 +14,15 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Seek};
 use std::net::{TcpStream, ToSocketAddrs};
 
+/// Allocation-free equivalent of matching `normalize_class_name(name)`
+/// against lowercase literals; raw and pre-normalized spellings both match.
+pub(super) fn class_name_is(name: &str, expected: &[&str]) -> bool {
+    let name = name.trim_start_matches('\\');
+    expected
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 pub(super) fn is_std_class_runtime_class(class_name: &str) -> bool {
     class_name
         .trim_start_matches('\\')
@@ -24,7 +33,7 @@ pub(super) fn is_std_class_runtime_class(class_name: &str) -> bool {
 }
 
 pub(super) fn is_hash_context_runtime_class(class_name: &str) -> bool {
-    normalize_class_name(class_name) == "hashcontext"
+    class_name_is(class_name, &["hashcontext"])
 }
 
 pub(super) fn internal_hash_context_instanceof(
@@ -35,7 +44,7 @@ pub(super) fn internal_hash_context_instanceof(
 }
 
 pub(super) fn is_php_token_runtime_class(class_name: &str) -> bool {
-    normalize_class_name(class_name) == "phptoken"
+    class_name_is(class_name, &["phptoken"])
 }
 
 pub(super) fn internal_php_token_instanceof(
@@ -43,8 +52,7 @@ pub(super) fn internal_php_token_instanceof(
     target_class: &str,
 ) -> Option<bool> {
     is_php_token_runtime_class(object_class).then(|| {
-        is_php_token_runtime_class(target_class)
-            || normalize_class_name(target_class) == "stringable"
+        is_php_token_runtime_class(target_class) || class_name_is(target_class, &["stringable"])
     })
 }
 
@@ -349,9 +357,14 @@ pub(super) fn php_token_class() -> RuntimeClassEntry {
 }
 
 pub(super) fn is_date_time_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "datetime" | "datetimeimmutable" | "datetimezone" | "dateinterval"
+    class_name_is(
+        class_name,
+        &[
+            "datetime",
+            "datetimeimmutable",
+            "datetimezone",
+            "dateinterval",
+        ],
     )
 }
 
@@ -421,7 +434,7 @@ pub(super) fn new_date_time_object(
                     .ok_or_else(|| {
                         format!("E_PHP_VM_DATETIME_PARSE: could not parse DateTime text {text:?}")
                     })?;
-            let value = if normalize_class_name(class_name) == "datetimeimmutable" {
+            let value = if class_name_is(class_name, &["datetimeimmutable"]) {
                 php_runtime::datetime::datetime_immutable_object(timestamp, &timezone)
             } else {
                 php_runtime::datetime::datetime_object(timestamp, &timezone)
@@ -473,10 +486,7 @@ pub(super) fn call_date_time_method(
 }
 
 pub(super) fn is_sqlite_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "sqlite3" | "sqlite3result" | "sqlite3stmt"
-    )
+    class_name_is(class_name, &["sqlite3", "sqlite3result", "sqlite3stmt"])
 }
 
 pub(super) fn internal_sqlite_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
@@ -487,10 +497,7 @@ pub(super) fn internal_sqlite_instanceof(object_class: &str, target_class: &str)
 }
 
 pub(super) fn is_pdo_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "pdo" | "pdostatement" | "pdorow"
-    )
+    class_name_is(class_name, &["pdo", "pdostatement", "pdorow"])
 }
 
 pub(super) fn internal_pdo_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
@@ -501,9 +508,15 @@ pub(super) fn internal_pdo_instanceof(object_class: &str, target_class: &str) ->
 }
 
 pub(super) fn is_mysqli_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "mysqli" | "mysqli_result" | "mysqli_stmt" | "mysqli_driver" | "mysqli_warning"
+    class_name_is(
+        class_name,
+        &[
+            "mysqli",
+            "mysqli_result",
+            "mysqli_stmt",
+            "mysqli_driver",
+            "mysqli_warning",
+        ],
     )
 }
 
@@ -515,26 +528,28 @@ pub(super) fn internal_mysqli_instanceof(object_class: &str, target_class: &str)
 }
 
 pub(super) fn is_memcached_runtime_class(class_name: &str) -> bool {
-    normalize_class_name(class_name) == "memcached"
+    class_name_is(class_name, &["memcached"])
 }
 
 pub(super) fn is_soap_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "soapparam"
-            | "soapheader"
-            | "soapvar"
-            | "soapfault"
-            | "soapclient"
-            | "soapserver"
-            | "soap\\soapparam"
-            | "soap\\soapheader"
-            | "soap\\soapvar"
-            | "soap\\soapfault"
-            | "soap\\soapclient"
-            | "soap\\soapserver"
-            | "soap\\sdl"
-            | "soap\\url"
+    class_name_is(
+        class_name,
+        &[
+            "soapparam",
+            "soapheader",
+            "soapvar",
+            "soapfault",
+            "soapclient",
+            "soapserver",
+            "soap\\soapparam",
+            "soap\\soapheader",
+            "soap\\soapvar",
+            "soap\\soapfault",
+            "soap\\soapclient",
+            "soap\\soapserver",
+            "soap\\sdl",
+            "soap\\url",
+        ],
     )
 }
 
@@ -546,9 +561,14 @@ pub(super) fn internal_soap_instanceof(object_class: &str, target_class: &str) -
 }
 
 pub(super) fn is_imagick_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "imagick" | "imagickdraw" | "imagickpixel" | "imagickpixeliterator"
+    class_name_is(
+        class_name,
+        &[
+            "imagick",
+            "imagickdraw",
+            "imagickpixel",
+            "imagickpixeliterator",
+        ],
     )
 }
 
@@ -578,7 +598,7 @@ pub(super) fn call_imagick_method(
 }
 
 pub(super) fn is_xsl_runtime_class(class_name: &str) -> bool {
-    normalize_class_name(class_name) == "xsltprocessor"
+    class_name_is(class_name, &["xsltprocessor"])
 }
 
 pub(super) fn new_xsl_object(
@@ -613,7 +633,7 @@ pub(super) fn internal_memcached_instanceof(
     if !is_memcached_runtime_class(object_class) {
         return None;
     }
-    Some(normalize_class_name(target_class) == "memcached")
+    Some(class_name_is(target_class, &["memcached"]))
 }
 
 pub(super) const MEMCACHED_RES_SUCCESS: i64 = 0;
@@ -2297,10 +2317,7 @@ pub(super) fn memcached_cas(object: &ObjectRef, values: &[Value]) -> Result<Valu
 }
 
 pub(super) fn is_phar_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "phar" | "phardata" | "pharfileinfo"
-    )
+    class_name_is(class_name, &["phar", "phardata", "pharfileinfo"])
 }
 
 pub(super) fn internal_phar_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
@@ -2620,25 +2637,22 @@ pub(super) fn phar_object_path(object: &ObjectRef) -> Result<PathBuf, String> {
 }
 
 pub(super) fn is_zip_runtime_class(class_name: &str) -> bool {
-    normalize_class_name(class_name) == "ziparchive"
+    class_name_is(class_name, &["ziparchive"])
 }
 
 pub(super) fn internal_zip_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
     if !is_zip_runtime_class(object_class) {
         return None;
     }
-    Some(matches!(
-        normalize_class_name(target_class).as_str(),
-        "ziparchive" | "countable"
-    ))
+    Some(class_name_is(target_class, &["ziparchive", "countable"]))
 }
 
 pub(super) fn is_gd_runtime_class(class_name: &str) -> bool {
-    normalize_class_name(class_name) == "gdimage"
+    class_name_is(class_name, &["gdimage"])
 }
 
 pub(super) fn is_fileinfo_runtime_class(class_name: &str) -> bool {
-    normalize_class_name(class_name) == "finfo"
+    class_name_is(class_name, &["finfo"])
 }
 
 pub(super) fn internal_fileinfo_instanceof(object_class: &str, target_class: &str) -> Option<bool> {
@@ -2649,23 +2663,25 @@ pub(super) fn internal_gd_instanceof(object_class: &str, target_class: &str) -> 
     if !is_gd_runtime_class(object_class) {
         return None;
     }
-    Some(normalize_class_name(target_class) == "gdimage")
+    Some(class_name_is(target_class, &["gdimage"]))
 }
 
 pub(super) fn is_internal_extension_resource_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "imap\\connection"
-            | "ldap\\connection"
-            | "ldap\\result"
-            | "ldap\\resultentry"
-            | "ssh2\\channel"
-            | "ssh2\\session"
-            | "ssh2\\sftp"
-            | "shmop"
-            | "sysvmessagequeue"
-            | "sysvsemaphore"
-            | "sysvsharedmemory"
+    class_name_is(
+        class_name,
+        &[
+            "imap\\connection",
+            "ldap\\connection",
+            "ldap\\result",
+            "ldap\\resultentry",
+            "ssh2\\channel",
+            "ssh2\\session",
+            "ssh2\\sftp",
+            "shmop",
+            "sysvmessagequeue",
+            "sysvsemaphore",
+            "sysvsharedmemory",
+        ],
     )
 }
 
@@ -7079,22 +7095,24 @@ pub(super) fn pdo_class_constant_value(class_name: &str, constant: &str) -> Opti
 }
 
 pub(super) fn is_xml_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "domdocument"
-            | "domnode"
-            | "domelement"
-            | "domattr"
-            | "domtext"
-            | "domcomment"
-            | "domcdatasection"
-            | "domnodelist"
-            | "domnamednodemap"
-            | "domxpath"
-            | "simplexmlelement"
-            | "xmlparser"
-            | "xmlreader"
-            | "xmlwriter"
+    class_name_is(
+        class_name,
+        &[
+            "domdocument",
+            "domnode",
+            "domelement",
+            "domattr",
+            "domtext",
+            "domcomment",
+            "domcdatasection",
+            "domnodelist",
+            "domnamednodemap",
+            "domxpath",
+            "simplexmlelement",
+            "xmlparser",
+            "xmlreader",
+            "xmlwriter",
+        ],
     )
 }
 
@@ -7675,9 +7693,17 @@ pub(super) fn intl_class_constant_value(class_name: &str, constant: &str) -> Opt
 }
 
 pub(super) fn internal_extension_static_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "normalizer" | "locale" | "xmlwriter" | "pdo" | "phar" | "ffi" | "ziparchive"
+    class_name_is(
+        class_name,
+        &[
+            "normalizer",
+            "locale",
+            "xmlwriter",
+            "pdo",
+            "phar",
+            "ffi",
+            "ziparchive",
+        ],
     )
 }
 
