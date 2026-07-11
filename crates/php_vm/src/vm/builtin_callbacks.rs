@@ -799,7 +799,7 @@ impl Vm {
                     stack,
                     state,
                     function: "iterator_apply",
-                    values: &values,
+                    values,
                     call_span: None,
                 }
                 .result(message),
