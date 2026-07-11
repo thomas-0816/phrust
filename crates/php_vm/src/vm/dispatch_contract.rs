@@ -1,5 +1,14 @@
 use super::prelude::*;
 
+pub(super) struct RichInstructionSite<'a> {
+    pub(super) unit: &'a IrUnit,
+    pub(super) function: &'a IrFunction,
+    pub(super) function_id: FunctionId,
+    pub(super) block_id: BlockId,
+    pub(super) instruction: &'a Instruction,
+    pub(super) frame_index: usize,
+}
+
 pub(super) fn next_dense_block_index(
     function: &DenseFunction,
     current: u32,

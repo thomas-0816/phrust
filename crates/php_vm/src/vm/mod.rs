@@ -59,6 +59,7 @@ mod reflection;
 mod request_lifecycle;
 mod request_profile;
 mod result;
+mod rich_array_dispatch;
 mod rich_dispatch;
 mod rich_exception_dispatch;
 mod rich_foreach_dispatch;
@@ -213,10 +214,9 @@ use jit_abi::{
     jit_count_known_abi, jit_guard_kind_for_side_exit, jit_property_load_monomorphic_fast,
     jit_record_array_lookup_abi, jit_strlen_known_abi,
 };
-use operand_read::operand_truthy_at_frame;
-use operand_read::take_discard_operand_at_frame;
 use operand_read::{
-    DenseOperandRead, read_operand, read_operand_at_frame, read_operand_ref_at_frame,
+    DenseOperandRead, operand_truthy_at_frame, read_operand, read_operand_at_frame,
+    read_operand_ref_at_frame, take_discard_operand_at_frame,
     unset_consumed_assignment_value_operand_at_frame, unset_dense_register_operand,
     unset_register_operand_at_frame,
 };

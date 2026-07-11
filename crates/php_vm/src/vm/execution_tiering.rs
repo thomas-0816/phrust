@@ -674,12 +674,12 @@ impl Vm {
                     let status = error.native_status();
                     let side_exit = match status {
                         Some(
-                            JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT
+                            status @ (JIT_PROPERTY_LOAD_STATUS_CLASS_EXIT
                             | JIT_PROPERTY_LOAD_STATUS_LAYOUT_EXIT
                             | JIT_PROPERTY_LOAD_STATUS_UNINITIALIZED_EXIT
-                            | JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT,
+                            | JIT_PROPERTY_LOAD_STATUS_STORAGE_EXIT),
                         ) => php_jit::JitSideExit::new(php_jit::SideExitReason::GuardFailed)
-                            .with_status(status.unwrap()),
+                            .with_status(status),
                         _ => error.side_exit(),
                     };
                     self.record_jit_side_exit_for_key(key, side_exit);
