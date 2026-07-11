@@ -437,3 +437,164 @@ pub(super) fn current_closure_value(
             }),
     ))
 }
+
+pub(super) fn make_closure_value(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    stack: &CallStack,
+    function: FunctionId,
+    captured: Vec<ClosureCaptureValue>,
+) -> Value {
+    let bound_this = compiled
+        .unit()
+        .functions
+        .get(function.index())
+        .filter(|closure| closure.flags.is_closure && !closure.flags.is_static)
+        .and_then(|_| current_this_object(compiled, stack));
+    Value::closure(
+        ClosurePayload::new(function.raw(), captured)
+            .with_debug(closure_debug_info(compiled, function))
+            .with_bound_this(bound_this)
+            .with_context(ClosureContext {
+                owner_unit: dynamic_unit_index_for_compiled(state, compiled),
+                scope_class: current_scope_class(compiled, stack).map(Arc::from),
+                // Display spelling: `static::class` inside the closure must
+                // reproduce the PHP-visible name, like method frames do.
+                called_class: current_called_class_display(compiled, stack).map(Arc::from),
+                declaring_class: current_scope_class(compiled, stack).map(Arc::from),
+            }),
+    )
+}
+
+pub(super) fn evaluate_closure_captures(
+    unit: &IrUnit,
+    stack: &mut CallStack,
+    captures: &[ClosureCaptureArg],
+) -> Result<Vec<ClosureCaptureValue>, String> {
+    let mut values = Vec::with_capacity(captures.len());
+    for capture in captures {
+        if capture.by_ref {
+            let Operand::Local(local) = capture.src else {
+                return Err(format!(
+                    "E_PHP_VM_BY_REF_CAPTURE_NOT_REFERENCEABLE: closure capture ${} is not a local variable",
+                    capture.name
+                ));
+            };
+            let _source = layout_source::enter(layout_source::CLOSURE_CAPTURE_BINDING);
+            let cell = stack
+                .current_mut()
+                .ok_or("no active frame")?
+                .locals
+                .ensure_reference_cell(local)?;
+            values.push(ClosureCaptureValue::by_reference(
+                capture.name.clone(),
+                cell,
+            ));
+            continue;
+        }
+        values.push(ClosureCaptureValue::by_value(
+            capture.name.clone(),
+            read_operand(unit, stack, capture.src)?,
+        ));
+    }
+    Ok(values)
+}
+
+pub(super) fn initialize_captures(
+    function: &IrFunction,
+    captures: Vec<ClosureCaptureValue>,
+    stack: &mut CallStack,
+) -> Result<(), String> {
+    if function.captures.is_empty() {
+        return Ok(());
+    }
+    for metadata in &function.captures {
+        let capture = captures
+            .iter()
+            .find(|capture| capture.name == metadata.name)
+            .cloned();
+        let locals = &mut stack.current_mut().expect("frame was pushed").locals;
+        if metadata.by_ref {
+            let Some(cell) = capture.and_then(|capture| capture.reference()) else {
+                return Err(format!(
+                    "E_PHP_VM_BY_REF_CAPTURE_MISSING_CELL: closure capture ${} has no reference cell",
+                    metadata.name
+                ));
+            };
+            locals.bind_reference_cell(metadata.local, cell)?;
+        } else {
+            let value = capture
+                .and_then(|capture| capture.value().cloned())
+                .unwrap_or(Value::Null);
+            locals.set(metadata.local, value)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn initialize_this(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    function_id: FunctionId,
+    function: &IrFunction,
+    this_value: ObjectRef,
+    stack: &mut CallStack,
+) -> Result<(), String> {
+    let Some(index) = function.locals.iter().position(|name| name == "this") else {
+        let source = compiled
+            .unit()
+            .files
+            .first()
+            .map(|file| file.path.as_str())
+            .unwrap_or("<unknown>");
+        let context = stack
+            .current()
+            .map(|frame| {
+                let declaring_class = frame.declaring_class.as_deref();
+                let dynamic_owner_index = declaring_class
+                    .and_then(|class_name| dynamic_class_owner_index_in_state(state, class_name));
+                let dynamic_owner_source = dynamic_owner_index
+                    .and_then(|unit_index| state.dynamic_units.get(unit_index))
+                    .and_then(|unit| unit.unit().files.first())
+                    .map(|file| file.path.as_str())
+                    .unwrap_or("<none>");
+                let compiled_has_declaring_class = declaring_class
+                    .and_then(|class_name| compiled.lookup_class(class_name))
+                    .is_some();
+                let dynamic_has_declaring_class = declaring_class
+                    .and_then(|class_name| dynamic_class_entry_in_state(state, class_name))
+                    .is_some();
+                format!(
+                    " source={source} function_id={} this_class={} scope_class={} called_class={} declaring_class={} call_span={:?} compiled_has_declaring_class={} dynamic_has_declaring_class={} dynamic_owner_index={} dynamic_owner_source={}",
+                    function_id.raw(),
+                    this_value.display_name(),
+                    frame.scope_class.as_deref().unwrap_or("<none>"),
+                    frame.called_class.as_deref().unwrap_or("<none>"),
+                    frame.declaring_class.as_deref().unwrap_or("<none>"),
+                    frame.call_span,
+                    compiled_has_declaring_class,
+                    dynamic_has_declaring_class,
+                    dynamic_owner_index
+                        .map(|index| index.to_string())
+                        .unwrap_or_else(|| "<none>".to_owned()),
+                    dynamic_owner_source
+                )
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    " source={source} function_id={} this_class={} scope_class=<no-frame> called_class=<no-frame> declaring_class=<no-frame> call_span=<no-frame>",
+                    function_id.raw(),
+                    this_value.display_name(),
+                )
+            });
+        return Err(format!(
+            "E_PHP_VM_MISSING_THIS_LOCAL: method {} has no $this local{}",
+            function.name, context
+        ));
+    };
+    Ok(stack
+        .current_mut()
+        .expect("frame was pushed")
+        .locals
+        .set(LocalId::new(index as u32), Value::Object(this_value))?)
+}

@@ -13,7 +13,10 @@ implementation into a module directory:
   mode enums re-exported from `php_vm::vm`.
 - `crates/php_vm/src/vm/result.rs` owns `VmResult`, `VmControlFlow`, and
   `VmResult` constructor helpers.
-- `crates/php_vm/src/vm/arguments.rs` owns user-function argument preparation.
+- `crates/php_vm/src/vm/arguments.rs` owns user-function argument preparation,
+  reference binding, runtime type enforcement, and parameter diagnostics.
+- `crates/php_vm/src/vm/closure_operations.rs` owns closure construction,
+  capture materialization, binding context, and `$this` initialization.
 - `crates/php_vm/src/vm/dense_method_dispatch.rs` owns dense bytecode method
   call dispatch helpers.
 - `crates/php_vm/src/vm/generator_fiber.rs` owns generator and fiber runtime

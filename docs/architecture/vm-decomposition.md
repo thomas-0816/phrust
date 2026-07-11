@@ -40,7 +40,11 @@ owner rather than routing through facade methods. Callable validation,
 acquisition, presentation, and internal dispatch cacheability also live in
 `calls` instead of remaining as facade free functions. Trivial method inlining,
 route selection, dense route execution, bound methods, and invokable-object
-dispatch now live in the separate `method_dispatch` owner.
+dispatch now live in the separate `method_dispatch` owner. Argument binding,
+reference acquisition, parameter/return/property type enforcement, and
+sensitive-parameter presentation now live in `arguments`; closure creation,
+capture materialization, and `$this` initialization live in
+`closure_operations`.
 
 ## Target Ownership
 
@@ -57,7 +61,9 @@ migration.
 | `execution_state` | frames, exception/control state, request-local declaration tables, deadline state, GC roots | builtin dispatch or server state |
 | `rich_dispatch` | IR cursor and direct opcode selection | extension implementations or backend-specific JIT details |
 | `dense_dispatch` | dense cursor and direct opcode selection | a second semantic implementation |
-| `calls` | argument binding, activation, function/closure calls, return and unwind | generic property rules or SPL collections |
+| `arguments` | argument binding, reference acquisition, type enforcement, and parameter diagnostics | call routing or opcode dispatch |
+| `closure_operations` | closure values, captures, binding context, and `$this` initialization | generic function dispatch or argument binding |
+| `calls` | activation, function/closure calls, return and unwind | generic property rules or SPL collections |
 | `method_dispatch` | method route selection, receiver/class context, method cache integration | class construction or extension methods |
 | `class_operations` | class lookup, constants, static properties, construction, visibility, autoload metadata | reflection presentation or SPL implementation |
 | `property_execution` | generic property read/write/isset/empty/hook rules | internal-class special cases |
