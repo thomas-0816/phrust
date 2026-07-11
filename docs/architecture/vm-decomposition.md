@@ -23,6 +23,12 @@ Line numbers are deliberately not part of this contract because each completed
 slice changes them. `scripts/verify/architecture_inventory.py` is the
 authoritative size inventory.
 
+Completed ownership slices already remove instrumentation/JIT state, call
+models, continuation/control models, foreach iteration, and request-local
+extension adapter state from the facade. `ExecutionState` now contains one
+`BuiltinAdapterState` subsystem instead of directly owning extension clients,
+stream-wrapper state, and the typed `BuiltinRequestState`.
+
 ## Target Ownership
 
 | Owner | Owns | Must not own |

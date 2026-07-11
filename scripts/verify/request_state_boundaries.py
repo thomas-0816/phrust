@@ -40,6 +40,7 @@ def main() -> int:
     context = read("crates/php_runtime/src/builtins/context.rs")
     views = read("crates/php_runtime/src/builtins/context/service_views.rs")
     vm = read("crates/php_vm/src/vm/mod.rs")
+    vm_builtin_adapter = read("crates/php_vm/src/vm/builtin_adapter.rs")
     migration = read("docs/runtime/request-state-slots.md")
 
     if "HashMap" in layout or "BTreeMap" in layout:
@@ -96,7 +97,18 @@ def main() -> int:
         if symbol not in builtin_state:
             failures.append(f"builtin request owner is missing {symbol}")
 
-    if vm.count("builtin_request_state: php_runtime::BuiltinRequestState") != 1:
+    execution_state = struct_body(vm, "ExecutionState")
+    vm_adapter_state = struct_body(vm_builtin_adapter, "BuiltinAdapterState")
+    if execution_state.count("builtins: BuiltinAdapterState") != 1:
+        failures.append("ExecutionState must own exactly one builtin adapter subsystem")
+    if "builtin_request_state" in execution_state:
+        failures.append("ExecutionState must not directly own migrated builtin request slots")
+    if (
+        vm_adapter_state.count(
+            "builtin_request_state: php_runtime::BuiltinRequestState"
+        )
+        != 1
+    ):
         failures.append("VM must own exactly one migrated BuiltinRequestState")
     if "BuiltinContext::with_runtime_request_state(" not in vm:
         failures.append("VM dispatch must borrow its request-state owner")

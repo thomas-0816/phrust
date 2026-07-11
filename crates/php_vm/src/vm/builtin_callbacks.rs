@@ -136,6 +136,7 @@ impl Vm {
     ) -> Result<Value, VmResult> {
         if transform_state.active_objects.contains(&object.id())
             || state
+                .builtins
                 .json_serializable_active_objects
                 .contains(&object.id())
         {
@@ -160,7 +161,10 @@ impl Vm {
             return Ok(Value::Object(object));
         }
         transform_state.active_objects.push(object.id());
-        state.json_serializable_active_objects.push(object.id());
+        state
+            .builtins
+            .json_serializable_active_objects
+            .push(object.id());
         let result = self.call_object_method_callable(
             compiled,
             object.clone(),
@@ -173,14 +177,14 @@ impl Vm {
         );
         if !result.status.is_success() {
             let _ = transform_state.active_objects.pop();
-            let _ = state.json_serializable_active_objects.pop();
+            let _ = state.builtins.json_serializable_active_objects.pop();
             return Err(result);
         }
         let serialized = result.return_value.unwrap_or(Value::Null);
         if matches!(effective_value(&serialized), Value::Object(returned) if returned.id() == object.id())
         {
             let _ = transform_state.active_objects.pop();
-            let _ = state.json_serializable_active_objects.pop();
+            let _ = state.builtins.json_serializable_active_objects.pop();
             return Ok(serialized);
         }
         let transformed = self.prepare_json_serializable_value(
@@ -193,7 +197,7 @@ impl Vm {
             transform_state,
         );
         let _ = transform_state.active_objects.pop();
-        let _ = state.json_serializable_active_objects.pop();
+        let _ = state.builtins.json_serializable_active_objects.pop();
         transformed
     }
 

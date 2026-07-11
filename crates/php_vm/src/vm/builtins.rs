@@ -230,7 +230,7 @@ impl Vm {
             Ok(key) => key,
             Err(message) => return self.runtime_error(output, compiled, stack, message),
         };
-        if let Some(value) = state.apcu_state.fetch(key.as_bytes()) {
+        if let Some(value) = state.builtins.apcu_state.fetch(key.as_bytes()) {
             return VmResult::success_no_output(Some(value));
         }
         let ttl = match values.get(2) {
@@ -254,6 +254,7 @@ impl Vm {
         }
         let value = result.return_value.unwrap_or(Value::Null);
         state
+            .builtins
             .apcu_state
             .store(key.as_bytes().to_vec(), value.clone(), ttl);
         VmResult::success_no_output(Some(value))
@@ -284,7 +285,10 @@ impl Vm {
         if normalize_class_name(&queue.class_name()) != "sysvmessagequeue" {
             return None;
         }
-        let queue_id = state.sysvmsg_state.queue_id_for_object(queue.id())?;
+        let queue_id = state
+            .builtins
+            .sysvmsg_state
+            .queue_id_for_object(queue.id())?;
         let message_type = php_runtime::api::to_int(&values[1]).ok()?;
         if message_type <= 0 {
             return None;
@@ -321,7 +325,7 @@ impl Vm {
             }
         };
 
-        if state.sysvmsg_state.queue(queue_id).is_none() {
+        if state.builtins.sysvmsg_state.queue(queue_id).is_none() {
             if let Err(result) = self
                 .emit_sysvmsg_send_invalid_queue_warning(compiled, output, stack, state, call_span)
             {
@@ -339,10 +343,13 @@ impl Vm {
         } else {
             php_runtime::api::SYSVMSG_IPC_NOWAIT
         };
-        let sent =
-            state
-                .sysvmsg_state
-                .send_payload(queue_id, message_type, payload, true, send_flags);
+        let sent = state.builtins.sysvmsg_state.send_payload(
+            queue_id,
+            message_type,
+            payload,
+            true,
+            send_flags,
+        );
         assign_optional_reference(values.get(5), Value::Int(sent.err().map_or(0, i64::from)));
         Some(VmResult::success(
             OutputBuffer::new(),
@@ -446,6 +453,7 @@ impl Vm {
         }
 
         state
+            .builtins
             .opcache_state
             .compile_script(resolved.canonical_path.to_string_lossy().into_owned());
         VmResult::success_no_output(Some(Value::Bool(true)))
@@ -566,7 +574,7 @@ impl Vm {
                 }
                 return result;
             }
-            if object_id.is_some_and(|id| state.sysvshm_state.object_destroyed(id)) {
+            if object_id.is_some_and(|id| state.builtins.sysvshm_state.object_destroyed(id)) {
                 let result = self.runtime_error(
                     output,
                     compiled,

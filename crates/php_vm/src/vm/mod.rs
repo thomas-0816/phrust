@@ -4,6 +4,7 @@
 #![allow(clippy::too_many_arguments)]
 
 mod arguments;
+mod builtin_adapter;
 mod builtin_callbacks;
 mod builtin_classes;
 mod builtin_intrinsics;
@@ -30,6 +31,9 @@ mod request_profile;
 mod result;
 mod spl;
 
+use builtin_adapter::{
+    BuiltinAdapterState, InternalFunctionDispatchCache, InternalFunctionDispatchCacheOutcome,
+};
 use builtin_classes::*;
 use calls::*;
 use diagnostics::*;
@@ -388,119 +392,6 @@ enum PropertyDimAssign {
     Return(Box<VmResult>),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InternalFunctionDispatchCacheOutcome {
-    Hit,
-    Miss,
-    Uncached,
-}
-
-#[derive(Clone, Debug, Default)]
-struct InternalFunctionDispatchCache {
-    entries: HashMap<String, BuiltinEntry>,
-}
-
-impl InternalFunctionDispatchCache {
-    fn clear(&mut self) {
-        self.entries.clear();
-    }
-
-    fn lookup(
-        &mut self,
-        name: &str,
-    ) -> (Option<BuiltinEntry>, InternalFunctionDispatchCacheOutcome) {
-        if !internal_function_dispatch_cacheable(name) {
-            return (
-                BuiltinRegistry::new().get(name),
-                InternalFunctionDispatchCacheOutcome::Uncached,
-            );
-        }
-        if let Some(entry) = self.entries.get(name).copied() {
-            return (Some(entry), InternalFunctionDispatchCacheOutcome::Hit);
-        }
-        let entry = BuiltinRegistry::new().get(name);
-        if let Some(entry) = entry {
-            self.entries.insert(name.to_owned(), entry);
-        }
-        (entry, InternalFunctionDispatchCacheOutcome::Miss)
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct UserStreamWrapperRegistry {
-    wrappers: BTreeMap<String, UserStreamWrapperClass>,
-    open_streams: BTreeMap<php_runtime::ResourceId, UserStreamWrapperInstance>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct UserStreamWrapperClass {
-    protocol: String,
-    class_name: String,
-    display_class_name: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct UserStreamWrapperInstance {
-    object: ObjectRef,
-    close_called: bool,
-}
-
-impl UserStreamWrapperRegistry {
-    fn register(&mut self, protocol: &str, class_name: &str, display_class_name: &str) -> bool {
-        let normalized = normalize_stream_wrapper_protocol(protocol);
-        if normalized.is_empty() || self.wrappers.contains_key(&normalized) {
-            return false;
-        }
-        self.wrappers.insert(
-            normalized.clone(),
-            UserStreamWrapperClass {
-                protocol: normalized,
-                class_name: class_name.to_owned(),
-                display_class_name: display_class_name.to_owned(),
-            },
-        );
-        true
-    }
-
-    fn wrapper_for_uri(&self, uri: &str) -> Option<UserStreamWrapperClass> {
-        let protocol = stream_uri_protocol(uri)?;
-        self.wrappers.get(&protocol).cloned()
-    }
-
-    fn protocols(&self) -> Vec<String> {
-        self.wrappers
-            .values()
-            .map(|wrapper| wrapper.protocol.clone())
-            .collect()
-    }
-
-    fn register_open_stream(&mut self, resource: &php_runtime::ResourceRef, object: ObjectRef) {
-        self.open_streams.insert(
-            resource.id(),
-            UserStreamWrapperInstance {
-                object,
-                close_called: false,
-            },
-        );
-    }
-
-    fn pending_close_object(&mut self, id: php_runtime::ResourceId) -> Option<ObjectRef> {
-        let instance = self.open_streams.get_mut(&id)?;
-        if instance.close_called {
-            return None;
-        }
-        instance.close_called = true;
-        Some(instance.object.clone())
-    }
-
-    fn pending_close_ids(&self) -> Vec<php_runtime::ResourceId> {
-        self.open_streams
-            .iter()
-            .filter_map(|(id, instance)| (!instance.close_called).then_some(*id))
-            .collect()
-    }
-}
-
 #[derive(Debug, Default)]
 struct ExecutionState {
     /// Worker-stable symbol epochs enabled (VmOptions::worker_symbol_epoch).
@@ -559,33 +450,7 @@ struct ExecutionState {
     stdin: Option<php_runtime::ResourceRef>,
     stdout: Option<php_runtime::ResourceRef>,
     stderr: Option<php_runtime::ResourceRef>,
-    bcmath_scale: usize,
-    strtok_state: php_runtime::StrtokState,
-    iconv_state: php_runtime::IconvEncodingState,
-    apcu_state: php_runtime::ApcuState,
-    opcache_state: php_runtime::OpcacheState,
-    soap_state: php_runtime::SoapState,
-    openssl_error_state: php_runtime::OpenSslErrorState,
-    gettext_state: php_runtime::GettextState,
-    shmop_state: php_runtime::ShmopState,
-    readline_state: php_runtime::ReadlineState,
-    sysvmsg_state: php_runtime::SysvMessageQueueState,
-    sysvsem_state: php_runtime::SysvSemaphoreState,
-    sysvshm_state: php_runtime::SysvSharedMemoryState,
-    pcntl_state: php_runtime::PcntlState,
-    ftp_state: php_runtime::FtpState,
-    imap_state: php_runtime::ImapState,
-    ldap_state: php_runtime::LdapState,
-    ssh2_state: php_runtime::Ssh2State,
-    socket_state: php_runtime::SocketState,
-    filesystem_state: php_runtime::FilesystemRuntimeState,
-    stream_context_state: php_runtime::StreamContextState,
-    user_stream_wrappers: UserStreamWrapperRegistry,
-    mb_internal_encoding: String,
-    mb_substitute_character: php_runtime::MbSubstituteCharacter,
-    builtin_request_state: php_runtime::BuiltinRequestState,
-    json_serializable_active_objects: Vec<u64>,
-    posix_last_error: i32,
+    builtins: BuiltinAdapterState,
     last_error: Option<LastErrorEntry>,
     http_response: RuntimeHttpResponseState,
     upload_registry: UploadRegistry,
@@ -593,11 +458,6 @@ struct ExecutionState {
     session_loader: Option<php_runtime::SessionLoadCallback>,
     sapi_name: String,
     php_binary: String,
-    sqlite: php_runtime::SqliteState,
-    mysql: php_runtime::MysqlState,
-    postgres: php_runtime::PostgresState,
-    redis_clients: RedisClientState,
-    memcached_clients: MemcachedClientState,
     error_handlers: Vec<ErrorHandlerEntry>,
     exception_handlers: Vec<CallableValue>,
     diagnostics: Vec<RuntimeDiagnostic>,
@@ -617,11 +477,11 @@ struct ExecutionState {
 
 impl ExecutionState {
     fn pcre_state_mut(&mut self) -> &mut php_runtime::PcreRequestState {
-        self.builtin_request_state.pcre_mut()
+        self.builtins.builtin_request_state.pcre_mut()
     }
 
     fn set_json_last_error(&mut self, code: i64) {
-        self.builtin_request_state.json_mut().set(code);
+        self.builtins.builtin_request_state.json_mut().set(code);
     }
 
     fn has_included(&self, path: &Path) -> bool {
@@ -15917,7 +15777,7 @@ impl Vm {
                             let object = match new_sqlite_object(
                                 &class_name,
                                 values,
-                                &mut state.sqlite,
+                                &mut state.builtins.sqlite,
                                 &self.options.runtime_context,
                             ) {
                                 Ok(object) => object,
@@ -15951,14 +15811,16 @@ impl Vm {
                             continue;
                         }
                         if is_mysqli_runtime_class(&class_name) {
-                            let object =
-                                match new_mysqli_object(&class_name, values, &mut state.mysql) {
-                                    Ok(object) => object,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                };
+                            let object = match new_mysqli_object(
+                                &class_name,
+                                values,
+                                &mut state.builtins.mysql,
+                            ) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame was pushed")
@@ -16058,9 +15920,9 @@ impl Vm {
                             let object = match new_pdo_object(
                                 &class_name,
                                 values,
-                                &mut state.sqlite,
-                                &mut state.mysql,
-                                &mut state.postgres,
+                                &mut state.builtins.sqlite,
+                                &mut state.builtins.mysql,
+                                &mut state.builtins.postgres,
                                 &self.options.runtime_context,
                             ) {
                                 Ok(object) => object,
@@ -16914,7 +16776,7 @@ impl Vm {
                             let object = match new_sqlite_object(
                                 class_name,
                                 values,
-                                &mut state.sqlite,
+                                &mut state.builtins.sqlite,
                                 &self.options.runtime_context,
                             ) {
                                 Ok(object) => object,
@@ -16944,9 +16806,9 @@ impl Vm {
                             let object = match new_pdo_object(
                                 class_name,
                                 values,
-                                &mut state.sqlite,
-                                &mut state.mysql,
-                                &mut state.postgres,
+                                &mut state.builtins.sqlite,
+                                &mut state.builtins.mysql,
+                                &mut state.builtins.postgres,
                                 &self.options.runtime_context,
                             ) {
                                 Ok(object) => object,
@@ -16973,14 +16835,16 @@ impl Vm {
                                             .runtime_error(output, compiled, stack, message);
                                     }
                                 };
-                            let object =
-                                match new_mysqli_object(class_name, values, &mut state.mysql) {
-                                    Ok(object) => object,
-                                    Err(message) => {
-                                        return self
-                                            .runtime_error(output, compiled, stack, message);
-                                    }
-                                };
+                            let object = match new_mysqli_object(
+                                class_name,
+                                values,
+                                &mut state.builtins.mysql,
+                            ) {
+                                Ok(object) => object,
+                                Err(message) => {
+                                    return self.runtime_error(output, compiled, stack, message);
+                                }
+                            };
                             if let Err(message) = stack
                                 .frame_mut(frame_index)
                                 .expect("frame was pushed")
@@ -25554,7 +25418,7 @@ impl Vm {
                                 &object,
                                 method,
                                 values,
-                                &mut state.sqlite,
+                                &mut state.builtins.sqlite,
                                 &self.options.runtime_context,
                             ) {
                                 Ok(value) => value,
@@ -25577,9 +25441,9 @@ impl Vm {
                                 &object,
                                 method,
                                 values,
-                                &mut state.sqlite,
-                                &mut state.mysql,
-                                &mut state.postgres,
+                                &mut state.builtins.sqlite,
+                                &mut state.builtins.mysql,
+                                &mut state.builtins.postgres,
                                 &self.options.runtime_context,
                             ) {
                                 Ok(value) => value,
@@ -25689,7 +25553,7 @@ impl Vm {
                                 &object,
                                 method,
                                 values,
-                                &mut state.mysql,
+                                &mut state.builtins.mysql,
                                 compiled,
                                 stack,
                             ) {
@@ -25713,7 +25577,7 @@ impl Vm {
                                 &object,
                                 method,
                                 values,
-                                &mut state.redis_clients,
+                                &mut state.builtins.redis_clients,
                             ) {
                                 Ok(value) => value,
                                 Err(message) => {
@@ -25735,7 +25599,7 @@ impl Vm {
                                 &object,
                                 method,
                                 values,
-                                &mut state.memcached_clients,
+                                &mut state.builtins.memcached_clients,
                             ) {
                                 Ok(value) => value,
                                 Err(message) => {
@@ -34160,9 +34024,9 @@ impl Vm {
                 &object,
                 method,
                 args,
-                &mut state.sqlite,
-                &mut state.mysql,
-                &mut state.postgres,
+                &mut state.builtins.sqlite,
+                &mut state.builtins.mysql,
+                &mut state.builtins.postgres,
                 &self.options.runtime_context,
             ) {
                 Ok(value) => VmResult::success_no_output(Some(value)),
@@ -34174,7 +34038,7 @@ impl Vm {
                 &object,
                 method,
                 args,
-                &mut state.sqlite,
+                &mut state.builtins.sqlite,
                 &self.options.runtime_context,
             ) {
                 Ok(value) => VmResult::success_no_output(Some(value)),
@@ -34182,14 +34046,19 @@ impl Vm {
             };
         }
         if is_redis_runtime_class(&object.class_name()) {
-            return match call_redis_method(&object, method, args, &mut state.redis_clients) {
+            return match call_redis_method(&object, method, args, &mut state.builtins.redis_clients)
+            {
                 Ok(value) => VmResult::success_no_output(Some(value)),
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
         }
         if is_memcached_runtime_class(&object.class_name()) {
-            return match call_memcached_method(&object, method, args, &mut state.memcached_clients)
-            {
+            return match call_memcached_method(
+                &object,
+                method,
+                args,
+                &mut state.builtins.memcached_clients,
+            ) {
                 Ok(value) => VmResult::success_no_output(Some(value)),
                 Err(message) => self.runtime_error(output, compiled, stack, message),
             };
@@ -38910,10 +38779,11 @@ impl Vm {
         let Some(class) = lookup_class_in_state(compiled, state, &class_name) else {
             return VmResult::success_no_output(Some(Value::Bool(false)));
         };
-        let registered =
-            state
-                .user_stream_wrappers
-                .register(&protocol, &class.name, &class.display_name);
+        let registered = state.builtins.user_stream_wrappers.register(
+            &protocol,
+            &class.name,
+            &class.display_name,
+        );
         VmResult::success_no_output(Some(Value::Bool(registered)))
     }
 
@@ -38928,6 +38798,7 @@ impl Vm {
         let mut wrappers = vec![Value::string("file"), Value::string("php")];
         wrappers.extend(
             state
+                .builtins
                 .user_stream_wrappers
                 .protocols()
                 .into_iter()
@@ -38954,7 +38825,7 @@ impl Vm {
             },
             None => return None,
         };
-        let wrapper = state.user_stream_wrappers.wrapper_for_uri(&uri)?;
+        let wrapper = state.builtins.user_stream_wrappers.wrapper_for_uri(&uri)?;
         let mode = match values.get(1).map(effective_value) {
             Some(value) => match to_string(&value) {
                 Ok(mode) => mode.to_string_lossy(),
@@ -39027,6 +38898,7 @@ impl Vm {
             php_runtime::StreamMetadata::new(&wrapper.protocol, "stream", &mode, &uri),
         );
         state
+            .builtins
             .user_stream_wrappers
             .register_open_stream(&resource, object);
         Some(VmResult::success_no_output(Some(Value::Resource(resource))))
@@ -39056,7 +38928,10 @@ impl Vm {
         state: &mut ExecutionState,
         compiled: &CompiledUnit,
     ) -> Option<VmResult> {
-        let object = state.user_stream_wrappers.pending_close_object(id)?;
+        let object = state
+            .builtins
+            .user_stream_wrappers
+            .pending_close_object(id)?;
         if lookup_resolved_method_in_state(
             compiled,
             state,
@@ -39099,7 +38974,7 @@ impl Vm {
         state: &mut ExecutionState,
     ) -> Result<Vec<RuntimeDiagnostic>, VmResult> {
         let mut diagnostics = Vec::new();
-        for id in state.user_stream_wrappers.pending_close_ids() {
+        for id in state.builtins.user_stream_wrappers.pending_close_ids() {
             let mut stack = CallStack::new();
             let Some(result) =
                 self.close_user_stream_resource(id, None, output, &mut stack, state, compiled)
@@ -46564,7 +46439,11 @@ fn normalize_exit_code(code: i64) -> i32 {
 }
 
 fn script_exit_result(output: &OutputBuffer, state: &ExecutionState, code: i32) -> VmResult {
-    VmResult::script_exit(output.clone(), code, state.pcntl_state.is_fork_child())
+    VmResult::script_exit(
+        output.clone(),
+        code,
+        state.builtins.pcntl_state.is_fork_child(),
+    )
 }
 
 fn compiled_unit_cache_key(compiled: &CompiledUnit) -> u64 {
@@ -57815,15 +57694,15 @@ fn execute_builtin_entry(
     if state.default_timezone.is_empty() {
         state.default_timezone = php_runtime::datetime::DEFAULT_TIMEZONE.to_owned();
     }
-    if state.mb_internal_encoding.is_empty() {
-        state.mb_internal_encoding = "UTF-8".to_owned();
+    if state.builtins.mb_internal_encoding.is_empty() {
+        state.builtins.mb_internal_encoding = "UTF-8".to_owned();
     }
     let mut context = BuiltinContext::with_runtime_request_state(
         output,
         PathBuf::new(),
         runtime_context.filesystem.clone(),
         Some(&mut state.resources),
-        &mut state.builtin_request_state,
+        &mut state.builtins.builtin_request_state,
     );
     context.set_cwd_state(&mut state.cwd);
     context.set_include_path_shared(include_path);
@@ -57836,34 +57715,34 @@ fn execute_builtin_entry(
     context.set_default_timezone_state(&mut state.default_timezone);
     context.set_diagnostic_display(diagnostic_display);
     context.set_filter_input_arrays_shared(Rc::clone(&state.filter_input_arrays));
-    context.set_bcmath_scale(state.bcmath_scale);
-    context.set_strtok_state(&mut state.strtok_state);
-    context.set_iconv_state(&mut state.iconv_state);
-    context.set_apcu_state(&mut state.apcu_state);
-    context.set_opcache_state(&mut state.opcache_state);
-    context.set_soap_state(&mut state.soap_state);
-    context.set_openssl_error_state(&mut state.openssl_error_state);
-    context.set_gettext_state(&mut state.gettext_state);
-    context.set_shmop_state(&mut state.shmop_state);
-    context.set_readline_state(&mut state.readline_state);
-    context.set_sysvmsg_state(&mut state.sysvmsg_state);
-    context.set_sysvsem_state(&mut state.sysvsem_state);
-    context.set_sysvshm_state(&mut state.sysvshm_state);
-    context.set_pcntl_state(&mut state.pcntl_state);
-    context.set_ftp_state(&mut state.ftp_state);
-    context.set_imap_state(&mut state.imap_state);
-    context.set_ldap_state(&mut state.ldap_state);
-    context.set_ssh2_state(&mut state.ssh2_state);
-    context.set_socket_state(&mut state.socket_state);
-    context.set_posix_last_error(state.posix_last_error);
-    context.set_filesystem_state(&mut state.filesystem_state);
-    context.set_stream_context_state(&mut state.stream_context_state);
+    context.set_bcmath_scale(state.builtins.bcmath_scale);
+    context.set_strtok_state(&mut state.builtins.strtok_state);
+    context.set_iconv_state(&mut state.builtins.iconv_state);
+    context.set_apcu_state(&mut state.builtins.apcu_state);
+    context.set_opcache_state(&mut state.builtins.opcache_state);
+    context.set_soap_state(&mut state.builtins.soap_state);
+    context.set_openssl_error_state(&mut state.builtins.openssl_error_state);
+    context.set_gettext_state(&mut state.builtins.gettext_state);
+    context.set_shmop_state(&mut state.builtins.shmop_state);
+    context.set_readline_state(&mut state.builtins.readline_state);
+    context.set_sysvmsg_state(&mut state.builtins.sysvmsg_state);
+    context.set_sysvsem_state(&mut state.builtins.sysvsem_state);
+    context.set_sysvshm_state(&mut state.builtins.sysvshm_state);
+    context.set_pcntl_state(&mut state.builtins.pcntl_state);
+    context.set_ftp_state(&mut state.builtins.ftp_state);
+    context.set_imap_state(&mut state.builtins.imap_state);
+    context.set_ldap_state(&mut state.builtins.ldap_state);
+    context.set_ssh2_state(&mut state.builtins.ssh2_state);
+    context.set_socket_state(&mut state.builtins.socket_state);
+    context.set_posix_last_error(state.builtins.posix_last_error);
+    context.set_filesystem_state(&mut state.builtins.filesystem_state);
+    context.set_stream_context_state(&mut state.builtins.stream_context_state);
     context.set_http_response_state(&mut state.http_response);
     context.set_upload_registry(&mut state.upload_registry);
-    context.set_mysql_state(&mut state.mysql);
-    context.set_postgres_state(&mut state.postgres);
-    context.set_mb_internal_encoding_state(&mut state.mb_internal_encoding);
-    context.set_mb_substitute_character_state(&mut state.mb_substitute_character);
+    context.set_mysql_state(&mut state.builtins.mysql);
+    context.set_postgres_state(&mut state.builtins.postgres);
+    context.set_mb_internal_encoding_state(&mut state.builtins.mb_internal_encoding);
+    context.set_mb_substitute_character_state(&mut state.builtins.mb_substitute_character);
     let initial_session_global =
         if state.session.status() == php_runtime::PHP_SESSION_ACTIVE || state.session.started() {
             state.session.data_value()
@@ -57879,8 +57758,8 @@ fn execute_builtin_entry(
     let time_limit_arg = (entry.name() == "set_time_limit").then(|| args.first().cloned());
     let result = (entry.function())(&mut context, args, source_span.clone());
     context.sync_session_state_from_global();
-    state.posix_last_error = context.posix_last_error();
-    state.bcmath_scale = context.bcmath_scale();
+    state.builtins.posix_last_error = context.posix_last_error();
+    state.builtins.bcmath_scale = context.bcmath_scale();
     let mut diagnostics = context.take_diagnostics();
     let error_output = result.as_ref().err().map(|_| context.output().clone());
     drop(context);

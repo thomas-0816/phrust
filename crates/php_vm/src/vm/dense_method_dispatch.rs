@@ -87,7 +87,7 @@ impl Vm {
                 &object,
                 method,
                 args,
-                &mut state.mysql,
+                &mut state.builtins.mysql,
                 compiled,
                 stack,
             ) {
