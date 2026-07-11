@@ -1,4 +1,36 @@
 use super::*;
+use std::hash::{Hash, Hasher};
+
+#[derive(Clone, Debug)]
+struct SharedClassName(Arc<str>);
+
+impl PartialEq for SharedClassName {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SharedClassName {}
+
+impl Hash for SharedClassName {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+/// Receiver-class resolutions pinned by their shared name handles.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ObjectClassResolution {
+    epoch: u64,
+    entries: HashMap<SharedClassName, Arc<php_ir::module::ClassEntry>>,
+}
+
+/// Per-unit lazily-resolved constant values with a one-entry hot-unit cache.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ResolvedConstantTables {
+    last: Option<(u64, Rc<[std::cell::OnceCell<Value>]>)>,
+    tables: HashMap<u64, Rc<[std::cell::OnceCell<Value>]>>,
+}
 
 impl Vm {
     #[cfg(feature = "jit-cranelift")]
@@ -563,23 +595,22 @@ impl Vm {
             }
             plan
         };
-        let plan = match execution_plan
-            .and_then(|plan| plan.last_use_plans.get(function_id.index()))
-        {
-            Some(cell) => Rc::clone(cell.get_or_init(build)),
-            None => {
-                let key = (compiled_unit_cache_key(compiled), function_id.raw());
-                if let Some(plan) = self.last_use_move_plans.borrow().get(&key) {
-                    Rc::clone(plan)
-                } else {
-                    let plan = build();
-                    self.last_use_move_plans
-                        .borrow_mut()
-                        .insert(key, Rc::clone(&plan));
-                    plan
+        let plan =
+            match execution_plan.and_then(|plan| plan.last_use_plans.get(function_id.index())) {
+                Some(cell) => Rc::clone(cell.get_or_init(build)),
+                None => {
+                    let key = (compiled_unit_cache_key(compiled), function_id.raw());
+                    if let Some(plan) = self.last_use_move_plans.borrow().get(&key) {
+                        Rc::clone(plan)
+                    } else {
+                        let plan = build();
+                        self.last_use_move_plans
+                            .borrow_mut()
+                            .insert(key, Rc::clone(&plan));
+                        plan
+                    }
                 }
-            }
-        };
+            };
         (!plan.is_empty() && (plan.move_checks_enabled() || plan.has_array_release_reads()))
             .then_some(plan)
     }
@@ -1616,24 +1647,23 @@ impl Vm {
         state: &ExecutionState,
         object: &php_runtime::ObjectRef,
     ) -> Option<Arc<php_ir::module::ClassEntry>> {
-        let handle = object.class_name_handle();
-        let key = std::sync::Arc::as_ptr(&handle) as *const () as usize;
+        let key = SharedClassName(object.class_name_handle());
         let epoch = state.class_table_epoch;
         {
             let cache = self.object_class_resolution.borrow();
             if cache.epoch == epoch
-                && let Some((_, class)) = cache.entries.get(&key)
+                && let Some(class) = cache.entries.get(&key)
             {
                 return Some(Arc::clone(class));
             }
         }
-        let class = lookup_class_in_state(compiled, state, &handle)?;
+        let class = lookup_class_in_state(compiled, state, &key.0)?;
         let mut cache = self.object_class_resolution.borrow_mut();
         if cache.epoch != epoch {
             cache.entries.clear();
             cache.epoch = epoch;
         }
-        cache.entries.insert(key, (handle, Arc::clone(&class)));
+        cache.entries.insert(key, Arc::clone(&class));
         Some(class)
     }
 

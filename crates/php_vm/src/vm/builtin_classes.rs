@@ -345,11 +345,11 @@ pub(super) fn php_token_class() -> RuntimeClassEntry {
         name: normalize_class_name("PhpToken").into(),
         parent: None,
         interfaces: vec![normalize_class_name("Stringable")],
-        methods: Vec::new(),
+        methods: vec![],
         properties: php_token_properties(),
-        constants: Vec::new(),
-        enum_cases: Vec::new(),
-        attributes: Vec::new(),
+        constants: vec![],
+        enum_cases: vec![],
+        attributes: vec![],
         enum_backing_type: None,
         constructor_id: None,
         flags: RuntimeClassFlags::default(),
@@ -809,10 +809,10 @@ pub(super) fn soap_runtime_class(name: &str) -> RuntimeClassEntry {
     RuntimeClassEntry {
         name: normalize_class_name(name).into(),
         parent: None,
-        interfaces: Vec::new(),
-        methods: Vec::new(),
-        properties: Vec::new(),
-        constants: Vec::new(),
+        interfaces: vec![],
+        methods: vec![],
+        properties: vec![],
+        constants: vec![],
         enum_cases: Vec::new(),
         attributes: Vec::new(),
         enum_backing_type: None,
@@ -1694,7 +1694,7 @@ pub(super) fn new_memcached_object(
 
 pub(super) fn memcached_runtime_class() -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: "memcached".to_owned().into(),
+        name: "memcached".into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -2746,7 +2746,7 @@ pub(super) fn new_fileinfo_object(
 
 pub(super) fn fileinfo_runtime_class() -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: "finfo".to_owned().into(),
+        name: "finfo".into(),
         parent: None,
         interfaces: Vec::new(),
         methods: Vec::new(),
@@ -2762,7 +2762,7 @@ pub(super) fn fileinfo_runtime_class() -> RuntimeClassEntry {
 
 pub(super) fn zip_runtime_class() -> RuntimeClassEntry {
     RuntimeClassEntry {
-        name: "ziparchive".to_owned().into(),
+        name: "ziparchive".into(),
         parent: None,
         interfaces: vec!["Countable".to_owned()],
         methods: Vec::new(),

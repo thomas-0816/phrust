@@ -5365,59 +5365,9 @@ impl Vm {
                                 };
                             match object_read.as_value() {
                                 Value::Object(object) => {
-                                    // Mirror the rich arms: borrowed probe
-                                    // first, clone path only when the walk
-                                    // meets unsupported shapes.
-                                    let borrowed = self.with_property_state_value(
-                                        compiled,
-                                        state,
-                                        stack,
-                                        object,
-                                        property,
-                                        &mut |value| match value {
-                                            Some(value) => {
-                                                with_borrowed_dim_path(value, &dims, &mut |leaf| {
-                                                    if is_empty {
-                                                        php_empty_access_value(
-                                                            leaf.unwrap_or(&Value::Uninitialized),
-                                                        )
-                                                    } else {
-                                                        Ok(!matches!(
-                                                            leaf,
-                                                            None | Some(Value::Null)
-                                                        ))
-                                                    }
-                                                })
-                                            }
-                                            None => Some(if is_empty {
-                                                php_empty_access_value(&Value::Uninitialized)
-                                            } else {
-                                                Ok(false)
-                                            }),
-                                        },
-                                    )
-                                    .flatten();
-                                    let probe = match borrowed {
-                                        Some(result) => {
-                                            self.record_counter_property_dim_probe_borrowed_hit();
-                                            result
-                                        }
-                                        None => {
-                                            let value = self.property_state_value(compiled, state, stack, object, property,
-                                            )
-                                            .and_then(|value| {
-                                                fetch_dim_path_value(&value, &dims).ok().flatten()
-                                            });
-                                            if is_empty {
-                                                php_empty_access_value(
-                                                    &value.unwrap_or(Value::Uninitialized),
-                                                )
-                                            } else {
-                                                Ok(!matches!(value, None | Some(Value::Null)))
-                                            }
-                                        }
-                                    };
-                                    match probe {
+                                    match self.property_dim_probe(
+                                        compiled, state, stack, object, property, &dims, is_empty,
+                                    ) {
                                         Ok(value) => Value::Bool(value),
                                         Err(message) => {
                                             let result = self

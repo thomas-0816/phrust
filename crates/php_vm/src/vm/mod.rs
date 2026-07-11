@@ -64,6 +64,7 @@ mod rich_call_dispatch;
 mod rich_dispatch;
 mod rich_exception_dispatch;
 mod rich_foreach_dispatch;
+mod rich_property_dispatch;
 mod runtime_class_metadata;
 mod runtime_class_support;
 mod runtime_environment_support;
@@ -171,6 +172,7 @@ use static_property_predicates::*;
 use symbol_resolution::*;
 use value_support::*;
 
+use self::execution_optimization::{ObjectClassResolution, ResolvedConstantTables};
 use crate::aliasing::{AliasState, slot_alias_state};
 use crate::bytecode::{
     DenseBytecodeUnit, DenseCallArg, DenseCallShapeMeta, DenseCallableKind, DenseClosureCapture,
@@ -565,36 +567,10 @@ pub struct Vm {
     /// Built only when `options.last_use_moves` is on; empty and never consulted
     /// otherwise, keeping the default dense read path byte-identical.
     last_use_move_plans: RefCell<HashMap<(u64, u32), Rc<crate::last_use::LastUseMovePlan>>>,
-    /// Receiver-class resolution keyed by the shared class-name handle's
-    /// address (all instances of one runtime class alias one allocation).
-    /// The map pins each key handle, so an address can never be reused while
-    /// its entry lives; guarded by the class-table epoch and cleared per
-    /// request with the other per-request memo caches.
+    /// Per-request receiver-class lookup by shared class-name identity.
     object_class_resolution: RefCell<ObjectClassResolution>,
-    /// Per-unit resolved constant tables (zend literal-table parity): each
-    /// materializable `IrConstant` resolves once into an interned value and
-    /// every later operand read is an indexed refcount bump instead of a
-    /// fresh allocation (strings) or a full rebuild (constant arrays).
-    /// Keyed by the compiled unit's cache identity; unit constant tables
-    /// are immutable per identity, so entries never invalidate.
+    /// Per-unit constant values, resolved once and indexed on later reads.
     resolved_constants: RefCell<ResolvedConstantTables>,
-}
-
-/// Receiver-class resolutions pinned by their shared name handles (the
-/// handle address is the key, the stored handle keeps that address alive).
-#[derive(Clone, Debug, Default)]
-struct ObjectClassResolution {
-    epoch: u64,
-    entries: HashMap<usize, (std::sync::Arc<str>, Arc<php_ir::module::ClassEntry>)>,
-}
-
-/// Per-unit lazily-resolved constant values, with a one-entry hot-unit
-/// cache in front of the map because consecutive reads overwhelmingly
-/// come from the same unit.
-#[derive(Clone, Debug, Default)]
-struct ResolvedConstantTables {
-    last: Option<(u64, Rc<[std::cell::OnceCell<Value>]>)>,
-    tables: HashMap<u64, Rc<[std::cell::OnceCell<Value>]>>,
 }
 
 impl Vm {

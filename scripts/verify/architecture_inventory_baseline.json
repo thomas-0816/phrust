@@ -170,7 +170,7 @@
       "max_lines": 1336
     },
     "crates/php_runtime/src/builtins/modules/core.rs": {
-      "max_bytes": 468655,
+      "max_bytes": 468652,
       "max_lines": 14297
     },
     "crates/php_vm/src/counters.rs": {
@@ -222,23 +222,23 @@
       "max_lines": 5053
     },
     "crates/php_vm/src/vm/builtin_classes.rs": {
-      "max_bytes": 330731,
+      "max_bytes": 330729,
       "max_lines": 8770
     },
     "crates/php_vm/src/vm/dense_dispatch.rs": {
-      "max_bytes": 307062,
-      "max_lines": 5993
+      "max_bytes": 303847,
+      "max_lines": 5942
     },
     "crates/php_vm/src/vm/mod.rs": {
-      "max_bytes": 67077,
-      "max_lines": 1601
+      "max_bytes": 66773,
+      "max_lines": 1593
     },
     "crates/php_vm/src/vm/rich_dispatch.rs": {
-      "max_bytes": 498149,
-      "max_lines": 9674
+      "max_bytes": 307686,
+      "max_lines": 5970
     },
     "crates/php_vm/src/vm/spl.rs": {
-      "max_bytes": 257771,
+      "max_bytes": 257769,
       "max_lines": 6930
     },
     "crates/php_vm_cli/src/commands.rs": {

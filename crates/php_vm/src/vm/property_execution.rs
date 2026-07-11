@@ -118,6 +118,49 @@ impl Vm {
         Ok(Value::Bool(result))
     }
 
+    /// Read-only property-dimension predicate shared by execution cursors.
+    pub(super) fn property_dim_probe(
+        &self,
+        compiled: &CompiledUnit,
+        state: &ExecutionState,
+        stack: &CallStack,
+        object: &ObjectRef,
+        property: &str,
+        dims: &[ArrayKey],
+        is_empty: bool,
+    ) -> Result<bool, String> {
+        let borrowed = self
+            .with_property_state_value(compiled, state, stack, object, property, &mut |value| {
+                match value {
+                    Some(value) => with_borrowed_dim_path(value, dims, &mut |leaf| {
+                        if is_empty {
+                            php_empty_access_value(leaf.unwrap_or(&Value::Uninitialized))
+                        } else {
+                            Ok(!matches!(leaf, None | Some(Value::Null)))
+                        }
+                    }),
+                    None => Some(if is_empty {
+                        php_empty_access_value(&Value::Uninitialized)
+                    } else {
+                        Ok(false)
+                    }),
+                }
+            })
+            .flatten();
+        if let Some(result) = borrowed {
+            self.record_counter_property_dim_probe_borrowed_hit();
+            return result;
+        }
+        let value = self
+            .property_state_value(compiled, state, stack, object, property)
+            .and_then(|value| fetch_dim_path_value(&value, dims).ok().flatten());
+        if is_empty {
+            php_empty_access_value(&value.unwrap_or(Value::Uninitialized))
+        } else {
+            Ok(!matches!(value, None | Some(Value::Null)))
+        }
+    }
+
     /// Shared instance-property unset: SPL array-as-props containers route
     /// through offsetUnset; declared properties validate visibility (with a
     /// `__unset` fallback) and honor typed-property reset semantics; unknown
@@ -729,8 +772,9 @@ impl Vm {
         } else {
             self.record_counter_property_dim_assign_generic("typed_readonly_or_readonly_class");
         }
-        let mut current =
-            self.property_state_value(compiled, state, stack, &object, property).unwrap_or(Value::Null);
+        let mut current = self
+            .property_state_value(compiled, state, stack, &object, property)
+            .unwrap_or(Value::Null);
         match self.try_userland_arrayaccess_offset_set_value(
             compiled,
             output,
