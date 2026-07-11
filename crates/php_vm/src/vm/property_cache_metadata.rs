@@ -129,8 +129,10 @@ pub(super) fn class_allows_dynamic_properties(
     state: &ExecutionState,
     class: &php_ir::module::ClassEntry,
 ) -> bool {
-    let mut current = Some(Arc::new(class.clone()));
-    while let Some(entry) = current {
+    // Walk the receiver borrowed; only parent hops take a shared handle.
+    let mut parent_holder;
+    let mut entry = class;
+    loop {
         if entry
             .attributes
             .iter()
@@ -138,12 +140,16 @@ pub(super) fn class_allows_dynamic_properties(
         {
             return true;
         }
-        current = entry
+        let Some(parent) = entry
             .parent
             .as_deref()
-            .and_then(|parent| lookup_class_in_state(compiled, state, parent));
+            .and_then(|parent| lookup_class_in_state(compiled, state, parent))
+        else {
+            return false;
+        };
+        parent_holder = parent;
+        entry = &parent_holder;
     }
-    false
 }
 
 pub(super) fn attribute_is_allow_dynamic_properties(
