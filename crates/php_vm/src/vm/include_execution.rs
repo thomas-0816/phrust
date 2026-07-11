@@ -254,4 +254,730 @@ impl Vm {
         }
         self.execute_function(included, function_id, call, output, stack, state)
     }
+
+    pub(super) fn execute_include(
+        &self,
+        compiled: &CompiledUnit,
+        cache_id: Option<InlineCacheId>,
+        unit_key: u64,
+        function_id: FunctionId,
+        block_id: BlockId,
+        instruction_id: php_ir::ids::InstrId,
+        instruction_span: php_ir::IrSpan,
+        kind: IncludeKind,
+        path: &Value,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        let path = match to_string(path) {
+            Ok(path) => path.to_string_lossy(),
+            Err(message) => return self.runtime_error(output, compiled, stack, message),
+        };
+        let including_file = current_source_path(compiled, stack);
+        let include_path = state_include_path(state);
+        let cwd = state.cwd.clone();
+        self.record_include_trace_event(format!(
+            "request kind={} path={} including_file={} stack_depth={}",
+            include_kind_function_name(kind),
+            path,
+            including_file
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<entry>".to_owned()),
+            state.include_stack.len(),
+        ));
+        let request = IncludePathCacheKey {
+            path: path.clone(),
+            include_path: include_path.as_ref().clone(),
+            cwd: cwd.clone(),
+            calling_file_directory: including_file
+                .as_deref()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf),
+        };
+        let mut compiled_include = None;
+        let mut include_path_recorded = false;
+        let loaded = if php_runtime::phar::is_phar_uri(&path) {
+            self.record_counter_fallback_by_path_semantics("phar_stream");
+            match load_phar_include(&path, &cwd, &self.options.runtime_context.filesystem) {
+                Ok(loaded) => loaded,
+                Err(message) => {
+                    return include_failure(
+                        output,
+                        compiled,
+                        instruction_span,
+                        kind,
+                        message,
+                        state,
+                        stack_trace(compiled, stack),
+                    );
+                }
+            }
+        } else {
+            let Some(loader) = &self.options.include_loader else {
+                self.record_counter_fallback_by_path_semantics("loader_disabled");
+                return include_failure(
+                    output,
+                    compiled,
+                    instruction_span,
+                    kind,
+                    include_vm_error(
+                        "E_PHP_VM_INCLUDE_DISABLED",
+                        "include/require loader is not configured",
+                    ),
+                    state,
+                    stack_trace(compiled, stack),
+                );
+            };
+            if let Some(cache) = &self.options.include_cache {
+                let before_resolve = cache.cache_stats();
+                let resolved = match cache.resolve_with_include_path(
+                    loader,
+                    including_file.as_deref(),
+                    &path,
+                    &include_path,
+                    Some(&cwd),
+                ) {
+                    Ok(resolved) => resolved,
+                    Err(message) => {
+                        self.record_include_cache_stats_delta(before_resolve, cache.cache_stats());
+                        self.record_include_graph_resolution_fallback(
+                            &path,
+                            &message.render_message(),
+                        );
+                        return include_failure(
+                            output,
+                            compiled,
+                            instruction_span,
+                            kind,
+                            message,
+                            state,
+                            stack_trace(compiled, stack),
+                        );
+                    }
+                };
+                self.record_include_cache_stats_delta(before_resolve, cache.cache_stats());
+                let after_resolve = cache.cache_stats();
+                self.record_include_trace_event(format!(
+                    "resolved kind={} path={} canonical={} resolution_cache={} stack_depth={}",
+                    include_kind_function_name(kind),
+                    path,
+                    resolved.canonical_path.display(),
+                    include_cache_resolution_outcome(before_resolve, after_resolve),
+                    state.include_stack.len(),
+                ));
+                if matches!(kind, IncludeKind::IncludeOnce | IncludeKind::RequireOnce) {
+                    if state.has_included(&resolved.canonical_path) {
+                        self.record_counter_include_once_skip();
+                        self.record_include_trace_event(format!(
+                            "once kind={} canonical={} decision=skip stack_depth={}",
+                            include_kind_function_name(kind),
+                            resolved.canonical_path.display(),
+                            state.include_stack.len(),
+                        ));
+                        return VmResult::success_no_output(Some(Value::Bool(true)));
+                    }
+                    state.record_included(resolved.canonical_path.clone());
+                    include_path_recorded = true;
+                    self.record_include_trace_event(format!(
+                        "once kind={} canonical={} decision=record stack_depth={}",
+                        include_kind_function_name(kind),
+                        resolved.canonical_path.display(),
+                        state.include_stack.len(),
+                    ));
+                } else {
+                    state.record_included(resolved.canonical_path.clone());
+                    include_path_recorded = true;
+                    self.record_include_trace_event(format!(
+                        "once kind={} canonical={} decision=not_once stack_depth={}",
+                        include_kind_function_name(kind),
+                        resolved.canonical_path.display(),
+                        state.include_stack.len(),
+                    ));
+                }
+                if self.options.trace_includes
+                    && state.include_stack.contains(&resolved.canonical_path)
+                {
+                    return include_failure(
+                        output,
+                        compiled,
+                        instruction_span,
+                        kind,
+                        include_vm_error(
+                            "E_PHP_VM_INCLUDE_CYCLE",
+                            format!(
+                                "recursive include {} stack=[{}]",
+                                resolved.canonical_path.display(),
+                                format_include_stack(&state.include_stack),
+                            ),
+                        )
+                        .with_context("canonical_path", resolved.canonical_path.display()),
+                        state,
+                        stack_trace(compiled, stack),
+                    );
+                }
+                let before_compile = cache.cache_stats();
+                let Some(include_compiler) = self.options.include_compiler.as_deref() else {
+                    return include_failure(
+                        output,
+                        compiled,
+                        instruction_span,
+                        kind,
+                        include_vm_error(
+                            "E_PHP_VM_INCLUDE_COMPILER_UNAVAILABLE",
+                            "include compiler is not configured",
+                        ),
+                        state,
+                        stack_trace(compiled, stack),
+                    );
+                };
+                let included =
+                    match cache.get_or_compile_include(loader, &resolved, include_compiler) {
+                        Ok(included) => included,
+                        Err(message) => {
+                            self.record_include_cache_stats_delta(
+                                before_compile,
+                                cache.cache_stats(),
+                            );
+                            return include_failure(
+                                output,
+                                compiled,
+                                instruction_span,
+                                kind,
+                                message,
+                                state,
+                                stack_trace(compiled, stack),
+                            );
+                        }
+                    };
+                self.record_include_cache_stats_delta(before_compile, cache.cache_stats());
+                let after_compile = cache.cache_stats();
+                self.record_include_trace_event(format!(
+                    "compiled kind={} canonical={} compile_cache={} functions={} classes={} constants={} entry_instructions={}",
+                    include_kind_function_name(kind),
+                    resolved.canonical_path.display(),
+                    include_cache_compile_outcome(before_compile, after_compile),
+                    included.unit().functions.len(),
+                    included.unit().classes.len(),
+                    included.unit().constant_table.len(),
+                    entry_instruction_count(included.unit()),
+                ));
+                compiled_include = Some(included.as_ref().clone());
+                LoadedInclude {
+                    canonical_path: resolved.canonical_path,
+                    source: String::new(),
+                }
+            } else {
+                let cached = self.lookup_include_path_inline_cache(
+                    cache_id,
+                    unit_key,
+                    function_id,
+                    block_id,
+                    instruction_id,
+                    &request,
+                    InvalidationEpoch::default(),
+                );
+                if let Some(target) = cached {
+                    if target.is_current() {
+                        self.record_include_path_inline_cache_hit(
+                            cache_id,
+                            unit_key,
+                            function_id,
+                            block_id,
+                            instruction_id,
+                        );
+                        self.record_counter_directory_version_observation(&target);
+                        match loader.load_resolved(target.canonical_path) {
+                            Ok(loaded) => loaded,
+                            Err(message) => {
+                                return include_failure(
+                                    output,
+                                    compiled,
+                                    instruction_span,
+                                    kind,
+                                    message,
+                                    state,
+                                    stack_trace(compiled, stack),
+                                );
+                            }
+                        }
+                    } else {
+                        self.record_include_path_inline_cache_invalidation(
+                            cache_id,
+                            unit_key,
+                            function_id,
+                            block_id,
+                            instruction_id,
+                        );
+                        self.record_counter_invalidation_by_reason("file_fingerprint_changed");
+                        self.record_counter_include_stale_invalidation_by_reason(
+                            "file_fingerprint_changed",
+                        );
+                        match loader.resolve_with_include_path(
+                            including_file.as_deref(),
+                            &path,
+                            &include_path,
+                            Some(&cwd),
+                        ) {
+                            Ok(resolved) => {
+                                let target = IncludePathCacheTarget::from_resolved(&resolved);
+                                self.install_include_path_inline_cache(
+                                    cache_id,
+                                    unit_key,
+                                    function_id,
+                                    block_id,
+                                    instruction_id,
+                                    request.clone(),
+                                    InvalidationEpoch::default(),
+                                    target,
+                                );
+                                match loader.load_resolved(resolved.canonical_path) {
+                                    Ok(loaded) => loaded,
+                                    Err(message) => {
+                                        return include_failure(
+                                            output,
+                                            compiled,
+                                            instruction_span,
+                                            kind,
+                                            message,
+                                            state,
+                                            stack_trace(compiled, stack),
+                                        );
+                                    }
+                                }
+                            }
+                            Err(message) => {
+                                self.record_include_graph_resolution_fallback(
+                                    &path,
+                                    &message.render_message(),
+                                );
+                                return include_failure(
+                                    output,
+                                    compiled,
+                                    instruction_span,
+                                    kind,
+                                    message,
+                                    state,
+                                    stack_trace(compiled, stack),
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    match loader.resolve_with_include_path(
+                        including_file.as_deref(),
+                        &path,
+                        &include_path,
+                        Some(&cwd),
+                    ) {
+                        Ok(resolved) => {
+                            let target = IncludePathCacheTarget::from_resolved(&resolved);
+                            self.install_include_path_inline_cache(
+                                cache_id,
+                                unit_key,
+                                function_id,
+                                block_id,
+                                instruction_id,
+                                request,
+                                InvalidationEpoch::default(),
+                                target,
+                            );
+                            match loader.load_resolved(resolved.canonical_path) {
+                                Ok(loaded) => loaded,
+                                Err(message) => {
+                                    return include_failure(
+                                        output,
+                                        compiled,
+                                        instruction_span,
+                                        kind,
+                                        message,
+                                        state,
+                                        stack_trace(compiled, stack),
+                                    );
+                                }
+                            }
+                        }
+                        Err(message) => {
+                            self.record_include_graph_resolution_fallback(
+                                &path,
+                                &message.render_message(),
+                            );
+                            return include_failure(
+                                output,
+                                compiled,
+                                instruction_span,
+                                kind,
+                                message,
+                                state,
+                                stack_trace(compiled, stack),
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        if !include_path_recorded {
+            if matches!(kind, IncludeKind::IncludeOnce | IncludeKind::RequireOnce) {
+                if state.has_included(&loaded.canonical_path) {
+                    self.record_counter_include_once_skip();
+                    self.record_include_trace_event(format!(
+                        "once kind={} canonical={} decision=skip stack_depth={}",
+                        include_kind_function_name(kind),
+                        loaded.canonical_path.display(),
+                        state.include_stack.len(),
+                    ));
+                    return VmResult::success_no_output(Some(Value::Bool(true)));
+                }
+                state.record_included(loaded.canonical_path.clone());
+                self.record_include_trace_event(format!(
+                    "once kind={} canonical={} decision=record stack_depth={}",
+                    include_kind_function_name(kind),
+                    loaded.canonical_path.display(),
+                    state.include_stack.len(),
+                ));
+            } else {
+                state.record_included(loaded.canonical_path.clone());
+                self.record_include_trace_event(format!(
+                    "once kind={} canonical={} decision=not_once stack_depth={}",
+                    include_kind_function_name(kind),
+                    loaded.canonical_path.display(),
+                    state.include_stack.len(),
+                ));
+            }
+        }
+
+        if self.options.trace_includes && state.include_stack.contains(&loaded.canonical_path) {
+            return include_failure(
+                output,
+                compiled,
+                instruction_span,
+                kind,
+                include_vm_error(
+                    "E_PHP_VM_INCLUDE_CYCLE",
+                    format!(
+                        "recursive include {} stack=[{}]",
+                        loaded.canonical_path.display(),
+                        format_include_stack(&state.include_stack),
+                    ),
+                )
+                .with_context("canonical_path", loaded.canonical_path.display()),
+                state,
+                stack_trace(compiled, stack),
+            );
+        }
+
+        let compiled_from_shared_cache = compiled_include.is_some();
+        let included = match compiled_include {
+            Some(included) => included,
+            None => match self
+                .options
+                .include_compiler
+                .as_deref()
+                .ok_or_else(|| {
+                    include_vm_error(
+                        "E_PHP_VM_INCLUDE_COMPILER_UNAVAILABLE",
+                        "include compiler is not configured",
+                    )
+                })
+                .and_then(|compiler| {
+                    let loader = self.options.include_loader.as_ref().ok_or_else(|| {
+                        include_vm_error(
+                            "E_PHP_VM_INCLUDE_DISABLED",
+                            "include loader is not configured",
+                        )
+                    })?;
+                    let resolved = loader.resolve_with_include_path(
+                        None,
+                        &loaded.canonical_path.to_string_lossy(),
+                        &[],
+                        loader.allowed_roots().first().map(PathBuf::as_path),
+                    )?;
+                    let validated = loader.load_validated_resolved(&resolved)?;
+                    compiler
+                        .compile_include(validated, loader)
+                        .map(|compilation| compilation.unit)
+                }) {
+                Ok(included) => {
+                    self.record_counter_include_compile_miss();
+                    included
+                }
+                Err(message) => {
+                    return include_failure(
+                        output,
+                        compiled,
+                        instruction_span,
+                        kind,
+                        message,
+                        state,
+                        stack_trace(compiled, stack),
+                    );
+                }
+            },
+        };
+        if !compiled_from_shared_cache {
+            self.record_include_trace_event(format!(
+                "compiled kind={} cache=off functions={} classes={} constants={} entry_instructions={}",
+                include_kind_function_name(kind),
+                included.unit().functions.len(),
+                included.unit().classes.len(),
+                included.unit().constant_table.len(),
+                entry_instruction_count(included.unit()),
+            ));
+        }
+        if let Err(message) = validate_dynamic_declarations(compiled, state, &included) {
+            return self.runtime_error(output, compiled, stack, message);
+        }
+        let mut declaration_diagnostics = Vec::new();
+        if let Err(result) = self.emit_duplicate_dynamic_constant_warnings(
+            compiled,
+            &included,
+            DeclarationLoadKind::Include,
+            None,
+            output,
+            stack,
+            state,
+            &mut declaration_diagnostics,
+        ) {
+            return result;
+        }
+        register_dynamic_unit(
+            state,
+            compiled,
+            included.clone(),
+            DeclarationLoadKind::Include,
+        );
+        let mut shared = shared_locals_from_current_frame(compiled, stack);
+        let caller_is_top_level = compiled
+            .unit()
+            .functions
+            .get(function_id.index())
+            .is_some_and(|function| function.flags.is_top_level);
+        let included_path = included
+            .unit()
+            .files
+            .first()
+            .map(|file| PathBuf::from(&file.path))
+            .unwrap_or_default();
+        state.include_stack.push(included_path.clone());
+        self.record_include_trace_event(format!(
+            "execute-start kind={} canonical={} stack_depth={}",
+            include_kind_function_name(kind),
+            included_path.display(),
+            state.include_stack.len(),
+        ));
+        let include_instructions_before = self.current_instructions_executed();
+        let include_bytecode_before = self.current_bytecode_instructions_executed();
+        let prior_include_depth = self.include_execution_depth.get();
+        self.include_execution_depth
+            .set(prior_include_depth.saturating_add(1));
+        let include_profile_boundary = self.request_profile_boundary_start();
+        let mut result = self.execute_linked_include_entries(
+            compiled,
+            &included,
+            instruction_span,
+            caller_is_top_level,
+            &mut shared,
+            output,
+            stack,
+            state,
+        );
+        self.include_execution_depth.set(prior_include_depth);
+        self.record_counter_include_profile(
+            &included_path.display().to_string(),
+            include_profile_boundary,
+        );
+        let include_instructions_after = self.current_instructions_executed();
+        let include_bytecode_after = self.current_bytecode_instructions_executed();
+        let include_instructions_executed = include_instructions_before
+            .zip(include_instructions_after)
+            .map(|(before, after)| after.saturating_sub(before))
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let include_bytecode_executed = include_bytecode_before
+            .zip(include_bytecode_after)
+            .map(|(before, after)| after.saturating_sub(before))
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned());
+        self.record_include_trace_event(format!(
+            "execute-end kind={} canonical={} status={:?} stack_depth={} instructions_executed={} bytecode_instructions_executed={}",
+            include_kind_function_name(kind),
+            included_path.display(),
+            result.status.exit_status(),
+            state.include_stack.len(),
+            include_instructions_executed,
+            include_bytecode_executed,
+        ));
+        if result.status.is_success()
+            && let Some(error) =
+                self.validate_runtime_class_dependencies(compiled, &included, output, stack, state)
+        {
+            result = error;
+        }
+        state.include_stack.pop();
+        if result.status.is_success() {
+            result.return_value =
+                include_return_value(result.return_value.take(), result.returned_explicitly);
+            write_shared_locals_to_current_frame(compiled, stack, &shared);
+        }
+        result.diagnostics.splice(0..0, declaration_diagnostics);
+        result
+    }
+
+    pub(super) fn get_included_files_value(
+        compiled: &CompiledUnit,
+        stack: &CallStack,
+        state: &ExecutionState,
+    ) -> Value {
+        let mut paths = Vec::new();
+        if let Some(path) = current_source_path(compiled, stack) {
+            paths.push(path);
+        }
+        for path in &state.included_once {
+            if !paths.iter().any(|existing| existing == path) {
+                paths.push(path.clone());
+            }
+        }
+        Value::Array(PhpArray::from_packed(
+            paths
+                .into_iter()
+                .map(|path| Value::string(path.to_string_lossy().into_owned()))
+                .collect(),
+        ))
+    }
+
+    pub(super) fn execute_eval(
+        &self,
+        compiled: &CompiledUnit,
+        code: &Value,
+        eval_span: IrSpan,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> VmResult {
+        if state.eval_depth >= MAX_EVAL_DEPTH {
+            return eval_failure(
+                output,
+                "E_PHP_VM_EVAL_RECURSION_LIMIT: maximum nested eval depth exceeded",
+                stack_trace(compiled, stack),
+            );
+        }
+
+        let code = match to_string(code) {
+            Ok(code) => code.to_string_lossy(),
+            Err(message) => return self.runtime_error(output, compiled, stack, message),
+        };
+        state.eval_counter += 1;
+        state.bump_lookup_epoch();
+        let source_path = format!("eval://{}", state.eval_counter);
+        let source = format!("<?php {code}");
+        let Some(include_compiler) = self.options.include_compiler.as_deref() else {
+            return eval_failure(
+                output,
+                "E_PHP_VM_EVAL_COMPILER_UNAVAILABLE: eval compiler is not configured",
+                stack_trace(compiled, stack),
+            );
+        };
+        let evaluated = match include_compiler.compile_eval(&source_path, &source) {
+            Ok(evaluated) => evaluated,
+            Err(error) => {
+                return eval_failure(output, error.render_message(), stack_trace(compiled, stack));
+            }
+        };
+        let has_named_function_declarations = evaluated
+            .unit()
+            .function_table
+            .iter()
+            .any(|entry| entry.function != evaluated.unit().entry);
+        let has_source_class_declarations = evaluated
+            .class_table()
+            .iter()
+            .any(|class| !is_lowered_internal_interface_skeleton(class));
+        let has_constant_declarations = !evaluated.unit().constant_table.is_empty();
+        let has_declarations = has_named_function_declarations
+            || has_source_class_declarations
+            || has_constant_declarations;
+        let mut declaration_diagnostics = Vec::new();
+        if has_declarations {
+            if let Err(message) = validate_dynamic_declarations(compiled, state, &evaluated) {
+                return eval_failure(output, message, stack_trace(compiled, stack));
+            }
+            if let Err(result) = self.emit_duplicate_dynamic_constant_warnings(
+                compiled,
+                &evaluated,
+                DeclarationLoadKind::Eval,
+                Some(eval_span),
+                output,
+                stack,
+                state,
+                &mut declaration_diagnostics,
+            ) {
+                return result;
+            }
+            register_dynamic_unit(
+                state,
+                compiled,
+                evaluated.clone(),
+                DeclarationLoadKind::Eval,
+            );
+        }
+        let has_closures = evaluated
+            .unit()
+            .functions
+            .iter()
+            .any(|function| function.flags.is_closure);
+        if has_closures && !has_declarations {
+            retain_dynamic_closure_unit(state, evaluated.clone());
+        }
+
+        let mut shared = shared_locals_from_current_frame(compiled, stack);
+        let call = FunctionCall {
+            positional_values: Vec::new(),
+            args: Vec::new(),
+            captures: Vec::new(),
+            call_span: Some(eval_span),
+            call_site_strict_types: Some(compiled.unit().strict_types),
+            error_context_compiled: None,
+            allow_by_ref_value_warnings: false,
+            by_ref_warning_callable_name: None,
+            this_value: None,
+            scope_class: None,
+            called_class: None,
+            declaring_class: None,
+            shared_top_level_locals: Some(&mut shared),
+            shared_top_level_bind_missing_globals: current_frame_is_top_level(compiled, stack),
+            running_generator: None,
+            resume_continuation: None,
+            resume_input: None,
+            running_fiber: None,
+            resume_fiber_continuation: None,
+            resume_fiber_input: None,
+        };
+        state.eval_depth += 1;
+        state
+            .eval_diagnostic_spans
+            .push(eval_diagnostic_source_span(compiled, eval_span));
+        let mut result = self.execute_function(
+            &evaluated,
+            evaluated.unit().entry,
+            call,
+            output,
+            stack,
+            state,
+        );
+        state.eval_diagnostic_spans.pop();
+        state.eval_depth -= 1;
+        if result.status.is_success()
+            && has_source_class_declarations
+            && let Some(error) =
+                self.validate_runtime_class_dependencies(compiled, &evaluated, output, stack, state)
+        {
+            return error;
+        }
+        if result.status.is_success() {
+            write_shared_locals_to_current_frame(compiled, stack, &shared);
+        }
+        result.diagnostics.splice(0..0, declaration_diagnostics);
+        result
+    }
 }
