@@ -64,3 +64,10 @@ php_testkit = { path = "../php_testkit", version = "0.0.0" }
 
 [package.metadata.cargo-machete]
 ignored = ["md-5"]
+
+[features]
+default = ["runtime-telemetry"]
+# Per-event layout/clone/allocation recorders. Compiling them out removes a
+# thread-local enabled check from every value clone and container operation;
+# request profiling and layout attribution then report zeros.
+runtime-telemetry = []

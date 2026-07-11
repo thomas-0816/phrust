@@ -14,3 +14,7 @@ php_runtime = { path = "../php_runtime", version = "0.0.0" }
 php_semantics = { path = "../php_semantics", version = "0.1.0" }
 php_source = { path = "../php_source", version = "0.0.0" }
 php_vm = { path = "../php_vm", version = "0.0.0" }
+
+[features]
+default = ["runtime-telemetry"]
+runtime-telemetry = ["php_vm/runtime-telemetry"]

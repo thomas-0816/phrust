@@ -296,9 +296,17 @@ pub const SOURCE_STACK_REGISTER_LOCAL_MOVE: LayoutSourceFamily =
     LayoutSourceFamily::StackRegisterLocalMove;
 
 /// Returns true when layout/allocation stats recording is enabled.
+#[cfg(feature = "runtime-telemetry")]
 #[inline(always)]
 pub(crate) fn stats_enabled() -> bool {
     LAYOUT_STATS_ENABLED.with(std::cell::Cell::get)
+}
+
+/// Telemetry compiled out: recorders reduce to no-ops.
+#[cfg(not(feature = "runtime-telemetry"))]
+#[inline(always)]
+pub(crate) fn stats_enabled() -> bool {
+    false
 }
 
 /// Enables stats recording for the current thread. Shared by the layout
@@ -316,9 +324,17 @@ pub(crate) fn disable_stats() {
 /// separate opt-in on top of layout stats: aggregate counters (clone totals)
 /// are cheap, while per-event family attribution pays map updates and must
 /// only run when a caller explicitly asks for source-attributed layouts.
+#[cfg(feature = "runtime-telemetry")]
 #[inline(always)]
 pub(crate) fn source_attribution_enabled() -> bool {
     LAYOUT_SOURCE_ATTRIBUTION_ENABLED.with(std::cell::Cell::get)
+}
+
+/// Telemetry compiled out: attribution reduces to a no-op.
+#[cfg(not(feature = "runtime-telemetry"))]
+#[inline(always)]
+pub(crate) fn source_attribution_enabled() -> bool {
+    false
 }
 
 /// Enables per-family source attribution for the current thread. Only
