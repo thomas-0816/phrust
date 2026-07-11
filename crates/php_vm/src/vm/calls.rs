@@ -471,6 +471,136 @@ fn dense_instruction_call_args(instruction: &DenseInstruction) -> Option<&[Dense
     }
 }
 
+pub(super) fn read_call_args_for_function_at_frame(
+    unit: &IrUnit,
+    stack: &CallStack,
+    frame_index: usize,
+    function: &str,
+    args: &[IrCallArg],
+) -> Result<Vec<CallArgument>, String> {
+    read_call_args_with_value_policy_at_frame(unit, stack, frame_index, args, |index, arg| {
+        is_quiet_by_ref_internal_builtin_arg(function, index, arg)
+    })
+}
+
+pub(super) fn read_call_args_at_frame(
+    unit: &IrUnit,
+    stack: &CallStack,
+    frame_index: usize,
+    args: &[IrCallArg],
+) -> Result<Vec<CallArgument>, String> {
+    read_call_args_with_value_policy_at_frame(unit, stack, frame_index, args, |_, _| false)
+}
+
+fn read_call_args_with_value_policy_at_frame(
+    unit: &IrUnit,
+    stack: &CallStack,
+    frame_index: usize,
+    args: &[IrCallArg],
+    mut use_null_placeholder: impl FnMut(usize, &IrCallArg) -> bool,
+) -> Result<Vec<CallArgument>, String> {
+    let mut out = Vec::new();
+    for (index, arg) in args.iter().enumerate() {
+        let _source = layout_source::enter(layout_source::CALL_ARGUMENT_SNAPSHOT);
+        let value = if use_null_placeholder(index, arg) {
+            Value::Null
+        } else {
+            read_operand_at_frame(unit, stack, frame_index, arg.value)?
+        };
+        if arg.unpack {
+            if arg.name.is_some() {
+                return Err(
+                    "E_PHP_VM_NAMED_UNPACK_ARG: unpacked arguments cannot have an explicit name"
+                        .to_owned(),
+                );
+            }
+            let Value::Array(array) = value else {
+                return Err(format!(
+                    "E_PHP_VM_UNPACK_NON_ARRAY: cannot unpack {} as call arguments",
+                    value_type_name(&value)
+                ));
+            };
+            for (key, value) in array.iter() {
+                let name = match key {
+                    ArrayKey::Int(_) => None,
+                    ArrayKey::String(key) => Some(key.to_string()),
+                };
+                out.push(CallArgument {
+                    name,
+                    value: value.clone(),
+                    value_kind: IrCallArgValueKind::Direct,
+                    by_ref_local: None,
+                    by_ref_dim: None,
+                    by_ref_property: None,
+                    by_ref_property_dim: None,
+                });
+            }
+            continue;
+        }
+        let by_ref_dim = arg
+            .by_ref_dim
+            .as_ref()
+            .map(|target| {
+                read_dim_operands_at_frame(unit, stack, frame_index, &target.dims).map(|dims| {
+                    CallDimTarget {
+                        local: target.local,
+                        dims,
+                    }
+                })
+            })
+            .transpose()?;
+        let by_ref_property = arg
+            .by_ref_property
+            .as_ref()
+            .map(
+                |target| match read_operand_at_frame(unit, stack, frame_index, target.object)? {
+                    Value::Object(object) => Ok(CallPropertyTarget {
+                        object,
+                        property: target.property.clone(),
+                    }),
+                    other => Err(format!(
+                        "E_PHP_VM_BY_REF_PROPERTY_NON_OBJECT: cannot bind property ${} on {}",
+                        target.property,
+                        value_type_name(&other)
+                    )),
+                },
+            )
+            .transpose()?;
+        let by_ref_property_dim = arg
+            .by_ref_property_dim
+            .as_ref()
+            .map(
+                |target| match read_operand_at_frame(unit, stack, frame_index, target.object)? {
+                    Value::Object(object) => {
+                        let dims =
+                            read_dim_operands_at_frame(unit, stack, frame_index, &target.dims)?;
+                        Ok(CallPropertyDimTarget {
+                            object,
+                            property: target.property.clone(),
+                            dims,
+                        })
+                    }
+                    other => Err(format!(
+                        "E_PHP_VM_BY_REF_PROPERTY_DIM_NON_OBJECT: cannot bind property dimension ${} on {}",
+                        target.property,
+                        value_type_name(&other)
+                    )),
+                },
+            )
+            .transpose()?;
+        out.push(CallArgument {
+            name: arg.name.clone(),
+            value,
+            value_kind: arg.value_kind,
+            by_ref_local: arg.by_ref_local,
+            by_ref_dim,
+            by_ref_property,
+            by_ref_property_dim,
+        });
+    }
+    Ok(out)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PreparedArg {
     pub(super) value: Value,
