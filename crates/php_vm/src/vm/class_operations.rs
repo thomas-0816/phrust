@@ -3063,3 +3063,543 @@ impl Vm {
         }
     }
 }
+
+pub(super) fn register_dynamic_unit(
+    state: &mut ExecutionState,
+    compiled: &CompiledUnit,
+    unit: CompiledUnit,
+    load_kind: DeclarationLoadKind,
+) -> usize {
+    // Retain the owner before publishing symbol-table entries so every
+    // indexed declaration always points at an already-valid unit slot.
+    let unit_index = state.push_dynamic_unit(unit.clone());
+    for entry in unit.function_table() {
+        if state.dynamic_function_index.contains_key(&entry.name) {
+            continue;
+        }
+        state.push_dynamic_function(DynamicFunctionEntry {
+            name: entry.name.clone(),
+            unit_index,
+            function: entry.function,
+            origin: function_declaration_origin(&unit, entry.function, &entry.name, load_kind),
+        });
+    }
+    register_dynamic_classes(state, unit_index, &unit, load_kind);
+    for entry in unit.constant_table() {
+        if dynamic_constant_declared(compiled, state, &entry.name) {
+            continue;
+        }
+        state.push_dynamic_constant(DynamicConstantEntry {
+            name: entry.name.clone(),
+            unit_index,
+            value: entry.value,
+            origin: constant_declaration_origin(&unit, &entry.name, load_kind),
+        });
+    }
+    // Class/autoload epochs guard request-local caches and always advance;
+    // the LOOKUP epoch stays constant when this thread has already observed
+    // this exact unit's declarations (identical replay), so cross-request
+    // slot entries keep validating.
+    let replayed = state.worker_symbol_epoch
+        && WORKER_SYMBOL_LEDGER
+            .with(|ledger| !ledger.seen_units.borrow_mut().insert(unit.cache_identity()));
+    state.class_table_epoch = state.class_table_epoch.saturating_add(1);
+    if !replayed {
+        state.bump_lookup_epoch();
+    }
+    unit_index
+}
+
+pub(super) fn dynamic_constant_declared(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    name: &str,
+) -> bool {
+    compiled.lookup_constant(name).is_some()
+        || state.user_constants.contains_key(name)
+        || state.dynamic_constant_index.contains_key(name)
+}
+
+pub(super) fn validate_dynamic_declarations(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    unit: &CompiledUnit,
+) -> Result<(), String> {
+    for entry in unit.function_table() {
+        if compiled.lookup_function(&entry.name).is_some()
+            || BuiltinRegistry::new().contains(&entry.name)
+        {
+            return Err(format!(
+                "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {}()",
+                entry.name
+            ));
+        }
+        if let Some(existing) = dynamic_function_entry_by_normalized_name(state, &entry.name) {
+            return Err(format!(
+                "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {}() previously declared at {}",
+                entry.name,
+                existing.origin.display_site()
+            ));
+        }
+    }
+    for class in unit.class_table() {
+        if is_lowered_internal_interface_skeleton(class) {
+            continue;
+        }
+        if compiled.lookup_class(&class.name).is_some() {
+            return Err(format!(
+                "E_PHP_VM_CLASS_REDECLARATION: Cannot declare class {}, because the name is already in use",
+                class.display_name
+            ));
+        }
+        if let Some(existing) = dynamic_class_entry_in_state(state, &class.name) {
+            return Err(format!(
+                "E_PHP_VM_CLASS_REDECLARATION: Cannot declare class {}, because the name is already in use; previous declaration at {}",
+                class.display_name,
+                existing.origin.display_site()
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn retain_dynamic_closure_unit(state: &mut ExecutionState, unit: CompiledUnit) -> usize {
+    state.push_dynamic_unit(unit)
+}
+
+pub(super) fn dynamic_or_retain_unit_index(
+    state: &mut ExecutionState,
+    compiled: &CompiledUnit,
+) -> usize {
+    dynamic_unit_index_for_compiled(state, compiled)
+        .unwrap_or_else(|| retain_dynamic_closure_unit(state, compiled.clone()))
+}
+
+pub(super) fn dynamic_unit_index_for_compiled(
+    state: &ExecutionState,
+    compiled: &CompiledUnit,
+) -> Option<usize> {
+    let identity = compiled.cache_identity();
+    if let Some(&index) = state.dynamic_unit_index.get(&identity)
+        && state
+            .dynamic_units
+            .get(index)
+            .is_some_and(|unit| unit.ptr_eq(compiled))
+    {
+        return Some(index);
+    }
+    // Cache identities are process-unique. Retain a pointer-only collision
+    // fallback so integer wraparound can never select the wrong unit.
+    state
+        .dynamic_units
+        .iter()
+        .rposition(|unit| unit.ptr_eq(compiled))
+}
+
+pub(super) fn function_declaration_origin(
+    compiled: &CompiledUnit,
+    function: FunctionId,
+    name: &str,
+    load_kind: DeclarationLoadKind,
+) -> DeclarationOrigin {
+    let span = compiled
+        .unit()
+        .functions
+        .get(function.index())
+        .map_or(IrSpan::default(), |function| function.span);
+    declaration_origin(compiled, span, name, DeclarationKind::Function, load_kind)
+}
+
+pub(super) fn constant_declaration_origin(
+    compiled: &CompiledUnit,
+    name: &str,
+    load_kind: DeclarationLoadKind,
+) -> DeclarationOrigin {
+    let span = compiled
+        .unit()
+        .constant_table
+        .iter()
+        .find(|entry| entry.name == name)
+        .map_or(IrSpan::default(), |entry| entry.span);
+    declaration_origin(
+        compiled,
+        span,
+        name,
+        DeclarationKind::GlobalConstant,
+        load_kind,
+    )
+}
+
+pub(super) fn declaration_origin(
+    compiled: &CompiledUnit,
+    span: IrSpan,
+    name: &str,
+    kind: DeclarationKind,
+    load_kind: DeclarationLoadKind,
+) -> DeclarationOrigin {
+    let (source_path, line) = source_span_file_line(compiled, span).unwrap_or_else(|| {
+        let source_path = compiled
+            .unit()
+            .files
+            .get(span.file.index())
+            .map_or_else(|| "<unknown>".to_string(), |file| file.path.clone());
+        (source_path, i64::from(span.start))
+    });
+    DeclarationOrigin {
+        source_path,
+        line,
+        span,
+        namespace: declaration_namespace(name),
+        kind,
+        load_kind,
+    }
+}
+
+pub(super) fn declaration_namespace(name: &str) -> Option<String> {
+    let trimmed = name.trim_start_matches('\\');
+    let (namespace, _) = trimmed.rsplit_once('\\')?;
+    if namespace.is_empty() {
+        None
+    } else {
+        Some(namespace.to_owned())
+    }
+}
+
+pub(super) fn declare_runtime_function(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    function_name: &str,
+    function: FunctionId,
+) -> Result<(), String> {
+    let normalized = normalize_function_name(function_name);
+    if let Some(existing) = compiled.lookup_function(&normalized) {
+        return Err(format!(
+            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}(){}",
+            function_previous_declaration_suffix(compiled, existing)
+        ));
+    }
+    if let Some(existing) = dynamic_function_entry_by_normalized_name(state, &normalized) {
+        return Err(format!(
+            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}() (previously declared in {}:{})",
+            existing.origin.source_path, existing.origin.line
+        ));
+    }
+    if BuiltinRegistry::new().contains(&normalized) {
+        return Err(format!(
+            "E_PHP_VM_FUNCTION_REDECLARATION: Cannot redeclare function {normalized}()"
+        ));
+    }
+    let unit_index = dynamic_or_retain_unit_index(state, compiled);
+    state.push_dynamic_function(DynamicFunctionEntry {
+        name: normalized,
+        unit_index,
+        function,
+        origin: function_declaration_origin(
+            compiled,
+            function,
+            function_name,
+            DeclarationLoadKind::Conditional,
+        ),
+    });
+    state.bump_lookup_epoch();
+    Ok(())
+}
+
+pub(super) fn function_previous_declaration_suffix(
+    compiled: &CompiledUnit,
+    function: FunctionId,
+) -> String {
+    let Some(function) = compiled.unit().functions.get(function.index()) else {
+        return String::new();
+    };
+    let Some((file, line)) = source_span_file_line(compiled, function.span) else {
+        return String::new();
+    };
+    format!(" (previously declared in {file}:{line})")
+}
+
+pub(super) fn register_dynamic_classes(
+    state: &mut ExecutionState,
+    unit_index: usize,
+    compiled: &CompiledUnit,
+    load_kind: DeclarationLoadKind,
+) {
+    // Declarations living in compile-time-inferred linked files stand in for
+    // what an autoloader would provide at class-link time; pre-registering
+    // them would make them visible without any autoloader having run. Their
+    // runtime declaration is decided by the linked-entry autoload gate.
+    let inferred_files: std::collections::HashSet<php_ir::ids::FileId> = compiled
+        .unit()
+        .linked_file_entries
+        .iter()
+        .zip(compiled.unit().linked_entry_inferred_declarations.iter())
+        .filter(|(_, inferred)| inferred.is_some())
+        .filter_map(|(entry, _)| {
+            compiled
+                .unit()
+                .functions
+                .get(entry.index())
+                .map(|function| function.span.file)
+        })
+        .collect();
+    for class in compiled.unit().classes.iter().filter(|class| {
+        class.span != php_ir::source_map::IrSpan::default()
+            && !class.flags.is_conditional
+            && !inferred_files.contains(&class.span.file)
+    }) {
+        let normalized = normalize_class_name(&class.name);
+        if state.dynamic_class_index.contains_key(&normalized) {
+            continue;
+        }
+        state.push_dynamic_class(DynamicClassEntry {
+            lookup_name: normalized,
+            class: Arc::new(class.clone()),
+            unit_index,
+            origin: declaration_origin(
+                compiled,
+                class.span,
+                &class.name,
+                DeclarationKind::ClassLike,
+                load_kind,
+            ),
+        });
+    }
+}
+
+pub(super) fn is_lowered_internal_interface_skeleton(class: &php_ir::module::ClassEntry) -> bool {
+    class.span == php_ir::source_map::IrSpan::default()
+        && class.flags.is_interface
+        && class.methods.is_empty()
+        && class.properties.is_empty()
+        && class.constants.is_empty()
+        && matches!(
+            normalize_class_name(&class.name).as_str(),
+            "traversable"
+                | "iterator"
+                | "iteratoraggregate"
+                | "arrayaccess"
+                | "throwable"
+                | "unitenum"
+                | "backedenum"
+                | "stringable"
+        )
+}
+
+pub(super) fn block_first_span(block: &php_ir::block::BasicBlock) -> Option<IrSpan> {
+    block
+        .instructions
+        .first()
+        .map(|instruction| instruction.span)
+        .or_else(|| block.terminator.as_ref().map(|terminator| terminator.span))
+}
+
+pub(super) fn declare_runtime_class(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    class_name: &str,
+) -> Result<(), String> {
+    let normalized = normalize_class_name(class_name);
+    if lookup_class_in_state(compiled, state, &normalized).is_some() {
+        return Err(format!(
+            "Cannot declare class {class_name}, because the name is already in use"
+        ));
+    }
+    let Some(class) = compiled.lookup_unit_class(&normalized).cloned() else {
+        return Err(format!(
+            "class declaration metadata for {class_name} is missing"
+        ));
+    };
+    let unit_index = dynamic_or_retain_unit_index(state, compiled);
+    state.push_dynamic_class(DynamicClassEntry {
+        lookup_name: normalized,
+        origin: declaration_origin(
+            compiled,
+            class.span,
+            &class.name,
+            DeclarationKind::ClassLike,
+            DeclarationLoadKind::Conditional,
+        ),
+        class: Arc::new(class),
+        unit_index,
+    });
+    state.bump_class_table_epoch();
+    Ok(())
+}
+
+pub(super) fn dynamic_function_in_state(
+    state: &ExecutionState,
+    function_name: &str,
+) -> Option<(CompiledUnit, FunctionId)> {
+    let (unit_index, function) = dynamic_function_target_in_state(state, function_name)?;
+    let owner = state.dynamic_units.get(unit_index)?.clone();
+    Some((owner, function))
+}
+
+pub(super) fn dynamic_function_entry_in_state<'a>(
+    state: &'a ExecutionState,
+    function_name: &str,
+) -> Option<&'a DynamicFunctionEntry> {
+    let normalized = normalize_function_name(function_name);
+    dynamic_function_entry_by_normalized_name(state, &normalized)
+}
+
+pub(super) fn dynamic_function_entry_by_normalized_name<'a>(
+    state: &'a ExecutionState,
+    normalized_name: &str,
+) -> Option<&'a DynamicFunctionEntry> {
+    let index = *state.dynamic_function_index.get(normalized_name)?;
+    let entry = state.dynamic_functions.get(index)?;
+    debug_assert_eq!(entry.name, normalized_name);
+    Some(entry)
+}
+
+pub(super) fn dynamic_function_target_in_state(
+    state: &ExecutionState,
+    function_name: &str,
+) -> Option<(usize, FunctionId)> {
+    let entry = dynamic_function_entry_in_state(state, function_name)?;
+    Some((entry.unit_index, entry.function))
+}
+
+pub(super) fn dynamic_class_entry_in_state<'a>(
+    state: &'a ExecutionState,
+    class_name: &str,
+) -> Option<&'a DynamicClassEntry> {
+    let normalized = normalize_class_name(class_name);
+    dynamic_class_entry_by_normalized_name(state, &normalized)
+}
+
+/// Cache identity of a request-local dynamic unit slot.
+pub(super) fn dynamic_unit_identity(state: &ExecutionState, unit_index: usize) -> u64 {
+    state
+        .dynamic_units
+        .get(unit_index)
+        .map_or(0, CompiledUnit::cache_identity)
+}
+
+/// Fetches a dynamic unit by its remembered index, validating the unit
+/// identity; a mismatch (replay order shifted across requests) re-maps
+/// through the state's identity index.
+pub(super) fn resolve_dynamic_unit_by_identity(
+    state: &ExecutionState,
+    unit_index: usize,
+    unit_identity: u64,
+) -> Option<CompiledUnit> {
+    if let Some(unit) = state.dynamic_units.get(unit_index)
+        && unit.cache_identity() == unit_identity
+    {
+        return Some(unit.clone());
+    }
+    let index = *state.dynamic_unit_index.get(&unit_identity)?;
+    state.dynamic_units.get(index).cloned()
+}
+
+pub(super) fn dynamic_class_entry_by_normalized_name<'a>(
+    state: &'a ExecutionState,
+    normalized_name: &str,
+) -> Option<&'a DynamicClassEntry> {
+    let index = *state.dynamic_class_index.get(normalized_name)?;
+    let entry = state.dynamic_classes.get(index)?;
+    debug_assert_eq!(entry.lookup_name, normalized_name);
+    Some(entry)
+}
+
+pub(super) fn dynamic_class_in_loaded_units(
+    state: &ExecutionState,
+    class_name: &str,
+) -> Option<Arc<php_ir::module::ClassEntry>> {
+    let normalized = normalize_class_name(class_name);
+    state.dynamic_units.iter().rev().find_map(|unit| {
+        unit.lookup_class_arc(&normalized)
+            .filter(|class| normalize_class_name(&class.name) == normalized)
+    })
+}
+
+pub(super) fn closure_owner_for_function(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    function: u32,
+    debug: Option<&ClosureDebugInfo>,
+    owner_unit: Option<usize>,
+) -> CompiledUnit {
+    let function_id = FunctionId::new(function);
+    if let Some(owner_unit) = owner_unit
+        && let Some(unit) = state.dynamic_units.get(owner_unit)
+        && unit
+            .unit()
+            .functions
+            .get(function_id.index())
+            .is_some_and(|entry| entry.flags.is_closure)
+    {
+        return unit.clone();
+    }
+    if compiled_unit_contains_closure(compiled, function_id, debug) {
+        return compiled.clone();
+    }
+    state
+        .dynamic_units
+        .iter()
+        .find(|unit| compiled_unit_contains_closure(unit, function_id, debug))
+        .cloned()
+        .unwrap_or_else(|| compiled.clone())
+}
+
+pub(super) fn closure_function_has_this_local(compiled: &CompiledUnit, function: u32) -> bool {
+    compiled
+        .unit()
+        .functions
+        .get(FunctionId::new(function).index())
+        .is_some_and(|entry| entry.locals.iter().any(|local| local == "this"))
+}
+
+pub(super) fn compiled_unit_contains_closure(
+    compiled: &CompiledUnit,
+    function: FunctionId,
+    debug: Option<&ClosureDebugInfo>,
+) -> bool {
+    let Some(entry) = compiled.unit().functions.get(function.index()) else {
+        return false;
+    };
+    if !entry.flags.is_closure {
+        return false;
+    }
+    let Some(debug) = debug else {
+        return true;
+    };
+    compiled
+        .unit()
+        .files
+        .get(entry.span.file.index())
+        .is_some_and(|file| file.path == debug.file)
+}
+
+pub(super) fn lookup_class_in_state(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class_name: &str,
+) -> Option<Arc<php_ir::module::ClassEntry>> {
+    lookup_class_in_state_ref(compiled, state, class_name).map(ClassLookup::into_arc)
+}
+
+pub(super) fn lookup_class_in_state_ref(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class_name: &str,
+) -> Option<ClassLookup> {
+    let normalized = normalize_class_name(class_name);
+    if let Some(entry) = dynamic_class_entry_by_normalized_name(state, &normalized) {
+        return Some(ClassLookup::Shared(Arc::clone(&entry.class)));
+    }
+    if let Some(class) = compiled.lookup_class_arc(class_name) {
+        return Some(ClassLookup::Shared(class));
+    }
+    if let Some(class) = dynamic_class_in_loaded_units(state, &normalized) {
+        return Some(ClassLookup::Shared(class));
+    }
+    if state.failed_class_declarations.contains(&normalized) {
+        return None;
+    }
+    internal_runtime_class_entry(&normalized)
+        .or_else(|| internal_enum_class_entry(&normalized))
+        .map(|class| ClassLookup::Owned(Box::new(class)))
+}
