@@ -8972,7 +8972,7 @@ fn lookup_private_method_in_caller_scope_in_state(
         .as_ref()
         .methods
         .iter()
-        .find(|entry| entry.flags.is_private && normalize_method_name(&entry.name) == normalized)
+        .find(|entry| entry.flags.is_private && entry.name.eq_ignore_ascii_case(&normalized))
         .cloned()
     else {
         return Ok(None);
@@ -9003,7 +9003,7 @@ fn lookup_resolved_method_in_state_inner(
     if let Some(method) = class
         .methods
         .iter()
-        .find(|entry| normalize_method_name(&entry.name) == normalized)
+        .find(|entry| entry.name.eq_ignore_ascii_case(&normalized))
     {
         if method.flags.is_private
             && caller_scope.is_some_and(|scope| normalize_class_name(scope) != class_name)
