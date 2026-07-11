@@ -151,8 +151,14 @@ pub(crate) fn execution_output_from_vm(
             .collect(),
         status,
         runtime_diagnostics: result.diagnostics,
-        http_response: result.http_response,
-        upload_registry: result.upload_registry,
+        http_response: result
+            .http_response
+            .map(|http_response| *http_response)
+            .unwrap_or_default(),
+        upload_registry: result
+            .upload_registry
+            .map(|upload_registry| *upload_registry)
+            .unwrap_or_default(),
         session: result.session.map(|session| *session).unwrap_or_default(),
         return_value: result.return_value,
         trace: result.trace,

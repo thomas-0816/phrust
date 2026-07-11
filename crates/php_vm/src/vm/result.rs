@@ -18,10 +18,14 @@ pub struct VmResult {
     pub output: OutputBuffer,
     /// Structured runtime diagnostics emitted during execution.
     pub diagnostics: Vec<RuntimeDiagnostic>,
-    /// Request-local HTTP response state accumulated by web-response builtins.
-    pub http_response: RuntimeHttpResponseState,
+    /// Request-local HTTP response state accumulated by web-response
+    /// builtins. Boxed and optional: only the outermost `execute` boundary
+    /// attaches it, while every nested function return moves a `VmResult`
+    /// by value.
+    pub http_response: Option<Box<RuntimeHttpResponseState>>,
     /// Request-local upload registry state after PHP code has executed.
-    pub upload_registry: UploadRegistry,
+    /// Boxed for the same reason.
+    pub upload_registry: Option<Box<UploadRegistry>>,
     /// Request-local session state after PHP code has executed. Boxed and
     /// optional: only the outermost `execute` boundary attaches it, while
     /// every nested function return moves a `VmResult` by value.
@@ -34,8 +38,10 @@ pub struct VmResult {
     pub process_exit_code: Option<i32>,
     /// Whether the process must terminate directly instead of returning to the caller.
     pub process_exit_terminates_process: bool,
-    pub(super) yielded: Option<super::GeneratorYield>,
-    pub(super) fiber_suspension: Option<super::FiberSuspension>,
+    /// Boxed: generator/fiber suspensions are rare relative to plain
+    /// returns, and `VmResult` moves by value on every function return.
+    pub(super) yielded: Option<Box<super::GeneratorYield>>,
+    pub(super) fiber_suspension: Option<Box<super::FiberSuspension>>,
     pub(super) return_ref: Option<ReferenceCell>,
     /// Deterministic trace events captured when `VmOptions::trace` is enabled.
     pub trace: Vec<String>,
@@ -117,8 +123,8 @@ impl VmResult {
             status: ExecutionStatus::success(),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
+            http_response: None,
+            upload_registry: None,
             session: None,
             return_value,
             returned_explicitly: false,
@@ -146,8 +152,8 @@ impl VmResult {
             status: ExecutionStatus::success(),
             output,
             diagnostics,
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
+            http_response: None,
+            upload_registry: None,
             session: None,
             return_value,
             returned_explicitly: false,
@@ -187,8 +193,8 @@ impl VmResult {
             status: ExecutionStatus::runtime_error(message),
             output,
             diagnostics: vec![diagnostic],
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
+            http_response: None,
+            upload_registry: None,
             session: None,
             return_value: None,
             returned_explicitly: false,
@@ -210,8 +216,8 @@ impl VmResult {
             status: ExecutionStatus::compile_error(message),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
+            http_response: None,
+            upload_registry: None,
             session: None,
             return_value: None,
             returned_explicitly: false,
@@ -231,8 +237,8 @@ impl VmResult {
             status: ExecutionStatus::unsupported(message),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
+            http_response: None,
+            upload_registry: None,
             session: None,
             return_value: None,
             returned_explicitly: false,
@@ -258,8 +264,8 @@ impl VmResult {
             ),
             output,
             diagnostics: Vec::new(),
-            http_response: RuntimeHttpResponseState::default(),
-            upload_registry: UploadRegistry::default(),
+            http_response: None,
+            upload_registry: None,
             session: None,
             return_value: None,
             returned_explicitly: false,
@@ -314,7 +320,7 @@ mod size_tests {
     fn vm_result_stays_call_sized() {
         let size = std::mem::size_of::<super::VmResult>();
         assert!(
-            size <= 512,
+            size <= 320,
             "VmResult grew to {size} bytes; it is moved by value on every function return — box new large fields"
         );
     }

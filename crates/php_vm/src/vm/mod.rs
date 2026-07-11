@@ -2948,8 +2948,8 @@ impl Vm {
                     status: ExecutionStatus::compile_error(message),
                     output,
                     diagnostics: vec![diagnostic],
-                    http_response: RuntimeHttpResponseState::default(),
-                    upload_registry: UploadRegistry::default(),
+                    http_response: None,
+                    upload_registry: None,
                     session: None,
                     return_value: None,
                     returned_explicitly: false,
@@ -3042,8 +3042,8 @@ impl Vm {
                             trace: Vec::new(),
                             counters: None,
                             tiering_stats: None,
-                            http_response: RuntimeHttpResponseState::default(),
-                            upload_registry: UploadRegistry::default(),
+                            http_response: None,
+                            upload_registry: None,
                             session: None,
                         }
                     } else {
@@ -3140,8 +3140,8 @@ impl Vm {
             },
         ));
         result.diagnostics.extend(state.diagnostics);
-        result.http_response = state.http_response;
-        result.upload_registry = state.upload_registry;
+        result.http_response = Some(Box::new(state.http_response));
+        result.upload_registry = Some(Box::new(state.upload_registry));
         result.session = Some(Box::new(state.session));
         if self.options.trace || self.options.trace_runtime || self.options.trace_includes {
             result.trace = self.trace.borrow().clone();
@@ -27214,8 +27214,8 @@ impl Vm {
                                 trace: Vec::new(),
                                 counters: None,
                                 tiering_stats: None,
-                                http_response: RuntimeHttpResponseState::default(),
-                                upload_registry: UploadRegistry::default(),
+                                http_response: None,
+                                upload_registry: None,
                                 session: None,
                             };
                         };
@@ -27490,7 +27490,7 @@ impl Vm {
                         }
                         let mut result =
                             VmResult::success_with_diagnostics_no_output(None, diagnostics);
-                        result.yielded = Some(GeneratorYield { key, value });
+                        result.yielded = Some(Box::new(GeneratorYield { key, value }));
                         return result;
                     }
                     InstructionKind::YieldFrom { dst, source } => {
@@ -27542,7 +27542,7 @@ impl Vm {
                                 );
                                 let mut result =
                                     VmResult::success_with_diagnostics_no_output(None, diagnostics);
-                                result.yielded = Some(GeneratorYield { key, value });
+                                result.yielded = Some(Box::new(GeneratorYield { key, value }));
                                 return result;
                             }
                             YieldFromStep::Complete(return_value) => {
@@ -31317,8 +31317,8 @@ impl Vm {
                             trace: Vec::new(),
                             counters: None,
                             tiering_stats: None,
-                            http_response: RuntimeHttpResponseState::default(),
-                            upload_registry: UploadRegistry::default(),
+                            http_response: None,
+                            upload_registry: None,
                             session: None,
                         };
                     }
@@ -40275,8 +40275,8 @@ impl Vm {
                     trace: Vec::new(),
                     counters: None,
                     tiering_stats: None,
-                    http_response: RuntimeHttpResponseState::default(),
-                    upload_registry: UploadRegistry::default(),
+                    http_response: None,
+                    upload_registry: None,
                     session: None,
                 })
             }
@@ -41130,7 +41130,7 @@ impl Vm {
             ));
         };
         let mut result = VmResult::success_no_output(None);
-        result.fiber_suspension = Some(FiberSuspension {
+        result.fiber_suspension = Some(Box::new(FiberSuspension {
             value,
             continuations: vec![FiberContinuation {
                 frame,
@@ -41141,7 +41141,7 @@ impl Vm {
                 exception_handlers: exception_handlers.to_vec(),
                 pending_control: pending_control.clone(),
             }],
-        });
+        }));
         Ok(result)
     }
 
