@@ -893,6 +893,9 @@ struct DenseCallSlotEntry {
     epoch: crate::inline_cache::InvalidationEpoch,
     shape: Option<crate::inline_cache::FunctionCallShape>,
     target: Option<crate::inline_cache::FunctionCallCacheTarget>,
+    /// Target is pinned by the owning unit or the static builtin table, so
+    /// it may outlive the populating request under worker-stable epochs.
+    stable_target: bool,
 }
 
 /// Slot-indexed function-call inline-cache storage attached to a dense plan.
@@ -923,10 +926,12 @@ impl DenseCallSlotTable {
         vm_nonce: u64,
         epoch: crate::inline_cache::InvalidationEpoch,
         shape: &crate::inline_cache::FunctionCallShape,
+        relax_nonce: bool,
     ) -> Option<crate::inline_cache::FunctionCallCacheTarget> {
         let entries = self.entries.borrow();
         let entry = entries.get(slot.index())?;
-        if entry.vm_nonce != vm_nonce || entry.epoch != epoch {
+        let nonce_ok = entry.vm_nonce == vm_nonce || (relax_nonce && entry.stable_target);
+        if !nonce_ok || entry.epoch != epoch {
             return None;
         }
         if entry.shape.as_ref() != Some(shape) {
@@ -951,6 +956,11 @@ impl DenseCallSlotTable {
         entry.vm_nonce = vm_nonce;
         entry.epoch = epoch;
         entry.shape = Some(shape);
+        entry.stable_target = matches!(
+            target,
+            crate::inline_cache::FunctionCallCacheTarget::CurrentUnit { .. }
+                | crate::inline_cache::FunctionCallCacheTarget::Builtin { .. }
+        );
         entry.target = Some(target);
     }
 }

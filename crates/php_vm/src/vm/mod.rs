@@ -1016,6 +1016,22 @@ struct DenseExecutionPlanThreadCacheKey {
     artifact: DenseExecutionArtifactKey,
 }
 
+/// Per-worker symbol-replay ledger: units whose declarations this thread
+/// has already observed, plus the worker-monotonic lookup epoch. Identical
+/// include replay keeps the epoch constant so slot-indexed inline caches
+/// with request-stable targets survive the request boundary.
+struct WorkerSymbolLedger {
+    epoch: Cell<u64>,
+    seen_units: RefCell<HashSet<u64>>,
+}
+
+thread_local! {
+    static WORKER_SYMBOL_LEDGER: WorkerSymbolLedger = WorkerSymbolLedger {
+        epoch: Cell::new(0),
+        seen_units: RefCell::new(HashSet::new()),
+    };
+}
+
 thread_local! {
     static DENSE_EXECUTION_PLAN_THREAD_CACHE:
         RefCell<HashMap<DenseExecutionPlanThreadCacheKey, Arc<DenseExecutionPlan>>> =
@@ -1200,6 +1216,8 @@ impl UserStreamWrapperRegistry {
 
 #[derive(Debug, Default)]
 struct ExecutionState {
+    /// Worker-stable symbol epochs enabled (VmOptions::worker_symbol_epoch).
+    worker_symbol_epoch: bool,
     globals: GlobalSymbolTable,
     included_once: Vec<PathBuf>,
     included_once_set: HashSet<PathBuf>,
@@ -1364,7 +1382,17 @@ impl ExecutionState {
     }
 
     fn bump_lookup_epoch(&mut self) {
-        self.function_table_epoch = self.function_table_epoch.saturating_add(1);
+        if self.worker_symbol_epoch {
+            // Advance the worker ledger so the epoch stays monotonic across
+            // requests on this thread; per-request state re-seeds from it.
+            self.function_table_epoch = WORKER_SYMBOL_LEDGER.with(|ledger| {
+                let next = ledger.epoch.get().saturating_add(1);
+                ledger.epoch.set(next);
+                next
+            });
+        } else {
+            self.function_table_epoch = self.function_table_epoch.saturating_add(1);
+        }
     }
 
     fn autoload_class_lookup_epochs(&self) -> AutoloadClassLookupEpochs {
@@ -2948,6 +2976,12 @@ impl Vm {
             .iter()
             .any(|(name, value)| name == "PHRUST_NET_TESTS" && value == "1");
         let mut state = ExecutionState {
+            worker_symbol_epoch: self.options.worker_symbol_epoch,
+            function_table_epoch: if self.options.worker_symbol_epoch {
+                WORKER_SYMBOL_LEDGER.with(|ledger| ledger.epoch.get())
+            } else {
+                0
+            },
             cwd: self.options.runtime_context.cwd.clone(),
             ini,
             parsed_include_path,
@@ -11470,7 +11504,13 @@ impl Vm {
                             None
                         };
                         let slot_target = call_slot.and_then(|(plan, slot)| {
-                            plan.call_slots.hit(slot, self.vm_nonce, epoch, &call_shape)
+                            plan.call_slots.hit(
+                                slot,
+                                self.vm_nonce,
+                                epoch,
+                                &call_shape,
+                                self.options.worker_symbol_epoch,
+                            )
                         });
                         let target = if let Some(target) = slot_target {
                             self.record_counter_dense_call_ic_hit();
@@ -56004,7 +56044,17 @@ fn register_dynamic_unit(
             origin: constant_declaration_origin(&unit, &entry.name, load_kind),
         });
     }
-    state.bump_class_table_epoch();
+    // Class/autoload epochs guard request-local caches and always advance;
+    // the LOOKUP epoch stays constant when this thread has already observed
+    // this exact unit's declarations (identical replay), so cross-request
+    // slot entries keep validating.
+    let replayed = state.worker_symbol_epoch
+        && WORKER_SYMBOL_LEDGER
+            .with(|ledger| !ledger.seen_units.borrow_mut().insert(unit.cache_identity()));
+    state.class_table_epoch = state.class_table_epoch.saturating_add(1);
+    if !replayed {
+        state.bump_lookup_epoch();
+    }
     unit_index
 }
 

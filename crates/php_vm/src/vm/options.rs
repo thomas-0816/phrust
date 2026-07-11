@@ -100,6 +100,11 @@ pub struct VmOptions {
     /// path is byte-identical to the pre-lever engine and this analysis is never
     /// built. Preserves COW/reference semantics.
     pub last_use_moves: bool,
+    /// Worker-stable symbol epochs: identical include replay keeps the
+    /// lookup epoch constant across requests so slot-indexed inline caches
+    /// with request-stable targets survive the request boundary. Read from
+    /// `PHRUST_WORKER_SYMBOL_EPOCH` (off unless set to `1`).
+    pub worker_symbol_epoch: bool,
     /// Runtime lever R4: allow request-local frame/register pooling to reuse a
     /// completed activation for a class-context call (a method/constructor/static
     /// call, or any call that carries `$this`/scope/called/declaring class) when
@@ -148,6 +153,7 @@ impl Default for VmOptions {
             internal_function_dispatch_cache: true,
             adaptive_tiny_unit_setup_threshold: None,
             last_use_moves: true,
+            worker_symbol_epoch: worker_symbol_epoch_from_env(),
             reuse_class_context_frames: true,
         }
     }
@@ -372,4 +378,11 @@ impl JitBlacklistMode {
     pub const fn enabled(self) -> bool {
         matches!(self, Self::On)
     }
+}
+
+fn worker_symbol_epoch_from_env() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("PHRUST_WORKER_SYMBOL_EPOCH").is_ok_and(|value| value.trim() == "1")
+    })
 }
