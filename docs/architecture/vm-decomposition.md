@@ -44,7 +44,10 @@ dispatch now live in the separate `method_dispatch` owner. Argument binding,
 reference acquisition, parameter/return/property type enforcement, and
 sensitive-parameter presentation now live in `arguments`; closure creation,
 capture materialization, and `$this` initialization live in
-`closure_operations`.
+`closure_operations`. Global, lexical, predefined, and class-constant
+resolution now lives in `class_operations`; state-aware class/method relation
+queries and property resolution live in `class_relations` and
+`property_resolution` respectively.
 
 ## Target Ownership
 

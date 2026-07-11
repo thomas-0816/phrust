@@ -1270,3 +1270,30 @@ fn materialize_int_to_float_runtime_type(value: &mut Value, runtime_type: &Runti
         *value = Value::float(float);
     }
 }
+
+pub(super) fn call_args_from_owned_php_array(array: PhpArray) -> Vec<CallArgument> {
+    array
+        .into_pairs()
+        .into_iter()
+        .map(|(key, value)| {
+            let mut arg = CallArgument::positional(value);
+            if let ArrayKey::String(name) = key {
+                arg.name = Some(name.to_string_lossy());
+            }
+            arg
+        })
+        .collect()
+}
+
+pub(super) fn call_args_from_php_array(array: &PhpArray) -> Vec<CallArgument> {
+    array
+        .iter()
+        .map(|(key, value)| {
+            let mut arg = CallArgument::positional(value.clone());
+            if let ArrayKey::String(name) = key {
+                arg.name = Some(name.to_string_lossy());
+            }
+            arg
+        })
+        .collect()
+}

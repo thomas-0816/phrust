@@ -17,6 +17,9 @@ implementation into a module directory:
   reference binding, runtime type enforcement, and parameter diagnostics.
 - `crates/php_vm/src/vm/closure_operations.rs` owns closure construction,
   capture materialization, binding context, and `$this` initialization.
+- `crates/php_vm/src/vm/class_operations.rs`, `class_relations.rs`, and
+  `property_resolution.rs` own constant/class operations, state-aware class and
+  method relationships, and property lookup respectively.
 - `crates/php_vm/src/vm/dense_method_dispatch.rs` owns dense bytecode method
   call dispatch helpers.
 - `crates/php_vm/src/vm/generator_fiber.rs` owns generator and fiber runtime

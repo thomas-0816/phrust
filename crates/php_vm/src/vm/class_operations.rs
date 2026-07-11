@@ -3606,3 +3606,390 @@ pub(super) fn lookup_class_in_state_ref(
         .or_else(|| internal_enum_class_entry(&normalized))
         .map(|class| ClassLookup::Owned(Box::new(class)))
 }
+
+pub(super) struct ResolvedConstantValue {
+    pub(super) value: Value,
+    pub(super) predefined: Option<&'static php_std::ConstantDescriptor>,
+}
+
+pub(super) fn global_constant_lookup(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    name: &str,
+) -> Result<Option<ResolvedConstantValue>, String> {
+    if let Some(constant) = compiled.lookup_constant(name) {
+        Ok(Some(ResolvedConstantValue {
+            value: inline_constant_value(constant),
+            predefined: None,
+        }))
+    } else if let Some(value) = dynamic_constant_value_in_state(state, name)? {
+        Ok(Some(ResolvedConstantValue {
+            value,
+            predefined: None,
+        }))
+    } else if let Some(value) = state.user_constants.get(name) {
+        Ok(Some(ResolvedConstantValue {
+            value: value.clone(),
+            predefined: None,
+        }))
+    } else if let Some(value) = class_constant_value_by_name(compiled, state, stack, name)? {
+        Ok(Some(ResolvedConstantValue {
+            value,
+            predefined: None,
+        }))
+    } else {
+        Ok(predefined_constant_lookup_for_state(state, name))
+    }
+}
+
+pub(super) fn global_constant_value(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    name: &str,
+) -> Result<Option<Value>, String> {
+    Ok(global_constant_lookup(compiled, state, stack, name)?.map(|resolved| resolved.value))
+}
+
+pub(super) fn lexical_constant_lookup(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    name: &str,
+) -> Result<Option<ResolvedConstantValue>, String> {
+    if let Some(resolved) = global_constant_lookup(compiled, state, stack, name)? {
+        return Ok(Some(resolved));
+    }
+    let Some((_, global_name)) = name.rsplit_once('\\') else {
+        return Ok(None);
+    };
+    if global_name.is_empty() {
+        return Ok(None);
+    }
+    global_constant_lookup(compiled, state, stack, global_name)
+}
+
+pub(super) fn lexical_constant_value(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    name: &str,
+) -> Result<Option<Value>, String> {
+    Ok(lexical_constant_lookup(compiled, state, stack, name)?.map(|resolved| resolved.value))
+}
+
+fn dynamic_constant_value_in_state(
+    state: &ExecutionState,
+    name: &str,
+) -> Result<Option<Value>, String> {
+    let Some(entry_index) = state.dynamic_constant_index.get(name).copied() else {
+        return Ok(None);
+    };
+    let Some(entry) = state.dynamic_constants.get(entry_index) else {
+        return Ok(None);
+    };
+    debug_assert_eq!(entry.name, name);
+    let Some(owner) = state.dynamic_units.get(entry.unit_index) else {
+        return Ok(None);
+    };
+    constant_value(owner.unit(), entry.value).map(Some)
+}
+
+pub(super) fn class_constant_value_by_name(
+    compiled: &CompiledUnit,
+    state: &mut ExecutionState,
+    stack: &CallStack,
+    name: &str,
+) -> Result<Option<Value>, String> {
+    let Some((class_name, constant_name)) = name.split_once("::") else {
+        return Ok(None);
+    };
+    let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
+        return Ok(None);
+    };
+    if constant_name.eq_ignore_ascii_case("class") {
+        return Ok(Some(Value::String(PhpString::from_test_str(
+            &class.display_name,
+        ))));
+    }
+    if let Some(value) = pdo_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = zip_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = redis_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = memcached_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = intl_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = xml_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) = date_time_class_constant_value(class_name, constant_name) {
+        return Ok(Some(value));
+    }
+    if let Some(value) =
+        spl_class_constant_value_in_state(compiled, state, class_name, constant_name)
+    {
+        return Ok(Some(value));
+    }
+    if class.flags.is_enum
+        && let Some(case) = class
+            .enum_cases
+            .iter()
+            .find(|case| case.name.eq_ignore_ascii_case(constant_name))
+    {
+        let object = enum_case_object(compiled, state, &class, case, &|constant| {
+            constant_value(compiled.unit(), constant)
+        })
+        .map_err(|message| {
+            format!(
+                "E_PHP_VM_ENUM_CASE_CONSTANT_VALUE: failed to build enum case {}::{}: {message}",
+                class.display_name, case.name
+            )
+        })?;
+        return Ok(Some(Value::Object(object)));
+    }
+    let Some((resolved_class, resolved_constant)) = lookup_class_constant_in_state(
+        compiled,
+        state,
+        &class.name,
+        &class.display_name,
+        constant_name,
+    )?
+    else {
+        return Ok(None);
+    };
+    validate_constant_access(compiled, stack, &resolved_class, &resolved_constant)?;
+    if let Some(value) = resolved_constant.value {
+        let owner = class_owner_in_state(compiled, state, &resolved_class.name);
+        runtime_constant_value(compiled, state, stack, owner.unit(), value).map(Some)
+    } else if let Some(reference) = &resolved_constant.value_class_constant {
+        class_constant_reference_value(compiled, state, reference).map(Some)
+    } else if let Some(reference) = &resolved_constant.value_named_constant {
+        named_constant_reference_value(compiled, state, reference).map(Some)
+    } else {
+        Ok(Some(Value::Null))
+    }
+}
+
+pub(super) fn named_constant_reference_value(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    reference: &NamedConstantReference,
+) -> Result<Value, String> {
+    for name in &reference.names {
+        if let Some(constant) = compiled.lookup_constant(name) {
+            return Ok(inline_constant_value(constant));
+        }
+        if let Some(value) = dynamic_constant_value_in_state(state, name)? {
+            return Ok(value);
+        }
+        if let Some(value) = state.user_constants.get(name) {
+            return Ok(value.clone());
+        }
+        if let Some(value) = predefined_constant_value_for_state(state, name) {
+            return Ok(value);
+        }
+    }
+    Err(format!(
+        "E_PHP_VM_UNDEFINED_CONSTANT: Undefined constant \"{}\"",
+        if reference.display_name.is_empty() {
+            reference
+                .names
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default()
+        } else {
+            &reference.display_name
+        }
+    ))
+}
+
+pub(super) fn class_constant_reference_value(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    reference: &ClassConstantReference,
+) -> Result<Value, String> {
+    class_constant_reference_value_inner(compiled, state, reference, &mut Vec::new())
+}
+
+fn class_constant_reference_value_inner(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    reference: &ClassConstantReference,
+    visiting: &mut Vec<(String, String)>,
+) -> Result<Value, String> {
+    let key = (
+        normalize_class_name(&reference.class_name),
+        reference.constant_name.clone(),
+    );
+    if visiting.iter().any(|entry| entry == &key) {
+        return Err(format!(
+            "E_PHP_VM_CLASS_CONSTANT_CYCLE: class constant {}::{} has a recursive initializer",
+            reference.class_name, reference.constant_name
+        ));
+    }
+    visiting.push(key);
+    let (class, constant) = lookup_class_constant_in_state(
+        compiled,
+        state,
+        &reference.class_name,
+        &reference.display_class_name,
+        &reference.constant_name,
+    )?
+    .ok_or_else(|| {
+        format!(
+            "E_PHP_VM_UNKNOWN_CLASS_CONSTANT: Undefined constant {}::{}",
+            class_constant_reference_display_class(reference),
+            reference.constant_name
+        )
+    })?;
+    let value = if let Some(value) = constant.value {
+        let owner = class_owner_in_state(compiled, state, &class.name);
+        constant_value(owner.unit(), value)?
+    } else if let Some(next) = &constant.value_class_constant {
+        class_constant_reference_value_inner(compiled, state, next, visiting)?
+    } else if let Some(reference) = &constant.value_named_constant {
+        named_constant_reference_value(compiled, state, reference)?
+    } else {
+        Value::Null
+    };
+    visiting.pop();
+    Ok(value)
+}
+
+pub(super) fn lookup_class_constant_in_state(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class_name: &str,
+    reference_display_class_name: &str,
+    constant_name: &str,
+) -> Result<
+    Option<(
+        Arc<php_ir::module::ClassEntry>,
+        php_ir::module::ClassConstantEntry,
+    )>,
+    String,
+> {
+    let Some(class) = lookup_class_in_state(compiled, state, class_name) else {
+        return Err(format!(
+            "E_PHP_VM_UNKNOWN_CLASS: Class \"{}\" not found",
+            if reference_display_class_name.is_empty() {
+                display_class_name(class_name)
+            } else {
+                reference_display_class_name.to_owned()
+            }
+        ));
+    };
+    lookup_class_constant_in_state_inner(compiled, state, class, constant_name, &mut Vec::new())
+}
+
+fn lookup_class_constant_in_state_inner(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    class: Arc<php_ir::module::ClassEntry>,
+    constant_name: &str,
+    seen: &mut Vec<String>,
+) -> Result<
+    Option<(
+        Arc<php_ir::module::ClassEntry>,
+        php_ir::module::ClassConstantEntry,
+    )>,
+    String,
+> {
+    let normalized = normalize_class_name(&class.name);
+    if seen.iter().any(|name| name == &normalized) {
+        return Err(format!(
+            "E_PHP_VM_CLASS_INHERITANCE_CYCLE: class {} participates in an inheritance cycle",
+            class.name
+        ));
+    }
+    seen.push(normalized);
+    if let Some(constant) = class
+        .constants
+        .iter()
+        .find(|entry| entry.name == constant_name)
+        .cloned()
+    {
+        seen.pop();
+        return Ok(Some((class, constant)));
+    }
+    if let Some(parent_name) = class.parent.as_deref() {
+        let Some(parent) = lookup_class_in_state(compiled, state, parent_name) else {
+            return Err(format!(
+                "E_PHP_VM_UNKNOWN_PARENT_CLASS: class {} extends missing class {}",
+                class.name, parent_name
+            ));
+        };
+        let resolved =
+            lookup_class_constant_in_state_inner(compiled, state, parent, constant_name, seen)?;
+        if resolved
+            .as_ref()
+            .is_some_and(|(_, constant)| constant.flags.is_private)
+        {
+            seen.pop();
+            return Ok(None);
+        }
+        if resolved.is_some() {
+            seen.pop();
+            return Ok(resolved);
+        }
+    }
+    for interface_name in &class.interfaces {
+        let Some(interface) = lookup_class_in_state(compiled, state, interface_name) else {
+            continue;
+        };
+        if let Some(resolved) =
+            lookup_class_constant_in_state_inner(compiled, state, interface, constant_name, seen)?
+        {
+            seen.pop();
+            return Ok(Some(resolved));
+        }
+    }
+    seen.pop();
+    Ok(None)
+}
+
+fn class_constant_reference_display_class(reference: &ClassConstantReference) -> String {
+    if reference.display_class_name.is_empty() {
+        display_class_name(&reference.class_name)
+    } else {
+        reference.display_class_name.clone()
+    }
+}
+
+fn predefined_constant_lookup(name: &str) -> Option<ResolvedConstantValue> {
+    let constant = php_std::ExtensionRegistry::standard_library().enabled_constant(name)?;
+    Some(ResolvedConstantValue {
+        value: php_std::constants::constant_to_value(constant.value()?),
+        predefined: Some(constant),
+    })
+}
+
+fn predefined_constant_lookup_for_state(
+    state: &ExecutionState,
+    name: &str,
+) -> Option<ResolvedConstantValue> {
+    match name {
+        "PHP_SAPI" => Some(ResolvedConstantValue {
+            value: Value::string(state.request.sapi_name.clone()),
+            predefined: None,
+        }),
+        "PHP_BINARY" => Some(ResolvedConstantValue {
+            value: Value::string(state.request.php_binary.clone()),
+            predefined: None,
+        }),
+        _ => predefined_constant_lookup(name),
+    }
+}
+
+fn predefined_constant_value_for_state(state: &ExecutionState, name: &str) -> Option<Value> {
+    predefined_constant_lookup_for_state(state, name).map(|resolved| resolved.value)
+}
