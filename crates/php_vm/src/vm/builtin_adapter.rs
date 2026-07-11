@@ -162,3 +162,13 @@ pub(super) struct BuiltinAdapterState {
     pub(super) redis_clients: RedisClientState,
     pub(super) memcached_clients: MemcachedClientState,
 }
+
+impl BuiltinAdapterState {
+    pub(super) fn pcre_state_mut(&mut self) -> &mut php_runtime::PcreRequestState {
+        self.builtin_request_state.pcre_mut()
+    }
+
+    pub(super) fn set_json_last_error(&mut self, code: i64) {
+        self.builtin_request_state.json_mut().set(code);
+    }
+}

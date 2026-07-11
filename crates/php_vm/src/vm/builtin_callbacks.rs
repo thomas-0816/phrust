@@ -49,11 +49,15 @@ impl Vm {
             builtin_source_span(compiled, call_span),
         );
         if result.status.is_success() && transform_state.recursion_error {
-            state.set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
+            state
+                .builtins
+                .set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
         }
         if !result.status.is_success() && transform_state.recursion_error {
             result.return_value = Some(Value::Bool(false));
-            state.set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
+            state
+                .builtins
+                .set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
         }
         release_unrooted_direct_object_handle(&original_first, stack, state);
         result
@@ -144,7 +148,9 @@ impl Vm {
             if flags & php_runtime::JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
                 return Ok(Value::Null);
             }
-            state.set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
+            state
+                .builtins
+                .set_json_last_error(php_runtime::JSON_ERROR_RECURSION);
             return Err(VmResult::success_no_output(Some(Value::Bool(false))));
         }
         let implements_jsonserializable = match class_implements_in_state(

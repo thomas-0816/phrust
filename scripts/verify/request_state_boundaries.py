@@ -41,6 +41,7 @@ def main() -> int:
     views = read("crates/php_runtime/src/builtins/context/service_views.rs")
     vm = read("crates/php_vm/src/vm/mod.rs")
     vm_builtin_adapter = read("crates/php_vm/src/vm/builtin_adapter.rs")
+    vm_request_lifecycle = read("crates/php_vm/src/vm/request_lifecycle.rs")
     migration = read("docs/runtime/request-state-slots.md")
 
     if "HashMap" in layout or "BTreeMap" in layout:
@@ -99,10 +100,28 @@ def main() -> int:
 
     execution_state = struct_body(vm, "ExecutionState")
     vm_adapter_state = struct_body(vm_builtin_adapter, "BuiltinAdapterState")
+    request_lifecycle_state = struct_body(
+        vm_request_lifecycle, "RequestLifecycleState"
+    )
     if execution_state.count("builtins: BuiltinAdapterState") != 1:
         failures.append("ExecutionState must own exactly one builtin adapter subsystem")
     if "builtin_request_state" in execution_state:
         failures.append("ExecutionState must not directly own migrated builtin request slots")
+    if execution_state.count("request: RequestLifecycleState") != 1:
+        failures.append("ExecutionState must own exactly one request lifecycle subsystem")
+    lifecycle_fields = (
+        "http_response",
+        "upload_registry",
+        "session",
+        "session_loader",
+        "sapi_name",
+        "php_binary",
+    )
+    for field in lifecycle_fields:
+        if re.search(rf"^\s+{field}:", execution_state, re.MULTILINE):
+            failures.append(f"ExecutionState directly owns request field: {field}")
+        if not re.search(rf"^\s+pub\(super\) {field}:", request_lifecycle_state, re.MULTILINE):
+            failures.append(f"RequestLifecycleState is missing request field: {field}")
     if (
         vm_adapter_state.count(
             "builtin_request_state: php_runtime::BuiltinRequestState"

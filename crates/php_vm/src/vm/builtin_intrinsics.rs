@@ -58,7 +58,9 @@ impl Vm {
         match php_runtime::builtins::json_fast::json_encode_default_flags(&values[0]) {
             Ok(encoded) => {
                 self.record_counter_json_encode_fast_path(encoded.len());
-                state.set_json_last_error(php_runtime::builtins::json_fast::JSON_ENCODE_NO_ERROR);
+                state
+                    .builtins
+                    .set_json_last_error(php_runtime::builtins::json_fast::JSON_ENCODE_NO_ERROR);
                 Some(VmResult::success_no_output(Some(Value::string(encoded))))
             }
             Err(reason) => {
@@ -158,6 +160,7 @@ impl Vm {
             return None;
         }
         if !state
+            .builtins
             .pcre_state_mut()
             .cache_mut()
             .validate_utf8_ascii_subject_at_offset(&subject, start)
@@ -165,7 +168,7 @@ impl Vm {
         {
             return None;
         }
-        state.pcre_state_mut().last_error_mut().clear();
+        state.builtins.pcre_state_mut().last_error_mut().clear();
         match subject_bytes.get(start).copied() {
             Some(byte) if byte.is_ascii_alphanumeric() || byte == b'_' => {
                 set_preg_match_single_byte_match(matches, &subject_bytes[start..start + 1]);
@@ -225,6 +228,7 @@ impl Vm {
             return None;
         }
         if !state
+            .builtins
             .pcre_state_mut()
             .cache_mut()
             .validate_utf8_ascii_subject_at_offset(&subject, start)
@@ -232,7 +236,7 @@ impl Vm {
         {
             return None;
         }
-        state.pcre_state_mut().last_error_mut().clear();
+        state.builtins.pcre_state_mut().last_error_mut().clear();
         match subject_bytes.get(start).copied() {
             Some(byte) if byte.is_ascii_alphanumeric() || byte == b'_' => {
                 set_preg_match_single_byte_match(&matches, &subject_bytes[start..start + 1]);
@@ -304,6 +308,7 @@ impl Vm {
             return Ok(None);
         }
         if !state
+            .builtins
             .pcre_state_mut()
             .cache_mut()
             .validate_utf8_ascii_subject_at_offset(&subject, start)
@@ -317,7 +322,7 @@ impl Vm {
             .ok_or_else(|| "frame is not active".to_owned())?
             .locals
             .ensure_reference_cell(matches_local)?;
-        state.pcre_state_mut().last_error_mut().clear();
+        state.builtins.pcre_state_mut().last_error_mut().clear();
         let matched = match subject_bytes.get(start).copied() {
             Some(byte) if byte.is_ascii_alphanumeric() || byte == b'_' => {
                 set_preg_match_single_byte_match(&matches, &subject_bytes[start..start + 1]);
@@ -386,6 +391,7 @@ impl Vm {
                     return Ok(None);
                 }
                 if !state
+                    .builtins
                     .pcre_state_mut()
                     .cache_mut()
                     .validate_utf8_ascii_subject_at_offset(subject, start)
@@ -407,6 +413,7 @@ impl Vm {
                     return Ok(None);
                 }
                 if !state
+                    .builtins
                     .pcre_state_mut()
                     .cache_mut()
                     .validate_utf8_ascii_subject_at_offset(subject, start)
@@ -431,7 +438,7 @@ impl Vm {
             .ok_or_else(|| "no active frame".to_owned())?
             .locals
             .ensure_reference_cell(LocalId::new(matches_local))?;
-        state.pcre_state_mut().last_error_mut().clear();
+        state.builtins.pcre_state_mut().last_error_mut().clear();
         let matched = match match_result {
             PregAsciiOffsetMatch::Matched(byte) => {
                 set_preg_match_single_byte_match(&matches, &[byte]);

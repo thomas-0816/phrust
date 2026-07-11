@@ -27,7 +27,9 @@ Completed ownership slices already remove instrumentation/JIT state, call
 models, continuation/control models, foreach iteration, and request-local
 extension adapter state from the facade. `ExecutionState` now contains one
 `BuiltinAdapterState` subsystem instead of directly owning extension clients,
-stream-wrapper state, and the typed `BuiltinRequestState`.
+stream-wrapper state, and the typed `BuiltinRequestState`. HTTP response,
+upload, session, and SAPI state similarly live behind one
+`RequestLifecycleState` subsystem.
 
 ## Target Ownership
 

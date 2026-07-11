@@ -27,6 +27,7 @@ mod options;
 mod prelude;
 mod property_execution;
 mod reflection;
+mod request_lifecycle;
 mod request_profile;
 mod result;
 mod spl;
@@ -57,6 +58,7 @@ pub use options::{
     JitBlacklistMode, JitMode, SuperinstructionMode, VmOptions,
 };
 use reflection::*;
+use request_lifecycle::RequestLifecycleState;
 pub use result::VmStepLimitDiagnostic;
 pub use result::{VmControlFlow, VmResult};
 use spl::*;
@@ -452,12 +454,7 @@ struct ExecutionState {
     stderr: Option<php_runtime::ResourceRef>,
     builtins: BuiltinAdapterState,
     last_error: Option<LastErrorEntry>,
-    http_response: RuntimeHttpResponseState,
-    upload_registry: UploadRegistry,
-    session: php_runtime::SessionState,
-    session_loader: Option<php_runtime::SessionLoadCallback>,
-    sapi_name: String,
-    php_binary: String,
+    request: RequestLifecycleState,
     error_handlers: Vec<ErrorHandlerEntry>,
     exception_handlers: Vec<CallableValue>,
     diagnostics: Vec<RuntimeDiagnostic>,
@@ -476,14 +473,6 @@ struct ExecutionState {
 }
 
 impl ExecutionState {
-    fn pcre_state_mut(&mut self) -> &mut php_runtime::PcreRequestState {
-        self.builtins.builtin_request_state.pcre_mut()
-    }
-
-    fn set_json_last_error(&mut self, code: i64) {
-        self.builtins.builtin_request_state.json_mut().set(code);
-    }
-
     fn has_included(&self, path: &Path) -> bool {
         self.included_once_set.contains(path)
     }
@@ -1582,11 +1571,7 @@ impl Vm {
             filter_input_arrays,
             network_requests_enabled,
             spl_autoload_extensions: ".inc,.php".to_owned(),
-            upload_registry: self.options.runtime_context.upload_registry(),
-            session: self.options.runtime_context.session.clone(),
-            session_loader: self.options.runtime_context.session_loader.clone(),
-            sapi_name: self.options.runtime_context.sapi_name.clone(),
-            php_binary: self.options.runtime_context.php_binary.clone(),
+            request: RequestLifecycleState::from_runtime_context(&self.options.runtime_context),
             execution_deadline_at: self
                 .options
                 .runtime_context
@@ -1732,9 +1717,9 @@ impl Vm {
             },
         ));
         result.diagnostics.extend(state.diagnostics);
-        result.http_response = Some(Box::new(state.http_response));
-        result.upload_registry = Some(Box::new(state.upload_registry));
-        result.session = Some(Box::new(state.session));
+        result.http_response = Some(Box::new(state.request.http_response));
+        result.upload_registry = Some(Box::new(state.request.upload_registry));
+        result.session = Some(Box::new(state.request.session));
         if self.options.trace || self.options.trace_runtime || self.options.trace_includes {
             result.trace = self.trace.borrow().clone();
         }
@@ -28204,9 +28189,10 @@ impl Vm {
                 };
                 let mut diagnostics = Vec::new();
                 if session_ini_cannot_change_when_active(&option)
-                    && state.session.status() == php_runtime::PHP_SESSION_ACTIVE
+                    && state.request.session.status() == php_runtime::PHP_SESSION_ACTIVE
                 {
                     let (started_file, started_line) = state
+                        .request
                         .session
                         .started_location()
                         .map(|(file, line)| (file.to_owned(), line))
@@ -30042,7 +30028,7 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Result<(), ArrayCallbackError> {
-        state.pcre_state_mut().last_error_mut().set(
+        state.builtins.pcre_state_mut().last_error_mut().set(
             error.code(),
             php_runtime::pcre::preg_error_message(error.code()),
         );
@@ -53568,11 +53554,11 @@ fn predefined_constant_lookup_for_state(
 ) -> Option<ResolvedConstantValue> {
     match name {
         "PHP_SAPI" => Some(ResolvedConstantValue {
-            value: Value::string(state.sapi_name.clone()),
+            value: Value::string(state.request.sapi_name.clone()),
             predefined: None,
         }),
         "PHP_BINARY" => Some(ResolvedConstantValue {
-            value: Value::string(state.php_binary.clone()),
+            value: Value::string(state.request.php_binary.clone()),
             predefined: None,
         }),
         _ => predefined_constant_lookup(name),
@@ -54897,27 +54883,33 @@ fn current_frame_is_top_level(compiled: &CompiledUnit, stack: &CallStack) -> boo
 
 fn auto_start_session_if_configured(state: &mut ExecutionState, source_span: RuntimeSourceSpan) {
     if !ini_bool(&state.ini, "session.auto_start")
-        || state.session.status() == php_runtime::PHP_SESSION_ACTIVE
+        || state.request.session.status() == php_runtime::PHP_SESSION_ACTIVE
     {
         return;
     }
-    if state.session.needs_lazy_load() {
-        let id = state.session.id().to_owned();
-        if let Some(loader) = &state.session_loader
+    if state.request.session.needs_lazy_load() {
+        let id = state.request.session.id().to_owned();
+        if let Some(loader) = &state.request.session_loader
             && let Ok(data) = loader.load(&id)
         {
-            state.session.load_data(data);
+            state.request.session.load_data(data);
         }
     }
     let id_length = session_sid_length_from_ini(&state.ini);
     let strict_mode = ini_bool(&state.ini, "session.use_strict_mode");
-    state.session.start_with_policy(id_length, strict_mode);
-    state.session.mark_started_automatically();
+    state
+        .request
+        .session
+        .start_with_policy(id_length, strict_mode);
+    state.request.session.mark_started_automatically();
     let location = php_runtime::PhpDiagnosticLocation::from_span(&source_span);
     state
+        .request
         .session
         .record_start_location(location.file, location.line);
-    state.globals.set("_SESSION", state.session.data_value());
+    state
+        .globals
+        .set("_SESSION", state.request.session.data_value());
 }
 
 fn session_sid_length_from_ini(ini: &IniRegistry) -> usize {
@@ -54951,7 +54943,7 @@ fn sync_session_state_from_globals(state: &mut ExecutionState) {
     let Some(Value::Array(array)) = state.globals.get("_SESSION") else {
         return;
     };
-    state.session.set_data(array);
+    state.request.session.set_data(array);
 }
 
 fn env_entries_array(entries: &[(String, String)]) -> PhpArray {
@@ -57484,7 +57476,7 @@ fn try_execute_simple_literal_pcre_builtin(
         "preg_grep" => try_execute_simple_literal_preg_grep(values)?,
         _ => return None,
     };
-    state.pcre_state_mut().last_error_mut().clear();
+    state.builtins.pcre_state_mut().last_error_mut().clear();
     Some(VmResult::success_no_output(Some(result)))
 }
 
@@ -57737,23 +57729,25 @@ fn execute_builtin_entry(
     context.set_posix_last_error(state.builtins.posix_last_error);
     context.set_filesystem_state(&mut state.builtins.filesystem_state);
     context.set_stream_context_state(&mut state.builtins.stream_context_state);
-    context.set_http_response_state(&mut state.http_response);
-    context.set_upload_registry(&mut state.upload_registry);
+    context.set_http_response_state(&mut state.request.http_response);
+    context.set_upload_registry(&mut state.request.upload_registry);
     context.set_mysql_state(&mut state.builtins.mysql);
     context.set_postgres_state(&mut state.builtins.postgres);
     context.set_mb_internal_encoding_state(&mut state.builtins.mb_internal_encoding);
     context.set_mb_substitute_character_state(&mut state.builtins.mb_substitute_character);
-    let initial_session_global =
-        if state.session.status() == php_runtime::PHP_SESSION_ACTIVE || state.session.started() {
-            state.session.data_value()
-        } else {
-            Value::Uninitialized
-        };
+    let initial_session_global = if state.request.session.status()
+        == php_runtime::PHP_SESSION_ACTIVE
+        || state.request.session.started()
+    {
+        state.request.session.data_value()
+    } else {
+        Value::Uninitialized
+    };
     let session_global = state
         .globals
         .ensure_slot("_SESSION", initial_session_global);
-    context.set_session_state(&mut state.session, session_global);
-    context.set_session_loader(state.session_loader.as_ref());
+    context.set_session_state(&mut state.request.session, session_global);
+    context.set_session_loader(state.request.session_loader.as_ref());
     context.sync_session_state_from_global();
     let time_limit_arg = (entry.name() == "set_time_limit").then(|| args.first().cloned());
     let result = (entry.function())(&mut context, args, source_span.clone());
@@ -60246,6 +60240,7 @@ fn try_execute_dense_pcre_ascii_offset_block_fast_path(
                 return Ok(None);
             }
             if !state
+                .builtins
                 .pcre_state_mut()
                 .cache_mut()
                 .validate_utf8_ascii_subject_at_offset(subject, start)
@@ -60269,7 +60264,7 @@ fn try_execute_dense_pcre_ascii_offset_block_fast_path(
         .ok_or_else(|| "no active frame".to_owned())?
         .locals
         .ensure_reference_cell(LocalId::new(matches_local))?;
-    state.pcre_state_mut().last_error_mut().clear();
+    state.builtins.pcre_state_mut().last_error_mut().clear();
     let truthy = match match_result {
         DensePcreAsciiOffsetBlockMatch::Matched(byte) => {
             builtin_intrinsics::set_preg_match_single_byte_match(&matches, &[byte]);
