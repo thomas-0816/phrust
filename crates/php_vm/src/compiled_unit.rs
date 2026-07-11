@@ -2,7 +2,7 @@
 
 use php_ir::constants::IrConstant;
 use php_ir::ids::FunctionId;
-use php_ir::module::{ClassEntry, normalize_class_name};
+use php_ir::module::{ClassEntry, normalize_class_name, normalized_class_name};
 use php_ir::source_map::IrSpan;
 use php_ir::verify::verify_unit;
 use php_ir::{ConstId, IrUnit};
@@ -325,8 +325,8 @@ impl CompiledUnit {
     #[must_use]
     pub fn lookup_class(&self, name: &str) -> Option<&ClassEntry> {
         php_runtime::layout_stats::record_symbol_map_lookup();
-        let normalized = normalize_class_name(name);
-        let index = self.inner.class_lookup.get(&normalized).copied()?;
+        let normalized = normalized_class_name(name);
+        let index = self.inner.class_lookup.get(normalized.as_ref()).copied()?;
         self.inner.class_table.get(index).map(Arc::as_ref)
     }
 
@@ -336,8 +336,8 @@ impl CompiledUnit {
     #[must_use]
     pub fn lookup_class_arc(&self, name: &str) -> Option<Arc<ClassEntry>> {
         php_runtime::layout_stats::record_symbol_map_lookup();
-        let normalized = normalize_class_name(name);
-        let index = self.inner.class_lookup.get(&normalized).copied()?;
+        let normalized = normalized_class_name(name);
+        let index = self.inner.class_lookup.get(normalized.as_ref()).copied()?;
         self.inner.class_table.get(index).map(Arc::clone)
     }
 
@@ -345,8 +345,8 @@ impl CompiledUnit {
     #[must_use]
     pub fn lookup_unit_class(&self, name: &str) -> Option<&ClassEntry> {
         php_runtime::layout_stats::record_symbol_map_lookup();
-        let normalized = normalize_class_name(name);
-        let index = self.inner.unit_class_lookup.get(&normalized).copied()?;
+        let normalized = normalized_class_name(name);
+        let index = self.inner.unit_class_lookup.get(normalized.as_ref()).copied()?;
         self.inner.unit.classes.get(index)
     }
 

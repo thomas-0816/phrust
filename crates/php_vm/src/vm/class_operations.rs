@@ -3586,7 +3586,7 @@ pub(super) fn lookup_class_in_state_ref(
     state: &ExecutionState,
     class_name: &str,
 ) -> Option<ClassLookup> {
-    let normalized = normalize_class_name(class_name);
+    let normalized = php_ir::module::normalized_class_name(class_name);
     if let Some(entry) = dynamic_class_entry_by_normalized_name(state, &normalized) {
         return Some(ClassLookup::Shared(Arc::clone(&entry.class)));
     }
@@ -3596,7 +3596,7 @@ pub(super) fn lookup_class_in_state_ref(
     if let Some(class) = dynamic_class_in_loaded_units(state, &normalized) {
         return Some(ClassLookup::Shared(class));
     }
-    if state.failed_class_declarations.contains(&normalized) {
+    if state.failed_class_declarations.contains(normalized.as_ref()) {
         return None;
     }
     internal_runtime_class_entry(&normalized)

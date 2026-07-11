@@ -15,6 +15,19 @@ pub fn normalize_class_name(name: &str) -> String {
     name.trim_start_matches('\\').to_ascii_lowercase()
 }
 
+/// Allocation-free variant of [`normalize_class_name`] for lookup paths:
+/// runtime-supplied names are overwhelmingly already normalized (lowercase,
+/// no root slash), so borrowing them avoids a heap allocation per lookup.
+#[must_use]
+pub fn normalized_class_name(name: &str) -> std::borrow::Cow<'_, str> {
+    let trimmed = name.trim_start_matches('\\');
+    if trimmed.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        std::borrow::Cow::Owned(trimmed.to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(trimmed)
+    }
+}
+
 /// Preserves PHP-visible class spelling while removing a leading root slash.
 #[must_use]
 pub fn display_class_name(name: &str) -> String {
