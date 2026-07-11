@@ -1,4 +1,4 @@
-use super::builtin_adapter::builtin_source_span;
+use super::builtin_adapter::{BuiltinTypeError, builtin_source_span};
 use super::prelude::*;
 
 impl Vm {
@@ -39,20 +39,19 @@ impl Vm {
             Err(ArrayCallbackError::BuiltinType { function, actual }) => {
                 array_callback_type_error(output, compiled, stack, function, &actual)
             }
-            Err(ArrayCallbackError::Message(message)) => match builtin_type_error_message(&message)
-            {
-                Some(message) => builtin_type_error_result_with_failed_call(
-                    output,
-                    compiled,
-                    stack,
-                    state,
-                    name,
-                    &trace_values,
-                    call_span,
-                    message.to_owned(),
-                ),
-                None => self.runtime_error(output, compiled, stack, message),
-            },
+            Err(ArrayCallbackError::BuiltinTypeMessage(message)) => BuiltinTypeError {
+                output,
+                compiled,
+                stack,
+                state,
+                function: name,
+                values: &trace_values,
+                call_span,
+            }
+            .result(message),
+            Err(ArrayCallbackError::Message(message)) => {
+                self.runtime_error(output, compiled, stack, message)
+            }
         }
     }
 
@@ -138,13 +137,15 @@ impl Vm {
         state: &mut ExecutionState,
     ) -> Result<PhpString, ArrayCallbackError> {
         match effective_value(value) {
-            Value::Object(object) => Err(ArrayCallbackError::Message(format!(
-                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, {} given",
+            Value::Object(object) => Err(ArrayCallbackError::BuiltinTypeMessage(format!(
+                "{function}(): Argument #{position} (${param_name}) must be of type array|string, {} given",
                 object.display_name()
             ))),
-            Value::Fiber(_) | Value::Generator(_) => Err(ArrayCallbackError::Message(format!(
-                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, object given"
-            ))),
+            Value::Fiber(_) | Value::Generator(_) => {
+                Err(ArrayCallbackError::BuiltinTypeMessage(format!(
+                    "{function}(): Argument #{position} (${param_name}) must be of type array|string, object given"
+                )))
+            }
             _ => self.pcre_callback_string_value(compiled, value, call_span, output, stack, state),
         }
     }
@@ -323,13 +324,15 @@ impl Vm {
         value: &Value,
     ) -> Result<(), ArrayCallbackError> {
         match effective_value(value) {
-            Value::Object(object) => Err(ArrayCallbackError::Message(format!(
-                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, {} given",
+            Value::Object(object) => Err(ArrayCallbackError::BuiltinTypeMessage(format!(
+                "{function}(): Argument #{position} (${param_name}) must be of type array|string, {} given",
                 object.display_name()
             ))),
-            Value::Fiber(_) | Value::Generator(_) => Err(ArrayCallbackError::Message(format!(
-                "E_PHP_RUNTIME_BUILTIN_TYPE: {function}(): Argument #{position} (${param_name}) must be of type array|string, object given"
-            ))),
+            Value::Fiber(_) | Value::Generator(_) => {
+                Err(ArrayCallbackError::BuiltinTypeMessage(format!(
+                    "{function}(): Argument #{position} (${param_name}) must be of type array|string, object given"
+                )))
+            }
             _ => Ok(()),
         }
     }
@@ -411,8 +414,8 @@ impl Vm {
         let mut value = args[1].clone();
         for (key, callback) in patterns.iter() {
             let ArrayKey::String(pattern) = key else {
-                return Err(ArrayCallbackError::Message(
-                    "E_PHP_RUNTIME_BUILTIN_TYPE: preg_replace_callback_array(): Argument #1 ($pattern) must contain only string patterns as keys"
+                return Err(ArrayCallbackError::BuiltinTypeMessage(
+                    "preg_replace_callback_array(): Argument #1 ($pattern) must contain only string patterns as keys"
                         .to_owned(),
                 ));
             };
@@ -426,8 +429,8 @@ impl Vm {
                 callback,
             )
             .map_err(|_| {
-                ArrayCallbackError::Message(
-                    "E_PHP_RUNTIME_BUILTIN_TYPE: preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks"
+                ArrayCallbackError::BuiltinTypeMessage(
+                    "preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks"
                         .to_owned(),
                 )
             })?;

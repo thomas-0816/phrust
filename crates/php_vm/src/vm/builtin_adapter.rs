@@ -2,6 +2,45 @@
 
 use super::prelude::*;
 
+pub(super) struct BuiltinTypeError<'a> {
+    pub(super) output: &'a OutputBuffer,
+    pub(super) compiled: &'a CompiledUnit,
+    pub(super) stack: &'a CallStack,
+    pub(super) state: &'a mut ExecutionState,
+    pub(super) function: &'a str,
+    pub(super) values: &'a [Value],
+    pub(super) call_span: Option<php_ir::IrSpan>,
+}
+
+impl BuiltinTypeError<'_> {
+    pub(super) fn result(self, message: String) -> VmResult {
+        let diagnostic = RuntimeDiagnostic::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            RuntimeSeverity::FatalError,
+            message.clone(),
+            builtin_source_span(self.compiled, self.call_span),
+            stack_trace(self.compiled, self.stack),
+            Some(php_runtime::PhpReferenceClassification::TypeError),
+        );
+        let result =
+            VmResult::runtime_error_with_diagnostic(self.output.clone(), message, diagnostic);
+        if let Some(call_span) = self.call_span
+            && let Some(throwable) = runtime_error_throwable(&result)
+        {
+            tag_throwable_location(&throwable, self.compiled, call_span);
+            self.state.pending_trace = Some(capture_backtrace_string_with_builtin_failed_call(
+                self.compiled,
+                self.stack,
+                self.function,
+                self.values,
+                call_span,
+            ));
+            self.state.pending_throw = Some(throwable);
+        }
+        result
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum InternalFunctionDispatchCacheOutcome {
     Hit,

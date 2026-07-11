@@ -491,6 +491,7 @@ enum ArrayCallbackError {
         function: &'static str,
         actual: String,
     },
+    BuiltinTypeMessage(String),
     Message(String),
 }
 
@@ -28719,42 +28720,6 @@ fn array_callback_type_error(
         Some(php_runtime::PhpReferenceClassification::TypeError),
     );
     VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic)
-}
-
-fn builtin_type_error_message(message: &str) -> Option<&str> {
-    message.strip_prefix("E_PHP_RUNTIME_BUILTIN_TYPE: ")
-}
-
-#[allow(clippy::too_many_arguments)]
-fn builtin_type_error_result_with_failed_call(
-    output: &OutputBuffer,
-    compiled: &CompiledUnit,
-    stack: &CallStack,
-    state: &mut ExecutionState,
-    function: &str,
-    values: &[Value],
-    call_span: Option<php_ir::IrSpan>,
-    message: String,
-) -> VmResult {
-    let diagnostic = RuntimeDiagnostic::new(
-        "E_PHP_RUNTIME_BUILTIN_TYPE",
-        RuntimeSeverity::FatalError,
-        message.clone(),
-        builtin_source_span(compiled, call_span),
-        stack_trace(compiled, stack),
-        Some(php_runtime::PhpReferenceClassification::TypeError),
-    );
-    let result = VmResult::runtime_error_with_diagnostic(output.clone(), message, diagnostic);
-    if let Some(call_span) = call_span
-        && let Some(throwable) = runtime_error_throwable(&result)
-    {
-        tag_throwable_location(&throwable, compiled, call_span);
-        state.pending_trace = Some(capture_backtrace_string_with_builtin_failed_call(
-            compiled, stack, function, values, call_span,
-        ));
-        state.pending_throw = Some(throwable);
-    }
-    result
 }
 
 fn validate_array_callback_arg(

@@ -1,6 +1,6 @@
 //! VM-mediated callbacks used by internal builtins.
 
-use super::builtin_adapter::{builtin_source_span, execute_builtin_entry};
+use super::builtin_adapter::{BuiltinTypeError, builtin_source_span, execute_builtin_entry};
 use super::prelude::*;
 
 impl Vm {
@@ -792,6 +792,16 @@ impl Vm {
                 ArrayCallbackError::BuiltinType { function, actual } => {
                     array_callback_type_error(output, compiled, stack, function, &actual)
                 }
+                ArrayCallbackError::BuiltinTypeMessage(message) => BuiltinTypeError {
+                    output,
+                    compiled,
+                    stack,
+                    state,
+                    function: "iterator_apply",
+                    values: &values,
+                    call_span: None,
+                }
+                .result(message),
                 ArrayCallbackError::Message(message) => {
                     self.runtime_error(output, compiled, stack, message)
                 }

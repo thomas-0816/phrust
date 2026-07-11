@@ -1,4 +1,4 @@
-use super::builtin_adapter::builtin_source_span;
+use super::builtin_adapter::{BuiltinTypeError, builtin_source_span};
 use super::prelude::*;
 
 impl Vm {
@@ -47,6 +47,16 @@ impl Vm {
             Err(ArrayCallbackError::BuiltinType { function, actual }) => {
                 array_callback_type_error(output, compiled, stack, function, &actual)
             }
+            Err(ArrayCallbackError::BuiltinTypeMessage(message)) => BuiltinTypeError {
+                output,
+                compiled,
+                stack,
+                state,
+                function: name,
+                values: &[],
+                call_span,
+            }
+            .result(message),
             Err(ArrayCallbackError::Message(message)) => {
                 self.runtime_error(output, compiled, stack, message)
             }
@@ -470,6 +480,16 @@ impl Vm {
             Err(ArrayCallbackError::BuiltinType { function, actual }) => {
                 array_callback_type_error(output, compiled, stack, function, &actual)
             }
+            Err(ArrayCallbackError::BuiltinTypeMessage(message)) => BuiltinTypeError {
+                output,
+                compiled,
+                stack,
+                state,
+                function: name,
+                values: &[],
+                call_span: None,
+            }
+            .result(message),
             Err(ArrayCallbackError::Message(message)) => {
                 self.runtime_error(output, compiled, stack, message)
             }

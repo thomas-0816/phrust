@@ -1,3 +1,4 @@
+use super::builtin_adapter::BuiltinTypeError;
 use super::prelude::*;
 
 const VM_FILTER_DEFAULT: i64 = 516;
@@ -133,16 +134,16 @@ fn filter_callback_type_error_result(
     function: &str,
     call_span: Option<php_ir::IrSpan>,
 ) -> VmResult {
-    builtin_type_error_result_with_failed_call(
+    BuiltinTypeError {
         output,
         compiled,
         stack,
         state,
         function,
-        &[],
+        values: &[],
         call_span,
-        format!("{function}(): Option must be a valid callback"),
-    )
+    }
+    .result(format!("{function}(): Option must be a valid callback"))
 }
 
 fn filter_callback_callable_name(callback: &Value) -> Option<String> {
