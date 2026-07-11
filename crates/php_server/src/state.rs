@@ -151,6 +151,15 @@ impl ServerEngineState {
             options.vm_options.dense_include_execution = mode;
         }
         options.include_optimization_level = self.compile_optimization_level;
+        // Worker-stable symbol epochs are the server's production default:
+        // request workers replay the same includes, so slot-indexed inline
+        // caches survive the request boundary (measured -35% call-site
+        // re-resolutions on WordPress). PHRUST_WORKER_SYMBOL_EPOCH=0 is the
+        // kill switch; the CLI keeps the library default (off) for
+        // single-shot parity with the reference binary.
+        options.vm_options.worker_symbol_epoch = std::env::var("PHRUST_WORKER_SYMBOL_EPOCH")
+            .map(|value| value.trim() != "0")
+            .unwrap_or(true);
         if self.perf_ablation.disable_dense_includes {
             options.vm_options.dense_include_execution = DenseIncludeMode::Off;
         }
