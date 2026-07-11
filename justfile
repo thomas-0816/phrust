@@ -201,7 +201,9 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
 runtime-hardening-lints:
-    cargo clippy -p php_runtime -p php_vm --all-targets -- -D warnings -D unsafe-code
+    # unsafe enforcement lives in the crate roots (#![deny(unsafe_code)]);
+    # php_runtime carves out only the audited runtime_memory module.
+    cargo clippy -p php_runtime -p php_vm --all-targets -- -D warnings
 
 test:
     RUST_MIN_STACK="${PHRUST_RUST_MIN_STACK:-8388608}" cargo test --workspace
@@ -1054,6 +1056,7 @@ runtime-miri-smoke:
       exit 0; \
     fi; \
     cargo miri test -p php_runtime reference::tests::slot_alias_and_copy_semantics_are_distinct
+    cargo miri test -p php_runtime runtime_memory::tests
 
 runtime-sanitizer-smoke:
     @if [[ "${PHRUST_RUN_SANITIZER:-0}" != "1" ]]; then \

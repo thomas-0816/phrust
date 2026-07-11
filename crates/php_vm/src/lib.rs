@@ -10,6 +10,10 @@
 //! Root re-exports remain as compatibility aliases while local crates migrate to
 //! the explicit facades.
 
+// The interpreter crate forbids unsafe entirely; native-tier unsafe lives
+// in php_jit behind its own safety audit.
+#![deny(unsafe_code)]
+
 #[doc(hidden)]
 pub mod aliasing;
 #[doc(hidden)]

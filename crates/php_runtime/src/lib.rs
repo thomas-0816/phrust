@@ -12,6 +12,11 @@
 //! Module ownership is grouped in `docs/runtime/module-boundaries.md`. New
 //! top-level modules must be categorized there before they are exposed here.
 
+// Unsafe stays confined to the audited `runtime_memory` module (see
+// docs/adr/0020 and docs/performance/runtime-memory-safety-audit.md);
+// every other module in this crate remains forbidden from using it.
+#![deny(unsafe_code)]
+
 pub mod array;
 pub mod autoload;
 #[cfg(feature = "full-runtime")]
@@ -43,6 +48,7 @@ pub mod phar;
 pub mod reference;
 mod request_state;
 pub mod resource;
+pub(crate) mod runtime_memory;
 pub mod serialization;
 pub mod session;
 pub mod source_span;
