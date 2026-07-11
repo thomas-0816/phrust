@@ -1321,6 +1321,14 @@ profile-composer:
 release-profile-plan:
     scripts/performance/release_profile_plan.sh
 
+# Production binaries with telemetry recorders compiled out (runtime
+# request-profiling and layout counters are unavailable in these builds;
+# use the default release build for diagnosis). Measured on microbenches:
+# property reads ~11% faster, concatenation ~5%.
+release-lean:
+    cargo build --release -p php_server --no-default-features
+    cargo build --release -p php_vm_cli --bin php-vm --no-default-features --features jit-copy-patch
+
 release-benchmark-smoke:
     scripts/performance/release_profiles.py release
 
