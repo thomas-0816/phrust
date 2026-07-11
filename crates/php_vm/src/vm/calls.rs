@@ -2,6 +2,551 @@
 
 use super::prelude::*;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparedArg {
+    pub(super) value: Value,
+    pub(super) reference: Option<ReferenceCell>,
+    /// When true, this argument's backtrace entry must hold the live by-ref
+    /// cell so the trace observes later writes through the parameter (matching
+    /// the reference engine). Set only for a *supplied* by-ref parameter that
+    /// bound a cell; a by-ref parameter that fell back to its default keeps a
+    /// value snapshot instead, so it stays false.
+    pub(super) trace_holds_reference: bool,
+}
+
+pub(super) struct PreparedArguments {
+    pub(super) args: Vec<PreparedArg>,
+    pub(super) frame_args: Vec<Value>,
+    pub(super) diagnostics: Vec<RuntimeDiagnostic>,
+}
+
+pub(super) struct FunctionCall<'a> {
+    pub(super) args: Vec<CallArgument>,
+    /// R1.2 fast lane: bare positional argument values for an exact-arity
+    /// plain-positional call to a known simple callee, pre-validated by the
+    /// dense call arm. When non-empty, `args` is empty and the executor's
+    /// direct-bind loop consumes these values straight into the frame locals
+    /// — no `CallArgument` construction, no by-ref bookkeeping per argument.
+    /// Values are already effective (references dereferenced at read).
+    pub(super) positional_values: Vec<Value>,
+    pub(super) captures: Vec<ClosureCaptureValue>,
+    pub(super) call_span: Option<php_ir::IrSpan>,
+    pub(super) call_site_strict_types: Option<bool>,
+    pub(super) error_context_compiled: Option<CompiledUnit>,
+    pub(super) allow_by_ref_value_warnings: bool,
+    pub(super) by_ref_warning_callable_name: Option<String>,
+    pub(super) this_value: Option<ObjectRef>,
+    pub(super) scope_class: Option<Arc<str>>,
+    pub(super) called_class: Option<Arc<str>>,
+    pub(super) declaring_class: Option<Arc<str>>,
+    pub(super) shared_top_level_locals: Option<&'a mut HashMap<String, Slot>>,
+    pub(super) shared_top_level_bind_missing_globals: bool,
+    pub(super) running_generator: Option<GeneratorRef>,
+    pub(super) resume_continuation: Option<GeneratorContinuation>,
+    pub(super) resume_input: Option<GeneratorResumeInput>,
+    pub(super) running_fiber: Option<FiberRef>,
+    pub(super) resume_fiber_continuation: Option<FiberContinuation>,
+    pub(super) resume_fiber_input: Option<FiberResumeInput>,
+}
+
+impl FunctionCall<'_> {
+    pub(super) fn new(args: Vec<CallArgument>, captures: Vec<ClosureCaptureValue>) -> Self {
+        Self {
+            args,
+            positional_values: Vec::new(),
+            captures,
+            call_span: None,
+            call_site_strict_types: None,
+            error_context_compiled: None,
+            allow_by_ref_value_warnings: false,
+            by_ref_warning_callable_name: None,
+            this_value: None,
+            scope_class: None,
+            called_class: None,
+            declaring_class: None,
+            shared_top_level_locals: None,
+            shared_top_level_bind_missing_globals: false,
+            running_generator: None,
+            resume_continuation: None,
+            resume_input: None,
+            running_fiber: None,
+            resume_fiber_continuation: None,
+            resume_fiber_input: None,
+        }
+    }
+
+    pub(super) fn with_call_span(mut self, span: php_ir::IrSpan) -> Self {
+        self.call_span = Some(span);
+        self
+    }
+
+    pub(super) fn with_positional_values(mut self, values: Vec<Value>) -> Self {
+        debug_assert!(self.args.is_empty());
+        self.positional_values = values;
+        self
+    }
+
+    /// PHP-visible call arity across both argument representations.
+    pub(super) fn arg_count(&self) -> usize {
+        if self.positional_values.is_empty() {
+            self.args.len()
+        } else {
+            self.positional_values.len()
+        }
+    }
+
+    pub(super) fn with_optional_call_span(mut self, span: Option<php_ir::IrSpan>) -> Self {
+        self.call_span = span;
+        self
+    }
+
+    pub(super) fn with_call_site_strict_types(mut self, strict_types: bool) -> Self {
+        self.call_site_strict_types = Some(strict_types);
+        self
+    }
+
+    pub(super) fn argument_binding_policy(
+        &self,
+        fallback_compiled: &CompiledUnit,
+    ) -> arguments::ArgumentBindingPolicy {
+        // A span's FileId is only meaningful inside the unit that produced
+        // it. Resolve per-file strictness against the caller unit when the
+        // call carries one; otherwise trust the explicit call-site flag. The
+        // fallback-unit span resolution stays last: it is only correct for
+        // intra-unit calls, where the binder unit and the span's unit agree.
+        let strict_types = self
+            .error_context_compiled
+            .as_ref()
+            .zip(self.call_span)
+            .map(|(caller, span)| caller.unit().strict_types_for_span(span))
+            .or(self.call_site_strict_types)
+            .or_else(|| {
+                self.call_span
+                    .map(|span| fallback_compiled.unit().strict_types_for_span(span))
+            })
+            .unwrap_or(fallback_compiled.unit().strict_types);
+        arguments::ArgumentBindingPolicy {
+            call_site_strict_types: strict_types,
+        }
+    }
+
+    pub(super) fn with_error_context(mut self, compiled: CompiledUnit) -> Self {
+        self.error_context_compiled = Some(compiled);
+        self
+    }
+
+    pub(super) fn with_by_ref_value_warnings(mut self) -> Self {
+        self.allow_by_ref_value_warnings = true;
+        self
+    }
+
+    pub(super) fn with_optional_by_ref_warning_callable_name(
+        mut self,
+        name: Option<String>,
+    ) -> Self {
+        self.by_ref_warning_callable_name = name;
+        self
+    }
+
+    pub(super) fn running_generator(mut self, generator: GeneratorRef) -> Self {
+        self.running_generator = Some(generator);
+        self
+    }
+
+    pub(super) fn resume_generator(
+        mut self,
+        continuation: GeneratorContinuation,
+        input: GeneratorResumeInput,
+    ) -> Self {
+        self.resume_continuation = Some(continuation);
+        self.resume_input = Some(input);
+        self
+    }
+
+    pub(super) fn running_fiber(mut self, fiber: FiberRef) -> Self {
+        self.running_fiber = Some(fiber);
+        self
+    }
+
+    pub(super) fn inherit_fiber_context(mut self, fiber: &Option<FiberRef>) -> Self {
+        self.running_fiber = fiber.clone();
+        self
+    }
+
+    pub(super) fn resume_fiber(
+        mut self,
+        fiber: FiberRef,
+        continuation: FiberContinuation,
+        input: FiberResumeInput,
+    ) -> Self {
+        self.running_fiber = Some(fiber);
+        self.resume_fiber_continuation = Some(continuation);
+        self.resume_fiber_input = Some(input);
+        self
+    }
+
+    pub(super) fn with_this(mut self, this_value: ObjectRef) -> Self {
+        self.this_value = Some(this_value);
+        self
+    }
+
+    pub(super) fn with_class_context(
+        mut self,
+        scope_class: impl Into<String>,
+        called_class: impl Into<String>,
+        declaring_class: impl Into<String>,
+    ) -> Self {
+        self.scope_class = Some(Arc::from(normalize_class_name(&scope_class.into())));
+        self.called_class = Some(Arc::from(display_class_name(&called_class.into())));
+        self.declaring_class = Some(Arc::from(normalize_class_name(&declaring_class.into())));
+        self
+    }
+
+    /// Class-context fast path: the handles are already in the exact
+    /// normalized/display form `with_class_context` would produce, so
+    /// attaching them is three refcount bumps instead of three fresh
+    /// normalizing allocations.
+    pub(super) fn with_class_context_handles(
+        mut self,
+        scope_class: Arc<str>,
+        called_class: Arc<str>,
+        declaring_class: Arc<str>,
+    ) -> Self {
+        debug_assert_eq!(normalize_class_name(&scope_class), *scope_class);
+        debug_assert_eq!(display_class_name(&called_class), *called_class);
+        debug_assert_eq!(normalize_class_name(&declaring_class), *declaring_class);
+        self.scope_class = Some(scope_class);
+        self.called_class = Some(called_class);
+        self.declaring_class = Some(declaring_class);
+        self
+    }
+}
+
+/// Function-invariant frame-shape properties derived from a single body scan.
+/// Classifying a call frame otherwise re-scans the whole callee body on every
+/// call; these flags are memoized per (unit, function) so repeated calls reuse
+/// the scan result. Field semantics mirror `function_has_try_or_finally`,
+/// `function_may_hold_destructor_sensitive_value`, and
+/// `method_body_has_inline_blocker`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FrameShapeFlags {
+    pub(super) has_try_or_finally: bool,
+    pub(super) may_hold_destructor_sensitive_value: bool,
+    pub(super) has_inline_blocker: bool,
+}
+
+/// Precomputes the function-invariant call-shape facts for every function in
+/// a unit. Runs once per built execution plan; the per-call dispatch path
+/// indexes the result instead of consulting hashed memo caches.
+pub(super) fn dense_call_shape_meta_for_unit(
+    unit: &php_ir::module::IrUnit,
+) -> Vec<DenseCallShapeMeta> {
+    unit.functions
+        .iter()
+        .map(|function| DenseCallShapeMeta {
+            has_try_or_finally: function_has_try_or_finally(function),
+            may_hold_destructor_sensitive_value: function_may_hold_destructor_sensitive_value(
+                function,
+            ),
+            has_inline_blocker: method_body_has_inline_blocker(function),
+            elide_frame_args: !function_body_observes_argument_vector(function),
+            params_bind_direct: arguments::params_bind_direct(function),
+        })
+        .collect()
+}
+
+pub(super) fn prepared_function_facts(
+    compiled: &CompiledUnit,
+    function_id: FunctionId,
+    function: &IrFunction,
+) -> PreparedFunctionFacts {
+    compiled.prepared_function_facts(function_id, || PreparedFunctionFacts {
+        observes_argument_vector: function_body_observes_argument_vector(function),
+        has_try_or_finally: function_has_try_or_finally(function),
+        may_hold_destructor_sensitive_value: function_may_hold_destructor_sensitive_value(function),
+        has_inline_blocker: method_body_has_inline_blocker(function),
+    })
+}
+
+pub(super) fn frame_reuse_call_shape_blocked_reason(
+    function: &IrFunction,
+    call: &FunctionCall<'_>,
+    shape: FrameShapeFlags,
+    reuse_class_context: bool,
+) -> Option<&'static str> {
+    if function.flags.is_generator {
+        return Some("generator");
+    }
+    if call.running_generator.is_some() || call.resume_continuation.is_some() {
+        return Some("generator_continuation");
+    }
+    if call.running_fiber.is_some() || call.resume_fiber_continuation.is_some() {
+        return Some("fiber_continuation");
+    }
+    if function.returns_by_ref {
+        return Some("by_ref_return");
+    }
+    if function.params.iter().any(|param| param.by_ref) {
+        return Some("by_ref_param");
+    }
+    if function.flags.is_closure || !call.captures.is_empty() || !function.captures.is_empty() {
+        return Some(
+            if call.captures.is_empty() && function.captures.is_empty() {
+                "closure"
+            } else {
+                "closure_capture"
+            },
+        );
+    }
+    // Runtime lever R4: class-context calls (methods/constructors/static calls,
+    // or any call carrying `$this`/scope/called/declaring class) are reuse-blocked
+    // by default. With `reuse_class_context` on, they become reuse-eligible only
+    // if they clear every *other* guard below (shared-top-level-locals,
+    // try/finally, destructor-sensitive body) and the by-ref-argument guard the
+    // caller ORs in afterwards. The reuse/reset path fully resets `$this` and all
+    // class-context frame state (`reset_with_activation_context` overwrites
+    // scope/called/declaring class and re-zeroes every local/register, so the
+    // `$this` local is dropped and re-initialized per call), and teardown drops
+    // the prior occupant's values at the same `pop_recycle` point as a fresh frame.
+    let has_class_context = call.this_value.is_some()
+        || call.scope_class.is_some()
+        || call.called_class.is_some()
+        || call.declaring_class.is_some()
+        || function.flags.is_method;
+    if has_class_context && !reuse_class_context {
+        return Some("class_context");
+    }
+    if call.shared_top_level_locals.is_some() {
+        return Some("shared_top_level_locals");
+    }
+    if shape.has_try_or_finally {
+        return Some("try_finally");
+    }
+    if shape.may_hold_destructor_sensitive_value {
+        return Some("destructor_sensitive_value");
+    }
+    None
+}
+
+pub(super) fn frame_reuse_prepared_args_blocked_reason(
+    prepared_args: &[PreparedArg],
+) -> Option<&'static str> {
+    prepared_args
+        .iter()
+        .any(|arg| arg.reference.is_some())
+        .then_some("by_ref_argument")
+}
+
+pub(super) fn call_frame_layout_class(
+    function: &IrFunction,
+    call: &FunctionCall<'_>,
+    shape: FrameShapeFlags,
+) -> &'static str {
+    if function.flags.is_generator
+        || call.running_generator.is_some()
+        || call.resume_continuation.is_some()
+    {
+        return "generator_frame";
+    }
+    if call.running_fiber.is_some() || call.resume_fiber_continuation.is_some() {
+        return "fiber_frame";
+    }
+    if call.shared_top_level_locals.is_some() || function.flags.is_top_level {
+        return "include_eval_frame";
+    }
+    if function.flags.is_closure || !call.captures.is_empty() || !function.captures.is_empty() {
+        return "closure_frame";
+    }
+    if call.args.iter().any(|arg| arg.name.is_some())
+        || function.params.iter().any(|param| param.variadic)
+    {
+        return "variadic_named_argument_frame";
+    }
+    if call.by_ref_warning_callable_name.is_some() {
+        return "dynamic_reflection_call_frame";
+    }
+    if call.this_value.is_some()
+        || call.scope_class.is_some()
+        || call.called_class.is_some()
+        || call.declaring_class.is_some()
+        || function.flags.is_method
+    {
+        return "known_method_frame";
+    }
+    if function_is_specialized_tiny_leaf_candidate(function, call.arg_count(), shape) {
+        return "tiny_leaf_frame";
+    }
+    "known_function_frame"
+}
+
+pub(super) fn function_is_specialized_tiny_leaf_candidate(
+    function: &IrFunction,
+    supplied_arg_count: usize,
+    shape: FrameShapeFlags,
+) -> bool {
+    !function.flags.is_top_level
+        && !function.flags.is_method
+        && !function.flags.is_closure
+        && !function.flags.is_generator
+        && !function.returns_by_ref
+        && function.return_type.is_none()
+        && function.captures.is_empty()
+        && function.params.len() == supplied_arg_count
+        && function
+            .params
+            .iter()
+            .all(|param| !param.by_ref && !param.variadic && param.type_.is_none())
+        && !shape.has_try_or_finally
+        && !shape.may_hold_destructor_sensitive_value
+        && !shape.has_inline_blocker
+}
+
+pub(super) fn specialized_call_frame_fallback_reason(
+    layout: &str,
+    frame_reuse_blocked_reason: Option<&'static str>,
+    has_by_ref_arg: bool,
+) -> Option<&'static str> {
+    if layout == "tiny_leaf_frame" && frame_reuse_blocked_reason.is_none() {
+        return None;
+    }
+    match layout {
+        "known_method_frame" => Some("class_context"),
+        "closure_frame" => Some("closure"),
+        "variadic_named_argument_frame" => Some("named_or_variadic"),
+        "generator_frame" => Some("generator"),
+        "fiber_frame" => Some("fiber"),
+        "include_eval_frame" => Some("include_eval"),
+        "dynamic_reflection_call_frame" => Some("dynamic_reflection"),
+        "known_function_frame" | "tiny_leaf_frame" => frame_reuse_blocked_reason
+            .or_else(|| has_by_ref_arg.then_some("by_ref_argument"))
+            .or(Some("not_tiny_leaf")),
+        _ => frame_reuse_blocked_reason
+            .or_else(|| has_by_ref_arg.then_some("by_ref_argument"))
+            .or(Some("unsupported_layout")),
+    }
+}
+
+pub(super) fn function_has_try_or_finally(function: &IrFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.kind,
+                InstructionKind::EnterTry { .. }
+                    | InstructionKind::LeaveTry
+                    | InstructionKind::EndFinally { .. }
+            )
+        })
+    })
+}
+
+pub(super) fn function_may_hold_destructor_sensitive_value(function: &IrFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.kind,
+                InstructionKind::NewObject { .. } | InstructionKind::DynamicNewObject { .. }
+            )
+        })
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CallArgument {
+    pub(super) name: Option<String>,
+    pub(super) value: Value,
+    pub(super) value_kind: IrCallArgValueKind,
+    pub(super) by_ref_local: Option<LocalId>,
+    pub(super) by_ref_dim: Option<CallDimTarget>,
+    pub(super) by_ref_property: Option<CallPropertyTarget>,
+    pub(super) by_ref_property_dim: Option<CallPropertyDimTarget>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CallDimTarget {
+    pub(super) local: LocalId,
+    pub(super) dims: Vec<ArrayKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CallPropertyTarget {
+    pub(super) object: ObjectRef,
+    pub(super) property: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CallPropertyDimTarget {
+    pub(super) object: ObjectRef,
+    pub(super) property: String,
+    pub(super) dims: Vec<ArrayKey>,
+}
+
+impl CallArgument {
+    pub(super) fn positional(value: Value) -> Self {
+        Self {
+            name: None,
+            value,
+            value_kind: IrCallArgValueKind::Direct,
+            by_ref_local: None,
+            by_ref_dim: None,
+            by_ref_property: None,
+            by_ref_property_dim: None,
+        }
+    }
+}
+
+pub(super) fn function_call_shape(args: &[CallArgument]) -> FunctionCallShape {
+    FunctionCallShape {
+        arity: args.len().try_into().unwrap_or(u32::MAX),
+        named_arguments: args
+            .iter()
+            .filter_map(|arg| arg.name.clone())
+            .collect::<Vec<_>>(),
+        by_ref_arguments: CallReferenceMask::from_flags(
+            args.iter().map(call_argument_has_by_ref_metadata),
+        ),
+    }
+}
+
+pub(super) fn method_call_shape(args: &[CallArgument]) -> MethodCallShape {
+    MethodCallShape {
+        arity: args.len().try_into().unwrap_or(u32::MAX),
+        named_arguments: args
+            .iter()
+            .filter_map(|arg| arg.name.clone())
+            .collect::<Vec<_>>(),
+        by_ref_arguments: CallReferenceMask::from_flags(
+            args.iter().map(call_argument_has_by_ref_metadata),
+        ),
+    }
+}
+
+pub(super) fn dense_call_has_by_ref_argument(args: &[CallArgument]) -> bool {
+    args.iter().any(call_argument_has_by_ref_metadata)
+}
+
+pub(super) fn call_argument_has_by_ref_metadata(arg: &CallArgument) -> bool {
+    arg.by_ref_local.is_some()
+        || arg.by_ref_dim.is_some()
+        || arg.by_ref_property.is_some()
+        || arg.by_ref_property_dim.is_some()
+}
+
+pub(super) fn function_call_builtin_metadata(
+    target: &FunctionCallCacheTarget,
+) -> Option<FunctionCallBuiltinMetadata> {
+    let FunctionCallCacheTarget::Builtin { kind, name } = target else {
+        return None;
+    };
+    Some(FunctionCallBuiltinMetadata {
+        implementation_id: format!("{kind:?}:{name}"),
+        version: 1,
+    })
+}
+
+pub(super) fn function_call_target_is_builtin(target: &FunctionCallCacheTarget) -> bool {
+    matches!(target, FunctionCallCacheTarget::Builtin { .. })
+}
+
 impl Vm {
     /// Dispatches a runtime callable value (callable string, closure,
     /// invokable, callable array) through the shared function-call target
