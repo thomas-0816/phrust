@@ -184,6 +184,75 @@ pub(super) fn read_operand_at_frame(
     }
 }
 
+pub(super) fn read_operand(
+    unit: &IrUnit,
+    stack: &CallStack,
+    operand: Operand,
+) -> Result<Value, String> {
+    match operand {
+        Operand::Register(id) => {
+            let frame = stack.current().ok_or("no active frame")?;
+            let Some(value) = frame.registers.get(id) else {
+                return Err(format!("invalid register r{}", id.raw()));
+            };
+            if value.is_uninitialized() {
+                return Err(format!("read uninitialized register r{}", id.raw()));
+            }
+            Ok(value.clone())
+        }
+        Operand::Constant(id) => constant_value(unit, id),
+        Operand::Local(id) => {
+            let frame = stack.current().ok_or("no active frame")?;
+            let Some(value) = frame.locals.get(id) else {
+                return Err(format!("invalid local local:{}", id.raw()));
+            };
+            Ok(if value.is_uninitialized() {
+                Value::Null
+            } else {
+                value
+            })
+        }
+    }
+}
+
+pub(super) fn unset_register_operand_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    operand: Operand,
+) -> Result<(), String> {
+    let Operand::Register(id) = operand else {
+        return Ok(());
+    };
+    let frame = stack.frame_mut(frame_index).ok_or("no active frame")?;
+    Ok(frame.registers.unset(id)?)
+}
+
+pub(super) fn unset_consumed_assignment_value_operand_at_frame(
+    stack: &mut CallStack,
+    frame_index: usize,
+    value_operand: Operand,
+    assignment_result: RegId,
+) -> Result<(), String> {
+    let Operand::Register(source) = value_operand else {
+        return Ok(());
+    };
+    if source == assignment_result {
+        return Ok(());
+    }
+    unset_register_operand_at_frame(stack, frame_index, value_operand)
+}
+
+pub(super) fn unset_dense_register_operand(
+    stack: &mut CallStack,
+    operand: DenseOperand,
+) -> Result<(), String> {
+    if operand.kind != DenseOperandKind::Register {
+        return Ok(());
+    }
+    let frame = stack.current_mut().ok_or("no active frame")?;
+    Ok(frame.registers.unset(RegId::new(operand.index))?)
+}
+
 pub(super) fn take_discard_operand_at_frame(
     unit: &IrUnit,
     stack: &mut CallStack,
