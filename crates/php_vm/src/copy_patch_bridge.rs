@@ -35,7 +35,7 @@ use crate::frame::LocalFile;
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_ir::ids::LocalId;
 #[cfg(all(unix, target_arch = "aarch64"))]
-use php_ir::instruction::{IrCallArg, TerminatorKind};
+use php_ir::instruction::{CastKind, IrCallArg, TerminatorKind};
 #[cfg(all(unix, target_arch = "aarch64"))]
 use php_ir::module::{ClassEntry, ClassPropertyEntry, IrUnit, normalize_class_name};
 #[cfg(all(unix, target_arch = "aarch64"))]
@@ -652,15 +652,18 @@ fn recognize_property_load_leaf(
     // a scalar type (the helper then requires the property value to already
     // have exactly that tag — a `bool` in an untyped property returned through
     // `: int` must side-exit so the interpreter coerces it to `int(1)`), or
-    // `mixed` (never coerces; any scalar commits). Everything else — string/
-    // array/class returns always side-exit at the scalar gate anyway, and
-    // nullable/union/literal types have a coercion matrix — rejects.
+    // `mixed` (never coerces; any scalar commits). An UNDECLARED return type
+    // has no return-site coercion at all — identical to `mixed` — and it is
+    // the norm in legacy code (every WordPress getter), so it is admitted the
+    // same way. Everything else — string/array/class returns always side-exit
+    // at the scalar gate anyway, and nullable/union/literal types have a
+    // coercion matrix — rejects.
     let expected_result_tag = match function.return_type.as_ref() {
         Some(IrReturnType::Int) => JitCValueTag::Int as u16,
         Some(IrReturnType::Float) => JitCValueTag::FloatBits as u16,
         Some(IrReturnType::Bool) => JitCValueTag::Bool as u16,
-        Some(IrReturnType::Mixed) => 0,
-        _ => return None,
+        Some(IrReturnType::Mixed) | None => 0,
+        Some(_) => return None,
     };
     // The receiver (free-function object parameter or `$this`), with no
     // further declared parameters for a getter.
@@ -683,19 +686,64 @@ fn recognize_property_load_leaf(
         .map(|instruction| &instruction.kind)
         .filter(|kind| !matches!(kind, InstructionKind::Discard { .. }))
         .collect();
-    let [
-        InstructionKind::LoadLocal {
-            dst: load_reg,
-            local: load_local,
-        },
-        InstructionKind::FetchProperty {
-            dst: fetch_dst,
-            object: Operand::Register(object_reg),
-            property,
-        },
-    ] = kinds.as_slice()
-    else {
-        return None;
+    // Optionally with a trailing scalar cast (`return (bool) $this->prop;`,
+    // the ubiquitous legacy predicate shape): a cast to bool/int/float is an
+    // identity on a value that already carries exactly that tag, so it
+    // narrows the expected result tag instead of rejecting — any other
+    // runtime tag side-exits and the interpreter performs the real cast.
+    let (load_reg, load_local, fetch_dst, object_reg, property, cast) = match kinds.as_slice() {
+        [
+            InstructionKind::LoadLocal {
+                dst: load_reg,
+                local: load_local,
+            },
+            InstructionKind::FetchProperty {
+                dst: fetch_dst,
+                object: Operand::Register(object_reg),
+                property,
+            },
+        ] => (load_reg, load_local, fetch_dst, object_reg, property, None),
+        [
+            InstructionKind::LoadLocal {
+                dst: load_reg,
+                local: load_local,
+            },
+            InstructionKind::FetchProperty {
+                dst: fetch_dst,
+                object: Operand::Register(object_reg),
+                property,
+            },
+            InstructionKind::Cast {
+                dst: cast_dst,
+                kind: cast_kind,
+                src: Operand::Register(cast_src),
+            },
+        ] if cast_src == fetch_dst => {
+            let cast_tag = match cast_kind {
+                CastKind::Bool => JitCValueTag::Bool as u16,
+                CastKind::Int => JitCValueTag::Int as u16,
+                CastKind::Float => JitCValueTag::FloatBits as u16,
+                _ => return None,
+            };
+            (
+                load_reg,
+                load_local,
+                fetch_dst,
+                object_reg,
+                property,
+                Some((cast_dst, cast_tag)),
+            )
+        }
+        _ => return None,
+    };
+    let expected_result_tag = match (expected_result_tag, cast) {
+        (tag, None) => tag,
+        // Cast into an undeclared/mixed return: the cast tag is the whole
+        // contract. A declared scalar return must agree with the cast tag,
+        // or the committed value could still need return-site coercion.
+        (0, Some((_, cast_tag))) => cast_tag,
+        (tag, Some((_, cast_tag))) if tag == cast_tag => tag,
+        _ => return None,
     };
     if load_local.raw() != receiver.local {
         return None;
@@ -710,7 +758,8 @@ fn recognize_property_load_leaf(
     else {
         return None;
     };
-    if ret_reg != fetch_dst {
+    let expected_ret_reg = cast.map_or(fetch_dst, |(cast_dst, _)| cast_dst);
+    if ret_reg != expected_ret_reg {
         return None;
     }
 

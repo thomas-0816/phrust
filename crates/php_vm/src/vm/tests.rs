@@ -9402,12 +9402,13 @@ fn direct_frames_elide_argument_vectors_unless_observed() {
     // property is *typed* so the constructor's assignment stays off the
     // copy-patch property-store leaf (which executes the whole body natively
     // with no frame at all) and keeps exercising the direct-constructor-frame
-    // path this test asserts.
+    // path this test asserts; `get` routes through a local for the same
+    // reason, staying off the property-load leaf.
     let source = "<?php \
             function plain($a, $b) { return $a + $b; } \
             function observer() { return implode(\",\", func_get_args()); } \
             class Dto { public int $v = 0; public function __construct($v) { $this->v = $v; } \
-                        public function get() { return $this->v; } } \
+                        public function get() { $v = $this->v; return $v; } } \
             $sum = 0; \
             for ($i = 0; $i < 5; $i++) { $sum += plain($i, 1); } \
             $dto = new Dto(41); \
@@ -23426,5 +23427,38 @@ for ($i = 0; $i < 2; $i++) {
     assert_eq!(
         result.output.to_string_lossy(),
         "1:base-mutated\n2:base-mutated\n3:base-mutated\nXbc\nXbc\n"
+    );
+}
+
+#[test]
+fn property_getter_casts_agree_between_interpreter_and_native_leaf() {
+    // The copy-patch property-load leaf admits trailing scalar casts by
+    // narrowing the expected result tag: a matching tag commits the value
+    // unchanged (identity cast), anything else side-exits so the
+    // interpreter performs the real cast. The first iteration always runs
+    // interpreted and later ones may run natively, so identical output
+    // across iterations pins the parity for both paths.
+    let result = execute_source(
+        "<?php
+class P {
+    public $b = true;
+    public $n = 5;
+    public function cast_matching() { return (bool) $this->b; }
+    public function cast_coercing() { return (bool) $this->n; }
+    public function cast_widening() { return (int) $this->b; }
+    public function untyped_plain() { return $this->n; }
+}
+$p = new P();
+for ($i = 0; $i < 3; $i++) {
+    var_dump($p->cast_matching(), $p->cast_coercing(), $p->cast_widening(), $p->untyped_plain());
+}",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    let expected_round = "bool(true)\nbool(true)\nint(1)\nint(5)\n";
+    assert_eq!(
+        result.output.to_string_lossy(),
+        expected_round.repeat(3),
+        "cast getters must agree across interpreted and native iterations"
     );
 }
