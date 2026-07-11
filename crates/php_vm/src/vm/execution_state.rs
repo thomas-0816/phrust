@@ -507,8 +507,20 @@ pub(super) fn preserved_destructor_object_ids(preserved: &[Value]) -> GcObjectId
 }
 
 pub(super) fn destructor_candidates_for_value(value: &Value) -> Vec<ObjectRef> {
+    // The scan runs on every object-overwriting store; reusing one scratch
+    // set keeps its capacity across calls instead of re-growing a fresh
+    // table each time. The walk is a pure value-graph traversal (no PHP
+    // re-entry), so the borrow never nests.
+    thread_local! {
+        static SEEN_SCRATCH: std::cell::RefCell<GcSeenSet> =
+            std::cell::RefCell::new(GcSeenSet::default());
+    }
     let mut candidates = Vec::new();
-    collect_destructor_candidate_objects(value, &mut HashSet::new(), &mut candidates);
+    SEEN_SCRATCH.with(|scratch| {
+        let mut seen = scratch.borrow_mut();
+        seen.clear();
+        collect_destructor_candidate_objects(value, &mut seen, &mut candidates);
+    });
     candidates
 }
 
@@ -684,7 +696,7 @@ fn gc_drain_reachable(
 
 fn collect_destructor_candidate_objects(
     value: &Value,
-    seen: &mut HashSet<GcEntityId>,
+    seen: &mut GcSeenSet,
     candidates: &mut Vec<ObjectRef>,
 ) {
     match value {
