@@ -3,6 +3,474 @@
 use super::builtin_intrinsics::try_execute_simple_literal_pcre_builtin;
 use super::prelude::*;
 
+fn internal_registry_builtin_call_name(name: &str) -> Option<String> {
+    let registry = BuiltinRegistry::new();
+    if registry.contains(name) {
+        return Some(name.to_owned());
+    }
+    let short = name.rsplit_once('\\')?.1;
+    if short.is_empty() {
+        return None;
+    }
+    registry.contains(short).then(|| short.to_owned())
+}
+
+pub(super) fn builtin_function_call_target(name: &str) -> Option<FunctionCallCacheTarget> {
+    if is_autoload_builtin_name(name) || is_symbol_introspection_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::AutoloadOrSymbolIntrospection,
+            name: Arc::from(name),
+        });
+    }
+    if is_config_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::Config,
+            name: Arc::from(name),
+        });
+    }
+    if is_error_handling_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::ErrorHandling,
+            name: Arc::from(name),
+        });
+    }
+    if is_output_buffering_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::OutputBuffering,
+            name: Arc::from(name),
+        });
+    }
+    if is_environment_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::Environment,
+            name: Arc::from(name),
+        });
+    }
+    if is_process_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::Process,
+            name: Arc::from(name),
+        });
+    }
+    if is_pcre_callback_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::PcreCallback,
+            name: Arc::from(name),
+        });
+    }
+    if is_filter_callback_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::FilterCallback,
+            name: Arc::from(name),
+        });
+    }
+    if is_array_callback_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::ArrayCallback,
+            name: Arc::from(name),
+        });
+    }
+    if is_array_sort_builtin_name(name) {
+        return Some(FunctionCallCacheTarget::Builtin {
+            kind: FunctionCallBuiltinKind::ArraySort,
+            name: Arc::from(name),
+        });
+    }
+    internal_registry_builtin_call_name(name).map(|name| FunctionCallCacheTarget::Builtin {
+        kind: FunctionCallBuiltinKind::InternalRegistry,
+        name: Arc::from(name),
+    })
+}
+
+pub(super) fn namespaced_function_global_fallback(name: &str) -> Option<&str> {
+    let short = name.rsplit_once('\\')?.1;
+    (!short.is_empty()).then_some(short)
+}
+
+pub(super) fn load_local_is_pre_call_by_ref_out_param(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    instructions: &[Instruction],
+    instruction_index: usize,
+    dst: RegId,
+    local: LocalId,
+) -> bool {
+    let loaded = Operand::Register(dst);
+    for instruction in instructions.iter().skip(instruction_index + 1) {
+        match &instruction.kind {
+            InstructionKind::Nop => continue,
+            InstructionKind::LoadConst { dst: next_dst, .. }
+            | InstructionKind::FetchConst { dst: next_dst, .. }
+            | InstructionKind::LoadLocal { dst: next_dst, .. }
+            | InstructionKind::LoadLocalQuiet { dst: next_dst, .. } => {
+                if *next_dst == dst {
+                    return false;
+                }
+                continue;
+            }
+            InstructionKind::CallFunction { name, args, .. } => {
+                return call_function_load_is_actual_by_ref_arg(
+                    compiled, state, name, args, loaded, local,
+                );
+            }
+            InstructionKind::CallMethod { args, .. }
+            | InstructionKind::CallStaticMethod { args, .. }
+            | InstructionKind::CallClosure { args, .. }
+            | InstructionKind::CallCallable { args, .. }
+            | InstructionKind::NewObject { args, .. }
+            | InstructionKind::BindReferenceFromCall { args, .. }
+            | InstructionKind::BindReferenceFromMethodCall { args, .. } => {
+                return args.iter().any(|arg| {
+                    arg.value == loaded
+                        && arg.by_ref_local.is_some_and(|arg_local| arg_local == local)
+                });
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn call_function_load_is_actual_by_ref_arg(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    name: &str,
+    args: &[IrCallArg],
+    loaded: Operand,
+    local: LocalId,
+) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        arg.value == loaded
+            && arg.by_ref_local.is_some_and(|arg_local| arg_local == local)
+            && direct_function_arg_requires_reference(compiled, state, name, index, arg)
+    })
+}
+
+fn direct_function_arg_requires_reference(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    name: &str,
+    index: usize,
+    arg: &IrCallArg,
+) -> bool {
+    let normalized = normalize_function_name(name);
+    if !normalized.contains('\\') && builtin_function_call_target(&normalized).is_some() {
+        return direct_builtin_arg_requires_reference(
+            &normalized,
+            index,
+            ir_call_arg_has_by_ref_metadata(arg),
+        );
+    }
+    if let Some(function_id) = compiled.lookup_function(&normalized)
+        && let Some(function) = compiled.unit().functions.get(function_id.index())
+    {
+        return ir_function_arg_requires_reference(function, index, arg);
+    }
+    if let Some((owner, function_id)) = dynamic_function_in_state(state, &normalized)
+        && let Some(function) = owner.unit().functions.get(function_id.index())
+    {
+        return ir_function_arg_requires_reference(function, index, arg);
+    }
+    if let Some(fallback_name) = namespaced_function_global_fallback(&normalized) {
+        if let Some(function_id) = compiled.lookup_function(fallback_name)
+            && let Some(function) = compiled.unit().functions.get(function_id.index())
+        {
+            return ir_function_arg_requires_reference(function, index, arg);
+        }
+        if let Some((owner, function_id)) = dynamic_function_in_state(state, fallback_name)
+            && let Some(function) = owner.unit().functions.get(function_id.index())
+        {
+            return ir_function_arg_requires_reference(function, index, arg);
+        }
+    }
+    direct_builtin_arg_requires_reference(&normalized, index, ir_call_arg_has_by_ref_metadata(arg))
+}
+
+fn ir_call_arg_has_by_ref_metadata(arg: &IrCallArg) -> bool {
+    arg.by_ref_local.is_some()
+        || arg.by_ref_dim.is_some()
+        || arg.by_ref_property.is_some()
+        || arg.by_ref_property_dim.is_some()
+}
+
+fn ir_function_arg_requires_reference(
+    function: &IrFunction,
+    index: usize,
+    arg: &IrCallArg,
+) -> bool {
+    ir_function_param_requires_reference(function, index, arg.name.as_deref())
+}
+
+fn ir_function_param_requires_reference(
+    function: &IrFunction,
+    index: usize,
+    arg_name: Option<&str>,
+) -> bool {
+    let param = if let Some(name) = arg_name {
+        function.params.iter().find(|param| param.name == name)
+    } else {
+        function.params.get(index).or_else(|| {
+            function
+                .params
+                .last()
+                .filter(|param| param.variadic && index >= function.params.len())
+        })
+    };
+    param.is_some_and(|param| param.by_ref)
+}
+
+fn direct_builtin_arg_requires_reference(
+    name: &str,
+    index: usize,
+    arg_is_referenceable: bool,
+) -> bool {
+    let target = builtin_function_call_target(name).or_else(|| {
+        namespaced_function_global_fallback(name).and_then(builtin_function_call_target)
+    });
+    let Some(FunctionCallCacheTarget::Builtin { kind, name }) = target else {
+        return false;
+    };
+    match kind {
+        FunctionCallBuiltinKind::InternalRegistry | FunctionCallBuiltinKind::PcreCallback => {
+            internal_builtin_param_requires_reference(&name, index)
+        }
+        FunctionCallBuiltinKind::FilterCallback => {
+            internal_builtin_param_requires_reference(&name, index)
+        }
+        FunctionCallBuiltinKind::Process => process_builtin_param_requires_reference(&name, index),
+        FunctionCallBuiltinKind::ArraySort => {
+            array_sort_builtin_param_requires_reference(&name, index, arg_is_referenceable)
+        }
+        FunctionCallBuiltinKind::ArrayCallback => {
+            array_callback_builtin_param_requires_reference(&name, index)
+        }
+        _ => false,
+    }
+}
+
+fn array_callback_builtin_param_requires_reference(function: &str, index: usize) -> bool {
+    matches!(function, "array_walk" | "array_walk_recursive") && index == 0
+}
+
+pub(super) fn internal_builtin_param_requires_reference(function: &str, index: usize) -> bool {
+    if let Some(metadata) = php_std::arginfo::function_metadata_indexed(function)
+        && metadata.params.get(index).is_some_and(|param| param.by_ref)
+    {
+        return true;
+    }
+    (function == "str_replace" && index == 3)
+        || (function == "parse_str" && index == 1)
+        || (function == "mysqli_stmt_bind_param" && index >= 2)
+        || (function == "mysqli_stmt_bind_result" && index >= 1)
+        || (function == "curl_multi_exec" && index == 1)
+        || (function == "openssl_random_pseudo_bytes" && index == 1)
+        || (matches!(function, "preg_match" | "preg_match_all") && index == 2)
+        || (function == "preg_replace" && index == 4)
+        || (function == "preg_replace_callback" && index == 4)
+        || (function == "preg_replace_callback_array" && index == 3)
+        || (function == "apcu_fetch" && index == 1)
+        || (matches!(function, "apcu_dec" | "apcu_inc") && index == 2)
+        || (matches!(
+            function,
+            "array_pop"
+                | "array_push"
+                | "array_shift"
+                | "array_splice"
+                | "array_unshift"
+                | "end"
+                | "next"
+                | "prev"
+                | "reset"
+                | "shuffle"
+        ) && index == 0)
+}
+
+fn process_builtin_param_requires_reference(function: &str, index: usize) -> bool {
+    matches!((function, index), ("exec", 1 | 2) | ("passthru", 1))
+}
+
+fn array_sort_builtin_param_requires_reference(
+    function: &str,
+    index: usize,
+    arg_is_referenceable: bool,
+) -> bool {
+    if function == "array_multisort" {
+        return arg_is_referenceable;
+    }
+    index == 0
+}
+
+pub(super) fn dense_load_local_is_pre_call_by_ref_out_param(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    dense: &DenseBytecodeUnit,
+    instructions: &[DenseInstruction],
+    instruction_offset: usize,
+    dst: u32,
+    local: u32,
+) -> bool {
+    let loaded = DenseOperand {
+        kind: DenseOperandKind::Register,
+        index: dst,
+    };
+    for instruction in instructions.iter().skip(instruction_offset + 1) {
+        match instruction.opcode {
+            DenseOpcode::Nop => continue,
+            DenseOpcode::LoadConst
+            | DenseOpcode::LoadConstEcho
+            | DenseOpcode::FetchConst
+            | DenseOpcode::Move
+            | DenseOpcode::LoadLocal
+            | DenseOpcode::LoadLocalEcho => {
+                if dense_instruction_dst(instruction) == Some(dst) {
+                    return false;
+                }
+                continue;
+            }
+            DenseOpcode::LoadLocalLoadConst => {
+                let DenseOperands::LoadLocalLoadConst {
+                    first_dst,
+                    second_dst,
+                    ..
+                } = instruction.operands
+                else {
+                    return false;
+                };
+                if first_dst == dst || second_dst == dst {
+                    return false;
+                }
+                continue;
+            }
+            DenseOpcode::CallFunction | DenseOpcode::CallFunctionDiscard => {
+                let DenseOperands::Call { name, ref args, .. } = instruction.operands else {
+                    return false;
+                };
+                let Some(name) = dense.names.get(name as usize) else {
+                    return false;
+                };
+                return dense_call_function_load_is_actual_by_ref_arg(
+                    compiled, state, dense, name, args, loaded, local,
+                );
+            }
+            DenseOpcode::CallMethod | DenseOpcode::CallStaticMethod => {
+                let Some(args) = dense_instruction_call_args(instruction) else {
+                    return false;
+                };
+                return args.iter().any(|arg| {
+                    arg.value == loaded
+                        && arg.by_ref_local.is_some_and(|arg_local| arg_local == local)
+                });
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn dense_call_function_load_is_actual_by_ref_arg(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    dense: &DenseBytecodeUnit,
+    name: &str,
+    args: &[DenseCallArg],
+    loaded: DenseOperand,
+    local: u32,
+) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        arg.value == loaded
+            && arg.by_ref_local.is_some_and(|arg_local| arg_local == local)
+            && dense_direct_function_arg_requires_reference(
+                compiled, state, dense, name, index, arg,
+            )
+    })
+}
+
+fn dense_direct_function_arg_requires_reference(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    dense: &DenseBytecodeUnit,
+    name: &str,
+    index: usize,
+    arg: &DenseCallArg,
+) -> bool {
+    let normalized = normalize_function_name(name);
+    if !normalized.contains('\\') && builtin_function_call_target(&normalized).is_some() {
+        return direct_builtin_arg_requires_reference(
+            &normalized,
+            index,
+            dense_call_arg_has_by_ref_metadata(arg),
+        );
+    }
+    let arg_name = arg
+        .name
+        .and_then(|name| dense.names.get(name as usize).map(String::as_str));
+    if let Some(function_id) = compiled.lookup_function(&normalized)
+        && let Some(function) = compiled.unit().functions.get(function_id.index())
+    {
+        return ir_function_param_requires_reference(function, index, arg_name);
+    }
+    if let Some((owner, function_id)) = dynamic_function_in_state(state, &normalized)
+        && let Some(function) = owner.unit().functions.get(function_id.index())
+    {
+        return ir_function_param_requires_reference(function, index, arg_name);
+    }
+    if let Some(fallback_name) = namespaced_function_global_fallback(&normalized) {
+        if let Some(function_id) = compiled.lookup_function(fallback_name)
+            && let Some(function) = compiled.unit().functions.get(function_id.index())
+        {
+            return ir_function_param_requires_reference(function, index, arg_name);
+        }
+        if let Some((owner, function_id)) = dynamic_function_in_state(state, fallback_name)
+            && let Some(function) = owner.unit().functions.get(function_id.index())
+        {
+            return ir_function_param_requires_reference(function, index, arg_name);
+        }
+    }
+    direct_builtin_arg_requires_reference(
+        &normalized,
+        index,
+        dense_call_arg_has_by_ref_metadata(arg),
+    )
+}
+
+fn dense_call_arg_has_by_ref_metadata(arg: &DenseCallArg) -> bool {
+    arg.by_ref_local.is_some()
+        || arg.by_ref_dim.is_some()
+        || arg.by_ref_property.is_some()
+        || arg.by_ref_property_dim.is_some()
+}
+
+fn dense_instruction_dst(instruction: &DenseInstruction) -> Option<u32> {
+    match instruction.operands {
+        DenseOperands::RegConst { dst, .. }
+        | DenseOperands::RegOperand { dst, .. }
+        | DenseOperands::Binary { dst, .. }
+        | DenseOperands::Call { dst, .. }
+        | DenseOperands::MethodCall { dst, .. }
+        | DenseOperands::StaticCall { dst, .. }
+        | DenseOperands::RegName { dst, .. }
+        | DenseOperands::Cast { dst, .. }
+        | DenseOperands::Dst { dst }
+        | DenseOperands::FetchDim { dst, .. }
+        | DenseOperands::AssignDim { dst, .. }
+        | DenseOperands::IssetDim { dst, .. }
+        | DenseOperands::EmptyDim { dst, .. }
+        | DenseOperands::ForeachNext { has_value: dst, .. }
+        | DenseOperands::FetchProperty { dst, .. }
+        | DenseOperands::AssignProperty { dst, .. } => Some(dst),
+        _ => None,
+    }
+}
+
+fn dense_instruction_call_args(instruction: &DenseInstruction) -> Option<&[DenseCallArg]> {
+    match &instruction.operands {
+        DenseOperands::Call { args, .. }
+        | DenseOperands::MethodCall { args, .. }
+        | DenseOperands::StaticCall { args, .. } => Some(args),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PreparedArg {
     pub(super) value: Value,
