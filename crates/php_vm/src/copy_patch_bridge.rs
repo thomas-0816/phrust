@@ -779,9 +779,16 @@ fn recognize_property_load_leaf(
     if property_entry.hooks.get.is_some() || property_entry.hooks.set.is_some() {
         return None;
     }
-    if class_or_parent_has_public_magic_get(ir, class) {
-        return None;
-    }
+    // A hierarchy `__get` does NOT reject: PHP only routes reads through
+    // `__get` when the property is inaccessible or undefined, and this shape
+    // admits only accessible declared slots (public, or private/protected
+    // from their own scope). The one way such a slot becomes undefined —
+    // `unset($this->prop)` — empties its runtime storage, which the native
+    // helper answers with a storage side exit (`jit_property_load_fetch`
+    // returns `STORAGE_EXIT` for an absent slot), so the interpreter runs
+    // the getter and re-arms `__get` exactly as before. Every WordPress
+    // core class carries a compat `__get`; the blanket rejection kept the
+    // whole property-leaf family off real legacy code.
     let property_slot_index = declaring_class
         .properties
         .iter()
@@ -968,9 +975,13 @@ fn recognize_property_store_leaf(
     if property_entry.hooks.get.is_some() || property_entry.hooks.set.is_some() {
         return None;
     }
-    if class_or_parent_has_public_magic_set(ir, class) {
-        return None;
-    }
+    // A hierarchy `__set` does NOT reject, mirroring the load leaf's `__get`
+    // reasoning: writes reach `__set` only for inaccessible or undefined
+    // properties, this shape admits only accessible declared slots, and the
+    // undefined case (`unset($this->prop)` re-arming `__set`) empties the
+    // runtime storage, which `jit_property_store_commit` answers with a
+    // storage side exit *before any write* — the interpreter then performs
+    // the store and invokes `__set` exactly as before.
     let property_slot_index = declaring_class
         .properties
         .iter()
@@ -1025,48 +1036,6 @@ fn lookup_property_in_unit<'a>(
         .as_deref()
         .and_then(|parent| lookup_ir_class(unit, parent))?;
     lookup_property_in_unit(unit, parent, property)
-}
-
-/// True when `class` or an ancestor declares a public instance `__get`, which
-/// would make a "missing" property read call user code (mirrors the Cranelift
-/// recognizer's `class_or_parent_has_public_magic_get`).
-#[cfg(all(unix, target_arch = "aarch64"))]
-fn class_or_parent_has_public_magic_get(unit: &IrUnit, class: &ClassEntry) -> bool {
-    if class.methods.iter().any(|method| {
-        method.name.eq_ignore_ascii_case("__get")
-            && !method.flags.is_static
-            && !method.flags.is_private
-            && !method.flags.is_protected
-    }) {
-        return true;
-    }
-    class
-        .parent
-        .as_deref()
-        .and_then(|parent| lookup_ir_class(unit, parent))
-        .is_some_and(|parent| class_or_parent_has_public_magic_get(unit, parent))
-}
-
-/// True when `class` or an ancestor declares a public instance `__set`, which
-/// would make a "missing" (`unset()`) property write call user code (the write
-/// mirror of [`class_or_parent_has_public_magic_get`]; the runtime storage
-/// guard also side-exits that case, so this is recognition-time defense in
-/// depth).
-#[cfg(all(unix, target_arch = "aarch64"))]
-fn class_or_parent_has_public_magic_set(unit: &IrUnit, class: &ClassEntry) -> bool {
-    if class.methods.iter().any(|method| {
-        method.name.eq_ignore_ascii_case("__set")
-            && !method.flags.is_static
-            && !method.flags.is_private
-            && !method.flags.is_protected
-    }) {
-        return true;
-    }
-    class
-        .parent
-        .as_deref()
-        .and_then(|parent| lookup_ir_class(unit, parent))
-        .is_some_and(|parent| class_or_parent_has_public_magic_set(unit, parent))
 }
 
 /// Runtime storage name for a declared property (mirrors the Cranelift

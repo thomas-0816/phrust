@@ -23462,3 +23462,74 @@ for ($i = 0; $i < 3; $i++) {
         "cast getters must agree across interpreted and native iterations"
     );
 }
+
+#[test]
+fn magic_get_class_getters_stay_reference_exact_across_unset() {
+    // Classes with a hierarchy __get (every WordPress core class) now admit
+    // property-load leaves for their declared accessible slots. A declared
+    // property never routes through __get while set; unset() empties its
+    // runtime storage, which the native helper answers with a storage side
+    // exit, so the interpreter re-arms __get. The getter runs enough
+    // iterations for the native leaf to engage BEFORE the unset, so the
+    // post-unset calls prove the side exit, not just cold interpretation.
+    let result = execute_source(
+        "<?php
+class Compat {
+    public $flag = true;
+    public function __get($name) { return \"magic:$name\"; }
+    public function flag() { return (bool) $this->flag; }
+    public function raw() { return $this->flag; }
+}
+$c = new Compat();
+for ($i = 0; $i < 3; $i++) {
+    var_dump($c->flag(), $c->raw());
+}
+unset($c->flag);
+for ($i = 0; $i < 2; $i++) {
+    var_dump($c->raw());
+}",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        format!(
+            "{}{}",
+            "bool(true)\nbool(true)\n".repeat(3),
+            "string(10) \"magic:flag\"\n".repeat(2)
+        ),
+        "unset must re-arm __get identically on native-cached getters"
+    );
+}
+
+#[test]
+fn magic_set_class_setters_stay_reference_exact_across_unset() {
+    // The write-side mirror: a declared untyped slot admits the store leaf
+    // despite a hierarchy __set; unset() empties the storage and the store
+    // helper side-exits before writing, so the interpreter invokes __set.
+    let result = execute_source(
+        "<?php
+class Compat {
+    public $slot = 0;
+    public $seen = [];
+    public function __set($name, $value) { $this->seen[] = \"$name=$value\"; }
+    public function put($v) { $this->slot = $v; }
+}
+$c = new Compat();
+for ($i = 0; $i < 3; $i++) {
+    $c->put($i);
+}
+var_dump($c->slot);
+unset($c->slot);
+$c->put(9);
+$c->put(11);
+var_dump(isset($c->slot), $c->seen);",
+    );
+
+    assert!(result.status.is_success(), "{:?}", result.status);
+    assert_eq!(
+        result.output.to_string_lossy(),
+        "int(2)\nbool(false)\narray(2) {\n  [0]=>\n  string(6) \"slot=9\"\n  [1]=>\n  string(7) \"slot=11\"\n}\n",
+        "unset must re-arm __set identically on native-cached setters"
+    );
+}
