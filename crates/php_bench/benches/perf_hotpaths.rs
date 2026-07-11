@@ -1,4 +1,6 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use php_executor::ExecutorIncludeCompiler;
+use php_ir::ids::{BlockId, FunctionId, InstrId};
 use php_ir::{LoweringOptions, lower_frontend_result};
 use php_lexer::{LexerConfig, lex_all};
 use php_optimizer::OptimizationLevel;
@@ -11,7 +13,16 @@ use php_vm::api::{
     CompiledUnit, DeploymentRootFingerprint, DeploymentRootMode, IncludeCache, IncludeLoader,
     InlineCacheMode, QuickeningMode, Vm, VmOptions,
 };
+use php_vm::inline_cache::{
+    CallReferenceMask, FunctionCallCacheTarget, FunctionCallShape, InlineCacheKind,
+    InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget, MethodCallGuardMetadata,
+    MethodCallResolvedTarget, MethodCallShape, PropertyAssignCacheTarget,
+    PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget, PropertyFetchCacheTarget,
+    PropertyFetchLayoutMetadata, PropertyFetchResolvedTarget,
+};
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -171,13 +182,14 @@ impl Drop for IncludeBenchmarkFixture {
 fn bench_include_cache_identity(c: &mut Criterion) {
     let fixture = IncludeBenchmarkFixture::new();
     let loader = IncludeLoader::for_root(&fixture.root).expect("include loader");
+    let compiler = ExecutorIncludeCompiler::new(OptimizationLevel::O0);
 
     let mutable_cache = IncludeCache::new(4);
     let mutable_resolved = mutable_cache
         .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
         .expect("resolve mutable include");
     mutable_cache
-        .get_or_compile_include(&loader, &mutable_resolved, OptimizationLevel::O0)
+        .get_or_compile_include(&loader, &mutable_resolved, &compiler)
         .expect("warm mutable include");
     c.bench_function("performance/include_cache_hit_mutable_content", |b| {
         b.iter(|| {
@@ -186,7 +198,7 @@ fn bench_include_cache_identity(c: &mut Criterion) {
                     .get_or_compile_include(
                         black_box(&loader),
                         black_box(&mutable_resolved),
-                        OptimizationLevel::O0,
+                        &compiler,
                     )
                     .expect("mutable include hit"),
             );
@@ -203,7 +215,7 @@ fn bench_include_cache_identity(c: &mut Criterion) {
         .resolve_with_include_path(&loader, None, "lib.php", &[], Some(&fixture.root))
         .expect("resolve immutable include");
     immutable_cache
-        .get_or_compile_include(&loader, &immutable_resolved, OptimizationLevel::O0)
+        .get_or_compile_include(&loader, &immutable_resolved, &compiler)
         .expect("warm immutable include");
     c.bench_function("performance/include_cache_hit_immutable_identity", |b| {
         b.iter(|| {
@@ -212,7 +224,7 @@ fn bench_include_cache_identity(c: &mut Criterion) {
                     .get_or_compile_include(
                         black_box(&loader),
                         black_box(&immutable_resolved),
-                        OptimizationLevel::O0,
+                        &compiler,
                     )
                     .expect("immutable include hit"),
             );
@@ -239,6 +251,7 @@ fn bench_multi_file_include_compile(c: &mut Criterion) {
     let resolved = IncludeCache::new(1)
         .resolve_with_include_path(&loader, None, "Registry.php", &[], Some(&fixture.root))
         .expect("resolve multi-file include");
+    let compiler = ExecutorIncludeCompiler::new(OptimizationLevel::O0);
 
     c.bench_function("performance/multi_file_trait_compile", |b| {
         b.iter(|| {
@@ -248,7 +261,7 @@ fn bench_multi_file_include_compile(c: &mut Criterion) {
                     .get_or_compile_include(
                         black_box(&loader),
                         black_box(&resolved),
-                        OptimizationLevel::O0,
+                        &compiler,
                     )
                     .expect("compile multi-file include"),
             );
@@ -299,6 +312,234 @@ fn bench_vm(c: &mut Criterion) {
     });
     c.bench_function("performance/builtin_context_arginfo_mix", |b| {
         b.iter(|| execute_unit(black_box(&builtin_mix_unit)));
+    });
+}
+
+fn bench_inline_cache_lookup(c: &mut Criterion) {
+    let name = PhpString::intern(b"perf_target");
+    let shape = FunctionCallShape {
+        arity: 2,
+        named_arguments: Vec::new(),
+        by_ref_arguments: CallReferenceMask::default(),
+    };
+    let target = FunctionCallCacheTarget::CurrentUnit {
+        function: FunctionId::new(7),
+    };
+    let epoch = InvalidationEpoch::new(3);
+    let function = FunctionId::new(1);
+    let block = BlockId::new(2);
+    let instruction = InstrId::new(3);
+
+    let mut dense_table = InlineCacheTable::default();
+    let (id, _) = dense_table.bind_slot(
+        11,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::FunctionCall,
+    );
+    dense_table.install_function_call_by_id(
+        id,
+        &name,
+        epoch,
+        shape.clone(),
+        None,
+        target.clone(),
+    );
+    c.bench_function("performance/inline_cache_function_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(dense_table.lookup_function_call_by_id(
+                black_box(id),
+                black_box(&name),
+                black_box(epoch),
+                black_box(&shape),
+                None,
+            ));
+        });
+    });
+
+    let mut coordinate_table = InlineCacheTable::default();
+    coordinate_table.observe_slot(
+        11,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::FunctionCall,
+    );
+    coordinate_table.install_function_call(
+        11,
+        function,
+        block,
+        instruction,
+        &name,
+        epoch,
+        shape.clone(),
+        None,
+        target,
+    );
+    c.bench_function("performance/inline_cache_function_hit_coordinate", |b| {
+        b.iter(|| {
+            black_box(coordinate_table.lookup_function_call(
+                black_box(11),
+                black_box(function),
+                black_box(block),
+                black_box(instruction),
+                black_box(&name),
+                black_box(epoch),
+                black_box(&shape),
+                None,
+            ));
+        });
+    });
+
+    let mut method_table = InlineCacheTable::default();
+    let (method_id, _) = method_table.bind_slot(
+        12,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::MethodCall,
+    );
+    method_table.install_method_call_by_id(
+        method_id,
+        "run",
+        "perfbox",
+        None,
+        epoch,
+        MethodCallCacheTarget::CurrentUnit {
+            target: Rc::new(MethodCallResolvedTarget {
+                receiver_class: "perfbox".to_owned(),
+                declaring_class: "PerfBox".to_owned(),
+                function: FunctionId::new(8),
+                guard: MethodCallGuardMetadata {
+                    receiver_class_id: 1,
+                    class_layout_epoch: epoch.raw(),
+                    method_table_epoch: epoch.raw(),
+                    method_slot_index: Some(0),
+                    visibility_context: None,
+                    method_is_final: false,
+                    method_is_private: false,
+                    method_is_static: false,
+                    receiver_has_override: false,
+                    argument_shape: MethodCallShape {
+                        arity: 0,
+                        named_arguments: Vec::new(),
+                        by_ref_arguments: CallReferenceMask::default(),
+                    },
+                    by_ref_compatible: true,
+                    has_magic_call: false,
+                },
+                route: None,
+            }),
+        },
+    );
+    c.bench_function("performance/inline_cache_method_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(method_table.lookup_method_call_by_id(
+                black_box(method_id),
+                black_box("run"),
+                black_box("perfbox"),
+                None,
+                black_box(epoch),
+            ));
+        });
+    });
+
+    let mut property_fetch_table = InlineCacheTable::default();
+    let (property_fetch_id, _) = property_fetch_table.bind_slot(
+        13,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::PropertyFetch,
+    );
+    property_fetch_table.install_property_fetch_by_id(
+        property_fetch_id,
+        "value",
+        "perfbox",
+        None,
+        epoch,
+        PropertyFetchCacheTarget::CurrentUnit {
+            target: Arc::new(PropertyFetchResolvedTarget {
+                receiver_class: "perfbox".to_owned(),
+                declaring_class: "PerfBox".to_owned(),
+                property: "value".to_owned(),
+                storage_name: "value".to_owned(),
+                layout: PropertyFetchLayoutMetadata {
+                    class_id: 1,
+                    layout_version: epoch.raw(),
+                    property_slot_index: Some(0),
+                    visibility_context: None,
+                    typed_property_initialized: true,
+                    has_property_hooks: false,
+                    has_magic_get: false,
+                    dynamic_property_fallback: false,
+                },
+                object_layout_epoch: 1,
+                declared_slot: Some(0),
+            }),
+        },
+    );
+    c.bench_function("performance/inline_cache_property_fetch_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(property_fetch_table.lookup_property_fetch_by_id(
+                black_box(property_fetch_id),
+                black_box("value"),
+                black_box("perfbox"),
+                None,
+                black_box(epoch),
+            ));
+        });
+    });
+
+    let mut property_assign_table = InlineCacheTable::default();
+    let (property_assign_id, _) = property_assign_table.bind_slot(
+        14,
+        function,
+        block,
+        instruction,
+        InlineCacheKind::PropertyAssign,
+    );
+    property_assign_table.install_property_assign_by_id(
+        property_assign_id,
+        "value",
+        "perfbox",
+        None,
+        epoch,
+        PropertyAssignCacheTarget::CurrentUnit {
+            target: Arc::new(PropertyAssignResolvedTarget {
+                receiver_class: "perfbox".to_owned(),
+                declaring_class: "PerfBox".to_owned(),
+                property: "value".to_owned(),
+                storage_name: "value".to_owned(),
+                layout: PropertyAssignLayoutMetadata {
+                    class_id: 1,
+                    layout_version: epoch.raw(),
+                    property_slot_index: Some(0),
+                    visibility_context: None,
+                    typed_property: false,
+                    readonly_or_init_only: false,
+                    reference_slot: false,
+                    has_property_hooks: false,
+                    has_magic_set: false,
+                    dynamic_property_fallback: false,
+                },
+                object_layout_epoch: 1,
+                declared_slot: Some(0),
+                slot_write_eligible: true,
+            }),
+        },
+    );
+    c.bench_function("performance/inline_cache_property_assign_hit_dense_id", |b| {
+        b.iter(|| {
+            black_box(property_assign_table.lookup_property_assign_by_id(
+                black_box(property_assign_id),
+                black_box("value"),
+                black_box("perfbox"),
+                None,
+                black_box(epoch),
+            ));
+        });
     });
 }
 
@@ -598,6 +839,6 @@ fn bench_string_intrinsics(c: &mut Criterion) {
 criterion_group! {
     name = perf_hotpaths;
     config = configured_criterion();
-    targets = bench_frontend, bench_vm, bench_dynamic_symbols, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
+    targets = bench_frontend, bench_vm, bench_inline_cache_lookup, bench_dynamic_symbols, bench_runtime, bench_byte_kernels, bench_string_intrinsics, bench_include_cache_identity, bench_multi_file_include_compile
 }
 criterion_main!(perf_hotpaths);

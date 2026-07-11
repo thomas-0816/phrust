@@ -13,6 +13,7 @@ mod dense_method_dispatch;
 mod ext_redis;
 mod generator_fiber;
 mod include_execution;
+mod inline_cache_access;
 mod layout_source;
 mod operand_read;
 mod options;
@@ -58,7 +59,7 @@ use crate::inline_cache::{
     ClassConstantStaticPropertyCacheTarget, ClassRelationCache, ClassRelationCacheKey,
     ClassRelationCacheLookup, ClassRelationCacheTarget, ClassRelationEpochs, ClassRelationKind,
     FunctionCallBuiltinKind, FunctionCallBuiltinMetadata, FunctionCallCacheTarget,
-    FunctionCallShape, IncludePathCacheKey, IncludePathCacheTarget, InlineCacheKind,
+    FunctionCallShape, IncludePathCacheKey, IncludePathCacheTarget, InlineCacheId, InlineCacheKind,
     InlineCacheObservation, InlineCacheTable, InvalidationEpoch, MethodCallCacheTarget,
     MethodCallDispatchRoute, MethodCallGuardMetadata, MethodCallResolvedTarget, MethodCallShape,
     PropertyAssignCacheTarget, PropertyAssignLayoutMetadata, PropertyAssignResolvedTarget,
@@ -2700,10 +2701,6 @@ fn function_call_target_is_builtin(target: &FunctionCallCacheTarget) -> bool {
 #[derive(Clone, Debug)]
 pub struct Vm {
     options: VmOptions,
-    /// Thread-unique instance nonce guarding slot-indexed inline-cache
-    /// entries on thread-shared dense plans: entries populated by another
-    /// request's VM never validate for this one.
-    vm_nonce: u64,
     trace: RefCell<Vec<String>>,
     counters: RefCell<Option<VmCounters>>,
     literal_pool: RefCell<LiteralPool>,
@@ -2768,17 +2765,8 @@ impl Vm {
     #[must_use]
     pub fn with_options(options: VmOptions) -> Self {
         let tiering = TieringState::new(options.tiering.clone());
-        thread_local! {
-            static VM_NONCE: Cell<u64> = const { Cell::new(0) };
-        }
-        let vm_nonce = VM_NONCE.with(|nonce| {
-            let next = nonce.get().wrapping_add(1);
-            nonce.set(next);
-            next
-        });
         Self {
             options,
-            vm_nonce,
             trace: RefCell::new(Vec::new()),
             counters: RefCell::new(None),
             literal_pool: RefCell::new(LiteralPool::default()),
@@ -4632,257 +4620,6 @@ impl Vm {
         self.record_counter_inline_cache_site(function_id, instruction_id.raw(), observation);
     }
 
-    fn observe_dense_property_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        kind: InlineCacheKind,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        let observation = self.inline_caches.borrow_mut().observe_slot(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            kind,
-        );
-        self.record_inline_cache_site_event(function_id, instruction_id, observation);
-    }
-
-    fn observe_dense_call_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        kind: InlineCacheKind,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        let observation = self.inline_caches.borrow_mut().observe_slot(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            kind,
-        );
-        self.record_inline_cache_site_event(function_id, instruction_id, observation);
-    }
-
-    fn method_call_inline_cache_enabled(&self) -> bool {
-        self.options.inline_caches.enabled() || matches!(self.options.jit, JitMode::Cranelift)
-    }
-
-    fn lookup_function_call_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        lowered_name: &PhpString,
-        epoch: InvalidationEpoch,
-        shape: &FunctionCallShape,
-    ) -> Option<FunctionCallCacheTarget> {
-        if !self.options.inline_caches.enabled() {
-            return None;
-        }
-        let expected_builtin_metadata = self
-            .inline_caches
-            .borrow()
-            .peek_function_call_builtin_metadata(
-                compiled_unit_cache_key(compiled),
-                function_id,
-                block_id,
-                instruction_id,
-                lowered_name,
-                shape,
-            );
-        let (target, observation) = self.inline_caches.borrow_mut().lookup_function_call(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            lowered_name,
-            epoch,
-            shape,
-            expected_builtin_metadata.as_ref(),
-        );
-        self.record_inline_cache_site_event(function_id, instruction_id, observation);
-        if observation.hit {
-            self.record_counter_function_call_ic(true);
-            if target.as_ref().is_some_and(function_call_target_is_builtin) {
-                self.record_counter_builtin_call_ic(true);
-            }
-        } else if observation.miss {
-            self.record_counter_function_call_ic(false);
-            if observation.megamorphic {
-                self.record_counter_call_ic_megamorphic_fallback();
-            }
-        }
-        target
-    }
-
-    fn install_function_call_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        lowered_name: &PhpString,
-        epoch: InvalidationEpoch,
-        shape: FunctionCallShape,
-        target: FunctionCallCacheTarget,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        let builtin_metadata = function_call_builtin_metadata(&target);
-        self.inline_caches.borrow_mut().install_function_call(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            lowered_name,
-            epoch,
-            shape,
-            builtin_metadata,
-            target,
-        );
-    }
-
-    fn lookup_method_call_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        lowered_method: &str,
-        receiver_class: &str,
-        scope: Option<&str>,
-        epoch: InvalidationEpoch,
-    ) -> (
-        Option<MethodCallCacheTarget>,
-        Option<InlineCacheObservation>,
-    ) {
-        if !self.method_call_inline_cache_enabled() {
-            return (None, None);
-        }
-        let (target, observation) = self.inline_caches.borrow_mut().lookup_method_call(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            lowered_method,
-            receiver_class,
-            scope,
-            epoch,
-        );
-        self.record_inline_cache_site_event(function_id, instruction_id, observation);
-        if observation.hit {
-            self.record_counter_method_override_cache_hit();
-        } else if observation.miss {
-            self.record_counter_method_override_cache_miss();
-        }
-        (target, Some(observation))
-    }
-
-    fn install_method_call_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        lowered_method: &str,
-        receiver_class: &str,
-        scope: Option<&str>,
-        epoch: InvalidationEpoch,
-        target: MethodCallCacheTarget,
-    ) {
-        if !self.method_call_inline_cache_enabled() {
-            return;
-        }
-        let mut inline_caches = self.inline_caches.borrow_mut();
-        inline_caches.observe_slot(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            InlineCacheKind::MethodCall,
-        );
-        inline_caches.install_method_call(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            lowered_method,
-            receiver_class,
-            scope,
-            epoch,
-            target,
-        );
-    }
-
-    fn lookup_property_fetch_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        property: &str,
-        receiver_class: &str,
-        scope: Option<&str>,
-        epoch: InvalidationEpoch,
-    ) -> Option<PropertyFetchCacheTarget> {
-        if !self.options.inline_caches.enabled() {
-            return None;
-        }
-        let (target, observation) = self.inline_caches.borrow_mut().lookup_property_fetch(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            receiver_class,
-            scope,
-            epoch,
-        );
-        self.record_inline_cache_site_event(function_id, instruction_id, observation);
-        target
-    }
-
-    fn install_property_fetch_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        property: &str,
-        receiver_class: &str,
-        scope: Option<&str>,
-        epoch: InvalidationEpoch,
-        target: PropertyFetchCacheTarget,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        self.inline_caches.borrow_mut().install_property_fetch(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            receiver_class,
-            scope,
-            epoch,
-            target,
-        );
-    }
-
     #[expect(
         clippy::too_many_arguments,
         reason = "property IC installation needs the resolved property metadata and callsite guard context"
@@ -4904,6 +4641,7 @@ impl Vm {
         receiver_has_magic_get: bool,
         state: &ExecutionState,
         object: &ObjectRef,
+        cache_id: Option<InlineCacheId>,
     ) {
         if !self.options.inline_caches.enabled()
             || declaring_property.flags.is_static
@@ -4932,7 +4670,7 @@ impl Vm {
             false,
             true,
         );
-        let target_payload = Box::new(PropertyFetchResolvedTarget {
+        let target_payload = Arc::new(PropertyFetchResolvedTarget {
             receiver_class: receiver_class.to_owned(),
             declaring_class: declaring_class.name.clone(),
             property: declaring_property.name.clone(),
@@ -4950,73 +4688,30 @@ impl Vm {
                 target: target_payload,
             },
         };
-        self.install_property_fetch_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            receiver_class,
-            cache_scope.as_deref(),
-            lookup_epoch,
-            target,
-        );
-    }
-
-    fn lookup_property_assign_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        property: &str,
-        receiver_class: &str,
-        scope: Option<&str>,
-        epoch: InvalidationEpoch,
-    ) -> Option<PropertyAssignCacheTarget> {
-        if !self.options.inline_caches.enabled() {
-            return None;
+        if let Some(id) = cache_id {
+            self.inline_caches
+                .borrow_mut()
+                .install_property_fetch_by_id(
+                    id,
+                    property,
+                    receiver_class,
+                    cache_scope.as_deref(),
+                    lookup_epoch,
+                    target,
+                );
+        } else {
+            self.install_property_fetch_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                property,
+                receiver_class,
+                cache_scope.as_deref(),
+                lookup_epoch,
+                target,
+            );
         }
-        let (target, observation) = self.inline_caches.borrow_mut().lookup_property_assign(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            receiver_class,
-            scope,
-            epoch,
-        );
-        self.record_inline_cache_site_event(function_id, instruction_id, observation);
-        target
-    }
-
-    fn install_property_assign_inline_cache(
-        &self,
-        compiled: &CompiledUnit,
-        function_id: FunctionId,
-        block_id: BlockId,
-        instruction_id: php_ir::ids::InstrId,
-        property: &str,
-        receiver_class: &str,
-        scope: Option<&str>,
-        epoch: InvalidationEpoch,
-        target: PropertyAssignCacheTarget,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        self.inline_caches.borrow_mut().install_property_assign(
-            compiled_unit_cache_key(compiled),
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            receiver_class,
-            scope,
-            epoch,
-            target,
-        );
     }
 
     #[expect(
@@ -5040,6 +4735,7 @@ impl Vm {
         receiver_has_magic_set: bool,
         state: &ExecutionState,
         object: &ObjectRef,
+        cache_id: Option<InlineCacheId>,
     ) {
         if !self.options.inline_caches.enabled() {
             return;
@@ -5083,7 +4779,7 @@ impl Vm {
             false,
             false,
         );
-        let target_payload = Box::new(PropertyAssignResolvedTarget {
+        let target_payload = Arc::new(PropertyAssignResolvedTarget {
             receiver_class: receiver_class.to_owned(),
             declaring_class: declaring_class.name.clone(),
             property: declaring_property.name.clone(),
@@ -5105,22 +4801,36 @@ impl Vm {
                 target: target_payload,
             },
         };
-        self.install_property_assign_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            receiver_class,
-            cache_scope.as_deref(),
-            lookup_epoch,
-            target,
-        );
+        if let Some(id) = cache_id {
+            self.inline_caches
+                .borrow_mut()
+                .install_property_assign_by_id(
+                    id,
+                    property,
+                    receiver_class,
+                    cache_scope.as_deref(),
+                    lookup_epoch,
+                    target,
+                );
+        } else {
+            self.install_property_assign_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                property,
+                receiver_class,
+                cache_scope.as_deref(),
+                lookup_epoch,
+                target,
+            );
+        }
     }
 
     fn lookup_class_constant_static_property_inline_cache(
         &self,
         compiled: &CompiledUnit,
+        cache_id: Option<InlineCacheId>,
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: php_ir::ids::InstrId,
@@ -5133,20 +4843,32 @@ impl Vm {
         if !self.options.inline_caches.enabled() {
             return None;
         }
-        let (target, observation) = self
-            .inline_caches
-            .borrow_mut()
-            .lookup_class_constant_static_property(
-                compiled_unit_cache_key(compiled),
-                function_id,
-                block_id,
-                instruction_id,
-                kind,
-                resolved_class,
-                member,
-                scope,
-                epoch,
-            );
+        let (target, observation) = if let Some(id) = cache_id {
+            self.inline_caches
+                .borrow_mut()
+                .lookup_class_constant_static_property_by_id(
+                    id,
+                    kind,
+                    resolved_class,
+                    member,
+                    scope,
+                    epoch,
+                )
+        } else {
+            self.inline_caches
+                .borrow_mut()
+                .lookup_class_constant_static_property(
+                    compiled_unit_cache_key(compiled),
+                    function_id,
+                    block_id,
+                    instruction_id,
+                    kind,
+                    resolved_class,
+                    member,
+                    scope,
+                    epoch,
+                )
+        };
         self.record_inline_cache_site_event(function_id, instruction_id, observation);
         target
     }
@@ -5154,6 +4876,7 @@ impl Vm {
     fn install_class_constant_static_property_inline_cache(
         &self,
         compiled: &CompiledUnit,
+        cache_id: Option<InlineCacheId>,
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: php_ir::ids::InstrId,
@@ -5167,20 +4890,34 @@ impl Vm {
         if !self.options.inline_caches.enabled() {
             return;
         }
-        self.inline_caches
-            .borrow_mut()
-            .install_class_constant_static_property(
-                compiled_unit_cache_key(compiled),
-                function_id,
-                block_id,
-                instruction_id,
-                kind,
-                resolved_class,
-                member,
-                scope,
-                epoch,
-                target,
-            );
+        if let Some(id) = cache_id {
+            self.inline_caches
+                .borrow_mut()
+                .install_class_constant_static_property_by_id(
+                    id,
+                    kind,
+                    resolved_class,
+                    member,
+                    scope,
+                    epoch,
+                    target,
+                );
+        } else {
+            self.inline_caches
+                .borrow_mut()
+                .install_class_constant_static_property(
+                    compiled_unit_cache_key(compiled),
+                    function_id,
+                    block_id,
+                    instruction_id,
+                    kind,
+                    resolved_class,
+                    member,
+                    scope,
+                    epoch,
+                    target,
+                );
+        }
     }
 
     fn observe_quickening(
@@ -8055,11 +7792,6 @@ impl Vm {
             }
             self.record_counter_bytecode_lowered_families(&plan.unit);
             self.record_counter_bytecode_lower_success();
-            let slot_count = crate::bytecode::assign_function_call_cache_slots(&mut plan.unit);
-            plan.call_slots = crate::bytecode::DenseCallSlotTable::with_slot_count(slot_count);
-            plan.property_slots =
-                crate::bytecode::DensePropertySlotTable::with_slot_count(slot_count);
-            plan.method_slots = crate::bytecode::DenseMethodSlotTable::with_slot_count(slot_count);
             return Ok(plan);
         }
 
@@ -8103,7 +7835,6 @@ impl Vm {
         }
         self.record_counter_bytecode_lowered_families(&dense);
         self.record_counter_bytecode_lower_success();
-        let slot_count = crate::bytecode::assign_function_call_cache_slots(&mut dense);
         let functions = dense
             .functions
             .iter()
@@ -8113,9 +7844,6 @@ impl Vm {
             unit: dense,
             functions,
             call_shape_meta: Vec::new(),
-            call_slots: crate::bytecode::DenseCallSlotTable::with_slot_count(slot_count),
-            property_slots: crate::bytecode::DensePropertySlotTable::with_slot_count(slot_count),
-            method_slots: crate::bytecode::DenseMethodSlotTable::with_slot_count(slot_count),
         })
     }
 
@@ -8674,6 +8402,22 @@ impl Vm {
             }
         }
         let unit_id = compiled.unit().id;
+        let dense_inline_cache_ids = if self.options.inline_caches.enabled() {
+            let (ids, observations) = self
+                .inline_caches
+                .borrow_mut()
+                .bind_dense_slots(compiled_unit_cache_key(compiled), &dense.cache_slots);
+            for (descriptor, observation) in observations {
+                self.record_inline_cache_site_event(
+                    FunctionId::new(descriptor.function),
+                    InstrId::new(descriptor.instruction),
+                    observation,
+                );
+            }
+            Some(ids)
+        } else {
+            None
+        };
         // Runtime lever R3: `None` unless the flag is on, so the hot read path is
         // unchanged by default. Built once per (unit, function) and reused.
         let move_plan = self.last_use_move_plan(compiled, function_id, dense_function);
@@ -8750,6 +8494,12 @@ impl Vm {
             let mut instruction_offset = 0_usize;
             while instruction_offset < instructions.len() {
                 let instruction = &instructions[instruction_offset];
+                let inline_cache_id = instruction.cache_slot.and_then(|slot| {
+                    dense_inline_cache_ids
+                        .as_deref()
+                        .and_then(|ids| ids.get(slot.index()))
+                        .copied()
+                });
                 let dense_instruction_index = start + instruction_offset;
                 let dense_instruction_index = match u32::try_from(dense_instruction_index) {
                     Ok(index) => index,
@@ -8895,13 +8645,15 @@ impl Vm {
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
                         );
-                        self.observe_dense_property_inline_cache(
-                            compiled,
-                            cache_site.0,
-                            cache_site.1,
-                            cache_site.2,
-                            InlineCacheKind::ClassConstantStaticProperty,
-                        );
+                        if inline_cache_id.is_none() {
+                            self.observe_dense_property_inline_cache(
+                                compiled,
+                                cache_site.0,
+                                cache_site.1,
+                                cache_site.2,
+                                InlineCacheKind::ClassConstantStaticProperty,
+                            );
+                        }
                         // Dense functions carry no local exception handlers
                         // (try/catch keeps a function on the rich plan), so a
                         // raised \Error / autoload throwable propagates to outer
@@ -8911,6 +8663,7 @@ impl Vm {
                             &class_name,
                             &constant,
                             Some(cache_site),
+                            inline_cache_id,
                             span,
                             output,
                             stack,
@@ -9024,18 +8777,21 @@ impl Vm {
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
                         );
-                        self.observe_dense_property_inline_cache(
-                            compiled,
-                            cache_site.0,
-                            cache_site.1,
-                            cache_site.2,
-                            InlineCacheKind::ClassConstantStaticProperty,
-                        );
+                        if inline_cache_id.is_none() {
+                            self.observe_dense_property_inline_cache(
+                                compiled,
+                                cache_site.0,
+                                cache_site.1,
+                                cache_site.2,
+                                InlineCacheKind::ClassConstantStaticProperty,
+                            );
+                        }
                         let value = match self.fetch_static_property_value(
                             compiled,
                             &class_name,
                             &property,
                             Some(cache_site),
+                            inline_cache_id,
                             span,
                             output,
                             stack,
@@ -9599,13 +9355,11 @@ impl Vm {
                             function_id,
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
+                            inline_cache_id,
                             &property,
                             object,
                             value,
                             span,
-                            // Dynamic property names are not site-invariant,
-                            // so this arm never carries a cache slot.
-                            None,
                         ) {
                             Ok(value) => value,
                             Err(result) => {
@@ -11250,15 +11004,18 @@ impl Vm {
                         // observed slot; the rich interpreter observes every
                         // IC-capable instruction generically, so mirror that
                         // here before executing the include.
-                        self.observe_dense_call_inline_cache(
-                            compiled,
-                            function_id,
-                            BlockId::new(block_index),
-                            InstrId::new(dense_instruction_index),
-                            InlineCacheKind::IncludePath,
-                        );
+                        if inline_cache_id.is_none() {
+                            self.observe_dense_call_inline_cache(
+                                compiled,
+                                function_id,
+                                BlockId::new(block_index),
+                                InstrId::new(dense_instruction_index),
+                                InlineCacheKind::IncludePath,
+                            );
+                        }
                         let result = self.execute_include(
                             compiled,
+                            inline_cache_id,
                             compiled_unit_cache_key(compiled),
                             function_id,
                             BlockId::new(block_index),
@@ -11496,110 +11253,79 @@ impl Vm {
                                 )),
                             },
                         };
-                        // Slot-indexed L1 in front of the keyed inline-cache
-                        // table: the plan builder assigned this call site a
-                        // numeric cache slot, so a warm repeat is an indexed
-                        // load plus nonce/epoch/shape guards. The keyed table
-                        // stays the L2 — it still learns sites, feeds
-                        // persistent-feedback export, and serves rich sites.
-                        let call_slot = if self.options.inline_caches.enabled() {
-                            plan.and_then(|plan| instruction.cache_slot.map(|slot| (plan, slot)))
-                        } else {
-                            None
-                        };
-                        let slot_target = call_slot.and_then(|(plan, slot)| {
-                            plan.call_slots.hit(
-                                slot,
-                                self.vm_nonce,
+                        let dense_instruction_id = InstrId::new(dense_instruction_index);
+                        let cached_target = if let Some(id) = inline_cache_id {
+                            self.lookup_dense_function_call_inline_cache(
+                                id,
+                                function_id,
+                                dense_instruction_id,
+                                &lowered_name,
                                 epoch,
                                 &call_shape,
-                                self.options.worker_symbol_epoch,
                             )
-                        });
-                        let target = if let Some(target) = slot_target {
-                            self.record_counter_dense_call_ic_hit();
-                            // Keep the tiering IC-stability signal alive for
-                            // slot-served sites: a monomorphic hit event with
-                            // no keyed-table walk behind it.
-                            if self.options.tiering.enabled {
-                                self.record_inline_cache_site_event(
-                                    function_id,
-                                    InstrId::new(dense_instruction_index),
-                                    InlineCacheObservation {
-                                        kind: Some(InlineCacheKind::FunctionCall),
-                                        monomorphic: true,
-                                        ..InlineCacheObservation::hit()
-                                    },
-                                );
-                            }
-                            self.record_counter_function_call_ic(true);
-                            if function_call_target_is_builtin(&target) {
-                                self.record_counter_builtin_call_ic(true);
-                            }
-                            target
                         } else {
                             self.observe_dense_call_inline_cache(
                                 compiled,
                                 function_id,
                                 BlockId::new(block_index),
-                                InstrId::new(dense_instruction_index),
+                                dense_instruction_id,
                                 InlineCacheKind::FunctionCall,
                             );
-                            let cached_target = self.lookup_function_call_inline_cache(
+                            self.lookup_function_call_inline_cache(
                                 compiled,
                                 function_id,
                                 BlockId::new(block_index),
-                                InstrId::new(dense_instruction_index),
+                                dense_instruction_id,
                                 &lowered_name,
                                 epoch,
                                 &call_shape,
-                            );
-                            let target = if let Some(target) = cached_target {
-                                self.record_counter_dense_call_ic_hit();
-                                target
+                            )
+                        };
+                        let target = if let Some(target) = cached_target {
+                            self.record_counter_dense_call_ic_hit();
+                            target
+                        } else {
+                            self.record_counter_dense_call_ic_miss();
+                            let lowered_str =
+                                std::str::from_utf8(lowered_name.as_bytes()).unwrap_or_default();
+                            let Some(resolved) =
+                                self.resolve_function_call_target(compiled, state, lowered_str)
+                            else {
+                                self.record_counter_dense_call_fallback("unknown_function");
+                                let diagnostic = undefined_function(
+                                    name,
+                                    RuntimeSourceSpan::default(),
+                                    stack_trace(compiled, stack),
+                                );
+                                let result = VmResult::runtime_error_with_diagnostic(
+                                    output.clone(),
+                                    diagnostic.message().to_owned(),
+                                    diagnostic,
+                                );
+                                stack.pop_recycle();
+                                return result;
+                            };
+                            if let Some(id) = inline_cache_id {
+                                self.install_dense_function_call_inline_cache(
+                                    id,
+                                    &lowered_name,
+                                    epoch,
+                                    call_shape,
+                                    resolved.clone(),
+                                );
                             } else {
-                                self.record_counter_dense_call_ic_miss();
-                                let lowered_str = std::str::from_utf8(lowered_name.as_bytes())
-                                    .unwrap_or_default();
-                                let Some(resolved) =
-                                    self.resolve_function_call_target(compiled, state, lowered_str)
-                                else {
-                                    self.record_counter_dense_call_fallback("unknown_function");
-                                    let diagnostic = undefined_function(
-                                        name,
-                                        RuntimeSourceSpan::default(),
-                                        stack_trace(compiled, stack),
-                                    );
-                                    let result = VmResult::runtime_error_with_diagnostic(
-                                        output.clone(),
-                                        diagnostic.message().to_owned(),
-                                        diagnostic,
-                                    );
-                                    stack.pop_recycle();
-                                    return result;
-                                };
                                 self.install_function_call_inline_cache(
                                     compiled,
                                     function_id,
                                     BlockId::new(block_index),
-                                    InstrId::new(dense_instruction_index),
+                                    dense_instruction_id,
                                     &lowered_name,
                                     epoch,
-                                    call_shape.clone(),
+                                    call_shape,
                                     resolved.clone(),
                                 );
-                                resolved
-                            };
-                            if let Some((plan, slot)) = call_slot {
-                                plan.call_slots.store(
-                                    slot,
-                                    self.vm_nonce,
-                                    epoch,
-                                    call_shape.clone(),
-                                    target.clone(),
-                                );
                             }
-                            target
+                            resolved
                         };
                         self.record_counter_dense_direct_call_hit();
                         // R1.2 fast lane: the IC resolved a current-unit dense
@@ -11947,6 +11673,7 @@ impl Vm {
                             function_id,
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
+                            inline_cache_id,
                             class_name,
                             display_class_name,
                             values,
@@ -12405,6 +12132,7 @@ impl Vm {
                             function_id,
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
+                            inline_cache_id,
                             object,
                             method,
                             values,
@@ -12412,11 +12140,6 @@ impl Vm {
                             output,
                             stack,
                             state,
-                            if self.options.inline_caches.enabled() {
-                                instruction.cache_slot
-                            } else {
-                                None
-                            },
                         );
                         if !result.status.is_success() {
                             self.record_counter_dense_call_fallback("dispatch_error");
@@ -12500,6 +12223,7 @@ impl Vm {
                             function_id,
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
+                            inline_cache_id,
                             class_name,
                             method,
                             values,
@@ -12507,11 +12231,6 @@ impl Vm {
                             output,
                             stack,
                             state,
-                            if self.options.inline_caches.enabled() {
-                                instruction.cache_slot
-                            } else {
-                                None
-                            },
                         );
                         if !result.status.is_success() {
                             self.record_counter_dense_call_fallback("dispatch_error");
@@ -13952,15 +13671,10 @@ impl Vm {
                             function_id,
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
+                            inline_cache_id,
                             property,
                             object,
                             span,
-                            if self.options.inline_caches.enabled() {
-                                plan.zip(instruction.cache_slot)
-                                    .map(|(plan, slot)| (&plan.property_slots, slot))
-                            } else {
-                                None
-                            },
                         ) {
                             Ok(value) => value,
                             Err(result) => {
@@ -14046,16 +13760,11 @@ impl Vm {
                             function_id,
                             BlockId::new(block_index),
                             InstrId::new(dense_instruction_index),
+                            inline_cache_id,
                             property,
                             object,
                             value,
                             span,
-                            if self.options.inline_caches.enabled() {
-                                plan.zip(instruction.cache_slot)
-                                    .map(|(plan, slot)| (&plan.property_slots, slot))
-                            } else {
-                                None
-                            },
                         ) {
                             Ok(value) => value,
                             Err(result) => {
@@ -14525,7 +14234,6 @@ impl Vm {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn dense_fetch_property_value(
         &self,
         compiled: &CompiledUnit,
@@ -14536,13 +14244,10 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         property: &str,
         object_value: Value,
         span: IrSpan,
-        property_slot: Option<(
-            &crate::bytecode::DensePropertySlotTable,
-            crate::bytecode::DenseCacheSlotId,
-        )>,
     ) -> Result<Value, VmResult> {
         let object = match object_value {
             Value::Object(object) => object,
@@ -14605,36 +14310,6 @@ impl Vm {
             });
         }
 
-        // Slot-indexed L1: a warm monomorphic repeat skips the class-table
-        // lookup, both name normalizations, and the keyed inline-cache walks
-        // below. Raw (case-preserved) receiver/scope compares are strictly
-        // narrower than the keyed table's normalized guards, so a raw
-        // mismatch only demotes to the keyed path.
-        let scope = current_scope_class(compiled, stack);
-        if let Some((table, slot)) = property_slot
-            && let Some(target) = table.fetch_hit(
-                slot,
-                self.vm_nonce,
-                state.lookup_epoch(),
-                &object.class_name_handle(),
-                scope.as_deref(),
-            )
-        {
-            match self.read_property_fetch_target(compiled, target, &object, stack, state) {
-                Ok(PropertyFetchCacheRead::Value(value)) => {
-                    self.record_counter_dense_property_ic_reuse();
-                    self.record_counter_dense_property_fetch_hit();
-                    return Ok(value);
-                }
-                Ok(PropertyFetchCacheRead::Fallback) => {}
-                Err(message) => {
-                    return Err(
-                        self.dense_runtime_error(compiled, output, stack, state, span, message)
-                    );
-                }
-            }
-        }
-
         let class = match lookup_class_in_state(compiled, state, &object.class_name()) {
             Some(class) => class,
             None => {
@@ -14652,40 +14327,42 @@ impl Vm {
                 ));
             }
         };
+        let scope = current_scope_class(compiled, stack);
         let normalized_scope = scope.as_deref().map(normalize_class_name);
         let receiver_class = normalize_class_name(&object.class_name());
         let lookup_epoch = state.lookup_epoch();
         let receiver_has_magic_get = class_has_public_magic_get(compiled, &class);
 
-        self.observe_dense_property_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            InlineCacheKind::PropertyFetch,
-        );
-        if let Some(target) = self.lookup_property_fetch_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            &receiver_class,
-            normalized_scope.as_deref(),
-            lookup_epoch,
-        ) {
-            // Warm the slot from the keyed hit so the next repeat takes the
-            // indexed load instead of the keyed walks.
-            if let Some((table, slot)) = property_slot {
-                table.store_fetch(
-                    slot,
-                    self.vm_nonce,
-                    lookup_epoch,
-                    object.class_name_handle(),
-                    scope.clone(),
-                    target.clone(),
-                );
-            }
+        let cached_target = if let Some(id) = cache_id {
+            self.lookup_dense_property_fetch_inline_cache(
+                id,
+                function_id,
+                instruction_id,
+                property,
+                &receiver_class,
+                normalized_scope.as_deref(),
+                lookup_epoch,
+            )
+        } else {
+            self.observe_dense_property_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                InlineCacheKind::PropertyFetch,
+            );
+            self.lookup_property_fetch_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                property,
+                &receiver_class,
+                normalized_scope.as_deref(),
+                lookup_epoch,
+            )
+        };
+        if let Some(target) = cached_target {
             match self.read_property_fetch_target(compiled, target, &object, stack, state) {
                 Ok(PropertyFetchCacheRead::Value(value)) => {
                     self.record_counter_dense_property_ic_reuse();
@@ -14918,6 +14595,7 @@ impl Vm {
             receiver_has_magic_get,
             state,
             &object,
+            cache_id,
         );
         self.record_counter_dense_property_fetch_hit();
         Ok(value)
@@ -14933,14 +14611,11 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         property: &str,
         object_value: Value,
         value: Value,
         span: IrSpan,
-        property_slot: Option<(
-            &crate::bytecode::DensePropertySlotTable,
-            crate::bytecode::DenseCacheSlotId,
-        )>,
     ) -> Result<Value, VmResult> {
         let object = match object_value {
             Value::Object(object) => object,
@@ -15010,40 +14685,6 @@ impl Vm {
             return Ok(value);
         }
 
-        // Slot-indexed L1 mirroring the fetch path: raw receiver/scope
-        // guards, keyed table stays the L2.
-        let scope = current_scope_class(compiled, stack);
-        if let Some((table, slot)) = property_slot
-            && let Some(target) = table.assign_hit(
-                slot,
-                self.vm_nonce,
-                state.lookup_epoch(),
-                &object.class_name_handle(),
-                scope.as_deref(),
-            )
-        {
-            match self.write_property_assign_target(
-                compiled,
-                target,
-                &object,
-                value.clone(),
-                stack,
-                state,
-            ) {
-                Ok(PropertyAssignCacheWrite::Written(value)) => {
-                    self.record_counter_dense_property_ic_reuse();
-                    self.record_counter_dense_property_assignment_hit();
-                    return Ok(value);
-                }
-                Ok(PropertyAssignCacheWrite::Fallback) => {}
-                Err(message) => {
-                    return Err(
-                        self.dense_runtime_error(compiled, output, stack, state, span, message)
-                    );
-                }
-            }
-        }
-
         let class = match lookup_class_in_state(compiled, state, &object.class_name()) {
             Some(class) => class,
             None => {
@@ -15061,39 +14702,42 @@ impl Vm {
                 ));
             }
         };
+        let scope = current_scope_class(compiled, stack);
         let normalized_scope = scope.as_deref().map(normalize_class_name);
         let receiver_class = normalize_class_name(&object.class_name());
         let lookup_epoch = state.lookup_epoch();
         let receiver_has_magic_set = class_has_public_magic_set(compiled, &class);
 
-        self.observe_dense_property_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            InlineCacheKind::PropertyAssign,
-        );
-        if let Some(target) = self.lookup_property_assign_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            property,
-            &receiver_class,
-            normalized_scope.as_deref(),
-            lookup_epoch,
-        ) {
-            // Warm the slot from the keyed hit.
-            if let Some((table, slot)) = property_slot {
-                table.store_assign(
-                    slot,
-                    self.vm_nonce,
-                    lookup_epoch,
-                    object.class_name_handle(),
-                    scope.clone(),
-                    target.clone(),
-                );
-            }
+        let cached_target = if let Some(id) = cache_id {
+            self.lookup_dense_property_assign_inline_cache(
+                id,
+                function_id,
+                instruction_id,
+                property,
+                &receiver_class,
+                normalized_scope.as_deref(),
+                lookup_epoch,
+            )
+        } else {
+            self.observe_dense_property_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                InlineCacheKind::PropertyAssign,
+            );
+            self.lookup_property_assign_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                property,
+                &receiver_class,
+                normalized_scope.as_deref(),
+                lookup_epoch,
+            )
+        };
+        if let Some(target) = cached_target {
             match self.write_property_assign_target(
                 compiled,
                 target,
@@ -15296,6 +14940,7 @@ impl Vm {
             receiver_has_magic_set,
             state,
             &object,
+            cache_id,
         );
         self.record_counter_dense_property_assignment_hit();
         Ok(value)
@@ -22328,6 +21973,7 @@ impl Vm {
                             receiver_has_magic_get,
                             state,
                             &object,
+                            None,
                         );
                         if let Err(message) = stack
                             .frame_mut(frame_index)
@@ -22348,6 +21994,7 @@ impl Vm {
                             class_name,
                             property,
                             Some((function_id, block_id, instruction.id)),
+                            None,
                             instruction.span,
                             output,
                             stack,
@@ -22881,6 +22528,7 @@ impl Vm {
                             class_name,
                             constant,
                             Some((function_id, block_id, instruction.id)),
+                            None,
                             instruction.span,
                             output,
                             stack,
@@ -24406,6 +24054,7 @@ impl Vm {
                             receiver_has_magic_set,
                             state,
                             &object,
+                            None,
                         );
                         if let Err(message) = stack
                             .frame_mut(frame_index)
@@ -29674,7 +29323,7 @@ impl Vm {
                             has_magic_call,
                             has_by_ref_argument,
                         );
-                        let method_target = Box::new(MethodCallResolvedTarget {
+                        let method_target = Rc::new(MethodCallResolvedTarget {
                             receiver_class: receiver_class.clone(),
                             declaring_class: declaring_class.name.clone(),
                             function: method_entry.function,
@@ -31202,6 +30851,7 @@ impl Vm {
                         };
                         let result = self.execute_include(
                             compiled,
+                            None,
                             compiled_unit_cache_key(compiled),
                             function_id,
                             block_id,
@@ -31610,175 +31260,6 @@ impl Vm {
         self.tiering
             .borrow_mut()
             .record_loop_backedge(function_id, current, target);
-    }
-
-    fn lookup_include_path_inline_cache(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-        request: &IncludePathCacheKey,
-        epoch: InvalidationEpoch,
-    ) -> Option<IncludePathCacheTarget> {
-        if !self.options.inline_caches.enabled() {
-            return None;
-        }
-        let (target, observation) = self.inline_caches.borrow_mut().lookup_include_path(
-            unit_key,
-            function,
-            block,
-            instruction,
-            request,
-            epoch,
-        );
-        self.record_inline_cache_site_event(function, instruction, observation);
-        target
-    }
-
-    fn record_include_path_inline_cache_hit(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        let observation = self.inline_caches.borrow_mut().record_include_path_hit(
-            unit_key,
-            function,
-            block,
-            instruction,
-        );
-        self.record_inline_cache_site_event(function, instruction, observation);
-    }
-
-    fn record_include_path_inline_cache_invalidation(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        let observation = self.inline_caches.borrow_mut().invalidate_include_path(
-            unit_key,
-            function,
-            block,
-            instruction,
-        );
-        self.record_inline_cache_site_event(function, instruction, observation);
-    }
-
-    fn install_include_path_inline_cache(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-        request: IncludePathCacheKey,
-        epoch: InvalidationEpoch,
-        target: IncludePathCacheTarget,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        self.inline_caches.borrow_mut().install_include_path(
-            unit_key,
-            function,
-            block,
-            instruction,
-            request,
-            epoch,
-            target,
-        );
-    }
-
-    fn lookup_autoload_class_inline_cache(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-        request: &AutoloadClassLookupCacheKey,
-        epochs: AutoloadClassLookupEpochs,
-    ) -> Option<AutoloadClassLookupCacheTarget> {
-        if !self.options.inline_caches.enabled() {
-            return None;
-        }
-        let (target, observation) = self
-            .inline_caches
-            .borrow_mut()
-            .lookup_autoload_class_lookup(unit_key, function, block, instruction, request, epochs);
-        self.record_inline_cache_site_event(function, instruction, observation);
-        target
-    }
-
-    fn observe_autoload_class_inline_cache(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        let observation = self.inline_caches.borrow_mut().observe_slot(
-            unit_key,
-            function,
-            block,
-            instruction,
-            InlineCacheKind::AutoloadClassLookup,
-        );
-        self.record_inline_cache_site_event(function, instruction, observation);
-    }
-
-    fn invalidate_autoload_class_inline_cache(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        let observation = self
-            .inline_caches
-            .borrow_mut()
-            .invalidate_autoload_class_lookup(unit_key, function, block, instruction);
-        self.record_inline_cache_site_event(function, instruction, observation);
-    }
-
-    fn install_autoload_class_inline_cache(
-        &self,
-        unit_key: u64,
-        function: FunctionId,
-        block: BlockId,
-        instruction: InstrId,
-        request: AutoloadClassLookupCacheKey,
-        epochs: AutoloadClassLookupEpochs,
-        target: AutoloadClassLookupCacheTarget,
-    ) {
-        if !self.options.inline_caches.enabled() {
-            return;
-        }
-        self.inline_caches
-            .borrow_mut()
-            .install_autoload_class_lookup(
-                unit_key,
-                function,
-                block,
-                instruction,
-                request,
-                epochs,
-                target,
-            );
     }
 
     fn object_instanceof_cached(
@@ -35875,15 +35356,8 @@ impl Vm {
                 (owner, target)
             }
         };
-        let PropertyFetchResolvedTarget {
-            receiver_class,
-            declaring_class: declaring_class_name,
-            property: property_name,
-            storage_name,
-            layout,
-            object_layout_epoch,
-            declared_slot,
-        } = *target;
+        let target = target.as_ref();
+        let layout = &target.layout;
         if state.lookup_epoch().raw() != layout.layout_version {
             self.record_counter_property_ic_fallback("layout_epoch_mismatch");
             return Ok(PropertyFetchCacheRead::Fallback);
@@ -35894,8 +35368,8 @@ impl Vm {
         // plus the IC scope guard cover hooks, protected access, and private
         // visibility. Guard mismatches and unset slots fall through to the
         // generic path, which attributes the exact fallback reason.
-        if let Some(slot) = declared_slot {
-            match object.get_declared_slot(slot, object_layout_epoch) {
+        if let Some(slot) = target.declared_slot {
+            match object.get_declared_slot(slot, target.object_layout_epoch) {
                 Some(Value::Uninitialized) => {
                     self.record_counter_property_ic_fallback("uninitialized_typed_property");
                     return Ok(PropertyFetchCacheRead::Fallback);
@@ -35904,7 +35378,7 @@ impl Vm {
                 None => {}
             }
         }
-        if normalize_class_name(&object.class_name()) != receiver_class {
+        if normalize_class_name(&object.class_name()) != target.receiver_class {
             self.record_counter_property_ic_fallback("receiver_class_mismatch");
             return Ok(PropertyFetchCacheRead::Fallback);
         }
@@ -35931,7 +35405,7 @@ impl Vm {
             self.record_counter_property_ic_fallback("uninitialized_metadata");
             return Ok(PropertyFetchCacheRead::Fallback);
         }
-        let Some(declaring_class) = owner.lookup_class(&declaring_class_name) else {
+        let Some(declaring_class) = owner.lookup_class(&target.declaring_class) else {
             self.record_counter_property_ic_fallback("declaring_class_missing");
             return Ok(PropertyFetchCacheRead::Fallback);
         };
@@ -35939,7 +35413,7 @@ impl Vm {
             .properties
             .iter()
             .enumerate()
-            .find(|(_, entry)| entry.name == property_name)
+            .find(|(_, entry)| entry.name == target.property)
         else {
             self.record_counter_property_ic_fallback("property_missing");
             return Ok(PropertyFetchCacheRead::Fallback);
@@ -35948,7 +35422,7 @@ impl Vm {
             self.record_counter_property_ic_fallback("property_slot_mismatch");
             return Ok(PropertyFetchCacheRead::Fallback);
         }
-        if property_storage_name(declaring_class, property) != storage_name {
+        if property_storage_name(declaring_class, property) != target.storage_name {
             self.record_counter_property_ic_fallback("storage_name_mismatch");
             return Ok(PropertyFetchCacheRead::Fallback);
         }
@@ -35968,7 +35442,7 @@ impl Vm {
             self.record_counter_property_ic_fallback("visibility_mismatch");
             return Ok(PropertyFetchCacheRead::Fallback);
         }
-        let Some(value) = object.get_property(&storage_name) else {
+        let Some(value) = object.get_property(&target.storage_name) else {
             self.record_counter_property_ic_fallback("storage_missing");
             return Ok(PropertyFetchCacheRead::Fallback);
         };
@@ -35998,16 +35472,8 @@ impl Vm {
                 (owner, target)
             }
         };
-        let PropertyAssignResolvedTarget {
-            receiver_class,
-            declaring_class: declaring_class_name,
-            property: property_name,
-            storage_name,
-            layout,
-            object_layout_epoch,
-            declared_slot,
-            slot_write_eligible,
-        } = *target;
+        let target = target.as_ref();
+        let layout = &target.layout;
         if state.lookup_epoch().raw() != layout.layout_version {
             self.record_counter_property_assign_ic_fallback("layout_epoch_mismatch");
             return Ok(PropertyAssignCacheWrite::Fallback);
@@ -36016,19 +35482,21 @@ impl Vm {
         // slots (install gate). The layout guard subsumes class/slot
         // re-validation; a slot currently holding a reference must write
         // through the cell, so it falls back to the generic path.
-        if slot_write_eligible && let Some(slot) = declared_slot {
-            let current = object.get_declared_slot(slot, object_layout_epoch);
+        if target.slot_write_eligible
+            && let Some(slot) = target.declared_slot
+        {
+            let current = object.get_declared_slot(slot, target.object_layout_epoch);
             if matches!(current, Some(Value::Reference(_))) {
                 self.record_counter_property_assign_ic_fallback("reference_slot");
                 return Ok(PropertyAssignCacheWrite::Fallback);
             }
             if current.is_some()
-                && object.set_declared_slot(slot, object_layout_epoch, value.clone())
+                && object.set_declared_slot(slot, target.object_layout_epoch, value.clone())
             {
                 return Ok(PropertyAssignCacheWrite::Written(value));
             }
         }
-        if normalize_class_name(&object.class_name()) != receiver_class {
+        if normalize_class_name(&object.class_name()) != target.receiver_class {
             self.record_counter_property_assign_ic_fallback("receiver_class_mismatch");
             return Ok(PropertyAssignCacheWrite::Fallback);
         }
@@ -36063,7 +35531,7 @@ impl Vm {
             self.record_counter_property_assign_ic_fallback("reference_metadata");
             return Ok(PropertyAssignCacheWrite::Fallback);
         }
-        let Some(declaring_class) = owner.lookup_class(&declaring_class_name) else {
+        let Some(declaring_class) = owner.lookup_class(&target.declaring_class) else {
             self.record_counter_property_assign_ic_fallback("declaring_class_missing");
             return Ok(PropertyAssignCacheWrite::Fallback);
         };
@@ -36071,7 +35539,7 @@ impl Vm {
             .properties
             .iter()
             .enumerate()
-            .find(|(_, entry)| entry.name == property_name)
+            .find(|(_, entry)| entry.name == target.property)
         else {
             self.record_counter_property_assign_ic_fallback("property_missing");
             return Ok(PropertyAssignCacheWrite::Fallback);
@@ -36080,7 +35548,7 @@ impl Vm {
             self.record_counter_property_assign_ic_fallback("property_slot_mismatch");
             return Ok(PropertyAssignCacheWrite::Fallback);
         }
-        if property_storage_name(declaring_class, property) != storage_name {
+        if property_storage_name(declaring_class, property) != target.storage_name {
             self.record_counter_property_assign_ic_fallback("storage_name_mismatch");
             return Ok(PropertyAssignCacheWrite::Fallback);
         }
@@ -36128,13 +35596,13 @@ impl Vm {
             return Ok(PropertyAssignCacheWrite::Fallback);
         }
         if matches!(
-            object.get_property(&storage_name),
+            object.get_property(&target.storage_name),
             Some(Value::Reference(_))
         ) {
             self.record_counter_property_assign_ic_fallback("reference_slot");
             return Ok(PropertyAssignCacheWrite::Fallback);
         }
-        object.set_property(storage_name, value.clone());
+        object.set_property(target.storage_name.clone(), value.clone());
         Ok(PropertyAssignCacheWrite::Written(value))
     }
 
@@ -43465,6 +42933,7 @@ impl Vm {
         class_name: &str,
         constant: &str,
         cache_site: Option<(FunctionId, BlockId, InstrId)>,
+        cache_id: Option<InlineCacheId>,
         span: IrSpan,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
@@ -43532,6 +43001,7 @@ impl Vm {
             if let Some((function_id, block_id, instruction_id)) = cache_site
                 && let Some(target) = self.lookup_class_constant_static_property_inline_cache(
                     compiled,
+                    cache_id,
                     function_id,
                     block_id,
                     instruction_id,
@@ -43581,6 +43051,7 @@ impl Vm {
                     };
                     self.install_class_constant_static_property_inline_cache(
                         compiled,
+                        cache_id,
                         function_id,
                         block_id,
                         instruction_id,
@@ -43668,6 +43139,7 @@ impl Vm {
                     };
                 self.install_class_constant_static_property_inline_cache(
                     compiled,
+                    cache_id,
                     function_id,
                     block_id,
                     instruction_id,
@@ -44280,6 +43752,7 @@ impl Vm {
     fn execute_include(
         &self,
         compiled: &CompiledUnit,
+        cache_id: Option<InlineCacheId>,
         unit_key: u64,
         function_id: FunctionId,
         block_id: BlockId,
@@ -44491,6 +43964,7 @@ impl Vm {
                 }
             } else {
                 let cached = self.lookup_include_path_inline_cache(
+                    cache_id,
                     unit_key,
                     function_id,
                     block_id,
@@ -44501,6 +43975,7 @@ impl Vm {
                 if let Some(target) = cached {
                     if target.is_current() {
                         self.record_include_path_inline_cache_hit(
+                            cache_id,
                             unit_key,
                             function_id,
                             block_id,
@@ -44523,6 +43998,7 @@ impl Vm {
                         }
                     } else {
                         self.record_include_path_inline_cache_invalidation(
+                            cache_id,
                             unit_key,
                             function_id,
                             block_id,
@@ -44541,6 +44017,7 @@ impl Vm {
                             Ok(resolved) => {
                                 let target = IncludePathCacheTarget::from_resolved(&resolved);
                                 self.install_include_path_inline_cache(
+                                    cache_id,
                                     unit_key,
                                     function_id,
                                     block_id,
@@ -44591,6 +44068,7 @@ impl Vm {
                         Ok(resolved) => {
                             let target = IncludePathCacheTarget::from_resolved(&resolved);
                             self.install_include_path_inline_cache(
+                                cache_id,
                                 unit_key,
                                 function_id,
                                 block_id,
@@ -44926,6 +44404,7 @@ impl Vm {
             }
             let result = self.execute_include(
                 compiled,
+                None,
                 unit_key,
                 function_id,
                 block_id,
@@ -47245,6 +46724,24 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Result<bool, VmResult> {
+        self.class_like_exists_with_autoload_cache_at_slot(
+            compiled, class_name, kind, autoload, call_site, None, output, stack, state,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn class_like_exists_with_autoload_cache_at_slot(
+        &self,
+        compiled: &CompiledUnit,
+        class_name: &str,
+        kind: AutoloadClassLookupKind,
+        autoload: bool,
+        call_site: Option<(u64, FunctionId, BlockId, InstrId)>,
+        cache_id: Option<InlineCacheId>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<bool, VmResult> {
         let request = AutoloadClassLookupCacheKey {
             kind,
             normalized_name: normalize_class_name(class_name),
@@ -47255,8 +46752,15 @@ impl Vm {
         };
         let epochs = state.autoload_class_lookup_epochs();
         if let Some((unit_key, function, block, instruction)) = call_site {
-            self.observe_autoload_class_inline_cache(unit_key, function, block, instruction);
+            self.observe_autoload_class_inline_cache(
+                cache_id,
+                unit_key,
+                function,
+                block,
+                instruction,
+            );
             if let Some(target) = self.lookup_autoload_class_inline_cache(
+                cache_id,
                 unit_key,
                 function,
                 block,
@@ -47273,6 +46777,7 @@ impl Vm {
                             "autoload_positive_target_missing",
                         );
                         self.invalidate_autoload_class_inline_cache(
+                            cache_id,
                             unit_key,
                             function,
                             block,
@@ -47290,6 +46795,7 @@ impl Vm {
         if class_like_exists_direct(compiled, state, class_name, kind) {
             if let Some((unit_key, function, block, instruction)) = call_site {
                 self.install_autoload_class_inline_cache(
+                    cache_id,
                     unit_key,
                     function,
                     block,
@@ -47320,6 +46826,7 @@ impl Vm {
             let post_epochs = state.autoload_class_lookup_epochs();
             if exists {
                 self.install_autoload_class_inline_cache(
+                    cache_id,
                     unit_key,
                     function,
                     block,
@@ -47332,6 +46839,7 @@ impl Vm {
                 );
             } else if !may_autoload_with_side_effects {
                 self.install_autoload_class_inline_cache(
+                    cache_id,
                     unit_key,
                     function,
                     block,
@@ -47355,6 +46863,23 @@ impl Vm {
         stack: &mut CallStack,
         state: &mut ExecutionState,
     ) -> Result<(), VmResult> {
+        self.autoload_static_class_if_missing_at_slot(
+            compiled, class_name, span, call_site, None, output, stack, state,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn autoload_static_class_if_missing_at_slot(
+        &self,
+        compiled: &CompiledUnit,
+        class_name: &str,
+        span: IrSpan,
+        call_site: Option<(u64, FunctionId, BlockId, InstrId)>,
+        cache_id: Option<InlineCacheId>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
         if is_special_static_class_name(class_name)
             || class_like_exists_direct(
                 compiled,
@@ -47367,12 +46892,13 @@ impl Vm {
         }
 
         let lookup_name = static_class_autoload_name(compiled, class_name, span);
-        self.class_like_exists_with_autoload_cache(
+        self.class_like_exists_with_autoload_cache_at_slot(
             compiled,
             &lookup_name,
             AutoloadClassLookupKind::ClassLike,
             true,
             call_site,
+            cache_id,
             output,
             stack,
             state,
@@ -68038,66 +67564,66 @@ fn builtin_function_call_target(name: &str) -> Option<FunctionCallCacheTarget> {
     if is_autoload_builtin_name(name) || is_symbol_introspection_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::AutoloadOrSymbolIntrospection,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_config_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::Config,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_error_handling_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::ErrorHandling,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_output_buffering_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::OutputBuffering,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_environment_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::Environment,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_process_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::Process,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_pcre_callback_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::PcreCallback,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_filter_callback_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::FilterCallback,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_array_callback_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::ArrayCallback,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     if is_array_sort_builtin_name(name) {
         return Some(FunctionCallCacheTarget::Builtin {
             kind: FunctionCallBuiltinKind::ArraySort,
-            name: name.to_owned(),
+            name: Arc::from(name),
         });
     }
     internal_registry_builtin_call_name(name).map(|name| FunctionCallCacheTarget::Builtin {
         kind: FunctionCallBuiltinKind::InternalRegistry,
-        name,
+        name: Arc::from(name),
     })
 }
 

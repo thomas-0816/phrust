@@ -336,6 +336,7 @@ impl Vm {
         class_name: &str,
         property: &str,
         cache_site: Option<(FunctionId, BlockId, InstrId)>,
+        cache_id: Option<InlineCacheId>,
         span: IrSpan,
         output: &mut OutputBuffer,
         stack: &mut CallStack,
@@ -366,6 +367,7 @@ impl Vm {
         if let Some((function_id, block_id, instruction_id)) = cache_site
             && let Some(target) = self.lookup_class_constant_static_property_inline_cache(
                 compiled,
+                cache_id,
                 function_id,
                 block_id,
                 instruction_id,
@@ -464,6 +466,7 @@ impl Vm {
             };
             self.install_class_constant_static_property_inline_cache(
                 compiled,
+                cache_id,
                 function_id,
                 block_id,
                 instruction_id,

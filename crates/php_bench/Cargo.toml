@@ -8,6 +8,7 @@ publish = false
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+php_executor = { path = "../php_executor", version = "0.0.0" }
 php_ir = { path = "../php_ir", version = "0.0.0" }
 php_lexer = { path = "../php_lexer", version = "0.1.0" }
 php_optimizer = { path = "../php_optimizer", version = "0.0.0" }

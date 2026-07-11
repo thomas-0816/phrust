@@ -1977,6 +1977,7 @@ name = "php_bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "php_executor",
  "php_ir",
  "php_lexer",
  "php_optimizer",
@@ -1994,6 +1995,20 @@ dependencies = [
  "php_source",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "php_executor"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "php_diagnostics",
+ "php_ir",
+ "php_optimizer",
+ "php_runtime",
+ "php_semantics",
+ "php_source",
+ "php_vm",
 ]
 
 [[package]]
@@ -2131,9 +2146,7 @@ dependencies = [
  "php_diagnostics",
  "php_ir",
  "php_jit",
- "php_optimizer",
  "php_runtime",
- "php_semantics",
  "php_source",
  "php_std",
  "redis",

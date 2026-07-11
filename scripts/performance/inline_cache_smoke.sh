@@ -409,4 +409,11 @@ if on_call_ic_megamorphic_fallbacks <= 0:
     raise SystemExit("[fail] function-call IC recorded no megamorphic fallback for dynamic call fixture")
 PY
 
+cargo test -p php_vm \
+    inline_cache::lifecycle_tests::typed_slot_layout_is_smaller_than_legacy_option_layout \
+    -- --exact --nocapture
+cargo test -p php_vm \
+    inline_cache::dense_contract_tests::dense_slot_binding_reaches_all_payloads_without_coordinate_map_access \
+    -- --exact
+
 printf '[pass] inline-cache smoke compared %s fixture(s)\n' "$fixture_count"

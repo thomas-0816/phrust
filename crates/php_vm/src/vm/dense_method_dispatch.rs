@@ -9,6 +9,7 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         object: Value,
         method: &str,
         args: Vec<CallArgument>,
@@ -16,7 +17,6 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
-        method_slot: Option<crate::bytecode::DenseCacheSlotId>,
     ) -> VmResult {
         let object = match callable_resolve_reference(object) {
             Value::Generator(generator) => {
@@ -53,27 +53,6 @@ impl Vm {
                 );
             }
         };
-
-        // Slot-indexed L1: a warm monomorphic repeat skips the runtime-class
-        // probes, the class-table lookup and clone, the method-name
-        // normalization, and the keyed inline-cache walks. Entries only ever
-        // come from keyed hits, so an L1 hit implies this receiver class
-        // already took the regular dispatch path.
-        if let Some((slot_plan, slot)) = plan.zip(method_slot)
-            && let Some(target) = slot_plan.method_slots.hit(
-                slot,
-                self.vm_nonce,
-                state.lookup_epoch(),
-                &object.class_name_handle(),
-                current_scope_class(compiled, stack).as_deref(),
-            )
-        {
-            self.record_counter_dense_call_ic_hit();
-            self.record_counter_dense_method_call_hit();
-            return self.execute_method_call_target(
-                compiled, target, object, args, call_span, output, stack, state, &None, plan,
-            );
-        }
 
         let receiver_class = object.class_name();
         if is_hash_context_runtime_class(&receiver_class)
@@ -167,36 +146,36 @@ impl Vm {
                 Err(message) => return self.runtime_error(output, compiled, stack, message),
             };
 
-        self.observe_dense_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            InlineCacheKind::MethodCall,
-        );
-        let (cached_target, observation) = self.lookup_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-        );
+        let (cached_target, observation) = if let Some(id) = cache_id {
+            self.lookup_dense_method_call_inline_cache(
+                id,
+                function_id,
+                instruction_id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        } else {
+            self.observe_dense_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                InlineCacheKind::MethodCall,
+            );
+            self.lookup_method_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        };
         if let Some(target) = cached_target {
-            // Warm the slot from the keyed hit so the next repeat takes the
-            // indexed load.
-            if let Some((slot_plan, slot)) = plan.zip(method_slot) {
-                slot_plan.method_slots.store(
-                    slot,
-                    self.vm_nonce,
-                    epoch,
-                    object.class_name_handle(),
-                    scope.clone(),
-                    target.clone(),
-                );
-            }
             self.record_counter_dense_call_ic_hit();
             self.record_counter_dense_method_call_hit();
             return self.execute_method_call_target(
@@ -301,7 +280,7 @@ impl Vm {
         let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         let route =
             self.method_dispatch_route(&class_owner, method_entry.function, declaring_class);
-        let method_target = Box::new(MethodCallResolvedTarget {
+        let method_target = Rc::new(MethodCallResolvedTarget {
             receiver_class: receiver_class.clone(),
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
@@ -319,17 +298,28 @@ impl Vm {
                 target: method_target,
             },
         };
-        self.install_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-            target,
-        );
+        if let Some(id) = cache_id {
+            self.install_dense_method_call_inline_cache(
+                id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        } else {
+            self.install_method_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        }
         self.record_counter_dense_method_call_hit();
         self.execute_function_with_dense_plan(
             compiled,
@@ -362,6 +352,7 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         class_name: &str,
         method: &str,
         args: Vec<CallArgument>,
@@ -369,7 +360,6 @@ impl Vm {
         output: &mut OutputBuffer,
         stack: &mut CallStack,
         state: &mut ExecutionState,
-        method_slot: Option<crate::bytecode::DenseCacheSlotId>,
     ) -> VmResult {
         if is_closure_runtime_class(class_name)
             || is_php_token_runtime_class(class_name)
@@ -408,39 +398,10 @@ impl Vm {
             }
         };
         let scope = method_lookup_scope_for_static_call(compiled, stack, class_name);
-        let epoch = state.lookup_epoch();
-        let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
-
-        // Slot-indexed L1: guards on the RESOLVED class name (runtime-variant
-        // for self::/static::/parent::) plus scope; late static binding stays
-        // correct because `called_class` is computed per call above and
-        // passed beside the cached target, exactly as the keyed hit does.
-        if let Some((slot_plan, slot)) = plan.zip(method_slot)
-            && let Some(target) = slot_plan.method_slots.hit(
-                slot,
-                self.vm_nonce,
-                epoch,
-                &class.name,
-                scope.as_deref(),
-            )
-        {
-            self.record_counter_dense_call_ic_hit();
-            self.record_counter_dense_static_call_hit();
-            return self.execute_static_method_call_target(
-                compiled,
-                plan,
-                target,
-                called_class,
-                args,
-                call_span,
-                output,
-                stack,
-                state,
-            );
-        }
-
         let lowered_method = normalize_method_name(method);
+        let epoch = state.lookup_epoch();
         let receiver_class = class.name.clone();
+        let called_class = called_class_for_static_call(compiled, stack, class_name, &class);
 
         if class_extends_php_token(compiled, state, &class) && lowered_method == "tokenize" {
             self.record_counter_dense_call_fallback("php_token_subclass_static_method");
@@ -638,35 +599,36 @@ impl Vm {
             }
         }
 
-        self.observe_dense_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            InlineCacheKind::MethodCall,
-        );
-        let (cached_target, observation) = self.lookup_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-        );
+        let (cached_target, observation) = if let Some(id) = cache_id {
+            self.lookup_dense_method_call_inline_cache(
+                id,
+                function_id,
+                instruction_id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        } else {
+            self.observe_dense_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                InlineCacheKind::MethodCall,
+            );
+            self.lookup_method_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+            )
+        };
         if let Some(target) = cached_target {
-            // Warm the slot from the keyed hit.
-            if let Some((slot_plan, slot)) = plan.zip(method_slot) {
-                slot_plan.method_slots.store(
-                    slot,
-                    self.vm_nonce,
-                    epoch,
-                    class.name.as_str().into(),
-                    scope.clone(),
-                    target.clone(),
-                );
-            }
             self.record_counter_dense_call_ic_hit();
             self.record_counter_dense_static_call_hit();
             return self.execute_static_method_call_target(
@@ -814,7 +776,7 @@ impl Vm {
         let static_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         let route =
             self.method_dispatch_route(&static_owner, method_entry.function, declaring_class);
-        let method_target = Box::new(MethodCallResolvedTarget {
+        let method_target = Rc::new(MethodCallResolvedTarget {
             receiver_class: receiver_class.clone(),
             declaring_class: declaring_class.name.clone(),
             function: method_entry.function,
@@ -832,17 +794,28 @@ impl Vm {
                 target: method_target,
             },
         };
-        self.install_method_call_inline_cache(
-            compiled,
-            function_id,
-            block_id,
-            instruction_id,
-            &lowered_method,
-            &receiver_class,
-            scope.as_deref(),
-            epoch,
-            target,
-        );
+        if let Some(id) = cache_id {
+            self.install_dense_method_call_inline_cache(
+                id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        } else {
+            self.install_method_call_inline_cache(
+                compiled,
+                function_id,
+                block_id,
+                instruction_id,
+                &lowered_method,
+                &receiver_class,
+                scope.as_deref(),
+                epoch,
+                target,
+            );
+        }
         self.record_counter_dense_static_call_hit();
         let class_owner = class_owner_in_state(compiled, state, &declaring_class.name);
         self.execute_function_with_dense_plan(
@@ -1006,6 +979,7 @@ impl Vm {
         function_id: FunctionId,
         block_id: BlockId,
         instruction_id: InstrId,
+        cache_id: Option<InlineCacheId>,
         class_name: &str,
         display_class_name: &str,
         args: Vec<CallArgument>,
@@ -1017,7 +991,7 @@ impl Vm {
         // Autoloaders receive the source-case class name (the reference
         // engine passes the spelling at the new-expression site); the
         // normalized name would fail case-sensitive loader comparisons.
-        if let Err(result) = self.autoload_static_class_if_missing(
+        if let Err(result) = self.autoload_static_class_if_missing_at_slot(
             compiled,
             display_class_name,
             call_span.unwrap_or_default(),
@@ -1027,6 +1001,7 @@ impl Vm {
                 block_id,
                 instruction_id,
             )),
+            cache_id,
             output,
             stack,
             state,
