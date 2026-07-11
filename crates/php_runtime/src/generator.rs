@@ -47,9 +47,14 @@ pub struct GeneratorCallContext {
 
 /// Internal reference to generator state.
 #[derive(Clone)]
-pub struct GeneratorRef {
+struct GeneratorCell {
     id: u64,
-    storage: Rc<RefCell<GeneratorStorage>>,
+    storage: RefCell<GeneratorStorage>,
+}
+
+#[derive(Clone)]
+pub struct GeneratorRef {
+    cell: Rc<GeneratorCell>,
 }
 
 impl GeneratorRef {
@@ -67,57 +72,59 @@ impl GeneratorRef {
         call_context: GeneratorCallContext,
     ) -> Self {
         Self {
-            id: NEXT_GENERATOR_ID.fetch_add(1, Ordering::Relaxed),
-            storage: Rc::new(RefCell::new(GeneratorStorage {
-                function,
-                args,
-                call_context,
-                state: GeneratorState::Created,
-                current_key: None,
-                current_value: None,
-                return_value: None,
-            })),
+            cell: Rc::new(GeneratorCell {
+                id: NEXT_GENERATOR_ID.fetch_add(1, Ordering::Relaxed),
+                storage: RefCell::new(GeneratorStorage {
+                    function,
+                    args,
+                    call_context,
+                    state: GeneratorState::Created,
+                    current_key: None,
+                    current_value: None,
+                    return_value: None,
+                }),
+            }),
         }
     }
 
     /// Stable debug identity.
     #[must_use]
-    pub const fn id(&self) -> u64 {
-        self.id
+    pub fn id(&self) -> u64 {
+        self.cell.id
     }
 
     /// Raw IR function ID.
     #[must_use]
     pub fn function(&self) -> u32 {
-        self.storage.borrow().function
+        self.cell.storage.borrow().function
     }
 
     /// Positional argument snapshots.
     #[must_use]
     pub fn args(&self) -> Vec<Value> {
-        self.storage.borrow().args.clone()
+        self.cell.storage.borrow().args.clone()
     }
 
     /// Captured activation context for the first generator resume.
     #[must_use]
     pub fn call_context(&self) -> GeneratorCallContext {
-        self.storage.borrow().call_context.clone()
+        self.cell.storage.borrow().call_context.clone()
     }
 
     /// Current lifecycle state.
     #[must_use]
     pub fn state(&self) -> GeneratorState {
-        self.storage.borrow().state
+        self.cell.storage.borrow().state
     }
 
     /// Sets the lifecycle state.
     pub fn set_state(&self, state: GeneratorState) {
-        self.storage.borrow_mut().state = state;
+        self.cell.storage.borrow_mut().state = state;
     }
 
     /// Records the current yielded key/value and marks the generator suspended.
     pub fn suspend(&self, key: Option<Value>, value: Value) {
-        let mut storage = self.storage.borrow_mut();
+        let mut storage = self.cell.storage.borrow_mut();
         storage.current_key = key;
         storage.current_value = Some(value);
         storage.state = GeneratorState::Suspended;
@@ -125,7 +132,7 @@ impl GeneratorRef {
 
     /// Marks the generator as completed.
     pub fn close(&self, return_value: Option<Value>) {
-        let mut storage = self.storage.borrow_mut();
+        let mut storage = self.cell.storage.borrow_mut();
         storage.current_key = None;
         storage.current_value = None;
         storage.return_value = return_value;
@@ -135,7 +142,7 @@ impl GeneratorRef {
     /// Current yielded key/value, if any.
     #[must_use]
     pub fn current(&self) -> Option<(Option<Value>, Value)> {
-        let storage = self.storage.borrow();
+        let storage = self.cell.storage.borrow();
         storage
             .current_value
             .clone()
@@ -145,26 +152,26 @@ impl GeneratorRef {
     /// Current yielded key, if any.
     #[must_use]
     pub fn current_key(&self) -> Option<Value> {
-        self.storage.borrow().current_key.clone()
+        self.cell.storage.borrow().current_key.clone()
     }
 
     /// Current yielded value, if any.
     #[must_use]
     pub fn current_value(&self) -> Option<Value> {
-        self.storage.borrow().current_value.clone()
+        self.cell.storage.borrow().current_value.clone()
     }
 
     /// Return value recorded after normal completion.
     #[must_use]
     pub fn return_value(&self) -> Option<Value> {
-        self.storage.borrow().return_value.clone()
+        self.cell.storage.borrow().return_value.clone()
     }
 }
 
 impl fmt::Debug for GeneratorRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GeneratorRef")
-            .field("id", &self.id)
+            .field("id", &self.cell.id)
             .field("function", &self.function())
             .field("state", &self.state())
             .finish()
@@ -173,7 +180,7 @@ impl fmt::Debug for GeneratorRef {
 
 impl PartialEq for GeneratorRef {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.cell.id == other.cell.id
     }
 }
 

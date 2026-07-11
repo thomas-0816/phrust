@@ -41,10 +41,12 @@ pub enum Value {
 }
 
 /// Register files and packed arrays memcpy `Value` on every clone; keep it
-/// small. If this assertion fails you added a fat variant - box its payload
-/// instead.
-const _: () = assert!(std::mem::size_of::<Value>() <= 24);
-const _: () = assert!(std::mem::size_of::<Option<Value>>() <= 24);
+/// small. Every heap variant is a single pointer-sized handle (identities
+/// live inside the shared cells), which is what holds the 16-byte layout.
+/// If this assertion fails you added a fat variant - box its payload or
+/// fold its side data into the pointee instead.
+const _: () = assert!(std::mem::size_of::<Value>() <= 16);
+const _: () = assert!(std::mem::size_of::<Option<Value>>() <= 16);
 
 impl Value {
     /// Creates a callable value, boxing the payload.

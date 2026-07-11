@@ -32,9 +32,14 @@ struct FiberStorage {
 
 /// Internal reference to fiber state.
 #[derive(Clone)]
-pub struct FiberRef {
+struct FiberCell {
     id: u64,
-    storage: Rc<RefCell<FiberStorage>>,
+    storage: RefCell<FiberStorage>,
+}
+
+#[derive(Clone)]
+pub struct FiberRef {
+    cell: Rc<FiberCell>,
 }
 
 impl FiberRef {
@@ -42,41 +47,43 @@ impl FiberRef {
     #[must_use]
     pub fn new(callable: Value) -> Self {
         Self {
-            id: NEXT_FIBER_ID.fetch_add(1, Ordering::Relaxed),
-            storage: Rc::new(RefCell::new(FiberStorage {
-                callable,
-                state: FiberState::NotStarted,
-                return_value: None,
-            })),
+            cell: Rc::new(FiberCell {
+                id: NEXT_FIBER_ID.fetch_add(1, Ordering::Relaxed),
+                storage: RefCell::new(FiberStorage {
+                    callable,
+                    state: FiberState::NotStarted,
+                    return_value: None,
+                }),
+            }),
         }
     }
 
     /// Stable debug identity.
     #[must_use]
-    pub const fn id(&self) -> u64 {
-        self.id
+    pub fn id(&self) -> u64 {
+        self.cell.id
     }
 
     /// Callable snapshot supplied to the constructor.
     #[must_use]
     pub fn callable(&self) -> Value {
-        self.storage.borrow().callable.clone()
+        self.cell.storage.borrow().callable.clone()
     }
 
     /// Current lifecycle state.
     #[must_use]
     pub fn state(&self) -> FiberState {
-        self.storage.borrow().state
+        self.cell.storage.borrow().state
     }
 
     /// Sets the lifecycle state.
     pub fn set_state(&self, state: FiberState) {
-        self.storage.borrow_mut().state = state;
+        self.cell.storage.borrow_mut().state = state;
     }
 
     /// Marks the fiber as completed normally.
     pub fn terminate(&self, return_value: Option<Value>) {
-        let mut storage = self.storage.borrow_mut();
+        let mut storage = self.cell.storage.borrow_mut();
         storage.return_value = return_value;
         storage.state = FiberState::Terminated;
     }
@@ -84,14 +91,14 @@ impl FiberRef {
     /// Return value recorded after normal completion.
     #[must_use]
     pub fn return_value(&self) -> Option<Value> {
-        self.storage.borrow().return_value.clone()
+        self.cell.storage.borrow().return_value.clone()
     }
 }
 
 impl fmt::Debug for FiberRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FiberRef")
-            .field("id", &self.id)
+            .field("id", &self.cell.id)
             .field("state", &self.state())
             .finish()
     }
@@ -99,7 +106,7 @@ impl fmt::Debug for FiberRef {
 
 impl PartialEq for FiberRef {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.cell.id == other.cell.id
     }
 }
 

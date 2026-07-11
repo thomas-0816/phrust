@@ -204,18 +204,26 @@ impl ObjectStorage {
     }
 }
 
+/// Shared object cell: the stable identity lives beside the storage inside
+/// one allocation so the handle itself stays pointer-sized — `Value` embeds
+/// it in every register and local slot.
+#[derive(Debug)]
+struct ObjectCell {
+    id: u64,
+    storage: RefCell<ObjectStorage>,
+}
+
 /// Reference to runtime object storage.
 #[derive(Clone)]
 pub struct ObjectRef {
-    id: u64,
-    storage: Rc<RefCell<ObjectStorage>>,
+    cell: Rc<ObjectCell>,
 }
 
 /// Weak debug handle to object storage for GC tests.
 #[derive(Clone, Debug)]
 pub struct WeakObjectHandle {
     id: u64,
-    storage: Weak<RefCell<ObjectStorage>>,
+    cell: Weak<ObjectCell>,
 }
 
 impl WeakObjectHandle {
@@ -228,16 +236,13 @@ impl WeakObjectHandle {
     /// Returns true when the object storage is still alive.
     #[must_use]
     pub fn is_alive(&self) -> bool {
-        self.storage.strong_count() > 0
+        self.cell.strong_count() > 0
     }
 
     /// Upgrades this weak handle into an object reference when still alive.
     #[must_use]
     pub fn upgrade(&self) -> Option<ObjectRef> {
-        self.storage.upgrade().map(|storage| ObjectRef {
-            id: self.id,
-            storage,
-        })
+        self.cell.upgrade().map(|cell| ObjectRef { cell })
     }
 }
 
@@ -309,19 +314,21 @@ impl ObjectRef {
         crate::layout_stats::record_object_allocation();
         let id = next_object_id();
         Self {
-            id,
-            storage: Rc::new(RefCell::new(ObjectStorage {
-                class_name: Arc::from(class.name.as_str()),
-                display_name: Arc::from(display_name),
-                is_enum: class.flags.is_enum,
-                enum_backing_type: class.enum_backing_type,
-                id_guard: Some(ObjectIdGuard::new(id)),
-                layout,
-                declared_slots,
-                dynamic_properties: HashMap::new(),
-                dynamic_order: Vec::new(),
-                dynamic_debug_labels: HashMap::new(),
-            })),
+            cell: Rc::new(ObjectCell {
+                id,
+                storage: RefCell::new(ObjectStorage {
+                    class_name: Arc::from(class.name.as_str()),
+                    display_name: Arc::from(display_name),
+                    is_enum: class.flags.is_enum,
+                    enum_backing_type: class.enum_backing_type,
+                    id_guard: Some(ObjectIdGuard::new(id)),
+                    layout,
+                    declared_slots,
+                    dynamic_properties: HashMap::new(),
+                    dynamic_order: Vec::new(),
+                    dynamic_debug_labels: HashMap::new(),
+                }),
+            }),
         }
     }
 
@@ -353,120 +360,125 @@ impl ObjectRef {
             dynamic_properties.insert(name, value);
         }
         Self {
-            id: source.id,
-            storage: Rc::new(RefCell::new(ObjectStorage {
-                class_name: source.class_name_handle(),
-                display_name: source.display_name_handle(),
-                is_enum: false,
-                enum_backing_type: None,
-                id_guard: None,
-                layout: empty_layout,
-                declared_slots: Vec::new(),
-                dynamic_properties,
-                dynamic_order,
-                dynamic_debug_labels,
-            })),
+            cell: Rc::new(ObjectCell {
+                id: source.id(),
+                storage: RefCell::new(ObjectStorage {
+                    class_name: source.class_name_handle(),
+                    display_name: source.display_name_handle(),
+                    is_enum: false,
+                    enum_backing_type: None,
+                    id_guard: None,
+                    layout: empty_layout,
+                    declared_slots: Vec::new(),
+                    dynamic_properties,
+                    dynamic_order,
+                    dynamic_debug_labels,
+                }),
+            }),
         }
     }
 
     /// Returns the stable object identity for tests and diagnostics.
     #[must_use]
-    pub const fn id(&self) -> u64 {
-        self.id
+    pub fn id(&self) -> u64 {
+        self.cell.id
     }
 
     /// Returns the current `Rc` strong count for GC debug metadata.
     #[must_use]
     pub fn gc_refcount_estimate(&self) -> usize {
-        Rc::strong_count(&self.storage)
+        Rc::strong_count(&self.cell)
     }
 
     /// Returns a weak debug handle for GC tests.
     #[must_use]
     pub fn weak_handle(&self) -> WeakObjectHandle {
         WeakObjectHandle {
-            id: self.id,
-            storage: Rc::downgrade(&self.storage),
+            id: self.cell.id,
+            cell: Rc::downgrade(&self.cell),
         }
     }
 
     /// Returns the object's class name.
     #[must_use]
     pub fn class_name(&self) -> String {
-        self.storage.borrow().class_name.to_string()
+        self.cell.storage.borrow().class_name.to_string()
     }
 
     /// Returns the object's class name as a shared handle (a refcount bump,
     /// no fresh allocation).
     #[must_use]
     pub fn class_name_handle(&self) -> Arc<str> {
-        Arc::clone(&self.storage.borrow().class_name)
+        Arc::clone(&self.cell.storage.borrow().class_name)
     }
 
     /// Returns the source-spelled display class name for diagnostics and dumps.
     #[must_use]
     pub fn display_name(&self) -> String {
-        self.storage.borrow().display_name.to_string()
+        self.cell.storage.borrow().display_name.to_string()
     }
 
     /// Returns the display class name as a shared handle (a refcount bump,
     /// no fresh allocation).
     #[must_use]
     pub fn display_name_handle(&self) -> Arc<str> {
-        Arc::clone(&self.storage.borrow().display_name)
+        Arc::clone(&self.cell.storage.borrow().display_name)
     }
 
     /// Returns whether this object represents an enum case.
     #[must_use]
     pub fn is_enum(&self) -> bool {
-        self.storage.borrow().is_enum
+        self.cell.storage.borrow().is_enum
     }
 
     /// Returns this object's enum backing type, when it is a backed enum case.
     #[must_use]
     pub fn enum_backing_type(&self) -> Option<ClassEnumBackingType> {
-        self.storage.borrow().enum_backing_type
+        self.cell.storage.borrow().enum_backing_type
     }
 
     /// Creates a new object identity with a shallow copy of the property map.
     #[must_use]
     pub fn clone_shallow(&self) -> Self {
         crate::layout_stats::record_object_allocation();
-        let storage = self.storage.borrow();
+        let storage = self.cell.storage.borrow();
         let id = next_object_id();
         Self {
-            id,
-            storage: Rc::new(RefCell::new(ObjectStorage {
-                class_name: storage.class_name.clone(),
-                display_name: storage.display_name.clone(),
-                is_enum: storage.is_enum,
-                enum_backing_type: storage.enum_backing_type,
-                id_guard: Some(ObjectIdGuard::new(id)),
-                layout: Rc::clone(&storage.layout),
-                declared_slots: storage.declared_slots.clone(),
-                dynamic_properties: storage.dynamic_properties.clone(),
-                dynamic_order: storage.dynamic_order.clone(),
-                dynamic_debug_labels: storage.dynamic_debug_labels.clone(),
-            })),
+            cell: Rc::new(ObjectCell {
+                id,
+                storage: RefCell::new(ObjectStorage {
+                    class_name: storage.class_name.clone(),
+                    display_name: storage.display_name.clone(),
+                    is_enum: storage.is_enum,
+                    enum_backing_type: storage.enum_backing_type,
+                    id_guard: Some(ObjectIdGuard::new(id)),
+                    layout: Rc::clone(&storage.layout),
+                    declared_slots: storage.declared_slots.clone(),
+                    dynamic_properties: storage.dynamic_properties.clone(),
+                    dynamic_order: storage.dynamic_order.clone(),
+                    dynamic_debug_labels: storage.dynamic_debug_labels.clone(),
+                }),
+            }),
         }
     }
 
     /// Reads a property value.
     #[must_use]
     pub fn get_property(&self, name: &str) -> Option<Value> {
-        self.storage.borrow().get(name).cloned()
+        self.cell.storage.borrow().get(name).cloned()
     }
 
     /// Attempts to read a property value without panicking on nested borrows.
     pub fn try_get_property(&self, name: &str) -> Result<Option<Value>, BorrowError> {
-        self.storage
+        self.cell
+            .storage
             .try_borrow()
             .map(|storage| storage.get(name).cloned())
     }
 
     /// Writes a property value.
     pub fn set_property(&self, name: impl Into<String>, value: Value) {
-        self.storage.borrow_mut().set(name.into(), value);
+        self.cell.storage.borrow_mut().set(name.into(), value);
     }
 
     /// Attempts to write a property value without panicking on nested borrows.
@@ -476,7 +488,8 @@ impl ObjectRef {
         value: Value,
     ) -> Result<(), BorrowMutError> {
         let name = name.into();
-        self.storage
+        self.cell
+            .storage
             .try_borrow_mut()
             .map(|mut storage| storage.set(name, value))
     }
@@ -493,7 +506,7 @@ impl ObjectRef {
         fallback_name: &str,
         f: impl FnOnce(Option<&Value>) -> R,
     ) -> Result<R, BorrowError> {
-        let storage = self.storage.try_borrow()?;
+        let storage = self.cell.storage.try_borrow()?;
         let value = storage
             .get(storage_name)
             .or_else(|| storage.get(fallback_name));
@@ -517,7 +530,7 @@ impl ObjectRef {
         f: impl FnOnce(&mut Value) -> R,
     ) -> Result<Option<R>, BorrowMutError> {
         let mut value = {
-            let mut storage = self.storage.try_borrow_mut()?;
+            let mut storage = self.cell.storage.try_borrow_mut()?;
             let Some(slot) = storage.get_mut(name) else {
                 return Ok(None);
             };
@@ -525,6 +538,7 @@ impl ObjectRef {
         };
         let result = f(&mut value);
         let mut storage = self
+            .cell
             .storage
             .try_borrow_mut()
             .expect("object storage re-borrowed across in-place property write");
@@ -540,7 +554,7 @@ impl ObjectRef {
     /// Returns the `var_dump` property label for a stored property name.
     #[must_use]
     pub fn property_debug_label(&self, name: &str) -> String {
-        let storage = self.storage.borrow();
+        let storage = self.cell.storage.borrow();
         storage
             .layout
             .debug_labels
@@ -552,7 +566,7 @@ impl ObjectRef {
 
     /// Removes a property value, returning whether it existed.
     pub fn unset_property(&self, name: &str) -> bool {
-        self.storage.borrow_mut().unset(name)
+        self.cell.storage.borrow_mut().unset(name)
     }
 
     /// Clears all stored properties as an internal GC action.
@@ -561,7 +575,7 @@ impl ObjectRef {
     /// runtime-semantics cycle-collection test hook after proving the object is not
     /// rooted.
     pub fn gc_clear_properties(&self) {
-        let mut storage = self.storage.borrow_mut();
+        let mut storage = self.cell.storage.borrow_mut();
         for slot in &mut storage.declared_slots {
             *slot = None;
         }
@@ -574,13 +588,13 @@ impl ObjectRef {
     /// clones until the current frame completes, so handle lifetime is tracked
     /// separately from Rust storage lifetime.
     pub fn release_php_handle(&self) {
-        self.storage.borrow_mut().id_guard.take();
+        self.cell.storage.borrow_mut().id_guard.take();
     }
 
     /// Returns a snapshot of runtime properties in PHP insertion/declaration order.
     #[must_use]
     pub fn properties_snapshot(&self) -> Vec<(String, Value)> {
-        self.storage.borrow().snapshot()
+        self.cell.storage.borrow().snapshot()
     }
 
     /// Visits every present property value (declared slots, then dynamic
@@ -588,7 +602,7 @@ impl ObjectRef {
     /// value set as [`Self::properties_snapshot`]; property names and order
     /// are not exposed.
     pub fn visit_property_values(&self, mut visit: impl FnMut(&Value)) {
-        let storage = self.storage.borrow();
+        let storage = self.cell.storage.borrow();
         for value in storage.declared_slots.iter().flatten() {
             visit(value);
         }
@@ -599,20 +613,24 @@ impl ObjectRef {
 
     /// Attempts to snapshot runtime properties without panicking on nested borrows.
     pub fn try_properties_snapshot(&self) -> Result<Vec<(String, Value)>, BorrowError> {
-        self.storage.try_borrow().map(|storage| storage.snapshot())
+        self.cell
+            .storage
+            .try_borrow()
+            .map(|storage| storage.snapshot())
     }
 
     /// Identity of this object's class layout, used as the declared-slot
     /// access guard by inline caches.
     #[must_use]
     pub fn class_layout_epoch(&self) -> u64 {
-        self.storage.borrow().layout.layout_id
+        self.cell.storage.borrow().layout.layout_id
     }
 
     /// Slot index for a declared storage name under the current layout.
     #[must_use]
     pub fn declared_slot_index(&self, storage_name: &str) -> Option<u32> {
-        self.storage
+        self.cell
+            .storage
             .borrow()
             .layout
             .slot_by_name
@@ -623,7 +641,8 @@ impl ObjectRef {
     /// Declared storage name for a slot under the current layout.
     #[must_use]
     pub fn slot_metadata(&self, slot: u32) -> Option<String> {
-        self.storage
+        self.cell
+            .storage
             .borrow()
             .layout
             .slot_names
@@ -636,7 +655,7 @@ impl ObjectRef {
     /// to the generic name-keyed path.
     #[must_use]
     pub fn get_declared_slot(&self, slot: u32, layout_epoch: u64) -> Option<Value> {
-        let storage = self.storage.borrow();
+        let storage = self.cell.storage.borrow();
         if storage.layout.layout_id != layout_epoch {
             return None;
         }
@@ -651,7 +670,7 @@ impl ObjectRef {
     /// Returns false on guard mismatch so callers fall back to the generic
     /// name-keyed path.
     pub fn set_declared_slot(&self, slot: u32, layout_epoch: u64, value: Value) -> bool {
-        let mut storage = self.storage.borrow_mut();
+        let mut storage = self.cell.storage.borrow_mut();
         if storage.layout.layout_id != layout_epoch {
             return false;
         }
@@ -667,7 +686,7 @@ impl ObjectRef {
 impl fmt::Debug for ObjectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ObjectRef")
-            .field("id", &self.id)
+            .field("id", &self.cell.id)
             .field("class_name", &self.class_name())
             .finish()
     }
@@ -675,7 +694,7 @@ impl fmt::Debug for ObjectRef {
 
 impl PartialEq for ObjectRef {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.cell.id == other.cell.id
     }
 }
 
