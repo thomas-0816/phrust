@@ -7,30 +7,32 @@
 use super::prelude::*;
 
 pub(super) fn is_spl_iterator_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "arrayiterator"
-            | "recursivearrayiterator"
-            | "directoryiterator"
-            | "filesystemiterator"
-            | "recursivedirectoryiterator"
-            | "iteratoriterator"
-            | "limititerator"
-            | "emptyiterator"
-            | "appenditerator"
-            | "recursiveiteratoriterator"
-            | "cachingiterator"
-            | "recursivecachingiterator"
-            | "regexiterator"
-            | "recursiveregexiterator"
-            | "norewinditerator"
-            | "infiniteiterator"
-            | "filteriterator"
-            | "recursivefilteriterator"
-            | "parentiterator"
-            | "recursivetreeiterator"
-            | "multipleiterator"
-            | "globiterator"
+    spl_class_name_is(
+        class_name,
+        &[
+            "arrayiterator",
+            "recursivearrayiterator",
+            "directoryiterator",
+            "filesystemiterator",
+            "recursivedirectoryiterator",
+            "iteratoriterator",
+            "limititerator",
+            "emptyiterator",
+            "appenditerator",
+            "recursiveiteratoriterator",
+            "cachingiterator",
+            "recursivecachingiterator",
+            "regexiterator",
+            "recursiveregexiterator",
+            "norewinditerator",
+            "infiniteiterator",
+            "filteriterator",
+            "recursivefilteriterator",
+            "parentiterator",
+            "recursivetreeiterator",
+            "multipleiterator",
+            "globiterator",
+        ],
     )
 }
 
@@ -43,35 +45,49 @@ pub(super) fn is_supported_spl_runtime_class(class_name: &str) -> bool {
 }
 
 pub(super) fn is_spl_interface_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "traversable"
-            | "iterator"
-            | "iteratoraggregate"
-            | "arrayaccess"
-            | "countable"
-            | "serializable"
-            | "outeriterator"
-            | "seekableiterator"
-            | "recursiveiterator"
+    spl_class_name_is(
+        class_name,
+        &[
+            "traversable",
+            "iterator",
+            "iteratoraggregate",
+            "arrayaccess",
+            "countable",
+            "serializable",
+            "outeriterator",
+            "seekableiterator",
+            "recursiveiterator",
+        ],
     )
 }
 
 pub(super) fn is_spl_array_access_runtime_class(class_name: &str) -> bool {
     is_spl_container_runtime_class(class_name)
-        || matches!(
-            normalize_class_name(class_name).as_str(),
-            "arrayiterator"
-                | "recursivearrayiterator"
-                | "cachingiterator"
-                | "recursivecachingiterator"
+        || spl_class_name_is(
+            class_name,
+            &[
+                "arrayiterator",
+                "recursivearrayiterator",
+                "cachingiterator",
+                "recursivecachingiterator",
+            ],
         )
 }
 
+/// Allocation-free equivalent of matching `normalize_class_name(name)`
+/// against lowercase literals: trims the root slash and compares
+/// case-insensitively, so raw and pre-normalized spellings both match.
+fn spl_class_name_is(name: &str, expected: &[&str]) -> bool {
+    let name = name.trim_start_matches('\\');
+    expected
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 pub(super) fn spl_runtime_marker(object: &ObjectRef) -> Option<String> {
-    let class_name = normalize_class_name(&object.class_name());
-    if is_supported_spl_runtime_class(&class_name) {
-        return Some(class_name);
+    let handle = object.class_name_handle();
+    if is_supported_spl_runtime_class(handle.trim_start_matches('\\')) {
+        return Some(normalize_class_name(&handle));
     }
     let marker = object.get_property(SPL_RUNTIME_CLASS_PROPERTY)?;
     let Value::String(value) = effective_value(&marker) else {
@@ -2107,10 +2123,7 @@ pub(super) const SPL_CACHING_STRING_FLAGS: i64 = SPL_CACHING_CALL_TOSTRING
     | SPL_CACHING_TOSTRING_USE_INNER;
 
 pub(super) fn is_spl_caching_iterator_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "cachingiterator" | "recursivecachingiterator"
-    )
+    spl_class_name_is(class_name, &["cachingiterator", "recursivecachingiterator"])
 }
 
 pub(super) fn spl_filtering_iterator_accepts_current(object: &ObjectRef) -> bool {
@@ -4431,14 +4444,16 @@ pub(super) fn spl_rii_note_array_string_warning(object: &ObjectRef) {
 }
 
 pub(super) fn is_spl_container_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "arrayobject"
-            | "splfixedarray"
-            | "splobjectstorage"
-            | "spldoublylinkedlist"
-            | "splstack"
-            | "splqueue"
+    spl_class_name_is(
+        class_name,
+        &[
+            "arrayobject",
+            "splfixedarray",
+            "splobjectstorage",
+            "spldoublylinkedlist",
+            "splstack",
+            "splqueue",
+        ],
     )
 }
 
@@ -5471,9 +5486,9 @@ pub(super) fn spl_object_storage_detach(object: &ObjectRef, key: &Value) -> Resu
 }
 
 pub(super) fn is_spl_heap_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "splheap" | "splmaxheap" | "splminheap" | "splpriorityqueue"
+    spl_class_name_is(
+        class_name,
+        &["splheap", "splmaxheap", "splminheap", "splpriorityqueue"],
     )
 }
 
@@ -6278,9 +6293,9 @@ pub(super) fn spl_priority_queue_extract_flags(object: &ObjectRef) -> i64 {
 }
 
 pub(super) fn is_spl_file_runtime_class(class_name: &str) -> bool {
-    matches!(
-        normalize_class_name(class_name).as_str(),
-        "splfileinfo" | "splfileobject" | "spltempfileobject"
+    spl_class_name_is(
+        class_name,
+        &["splfileinfo", "splfileobject", "spltempfileobject"],
     )
 }
 
