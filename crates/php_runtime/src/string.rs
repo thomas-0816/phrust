@@ -142,6 +142,18 @@ impl PhpString {
         }
     }
 
+    /// Creates a PHP string holding the concatenation of `parts` in a
+    /// single allocation, with no intermediate growable buffer. This is
+    /// the concatenation fast path: the joined length is known up front,
+    /// so each part is copied straight into its final position.
+    #[must_use]
+    pub fn from_parts(parts: &[&[u8]]) -> Self {
+        crate::layout_stats::record_string_allocation();
+        Self {
+            storage: crate::runtime_memory::CompactBytes::from_parts(parts),
+        }
+    }
+
     /// Returns the thread-local interned string for these bytes, creating
     /// the symbol on first use. Interned strings share storage, carry a
     /// [`SymbolId`], and compare/hash without touching the bytes.

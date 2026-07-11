@@ -447,19 +447,18 @@ impl Vm {
                     state,
                     source_span,
                 )?;
-                let bytes = if let Some(capacity) = lhs.len().checked_add(rhs.len()) {
+                if lhs.len().checked_add(rhs.len()).is_some() {
                     self.record_counter_concat_prealloc_hit();
-                    let mut bytes = Vec::with_capacity(capacity);
-                    bytes.extend_from_slice(lhs.as_bytes());
-                    bytes.extend_from_slice(rhs.as_bytes());
-                    bytes
+                    Ok(Value::String(PhpString::from_parts(&[
+                        lhs.as_bytes(),
+                        rhs.as_bytes(),
+                    ])))
                 } else {
                     self.record_counter_concat_fallback("capacity_overflow");
                     let mut bytes = lhs.into_bytes();
                     bytes.extend_from_slice(rhs.as_bytes());
-                    bytes
-                };
-                Ok(Value::String(PhpString::from_bytes(bytes)))
+                    Ok(Value::String(PhpString::from_bytes(bytes)))
+                }
             }
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
                 if op == BinaryOp::Add

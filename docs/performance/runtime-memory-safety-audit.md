@@ -19,8 +19,14 @@ Invariants:
   `len` bytes with the header's alignment; the same layout is recomputed
   from the stored `len` for deallocation.
 - `ptr` is non-null, points at a live `Header`, and is only produced by
-  `CompactBytes::from_slice`; the bytes pointer is derived by offsetting
-  past the header within the same allocation.
+  `CompactBytes::from_slice` or `CompactBytes::from_parts`; the bytes
+  pointer is derived by offsetting past the header within the same
+  allocation.
+- `from_parts` sizes the block as the sum of the part lengths and copies
+  each part into a disjoint tail window whose offset is the sum of the
+  preceding parts' lengths, so the copies exactly tile the `len`-byte
+  tail; the result carries fresh hash/symbol cells (never inherited from
+  the sources).
 - The refcount is a `Cell<usize>`: the type is `!Send`/`!Sync` (enforced
   by a `PhantomData<Rc<()>>` marker), so counts never race.
 - `clone` increments the refcount; `drop` decrements and frees on zero.

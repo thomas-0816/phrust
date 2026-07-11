@@ -90,6 +90,45 @@ impl CompactBytes {
         }
     }
 
+    /// Allocates one block holding the header and the concatenation of
+    /// `parts`, without an intermediate growable buffer. This is the
+    /// string-concatenation primitive: the result length is known up
+    /// front, so the bytes are copied straight into their final home.
+    #[must_use]
+    #[allow(unsafe_code)]
+    pub fn from_parts(parts: &[&[u8]]) -> Self {
+        let len = parts.iter().map(|part| part.len()).sum();
+        let layout = Self::layout(len);
+        // SAFETY: the layout has non-zero size (the header is non-empty),
+        // and an allocation failure diverts to `handle_alloc_error`.
+        let raw = unsafe { alloc(layout) };
+        let Some(ptr) = NonNull::new(raw.cast::<Header>()) else {
+            handle_alloc_error(layout);
+        };
+        // SAFETY: `ptr` is freshly allocated with space for `Header`
+        // followed by `len` bytes; writing the header initializes the
+        // block, and each part copy targets a disjoint window of the tail
+        // region (offsets advance by exactly the previous parts' lengths,
+        // and their sum is `len`), which cannot overlap the source slices.
+        unsafe {
+            ptr.as_ptr().write(Header {
+                refcount: Cell::new(1),
+                hash: Cell::new(0),
+                symbol: Cell::new(NO_SYMBOL),
+                len,
+            });
+            let mut tail = ptr.as_ptr().add(1).cast::<u8>();
+            for part in parts {
+                std::ptr::copy_nonoverlapping(part.as_ptr(), tail, part.len());
+                tail = tail.add(part.len());
+            }
+        }
+        Self {
+            ptr,
+            _not_send: PhantomData,
+        }
+    }
+
     #[allow(unsafe_code)]
     fn header(&self) -> &Header {
         // SAFETY: `ptr` always points at the live header of an allocation
@@ -275,6 +314,45 @@ mod tests {
         assert_eq!(a.as_bytes(), b"xbc");
         let c = CompactBytes::from_slice(b"abc");
         assert!(!CompactBytes::ptr_eq(&a, &c));
+    }
+
+    #[test]
+    fn from_parts_concatenates_without_inheriting_cached_cells() {
+        let cases: &[&[&[u8]]] = &[
+            &[],
+            &[b""],
+            &[b"", b"", b""],
+            &[b"solo"],
+            &[b"left", b"right"],
+            &[b"a", b"", b"bc", b"defg", b""],
+        ];
+        for parts in cases {
+            let expected: Vec<u8> = parts.iter().flat_map(|part| part.iter().copied()).collect();
+            let joined = CompactBytes::from_parts(parts);
+            assert_eq!(joined.as_bytes(), expected.as_slice());
+            assert_eq!(joined.len(), expected.len());
+            assert!(joined.is_unique());
+            assert_eq!(joined.hash(), 0);
+            assert_eq!(joined.symbol(), None);
+        }
+        let big_left = vec![0xAB_u8; 4096];
+        let big_right = vec![0xCD_u8; 2048];
+        let joined = CompactBytes::from_parts(&[&big_left, &big_right]);
+        assert_eq!(&joined.as_bytes()[..4096], big_left.as_slice());
+        assert_eq!(&joined.as_bytes()[4096..], big_right.as_slice());
+    }
+
+    #[test]
+    fn from_parts_result_is_independent_of_its_sources() {
+        let mut source = CompactBytes::from_slice(b"shared");
+        source.set_hash(99);
+        source.set_symbol(Some(7));
+        let joined = CompactBytes::from_parts(&[source.as_bytes(), b"-tail"]);
+        assert!(!CompactBytes::ptr_eq(&source, &joined));
+        assert_eq!(joined.hash(), 0);
+        assert_eq!(joined.symbol(), None);
+        source.unique_bytes_mut()[0] = b'X';
+        assert_eq!(joined.as_bytes(), b"shared-tail");
     }
 
     #[test]

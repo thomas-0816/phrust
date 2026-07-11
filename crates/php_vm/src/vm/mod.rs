@@ -2163,7 +2163,7 @@ impl Vm {
         match specialization {
             Some(QuickeningSpecialization::ConcatStringString) => match (lhs, rhs) {
                 (Value::String(lhs), Value::String(rhs)) => {
-                    let Some(capacity) = lhs.len().checked_add(rhs.len()) else {
+                    if lhs.len().checked_add(rhs.len()).is_none() {
                         self.record_quickened_concat_guard(
                             function_id,
                             block_id,
@@ -2171,13 +2171,13 @@ impl Vm {
                             false,
                         );
                         return None;
-                    };
-                    let mut bytes = Vec::with_capacity(capacity);
-                    bytes.extend_from_slice(lhs.as_bytes());
-                    bytes.extend_from_slice(rhs.as_bytes());
+                    }
                     self.record_quickened_concat_guard(function_id, block_id, instruction_id, true);
                     self.record_counter_concat_prealloc_hit();
-                    Some(Value::String(PhpString::from_bytes(bytes)))
+                    Some(Value::String(PhpString::from_parts(&[
+                        lhs.as_bytes(),
+                        rhs.as_bytes(),
+                    ])))
                 }
                 _ => {
                     self.record_quickened_concat_guard(
@@ -2445,7 +2445,7 @@ impl Vm {
         match specialization {
             Some(QuickeningSpecialization::ConcatStringString) => match (lhs, rhs) {
                 (Value::String(lhs), Value::String(rhs)) => {
-                    let Some(capacity) = lhs.len().checked_add(rhs.len()) else {
+                    if lhs.len().checked_add(rhs.len()).is_none() {
                         self.record_quickened_dense_concat_guard(
                             unit_id,
                             function_id,
@@ -2453,10 +2453,7 @@ impl Vm {
                             false,
                         );
                         return None;
-                    };
-                    let mut bytes = Vec::with_capacity(capacity);
-                    bytes.extend_from_slice(lhs.as_bytes());
-                    bytes.extend_from_slice(rhs.as_bytes());
+                    }
                     self.record_quickened_dense_concat_guard(
                         unit_id,
                         function_id,
@@ -2464,7 +2461,10 @@ impl Vm {
                         true,
                     );
                     self.record_counter_concat_prealloc_hit();
-                    Some(Value::String(PhpString::from_bytes(bytes)))
+                    Some(Value::String(PhpString::from_parts(&[
+                        lhs.as_bytes(),
+                        rhs.as_bytes(),
+                    ])))
                 }
                 _ => {
                     self.record_quickened_dense_concat_guard(
