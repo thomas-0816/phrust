@@ -344,6 +344,7 @@ impl StreamWrapperRegistry {
         if let Some(target) = uri.strip_prefix("php://") {
             return open_php_stream(table, target, mode, parsed_mode, capabilities, php_input);
         }
+        #[cfg(feature = "full-runtime")]
         if uri.starts_with("phar://") {
             return open_phar_stream(table, uri, mode, parsed_mode, cwd, capabilities);
         }
@@ -1447,6 +1448,7 @@ fn open_file_stream(
     ))
 }
 
+#[cfg(feature = "full-runtime")]
 fn open_phar_stream(
     table: &mut ResourceTable,
     uri: &str,

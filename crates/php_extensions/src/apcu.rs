@@ -1,14 +1,16 @@
 //! Process-local APCu compatibility helpers.
 
-use super::core::{arity_error, assign_reference_arg, conversion_error, int_arg, string_arg};
-use crate::builtins::{
+use php_runtime::api::{
+    ApcuState, ArrayKey, ExtensionCapability, ExtensionDescriptor, ExtensionModule,
+    ExtensionStateFactory, PhpArray, PhpString, Value, to_bool, to_int, to_string,
+};
+use php_runtime::api::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError, BuiltinResult,
     RuntimeSourceSpan,
 };
-use crate::convert::to_bool;
-use crate::{ArrayKey, PhpArray, PhpString, Value};
+use std::any::Any;
 
-pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
+pub(crate) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new("apcu_add", builtin_apcu_add, BuiltinCompatibility::Php),
     BuiltinEntry::new(
         "apcu_clear_cache",
@@ -46,6 +48,75 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
     ),
     BuiltinEntry::new("apcu_store", builtin_apcu_store, BuiltinCompatibility::Php),
 ];
+
+pub(crate) struct ApcuExtension;
+
+fn create_state() -> Box<dyn Any> {
+    Box::new(ApcuState::default())
+}
+
+static DESCRIPTOR: ExtensionDescriptor = ExtensionDescriptor {
+    name: "apcu",
+    version: "5.1",
+    dependencies: &[],
+    functions: ENTRIES,
+    classes: &[],
+    constants: &[],
+    request_state: Some(ExtensionStateFactory {
+        type_name: "ApcuState",
+        create: create_state,
+    }),
+    capabilities: &[
+        ExtensionCapability::Clock,
+        ExtensionCapability::ProcessSharedState,
+    ],
+    initialize: None,
+    shutdown: None,
+};
+
+impl ExtensionModule for ApcuExtension {
+    fn descriptor(&self) -> &'static ExtensionDescriptor {
+        &DESCRIPTOR
+    }
+}
+
+fn arity_error(name: &str, expected: &str) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_BUILTIN_ARITY",
+        format!("builtin {name} expects {expected}"),
+    )
+}
+
+fn conversion_error(name: &str, message: String) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_BUILTIN_TYPE",
+        format!("builtin {name} could not convert value: {message}"),
+    )
+}
+
+fn string_arg(name: &str, value: &Value) -> Result<PhpString, BuiltinError> {
+    to_string(value).map_err(|message| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!("builtin {name} expects string-compatible value: {message}"),
+        )
+    })
+}
+
+fn int_arg(name: &str, value: &Value) -> Result<i64, BuiltinError> {
+    to_int(value).map_err(|message| {
+        BuiltinError::new(
+            "E_PHP_RUNTIME_BUILTIN_TYPE",
+            format!("builtin {name} expects int-compatible value: {message}"),
+        )
+    })
+}
+
+fn assign_reference_arg(argument: Option<&Value>, value: Value) {
+    if let Some(Value::Reference(reference)) = argument {
+        reference.set(value);
+    }
+}
 
 fn builtin_apcu_enabled(
     _context: &mut BuiltinContext<'_>,
@@ -263,7 +334,7 @@ fn apcu_counter(
 fn optional_bool(
     function: &'static str,
     value: Option<&Value>,
-) -> Result<Option<bool>, crate::builtins::BuiltinError> {
+) -> Result<Option<bool>, BuiltinError> {
     value
         .map(|value| to_bool(value).map_err(|message| conversion_error(function, message)))
         .transpose()
@@ -276,7 +347,7 @@ fn string_key(value: &str) -> ArrayKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OutputBuffer;
+    use php_runtime::api::OutputBuffer;
 
     fn call_with_context(name: &str, args: Vec<Value>, context: &mut BuiltinContext<'_>) -> Value {
         ENTRIES
@@ -291,7 +362,7 @@ mod tests {
     fn counters_and_info_cover_process_local_cache_slice() {
         let mut output = OutputBuffer::default();
         let mut context = BuiltinContext::new(&mut output);
-        let mut apcu = crate::ApcuState::isolated();
+        let mut apcu = ApcuState::isolated();
         context.set_apcu_state(&mut apcu);
 
         assert_eq!(
@@ -331,8 +402,8 @@ mod tests {
     #[test]
     fn default_state_is_shared_across_context_handles() {
         let key = b"__phrust_apcu_process_shared_unit_test".to_vec();
-        let mut first = crate::ApcuState::default();
-        let mut second = crate::ApcuState::default();
+        let mut first = ApcuState::default();
+        let mut second = ApcuState::default();
         first.delete(&key);
 
         first.store(key.clone(), Value::string("shared"), 0);
@@ -344,7 +415,7 @@ mod tests {
     #[test]
     fn ttl_expiry_uses_controllable_clock_for_isolated_state() {
         let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
-        let mut apcu = crate::ApcuState::isolated_at(base);
+        let mut apcu = ApcuState::isolated_at(base);
 
         apcu.store(b"ttl".to_vec(), Value::string("value"), 10);
         assert_eq!(apcu.fetch(b"ttl"), Some(Value::string("value")));

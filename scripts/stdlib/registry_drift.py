@@ -11,7 +11,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ALLOWLIST = ROOT / "scripts/stdlib/registry_drift_allowlist.jsonl"
-RUNTIME_MODULES = ROOT / "crates/php_runtime/src/builtins/modules"
+RUNTIME_BUILTIN_ROOTS = (
+    ROOT / "crates/php_runtime/src/builtins/modules",
+    ROOT / "crates/php_extensions/src",
+)
 STD_EXTENSIONS = ROOT / "crates/php_std/src/extensions.rs"
 GENERATED_ARGINFO = ROOT / "crates/php_std/src/generated/arginfo.rs"
 REPORT_DIR = ROOT / "target/stdlib/registry-drift"
@@ -89,10 +92,14 @@ def read_names(path: Path, pattern: re.Pattern[str]) -> set[str]:
 
 def read_runtime_names() -> set[str]:
     names: set[str] = set()
-    for path in sorted(RUNTIME_MODULES.rglob("*.rs")):
-        names.update(read_names_from_text(path.read_text(encoding="utf-8"), RUNTIME_RE))
+    for root in RUNTIME_BUILTIN_ROOTS:
+        for path in sorted(root.rglob("*.rs")):
+            if root.name == "src" and path == root / "lib.rs":
+                continue
+            names.update(read_names_from_text(path.read_text(encoding="utf-8"), RUNTIME_RE))
     if not names:
-        raise DriftError(f"no runtime builtin names found under {RUNTIME_MODULES.relative_to(ROOT)}")
+        roots = ", ".join(str(root.relative_to(ROOT)) for root in RUNTIME_BUILTIN_ROOTS)
+        raise DriftError(f"no runtime builtin names found under {roots}")
     names.update(VM_BUILTIN_NAMES)
     return names
 

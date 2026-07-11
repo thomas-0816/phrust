@@ -1,4 +1,4 @@
-use php_runtime::api::BuiltinRegistry;
+use php_extensions::BuiltinRegistry;
 use php_std::{ClassKind, ExtensionRegistry, SymbolVisibility};
 
 fn main() {

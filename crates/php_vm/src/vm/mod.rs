@@ -72,6 +72,7 @@ use crate::tiering::{ExecutionTier, TieringState};
 use operand_read::operand_truthy_at_frame;
 use operand_read::take_discard_operand_at_frame;
 use operand_read::{DenseOperandRead, read_operand_at_frame, read_operand_ref_at_frame};
+use php_extensions::BuiltinRegistry;
 use php_ir::constants::IrConstant;
 use php_ir::function::{IrFunction, IrParam, IrReturnType};
 use php_ir::ids::{BlockId, ClassId, ConstId, FunctionId, InstrId, LocalId, RegId, UnitId};
@@ -91,7 +92,7 @@ use php_runtime::debug::{GcEntityId, GcEntityKind, GcRoot, GcRootKind, GcSnapsho
 use php_runtime::numeric_string::{NumericStringKind, NumericStringValue, classify_php_string};
 use php_runtime::{
     ArrayKey, AttributeEntry as RuntimeAttributeEntry, AutoloadRegistry, BuiltinContext,
-    BuiltinEntry, BuiltinRegistry, CallableMethodTarget, CallableValue,
+    BuiltinEntry, CallableMethodTarget, CallableValue,
     ClassConstantEntry as RuntimeClassConstantEntry,
     ClassConstantFlags as RuntimeClassConstantFlags, ClassEntry as RuntimeClassEntry,
     ClassEnumBackingType as RuntimeClassEnumBackingType,

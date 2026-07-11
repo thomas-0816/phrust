@@ -1,12 +1,12 @@
 //! ASCII C-locale ctype extension.
 
-use super::core::{arity_error, deref_value, runtime_type_name};
-use crate::Value;
-use crate::builtins::{
-    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
+use php_runtime::api::{
+    BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan, Value,
+    value_type_name,
 };
+use php_runtime::api::{BuiltinError, ExtensionDescriptor, ExtensionModule};
 
-pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
+pub(crate) const ENTRIES: &[BuiltinEntry] = &[
     BuiltinEntry::new(
         "ctype_alnum",
         builtin_ctype_alnum,
@@ -63,6 +63,41 @@ pub(in crate::builtins) const ENTRIES: &[BuiltinEntry] = &[
         BuiltinCompatibility::Php,
     ),
 ];
+
+pub(crate) struct CtypeExtension;
+
+static DESCRIPTOR: ExtensionDescriptor = ExtensionDescriptor {
+    name: "ctype",
+    version: "8.5.7",
+    dependencies: &[],
+    functions: ENTRIES,
+    classes: &[],
+    constants: &[],
+    request_state: None,
+    capabilities: &[],
+    initialize: None,
+    shutdown: None,
+};
+
+impl ExtensionModule for CtypeExtension {
+    fn descriptor(&self) -> &'static ExtensionDescriptor {
+        &DESCRIPTOR
+    }
+}
+
+fn arity_error(name: &str, expected: &str) -> BuiltinError {
+    BuiltinError::new(
+        "E_PHP_RUNTIME_BUILTIN_ARITY",
+        format!("builtin {name} expects {expected}"),
+    )
+}
+
+fn deref_value(value: &Value) -> Value {
+    match value {
+        Value::Reference(cell) => cell.get(),
+        value => value.clone(),
+    }
+}
 
 macro_rules! ctype_builtin {
     ($name:ident, $php_name:literal, $predicate:expr, $allow_digits:literal, $allow_minus:literal) => {
@@ -139,7 +174,7 @@ fn ctype_deprecation(
 fn ctype_argument_type_name(value: &Value) -> String {
     match deref_value(value) {
         Value::Object(object) => object.display_name(),
-        other => runtime_type_name(&other).to_owned(),
+        other => value_type_name(&other).to_owned(),
     }
 }
 
@@ -224,7 +259,7 @@ ctype_builtin!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClassEntry, ClassFlags, ObjectRef, OutputBuffer, PhpString};
+    use php_runtime::api::{ClassEntry, ClassFlags, ObjectRef, OutputBuffer, PhpString};
 
     fn call(name: &str, value: Value) -> (Value, Vec<String>) {
         let mut output = OutputBuffer::default();

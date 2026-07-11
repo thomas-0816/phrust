@@ -102,17 +102,21 @@
       "max_bytes": 8587,
       "max_lines": 242
     },
+    "crates/php_vm/src/inline_cache.rs": {
+      "max_bytes": 164766,
+      "max_lines": 5053
+    },
     "crates/php_vm/src/vm/builtin_classes.rs": {
       "max_bytes": 330490,
       "max_lines": 8744
     },
     "crates/php_vm/src/vm/mod.rs": {
-      "max_bytes": 2818824,
+      "max_bytes": 2819456,
       "max_lines": 68229
     },
     "crates/php_vm/src/vm/spl.rs": {
-      "max_bytes": 257431,
-      "max_lines": 6915
+      "max_bytes": 257771,
+      "max_lines": 6930
     },
     "crates/php_vm_cli/src/commands.rs": {
       "max_bytes": 250655,
@@ -234,6 +238,14 @@
     "php_executor:libz-sys:z",
     "php_executor:openssl-sys:openssl",
     "php_executor:wasm-bindgen-shared:wasm_bindgen",
+    "php_extensions:clang-sys:clang",
+    "php_extensions:curl-sys:curl",
+    "php_extensions:libsodium-sys-stable:sodium",
+    "php_extensions:libsqlite3-sys:sqlite3",
+    "php_extensions:libssh2-sys:ssh2",
+    "php_extensions:libz-sys:z",
+    "php_extensions:openssl-sys:openssl",
+    "php_extensions:wasm-bindgen-shared:wasm_bindgen",
     "php_ir:clang-sys:clang",
     "php_ir:curl-sys:curl",
     "php_ir:libsodium-sys-stable:sodium",
@@ -324,10 +336,10 @@
   ],
   "public_surface_limits": {
     "php_runtime": {
-      "public_module_declarations": 37,
-      "public_reexport_statements": 67,
-      "root_public_module_declarations": 37,
-      "root_reexport_statements": 29
+      "public_module_declarations": 39,
+      "public_reexport_statements": 71,
+      "root_public_module_declarations": 39,
+      "root_reexport_statements": 31
     },
     "php_vm": {
       "public_module_declarations": 24,
@@ -497,6 +509,7 @@
     "php_executor:php_semantics:normal:false",
     "php_executor:php_source:normal:false",
     "php_executor:php_vm:normal:false",
+    "php_extensions:php_runtime:normal:false",
     "php_frontend_cli:php_semantics:normal:false",
     "php_ir:php_diagnostics:normal:false",
     "php_ir:php_semantics:normal:false",
@@ -512,9 +525,9 @@
     "php_parser_cli:php_syntax:normal:false",
     "php_phpt_tools:php_testkit:normal:false",
     "php_runtime:php_diagnostics:normal:false",
-    "php_runtime:php_lexer:normal:false",
+    "php_runtime:php_lexer:normal:true",
     "php_runtime:php_source:normal:false",
-    "php_runtime:php_syntax:normal:false",
+    "php_runtime:php_syntax:normal:true",
     "php_runtime:php_testkit:dev:false",
     "php_semantics:php_ast:normal:false",
     "php_semantics:php_diagnostics:normal:false",
@@ -524,12 +537,14 @@
     "php_server:php_executor:normal:false",
     "php_server:php_runtime:normal:false",
     "php_server:php_vm:normal:false",
+    "php_std:php_extensions:normal:false",
     "php_std:php_lexer:normal:false",
     "php_std:php_runtime:normal:false",
     "php_syntax:php_diagnostics:normal:false",
     "php_syntax:php_lexer:normal:false",
     "php_syntax:php_source:normal:false",
     "php_vm:php_diagnostics:normal:false",
+    "php_vm:php_extensions:normal:false",
     "php_vm:php_ir:normal:false",
     "php_vm:php_jit:normal:true",
     "php_vm:php_optimizer:dev:false",

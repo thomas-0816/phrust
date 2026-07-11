@@ -78,9 +78,8 @@ impl PhpWorkerPool {
     /// Runs a synchronous job on a pinned worker and awaits its result.
     ///
     /// Falls back to running the job on the calling thread inside
-    /// `block_in_place` when the pool is unavailable (a worker panicked and
-    /// poisoned the queue, or the reply channel was dropped), so a degraded
-    /// pool degrades to the pre-pool behavior instead of failing requests.
+    /// `block_in_place` when the pool queue is unavailable, so a degraded pool
+    /// degrades to the pre-pool behavior instead of failing requests.
     pub(crate) async fn execute<T, F>(&self, job: F) -> T
     where
         T: Send + 'static,

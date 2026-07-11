@@ -13,7 +13,7 @@ pub struct BuiltinEntry {
 }
 
 impl BuiltinEntry {
-    pub(in crate::builtins) const fn new(
+    pub const fn new(
         name: &'static str,
         function: InternalFunction,
         compatibility: BuiltinCompatibility,
@@ -95,14 +95,12 @@ const MODULE_SLICES: &[&[BuiltinEntry]] = &[
     modules::arrays::ENTRIES,
     modules::strings::ENTRIES,
     modules::hash::ENTRIES,
-    modules::ctype::ENTRIES,
     modules::calendar::ENTRIES,
     modules::filter::ENTRIES,
     modules::iconv::ENTRIES,
     modules::sodium::ENTRIES,
     modules::bcmath::ENTRIES,
     modules::gmp::ENTRIES,
-    modules::apcu::ENTRIES,
     modules::redis::ENTRIES,
     modules::memcached::ENTRIES,
     modules::igbinary::ENTRIES,

@@ -585,7 +585,8 @@ pub enum RegistryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use php_runtime::api::{BuiltinCompatibility, BuiltinEntry, BuiltinRegistry};
+    use php_extensions::BuiltinRegistry;
+    use php_runtime::api::{BuiltinCompatibility, BuiltinEntry};
 
     const FUNCTIONS_WITH_EXTERNAL_ARGINFO: &[&str] = &[
         "apcu_add",

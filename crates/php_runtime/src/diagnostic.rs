@@ -1,6 +1,6 @@
 //! Runtime diagnostics shared by the VM and CLI.
 
-use crate::builtins::RuntimeSourceSpan;
+use crate::source_span::RuntimeSourceSpan;
 use php_diagnostics::{
     DiagnosticEnvelope, DiagnosticLayer, DiagnosticLocation, DiagnosticPhase, DiagnosticSeverity,
     DiagnosticSpan,

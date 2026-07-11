@@ -154,7 +154,8 @@ fn inline_cache_slot_state_starts_cold() {
         instruction,
         InlineCacheKind::PropertyFetch,
     );
-    let slot = table.slots.first().expect("slot");
+    assert_eq!(table.slots.len(), 1);
+    let slot = &table.slots[0];
 
     assert_eq!(slot.id.raw(), 0);
     assert_eq!(slot.state, InlineCacheState::Cold);

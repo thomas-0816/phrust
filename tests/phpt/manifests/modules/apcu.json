@@ -12,6 +12,6 @@
   "known_failure_count": 0,
   "scope": ["Process-local store/fetch/add/delete/exists/clear within the runtime thread", "VM-mediated apcu_entry callable execution", "TTL expiry for process-local entries", "Existing-integer inc/dec counters with mutex-guarded cache operations", "Deterministic cache_info/sma_info probe shape"],
   "non_scope": ["Cross-thread APCu sharing for thread-affine runtime values", "APCUIterator traversal", "Multi-key array fetch/delete/exists semantics", "Per-entry shared-memory accounting"],
-  "target_gates": ["cargo test -p php_runtime apcu", "cargo test -p php_std apcu", "just phpt-dev-module MODULE=apcu"],
+  "target_gates": ["cargo test -p php_extensions apcu", "cargo test -p php_std apcu", "just phpt-dev-module MODULE=apcu"],
   "next_step": "Add array-key multi-fetch/delete coverage and APCUIterator traversal after cache API expansion."
 }

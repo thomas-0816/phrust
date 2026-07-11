@@ -1,10 +1,8 @@
-pub(in crate::builtins) mod apcu;
 pub mod array_intrinsics;
 pub(in crate::builtins) mod arrays;
 pub(in crate::builtins) mod bcmath;
 pub(in crate::builtins) mod calendar;
 pub(in crate::builtins) mod core;
-pub(in crate::builtins) mod ctype;
 pub(in crate::builtins) mod curl;
 pub(in crate::builtins) mod date;
 pub(in crate::builtins) mod debug_output;

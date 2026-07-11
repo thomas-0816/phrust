@@ -14,14 +14,18 @@
 
 pub mod array;
 pub mod autoload;
+#[cfg(feature = "full-runtime")]
 pub mod builtins;
 pub mod callable;
 pub mod context;
 pub mod convert;
 pub mod datetime;
+#[cfg(feature = "full-runtime")]
 pub mod db;
 pub mod diagnostic;
 pub mod error_output;
+#[cfg(feature = "full-runtime")]
+pub mod extension;
 pub mod fiber;
 pub mod gc;
 pub mod generator;
@@ -32,19 +36,26 @@ pub mod layout_stats;
 pub mod numeric_string;
 pub mod object;
 pub mod output;
+#[cfg(feature = "full-runtime")]
 pub mod pcre;
+#[cfg(feature = "full-runtime")]
 pub mod phar;
 pub mod reference;
 pub mod resource;
 pub mod serialization;
 pub mod session;
+pub mod source_span;
+#[cfg(feature = "full-runtime")]
 pub mod sqlite;
 pub mod status;
 pub mod string;
+#[cfg(feature = "full-runtime")]
 pub mod tokenizer;
 pub mod types;
 pub mod value;
+#[cfg(feature = "full-runtime")]
 pub mod xml;
+#[cfg(feature = "full-runtime")]
 pub mod xml_backend;
 
 /// Stable runtime surface for VM, executor, server, and standard-library code.
@@ -61,14 +72,15 @@ pub mod api {
         PhpArrayShapeLookupFallback, PhpArrayShapeMetadata, PhpArrayValueMut, PhpArrayWriteIntent,
     };
     pub use crate::autoload::AutoloadRegistry;
+    #[cfg(feature = "full-runtime")]
     pub use crate::builtins::{
         ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
         BuiltinErrorContext, BuiltinRegistry, BuiltinResult, FilesystemRuntimeState,
         FtpOptionValue, FtpState, GettextState, IconvEncodingState, ImapState, InternalFunction,
         LdapState, MbSubstituteCharacter, OpcacheState, OpenSslErrorState, PcntlState,
-        ReadlineState, RuntimeSourceSpan, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT,
-        ShmopState, SoapState, SocketState, Ssh2State, StreamContextState, StrtokState,
-        SysvMessageQueueState, SysvSemaphoreState, SysvSharedMemoryState,
+        ReadlineState, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState, SoapState,
+        SocketState, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
+        SysvSemaphoreState, SysvSharedMemoryState,
     };
     pub use crate::callable::{
         CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -88,6 +100,7 @@ pub mod api {
         to_float, to_float_php, to_int, to_int_php, to_number, to_number_php, to_object_php,
         to_string, to_string_php,
     };
+    #[cfg(feature = "full-runtime")]
     pub use crate::db::mysql::{
         MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_REPORT_ERROR,
         MYSQLI_REPORT_INDEX, MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV,
@@ -95,6 +108,7 @@ pub mod api {
         MysqlCell, MysqlConnectOptions, MysqlConnection, MysqlError, MysqlErrorKind,
         MysqlQueryResult, MysqlRow, MysqlState,
     };
+    #[cfg(feature = "full-runtime")]
     pub use crate::db::postgres::{
         PGSQL_ASSOC, PGSQL_BOTH, PGSQL_NUM, POSTGRES_TEST_DSN_ENV, PostgresConnectOptions,
         PostgresConnection, PostgresError, PostgresErrorKind, PostgresField, PostgresQueryResult,
@@ -115,6 +129,11 @@ pub mod api {
         PhpDiagnosticDisplayOptions, PhpDiagnosticLocation, emit_php_diagnostic,
         error_reporting_allows_level, format_php_diagnostic_line,
     };
+    #[cfg(feature = "full-runtime")]
+    pub use crate::extension::{
+        ExtensionCapability, ExtensionConstant, ExtensionDescriptor, ExtensionModule,
+        ExtensionStateFactory, ExtensionType,
+    };
     pub use crate::fiber::{FiberRef, FiberState};
     pub use crate::generator::{GeneratorCallContext, GeneratorRef, GeneratorState};
     pub use crate::globals::GlobalSymbolTable;
@@ -126,6 +145,7 @@ pub mod api {
         normalize_class_name,
     };
     pub use crate::output::{OutputBuffer, OutputStats};
+    #[cfg(feature = "full-runtime")]
     pub use crate::pcre::{
         PREG_BACKTRACK_LIMIT_ERROR, PREG_BAD_UTF8_ERROR, PREG_BAD_UTF8_OFFSET_ERROR,
         PREG_GREP_INVERT, PREG_INTERNAL_ERROR, PREG_JIT_STACKLIMIT_ERROR, PREG_NO_ERROR,
@@ -133,6 +153,7 @@ pub mod api {
         PREG_SPLIT_DELIM_CAPTURE, PREG_SPLIT_NO_EMPTY, PREG_SPLIT_OFFSET_CAPTURE,
         PREG_UNMATCHED_AS_NULL, PcreCache,
     };
+    #[cfg(feature = "full-runtime")]
     pub use crate::phar::{PharArchive, PharEntry, PharError, PharUri};
     pub use crate::reference::{
         Lvalue, LvalueError, LvalueKind, ReferenceCell, ReferencePlaceholder, Slot, TempValue,
@@ -149,6 +170,8 @@ pub mod api {
     pub use crate::session::{
         PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState,
     };
+    pub use crate::source_span::RuntimeSourceSpan;
+    #[cfg(feature = "full-runtime")]
     pub use crate::sqlite::{
         SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,
         SQLITE3_INTEGER, SQLITE3_NULL, SQLITE3_NUM, SQLITE3_OPEN_CREATE, SQLITE3_OPEN_READONLY,
@@ -156,6 +179,7 @@ pub mod api {
     };
     pub use crate::status::{ExecutionStatus, ExitStatus};
     pub use crate::string::{PhpString, SymbolId};
+    #[cfg(feature = "full-runtime")]
     pub use crate::tokenizer;
     pub use crate::types::{runtime_type_name, value_matches_runtime_type, value_type_name};
     pub use crate::value::{FloatValue, Value};
@@ -170,8 +194,10 @@ pub mod debug {
     #[doc(hidden)]
     pub use crate::array::WeakArrayHandle;
     #[doc(hidden)]
+    #[cfg(feature = "full-runtime")]
     pub use crate::builtins::CurlNetworkTestOverride;
     #[doc(hidden)]
+    #[cfg(feature = "full-runtime")]
     pub use crate::builtins::set_curl_network_tests_override_for_tests;
     #[doc(hidden)]
     pub use crate::gc::{
@@ -212,14 +238,15 @@ pub use array::{
     PhpArrayValueMut, PhpArrayWriteIntent, WeakArrayHandle,
 };
 pub use autoload::AutoloadRegistry;
+#[cfg(feature = "full-runtime")]
 pub use builtins::{
     ApcuState, BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinError,
     BuiltinErrorContext, BuiltinRegistry, BuiltinResult, FilesystemRuntimeState, FtpOptionValue,
     FtpState, GettextState, IconvEncodingState, ImapState, InternalFunction, JSON_ERROR_RECURSION,
     JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, LdapState, MbSubstituteCharacter,
-    OpcacheState, OpenSslErrorState, PcntlState, ReadlineState, RuntimeSourceSpan, ShmopState,
-    SoapState, SocketState, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
-    SysvSemaphoreState, SysvSharedMemoryState,
+    OpcacheState, OpenSslErrorState, PcntlState, ReadlineState, ShmopState, SoapState, SocketState,
+    Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState, SysvSemaphoreState,
+    SysvSharedMemoryState,
 };
 pub use callable::{
     CallableMethodTarget, CallableValue, ClosureCaptureValue, ClosureContext, ClosureDebugInfo,
@@ -238,6 +265,7 @@ pub use convert::{
     to_arithmetic_number_php, to_array_php, to_bool, to_bool_php, to_float, to_float_php, to_int,
     to_int_php, to_number, to_number_php, to_object_php, to_string, to_string_php,
 };
+#[cfg(feature = "full-runtime")]
 pub use db::mysql::{
     MYSQL_TEST_DSN_ENV, MYSQLI_ASSOC, MYSQLI_BOTH, MYSQLI_NUM, MYSQLI_REPORT_ERROR,
     MYSQLI_REPORT_INDEX, MYSQLI_REPORT_OFF, MYSQLI_REPORT_STRICT, MYSQLI_SQLITE_COMPAT_ENV,
@@ -245,6 +273,7 @@ pub use db::mysql::{
     MysqlConnectOptions, MysqlConnection, MysqlError, MysqlErrorKind, MysqlQueryResult, MysqlRow,
     MysqlState,
 };
+#[cfg(feature = "full-runtime")]
 pub use db::postgres::{
     PGSQL_ASSOC, PGSQL_BOTH, PGSQL_NUM, POSTGRES_TEST_DSN_ENV, PostgresConnectOptions,
     PostgresConnection, PostgresError, PostgresErrorKind, PostgresField, PostgresQueryResult,
@@ -264,6 +293,11 @@ pub use error_output::{
     PHP_E_USER_NOTICE, PHP_E_USER_WARNING, PHP_E_WARNING, PhpDiagnosticChannel,
     PhpDiagnosticDisplayOptions, PhpDiagnosticLocation, emit_php_diagnostic,
     error_reporting_allows_level, format_php_diagnostic_line,
+};
+#[cfg(feature = "full-runtime")]
+pub use extension::{
+    ExtensionCapability, ExtensionConstant, ExtensionDescriptor, ExtensionModule,
+    ExtensionStateFactory, ExtensionType,
 };
 pub use fiber::{FiberRef, FiberState};
 pub use gc::{
@@ -286,12 +320,14 @@ pub use object::{
     display_class_name, normalize_class_name,
 };
 pub use output::{OutputBuffer, OutputStats};
+#[cfg(feature = "full-runtime")]
 pub use pcre::{
     PREG_BACKTRACK_LIMIT_ERROR, PREG_BAD_UTF8_ERROR, PREG_BAD_UTF8_OFFSET_ERROR, PREG_GREP_INVERT,
     PREG_INTERNAL_ERROR, PREG_JIT_STACKLIMIT_ERROR, PREG_NO_ERROR, PREG_OFFSET_CAPTURE,
     PREG_PATTERN_ORDER, PREG_RECURSION_LIMIT_ERROR, PREG_SET_ORDER, PREG_SPLIT_DELIM_CAPTURE,
     PREG_SPLIT_NO_EMPTY, PREG_SPLIT_OFFSET_CAPTURE, PREG_UNMATCHED_AS_NULL, PcreCache,
 };
+#[cfg(feature = "full-runtime")]
 pub use phar::{PharArchive, PharEntry, PharError, PharUri};
 pub use reference::{
     Lvalue, LvalueError, LvalueKind, ReferenceCell, ReferencePlaceholder, Slot, TempValue,
@@ -307,6 +343,8 @@ pub use serialization::{
     serialize_with_precision, unserialize, unserialize_prefix,
 };
 pub use session::{PHP_SESSION_ACTIVE, PHP_SESSION_DISABLED, PHP_SESSION_NONE, SessionState};
+pub use source_span::RuntimeSourceSpan;
+#[cfg(feature = "full-runtime")]
 pub use sqlite::{
     SQLITE3_ASSOC, SQLITE3_BLOB, SQLITE3_BOTH, SQLITE3_DETERMINISTIC, SQLITE3_FLOAT,
     SQLITE3_INTEGER, SQLITE3_NULL, SQLITE3_NUM, SQLITE3_OPEN_CREATE, SQLITE3_OPEN_READONLY,

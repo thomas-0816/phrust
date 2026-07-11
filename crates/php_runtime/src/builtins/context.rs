@@ -5,7 +5,7 @@ use crate::{
     PHP_E_NOTICE, PHP_E_WARNING, PcreCache, PhpArray, PhpDiagnosticChannel,
     PhpDiagnosticDisplayOptions, PostgresState, ReferenceCell, ResourceTable, RuntimeDiagnostic,
     RuntimeHttpResponseState, RuntimeSeverity, SessionLoadCallback, SessionState, UploadRegistry,
-    Value, datetime, emit_php_diagnostic, pcre,
+    Value, datetime, emit_php_diagnostic, pcre, source_span::RuntimeSourceSpan,
 };
 use curl::easy::{Handler, WriteError};
 use curl::multi::{Easy2Handle, Multi};
@@ -4772,17 +4772,6 @@ impl StreamContextState {
     pub fn set_default_options(&mut self, options: PhpArray) {
         self.default_options = options;
     }
-}
-
-/// Source location passed to internal builtins.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RuntimeSourceSpan {
-    /// Optional source file path.
-    pub file: Option<String>,
-    /// Start byte offset.
-    pub start: u32,
-    /// End byte offset.
-    pub end: u32,
 }
 
 pub(in crate::builtins) struct BuiltinIoContext<'a> {

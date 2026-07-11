@@ -2297,6 +2297,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "php_extensions"
+version = "0.0.0"
+dependencies = [
+ "php_runtime",
+]
+
+[[package]]
 name = "php_frontend_cli"
 version = "0.1.0"
 dependencies = [
@@ -2486,6 +2493,7 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "libsodium-sys-stable",
+ "php_extensions",
  "php_lexer",
  "php_runtime",
 ]
@@ -2513,6 +2521,7 @@ name = "php_vm"
 version = "0.0.0"
 dependencies = [
  "php_diagnostics",
+ "php_extensions",
  "php_ir",
  "php_jit",
  "php_optimizer",

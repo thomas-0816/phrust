@@ -25,6 +25,7 @@ LAYER_INDEX = {
     "php_ir": 5,
     "php_optimizer": 6,
     "php_runtime": 7,
+    "php_extensions": 8,
     "php_std": 8,
     "php_vm": 9,
     "php_executor": 10,

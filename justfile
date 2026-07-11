@@ -25,6 +25,7 @@ help:
       '  just architecture-inventory Check source-derived architecture baseline' \
       '  just architecture-performance-baseline Capture compile/runtime architecture metrics' \
       '  just dependency-boundaries Check documented workspace dependency edges' \
+      '  just runtime-core-boundaries Check core and extension dependency direction' \
       '  just panic-unwrap-policy   Check production panic/unwrap policy' \
       '  just stdlib-registry-drift Check stdlib/runtime registry drift' \
       '  just verify-generated-arginfo Strict php-src arginfo drift check' \
@@ -271,6 +272,10 @@ architecture-performance-baseline *args:
 
 dependency-boundaries:
     scripts/verify/dependency_boundaries.py
+
+runtime-core-boundaries:
+    scripts/verify/runtime_core_boundaries.py
+    cargo check -p php_runtime --no-default-features
 
 panic-unwrap-policy:
     scripts/verify/panic_unwrap_policy.py

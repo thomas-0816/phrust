@@ -6,14 +6,15 @@ pub(in crate::builtins) mod modules;
 mod registry;
 mod signatures;
 
+pub use crate::source_span::RuntimeSourceSpan;
 pub use context::{
     ApcuState, BuiltinContext, CurlState, FilesystemRuntimeState, FtpOptionValue, FtpState,
     GettextState, IconvEncodingState, ImapConnectionConfig, ImapMailboxSnapshot, ImapState,
     JSON_ERROR_RECURSION, JSON_PARTIAL_OUTPUT_ON_ERROR, JSON_THROW_ON_ERROR, LdapSearchScope,
     LdapState, MbSubstituteCharacter, OpcacheState, OpenSslErrorState, PcntlState, ReadlineState,
-    RuntimeSourceSpan, SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState, SoapState,
-    SocketState, Ssh2FingerprintHash, Ssh2State, StreamContextState, StrtokState,
-    SysvMessageQueueState, SysvSemaphoreError, SysvSemaphoreState, SysvSharedMemoryState,
+    SYSVMSG_EAGAIN, SYSVMSG_EINVAL, SYSVMSG_IPC_NOWAIT, ShmopState, SoapState, SocketState,
+    Ssh2FingerprintHash, Ssh2State, StreamContextState, StrtokState, SysvMessageQueueState,
+    SysvSemaphoreError, SysvSemaphoreState, SysvSharedMemoryState,
 };
 pub(in crate::builtins) use context::{
     CurlEasyCollector, CurlMultiDone, CurlMultiRuntimeState, CurlMultiTransferState,
