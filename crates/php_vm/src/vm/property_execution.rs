@@ -772,4 +772,400 @@ impl Vm {
         object.set_property(storage_name, current);
         Ok(value)
     }
+
+    pub(super) fn read_property_fetch_target(
+        &self,
+        compiled: &CompiledUnit,
+        target: PropertyFetchCacheTarget,
+        object: &ObjectRef,
+        stack: &CallStack,
+        state: &ExecutionState,
+    ) -> Result<PropertyFetchCacheRead, String> {
+        let (owner, target) = match target {
+            PropertyFetchCacheTarget::CurrentUnit { target } => (compiled.clone(), target),
+            PropertyFetchCacheTarget::DynamicUnit { unit_index, target } => {
+                let Some(owner) = state.dynamic_units.get(unit_index).cloned() else {
+                    self.record_counter_property_ic_fallback("dynamic_unit_missing");
+                    return Ok(PropertyFetchCacheRead::Fallback);
+                };
+                (owner, target)
+            }
+        };
+        let target = target.as_ref();
+        let layout = &target.layout;
+        if state.lookup_epoch().raw() != layout.layout_version {
+            self.record_counter_property_ic_fallback("layout_epoch_mismatch");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        // Direct declared-slot read: the storage layout guard subsumes the
+        // receiver-class/declaring-class/slot re-validation below (a layout
+        // id identifies one class shape per thread), and the install gate
+        // plus the IC scope guard cover hooks, protected access, and private
+        // visibility. Guard mismatches and unset slots fall through to the
+        // generic path, which attributes the exact fallback reason.
+        if let Some(slot) = target.declared_slot {
+            match object.get_declared_slot(slot, target.object_layout_epoch) {
+                Some(Value::Uninitialized) => {
+                    self.record_counter_property_ic_fallback("uninitialized_typed_property");
+                    return Ok(PropertyFetchCacheRead::Fallback);
+                }
+                Some(value) => return Ok(PropertyFetchCacheRead::Value(value)),
+                None => {}
+            }
+        }
+        if normalize_class_name(&object.class_name()) != target.receiver_class {
+            self.record_counter_property_ic_fallback("receiver_class_mismatch");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        let object_class_name = object.class_name();
+        let Some(receiver_class_entry) =
+            lookup_class_in_state_ref(compiled, state, &object_class_name)
+        else {
+            self.record_counter_property_ic_fallback("receiver_class_missing");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        };
+        if receiver_class_entry.as_ref().id.raw() != layout.class_id {
+            self.record_counter_property_ic_fallback("class_id_mismatch");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if layout.dynamic_property_fallback {
+            self.record_counter_property_ic_fallback("dynamic_property_fallback");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if layout.has_property_hooks {
+            self.record_counter_property_ic_fallback("property_hook_metadata");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if !layout.typed_property_initialized {
+            self.record_counter_property_ic_fallback("uninitialized_metadata");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        let Some(declaring_class) = owner.lookup_class(&target.declaring_class) else {
+            self.record_counter_property_ic_fallback("declaring_class_missing");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        };
+        let Some((property_index, property)) = declaring_class
+            .properties
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.name == target.property)
+        else {
+            self.record_counter_property_ic_fallback("property_missing");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        };
+        if layout.property_slot_index != Some(property_index as u32) {
+            self.record_counter_property_ic_fallback("property_slot_mismatch");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if property_storage_name(declaring_class, property) != target.storage_name {
+            self.record_counter_property_ic_fallback("storage_name_mismatch");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if property.flags.is_static || property.flags.is_protected {
+            self.record_counter_property_ic_fallback("static_or_protected_property");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if property.hooks.get.is_some() || property.hooks.set.is_some() {
+            self.record_counter_property_ic_fallback("property_hook_present");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if property_hook_is_active(state, object, declaring_class, property) {
+            self.record_counter_property_ic_fallback("property_hook_active");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        if validate_property_access(&owner, stack, declaring_class, property).is_err() {
+            self.record_counter_property_ic_fallback("visibility_mismatch");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        let Some(value) = object.get_property(&target.storage_name) else {
+            self.record_counter_property_ic_fallback("storage_missing");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        };
+        if matches!(value, Value::Uninitialized) {
+            self.record_counter_property_ic_fallback("uninitialized_typed_property");
+            return Ok(PropertyFetchCacheRead::Fallback);
+        }
+        Ok(PropertyFetchCacheRead::Value(value))
+    }
+
+    pub(super) fn write_property_assign_target(
+        &self,
+        compiled: &CompiledUnit,
+        target: PropertyAssignCacheTarget,
+        object: &ObjectRef,
+        value: Value,
+        stack: &CallStack,
+        state: &ExecutionState,
+    ) -> Result<PropertyAssignCacheWrite, String> {
+        let (owner, target) = match target {
+            PropertyAssignCacheTarget::CurrentUnit { target } => (compiled.clone(), target),
+            PropertyAssignCacheTarget::DynamicUnit { unit_index, target } => {
+                let Some(owner) = state.dynamic_units.get(unit_index).cloned() else {
+                    self.record_counter_property_assign_ic_fallback("dynamic_unit_missing");
+                    return Ok(PropertyAssignCacheWrite::Fallback);
+                };
+                (owner, target)
+            }
+        };
+        let target = target.as_ref();
+        let layout = &target.layout;
+        if state.lookup_epoch().raw() != layout.layout_version {
+            self.record_counter_property_assign_ic_fallback("layout_epoch_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        // Direct declared-slot write for untyped, non-readonly, hook-free
+        // slots (install gate). The layout guard subsumes class/slot
+        // re-validation; a slot currently holding a reference must write
+        // through the cell, so it falls back to the generic path.
+        if target.slot_write_eligible
+            && let Some(slot) = target.declared_slot
+        {
+            let current = object.get_declared_slot(slot, target.object_layout_epoch);
+            if matches!(current, Some(Value::Reference(_))) {
+                self.record_counter_property_assign_ic_fallback("reference_slot");
+                return Ok(PropertyAssignCacheWrite::Fallback);
+            }
+            if current.is_some()
+                && object.set_declared_slot(slot, target.object_layout_epoch, value.clone())
+            {
+                return Ok(PropertyAssignCacheWrite::Written(value));
+            }
+        }
+        if normalize_class_name(&object.class_name()) != target.receiver_class {
+            self.record_counter_property_assign_ic_fallback("receiver_class_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        let object_class_name = object.class_name();
+        let Some(receiver_class_entry) =
+            lookup_class_in_state_ref(compiled, state, &object_class_name)
+        else {
+            self.record_counter_property_assign_ic_fallback("receiver_class_missing");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        };
+        if receiver_class_entry.as_ref().id.raw() != layout.class_id {
+            self.record_counter_property_assign_ic_fallback("class_id_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if layout.dynamic_property_fallback {
+            self.record_counter_property_assign_ic_fallback("dynamic_property_metadata");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if layout.has_magic_set {
+            self.record_counter_property_assign_ic_fallback("magic_set_metadata");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if layout.has_property_hooks {
+            self.record_counter_property_assign_ic_fallback("property_hook_metadata");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if layout.readonly_or_init_only {
+            self.record_counter_property_assign_ic_fallback("readonly_metadata");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if layout.reference_slot {
+            self.record_counter_property_assign_ic_fallback("reference_metadata");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        let Some(declaring_class) = owner.lookup_class(&target.declaring_class) else {
+            self.record_counter_property_assign_ic_fallback("declaring_class_missing");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        };
+        let Some((property_index, property)) = declaring_class
+            .properties
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.name == target.property)
+        else {
+            self.record_counter_property_assign_ic_fallback("property_missing");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        };
+        if layout.property_slot_index != Some(property_index as u32) {
+            self.record_counter_property_assign_ic_fallback("property_slot_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if property_storage_name(declaring_class, property) != target.storage_name {
+            self.record_counter_property_assign_ic_fallback("storage_name_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if property.flags.is_static || property.flags.is_protected {
+            self.record_counter_property_assign_ic_fallback("static_or_protected_property");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if property.hooks.get.is_some() || property.hooks.set.is_some() {
+            self.record_counter_property_assign_ic_fallback("property_hook_present");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if property_hook_is_active(state, object, declaring_class, property) {
+            self.record_counter_property_assign_ic_fallback("property_hook_active");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if validate_property_access(&owner, stack, declaring_class, property).is_err() {
+            self.record_counter_property_assign_ic_fallback("visibility_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if validate_property_set_access(&owner, stack, declaring_class, property).is_err() {
+            self.record_counter_property_assign_ic_fallback("setter_visibility_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        let property_type = ir_runtime_type(property.type_.as_ref());
+        if check_property_type(
+            &owner,
+            Some(state),
+            declaring_class.display_name.as_str(),
+            property.name.as_str(),
+            &property_type,
+            &value,
+            self.typecheck_fast_path_context(),
+        )
+        .is_err()
+        {
+            self.record_counter_property_assign_ic_fallback("type_mismatch");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if let Err(message) =
+            validate_property_write(declaring_class, property, object, stack, &owner)
+        {
+            if message.contains("readonly") {
+                self.record_counter_property_assign_ic_fallback("readonly_property");
+            }
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        if matches!(
+            object.get_property(&target.storage_name),
+            Some(Value::Reference(_))
+        ) {
+            self.record_counter_property_assign_ic_fallback("reference_slot");
+            return Ok(PropertyAssignCacheWrite::Fallback);
+        }
+        object.set_property(target.storage_name.clone(), value.clone());
+        Ok(PropertyAssignCacheWrite::Written(value))
+    }
+
+    pub(super) fn call_magic_property_method(
+        &self,
+        compiled: &CompiledUnit,
+        object: ObjectRef,
+        method: &str,
+        property: &str,
+        args: Vec<CallArgument>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Option<Value>, VmResult> {
+        let resolved = match lookup_resolved_method_in_state(
+            compiled,
+            state,
+            &object.class_name(),
+            method,
+            None,
+        ) {
+            Ok(Some(method)) => method,
+            Ok(None) => return Ok(None),
+            Err(message) => return Err(self.runtime_error(output, compiled, stack, message)),
+        };
+        if resolved.method.flags.is_static {
+            return Ok(None);
+        }
+        if resolved.method.flags.is_private || resolved.method.flags.is_protected {
+            return Ok(None);
+        }
+        let guard = MagicPropertyCall {
+            object_id: object.id(),
+            method: normalize_method_name(method),
+            property: property.to_owned(),
+        };
+        if magic_property_call_is_active(state, &object, method, property) {
+            if method.eq_ignore_ascii_case("__isset") || method.eq_ignore_ascii_case("__set") {
+                return Ok(None);
+            }
+            return Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_MAGIC_PROPERTY_RECURSION: recursive {method} for {}::${property}",
+                    object.class_name()
+                ),
+            ));
+        }
+        state.magic_property_stack.push(guard);
+        let owner = class_owner_in_state(compiled, state, &resolved.class.name);
+        let result = self.execute_function(
+            &owner,
+            resolved.method.function,
+            FunctionCall::new(args, Vec::new())
+                .with_call_site_strict_types(owner.unit().strict_types)
+                .with_this(object.clone())
+                .with_class_context_handles(
+                    self.class_name_handles(&resolved.class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&resolved.class.name).normalized,
+                ),
+            output,
+            stack,
+            state,
+        );
+        let _ = state.magic_property_stack.pop();
+        if result.status.is_success() {
+            Ok(Some(result.return_value.unwrap_or(Value::Null)))
+        } else {
+            Err(result)
+        }
+    }
+
+    pub(super) fn call_property_hook(
+        &self,
+        compiled: &CompiledUnit,
+        object: ObjectRef,
+        class: &php_ir::module::ClassEntry,
+        property: &php_ir::module::ClassPropertyEntry,
+        function: FunctionId,
+        args: Vec<CallArgument>,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<Value, VmResult> {
+        let guard = PropertyHookCall {
+            object_id: object.id(),
+            class_name: normalize_class_name(&class.name),
+            property: property.name.clone(),
+        };
+        if state
+            .property_hook_stack
+            .iter()
+            .any(|active| active == &guard)
+        {
+            return Err(self.runtime_error(
+                output,
+                compiled,
+                stack,
+                format!(
+                    "E_PHP_VM_PROPERTY_HOOK_RECURSION: recursive hook for {}::${}",
+                    class.name, property.name
+                ),
+            ));
+        }
+        state.property_hook_stack.push(guard);
+        let result = self.execute_function(
+            compiled,
+            function,
+            FunctionCall::new(args, Vec::new())
+                .with_call_site_strict_types(compiled.unit().strict_types)
+                .with_this(object.clone())
+                .with_class_context_handles(
+                    self.class_name_handles(&class.name).normalized,
+                    object_called_class_handle(&object),
+                    self.class_name_handles(&class.name).normalized,
+                ),
+            output,
+            stack,
+            state,
+        );
+        let _ = state.property_hook_stack.pop();
+        if result.status.is_success() {
+            Ok(result.return_value.unwrap_or(Value::Null))
+        } else {
+            Err(result)
+        }
+    }
 }

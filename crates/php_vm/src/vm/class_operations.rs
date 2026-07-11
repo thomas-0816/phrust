@@ -2966,4 +2966,100 @@ impl Vm {
         seen.pop();
         Ok(())
     }
+
+    pub(super) fn read_class_constant_static_property_target(
+        &self,
+        compiled: &CompiledUnit,
+        target: ClassConstantStaticPropertyCacheTarget,
+        stack: &CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<ClassStaticCacheRead, String> {
+        let (owner, kind, declaring_class_name, member) = match target {
+            ClassConstantStaticPropertyCacheTarget::CurrentUnit {
+                kind,
+                resolved_class: _,
+                declaring_class,
+                member,
+            } => (compiled.clone(), kind, declaring_class, member),
+            ClassConstantStaticPropertyCacheTarget::DynamicUnit {
+                unit_index,
+                kind,
+                resolved_class: _,
+                declaring_class,
+                member,
+            } => {
+                let Some(owner) = state.dynamic_units.get(unit_index).cloned() else {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                };
+                (owner, kind, declaring_class, member)
+            }
+        };
+        let Some(class) = owner.lookup_class(&declaring_class_name) else {
+            return Ok(ClassStaticCacheRead::Fallback);
+        };
+        match kind {
+            ClassConstantStaticPropertyCacheKind::ClassConstant => {
+                let Some(constant) = class.constants.iter().find(|entry| entry.name == member)
+                else {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                };
+                if validate_constant_access(&owner, stack, class, constant).is_err() {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                }
+                let value = match constant.value {
+                    Some(value) => constant_value(owner.unit(), value)?,
+                    None => {
+                        if let Some(reference) = &constant.value_class_constant {
+                            class_constant_reference_value(compiled, state, reference)?
+                        } else if let Some(reference) = &constant.value_named_constant {
+                            named_constant_reference_value(compiled, state, reference)?
+                        } else {
+                            Value::Null
+                        }
+                    }
+                };
+                Ok(ClassStaticCacheRead::Value(value))
+            }
+            ClassConstantStaticPropertyCacheKind::EnumCase => {
+                let Some(case) = class
+                    .enum_cases
+                    .iter()
+                    .find(|case| case.name.eq_ignore_ascii_case(&member))
+                else {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                };
+                let object = enum_case_object(&owner, state, class, case, &|value| {
+                    constant_value(owner.unit(), value)
+                })?;
+                Ok(ClassStaticCacheRead::Value(Value::Object(object)))
+            }
+            ClassConstantStaticPropertyCacheKind::StaticProperty => {
+                let Some(property) = class.properties.iter().find(|entry| entry.name == member)
+                else {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                };
+                if !property.flags.is_static {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                }
+                if validate_property_access_in_state(&owner, state, stack, class, property).is_err()
+                {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                }
+                let key = static_property_key(class, property);
+                if !state.static_properties.contains_key(&key) {
+                    let default = static_property_default(&owner, state, stack, class, property)?;
+                    state.static_properties.insert(key.clone(), default);
+                }
+                let value = state
+                    .static_properties
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(Value::Uninitialized);
+                if matches!(value, Value::Uninitialized) {
+                    return Ok(ClassStaticCacheRead::Fallback);
+                }
+                Ok(ClassStaticCacheRead::Value(value))
+            }
+        }
+    }
 }
