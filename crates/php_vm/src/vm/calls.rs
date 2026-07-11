@@ -3336,10 +3336,7 @@ pub(super) fn value_needs_vm_string_coercion_in_state(
     }
 }
 
-pub(super) fn internal_builtin_string_arg_positions(
-    name: &str,
-    arity: usize,
-) -> &'static [usize] {
+pub(super) fn internal_builtin_string_arg_positions(name: &str, arity: usize) -> &'static [usize] {
     match name {
         "addslashes"
         | "bin2hex"

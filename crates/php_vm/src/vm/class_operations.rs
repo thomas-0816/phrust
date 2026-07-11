@@ -3596,7 +3596,10 @@ pub(super) fn lookup_class_in_state_ref(
     if let Some(class) = dynamic_class_in_loaded_units(state, &normalized) {
         return Some(ClassLookup::Shared(class));
     }
-    if state.failed_class_declarations.contains(normalized.as_ref()) {
+    if state
+        .failed_class_declarations
+        .contains(normalized.as_ref())
+    {
         return None;
     }
     internal_runtime_class_entry(&normalized)

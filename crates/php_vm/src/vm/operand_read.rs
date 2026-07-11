@@ -77,8 +77,8 @@ impl Vm {
             DenseOperandKind::Register => {
                 let frame = stack.current().ok_or("no active frame")?;
                 // Verified dense operand (ADR 0021, crate::frame_memory).
-                let value = crate::frame_memory::register_slot(&frame.registers, operand.index)
-                    .value();
+                let value =
+                    crate::frame_memory::register_slot(&frame.registers, operand.index).value();
                 if value.is_uninitialized() {
                     return Err(format!("read uninitialized register r{}", operand.index));
                 }
@@ -89,8 +89,7 @@ impl Vm {
                 let frame = stack.current().ok_or("no active frame")?;
                 let _source = layout_source::enter(source_family);
                 // Verified dense operand (ADR 0021, crate::frame_memory).
-                let value =
-                    crate::frame_memory::local_slot(&frame.locals, operand.index).read();
+                let value = crate::frame_memory::local_slot(&frame.locals, operand.index).read();
                 Ok(if value.is_uninitialized() {
                     Value::Null
                 } else {
@@ -117,8 +116,8 @@ impl Vm {
             DenseOperandKind::Register => {
                 let frame = stack.current().ok_or("no active frame")?;
                 // Verified dense operand (ADR 0021, crate::frame_memory).
-                let value = crate::frame_memory::register_slot(&frame.registers, operand.index)
-                    .value();
+                let value =
+                    crate::frame_memory::register_slot(&frame.registers, operand.index).value();
                 if value.is_uninitialized() {
                     return Err(format!("read uninitialized register r{}", operand.index));
                 }

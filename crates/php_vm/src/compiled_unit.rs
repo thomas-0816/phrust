@@ -346,7 +346,11 @@ impl CompiledUnit {
     pub fn lookup_unit_class(&self, name: &str) -> Option<&ClassEntry> {
         php_runtime::layout_stats::record_symbol_map_lookup();
         let normalized = normalized_class_name(name);
-        let index = self.inner.unit_class_lookup.get(normalized.as_ref()).copied()?;
+        let index = self
+            .inner
+            .unit_class_lookup
+            .get(normalized.as_ref())
+            .copied()?;
         self.inner.unit.classes.get(index)
     }
 
