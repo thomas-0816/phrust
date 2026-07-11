@@ -32,7 +32,9 @@ upload, session, and SAPI state similarly live behind one
 `RequestLifecycleState` subsystem. The remaining execution state has a dedicated
 `execution_state` owner rather than being declared in the facade. Request-local
 declaration models, error/shutdown state, destructor ownership, and GC root
-scanning have moved with it.
+scanning have moved with it. Class constants, cloning, autoload, class/object
+introspection, aliases, dependency validation, and construction now have a
+bounded `class_operations` owner.
 
 ## Target Ownership
 
