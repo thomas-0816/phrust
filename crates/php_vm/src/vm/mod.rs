@@ -136,6 +136,7 @@ pub use result::VmStepLimitDiagnostic;
 pub use result::{VmControlFlow, VmResult};
 pub(crate) use runtime_class_metadata::dense_new_object_lowering_supported;
 use runtime_class_metadata::*;
+use runtime_operations::object_has_public_to_string_in_state;
 use scalar_handlers::{
     checked_int_binary, execute_arithmetic, execute_bitwise, execute_power, execute_rich_binary_op,
     execute_rich_compare_op, execute_rich_unary_op,
@@ -28760,39 +28761,6 @@ fn emit_string_offset_negative_warning(
         php_runtime::PHP_E_WARNING,
     );
     state.diagnostics.push(diagnostic);
-}
-
-fn object_has_public_to_string(compiled: &CompiledUnit, object: &ObjectRef) -> bool {
-    if is_php_token_runtime_class(&object.class_name()) {
-        return true;
-    }
-    let Some(class) = compiled.lookup_class(&object.class_name()) else {
-        return false;
-    };
-    let Ok(Some(resolved)) = lookup_method_in_hierarchy(compiled, class, "__toString", None) else {
-        return false;
-    };
-    !resolved.method.flags.is_static
-        && !resolved.method.flags.is_private
-        && !resolved.method.flags.is_protected
-}
-
-fn object_has_public_to_string_in_state(
-    compiled: &CompiledUnit,
-    state: &ExecutionState,
-    object: &ObjectRef,
-) -> bool {
-    if is_php_token_runtime_class(&object.class_name()) {
-        return true;
-    }
-    let Ok(Some(resolved)) =
-        lookup_resolved_method_in_state(compiled, state, &object.class_name(), "__toString", None)
-    else {
-        return false;
-    };
-    !resolved.method.flags.is_static
-        && !resolved.method.flags.is_private
-        && !resolved.method.flags.is_protected
 }
 
 #[cfg(test)]

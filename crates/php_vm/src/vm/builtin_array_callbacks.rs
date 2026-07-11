@@ -8,6 +8,7 @@ use super::builtin_array_sort::{
 };
 use super::builtin_callback_validation::{array_callback_type_error, validate_array_callback_arg};
 use super::prelude::*;
+use super::runtime_operations::object_has_public_to_string;
 
 pub(super) fn is_array_callback_builtin_name(name: &str) -> bool {
     matches!(

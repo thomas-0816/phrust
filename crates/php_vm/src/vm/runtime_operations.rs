@@ -1,5 +1,38 @@
 use super::prelude::*;
 
+pub(super) fn object_has_public_to_string(compiled: &CompiledUnit, object: &ObjectRef) -> bool {
+    if is_php_token_runtime_class(&object.class_name()) {
+        return true;
+    }
+    let Some(class) = compiled.lookup_class(&object.class_name()) else {
+        return false;
+    };
+    let Ok(Some(resolved)) = lookup_method_in_hierarchy(compiled, class, "__toString", None) else {
+        return false;
+    };
+    !resolved.method.flags.is_static
+        && !resolved.method.flags.is_private
+        && !resolved.method.flags.is_protected
+}
+
+pub(super) fn object_has_public_to_string_in_state(
+    compiled: &CompiledUnit,
+    state: &ExecutionState,
+    object: &ObjectRef,
+) -> bool {
+    if is_php_token_runtime_class(&object.class_name()) {
+        return true;
+    }
+    let Ok(Some(resolved)) =
+        lookup_resolved_method_in_state(compiled, state, &object.class_name(), "__toString", None)
+    else {
+        return false;
+    };
+    !resolved.method.flags.is_static
+        && !resolved.method.flags.is_private
+        && !resolved.method.flags.is_protected
+}
+
 fn has_array_operand(value: &Value) -> bool {
     match value {
         Value::Array(_) => true,
