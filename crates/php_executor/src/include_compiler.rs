@@ -114,6 +114,7 @@ fn compile_include(
                 );
                 continue;
             }
+            let mut inferred = false;
             let dependency_source =
                 match loader.load_compilation_dependency(&request.normalized_name)? {
                     Some(dependency_source) => {
@@ -146,17 +147,28 @@ fn compile_include(
                         else {
                             continue;
                         };
+                        inferred = true;
                         dependency_source
                     }
                 };
 
             let path = dependency_source.loaded().canonical_path.clone();
-            let dependency = session.add_dependency(
-                file_id,
-                &request.normalized_name,
-                path.to_string_lossy().into_owned(),
-                dependency_source.loaded().source.clone(),
-            );
+            let dependency = if inferred {
+                session.add_inferred_dependency(
+                    file_id,
+                    &request.normalized_name,
+                    &request.normalized_name,
+                    path.to_string_lossy().into_owned(),
+                    dependency_source.loaded().source.clone(),
+                )
+            } else {
+                session.add_dependency(
+                    file_id,
+                    &request.normalized_name,
+                    path.to_string_lossy().into_owned(),
+                    dependency_source.loaded().source.clone(),
+                )
+            };
             for declared in session.declared_trait_names(dependency) {
                 if let Some(previous) = providers.insert(declared.clone(), dependency)
                     && previous != dependency

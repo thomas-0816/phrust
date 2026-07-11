@@ -138,6 +138,9 @@ pub struct CompilationSession {
     paths: HashMap<String, CompilationFileId>,
     dependencies: Vec<CompilationDependency>,
     entry: CompilationFileId,
+    /// PHP-visible declaration names for files added by compile-time
+    /// inference, keyed by file.
+    inferred_declarations: HashMap<CompilationFileId, String>,
 }
 
 impl CompilationSession {
@@ -152,6 +155,7 @@ impl CompilationSession {
             paths: HashMap::from([(path, entry)]),
             dependencies: Vec::new(),
             entry,
+            inferred_declarations: HashMap::new(),
         }
     }
 
@@ -182,6 +186,31 @@ impl CompilationSession {
             self.dependencies.push(edge);
         }
         dependency
+    }
+
+    /// Adds a dependency discovered by compile-time inference rather than an
+    /// explicit mapping, recording the PHP-visible declaration name so the
+    /// VM can gate the injected file on the autoload protocol.
+    pub fn add_inferred_dependency(
+        &mut self,
+        requester: CompilationFileId,
+        declaration: impl Into<String>,
+        display_name: impl Into<String>,
+        path: impl Into<String>,
+        source: impl Into<String>,
+    ) -> CompilationFileId {
+        let dependency = self.add_dependency(requester, declaration, path, source);
+        self.inferred_declarations
+            .entry(dependency)
+            .or_insert_with(|| display_name.into());
+        dependency
+    }
+
+    /// Returns the PHP-visible declaration name when `file` was pulled in by
+    /// compile-time inference.
+    #[must_use]
+    pub fn inferred_declaration(&self, file: CompilationFileId) -> Option<&str> {
+        self.inferred_declarations.get(&file).map(String::as_str)
     }
 
     /// Returns all files in stable insertion order.

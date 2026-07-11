@@ -82,8 +82,55 @@ impl Vm {
             included.unit().linked_file_entries.clone()
         };
         let mut linked_diagnostics = Vec::new();
-
-        for linked_entry in linked_entries {
+        for (linked_index, linked_entry) in linked_entries.into_iter().enumerate() {
+            // A linked file that compile-time inference injected stands in
+            // for what the autoload protocol would load at class-link time in
+            // reference PHP. Mirror that: an already-declared or
+            // autoloader-provided declaration wins and the injected copy is
+            // skipped; a declaration nobody provides is the reference
+            // "Trait not found" failure.
+            if let Some(normalized_name) = included
+                .unit()
+                .linked_entry_inferred_declarations
+                .get(linked_index)
+                .and_then(|declaration| declaration.as_deref())
+            {
+                if dynamic_class_entry_by_normalized_name(state, normalized_name).is_some() {
+                    continue;
+                }
+                // Autoloaders see the declared spelling (PSR closures do
+                // case-sensitive prefix checks); the injected unit carries it
+                // on the trait's own class entry.
+                let display_name = included
+                    .unit()
+                    .classes
+                    .iter()
+                    .find(|class| normalize_class_name(&class.name) == normalized_name)
+                    .map_or_else(
+                        || normalized_name.to_owned(),
+                        |class| class.display_name.clone(),
+                    );
+                if let Err(result) = self.autoload_runtime_missing_declaration(
+                    caller,
+                    &display_name,
+                    output,
+                    stack,
+                    state,
+                ) {
+                    return result;
+                }
+                if dynamic_class_entry_by_normalized_name(state, normalized_name).is_some() {
+                    continue;
+                }
+                let mut result = self.runtime_error(
+                    output,
+                    included,
+                    stack,
+                    format!("E_PHP_VM_TRAIT_NOT_FOUND: Trait \"{display_name}\" not found"),
+                );
+                result.diagnostics.splice(0..0, linked_diagnostics);
+                return result;
+            }
             self.register_linked_include_path(included, linked_entry, state);
             let call = FunctionCall {
                 positional_values: Vec::new(),

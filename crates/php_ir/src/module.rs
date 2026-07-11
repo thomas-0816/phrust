@@ -336,6 +336,13 @@ pub struct IrUnit {
     /// and execute `entry` directly for backward-compatible serialization.
     #[serde(default)]
     pub linked_file_entries: Vec<FunctionId>,
+    /// Index-aligned with `linked_file_entries`: the PHP-visible declaration
+    /// name when the linked file was pulled in by compile-time inference
+    /// (PSR-4 trait resolution) rather than an explicit include or mapping.
+    /// The VM gates execution of such entries on the autoload protocol so a
+    /// deployment without a registered autoloader fails like reference PHP.
+    #[serde(default)]
+    pub linked_entry_inferred_declarations: Vec<Option<String>>,
     /// Per-file `declare(strict_types=1)` metadata indexed by [`FileId`].
     ///
     /// `strict_types` remains the entry-file compatibility value. Multi-file
@@ -365,6 +372,7 @@ impl IrUnit {
             classes: Vec::new(),
             files: Vec::new(),
             linked_file_entries: Vec::new(),
+            linked_entry_inferred_declarations: Vec::new(),
             file_strict_types: Vec::new(),
             entry: FunctionId::new(0),
             strict_types: false,

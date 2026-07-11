@@ -68,6 +68,17 @@ pub fn lower_compilation_session(
         diagnostics.extend(file_diagnostics);
     }
     builder.set_linked_file_entries(linked_file_entries);
+    builder.set_linked_entry_inferred_declarations(
+        session
+            .lowering_order()
+            .iter()
+            .map(|source_id| {
+                session
+                    .inferred_declaration(*source_id)
+                    .map(ToOwned::to_owned)
+            })
+            .collect(),
+    );
     finish_lowering(builder, diagnostics)
 }
 

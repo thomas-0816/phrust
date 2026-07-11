@@ -47987,6 +47987,54 @@ impl Vm {
         Ok(())
     }
 
+    /// Runs the registered-autoloader protocol for a declaration that is
+    /// missing from the RUNTIME declaration table, regardless of unit static
+    /// tables. The inferred-trait gate needs this: the including unit's own
+    /// static table always contains the compile-time-composed trait, which
+    /// would short-circuit `autoload_class` before any callback runs.
+    fn autoload_runtime_missing_declaration(
+        &self,
+        compiled: &CompiledUnit,
+        class_name: &str,
+        output: &mut OutputBuffer,
+        stack: &mut CallStack,
+        state: &mut ExecutionState,
+    ) -> Result<(), VmResult> {
+        let normalized = normalize_class_name(class_name);
+        if dynamic_class_entry_by_normalized_name(state, &normalized).is_some()
+            || state.autoload_stack.iter().any(|name| name == &normalized)
+            || !is_valid_autoload_class_name(class_name)
+        {
+            return Ok(());
+        }
+        let callbacks = state.autoload_registry.callbacks().to_vec();
+        if !callbacks.is_empty() {
+            self.record_counter_autoload();
+        }
+        state.autoload_stack.push(normalized.clone());
+        for callback in callbacks {
+            let result = self.call_callable(
+                compiled,
+                Value::Callable(Box::new(callback)),
+                vec![CallArgument::positional(Value::string(
+                    class_name.as_bytes().to_vec(),
+                ))],
+                output,
+                stack,
+                state,
+            );
+            if !result.status.is_success() {
+                let _ = state.autoload_stack.pop();
+                return Err(result);
+            }
+            if dynamic_class_entry_by_normalized_name(state, &normalized).is_some() {
+                break;
+            }
+        }
+        let _ = state.autoload_stack.pop();
+        Ok(())
+    }
+
     fn autoload_class_parents_if_missing(
         &self,
         compiled: &CompiledUnit,
@@ -56212,8 +56260,28 @@ fn register_dynamic_classes(
     compiled: &CompiledUnit,
     load_kind: DeclarationLoadKind,
 ) {
+    // Declarations living in compile-time-inferred linked files stand in for
+    // what an autoloader would provide at class-link time; pre-registering
+    // them would make them visible without any autoloader having run. Their
+    // runtime declaration is decided by the linked-entry autoload gate.
+    let inferred_files: std::collections::HashSet<php_ir::ids::FileId> = compiled
+        .unit()
+        .linked_file_entries
+        .iter()
+        .zip(compiled.unit().linked_entry_inferred_declarations.iter())
+        .filter(|(_, inferred)| inferred.is_some())
+        .filter_map(|(entry, _)| {
+            compiled
+                .unit()
+                .functions
+                .get(entry.index())
+                .map(|function| function.span.file)
+        })
+        .collect();
     for class in compiled.unit().classes.iter().filter(|class| {
-        class.span != php_ir::source_map::IrSpan::default() && !class.flags.is_conditional
+        class.span != php_ir::source_map::IrSpan::default()
+            && !class.flags.is_conditional
+            && !inferred_files.contains(&class.span.file)
     }) {
         let normalized = normalize_class_name(&class.name);
         if state.dynamic_class_index.contains_key(&normalized) {
