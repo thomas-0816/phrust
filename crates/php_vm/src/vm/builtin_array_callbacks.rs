@@ -1,9 +1,10 @@
 use super::builtin_adapter::{BuiltinTypeError, builtin_source_span};
 use super::builtin_array_sort::{
-    array_callback_key_value, emit_sort_bool_compare_deprecation, multisort_array_entries,
-    multisort_duplicate_flag_error, multisort_numeric_values, multisort_reference_cell_at,
-    multisort_reorder_entries, sort_argument_is_array, sort_callback_args, sort_callback_ordering,
-    sort_numeric_float, sort_reference_cell,
+    array_callback_key_value, compare_sort_values, emit_sort_bool_compare_deprecation,
+    multisort_array_entries, multisort_duplicate_flag_error, multisort_numeric_values,
+    multisort_reference_cell_at, multisort_reorder_entries, natural_compare_bytes,
+    sort_argument_is_array, sort_callback_args, sort_callback_ordering, sort_numeric_float,
+    sort_reference_cell, sort_string_value,
 };
 use super::builtin_callback_validation::{array_callback_type_error, validate_array_callback_arg};
 use super::prelude::*;
